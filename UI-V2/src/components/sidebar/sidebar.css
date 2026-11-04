@@ -1,0 +1,128 @@
+/* Sidebar motion. Scoped to .uam-sb-* so it cannot leak into other surfaces. */
+
+/* Section lists animate height (grid rows) and fade on expand/collapse; rows unmount after the exit window. */
+.uam-sb-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--dur-base) var(--ease-out-soft), opacity var(--dur-base) var(--ease-out-soft);
+}
+.uam-sb-collapse[data-state="closed"] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition-duration: var(--dur-exit);
+  transition-timing-function: var(--ease);
+}
+.uam-sb-collapse__inner { min-height: 0; overflow: hidden; }
+/* The collapse clips during its animation, so everything inside draws the focus ring inside its own shape. */
+.uam-sb-collapse__inner :focus-visible { outline-offset: var(--focus-inset); }
+.uam-sb-collapse[hidden] {
+  display: none;
+  opacity: 0;
+  transform: translateY(-4px);
+}
+@starting-style {
+  .uam-sb-collapse:not([hidden]) {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.uam-sb-chevron {
+  transition: transform var(--dur-base) var(--ease-out-soft);
+}
+
+/* Newly rendered chat rows settle into place instead of popping. */
+.uam-sb-row {
+  animation: uam-sb-row-in var(--dur-base) var(--ease-out-soft) backwards;
+  /* Selection and hover only repaint: no layout property transitions. */
+  transition: background-color var(--dur-fast) var(--ease-out-soft), color var(--dur-fast) var(--ease-out-soft);
+}
+/* Hover and selected share one box (same inset, radius and height from Tailwind classes on the row); only the paint differs. */
+.uam-sb-row:hover { background: var(--sidebar-item-hover); }
+.uam-sb-row:focus-visible { outline-offset: var(--focus-inset); }
+/* One light accent tint for selected or active rows; a selected row keeps its tint while hovered. */
+.uam-sb-row--selected,
+.uam-sb-row--selected:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+@keyframes uam-sb-row-in {
+  from { opacity: 0; transform: translateY(-3px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-sb-collapse,
+  .uam-sb-chevron {
+    transition: none;
+  }
+  .uam-sb-row {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* Snooze custom form: eases out toward its anchor, then unmounts (usePresence). */
+.uam-snooze-custom[data-state="closed"] { animation: uam-snooze-custom-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+@keyframes uam-snooze-custom-out { to { opacity: 0; transform: translateY(-4px); } }
+
+/* Shared row-menu item (chat context menu and snooze presets). */
+.uam-sb-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px var(--sp-3);
+  text-align: left;
+  font-size: var(--fs-base);
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out-soft), color var(--dur-fast) var(--ease-out-soft);
+}
+.uam-sb-menu-item:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--sidebar-item-hover); color: var(--text); }
+.uam-sb-menu-item:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
+.uam-sb-menu-item:disabled, .uam-sb-menu-item[aria-disabled="true"] { opacity: .5; cursor: default; }
+.uam-sb-menu-item--danger { color: var(--error); }
+.uam-sb-menu-item--danger:hover:not(:disabled) { background: var(--error-dim); color: var(--error); }
+.uam-sb-menu-divider { margin: 4px 8px; border-top: 1px solid var(--border); }
+
+/* Submenus slide out of the trigger row's edge and return to it; pointer-events stop while leaving. */
+[data-viewport-menu].uam-sb-submenu { animation: uam-sb-submenu-in var(--dur-base) var(--ease-out-soft) backwards; }
+.uam-sb-submenu[data-state="closing"] { animation: uam-sb-submenu-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+@keyframes uam-sb-submenu-in { from { opacity: 0; transform: translateX(-6px); } }
+@keyframes uam-sb-submenu-out { to { opacity: 0; transform: translateX(-6px); } }
+@media (prefers-reduced-motion: reduce) {
+  [data-viewport-menu].uam-sb-submenu, .uam-sb-submenu[data-state="closing"] { animation: none; }
+}
+
+/* Collapsed Active section: one calm warning strip that expands the section. */
+.uam-sb-attention-strip {
+  color: var(--warning);
+  background: var(--warning-dim);
+  border: 1px solid color-mix(in srgb, var(--warning) 28%, transparent);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out-soft);
+}
+.uam-sb-attention-strip:hover { background: var(--warning-dim); filter: brightness(1.08); }
+.uam-sb-attention-strip:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
+
+
+.uam-subagent-catalogue__children { margin-left: 12px; border-left: 1px solid var(--border); padding-left: 4px; }
+.uam-subagent-toggle { display: flex; align-items: center; gap: 4px; width: calc(100% - 8px); min-height: 22px; margin-inline: 4px; padding: 2px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text-3); font-size: var(--fs-xs); text-align: left; cursor: pointer; }
+.uam-subagent-toggle:hover { background: var(--sidebar-item-hover); color: var(--text-2); }
+.uam-subagent-toggle:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
+.uam-subagent-toggle__chevron { transition: transform .12s; }
+.uam-subagent-toggle[aria-expanded="true"] .uam-subagent-toggle__chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .uam-subagent-toggle__chevron { transition: none; } }
+.uam-managed-panel--catalogue { margin: 0; padding: 0; border: 0; }
+.uam-managed-panel--catalogue ul { margin: 0; padding: 0; list-style: none; }
+.uam-managed-panel--catalogue li { padding: 0; border: 0; }
+.uam-subagent-line { display: flex; align-items: center; min-width: 0; }
+.uam-subagent-line[data-nested] { margin-left: 12px; }
+.uam-subagent-line__open { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; min-height: 26px; padding: 4px 10px; margin-inline: 4px; border: 0; border-radius: 6px; color: var(--text-2); font-size: var(--fs-sm); text-align: left; cursor: pointer; }
+.uam-subagent-line__open:focus-visible, .uam-subagent-line__stop:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
+.uam-subagent-line__status { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; padding-left: 6px; flex-shrink: 0; color: var(--text-3); font-size: var(--fs-xs); white-space: nowrap; }
+.uam-subagent-line__stop { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; flex-shrink: 0; margin-right: 4px; border: 0; border-radius: 4px; background: transparent; color: var(--text-3); cursor: pointer; }
+.uam-subagent-line__stop:hover:not(:disabled) { background: var(--sidebar-item-hover); color: var(--text); }
+.uam-subagent-line__stop:disabled { opacity: .5; cursor: default; }
+.uam-managed-panel--catalogue p.uam-subagent-line__note { display: flex; align-items: center; gap: 6px; min-height: 22px; margin: 0; padding: 2px 14px; color: var(--text-3); font-size: var(--fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.uam-subagent-line__pager { display: flex; align-items: center; gap: 4px; padding: 0 6px; color: var(--text-3); font-size: var(--fs-xs); white-space: nowrap; }

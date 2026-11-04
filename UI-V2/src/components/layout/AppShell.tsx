@@ -1,9 +1,15 @@
+import { SettingsLoading } from '../settings/SettingsPrimitives'
+import { StartupNativeImportChooser } from '../modals/StartupNativeImportChooser'
+import { LegacyChatImportPrompt } from '../modals/LegacyChatImportPrompt'
+import { ProviderMcpWarning } from '../shared/ProviderMcpWarning'
 import { nextAttentionSession } from '../../utils/nextAttention'
 import { useShallow } from 'zustand/react/shallow'
-import { COLLECTION_MOVE_FAILURE_EVENT, type CollectionMoveFailure } from '../sidebar/CollectionMenuItems'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { subscribeChatGridLayout } from '../../utils/chatGridStorage'
+import { subscribeSubagentNavigation } from '../../utils/subagentNavigation'
+import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
-import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCircle2, X } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCheck, CheckCircle2, AlertTriangle, ArrowUpRight, Info, X, XCircle, ChartNoAxesCombined } from 'lucide-react'
+import './panels.css'
 
 /** GitHub mark (lucide dropped brand icons). */
 function GithubLogo({ size = 17 }: { size?: number }) {
@@ -27,25 +33,259 @@ function SvnLogo({ size = 17 }: { size?: number }) {
   )
 }
 import { InterfaceErrorBoundary } from '../shared/InterfaceErrorBoundary'
+import { CopyTextButton } from '../chat/StatusHelpers'
 import { Sidebar } from './Sidebar'
 import { MainPanel } from './MainPanel'
+import { WindowChrome, useWindowChrome } from './WindowChrome'
 import { UpdatesPanel } from './UpdatesPanel'
 import type { SettingsHandle } from '../settings/SettingsModal'
 import { useAppStore } from '../../store/useAppStore'
 import { Logo } from '../shared/Logo'
 import { ThemeToggle } from '../shared/ThemeToggle'
-import { Button, IconButton, Notice, Presence, StatusDot, usePresence } from '../ui'
+import { Button, ConfirmDialog, EXIT_MS, IconButton, motionAllowed, Presence, scaledMs, Tooltip, usePresence } from '../ui'
 import { VIEWPORT_MENU_Z_INDEX } from '../ui/ViewportMenu'
 import type { ButtonVariant } from '../ui'
 import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { FILE_MANAGER_NAME, matchShortcut, shortcutLabel } from '../../utils/shortcuts'
+import { focusActiveInput } from '../../utils/activeInputFocus'
+import { APP_FAILURE_EVENT, reportAppFailure, type AppFailure } from '../../utils/appFailure'
+import { useNotificationClock, useNotificationTimes } from '../../hooks/useNotificationTimes'
+import { notificationTimeGroup } from '../../utils/notificationTime'
+import { useRowLeave } from './useRowLeave'
+import { isSshHost } from '../../utils/remoteWorkspace'
+import { SSH_ENABLED } from '../../config/buildFeatures'
+
+// These panels subscribe to their own state; shell navigation must not rerender their histories.
+const ChatPanel = memo(MainPanel)
+const ChatSidebar = memo(Sidebar)
 
 const SettingsModal = lazy(() => import('../settings/SettingsModal').then(({ SettingsModal }) => ({ default: SettingsModal })))
+const UsagePage = lazy(() => import('../usage/UsagePage').then(({ UsagePage }) => ({ default: UsagePage })))
 const VcsCommitPanel = lazy(() => import('./VcsCommitPanel').then(({ VcsCommitPanel }) => ({ default: VcsCommitPanel })))
 const NewChatModal = lazy(() => import('../sidebar/NewChatModal').then(({ NewChatModal }) => ({ default: NewChatModal })))
-const MemoryLibraryModal = lazy(() => import('../settings/MemoryLibraryModal').then(({ MemoryLibraryModal }) => ({ default: MemoryLibraryModal })))
 const MemoryScanModal = lazy(() => import('../settings/MemoryScanModal').then(({ MemoryScanModal }) => ({ default: MemoryScanModal })))
 const MarkdownStoreModal = lazy(() => import('../settings/MarkdownStoreModal').then(({ MarkdownStoreModal }) => ({ default: MarkdownStoreModal })))
+
+/** `detail` is not shown in the toast; it joins the message in the Copy message text. */
+type TransientAlert = { id: string; tone: 'error' | 'info' | 'success'; message: string; detail?: string; actionLabel: string; action: 'notifications' | 'updates' }
+/** A stacked alert; identical repeats raise `count` instead of adding a second toast, and `leaving` plays its exit. */
+type StackedAlert = TransientAlert & { count: number; leaving?: boolean }
+
+const ALERT_EXPIRY_MS = 5000
+/** Same gap from the chat area's bottom edge as from its right edge (and from the window's bottom edge). */
+const ALERT_GAP_PX = 16
+/** The stack never takes more than this share of the window height. */
+const ALERT_STACK_HEIGHT_RATIO = 0.3
+/** One single-line notice (or the Show N more toggle) plus its gap; measured rows that are taller count at their height. */
+const ALERT_ROW_PX = 44
+
+/** Adds a notice at the bottom of the stack; an identical visible notice gains a count and restarts its countdown instead. */
+export function pushStackedAlert(stack: StackedAlert[], alert: TransientAlert): StackedAlert[] {
+  const same = stack.find((item) => !item.leaving && (item.id === alert.id ||
+    (item.message === alert.message && item.tone === alert.tone && item.action === alert.action)))
+  // A repeat moves to the bottom as the newest notice; its keyed remount replays the slide-in.
+  if (same) return [...stack.filter((item) => item !== same), { ...alert, id: same.id, count: same.count + 1 }]
+  // A predecessor still sliding out keeps its id; the re-raised notice needs its own so keys and dismissal stay distinct.
+  const id = stack.some((item) => item.id === alert.id) ? `${alert.id}#${++reraisedAlertSerial}` : alert.id
+  return [...stack, { ...alert, id, count: 1 }]
+}
+let reraisedAlertSerial = 0
+
+function TransientAlertItem({ alert, visible, collapsed, hovered, onHover, onAction, onDismiss, messageMaxHeight }: { alert: StackedAlert; visible: boolean; collapsed: boolean; hovered: boolean; onHover: (id: string, on: boolean) => void; onAction: (action: TransientAlert['action']) => void; onDismiss: (id: string) => void; messageMaxHeight: number }) {
+  const ref = useRef<HTMLDivElement>(null)
+  // Hover or focus holds only this notice's countdown. A hidden (no-fit) surface or a collapsed notice never holds, since it
+  // cannot be left (a hidden notice may never get its blur). Hover lives in the stack by id so a repeat's remount keeps it.
+  const [focused, setFocused] = useState(false)
+  const held = visible && !collapsed && (hovered || focused)
+  const copyText = [alert.message, alert.detail].filter(Boolean).join('\n')
+  // Expiry pauses while this notice is held and resumes with the time left; a repeat (count change) restarts it visibly.
+  const remaining = useRef(ALERT_EXPIRY_MS)
+  useEffect(() => { remaining.current = ALERT_EXPIRY_MS }, [alert.count])
+  useEffect(() => {
+    if (held || alert.leaving) return
+    const started = Date.now()
+    const timer = window.setTimeout(() => onDismiss(alert.id), remaining.current)
+    return () => {
+      window.clearTimeout(timer)
+      remaining.current = Math.max(0, remaining.current - (Date.now() - started))
+    }
+  }, [held, alert.leaving, alert.count, alert.id, onDismiss])
+  // A focused control is about to unmount; hand focus to the bell rather than dropping it to the document.
+  const finish = (run: () => void) => {
+    const hadFocus = ref.current?.contains(document.activeElement)
+    run()
+    if (hadFocus) document.querySelector<HTMLElement>('[data-notification-bell]')?.focus()
+  }
+  // Collapsing hides a focused notice; hand focus to the "Show N more" toggle (else the bell) before the browser drops it to body.
+  useLayoutEffect(() => {
+    if (!collapsed || !ref.current?.contains(document.activeElement)) return
+    const toggle = ref.current.closest('[data-testid="transient-alert"]')?.querySelector<HTMLElement>(':scope > button[aria-expanded]')
+    ;(toggle ?? document.querySelector<HTMLElement>('[data-notification-bell]'))?.focus()
+  }, [collapsed])
+  // Collapsed overflow stays mounted (hidden) so its own countdown keeps running.
+  return <div className="uam-transient-alert-slot" data-alert-id={alert.id} data-state={alert.leaving ? 'closed' : 'open'} hidden={collapsed}>
+    <div ref={ref} data-testid="transient-alert-item" data-state={alert.leaving ? 'closed' : 'open'} data-held={held || undefined}
+      onMouseEnter={() => onHover(alert.id, true)} onMouseLeave={() => onHover(alert.id, false)}
+      onFocus={() => setFocused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false) }}
+      onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); finish(() => onDismiss(alert.id)) } }}
+      className="uam-transient-alert relative flex items-center gap-2 rounded-md py-1 pl-3 pr-1 text-xs"
+      style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}>
+      <span tabIndex={0} role="region" aria-label="Notification message" className="min-w-0 flex-1" style={{ outlineOffset: 'var(--focus-inset)', overflowWrap: 'anywhere', whiteSpace: 'pre-line', userSelect: 'text', WebkitUserSelect: 'text', overflowY: 'auto', maxHeight: messageMaxHeight, color: alert.tone === 'error' ? 'var(--error)' : 'var(--text)' }}>
+        {alert.message}
+        {alert.count > 1 && <span data-testid="transient-alert-count" className="ml-1.5 tabular-nums" style={{ color: 'var(--text-muted)' }} aria-label={`repeated ${alert.count} times`}>×{alert.count}</span>}
+      </span>
+      {(alert.tone === 'error' || alert.detail) && <CopyTextButton text={copyText} label="Copy message" title="Copy message" />}
+      <Button className="shrink-0" variant="ghost" size="sm" onClick={() => finish(() => { onAction(alert.action); onDismiss(alert.id) })}>{alert.actionLabel}</Button>
+      <IconButton className="shrink-0" icon={<X size={13} />} size="sm" label="Dismiss alert" onClick={() => finish(() => onDismiss(alert.id))} />
+      {!alert.leaving && <span key={`${alert.id}:${alert.count}`} aria-hidden className="uam-transient-alert__countdown" style={{ animationDuration: `${ALERT_EXPIRY_MS}ms`, animationPlayState: held ? 'paused' : 'running' }} />}
+    </div>
+  </div>
+}
+
+/** The one shared transient alert stack for app-wide messages; every message is also kept in the notifications panel. */
+function TransientAlertSurface({ alerts, notice, onAction, onDismiss, fallbackId, onFallbackChange }: { alerts: StackedAlert[]; notice: Pick<TransientAlert, 'id' | 'message'> | null; onAction: (action: TransientAlert['action']) => void; onDismiss: (id: string) => void; fallbackId: string; onFallbackChange: (fallback: boolean) => void }) {
+  const mounted = alerts.length > 0
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const onHover = useCallback((id: string, on: boolean) => setHoveredId((current) => on ? id : current === id ? null : current), [])
+  // A notice dismissed under the pointer gets no mouseleave; forget it so a later notice reusing its id does not start held.
+  useEffect(() => {
+    if (hoveredId && !alerts.some((alert) => alert.id === hoveredId && !alert.leaving)) setHoveredId(null)
+  }, [alerts, hoveredId])
+  // Measured row heights (by id) for the collapse capacity; multi-line notices such as several updates are taller than one row.
+  const rowHeights = useRef(new Map<string, number>())
+  const [, setMeasured] = useState(0)
+  useLayoutEffect(() => {
+    let changed = false
+    surfaceRef.current?.querySelectorAll<HTMLElement>('.uam-transient-alert-slot[data-alert-id]').forEach((slot) => {
+      const id = slot.dataset.alertId!
+      // The notice's content height (+2 for its border): the slot itself reads 0 while its 0fr slide-in clips it, and
+      // nothing re-renders once that animation ends.
+      const content = slot.firstElementChild as HTMLElement | null
+      const height = content?.scrollHeight ? content.scrollHeight + 2 : 0
+      if (slot.hidden || slot.dataset.state === 'closed' || !height || Math.abs((rowHeights.current.get(id) ?? 0) - height) < 1) return
+      rowHeights.current.set(id, height)
+      changed = true
+    })
+    if (changed) setMeasured((count) => count + 1)
+  })
+  const [placement, setPlacement] = useState<{ right: number; width: number; height: number; fits: boolean } | null>(null)
+  const [announcement, setAnnouncement] = useState<{ id: string; message: string } | null>(null)
+  // Anchored bottom-right of the chat area, left of the right rail, with the same gap on both edges.
+  // David explicitly permits covering Send; composer growth and first-send FLIP do not lift it.
+  useLayoutEffect(() => {
+    if (!mounted || !surfaceRef.current) {
+      setPlacement(null)
+      onFallbackChange(false)
+      return
+    }
+    const surface = surfaceRef.current
+    const app = surface.closest('.uam-app')
+    let frame: number | null = null
+    let observed: Element[] = []
+    const visibleRect = (element: Element) => {
+      const rect = element.getBoundingClientRect()
+      return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight ? rect : null
+    }
+    const measure = () => {
+      const rail = app?.querySelector('.uam-side-rail--right')
+      const bell = app?.querySelector<HTMLElement>('[data-notification-bell]')
+      const railRect = rail ? visibleRect(rail) : null
+      const bellRect = bell ? visibleRect(bell) : null
+      const rightEdge = Math.min(window.innerWidth - ALERT_GAP_PX, (railRect?.left ?? window.innerWidth) - ALERT_GAP_PX)
+      const width = Math.max(0, Math.min(360, rightEdge - ALERT_GAP_PX))
+      const left = rightEdge - width
+      const overlaps = (rect: DOMRect) => rect.left < rightEdge && rect.right > left
+      const bottomEdge = window.innerHeight - ALERT_GAP_PX
+      const appRect = app?.getBoundingClientRect()
+      const stripHeight = app ? Number.parseFloat(getComputedStyle(app).paddingTop) || 0 : 0
+      let topEdge = Math.max(16, (appRect?.top ?? 0) + stripHeight + 8)
+      for (const header of app?.querySelectorAll('.uam-chat-pane__header') ?? []) {
+        const rect = visibleRect(header)
+        if (rect && overlaps(rect) && rect.top < bottomEdge) topEdge = Math.max(topEdge, rect.bottom + 8)
+      }
+      const height = Math.max(0, bottomEdge - topEdge)
+      // One notice's actions decide whether a readable notice fits; the stack itself is capped separately.
+      const buttons = Array.from(surface.querySelector('[data-testid="transient-alert-item"]')?.querySelectorAll('button') ?? []).map((button) => button.getBoundingClientRect())
+      const actionWidth = buttons.reduce((sum, rect) => sum + rect.width, 0) + 32
+      const actionHeight = Math.max(26, ...buttons.map((rect) => rect.height)) + 10
+      const fits = Boolean(railRect && bellRect && width >= actionWidth + 64 && height >= actionHeight)
+      const next = { right: window.innerWidth - rightEdge, width, height, fits }
+      setPlacement((current) => current && Object.keys(next).every((key) => current[key as keyof typeof next] === next[key as keyof typeof next]) ? current : next)
+      onFallbackChange(!fits)
+      if (!fits && surface.contains(document.activeElement)) bell?.focus()
+    }
+    const schedule = () => {
+      if (frame === null) frame = window.requestAnimationFrame(() => { frame = null; bind(); measure() })
+    }
+    const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule)
+    const bind = () => {
+      const next = [surface, ...(app ? [app, ...app.querySelectorAll('.uam-side-rail--right, .uam-chat-pane__header')] : [])]
+      if (next.length === observed.length && next.every((element, index) => element === observed[index])) return
+      resize?.disconnect()
+      observed = next
+      observed.forEach((element) => resize?.observe(element))
+    }
+    bind()
+    // Existing layout/selection notifications cover mount replacement; do not observe transcript mutations.
+    const unsubscribeGrid = subscribeChatGridLayout(schedule)
+    const unsubscribeChild = subscribeSubagentNavigation(schedule)
+    const unsubscribeStore = useAppStore.subscribe((state, previous) => {
+      if (state.activeSessionId !== previous.activeSessionId || state.isSettingsOpen !== previous.isSettingsOpen ||
+          (state.sessions !== previous.sessions && state.sessions.map((session) => `${session.id}:${session.viewMode}`).join('|') !==
+            previous.sessions.map((session) => `${session.id}:${session.viewMode}`).join('|'))) schedule()
+    })
+    window.addEventListener('resize', schedule)
+    measure()
+    return () => {
+      resize?.disconnect()
+      unsubscribeGrid()
+      unsubscribeChild()
+      unsubscribeStore()
+      window.removeEventListener('resize', schedule)
+      if (frame !== null) window.cancelAnimationFrame(frame)
+    }
+  }, [mounted, onFallbackChange])
+  // Publish into the already-mounted live region once per distinct notice, independently of placement.
+  // The retained-notification instruction stays true whether the visible alert fits or falls back to the bell.
+  useEffect(() => {
+    if (!notice) return
+    setAnnouncement((previous) => previous?.id === notice.id && previous.message === notice.message
+      ? previous : { id: notice.id, message: notice.message })
+  }, [notice?.id, notice?.message])
+  useEffect(() => {
+    if (!mounted) setExpanded(false)
+  }, [mounted])
+  const liveRegion = <span id={fallbackId} data-testid="transient-alert-announcer" role="status" aria-live="polite" aria-atomic="true" className="sr-only">{announcement && <span key={announcement.id}>{announcement.message} Saved in Notifications.</span>}</span>
+  if (!mounted) return liveRegion
+  const budget = Math.min(placement?.height ?? window.innerHeight, Math.floor(window.innerHeight * ALERT_STACK_HEIGHT_RATIO))
+  // Newest at the bottom; when the cap is reached the oldest collapse behind "Show N more" at the top (one row kept for it).
+  // Unmeasured rows count as one ALERT_ROW_PX row each.
+  let capacity = 0
+  for (let room = budget - ALERT_ROW_PX, index = alerts.length - 1; index >= 0; index--) {
+    room -= Math.max(ALERT_ROW_PX, (rowHeights.current.get(alerts[index].id) ?? 0) + 6)
+    if (room < 0) break
+    capacity++
+  }
+  capacity = Math.max(1, capacity)
+  const hidden = expanded ? 0 : Math.max(0, alerts.length - capacity)
+  const overflowing = alerts.length > capacity
+  return <>
+    {liveRegion}
+    <div ref={surfaceRef} data-testid="transient-alert" data-state={alerts.every((alert) => alert.leaving) ? 'closed' : 'open'}
+      aria-hidden={!placement?.fits || undefined}
+      className="uam-transient-alert-stack fixed flex flex-col items-stretch"
+      style={{ zIndex: VIEWPORT_MENU_Z_INDEX + 1, right: placement?.right ?? ALERT_GAP_PX, bottom: ALERT_GAP_PX, width: placement?.width ?? 360, maxHeight: budget, visibility: placement?.fits ? 'visible' : 'hidden' }}>
+      {overflowing && <Button className="self-end shrink-0" variant="secondary" size="sm" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
+        {expanded ? 'Show fewer' : `Show ${hidden} more`}
+      </Button>}
+      <div className="uam-transient-alert-list flex min-h-0 flex-col" style={{ overflowY: expanded ? 'auto' : 'visible' }}>
+        {alerts.map((alert, index) => <TransientAlertItem key={`${alert.id}:${alert.count}`} alert={alert} visible={Boolean(placement?.fits)} collapsed={index < hidden} hovered={hoveredId === alert.id} onHover={onHover} onAction={onAction} onDismiss={onDismiss} messageMaxHeight={Math.max(0, budget - 10)} />)}
+      </div>
+    </div>
+  </>
+}
 
 const SIDEBAR_WIDTH_MIN = 260
 const SIDEBAR_WIDTH_MAX = 520
@@ -67,6 +307,25 @@ function statusLineNotificationId(detail: string): string {
 
 function providerUpdateNotificationId(result: UpdateMonitor['providerUpdateResults'][number]): string {
   return `provider-update-${result.executionHostId ? JSON.stringify([result.executionHostId, result.providerId]) : result.providerId}-${result.installedVersion}-${result.message}`
+}
+
+/** Full per-update detail for the bell row and copy text; versions may themselves contain ` · `, so updates are separated by `; `. */
+function updateSummaryText(updates: UpdateMonitor['updates']): string {
+  return updates.map((update) => `${update.name} ${update.latestVersion}`).join('; ')
+}
+
+const UPDATE_NOTICE_LIST_LIMIT = 3
+
+/** Toast copy: one update reads as one sentence; several get a plural title and a short list, full details stay in the bell and Review updates. */
+export function updateNoticeText(updates: UpdateMonitor['updates']): string {
+  const line = (update: UpdateMonitor['updates'][number]) => `${update.name} ${update.latestVersion.split(' · ')[0]}`
+  if (updates.length === 1) return `Update available: ${line(updates[0])}`
+  const extra = updates.length - UPDATE_NOTICE_LIST_LIMIT
+  return [`${updates.length} updates available`, ...updates.slice(0, extra > 1 ? UPDATE_NOTICE_LIST_LIMIT : updates.length).map(line), ...(extra > 1 ? [`and ${extra} more`] : [])].join('\n')
+}
+
+function updateNotificationId(updates: UpdateMonitor['updates']): string {
+  return `updates-${updateSummaryText(updates)}`
 }
 
 function missingFolderNotificationId(folder: { id: string; name: string; directory: string }): string {
@@ -92,7 +351,7 @@ function remoteConnectionIssueSignature(state: ReturnType<typeof useAppStore.get
   const hosts = new Map(state.executionHosts.map((host) => [host.id, host]))
   const signature: string[] = []
   for (const host of state.executionHosts) {
-    if (host.transport === 'ssh' && (host.runnerStatus === 'offline' || host.runnerStatus === 'error')) {
+    if (isSshHost(host) && (host.runnerStatus === 'offline' || host.runnerStatus === 'error')) {
       signature.push(['host', host.id, host.label, host.runnerStatus].join('\0'))
     }
   }
@@ -116,12 +375,12 @@ function remoteConnectionIssues(
   cliBindings: ReturnType<typeof useAppStore.getState>['cliBindingBySessionId'],
 ): RemoteConnectionNotification[] {
   const hosts = new Map(executionHosts.map((host) => [host.id, host]))
-  const issues = executionHosts.flatMap((host) => host.transport === 'ssh' && (host.runnerStatus === 'offline' || host.runnerStatus === 'error') ? [{
+  const issues = executionHosts.flatMap((host) => isSshHost(host) && (host.runnerStatus === 'offline' || host.runnerStatus === 'error') ? [{
     id: `remote-host-${host.id}-${host.runnerStatus}`,
     connectionKey: `host-${host.id}`,
     hostLabel: host.label,
     title: `${host.label} connection ${host.runnerStatus}`,
-    detail: host.runnerStatus === 'offline' ? 'UAM cannot currently reach this SSH helper.' : 'The SSH helper needs attention in Remote Hosts.',
+    detail: host.runnerStatus === 'offline' ? 'UAM cannot currently reach this SSH host.' : 'The SSH host needs attention in Remote Hosts.',
     warning: true,
   }] : [])
   for (const session of sessions) {
@@ -138,44 +397,21 @@ function remoteConnectionIssues(
       connectionKey: `session-${session.id}`,
       hostLabel,
       title: `${hostLabel} connection issue`,
-      detail: `${session.name}: ${error}`,
+      detail: `${session.name}: connection lost`,
       warning: true,
     })
   }
   return issues
 }
 
-function formatMemoryTitle(entryCount: number, lastCreatedAt: string): string {
-  if (entryCount <= 0) {
-    return 'No memories yet'
-  }
-
-  const countLabel = `${entryCount} ${entryCount === 1 ? 'memory' : 'memories'} saved`
-  const parsed = lastCreatedAt ? new Date(lastCreatedAt) : null
-  if (!parsed || Number.isNaN(parsed.getTime())) {
-    return countLabel
-  }
-
-  return `${countLabel}, last updated ${parsed.toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })}`
-}
-
-function LeftActivityRail({ settingsOpen, onToggleSettings, onOpenMemory }: {
+function LeftActivityRail({ settingsOpen, usageOpen, onToggleUsage, onToggleSettings }: {
   settingsOpen: boolean
+  usageOpen: boolean
+  onToggleUsage: () => void
   onToggleSettings: () => void
-  onOpenMemory: () => void
 }) {
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed)
   const setSidebarCollapsed = useAppStore((s) => s.setSidebarCollapsed)
-  const memoryActivity = useAppStore((s) => s.memoryActivity)
-  const memoryLibraryOpen = useAppStore((s) => Boolean(s.memoryLibraryScope))
-  const hasActivity = memoryActivity.runningCount > 0 || memoryActivity.lastCreatedCount > 0
-  const memoryTitle = formatMemoryTitle(memoryActivity.entryCount, memoryActivity.lastCreatedAt)
 
   return (
     <aside className="uam-side-rail uam-side-rail--left" aria-label="Main navigation">
@@ -183,29 +419,15 @@ function LeftActivityRail({ settingsOpen, onToggleSettings, onOpenMemory }: {
       <IconButton
         icon={sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
         label={sidebarCollapsed ? 'Expand chat selector' : 'Collapse chat selector'}
-        disabled={settingsOpen}
-        style={settingsOpen ? {opacity:0.35, color:'var(--text-3)'} : undefined}
+        disabled={settingsOpen || usageOpen}
+        style={settingsOpen || usageOpen ? {opacity:0.35, color:'var(--text-3)'} : undefined}
         tooltipSide="right"
         shortcut={shortcutLabel('sidebar')}
         onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
       <div className="uam-side-rail__spacer" />
       <ThemeToggle />
-      <span className="relative inline-flex">
-        <IconButton
-          icon={<Brain size={17} />}
-          label="Memory library"
-          tooltip={memoryTitle}
-          tooltipSide="right"
-          active={memoryLibraryOpen}
-          onClick={onOpenMemory}
-        />
-        {hasActivity && (
-          <span className="absolute -right-0.5 -top-0.5 pointer-events-none" data-testid="memory-activity-dot" aria-hidden="true">
-            <StatusDot tone="accent" pulse size={7} />
-          </span>
-        )}
-      </span>
+      <IconButton icon={<ChartNoAxesCombined size={17} />} label="Usage" tooltipSide="right" active={usageOpen} onClick={onToggleUsage} />
       <IconButton
         icon={<Settings2 size={17} />}
         label="Settings"
@@ -218,22 +440,38 @@ function LeftActivityRail({ settingsOpen, onToggleSettings, onOpenMemory }: {
   )
 }
 
+/** Short form for the bell rows: now, 3m, 2h, 5d. The full date stays in the tooltip and accessible label. */
+function shortNotificationTime(time: number, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - time) / 60_000)
+  if (minutes < 1) return 'now'
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  return `${Math.floor(hours / 24)}d`
+}
+
 function NotificationsPanel({
   closing = false,
   dismissedNotificationIds,
+  notificationTimes,
   remoteNotifications,
-  collectionFailures,
+  failures,
+  updates,
   providerUpdateResults,
   onClose,
   onDismiss,
+  onReviewUpdates,
 }: {
   closing?: boolean
   dismissedNotificationIds: ReadonlySet<string>
+  notificationTimes: ReadonlyMap<string, number>
   remoteNotifications: RemoteConnectionNotification[]
-  collectionFailures: CollectionMoveFailure[]
+  failures: AppFailure[]
+  updates: UpdateMonitor['updates']
   providerUpdateResults: UpdateMonitor['providerUpdateResults']
   onClose: () => void
   onDismiss: (id: string) => void
+  onReviewUpdates: () => void
 }) {
   const missingFolders = useAppStore(useShallow((s) => s.folders.filter((folder) => folder.missing)))
   const shellActionNotification = useAppStore((s) => s.shellActionNotification)
@@ -244,11 +482,11 @@ function NotificationsPanel({
   const deleteFolder = useAppStore((s) => s.deleteFolder)
   const [busyAction, setBusyAction] = useState('')
   const [confirmingFolderId, setConfirmingFolderId] = useState('')
-  const [folderActionError, setFolderActionError] = useState('')
   const headingRef = useRef<HTMLDivElement>(null)
+  const rows = useRowLeave()
 
   type NotificationAction = { label: string; variant?: ButtonVariant; run: () => void | Promise<void> }
-  type Notification = { id: string; title: string; detail: string; warning?: boolean; failure?: CollectionMoveFailure; actions?: NotificationAction[] }
+  type Notification = { id: string; title: string; detail: string; warning?: boolean; notice?: 'info' | 'success'; failure?: AppFailure; actions?: NotificationAction[] }
 
   const notifications: Notification[] = [
     ...(statusLine ? [{
@@ -262,8 +500,16 @@ function NotificationsPanel({
       title: `${FILE_MANAGER_NAME} action`,
       detail: shellActionNotification,
     }] : []),
-    ...collectionFailures.map((failure) => ({ id: failure.id, title: 'Collection move failed', detail: failure.detail, failure })),
+    ...failures.map((failure): Notification => failure.tone
+      ? { id: failure.id, title: failure.message, detail: '', notice: failure.tone }
+      : { id: failure.id, title: 'Change not saved', detail: failure.detail, failure }),
     ...remoteNotifications,
+    ...(updates.length > 0 ? [{
+      id: updateNotificationId(updates),
+      title: `${updates.length} update${updates.length === 1 ? '' : 's'} available`,
+      detail: updateSummaryText(updates),
+      actions: [{ label: 'Review updates', variant: 'primary' as const, run: onReviewUpdates }],
+    }] : []),
     ...providerUpdateResults.filter((result) => result.status === 'succeeded').map((result): Notification => ({
       id: providerUpdateNotificationId(result),
       title: `${result.name} update completed`,
@@ -281,9 +527,8 @@ function NotificationsPanel({
           run: async () => {
             const directory = await browseFolderDirectory(folder.directory)
             if (!directory) return
-            setFolderActionError('')
             if (!await renameFolder(folder.id, folder.name, directory)) {
-              setFolderActionError('The workspace could not be relinked. Finish active work and try again.')
+              reportAppFailure('The workspace could not be relinked.', 'Finish active work and try again.')
             }
           },
         },
@@ -295,6 +540,11 @@ function NotificationsPanel({
       ],
     })),
   ].filter((notification) => !dismissedNotificationIds.has(notification.id))
+  const now = useNotificationClock(!closing && notifications.length > 0)
+  const timestampedNotifications = notifications.map((notification) => ({
+    ...notification,
+    time: notificationTimes.get(notification.id) ?? now,
+  })).sort((a, b) => b.time - a.time)
   const confirmingFolder = missingFolders.find((folder) => folder.id === confirmingFolderId)
   const confirmingChatCount = confirmingFolder ? sessions.filter((session) => session.folderId === confirmingFolder.id).length : 0
   const confirmingChats = confirmingChatCount === 1 ? '1 chat' : `${confirmingChatCount} chats`
@@ -309,6 +559,11 @@ function NotificationsPanel({
     }
   }
 
+  const groups = (['Today', 'Earlier'] as const).map((label) => ({
+    label,
+    items: timestampedNotifications.filter((notification) => notificationTimeGroup(notification.time, now) === label),
+  })).filter((group) => group.items.length > 0)
+
   return (
     <aside
       aria-label="Notifications"
@@ -317,98 +572,108 @@ function NotificationsPanel({
       className="uam-shell-panel uam-shell-panel--right flex h-full w-[360px] shrink-0 flex-col overflow-hidden"
       style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)', '--panel-w': '360px' } as React.CSSProperties}
     >
-      <header className="flex items-center justify-between gap-3 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
-        <div ref={headingRef} tabIndex={-1} data-notifications-heading className="flex items-center gap-2 text-sm font-semibold outline-none" style={{ color: 'var(--text)' }}>
-          <Bell size={16} /> Notifications
+      <header className="flex items-center gap-1 px-4" style={{ height: 'var(--pane-header-h)', borderBottom: '1px solid var(--border)' }}>
+        <div ref={headingRef} tabIndex={-1} data-notifications-heading className="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold outline-none" style={{ color: 'var(--text)' }}>
+          <Bell size={16} aria-hidden /> Notifications
+          {notifications.length > 0 && (
+            <span className="rounded-full px-1.5 text-[11px] font-medium leading-[18px] tabular-nums" style={{ background: 'var(--surface-high)', color: 'var(--text-2)' }}>{notifications.length}</span>
+          )}
         </div>
+        {notifications.length > 0 && (
+          <IconButton
+            icon={<CheckCheck size={16} />}
+            label="Mark all notifications as read"
+            onClick={() => {
+              rows.leave(notifications.map((notification) => notification.id), () => notifications.forEach((notification) => onDismiss(notification.id)))
+              headingRef.current?.focus()
+            }}
+          />
+        )}
         <IconButton icon={<X size={16} />} label="Close notifications" onClick={onClose} />
       </header>
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto p-2">
         {notifications.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-            <span className="flex h-10 w-10 items-center justify-center rounded-full" style={{ color: 'var(--success)', background: 'var(--success-dim)' }}>
-              <CheckCircle2 size={20} aria-hidden />
-            </span>
-            <strong className="text-sm" style={{ color: 'var(--text)' }}>You’re all caught up</strong>
-            <span className="text-xs leading-5" style={{ color: 'var(--text-3)' }}>Warnings and completed system actions will appear here.</span>
+          <div className="uam-np-empty h-full">
+            <span className="uam-np-empty__icon"><CheckCircle2 size={18} aria-hidden /></span>
+            <strong className="uam-np-empty__title">You’re all caught up</strong>
+            <span className="uam-np-empty__text">Warnings and completed system actions will appear here.</span>
           </div>
         ) : (
-          <div className="grid gap-3">
-            {folderActionError && (
-              <Notice
-                tone="warning"
-                title="Workspace action failed"
-                dismissLabel="Dismiss workspace action error"
-                onDismiss={() => setFolderActionError('')}
-              >
-                {folderActionError}
-              </Notice>
-            )}
-            {confirmingFolder && (
-              <Notice
-                tone="warning"
-                title="Remove workspace folder?"
-                dismissLabel="Dismiss workspace removal warning"
-                onDismiss={() => setConfirmingFolderId('')}
-                actions={(
-                  <>
-                    <Button size="sm" onClick={() => setConfirmingFolderId('')}>Cancel</Button>
-                    <Button size="sm" variant="danger" loading={busyAction === 'remove-folder'} onClick={() => {
-                      setBusyAction('remove-folder')
-                      setFolderActionError('')
-                      void deleteFolder(confirmingFolder.id).then((deleted) => {
-                        if (deleted) setConfirmingFolderId('')
-                        else setFolderActionError('The workspace could not be removed. Finish active work and try again.')
-                      }).catch(() => {
-                        setFolderActionError('The workspace could not be removed. Finish active work and try again.')
-                      }).finally(() => setBusyAction(''))
-                    }}>Confirm removal</Button>
-                  </>
-                )}
-              >
-                Remove “{confirmingFolder.name}” from Universal Agent Manager and delete {confirmingChats}? The directory on disk will not be deleted.
-              </Notice>
-            )}
-            {notifications.map((notification) => (
-              <Notice
-                key={notification.id}
-                tone={notification.failure ? 'error' : notification.warning ? 'warning' : 'info'}
-                title={notification.title}
-                dismissLabel={`Dismiss ${notification.title}`}
-                onDismiss={() => {
-                  onDismiss(notification.id)
-                  headingRef.current?.focus()
-                }}
-                actions={notification.actions && (
-                  <>
-                    {notification.actions.map((action) => {
-                      const actionId = `${notification.id}-${action.label}`
-                      return (
-                        <Button
-                          key={action.label}
-                          size="sm"
-                          variant={action.variant}
-                          loading={busyAction === actionId}
-                          disabled={Boolean(busyAction)}
-                          onClick={() => { void runAction(notification.id, action) }}
-                        >
-                          {action.label}
-                        </Button>
-                      )
-                    })}
-                  </>
-                )}
-              >
-                {notification.failure && (
-                  <div className="mb-1">
-                    <span style={{ color: 'var(--red)' }}>Error</span>{' · '}
-                    <time dateTime={notification.failure.time}>{new Date(notification.failure.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
-                    <div>{notification.failure.message}</div>
-                  </div>
-                )}
-                <span style={{ color: 'var(--text-3)', overflowWrap: 'anywhere' }}>{notification.detail}</span>
-              </Notice>
-            ))}
+          <div className="grid gap-1">
+            <ConfirmDialog
+              open={Boolean(confirmingFolder)}
+              title="Remove workspace folder?"
+              confirmLabel="Confirm removal"
+              busy={busyAction === 'remove-folder'}
+              onCancel={() => setConfirmingFolderId('')}
+              onConfirm={() => {
+                if (!confirmingFolder) return
+                setBusyAction('remove-folder')
+                void deleteFolder(confirmingFolder.id).then((deleted) => {
+                  if (deleted) setConfirmingFolderId('')
+                  else { setConfirmingFolderId(''); reportAppFailure('The workspace could not be removed.', 'Finish active work and try again.') }
+                }).catch(() => {
+                  setConfirmingFolderId('')
+                  reportAppFailure('The workspace could not be removed.', 'Finish active work and try again.')
+                }).finally(() => setBusyAction(''))
+              }}
+            >
+              {confirmingFolder ? <>Remove “{confirmingFolder.name}” from Universal Agent Manager and delete {confirmingChats}? The directory on disk will not be deleted.</> : null}
+            </ConfirmDialog>
+            {groups.flatMap((group) => [
+                <div key={`group-${group.label}`} className="uam-np-group">{group.label}</div>,
+                ...group.items.map((notification) => {
+                  const tone = notification.failure ? 'error' : notification.warning ? 'warning' : notification.notice === 'success' ? 'success' : 'info'
+                  const ToneIcon = tone === 'error' ? XCircle : tone === 'warning' ? AlertTriangle : tone === 'success' ? CheckCircle2 : Info
+                  const time = new Date(notification.time)
+                  const exactTime = time.toLocaleString()
+                  const fullDetail = [notification.failure?.message, notification.detail].filter(Boolean).join(' · ')
+                  const relativeTime = shortNotificationTime(notification.time, now)
+                  return (
+                    <div key={notification.id} className="uam-np-collapse" data-state={rows.leaving.has(notification.id) ? 'closed' : 'open'}>
+                    <div className="uam-np-row">
+                      <span className="uam-np-row__icon" data-tone={tone} aria-hidden><ToneIcon size={14} /></span>
+                      <Tooltip label={fullDetail}>
+                        <div className="uam-np-row__title">
+                          <span>{notification.title}</span>
+                          {fullDetail && <span className="sr-only">{fullDetail}</span>}
+                        </div>
+                      </Tooltip>
+                      <Tooltip label={exactTime}>
+                        <time tabIndex={0} className="uam-np-row__meta rounded-sm" dateTime={time.toISOString()} aria-label={relativeTime}>{relativeTime}</time>
+                      </Tooltip>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {(tone === 'error' || tone === 'warning' || fullDetail) && <CopyTextButton text={[notification.title, fullDetail].filter(Boolean).join('\n')} label="Copy message" title="Copy message" />}
+                        {notification.actions?.map((action) => {
+                          const actionId = `${notification.id}-${action.label}`
+                          return (
+                            <IconButton
+                              key={action.label}
+                              size="sm"
+                              variant={action.variant === 'danger' ? 'danger' : 'ghost'}
+                              icon={<ArrowUpRight size={14} />}
+                              label={action.label}
+                              disabled={Boolean(busyAction)}
+                              aria-busy={busyAction === actionId || undefined}
+                              onClick={() => { void runAction(notification.id, action) }}
+                            />
+                          )
+                        })}
+                      </div>
+                      <IconButton
+                        size="sm"
+                        icon={<X size={14} />}
+                        label={`Dismiss ${notification.title}`}
+                        onClick={() => {
+                          rows.leave([notification.id], () => onDismiss(notification.id))
+                          headingRef.current?.focus()
+                        }}
+                      />
+                    </div>
+                    </div>
+                  )
+                }),
+            ])}
           </div>
         )}
       </div>
@@ -416,7 +681,7 @@ function NotificationsPanel({
   )
 }
 
-function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onToggleCommit, onToggleAlerts, onToggleUpdates }: { alertCount: number; alertsOpen: boolean; monitor: UpdateMonitor; updatesOpen: boolean; onToggleCommit: () => void; onToggleAlerts: () => void; onToggleUpdates: () => void }) {
+function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onToggleCommit, onToggleAlerts, onToggleUpdates, notificationDescriptionId }: { notificationDescriptionId?: string; alertCount: number; alertsOpen: boolean; monitor: UpdateMonitor; updatesOpen: boolean; onToggleCommit: () => void; onToggleAlerts: () => void; onToggleUpdates: () => void }) {
   const commitPanelOpen = useAppStore((s) => s.commitPanelOpen)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const getChatWorktreeStatus = useAppStore((s) => s.getChatWorktreeStatus)
@@ -437,7 +702,7 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
   const vcsIcon = vcsKind === 'svn' ? <SvnLogo size={17} /> : vcsKind === 'git' ? <GithubLogo size={16} /> : <GitBranch size={17} />
 
   const updateCount = monitor.updates.length
-  const runtimeUpdateCount = monitor.updates.filter((update) => update.providerId || update.remoteHostId).length
+  const runtimeUpdateCount = monitor.updates.filter((update) => update.providerId || (SSH_ENABLED && update.remoteHostId)).length
   return (
     <aside className="uam-side-rail uam-side-rail--right" aria-label="Tool windows">
       <IconButton
@@ -452,13 +717,15 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
         <IconButton
           icon={<Bell size={17} />}
           label={alertCount > 0 ? `${alertCount} alert${alertCount === 1 ? '' : 's'}` : 'No new alerts'}
+          data-notification-bell=""
+          aria-describedby={notificationDescriptionId}
           tooltipSide="left"
           active={alertsOpen}
           onClick={onToggleAlerts}
         />
         {alertCount > 0 && (
-          <span className="absolute -right-0.5 -top-0.5 pointer-events-none" aria-hidden>
-            <StatusDot tone="warning" size={7} />
+          <span className="absolute -right-1.5 -top-1.5 pointer-events-none min-w-4 rounded-full px-1 text-center text-[10px] font-bold leading-4" style={{ background: 'var(--accent)', color: 'var(--on-accent)' }} aria-hidden>
+            {alertCount}
           </span>
         )}
       </span>
@@ -471,7 +738,7 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
           onClick={onToggleUpdates}
         />
         {runtimeUpdateCount > 0 && (
-          <span className="absolute -right-1.5 -top-1.5 pointer-events-none min-w-4 rounded-full px-1 text-center text-[10px] font-bold leading-4" style={{ background: 'var(--accent)', color: 'var(--bg)' }} aria-hidden>
+          <span className="absolute -right-1.5 -top-1.5 pointer-events-none min-w-4 rounded-full px-1 text-center text-[10px] font-bold leading-4" style={{ background: 'var(--accent)', color: 'var(--on-accent)' }} aria-hidden>
             {runtimeUpdateCount}
           </span>
         )}
@@ -481,13 +748,13 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
 }
 
 export function AppShell() {
+  const windowChrome = useWindowChrome()
   const settingsRef = useRef<SettingsHandle>(null)
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
-  const openAllMemoryLibrary = useAppStore((s) => s.openAllMemoryLibrary)
   const refreshCustomThemes = useAppStore((state) => state.refreshCustomThemes)
   const isNewChatModalOpen = useAppStore((s) => s.isNewChatModalOpen)
   const isSettingsOpen = useAppStore((s) => s.isSettingsOpen)
-  const memoryLibraryScope = useAppStore((s) => s.memoryLibraryScope)
+  const [usageOpen, setUsageOpen] = useState(false)
   const isMemoryScanModalOpen = useAppStore((s) => s.isMemoryScanModalOpen)
   const isMarkdownStoreOpen = useAppStore((s) => s.isMarkdownStoreOpen)
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed)
@@ -504,28 +771,36 @@ export function AppShell() {
   const dismissShellActionNotification = useAppStore((s) => s.dismissShellActionNotification)
   const updateMonitor = useUpdateMonitor()
   const [alertsOpen, setAlertsOpen] = useState(false)
-  const [collectionFailures, setCollectionFailures] = useState<CollectionMoveFailure[]>([])
-  const [collectionToast, setCollectionToast] = useState<CollectionMoveFailure | null>(null)
-
-  useEffect(() => {
-    const onFailure = (event: Event) => {
-      const failure = (event as CustomEvent<CollectionMoveFailure>).detail
-      setCollectionFailures((history) => [...history, failure])
-      setCollectionToast(failure)
-    }
-    window.addEventListener(COLLECTION_MOVE_FAILURE_EVENT, onFailure)
-    return () => window.removeEventListener(COLLECTION_MOVE_FAILURE_EVENT, onFailure)
+  const [appFailures, setAppFailures] = useState<AppFailure[]>([])
+  const [transientAlerts, setTransientAlerts] = useState<StackedAlert[]>([])
+  const [alertFallback, setAlertFallback] = useState(false)
+  const alertFallbackId = useId()
+  // The newest reported notice (each report has its own id) drives the single polite announcement.
+  const [alertNotice, setAlertNotice] = useState<Pick<TransientAlert, 'id' | 'message'> | null>(null)
+  const showTransientAlert = useCallback((alert: TransientAlert) => {
+    setTransientAlerts((stack) => pushStackedAlert(stack, alert))
+    setAlertNotice({ id: alert.id, message: alert.message })
+  }, [])
+  // Marks a notice leaving so it slides out toward its origin, then drops it; reduced motion removes it at once.
+  const dismissTransientAlert = useCallback((id: string) => {
+    setTransientAlerts((stack) => stack.map((alert) => alert.id === id ? { ...alert, leaving: true } : alert))
+    const remove = () => setTransientAlerts((stack) => stack.filter((alert) => alert.id !== id || !alert.leaving))
+    if (motionAllowed()) window.setTimeout(remove, scaledMs(EXIT_MS)); else remove()
   }, [])
 
   useEffect(() => {
-    if (!collectionToast) return
-    const timer = window.setTimeout(() => setCollectionToast(null), 8000)
-    return () => window.clearTimeout(timer)
-  }, [collectionToast])
+    const onFailure = (event: Event) => {
+      const failure = (event as CustomEvent<AppFailure>).detail
+      setAppFailures((history) => [...history, failure])
+      showTransientAlert({ id: failure.id, tone: failure.tone ?? 'error', message: failure.message, detail: failure.detail, actionLabel: 'View in notifications', action: 'notifications' })
+    }
+    window.addEventListener(APP_FAILURE_EVENT, onFailure)
+    return () => window.removeEventListener(APP_FAILURE_EVENT, onFailure)
+  }, [showTransientAlert])
+
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)
-  const [postponedUpdates, setPostponedUpdates] = useState('')
-  const updateNoticeIdentity = JSON.stringify(updateMonitor.updates.map((update) => [update.id, update.latestVersion]))
+  const updateNoticeId = updateMonitor.updates.length > 0 ? updateNotificationId(updateMonitor.updates) : ''
   const connectionIssues = useMemo(() => {
     const state = useAppStore.getState()
     return remoteConnectionIssues(
@@ -539,7 +814,8 @@ export function AppShell() {
   const [connectionRecoveries, setConnectionRecoveries] = useState<RemoteConnectionNotification[]>([])
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const activeNotificationIds = [
-    ...collectionFailures.map((failure) => failure.id),
+    ...appFailures.map((failure) => failure.id),
+    ...(updateNoticeId ? [updateNoticeId] : []),
     ...(statusLine ? [statusLineNotificationId(statusLine)] : []),
     ...(shellActionNotification ? [shellActionNotificationId(shellActionNotification)] : []),
     ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
@@ -547,6 +823,8 @@ export function AppShell() {
     ...connectionRecoveries.map((notification) => notification.id),
     ...updateMonitor.providerUpdateResults.filter((result) => result.status === 'succeeded').map(providerUpdateNotificationId),
   ]
+  const recordedFailureTimes = new Map(appFailures.map((failure) => [failure.id, failure.time]))
+  const notificationTimes = useNotificationTimes(activeNotificationIds.map((id) => ({ id, time: recordedFailureTimes.get(id) })))
   const alertCount = activeNotificationIds.filter((id) => !dismissedNotificationIds.has(id)).length
 
   useEffect(() => {
@@ -579,8 +857,22 @@ export function AppShell() {
   }, [connectionIssues])
 
   useEffect(() => {
+    if (updateMonitor.updates.length === 0) return
+    showTransientAlert({
+      id: updateNoticeId,
+      tone: 'info',
+      message: updateNoticeText(updateMonitor.updates),
+      detail: updateSummaryText(updateMonitor.updates),
+      actionLabel: 'Review updates',
+      action: 'updates',
+    })
+    // Only a new set of updates should raise the transient alert again.
+  }, [updateNoticeId])
+
+  useEffect(() => {
     const activeIds = new Set([
-      ...collectionFailures.map((failure) => failure.id),
+      ...appFailures.map((failure) => failure.id),
+      ...(updateNoticeId ? [updateNoticeId] : []),
       ...(statusLine ? [statusLineNotificationId(statusLine)] : []),
       ...(shellActionNotification ? [shellActionNotificationId(shellActionNotification)] : []),
       ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
@@ -593,7 +885,7 @@ export function AppShell() {
       const remainingIds = currentIds.filter((id) => activeIds.has(id))
       return remainingIds.length === currentIds.length ? dismissed : new Set(remainingIds)
     })
-  }, [collectionFailures, connectionIssues, connectionRecoveries, folders, shellActionNotification, statusLine, updateMonitor.providerUpdateResults])
+  }, [appFailures, connectionIssues, connectionRecoveries, folders, shellActionNotification, statusLine, updateMonitor.providerUpdateResults, updateNoticeId])
 
   const startResize = useCallback((
     side: 'sidebar' | 'commit',
@@ -667,14 +959,31 @@ export function AppShell() {
   const commitPresence = usePresence(commitPanelOpen)
   const alertsPresence = usePresence(alertsOpen)
   const updatesPresence = usePresence(updatesOpen)
+  const settingsPresence = usePresence(isSettingsOpen)
+  const usagePresence = usePresence(usageOpen)
+  // Any open right-side panel sits beside the rail; the alert would cover it. The bell keeps the message and unread count.
+  const alertSuppressed = transientAlerts.length > 0 && (alertsOpen || updatesOpen || commitPanelOpen)
+  useEffect(() => { if (alertSuppressed) setTransientAlerts([]) }, [alertSuppressed])
 
   const toggleSettings = () => {
+    if (usageOpen) { setUsageOpen(false); if (!isSettingsOpen) setSettingsOpen(true); return }
     if (isSettingsOpen && settingsRef.current) settingsRef.current.requestClose()
     else setSettingsOpen(!isSettingsOpen)
   }
 
-  const shortcutStateRef = useRef({ isSettingsOpen, sidebarCollapsed, sidebarWouldStarveChat, toggleSettings })
-  shortcutStateRef.current = { isSettingsOpen, sidebarCollapsed, sidebarWouldStarveChat, toggleSettings }
+  const openNotifications = () => {
+    setAlertsOpen(true)
+    setCommitPanelOpen(false)
+    setUpdatesOpen(false)
+  }
+  const openUpdates = () => {
+    setUpdatesOpen(true)
+    setCommitPanelOpen(false)
+    setAlertsOpen(false)
+  }
+
+  const shortcutStateRef = useRef({ isSettingsOpen, usageOpen, sidebarCollapsed, sidebarWouldStarveChat, toggleSettings })
+  shortcutStateRef.current = { isSettingsOpen, usageOpen, sidebarCollapsed, sidebarWouldStarveChat, toggleSettings }
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -683,20 +992,19 @@ export function AppShell() {
       // Modals own the keyboard while open.
       if (document.querySelector('[aria-modal="true"]')) return
       const state = shortcutStateRef.current
-      if (shortcut === 'undoOrganization') {
-        const target = event.target instanceof Element ? event.target : document.activeElement
-        if (state.isSettingsOpen || target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]') || !useAppStore.getState().organizationUndo) return
+      if (shortcut === 'focusActiveInput') {
+        if (!state.isSettingsOpen && !state.usageOpen && focusActiveInput()) event.preventDefault()
+        return
       }
       event.preventDefault()
       const store = useAppStore.getState()
       if (shortcut === 'newChat') {
+        setUsageOpen(false)
         store.setNewChatModalOpen(true)
       } else if (shortcut === 'settings') {
         state.toggleSettings()
       } else if (shortcut === 'sidebar') {
-        if (!state.isSettingsOpen) store.setSidebarCollapsed(!state.sidebarCollapsed)
-      } else if (shortcut === 'undoOrganization') {
-        void store.undoOrganization()
+        if (!state.isSettingsOpen && !state.usageOpen) store.setSidebarCollapsed(!state.sidebarCollapsed)
       } else if (shortcut === 'nextAttention') {
         const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-session-id]'))
           .filter((row) => !row.closest('[hidden], [inert], [aria-hidden="true"]'))
@@ -704,7 +1012,11 @@ export function AppShell() {
         const next = nextAttentionSession(store.sessions, store.acpBindingBySessionId, store.activeSessionId, rows)
         if (next) store.setActiveSession(next)
       } else if (shortcut === 'search') {
-        if (state.isSettingsOpen) setSettingsOpen(false)
+        if (state.isSettingsOpen) {
+          settingsRef.current?.requestClose()
+          if (useAppStore.getState().isSettingsOpen) return
+        }
+        setUsageOpen(false)
         if (state.sidebarCollapsed) store.setSidebarCollapsed(false)
         if (state.sidebarWouldStarveChat) {
           store.setCommitPanelOpen(false)
@@ -726,22 +1038,20 @@ export function AppShell() {
     <div
       className="h-screen w-screen overflow-hidden flex uam-app"
       data-right-panel-open={commitPanelOpen || alertsOpen || updatesOpen ? 'true' : 'false'}
+      data-window-platform={windowChrome.state?.platform}
+      data-window-fullscreen={windowChrome.state?.fullscreen ? 'true' : undefined}
       style={{ color: 'var(--text)' }}
     >
+      {windowChrome.state && <WindowChrome state={windowChrome.state} command={windowChrome.command} />}
       <LeftActivityRail
-        settingsOpen={isSettingsOpen}
+        settingsOpen={isSettingsOpen && !usageOpen}
+        usageOpen={usageOpen}
+        onToggleUsage={() => setUsageOpen(value => !value)}
         onToggleSettings={toggleSettings}
-        onOpenMemory={() => {
-          if (isSettingsOpen && settingsRef.current) settingsRef.current.showMemory()
-          else {
-            if (isSettingsOpen) setSettingsOpen(false)
-            void openAllMemoryLibrary()
-          }
-        }}
       />
 
       {/* Keep chat components mounted while Settings occupies the middle region. */}
-      <div data-testid="chat-region" hidden={isSettingsOpen} className="min-w-0 flex-1 h-full" style={{display: isSettingsOpen ? 'none' : 'flex'}}>
+      <div data-testid="chat-region" hidden={settingsPresence.mounted || usagePresence.mounted} className="min-w-0 flex-1 h-full" style={{display: settingsPresence.mounted || usagePresence.mounted ? 'none' : 'flex'}}>
 
       {sidebarPresence.mounted && (
         <>
@@ -751,7 +1061,7 @@ export function AppShell() {
             data-state={sidebarPresence.closing ? 'closed' : 'open'}
             style={{ width: sidebarWidthPx, flex: `0 0 ${sidebarWidthPx}px`, background: 'var(--sidebar-bg)', '--panel-w': `${sidebarWidthPx}px` } as React.CSSProperties}
           >
-            <Sidebar />
+            <ChatSidebar />
           </aside>
           {!sidebarPresence.closing && <div
             role="separator"
@@ -768,11 +1078,13 @@ export function AppShell() {
         </>
       )}
 
-      <main className="min-w-0 flex-1 overflow-hidden" style={{ background: 'var(--bg)' }}>
-        <MainPanel />
+      <main className="min-w-0 flex-1 overflow-hidden flex flex-col" style={{ background: 'var(--bg)' }}>
+        <ProviderMcpWarning />
+        <div className="min-h-0 flex-1"><ChatPanel /></div>
       </main>
       </div>
-      {isSettingsOpen && <main className="min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setSettingsOpen(false)}><Suspense fallback={<div role="status" className="p-4 text-xs">Loading settings…</div>}><SettingsModal ref={settingsRef}/></Suspense></InterfaceErrorBoundary></main>}
+      {settingsPresence.mounted && <main hidden={usageOpen} style={usageOpen ? { display: 'none' } : undefined} data-state={settingsPresence.closing ? 'closed' : 'open'} className="uam-shell-workspace min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setSettingsOpen(false)}><Suspense fallback={<div className="uam-settings-scroll"><div className="uam-settings-frame" style={{ maxWidth: 720 }}><SettingsLoading rows={4} /><SettingsLoading rows={2} /></div></div>}><SettingsModal ref={settingsRef}/></Suspense></InterfaceErrorBoundary></main>}
+      {usagePresence.mounted && <div data-state={usagePresence.closing ? 'closed' : 'open'} className="uam-shell-workspace flex min-h-0 min-w-0 flex-1"><InterfaceErrorBoundary panel onDismiss={() => setUsageOpen(false)}><Suspense fallback={<div role="status" className="min-w-0 flex-1 p-4 text-xs">Loading usage…</div>}><UsagePage onClose={() => { setUsageOpen(false); window.requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[aria-label="Usage"]')?.focus()) }} /></Suspense></InterfaceErrorBoundary></div>}
 
       {commitPresence.mounted && (
         <>
@@ -799,47 +1111,32 @@ export function AppShell() {
         </>
       )}
 
-      {/* Settings is a full page; the rail's update button stays available there. */}
-      {!updatesOpen && !isSettingsOpen && updateMonitor.updates.length > 0 && postponedUpdates !== updateNoticeIdentity && (
-        <div className="uam-side-panel-in fixed bottom-4 right-14 z-40 w-80 max-w-[calc(100vw-2rem)] rounded-xl p-3" style={{ background: 'var(--surface-up)', color: 'var(--text)', boxShadow: 'var(--elev-3)', border: '1px solid var(--border-bright)' }} role="status">
-          <div className="flex items-start gap-2.5">
-            <ArrowUpCircle size={18} aria-hidden className="mt-0.5 shrink-0" style={{ color: 'var(--accent)' }} />
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-semibold">{updateMonitor.updates.length} update{updateMonitor.updates.length === 1 ? '' : 's'} available</p>
-              <p className="mt-0.5 truncate text-xs" style={{ color: 'var(--text-2)' }} title={updateMonitor.updates.map((update) => update.name).join(', ')}>
-                {updateMonitor.updates.map((update) => `${update.name} ${update.latestVersion}`).join(' · ')}
-              </p>
-            </div>
-            <IconButton size="sm" icon={<X size={14} />} label="Remind me later" onClick={() => setPostponedUpdates(updateNoticeIdentity)} />
-          </div>
-          <div className="mt-3 flex items-center justify-between gap-2">
-            <button type="button" className="text-xs underline-offset-2 hover:underline" style={{ color: 'var(--text-3)', background: 'none', border: 0, cursor: 'pointer' }} onClick={updateMonitor.dismissAll}>Skip these versions</button>
-            <Button size="sm" variant="primary" onClick={() => setUpdatesOpen(true)}>Review updates</Button>
-          </div>
-        </div>
-      )}
       {updatesPresence.mounted && <UpdatesPanel monitor={updateMonitor} closing={updatesPresence.closing} onClose={() => setUpdatesOpen(false)} />}
 
       {alertsPresence.mounted && (
         <NotificationsPanel
           closing={alertsPresence.closing}
           dismissedNotificationIds={dismissedNotificationIds}
+          notificationTimes={notificationTimes}
           remoteNotifications={[...connectionIssues, ...connectionRecoveries]}
-          collectionFailures={collectionFailures}
+          failures={appFailures}
+          updates={updateMonitor.updates}
           providerUpdateResults={updateMonitor.providerUpdateResults}
           onClose={() => setAlertsOpen(false)}
+          onReviewUpdates={openUpdates}
           onDismiss={(id) => {
             if (shellActionNotification && id === shellActionNotificationId(shellActionNotification)) {
               void dismissShellActionNotification()
               return
             }
-            setCollectionToast((toast) => toast?.id === id ? null : toast)
+            setTransientAlerts((stack) => stack.filter((alert) => alert.id !== id))
             setDismissedNotificationIds((dismissed) => new Set(dismissed).add(id))
           }}
         />
       )}
 
       <RightActivityRail
+        notificationDescriptionId={alertFallback ? alertFallbackId : undefined}
         alertCount={alertCount}
         alertsOpen={alertsOpen}
         monitor={updateMonitor}
@@ -861,36 +1158,12 @@ export function AppShell() {
         }}
       />
 
-      {collectionToast && (
-        <div role="alert" className="fixed bottom-4 left-4 flex items-start gap-3 rounded-md p-3 text-xs"
-          style={{ zIndex: VIEWPORT_MENU_Z_INDEX + 1, width: 340, maxWidth: 'calc(100vw - 32px)', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border-bright)' }}>
-          <div className="min-w-0 flex-1" style={{ overflowWrap: 'anywhere' }}>
-            <div className="mb-1 flex items-center gap-2">
-              <strong style={{ color: 'var(--red)' }}>Error</strong>
-              <time dateTime={collectionToast.time}>{new Date(collectionToast.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
-            </div>
-            {collectionToast.message}
-            <button
-              type="button"
-              className="mt-1.5 block underline underline-offset-2"
-              style={{ color: 'var(--text-2)' }}
-              onClick={() => {
-                setCollectionToast(null)
-                setAlertsOpen(true)
-                setCommitPanelOpen(false)
-                setUpdatesOpen(false)
-              }}
-            >
-              View in notifications
-            </button>
-          </div>
-          <IconButton icon={<X size={13} />} size="sm" label="Dismiss collection notification" onClick={() => setCollectionToast(null)} />
-        </div>
-      )}
+      <StartupNativeImportChooser />
+      <LegacyChatImportPrompt />
+      <TransientAlertSurface alerts={alertSuppressed ? [] : transientAlerts} notice={alertNotice} fallbackId={alertFallbackId} onFallbackChange={setAlertFallback} onAction={(action) => action === 'updates' ? openUpdates() : openNotifications()} onDismiss={dismissTransientAlert} />
 
       {/* Modals */}
       <Presence open={isNewChatModalOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setNewChatModalOpen(false)}><Suspense fallback={null}><NewChatModal /></Suspense></InterfaceErrorBoundary></Presence>
-      <Presence open={Boolean(memoryLibraryScope) && !isSettingsOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().closeMemoryLibrary()}><Suspense fallback={null}><MemoryLibraryModal /></Suspense></InterfaceErrorBoundary></Presence>
       <Presence open={isMemoryScanModalOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().closeMemoryScanModal()}><Suspense fallback={null}><MemoryScanModal /></Suspense></InterfaceErrorBoundary></Presence>
       <Presence open={isMarkdownStoreOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().closeMarkdownStore()}><Suspense fallback={null}><MarkdownStoreModal /></Suspense></InterfaceErrorBoundary></Presence>
     </div>

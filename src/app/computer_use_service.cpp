@@ -1,4 +1,5 @@
 #include "app/computer_use_service.h"
+#include "common/platform/background_thread_priority.h"
 
 #include "computer_use/computer_use_mcp_config.h"
 #include "common/paths/path_utils.h"
@@ -6,12 +7,17 @@
 #include "common/utils/io_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/time_utils.h"
+#include "common/runtime/app_time.h"
+#include "common/utils/diagnostic_log.h"
 
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <optional>
 #include <sstream>
+#include <thread>
+#include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 
 #if defined(_WIN32)
@@ -161,6 +167,147 @@ namespace uam
 		}
 	} // namespace
 
+	struct ComputerUseService::Scan
+	{
+		AppState state;
+		std::vector<ChatSession> baseline;
+		std::vector<std::size_t> changed_indices;
+		std::unordered_map<std::string, std::string> signatures;
+	};
+
+	namespace
+	{
+		ChatSession ControlSnapshot(const ChatSession& chat)
+		{
+			ChatSession result;
+			result.id = chat.id;
+			result.provider_id = chat.provider_id;
+			result.execution_host_id = chat.execution_host_id;
+			result.computer_use_backend = chat.computer_use_backend;
+			result.computer_use_enabled = chat.computer_use_enabled;
+			result.computer_use_target_kind = chat.computer_use_target_kind;
+			result.computer_use_target_id = chat.computer_use_target_id;
+			result.computer_use_target_process_id = chat.computer_use_target_process_id;
+			result.computer_use_target_title = chat.computer_use_target_title;
+			result.computer_use_target_input_mode = chat.computer_use_target_input_mode;
+			return result;
+		}
+
+		bool SameControlIdentity(const ChatSession& left, const ChatSession& right)
+		{
+			return std::tie(left.id, left.provider_id, left.execution_host_id, left.computer_use_backend,
+			    left.computer_use_enabled, left.computer_use_target_kind, left.computer_use_target_id,
+			    left.computer_use_target_process_id, left.computer_use_target_title, left.computer_use_target_input_mode) ==
+			    std::tie(right.id, right.provider_id, right.execution_host_id, right.computer_use_backend,
+			    right.computer_use_enabled, right.computer_use_target_kind, right.computer_use_target_id,
+			    right.computer_use_target_process_id, right.computer_use_target_title, right.computer_use_target_input_mode);
+		}
+	}
+
+	bool ComputerUseService::PollInBackground(AppState& app)
+	{
+		const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+		bool changed = false;
+		if (m_scan.valid() && m_scan.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+		{
+			std::shared_ptr<Scan> scan;
+			try { scan = m_scan.get(); }
+			catch (const std::exception& error) { diagnostics::Write(std::string("Computer-use background scan failed: ") + error.what()); m_nextScanTime = GetAppTimeSeconds() + 1.0; }
+			if (scan && app.settings.computer_use_globally_enabled && !scan->changed_indices.empty() && scan->state.data_root == app.data_root)
+			{
+				std::unordered_map<std::string, ChatSession*> current_by_id;
+				current_by_id.reserve(app.chats.size());
+				for (ChatSession& chat : app.chats) current_by_id.emplace(chat.id, &chat);
+				for (const std::size_t index : scan->changed_indices)
+				{
+					const ChatSession& baseline = scan->baseline[index];
+					const std::unordered_map<std::string, ChatSession*>::const_iterator found = current_by_id.find(baseline.id);
+					if (found == current_by_id.end() || app.computer_use_revocation_pending_chat_ids.contains(baseline.id)) continue;
+					ChatSession* const current = found->second;
+					if (!SameControlIdentity(*current, baseline)) continue;
+					const auto prior = app.computer_use_by_chat_id.find(baseline.id);
+					const std::string signature = prior == app.computer_use_by_chat_id.end() ? "" : prior->second.source_signature;
+					if (signature != scan->signatures[baseline.id]) continue;
+					const ChatSession& next = scan->state.chats[index];
+					if (!SameControlIdentity(*current, next))
+					{
+						current->computer_use_enabled = next.computer_use_enabled;
+						current->computer_use_target_kind = next.computer_use_target_kind;
+						current->computer_use_target_id = next.computer_use_target_id;
+						current->computer_use_target_process_id = next.computer_use_target_process_id;
+						current->computer_use_target_title = next.computer_use_target_title;
+						current->computer_use_target_input_mode = next.computer_use_target_input_mode;
+						changed = true;
+					}
+					const auto result = scan->state.computer_use_by_chat_id.find(baseline.id);
+					if (result == scan->state.computer_use_by_chat_id.end()) changed = app.computer_use_by_chat_id.erase(baseline.id) > 0 || changed;
+					else
+					{
+						changed = prior == app.computer_use_by_chat_id.end() || prior->second.fingerprint != result->second.fingerprint || changed;
+						app.computer_use_by_chat_id[baseline.id] = result->second;
+					}
+				}
+			}
+			m_retiredScan = std::move(scan);
+		}
+		const std::chrono::steady_clock::time_point publication_finished = std::chrono::steady_clock::now();
+		if (!m_scan.valid() && GetAppTimeSeconds() >= m_nextScanTime)
+		{
+			std::shared_ptr<Scan> scan = std::make_shared<Scan>();
+			scan->state.data_root = app.data_root;
+			scan->state.settings.computer_use_globally_enabled = app.settings.computer_use_globally_enabled;
+			scan->state.computer_use_by_chat_id = app.computer_use_by_chat_id;
+			scan->state.computer_use_revocation_pending_chat_ids = app.computer_use_revocation_pending_chat_ids;
+			scan->baseline.reserve(app.chats.size());
+			scan->signatures.reserve(app.chats.size());
+			for (const ChatSession& chat : app.chats)
+			{
+				scan->baseline.push_back(ControlSnapshot(chat));
+				const auto prior = app.computer_use_by_chat_id.find(chat.id);
+				scan->signatures[chat.id] = prior == app.computer_use_by_chat_id.end() ? "" : prior->second.source_signature;
+			}
+			// Copy and release large scan vectors on the worker, outside interactive GUI work.
+			std::packaged_task<std::shared_ptr<Scan>()> task([scan, retired = std::move(m_retiredScan)]() mutable
+			{
+				retired.reset();
+				std::unordered_map<std::string, std::pair<std::string, std::string>> prior_states;
+				prior_states.reserve(scan->state.computer_use_by_chat_id.size());
+				for (const std::pair<const std::string, ComputerUseRuntimeState>& entry : scan->state.computer_use_by_chat_id)
+					prior_states.emplace(entry.first, std::make_pair(entry.second.fingerprint, entry.second.source_signature));
+				scan->state.chats = scan->baseline;
+				(void)Poll(scan->state);
+				// Unchanged scans need no catalog lookup or runtime-state copying on the GUI thread.
+				for (std::size_t index = 0; index < scan->baseline.size(); ++index)
+				{
+					const ChatSession& baseline = scan->baseline[index];
+					const std::unordered_map<std::string, std::pair<std::string, std::string>>::const_iterator prior = prior_states.find(baseline.id);
+					const std::unordered_map<std::string, ComputerUseRuntimeState>::const_iterator next = scan->state.computer_use_by_chat_id.find(baseline.id);
+					if (!SameControlIdentity(baseline, scan->state.chats[index]) ||
+					    (prior == prior_states.end()) != (next == scan->state.computer_use_by_chat_id.end()) ||
+					    (prior != prior_states.end() && next != scan->state.computer_use_by_chat_id.end() &&
+					     (prior->second.first != next->second.fingerprint || prior->second.second != next->second.source_signature)))
+						scan->changed_indices.push_back(index);
+				}
+				return scan;
+			});
+			m_scan = task.get_future();
+			uam::platform::StartBackgroundThread(std::move(task)).detach();
+			m_nextScanTime = GetAppTimeSeconds() + 0.25;
+		}
+		const std::chrono::steady_clock::time_point finished = std::chrono::steady_clock::now();
+		static std::chrono::steady_clock::time_point last_report = std::chrono::steady_clock::time_point::min();
+		if (finished - started >= std::chrono::milliseconds(50) &&
+		    (last_report == std::chrono::steady_clock::time_point::min() || finished - last_report >= std::chrono::seconds(5)))
+		{
+			diagnostics::Write("[performance] Computer-use GUI poll: publication=" +
+			    std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(publication_finished - started).count()) +
+			    ",preparation=" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(finished - publication_finished).count()) +
+			    " ms; chats=" + std::to_string(app.chats.size()) + ".");
+			last_report = finished;
+		}
+		return changed;
+	}
+
 	bool ComputerUseService::ResetControlsForStartup(AppState& app)
 	{
 		bool reset = true;
@@ -175,21 +322,26 @@ namespace uam
 			if (uam::paths::PathExistsNoThrow(control) &&
 			    !uam::io::WriteTextFile(control,
 			        nlohmann::json{{"state", "stopped"}}.dump() + "\n"))
+			{
+				app.computer_use_revocation_pending_chat_ids.insert(chat.id);
 				reset = false;
+			}
 		}
 		app.computer_use_by_chat_id.clear();
 		return reset;
 	}
 
-	bool ComputerUseService::Poll(AppState& app)
+	bool ComputerUseService::Poll(AppState& app, std::string_view chat_id)
 	{
 		bool changed = false;
 		const std::optional<std::unordered_set<std::string>> existing_session_ids =
-		    ExistingSessionIds(app);
+		    chat_id.empty() ? ExistingSessionIds(app) : std::optional<std::unordered_set<std::string>>{{std::string(chat_id)}};
 		for (ChatSession& chat : app.chats)
 		{
-			if (!uam::computer_use::AvailableForChat(chat))
+			if (!chat_id.empty() && chat.id != chat_id) continue;
+			if (!app.settings.computer_use_globally_enabled || app.computer_use_revocation_pending_chat_ids.contains(chat.id) || !uam::computer_use::AvailableForChat(chat))
 			{
+				changed = chat.computer_use_enabled || changed;
 				chat.computer_use_enabled = false;
 				changed = app.computer_use_by_chat_id.erase(chat.id) > 0 || changed;
 				continue;
@@ -249,6 +401,12 @@ namespace uam
 	bool ComputerUseService::SetControlState(AppState& app, const std::string& chat_id,
 	    std::string_view state, std::string* error)
 	{
+		if ((!app.settings.computer_use_globally_enabled || app.computer_use_revocation_pending_chat_ids.contains(chat_id)) && state != "stopped")
+		{
+			if (error != nullptr) *error = app.settings.computer_use_globally_enabled ?
+			    "Computer Use revocation is pending; retry disabling it." : "Computer Use is disabled globally.";
+			return false;
+		}
 		if (state != "armed" && state != "running" && state != "paused" && state != "stopped")
 		{
 			if (error != nullptr) *error = "Computer-use state must be armed, running, paused, or stopped.";
@@ -262,7 +420,9 @@ namespace uam
 		}
 		const auto chat = std::ranges::find_if(app.chats,
 		    [&chat_id](const ChatSession& candidate) { return candidate.id == chat_id; });
-		if (chat == app.chats.end() || !uam::computer_use::AvailableForChat(*chat))
+		if ((chat == app.chats.end() && state != "stopped") ||
+		    (chat != app.chats.end() && !uam::computer_use::AvailableForChat(*chat) &&
+		     !(state == "stopped" && app.computer_use_revocation_pending_chat_ids.contains(chat_id))))
 		{
 			if (error != nullptr) *error = "Computer Use is disabled for remote execution hosts.";
 			return false;
@@ -283,10 +443,11 @@ namespace uam
 		if (path_error || !uam::io::WriteTextFile(directory / "control.json",
 		                      control.dump() + "\n"))
 		{
+			if (state == "stopped") app.computer_use_revocation_pending_chat_ids.insert(chat_id);
 			if (error != nullptr) *error = "Failed to update computer-use controls.";
 			return false;
 		}
-		(void)Poll(app);
+		(void)Poll(app, chat_id);
 		return true;
 	}
 
@@ -300,7 +461,7 @@ namespace uam
 		}
 		const auto chat = std::ranges::find_if(app.chats,
 		    [&chat_id](const ChatSession& candidate) { return candidate.id == chat_id; });
-		if (chat == app.chats.end() || !uam::computer_use::AvailableForChat(*chat) ||
+		if (!app.settings.computer_use_globally_enabled || app.computer_use_revocation_pending_chat_ids.contains(chat_id) || chat == app.chats.end() || !uam::computer_use::AvailableForChat(*chat) ||
 		    !uam::computer_use::UsesUamBackend(*chat) || !chat->computer_use_enabled)
 		{
 			if (error != nullptr) *error = "Computer Use is not enabled for this local chat.";

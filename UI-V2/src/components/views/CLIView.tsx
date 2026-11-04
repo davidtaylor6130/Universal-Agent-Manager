@@ -1,15 +1,19 @@
+import { MONO_FONTS, useTypographyStore } from '../../store/typographyStore'
 import { useEffect, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { AlertTriangle, X } from 'lucide-react'
+import { Button, Notice } from '../ui'
 import { Session } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
+import { FOCUS_ACTIVE_INPUT_EVENT } from '../../utils/activeInputFocus'
+import { getTopmostModal } from '../../utils/modalFocus'
 import { sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
-import { normalizeCliLifecycleState, cliLifecycleIsProcessing } from '../../store/cpp/reconcile'
+import { normalizeCliLifecycleState, cliLifecycleIsProcessing, cliOutputMatchesBinding } from '../../store/cpp/reconcile'
 import type { CliLifecycleState } from '../../store/useAppStore'
-import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
+import { COPILOT_ENABLED } from '../../config/buildFeatures'
+import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, providerMetadataForId } from '../../utils/providerMetadata'
 import { resolveDocumentTheme } from '../../utils/themeStorage'
 import { UserInputInlineCard } from '../chat/QuestionInput'
 import { useResolvedTheme } from '../../hooks/useTheme'
@@ -20,6 +24,7 @@ interface CLIViewProps {
 
 interface StartCliTerminalResponse {
   terminalId?: string
+  startupTime?: number
   sessionId?: string
   sourceChatId?: string
   running?: boolean
@@ -69,6 +74,8 @@ function terminalTheme(isDark: boolean) {
 }
 
 export function CLIView({ session }: CLIViewProps) {
+  const terminalFont = useTypographyStore((state) => state.preferences.terminalFont)
+  const terminalSize = useTypographyStore((state) => state.preferences.terminalSize)
   const companion = isCompanionContext()
   const terminalRef = useRef<HTMLDivElement>(null)
   const termInstanceRef = useRef<Terminal | null>(null)
@@ -98,7 +105,19 @@ export function CLIView({ session }: CLIViewProps) {
     cliBinding?.lastError && cliBinding.lastError !== dismissedTerminalError
       ? cliBinding.lastError
       : ''
-  const unsupportedProviderMessage = `Provider '${currentProviderId}' is not supported in this build. Switch this chat to Gemini CLI to use terminal mode.`
+  const unsupportedProviderMessage = `Terminal mode isn't available for ${providerMetadataForId(currentProviderId).name}. Switch this chat to ${providerMetadataForId(DEFAULT_PROVIDER_ID).name} to use it.`
+
+  useEffect(() => {
+    const node = terminalRef.current
+    if (!node) return
+    const onFocusInput = (event: Event) => {
+      if (!termInstanceRef.current || getTopmostModal()) return
+      termInstanceRef.current.focus()
+      event.preventDefault()
+    }
+    node.addEventListener(FOCUS_ACTIVE_INPUT_EVENT, onFocusInput)
+    return () => node.removeEventListener(FOCUS_ACTIVE_INPUT_EVENT, onFocusInput)
+  }, [providerSupported, session.id])
 
   useEffect(() => {
     copilotCompatibilityRetryPendingRef.current = false
@@ -130,9 +149,10 @@ export function CLIView({ session }: CLIViewProps) {
     const effectiveTerminalId = state.cliBindingBySessionId[session.id]?.terminalId || cliTranscript?.terminalId || ''
     const isDark = resolveDocumentTheme(state.theme, state.customThemes) === 'dark'
 
+    const typography = useTypographyStore.getState().preferences
     const term = new Terminal({
-      fontFamily: '"JetBrains Mono", monospace',
-      fontSize: 13,
+      fontFamily: MONO_FONTS[typography.terminalFont].family,
+      fontSize: typography.terminalSize,
       lineHeight: 1,
       cursorBlink: !companion,
       cursorStyle: 'block',
@@ -238,6 +258,7 @@ export function CLIView({ session }: CLIViewProps) {
         let bestKnownBoundChatId = session.id
         const retryCopilotAfterCompatibilityCheck = (error: string) => {
           if (
+            !COPILOT_ENABLED ||
             currentProviderId !== COPILOT_CLI_PROVIDER_ID ||
             !error.startsWith('Checking GitHub Copilot CLI compatibility.')
           ) {
@@ -266,13 +287,15 @@ export function CLIView({ session }: CLIViewProps) {
 
         // Receive PTY output pushed from C++ via window.uamPush → CustomEvent.
         const onCliOutput = (e: Event) => {
-          const { sessionId, sourceChatId, terminalId, data } = (e as CustomEvent<{
+          const { sessionId, sourceChatId, terminalId, startupTime, data } = (e as CustomEvent<{
             sessionId?: string
             sourceChatId?: string
             terminalId?: string
+            startupTime?: number
             data: string
           }>).detail
           const binding = useAppStore.getState().cliBindingBySessionId[session.id]
+          if (!cliOutputMatchesBinding(binding, terminalId ?? '', startupTime)) return
           const sessionMatch = sessionId === session.id
           const sourceChatMatch = sourceChatId === session.id
           const terminalMatch = Boolean(binding?.terminalId) && Boolean(terminalId) && binding?.terminalId === terminalId
@@ -323,12 +346,16 @@ export function CLIView({ session }: CLIViewProps) {
           }
 
           if (data) {
+            const currentBinding = useAppStore.getState().cliBindingBySessionId[session.id]
+            if (currentBinding?.terminalId === returnedTerminalId && currentBinding.startupTime !== undefined &&
+                (data.startupTime === undefined || currentBinding.startupTime > data.startupTime)) return
             const running = Boolean(data.running)
             retryCopilotAfterCompatibilityCheck(data.lastError ?? '')
             const lifecycleState = normalizeCliLifecycleState(data.lifecycleState, running, data.turnState)
             const processing = cliLifecycleIsProcessing(lifecycleState)
           setCliBinding(session.id, {
             terminalId: data.terminalId ?? cliBinding?.terminalId ?? '',
+            startupTime: data.startupTime,
             boundChatId: data.sourceChatId ?? session.id,
             running,
             lifecycleState,
@@ -427,6 +454,16 @@ export function CLIView({ session }: CLIViewProps) {
     }
   }, [currentProviderId, providerSupported, session.id, terminalStartAttempt]) // Re-init per session, provider, support, and explicit retry
 
+  // Update the attached terminal in place; changing typography must not restart its provider.
+  useEffect(() => {
+    const term = termInstanceRef.current
+    if (!term) return
+    term.options.fontFamily = MONO_FONTS[terminalFont].family
+    term.options.fontSize = terminalSize
+    const frame = requestAnimationFrame(() => fitAddonRef.current?.fit())
+    return () => cancelAnimationFrame(frame)
+  }, [terminalFont, terminalSize])
+
   // Refit and recolor the live terminal on theme change.
   useEffect(() => {
     if (termInstanceRef.current?.options) {
@@ -438,16 +475,8 @@ export function CLIView({ session }: CLIViewProps) {
   if (!providerSupported) {
     return (
       <div className="flex flex-col h-full overflow-hidden">
-        <div
-          className="mx-4 mt-4 flex items-start gap-3 rounded-md border px-3 py-2 text-xs"
-          style={{
-            borderColor: 'color-mix(in srgb, var(--yellow) 45%, var(--border))',
-            background: 'color-mix(in srgb, var(--yellow) 10%, var(--surface))',
-            color: 'var(--text)',
-          }}
-        >
-          <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2, color: 'var(--yellow)' }} aria-hidden />
-          <span>{unsupportedProviderMessage}</span>
+        <div className="mx-4 mt-4">
+          <Notice tone="warning" title="Provider not supported" dismissible={false} dismissLabel="Dismiss provider notice">{unsupportedProviderMessage}</Notice>
         </div>
       </div>
     )
@@ -456,70 +485,49 @@ export function CLIView({ session }: CLIViewProps) {
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {!!visibleTerminalError && (
-        <div
-          className="flex-shrink-0 px-3 py-2 text-xs"
-          style={{
-            borderBottom: '1px solid var(--border)',
-            background: 'rgba(239, 68, 68, 0.10)',
-            color: 'var(--red)',
-          }}
-        >
-          <div className="flex items-start gap-2">
-            <span className="min-w-0 flex-1">{visibleTerminalError}</span>
-            {(!cliBinding?.running || companion) && (
-              <button
-                type="button"
-                aria-label={companion ? "Retry terminal attachment" : "Retry terminal start"}
-                onClick={() => {
-                  setDismissedTerminalError('')
-                  setCliBinding(session.id, { lastError: '' })
-                  setTerminalStartAttempt((attempt) => attempt + 1)
-                }}
-                className="rounded px-2 py-0.5 font-medium"
-                style={{ color: 'inherit', border: '1px solid currentColor' }}
-              >
-                {companion ? 'Retry attach' : 'Retry'}
-              </button>
-            )}
-            {!companion && <button
-              type="button"
-              aria-label="Check provider CLI"
-              onClick={() => void refreshCliProviderVersion(currentProviderId)}
-              className="rounded px-2 py-0.5 font-medium"
-              style={{ color: 'inherit', border: '1px solid currentColor' }}
-            >
-              Check CLI
-            </button>}
-            {!companion && <button
-              type="button"
-              aria-label="Open CLI settings"
-              onClick={() => setSettingsOpen(true)}
-              className="rounded px-2 py-0.5 font-medium"
-              style={{ color: 'inherit', border: '1px solid currentColor' }}
-            >
-              Settings
-            </button>}
-            <button
-              type="button"
-              aria-label="Dismiss terminal error"
-              title="Dismiss"
-              onClick={() => setDismissedTerminalError(visibleTerminalError)}
-              className="inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded"
-              style={{ color: 'inherit' }}
-            >
-              <X size={13} aria-hidden />
-            </button>
-          </div>
+        <div className="flex-shrink-0 px-3 pt-2">
+          <Notice
+            tone="error"
+            dismissLabel="Dismiss terminal error"
+            onDismiss={() => setDismissedTerminalError(visibleTerminalError)}
+            actions={<>
+              {(!cliBinding?.running || companion) && (
+                <Button
+                  size="sm"
+                  aria-label={companion ? "Retry terminal attachment" : "Retry terminal start"}
+                  onClick={() => {
+                    setDismissedTerminalError('')
+                    setCliBinding(session.id, { lastError: '' })
+                    setTerminalStartAttempt((attempt) => attempt + 1)
+                  }}
+                >
+                  {companion ? 'Retry attach' : 'Retry'}
+                </Button>
+              )}
+              {!companion && (
+                <Button size="sm" aria-label="Check provider CLI" onClick={() => void refreshCliProviderVersion(currentProviderId)}>
+                  Check CLI
+                </Button>
+              )}
+              {!companion && (
+                <Button size="sm" aria-label="Open CLI settings" onClick={() => setSettingsOpen(true)}>
+                  Settings
+                </Button>
+              )}
+            </>}
+          >
+            {visibleTerminalError}
+          </Notice>
         </div>
       )}
 
       {companion && <div data-cli-controls className="flex flex-wrap gap-2 border-b p-2" style={{ borderColor: 'var(--border)' }}>
-        <button type="button" onClick={() => termInstanceRef.current?.focus()}>Keyboard</button>
-        <button type="button" onClick={() => termInstanceRef.current?.input('\x1b', true)}>Esc</button>
-        <button type="button" onClick={() => termInstanceRef.current?.input('\t', true)}>Tab</button>
-        <button type="button" aria-label="Interrupt terminal" onClick={() => termInstanceRef.current?.input('\x03', true)}>Ctrl C</button>
-        <button type="button" onClick={() => termInstanceRef.current?.input('\x1b[A', true)} aria-label="Up arrow">↑</button>
-        <button type="button" onClick={() => termInstanceRef.current?.input('\x1b[B', true)} aria-label="Down arrow">↓</button>
+        <Button size="sm" variant="ghost" onClick={() => termInstanceRef.current?.focus()}>Keyboard</Button>
+        <Button size="sm" variant="ghost" onClick={() => termInstanceRef.current?.input('\x1b', true)}>Esc</Button>
+        <Button size="sm" variant="ghost" onClick={() => termInstanceRef.current?.input('\t', true)}>Tab</Button>
+        <Button size="sm" variant="ghost" aria-label="Interrupt terminal" onClick={() => termInstanceRef.current?.input('\x03', true)}>Ctrl C</Button>
+        <Button size="sm" variant="ghost" onClick={() => termInstanceRef.current?.input('\x1b[A', true)} aria-label="Up arrow">↑</Button>
+        <Button size="sm" variant="ghost" onClick={() => termInstanceRef.current?.input('\x1b[B', true)} aria-label="Down arrow">↓</Button>
       </div>}
       {pendingUserInput?.requestId.startsWith('uam-control:') && <UserInputInlineCard
         input={pendingUserInput}
@@ -531,7 +539,7 @@ export function CLIView({ session }: CLIViewProps) {
         className={`flex-1 ${companion ? 'overflow-auto' : 'overflow-hidden'}`}
         style={{ background: companion ? '#000' : 'var(--term-bg)', padding: '12px 18px 18px' }}
       >
-        <div ref={terminalRef} className="h-full" />
+        <div ref={terminalRef} data-uam-terminal className="h-full" />
       </div>
 
     </div>

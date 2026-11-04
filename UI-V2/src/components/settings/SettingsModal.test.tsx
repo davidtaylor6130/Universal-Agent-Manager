@@ -2,17 +2,27 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SettingsModal } from './SettingsModal'
+import * as cefBridge from '../../ipc/cefBridge'
+import * as copySelection from '../../utils/copySelection'
 import { useAppStore } from '../../store/useAppStore'
 import { fallbackProviderForId } from '../../utils/providerMetadata'
 import { version as packageVersion } from '../../../package.json'
+import { BUILT_IN_THEME_COLORS } from '../../utils/themeStorage'
+import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+const failures: AppFailure[] = []
+window.addEventListener(APP_FAILURE_EVENT, (event) => { failures.push((event as CustomEvent<AppFailure>).detail) })
+beforeEach(() => { failures.length = 0 })
 
 describe('SettingsModal memory settings', () => {
+  const originalSaveActions = { setVoiceInputSettings: useAppStore.getState().setVoiceInputSettings, setProviderAvailability: useAppStore.getState().setProviderAvailability }
   beforeEach(() => {
     vi.restoreAllMocks()
     window.cefQuery = undefined
     useAppStore.setState({
+      settingsScopeHostId: '*',
+      memorySettingsUnconfirmedFields: [],
 	  folders: [{ id: 'project', name: 'Project', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: new Date() }],
 	  providerModelCatalogs: [],
       providers: [
@@ -44,6 +54,9 @@ describe('SettingsModal memory settings', () => {
       favoriteUamAgentIds: ['writer', 'reviewer'],
       uamAgentCycleShortcut: 'shift+tab',
       computerUseAllowlistEnabled: false,
+      computerUseEnabled: undefined,
+      computerUseRevocationPending: undefined,
+      computerUseSettingsError: '',
       computerUseAllowedApplications: [],
       uamAgentsBySessionId: {
         'chat-1': [
@@ -53,6 +66,10 @@ describe('SettingsModal memory settings', () => {
           { id: 'writer', description: 'Write', builtIn: false },
         ],
       },
+      ...originalSaveActions,
+      providerAvailability: [],
+      voiceInputMode: 'system', voiceInputServerBaseUrl: 'https://api.openai.com', voiceInputServerEndpoint: '/v1/audio/transcriptions', voiceInputServerModel: 'whisper-1', voiceInputApiKeyEnv: 'OPENAI_API_KEY',
+      voiceInputCapabilities: { system: { supported: true, reason: '' }, server: { supported: false, reason: 'Server capture is unavailable on this platform.' }, local: { supported: false, reason: 'Local AI is not supported.' } },
       memoryEnabledDefault: true,
       memoryLevelDefault: 'strict',
       memoryIdleDelaySeconds: 120,
@@ -178,16 +195,323 @@ describe('SettingsModal memory settings', () => {
     act(() => defaultsSectionButton?.click())
   }
 
+  it('shows exact unconfirmed settings fields as persistent warning drafts without a save or dismiss action', () => {
+    useAppStore.setState({ memorySettingsUnconfirmedFields: [
+      'memoryEnabledDefault', 'memoryLevelDefault', 'memoryIdleDelaySeconds', 'memoryRecallBudgetBytes',
+      'goalMaxLoopIterations', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB', 'activeTurnInactivityTimeoutSeconds', 'streamLoopRepeatLimit',
+      'memoryWorkerBindings', 'permissionReviewerProviderId', 'permissionReviewerModelId',
+    ] })
+    const { host, root } = renderModal()
+    try {
+      const notice = host.querySelector<HTMLElement>('[data-memory-settings-unconfirmed]')!
+      expect(notice.querySelector('[role="status"].uam-notice')).toBeTruthy()
+      expect(notice.textContent).toContain('Unconfirmed settings changes')
+      expect(notice.textContent).toContain('Displayed choices are unconfirmed drafts and may differ from the running app.')
+      const fields = notice.querySelector<HTMLUListElement>('ul[aria-label="Unconfirmed settings fields"]')!
+      expect(Array.from(fields.querySelectorAll('li'), (item) => item.textContent)).toEqual([
+        'Default memory enabled', 'Default memory policy', 'Memory idle delay', 'Memory recall budget',
+        'Goal loop limit', 'Provider setup timeout', 'Provider output limit', 'Provider turn timeout', 'Repeated output limit', 'Memory worker selections',
+        'Permission reviewer provider', 'Permission reviewer model',
+      ])
+      // Notice is a single bar now: the title is text, not a collapse header, so no buttons remain.
+      expect(Array.from(notice.querySelectorAll('button'), (button) => button.textContent)).toEqual([])
+      expect(notice.querySelector('[aria-label="Unconfirmed settings changes cannot be dismissed"]')).toBeNull()
+      expect(useAppStore.getState().setMemorySettings).not.toHaveBeenCalled()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('retains the unconfirmed notice through section navigation and a normal settings reopen', () => {
+    useAppStore.setState({ memorySettingsUnconfirmedFields: ['memoryIdleDelaySeconds'] })
+    const first = renderModal()
+    try {
+      const notice = first.host.querySelector('[data-memory-settings-unconfirmed]')
+      expect(notice).toBeTruthy()
+      for (const section of ['Editors', 'About', 'Appearance']) {
+        const button = first.host.querySelector<HTMLButtonElement>(`nav button[aria-label="${section}"]`)!
+        expect(button).toBeTruthy()
+        act(() => button.click())
+        expect(first.host.querySelector('[data-memory-settings-unconfirmed]')).toBe(notice)
+        expect(notice?.textContent).toContain('Memory idle delay')
+      }
+      expect(useAppStore.getState().setMemorySettings).not.toHaveBeenCalled()
+    } finally { act(() => first.root.unmount()); first.host.remove() }
+    const reopened = renderModal()
+    try {
+      expect(reopened.host.querySelector('[data-memory-settings-unconfirmed]')?.textContent).toContain('Memory idle delay')
+      expect(useAppStore.getState().memorySettingsUnconfirmedFields).toEqual(['memoryIdleDelaySeconds'])
+      expect(useAppStore.getState().setMemorySettings).not.toHaveBeenCalled()
+    } finally { act(() => reopened.root.unmount()); reopened.host.remove() }
+  })
+
+  it('keeps the shared warning visible while the theme editor replaces normal section content', () => {
+    useAppStore.setState({ memorySettingsUnconfirmedFields: ['memoryWorkerBindings'] })
+    const { host, root } = renderModal()
+    try {
+      const notice = host.querySelector('[data-memory-settings-unconfirmed]')
+      const addTheme = host.querySelector<HTMLButtonElement>('[aria-label="Add theme"]')!
+      expect(addTheme).toBeTruthy()
+      act(() => addTheme.click())
+      expect(host.querySelector('[aria-label="Theme name"]')).toBeTruthy()
+      expect(host.querySelector('[data-memory-settings-unconfirmed]')).toBe(notice)
+      expect(notice?.textContent).toContain('Memory worker selections')
+      expect(useAppStore.getState().setMemorySettings).not.toHaveBeenCalled()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('updates exact field wording and removes the warning only when metadata clears', () => {
+    useAppStore.setState({ memorySettingsUnconfirmedFields: ['memoryRecallBudgetBytes'] })
+    const { host, root } = renderModal()
+    try {
+      expect(host.querySelector('[data-memory-settings-unconfirmed]')?.textContent).toContain('Memory recall budget')
+      act(() => useAppStore.setState({ memorySettingsUnconfirmedFields: ['permissionReviewerModelId'] }))
+      const notice = host.querySelector('[data-memory-settings-unconfirmed]')!
+      expect(notice.textContent).toContain('Permission reviewer model')
+      expect(notice.textContent).not.toContain('Memory recall budget')
+      act(() => useAppStore.setState({ memorySettingsUnconfirmedFields: [] }))
+      expect(host.querySelector('[data-memory-settings-unconfirmed]')).toBeNull()
+      expect(useAppStore.getState().setMemorySettings).not.toHaveBeenCalled()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('ignores duplicate and noncanonical metadata labels without exposing raw identifiers', () => {
+    useAppStore.setState({ memorySettingsUnconfirmedFields: ['memoryWorkerBindings', 'memoryWorkerBindings', 'not-a-canonical-setting'] })
+    const { host, root } = renderModal()
+    try {
+      const notice = host.querySelector('[data-memory-settings-unconfirmed]')!
+      expect(Array.from(notice.querySelectorAll('li'), (item) => item.textContent)).toEqual(['Memory worker selections'])
+      expect(notice.textContent).not.toContain('not-a-canonical-setting')
+      expect(notice.textContent).not.toContain('memoryWorkerBindings')
+      expect(useAppStore.getState().setMemorySettings).not.toHaveBeenCalled()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('renders older fixtures with absent unconfirmed metadata without a warning or memory action', () => {
+    // Represents an older fixture that predates this UI-only metadata field.
+    useAppStore.setState({ memorySettingsUnconfirmedFields: undefined as unknown as string[] })
+    const { host, root } = renderModal()
+    try {
+      expect(host.querySelector('[data-memory-settings-unconfirmed]')).toBeNull()
+      expect(useAppStore.getState().setMemorySettings).not.toHaveBeenCalled()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('keeps failed phone access actionable and offers an inline application restart', async () => {
+    const actions: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      actions.push(parsed.action)
+      onSuccess(JSON.stringify(parsed.action === 'getCompanionSettings'
+        ? { configured: true, enabled: true, state: 'failed', reason: 'The secure phone connection could not start.', desiredUrl: 'https://phone.example/companion', effectiveUrl: '', proxyRunning: false, restartRequired: true }
+        : {}))
+    }
+    const { host, root } = renderModal()
+    act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+    await act(async () => {})
+    expect(host.textContent).toContain('The secure phone connection could not start.')
+    const restart = Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Restart Universal Agent Manager')
+    expect(restart).toBeTruthy()
+    expect((Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Show pairing code') as HTMLButtonElement | undefined)?.disabled ?? true).toBe(true)
+    await act(async () => restart?.click())
+    expect(actions).toContain('restartApplication')
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('clears recovered polling errors without hiding a failed phone action', async () => {
+    vi.useFakeTimers()
+    let loads = 0
+    let rejectRetry: (() => void) | undefined
+    const failedStatus = { configured: true, enabled: true, state: 'failed', reason: 'The secure phone connection could not start.', desiredUrl: 'https://phone.example/companion', effectiveUrl: '' }
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const { action } = JSON.parse(request)
+      if (action === 'getCompanionSettings' && ++loads === 1) onFailure(1, 'Temporary phone settings failure.')
+      else if (action === 'getCompanionSettings') onSuccess(JSON.stringify(failedStatus))
+      else if (action === 'restartCompanion') rejectRetry = () => onFailure(1, 'Phone access retry failed.')
+      else onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    try {
+      act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+      await act(async () => {})
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Temporary phone settings failure.')
+      await act(async () => vi.advanceTimersByTimeAsync(1500))
+      expect(host.textContent).not.toContain('Temporary phone settings failure.')
+      const retry = [...host.querySelectorAll('button')].find(button => button.textContent === 'Retry phone access')!
+      act(() => retry.click())
+      expect(retry.textContent).toBe('Retrying…')
+      expect(retry.disabled).toBe(true)
+      await act(async () => rejectRetry!())
+      expect(failures.at(-1)?.message).toContain('Phone access retry failed.')
+      expect(host.textContent).toContain('Retry phone access')
+      await act(async () => vi.advanceTimersByTimeAsync(1500))
+      expect(loads).toBe(3)
+      expect(failures.at(-1)?.message).toContain('Phone access retry failed.')
+      act(() => host.querySelector<HTMLButtonElement>('nav button[aria-label="Chat defaults"]')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('nav button[aria-label="Phone"]')!.click())
+      await act(async () => {})
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+    } finally {
+      act(() => root.unmount()); host.remove(); vi.useRealTimers()
+    }
+  })
+
+  it('hides a revealed QR and disables URL copying when status polling fails', async () => {
+    vi.useFakeTimers()
+    let failed = false
+    const url = 'https://phone.example/companion'
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const { action } = JSON.parse(request)
+      if (action === 'getCompanionSettings') {
+        if (failed) onFailure(1, 'Phone settings connection lost.')
+        else onSuccess(JSON.stringify({ configured: true, enabled: true, state: 'ready', effectiveUrl: url, desiredUrl: url }))
+      } else if (action === 'getCompanionToken') onSuccess(JSON.stringify({ token: 'a'.repeat(64), url }))
+      else onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    try {
+      act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+      await act(async () => {})
+      const pairing = () => [...host.querySelectorAll('button')].find(button => /^(Show|Hide) pairing code$/.test(button.textContent || ''))!
+      const qr = () => [...host.querySelectorAll('svg title')].find(title => title.textContent === 'Universal Agent Manager iPhone pairing code')
+      await act(async () => pairing().click())
+      expect(qr()).toBeTruthy()
+      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Copy phone URL"]')?.disabled).toBe(false)
+      failed = true
+      await act(async () => vi.advanceTimersByTimeAsync(1500))
+      expect(host.textContent).not.toContain('Ready to connect')
+      expect(host.textContent).toContain('Phone settings connection lost.')
+      expect(qr()).toBeUndefined()
+      expect(pairing().disabled).toBe(true)
+      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Copy phone URL"]')?.disabled).toBe(true)
+      failed = false
+      await act(async () => vi.advanceTimersByTimeAsync(1500))
+      expect(host.textContent).toContain('Ready to connect')
+      expect(pairing().disabled).toBe(false)
+      expect(qr()).toBeUndefined()
+      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Copy phone URL"]')?.disabled).toBe(false)
+    } finally { act(() => root.unmount()); host.remove(); vi.useRealTimers() }
+  })
+
+  it.each(['bridge', 'clipboard'] as const)('unlocks phone controls after a rejected %s copy operation', async failure => {
+    let mutations = 0
+    window.cefQuery = ({ request, onSuccess }) => {
+      const { action } = JSON.parse(request)
+      if (action === 'getCompanionSettings') onSuccess(JSON.stringify({ configured: true, enabled: true, state: 'ready', effectiveUrl: 'https://phone.example/companion', desiredUrl: 'https://phone.example/companion' }))
+      else if (action === 'getCompanionToken') onSuccess(JSON.stringify({ token: 'a'.repeat(64) }))
+      else if (action === 'setCompanionEnabled') { mutations += 1; onSuccess(JSON.stringify({ configured: true, enabled: false, state: 'disabled' })) }
+      else onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    try {
+      act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+      await act(async () => {})
+      let rejectCopy!: (error: Error) => void
+      const rejected = new Promise<never>((_resolve, reject) => { rejectCopy = reject })
+      if (failure === 'bridge') vi.spyOn(cefBridge, 'sendToCEF').mockImplementationOnce(() => rejected)
+      else vi.spyOn(copySelection, 'copyTextToClipboard').mockImplementationOnce(() => rejected)
+      const copyToken = host.querySelector<HTMLButtonElement>('button[aria-label="Copy token"]')!
+      act(() => copyToken.click())
+      await act(async () => {})
+      const toggle = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+      expect(toggle.disabled).toBe(true)
+      act(() => toggle.click())
+      expect(mutations).toBe(0)
+      await act(async () => rejectCopy(new Error('Copy fixture rejected')))
+      expect(failures.at(-1)?.message).toContain('Could not copy the phone access token.')
+      expect(copyToken.disabled).toBe(false)
+      expect(toggle.disabled).toBe(false)
+      await act(async () => toggle.click())
+      expect(mutations).toBe(1)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('offers current network addresses once beside connection recovery controls', async () => {
+    let completeRepair: ((response: string) => void) | undefined
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed)
+      if (parsed.action === 'getCompanionSettings') onSuccess(JSON.stringify({ configured: true, enabled: true, state: 'failed', reason: 'Choose a current LAN address and repair.', desiredUrl: 'https://192.168.1.4/companion', effectiveUrl: '', localAddresses: ['192.168.1.5', '10.0.0.5', '192.168.1.5'] }))
+      else if (parsed.action === 'repairCompanionLanAddress') completeRepair = onSuccess
+      else onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    try {
+      act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+      await act(async () => {})
+      const rows = [...host.querySelectorAll('.uam-set-row')]
+      const repairs = rows.filter(row => row.querySelector('.uam-set-row__title')?.textContent === 'Network address changed')
+      expect(repairs).toHaveLength(1)
+      const repair = repairs[0]
+      const status = rows.find(row => row.querySelector('.uam-set-row__title')?.textContent === 'Connection')!
+      expect(status.nextElementSibling?.contains(repair)).toBe(true) // repair row sits in its presence wrapper
+      expect(host.textContent).not.toContain('LAN')
+      expect(repair.querySelectorAll('button')).toHaveLength(2)
+      expect(host.querySelector<HTMLDivElement>('.uam-settings-frame')?.style.margin).toBe('0px auto')
+      expect(host.querySelector('button[aria-label="Copy phone URL"]')?.closest('.uam-set-row')?.textContent).toContain('Available when phone access is ready.')
+      const choice = [...repair.querySelectorAll('button')].find(button => button.textContent === 'Use 10.0.0.5')!
+      act(() => choice.click())
+      expect(choice.textContent).toBe('Repairing…')
+      expect(repair.textContent).toContain('Use 192.168.1.5')
+      expect(requests.find(request => request.action === 'repairCompanionLanAddress')?.payload).toEqual({ address: '10.0.0.5' })
+      await act(async () => completeRepair!(JSON.stringify({ configured: true, enabled: true, state: 'ready', desiredUrl: 'https://10.0.0.5/companion', effectiveUrl: 'https://10.0.0.5/companion', localAddresses: ['192.168.1.5', '10.0.0.5'] })))
+      expect(host.textContent).toContain('Ready to connect')
+      expect(host.textContent).not.toContain('Network address changed')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('saves whether phone refreshes may show the macOS Keychain dialog', async () => {
+    const payloads: unknown[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload?: { allowed?: boolean } }
+      if (parsed.action === 'getCompanionSettings') {
+        onSuccess(JSON.stringify({ configured: true, enabled: true, state: 'ready', effectiveUrl: 'https://phone.example/companion', url: 'https://phone.example/companion', allowKeychainPrompts: false, generation: 1 }))
+      } else if (parsed.action === 'setCompanionKeychainPrompts') {
+        payloads.push(parsed.payload)
+        onSuccess(JSON.stringify({ configured: true, enabled: true, state: 'ready', effectiveUrl: 'https://phone.example/companion', url: 'https://phone.example/companion', allowKeychainPrompts: true, generation: 1 }))
+      } else {
+        onSuccess('{}')
+      }
+    }
+    const { host, root } = renderModal()
+    act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+    await act(async () => {})
+
+    const toggle = host.querySelector('input[aria-label="Allow Keychain prompts from phone"]') as HTMLInputElement
+    expect(toggle).toBeTruthy()
+    expect(toggle.checked).toBe(false)
+    act(() => toggle.click())
+    await act(async () => {})
+    expect(payloads).toEqual([{ allowed: true }])
+    expect((host.querySelector('input[aria-label="Allow Keychain prompts from phone"]') as HTMLInputElement).checked).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('hides the Keychain prompt setting where the computer reports none', async () => {
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string }
+      onSuccess(parsed.action === 'getCompanionSettings' ? JSON.stringify({ configured: true, enabled: true, state: 'ready', effectiveUrl: 'https://phone.example/companion', url: 'https://phone.example/companion' }) : '{}')
+    }
+    const { host, root } = renderModal()
+    act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+    await act(async () => {})
+    expect(host.querySelector('input[aria-label="Allow Keychain prompts from phone"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('loads phone access settings and only requests the token when copying', async () => {
     const actions: string[] = []
     window.cefQuery = ({ request, onSuccess }) => {
       const parsed = JSON.parse(request) as { action: string; payload?: { enabled?: boolean } }
       actions.push(parsed.action)
       if (parsed.action === 'getCompanionSettings') {
-        onSuccess(JSON.stringify({ configured: true, enabled: true, url: 'https://phone.example/companion', restartRequired: true }))
+        onSuccess(JSON.stringify({ configured: true, enabled: true, state: 'ready', effectiveUrl: 'https://phone.example/companion', url: 'https://phone.example/companion', restartRequired: false }))
       } else if (parsed.action === 'setCompanionEnabled') {
         expect(parsed.payload).toEqual({ enabled: false })
-        onSuccess(JSON.stringify({ configured: true, enabled: false, url: 'https://phone.example/companion', restartRequired: true }))
+        onSuccess(JSON.stringify({ configured: true, enabled: false, state: 'disabled', effectiveUrl: '', url: 'https://phone.example/companion', restartRequired: false }))
       } else if (parsed.action === 'getCompanionToken') {
         onSuccess(JSON.stringify({ token: 'a'.repeat(64) }))
       } else {
@@ -219,20 +543,133 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  function openCliVersionSection(host: HTMLElement) {
-    const cliSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('CLI Version')
-    )
-    expect(cliSectionButton).toBeTruthy()
 
-    act(() => {
-      cliSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  it('shows all six catalogue providers even when a runtime provider entry is missing', () => {
+    useAppStore.setState({ providers: [fallbackProviderForId('codex-cli')] })
+    const { host, root } = renderModal()
+    for (const name of ['Gemini', 'Codex', 'Claude', 'OpenCode', 'Copilot', 'Antigravity']) expect(host.querySelector(`nav [aria-label="${name}"]`)).toBeTruthy()
+    openProviderSection(host, 'Antigravity')
+    act(() => useAppStore.setState({ providers: [{ ...fallbackProviderForId('antigravity-cli'), supportsStructured: false }] }))
+    expect(host.textContent).toContain('Terminal only')
+    expect(host.querySelector('[aria-label="Refresh Antigravity models"]')).toBeNull()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Antigravity chat defaults"]')?.click())
+    expect(host.textContent).toContain('Models are managed in the CLI')
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('keeps shared agent setup under Agent preferences and per-provider controls out of General', () => {
+    const { host, root } = renderModal()
+    const group = [...host.querySelectorAll('nav h2')].find(item => item.textContent === 'Agent preferences')?.parentElement
+    for (const label of ['Central setup', 'Agents', 'Skills', 'Memory settings', 'Memory store', 'Shell actions']) expect(group?.querySelector(`[aria-label="${label}"]`)).toBeTruthy()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat defaults"]')?.click())
+    expect(host.querySelector('[aria-label="Chats"]')).toBeNull()
+    expect(host.textContent).toContain('Reviewer provider')
+    expect(host.querySelector('[aria-label="Show Codex chat defaults"]')).toBeNull()
+    act(() => root.unmount()); host.remove()
+  })
+
+
+  it('lists SSH routing under Connections and opens its settings page', () => {
+    const { host, root } = renderModal()
+    const group = [...host.querySelectorAll('nav h2')].find(item => item.textContent === 'Connections')?.parentElement
+    expect(group?.querySelector('[aria-label="SSH routing"]')).toBeTruthy()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="SSH routing"]')?.click())
+    expect(host.querySelector('h2.uam-settings-page-header__title')?.textContent).toBe('SSH routing')
+    expect(host.querySelector('[aria-label="Automatic routing"]')).toBeTruthy()
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('routes provider version actions to the selected remote host and drops old install confirmation', async () => {
+    const template = useAppStore.getState().cliVersionManager.providers.find(provider => provider.providerId === 'codex-cli')!
+    useAppStore.setState(state => ({ executionHosts: [{ id: 'local', label: 'Local', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }], cliVersionManager: { ...state.cliVersionManager, remoteProviders: [{ ...template, executionHostId: 'ssh-lab', executionHostName: 'Lab', installedVersion: '8.0' }] } }))
+    const { host, root } = renderModal()
+    openProviderSection(host, 'Codex')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')?.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Download Codex CLI"]')!.click())
+    act(() => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent === 'Download latest')!.click())
+    expect(host.querySelector('[aria-label="Confirm CLI installation"]')).toBeTruthy()
+    act(() => useAppStore.setState({ settingsScopeHostId: 'ssh-lab' }))
+    expect(host.querySelector('[aria-label="Confirm CLI installation"]')).toBeNull()
+    expect(host.textContent).toContain('Installed')
+    expect(host.textContent).toContain('8.0')
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh Codex CLI version"]')!.click())
+    expect(useAppStore.getState().refreshCliProviderVersion).toHaveBeenCalledWith('codex-cli', 'ssh-lab')
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('keeps the overview host selection when opening a provider page', () => {
+    const template = useAppStore.getState().cliVersionManager.providers.find(provider => provider.providerId === 'codex-cli')!
+    useAppStore.setState(state => ({
+      executionHosts: [{ id: 'local', label: 'This computer', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }],
+      cliVersionManager: { ...state.cliVersionManager, remoteProviders: [{ ...template, executionHostId: 'ssh-lab', executionHostName: 'Lab', installedVersion: '8.0' }] },
+    }))
+    const { host, root } = renderModal()
+    act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Overview"]')!.click())
+    act(() => useAppStore.setState({ settingsScopeHostId: 'ssh-lab' }))
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('[aria-label="Provider connection overview"] button')).find(button => button.querySelector('.uam-prov-provider__name')?.textContent === 'Codex')!.click())
+    expect(useAppStore.getState().settingsScopeHostId).toBe('ssh-lab')
+    expect(host.textContent).toContain('Installed')
+    expect(host.textContent).toContain('8.0')
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('uses the remote host label for an install confirmation without a manager host name', () => {
+    const template = useAppStore.getState().cliVersionManager.providers.find(provider => provider.providerId === 'codex-cli')!
+    useAppStore.setState(state => ({
+      executionHosts: [{ id: 'local', label: 'This computer', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }],
+      cliVersionManager: { ...state.cliVersionManager, remoteProviders: [{ ...template, executionHostId: 'ssh-lab', executionHostName: '', installedVersion: '8.0' }] },
+    }))
+    const { host, root } = renderModal()
+    openProviderSection(host, 'Codex')
+    act(() => useAppStore.setState({ settingsScopeHostId: 'ssh-lab' }))
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')?.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Download Codex CLI"]')!.click())
+    act(() => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(button => button.textContent === 'Download latest')!.click())
+    expect(host.querySelector('[aria-label="Confirm CLI installation"]')?.textContent).toContain('Install Codex latest on Lab using npm?')
+    expect(host.querySelector('[aria-label="Confirm CLI installation"]')?.textContent).not.toContain('this computer')
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('reads effective provider memory defaults for the selected computer', () => {
+    useAppStore.setState({ hostScopedSettings: true, settingsScopeHostId: 'ssh-lab',
+      executionHosts: [{ id: 'local', label: 'This computer', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }],
+      hostScopedSettingsValues: { 'ssh-lab': { defaultNewChatProviderId: 'codex-cli', providerChatDefaults: { 'codex-cli': { ...useAppStore.getState().providerChatDefaults['codex-cli'], memoryLevel: 'off' } }, mcpServers: [] } },
     })
+    const { host, root } = renderModal()
+    openProviderSection(host, 'Codex')
+    expect(host.querySelector('[aria-label="Codex default memory level"]')?.textContent).toContain('Off')
+    act(() => useAppStore.setState({ executionHosts: [{ id: 'local', label: 'This computer', transport: 'local' }] }))
+    expect(host.querySelector('[aria-label="Codex default memory level"]')?.textContent).not.toContain('Off')
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('reports CLI action failures as app failures instead of inline notices', async () => {
+    const template = useAppStore.getState().cliVersionManager.providers.find(provider => provider.providerId === 'codex-cli')!
+    useAppStore.setState(state => ({
+      executionHosts: [{ id: 'local', label: 'This computer', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }],
+      cliVersionManager: { ...state.cliVersionManager, remoteProviders: [{ ...template, executionHostId: 'ssh-lab', executionHostName: 'Lab', installedVersion: '8.0' }] },
+      refreshCliProviderVersion: vi.fn(async () => false),
+    }))
+    const { host, root } = renderModal()
+    openProviderSection(host, 'Codex')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')?.click())
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh Codex CLI version"]')!.click())
+    expect(failures.at(-1)?.message).toBe('Version check could not start.')
+    expect(host.textContent).not.toContain('Version check could not start.')
+    act(() => root.unmount()); host.remove()
+  })
+
+  function openCliVersionSection(host: HTMLElement) {
+    act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Codex"]')?.click())
+  }
+
+  function openProviderSection(host: HTMLElement, name: string) {
+    act(() => host.querySelector<HTMLButtonElement>(`nav [aria-label="${name}"]`)?.click())
   }
 
   function openRemoteHostsSection(host: HTMLElement) {
     const button = Array.from(host.querySelectorAll('button')).find(
-      (candidate) => candidate.textContent?.includes('Remote Hosts')
+      (candidate) => candidate.textContent?.includes('Remote hosts')
     )
     expect(button).toBeTruthy()
     act(() => button?.click())
@@ -266,12 +703,12 @@ describe('SettingsModal memory settings', () => {
     const preview = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))
     await act(async () => { preview?.click() })
 
-    expect(actions).toEqual(['previewRemoteHost'])
-    expect(host.textContent).toContain('Install helper on AI desktop?')
-    expect(host.textContent).toContain('detects Ubuntu/Linux or Windows')
-    expect(host.textContent).toContain('Unsupported systems stop before anything is copied')
-    expect(host.textContent).toContain('Check remote platform')
-    const install = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))
+    expect(actions.filter(action => action !== 'getProviderMcpStatus')).toEqual(['previewRemoteHost'])
+    expect(document.body.textContent).toContain('Install helper on AI desktop?')
+    expect(document.body.textContent).toContain('Uses your existing SSH login')
+    expect(document.body.textContent).toContain('Unsupported systems stop before copying')
+    expect(document.body.textContent).toContain('Check remote platform')
+    const install = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))
     await act(async () => { install?.click() })
     expect(actions).toEqual(['previewRemoteHost', 'installRemoteHost'])
 
@@ -302,11 +739,12 @@ describe('SettingsModal memory settings', () => {
       Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click()
     })
     await act(async () => {
-      Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
+      Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
     })
 
-    expect(host.textContent).not.toContain('Install helper on colima?')
-    expect(host.textContent).toContain('This UAM build does not contain a runner for linux/s390x.')
+    await act(async () => {})
+    expect(document.body.textContent).not.toContain('Install helper on colima?')
+    expect(failures.at(-1)?.message).toContain('This UAM build does not contain a runner for linux/s390x.')
 
     act(() => root.unmount())
     host.remove()
@@ -334,16 +772,16 @@ describe('SettingsModal memory settings', () => {
       alias.dispatchEvent(new Event('input', { bubbles: true }))
       Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click()
     })
-    const customChoice = host.querySelectorAll<HTMLInputElement>('input[name="remote-helper-location"]')[1]
+    const customChoice = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[aria-pressed]')).find((button) => button.textContent === 'Custom folder')!
     act(() => customChoice.click())
-    const directory = host.querySelector('input[aria-label="Remote helper folder"]') as HTMLInputElement
+    const directory = document.body.querySelector('input[aria-label="Remote helper folder"]') as HTMLInputElement
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(directory, 'helpers/uam')
       directory.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    expect(host.textContent).toContain(`~/helpers/uam/${packageVersion}`)
+    expect(document.body.textContent).toContain(`~/helpers/uam/${packageVersion}`)
     await act(async () => {
-      Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
+      Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
     })
     expect(installPayload).toMatchObject({ runnerDirectory: 'helpers/uam' })
 
@@ -373,8 +811,8 @@ describe('SettingsModal memory settings', () => {
       alias.dispatchEvent(new Event('input', { bubbles: true }))
       Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click()
     })
-    act(() => host.querySelectorAll<HTMLInputElement>('input[name="remote-helper-location"]')[1].click())
-    const directory = host.querySelector('input[aria-label="Remote helper folder"]') as HTMLInputElement
+    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[aria-pressed]')).find((button) => button.textContent === 'Custom folder')!.click())
+    const directory = document.body.querySelector('input[aria-label="Remote helper folder"]') as HTMLInputElement
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(directory, '../outside')
       directory.dispatchEvent(new Event('input', { bubbles: true }))
@@ -383,14 +821,14 @@ describe('SettingsModal memory settings', () => {
       directory.select()
       directory.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    const install = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install')) as HTMLButtonElement
+    const install = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install')) as HTMLButtonElement
     expect(install.disabled).toBe(true)
 		expect(directory.value).toBe('../outside')
     expect(directory.closest('label')).toBeNull()
     expect(directory.selectionStart).toBe(0)
     expect(directory.selectionEnd).toBe('../outside'.length)
-		expect(host.textContent).toContain('Remove the .. segment; the helper must stay under the remote home directory.')
-    expect(actions).toEqual(['previewRemoteHost'])
+		expect(document.body.textContent).toContain('Remove the .. segment; the helper must stay under the remote home directory.')
+    expect(actions.filter(action => action !== 'getProviderMcpStatus')).toEqual(['previewRemoteHost'])
 
     act(() => root.unmount())
     host.remove()
@@ -411,16 +849,236 @@ describe('SettingsModal memory settings', () => {
     await act(async () => { remove.click() })
     await act(async () => { Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Remove host')!.click() })
 
-    expect(host.textContent).toContain('Any helper files on that machine were left untouched.')
+    expect(failures.at(-1)?.message).toContain('Any helper files on that machine were left untouched.')
     expect(host.textContent).not.toContain('The remote helper was left installed.')
 
     act(() => root.unmount())
     host.remove()
   })
 
+  it.each([false, true])('saves the chosen Linux CLI elevation setting: %s', async (enabled) => {
+    useAppStore.setState({ executionHosts: [{ id: 'fixture-host', label: 'Fixture host', transport: 'ssh', sshAlias: 'fixture-host', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', cliUpdatesAsAdmin: !enabled }] })
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host)
+      const checkbox = host.querySelector<HTMLInputElement>('[name="cliUpdatesAsAdmin"]')!
+      expect(checkbox.checked).toBe(!enabled)
+      await act(async () => { checkbox.click() })
+      const button = Array.from(checkbox.form!.querySelectorAll('button')).find(candidate => candidate.type === 'submit')!
+      await act(async () => { button.click() })
+      expect(requests.find(request => request.action === 'saveRemoteHostOptions')?.payload.cliUpdatesAsAdmin).toBe(enabled)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it.each(['default submitter', 'Check file'] as const)('owns remote host options actions for %s', async (interaction) => {
+    useAppStore.setState({
+      executionHosts: [{ id: 'fixture-host', label: 'Fixture host', transport: 'ssh', sshAlias: 'fixture-host', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', instructionFile: '/tmp/AGENTS.md' }],
+    })
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      requests.push(parsed)
+      onSuccess(JSON.stringify(parsed.action === 'checkRemoteHostInstruction' ? { bytes: 12 } : {}))
+    }
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host)
+      const input = host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Fixture host"]')!
+      setNativeInputValue(input, '/tmp/new-instructions.md')
+      const form = input.form!
+      requests.length = 0
+      const buttons = Array.from(form.querySelectorAll('button'))
+      // jsdom lacks implicit Enter submission; Chromium separately verifies this default-submitter journey.
+      const button = interaction === 'default submitter'
+        ? buttons.find((candidate) => candidate.type === 'submit')
+        : buttons.find((candidate) => candidate.textContent === 'Check file')
+      expect(button).toBeTruthy()
+      await act(async () => { button!.click() })
+      const actions = requests.filter((request) => ['saveRemoteHostOptions', 'checkRemoteHostInstruction'].includes(request.action)).map(({ action, payload }) => ({ action, payload }))
+      expect(actions).toEqual([{
+        action: interaction === 'default submitter' ? 'saveRemoteHostOptions' : 'checkRemoteHostInstruction',
+        payload: interaction === 'default submitter'
+          ? { id: 'fixture-host', instructionFile: '/tmp/new-instructions.md', startupEnabled: false, cliUpdatesAsAdmin: false }
+          : { id: 'fixture-host', instructionFile: '/tmp/new-instructions.md' },
+      }])
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('saves inline host instructions only when they change, and can switch back to the instruction file', async () => {
+    const host = { id: 'fixture-host', label: 'Fixture host', transport: 'ssh', sshAlias: 'fixture-host', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', instructionFile: '/tmp/AGENTS.md' }
+    useAppStore.setState({ executionHosts: [{ ...host, instructionText: null }] })
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      requests.push(parsed)
+      onSuccess(JSON.stringify({}))
+    }
+    const setTextareaValue = (element: HTMLTextAreaElement, value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(element, value)
+      element.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const { host: container, root } = renderModal()
+    try {
+      openRemoteHostsSection(container)
+      const area = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Host instructions on Fixture host"]')!
+      const saveButton = () => area.form!.querySelector<HTMLButtonElement>('button[type="submit"]')!
+      expect(saveButton().disabled).toBe(true)
+      // Typing then clearing on a legacy host must not count as a change.
+      await act(async () => setTextareaValue(area, 'x'))
+      expect(saveButton().disabled).toBe(false)
+      await act(async () => setTextareaValue(area, ''))
+      expect(saveButton().disabled).toBe(true)
+      await act(async () => setTextareaValue(area, 'Be terse.'))
+      requests.length = 0
+      await act(async () => { saveButton().click() })
+      expect(requests.find((request) => request.action === 'saveRemoteHostOptions')?.payload).toEqual({
+        id: 'fixture-host', instructionFile: '/tmp/AGENTS.md', instructionText: 'Be terse.', startupEnabled: false, cliUpdatesAsAdmin: false,
+      })
+    } finally {
+      act(() => root.unmount())
+      container.remove()
+    }
+  })
+
+  it('sends null when a host with inline instructions goes back to the instruction file', async () => {
+    useAppStore.setState({
+      executionHosts: [{ id: 'fixture-host', label: 'Fixture host', transport: 'ssh', sshAlias: 'fixture-host', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', instructionFile: '/tmp/AGENTS.md', instructionText: 'Be terse.' }],
+    })
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request) as { action: string; payload: Record<string, unknown> })
+      onSuccess(JSON.stringify({}))
+    }
+    const { host: container, root } = renderModal()
+    try {
+      openRemoteHostsSection(container)
+      const area = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Host instructions on Fixture host"]')!
+      expect(area.value).toBe('Be terse.')
+      await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Use instruction file instead')!.click())
+      requests.length = 0
+      await act(async () => area.form!.querySelector<HTMLButtonElement>('button[type="submit"]')!.click())
+      expect(requests.find((request) => request.action === 'saveRemoteHostOptions')?.payload.instructionText).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      container.remove()
+    }
+  })
+
+  it.each([
+    { applied: undefined, error: undefined, expected: 'Currently off' },
+    { applied: 'enabled', error: undefined, expected: 'Starts automatically' },
+    { applied: 'disabled', error: undefined, expected: "Doesn't start automatically" },
+    { applied: 'pending', error: undefined, expected: 'Applying…' },
+    { applied: 'failed', error: 'systemd user session unavailable', expected: "Couldn't apply: systemd user session unavailable" },
+  ] as const)('shows applied startup state $applied while the switch keeps the saved preference', ({ applied, error, expected }) => {
+    useAppStore.setState({
+      executionHosts: [{ id: 'fixture-host', label: 'Fixture host', transport: 'ssh', sshAlias: 'fixture-host', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', startupEnabled: true, runnerStartupApplied: applied, runnerStartupError: error }],
+    })
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host)
+      expect(host.textContent).toContain(expected)
+      expect(host.querySelector<HTMLInputElement>('[name="startupEnabled"]')?.checked).toBe(true)
+      // Saved is on, so only states that are not "enabled" differ from it.
+      expect(host.textContent?.includes("doesn't match what is applied")).toBe(applied === 'failed' || applied === 'disabled')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  function setNativeInputValue(input: HTMLInputElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    act(() => {
+      setter.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  it('enables host options save only for valid changes and keeps other hosts usable while one saves', async () => {
+    const twoHosts = [
+      { id: 'host-a', label: 'Host A', transport: 'ssh', sshAlias: 'host-a', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', instructionFile: '/tmp/AGENTS.md' },
+      { id: 'host-b', label: 'Host B', transport: 'ssh', sshAlias: 'host-b', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', instructionFile: '' },
+    ]
+    useAppStore.setState({ executionHosts: twoHosts as never })
+    const requests: Array<{ action: string; payload: Record<string, unknown>; respond: () => void }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      requests.push({ ...parsed, respond: () => onSuccess(JSON.stringify({})) })
+    }
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host)
+      const saveA = () => Array.from(host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!.form!.querySelectorAll('button')).find(b => b.type === 'submit') as HTMLButtonElement
+      const inputA = host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!
+      expect(saveA().disabled).toBe(true)
+
+      setNativeInputValue(inputA, 'relative/AGENTS.md')
+      expect(saveA().disabled).toBe(true)
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('absolute path')
+
+      setNativeInputValue(inputA, '/tmp/new-AGENTS.md')
+      expect(saveA().disabled).toBe(false)
+
+      await act(async () => { saveA().click() })
+      expect(requests.find(r => r.action === 'saveRemoteHostOptions')?.payload.id).toBe('host-a')
+      // Only Host A shows progress and is disabled; Host B's controls stay usable.
+      expect(host.querySelector('[role="progressbar"][aria-label="Remote host task running on Host A"][aria-busy="true"]')).toBeTruthy()
+      expect(host.querySelector('[role="progressbar"][aria-label="Remote host task running on Host B"]')).toBeNull()
+      expect(saveA().disabled).toBe(true)
+      const reinstallB = host.querySelector<HTMLButtonElement>('button[aria-label="Reinstall helper on Host B"]')!
+      expect(reinstallB.disabled).toBe(false)
+      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Reinstall helper on Host A"]')!.disabled).toBe(true)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('keeps an unsaved host option draft and its disclosure open through a busy toggle', async () => {
+    const hosts = [
+      { id: 'host-a', label: 'Host A', transport: 'ssh', sshAlias: 'host-a', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', instructionFile: '/tmp/AGENTS.md' },
+    ]
+    useAppStore.setState({ executionHosts: hosts as never })
+    const requests: Array<{ action: string; payload: Record<string, unknown>; respond: () => void }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      requests.push({ ...parsed, respond: () => onSuccess(JSON.stringify({})) })
+    }
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host)
+      const inputA = () => host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!
+      const saveA = () => Array.from(inputA().form!.querySelectorAll('button')).find(b => b.type === 'submit') as HTMLButtonElement
+      setNativeInputValue(inputA(), '/tmp/draft-AGENTS.md')
+
+      await act(async () => { saveA().click() })
+      expect(host.querySelector('[role="progressbar"][aria-label="Remote host task running on Host A"][aria-busy="true"]')).toBeTruthy()
+      expect(inputA().value).toBe('/tmp/draft-AGENTS.md')
+
+      await act(async () => { requests.find(r => r.action === 'saveRemoteHostOptions')!.respond() })
+      expect(host.querySelector('[role="progressbar"]')).toBeNull()
+      expect(inputA().value).toBe('/tmp/draft-AGENTS.md')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   function openMemorySettingsSection(host: HTMLElement) {
     const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Memory Settings')
+      (button) => button.textContent?.includes('Memory settings')
     )
     expect(memorySectionButton).toBeTruthy()
 
@@ -431,7 +1089,7 @@ describe('SettingsModal memory settings', () => {
 
   function openChatDataSection(host: HTMLElement) {
     const sectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Chat Data')
+      (button) => button.textContent?.includes('Chat data')
     )
     expect(sectionButton).toBeTruthy()
     act(() => sectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
@@ -467,6 +1125,16 @@ describe('SettingsModal memory settings', () => {
       uamAgentCycleShortcut: 'control+shift+tab',
     })
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows the path-based provider agent import without a capability flag', async () => {
+    const { host, root } = renderModal()
+    openAgentsSection(host)
+    expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent === 'Find agents')).toBe(false)
+    expect(host.textContent).toContain('Import from a provider')
+    expect(host.querySelector('input[aria-label="Native agent Markdown file"]')).not.toBeNull()
     act(() => root.unmount())
     host.remove()
   })
@@ -582,7 +1250,7 @@ describe('SettingsModal memory settings', () => {
 
   function openMemoryStoreSection(host: HTMLElement) {
     const memoryStoreSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Memory Store')
+      (button) => button.textContent?.includes('Memory store')
     )
     expect(memoryStoreSectionButton).toBeTruthy()
 
@@ -593,10 +1261,20 @@ describe('SettingsModal memory settings', () => {
 
   function openGoalLoopsSection(host: HTMLElement) {
     const button = Array.from(host.querySelectorAll('button')).find(
-      (candidate) => candidate.textContent?.includes('Goal Loops')
+      (candidate) => candidate.textContent?.includes('Goal loops')
     )
     expect(button).toBeTruthy()
     act(() => button?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+  }
+
+  /** Opens the Skills folder menu, then picks one of its actions ("Choose folder…" or "Enter path…"). */
+  async function folderAction(host: HTMLElement, option: string) {
+    act(() => (host.querySelector('button[role="combobox"][aria-label="Change skills folder"]') as HTMLButtonElement).click())
+    await act(async () => {
+      Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((item) => item.textContent === option)!.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
   }
 
   function openMarkdownStoreSection(host: HTMLElement) {
@@ -616,7 +1294,7 @@ describe('SettingsModal memory settings', () => {
       field.dispatchEvent(new Event('input', {bubbles:true}))
     })
     search('  ReCoMmEnDeD  ')
-    expect(Array.from(host.querySelectorAll('nav button')).map(button => button.getAttribute('aria-label'))).toEqual(['CLI Version'])
+    expect(Array.from(host.querySelectorAll('nav button')).map(button => button.getAttribute('aria-label'))).toEqual(['Gemini', 'Codex', 'Claude', 'OpenCode', 'Copilot', 'Antigravity'])
     expect(host.querySelector('h2')?.textContent).toBe('Providers')
     expect(host.querySelector('nav [aria-pressed="true"]')).toBeNull()
     expect(host.querySelectorAll('h2')[1]?.textContent).toBe('Appearance')
@@ -638,7 +1316,7 @@ describe('SettingsModal memory settings', () => {
     expect(closeButton.textContent).toBe('Back to chats')
     expect(host.querySelector('[aria-modal="true"]')).toBeNull()
     expect(host.querySelector('h1')?.textContent).toBe('Settings')
-    expect(Array.from(host.querySelectorAll('nav h2')).map(heading => heading.textContent)).toEqual(['General', 'Providers', 'Security', 'Workspace', 'App'])
+    expect(Array.from(host.querySelectorAll('nav h2')).map(heading => heading.textContent)).toEqual(['General', 'Providers', 'Connections', 'Agent preferences', 'Security', 'Workspace', 'App'])
     const tab = new KeyboardEvent('keydown', {key: 'Tab', bubbles: true, cancelable: true})
     act(() => closeButton.dispatchEvent(tab))
     expect(tab.defaultPrevented).toBe(false)
@@ -652,8 +1330,11 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     openMemorySettingsSection(host)
 
-    expect(host.textContent).toContain('Idle delay (seconds)')
-    expect(host.textContent).toContain('Recall budget (bytes)')
+    expect(host.textContent).toContain('Idle delay')
+    expect(host.textContent).toContain('Recall budget')
+    // The unit lives inside the field, not in the row title.
+    expect(host.querySelector('[aria-label="Idle delay (seconds)"]')?.closest('.relative')?.textContent).toContain('seconds')
+    expect(host.querySelector('[aria-label="Recall budget (bytes)"]')?.closest('.relative')?.textContent).toContain('bytes')
 
     act(() => root.unmount())
     host.remove()
@@ -679,11 +1360,11 @@ describe('SettingsModal memory settings', () => {
   it('does not render native selects in settings', () => {
     const { host, root } = renderModal()
 
-    expect(host.querySelectorAll('select')).toHaveLength(0)
+    expect(Array.from(host.querySelectorAll('select')).filter(select => !select.id.startsWith('typography-'))).toHaveLength(0)
     expect(host.textContent).toContain('Appearance')
-    expect(host.textContent).toContain('CLI Version')
-    expect(host.textContent).toContain('Memory Settings')
-    expect(host.textContent).toContain('Memory Store')
+    expect(host.textContent).toContain('Overview')
+    expect(host.textContent).toContain('Memory settings')
+    expect(host.textContent).toContain('Memory store')
     expect(host.textContent).toContain('About')
     expect(host.textContent).toContain('Theme')
     expect(host.textContent).not.toContain('Gemini chats')
@@ -694,18 +1375,25 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  it('changes themes through the in-app menu', () => {
+  it('marks the active settings page with a selection dash inside the nav', () => {
     const { host, root } = renderModal()
-    const themeButton = host.querySelector('button[aria-label="Theme"]') as HTMLButtonElement | null
+    const indicator = host.querySelector<HTMLElement>('nav .uam-settings-nav__indicator')
+    expect(indicator).toBeTruthy()
+    expect(indicator?.style.transform).toContain('translateY(')
+    expect(host.querySelector('nav [aria-label="Appearance"][data-active="true"]')).toBeTruthy()
 
-    act(() => themeButton?.click())
-    expect(document.body.querySelector('[role="listbox"][aria-label="Theme"]')).toBeTruthy()
+    act(() => root.unmount())
+    host.remove()
+  })
 
-    const lightOption = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Light')) as HTMLButtonElement | undefined
-    act(() => lightOption?.click())
+  it('changes themes from the swatch grid', () => {
+    const { host, root } = renderModal()
+    const lightTile = host.querySelector('[role="radio"][aria-label="Light"]') as HTMLButtonElement | null
+    expect(lightTile).toBeTruthy()
+
+    act(() => lightTile?.click())
 
     expect(useAppStore.getState().setTheme).toHaveBeenCalledWith('light')
-    expect(document.body.querySelector('[role="listbox"][aria-label="Theme"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -761,20 +1449,17 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
 
     openGoalLoopsSection(host)
-    const decrease = host.querySelector('button[aria-label="Decrease maximum goal loop iterations"]') as HTMLButtonElement
-    const output = host.querySelector('output[aria-label="Maximum goal loop iterations"]')
+    const iterations = host.querySelector<HTMLButtonElement>('button[aria-label="Maximum goal loop iterations"]')
     const outputCeiling = host.querySelector<HTMLButtonElement>('button[aria-label="Provider turn output ceiling"]')
-    expect(decrease).toBeTruthy()
-    expect(output?.textContent).toBe('200')
+    expect(iterations?.textContent).toContain('200')
     expect(outputCeiling?.textContent).toContain('1 GiB')
     expect(host.querySelector('select[aria-label="Provider turn output ceiling"]')).toBeNull()
     expect(host.querySelector('input[type="number"]')).toBeNull()
 
-    act(() => {
-      decrease.click()
-    })
-
-    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ goalMaxLoopIterations: 199 })
+    act(() => iterations?.click())
+    const ninetyNine = Array.from(document.querySelectorAll<HTMLButtonElement>('button[role="option"]')).find((option) => option.textContent?.trim() === '99')
+    act(() => ninetyNine?.click())
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ goalMaxLoopIterations: 99 })
 
     act(() => {
       outputCeiling?.click()
@@ -783,22 +1468,53 @@ describe('SettingsModal memory settings', () => {
     act(() => fourGiB?.click())
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ acpTurnOutputLimitMiB: 4096 })
 
+    expect(host.querySelector('output[aria-label="Provider turn timeout"]')?.textContent).toBe('30 min')
+    const loopLimit = host.querySelector<HTMLButtonElement>('button[aria-label="Repeated output limit"]')
+    expect(loopLimit?.textContent).toContain('20 repeats')
+    act(() => loopLimit?.click())
+    expect(Array.from(document.querySelectorAll<HTMLButtonElement>('button[role="option"]'), (option) => option.textContent)).toEqual(['Off', '10 repeats', '20 repeats', '50 repeats'])
+    act(() => Array.from(document.querySelectorAll<HTMLButtonElement>('button[role="option"]')).find((option) => option.textContent === 'Off')?.click())
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ streamLoopRepeatLimit: 0 })
+    act(() => (host.querySelector('button[aria-label="Increase provider turn timeout by 15 minutes"]') as HTMLButtonElement).click())
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ activeTurnInactivityTimeoutSeconds: 2700 })
+
     act(() => root.unmount())
     host.remove()
   })
 
-  it('updates the default memory selectivity level', () => {
+  it('saves the global goal token budget from the goal loops page', () => {
+    const { host, root } = renderModal()
+
+    openGoalLoopsSection(host)
+    const trigger = host.querySelector<HTMLButtonElement>('button[aria-label="Goal token budget"]')
+    expect(trigger).toBeTruthy()
+    act(() => trigger?.click())
+    const fiftyK = Array.from(document.querySelectorAll<HTMLButtonElement>('button[role="option"]')).find((option) => option.textContent?.includes('50,000'))
+    act(() => fiftyK?.click())
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ goalTokenBudget: 50000 })
+    // A budget set elsewhere (for example the companion) that is not a preset still shows as the selected value.
+    act(() => useAppStore.setState({ goalTokenBudget: 75000 }))
+    expect(host.querySelector('button[aria-label="Goal token budget"]')?.textContent).toContain('75,000')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('updates the default memory selectivity level', async () => {
     const { host, root } = renderModal()
     openMemorySettingsSection(host)
-    const group = host.querySelector('[role="radiogroup"][aria-label="Default memory level"]') as HTMLElement
-    const balanced = Array.from(group.querySelectorAll('button[role="radio"]')).find((button) => button.textContent === 'Balanced') as HTMLButtonElement
-    expect(group.querySelector('button[aria-checked="true"]')?.textContent).toBe('Strict')
-
-    act(() => {
-      balanced.click()
-    })
-
+    const defaultLevel = host.querySelector<HTMLButtonElement>('button[aria-label="Default memory level"]')!
+    expect(defaultLevel.textContent).toContain('Strict creation')
+    act(() => defaultLevel.click())
+    expect(Array.from(document.body.querySelectorAll('[role="option"]')).map((option) => option.querySelector('span.block')?.textContent)).toEqual(['Off', 'Read only', 'Strict creation', 'Balanced creation', 'Remember everything'])
+    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.includes('Balanced creation'))!.click())
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ memoryLevelDefault: 'balanced' })
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Default memory level"]')!.click())
+    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.includes('Read only'))!.click())
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ memoryLevelDefault: 'readOnly' })
+    const chatPolicy = host.querySelector<HTMLButtonElement>('button[aria-label="Current chat memory policy"]')!
+    act(() => chatPolicy.click())
+    expect(Array.from(document.body.querySelectorAll('[role="option"]')).map((option) => option.querySelector('span.block')?.textContent)).toEqual(['Default', 'Off', 'Read only', 'Strict creation', 'Balanced creation', 'Remember everything'])
     act(() => root.unmount())
     host.remove()
   })
@@ -808,19 +1524,12 @@ describe('SettingsModal memory settings', () => {
 
     openCliVersionSection(host)
 
-    expect(host.textContent).toContain('CLI version control')
+    expect(host.textContent).toContain('Installed')
     expect(host.textContent).toContain('Gemini')
     expect(host.textContent).toContain('Codex')
-    expect(host.textContent).not.toContain('0.123.0')
-
-    const codexCliToggle = host.querySelector(
-      'button[aria-label="Show Codex CLI version settings"]'
-    ) as HTMLButtonElement | null
-    expect(codexCliToggle).toBeTruthy()
-
-    act(() => {
-      codexCliToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    // Provider pages show the CLI controls flat, without a disclosure toggle.
+    expect(host.querySelector('section[aria-label="CLI version"]')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Show Codex CLI version settings"]')).toBeNull()
 
     expect(host.textContent).toContain('0.123.0')
     expect(host.querySelector('button[aria-label="Refresh Codex CLI version"]')?.textContent).toBe('')
@@ -830,7 +1539,7 @@ describe('SettingsModal memory settings', () => {
     const recommended = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(button => button.textContent?.includes('Download recommended'))!
     expect(recommended.textContent).toContain('0.124.0')
     act(() => recommended.click())
-    expect(host.textContent).toContain('Install Codex 0.124.0 globally using npm?')
+    expect(host.textContent).toContain('Install Codex 0.124.0 on this computer using npm?')
     expect(useAppStore.getState().applyCliProviderVersion).not.toHaveBeenCalled()
     const confirmInstall = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Install version')
     act(() => confirmInstall?.click())
@@ -850,7 +1559,7 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
 
     openCliVersionSection(host)
-    act(() => (host.querySelector('button[aria-label="Show Codex CLI version settings"]') as HTMLButtonElement).click())
+    act(() => (host.querySelector('button[aria-label="Show Codex CLI version settings"]') as HTMLButtonElement | null)?.click())
 
     expect(host.querySelector<HTMLButtonElement>('button[aria-label="Refresh Codex CLI version"]')?.disabled).toBe(true)
     expect(host.querySelector<HTMLButtonElement>('button[aria-label="Download Codex CLI"]')?.disabled).toBe(true)
@@ -871,16 +1580,17 @@ describe('SettingsModal memory settings', () => {
       ], currentModelId: '', modelsLoading: false, modelRefreshError: '' }],
     })
     const { host, root } = renderModal()
-    act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults'))?.click())
+    act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat defaults'))?.click())
+    openProviderSection(host, 'OpenCode')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show OpenCode chat defaults"]')?.click())
     const section = host.querySelector('#opencode-cli-defaults-panel')!
-    const visibility = Array.from(section.querySelectorAll('details')).find((details) => details.querySelector('summary')?.textContent?.startsWith('Model visibility'))!
+    const visibility = Array.from(section.querySelectorAll<HTMLElement>('.uam-disclosure')).find((disclosure) => disclosure.querySelector('.uam-disclosure__label')?.textContent?.startsWith('Model visibility'))!
     expect(visibility).toBeTruthy()
     act(() => visibility.querySelector<HTMLInputElement>('input[aria-label="Show openai"]')!.click())
-    expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenProviderIds: ['openai'] }) }) }))
-    const model = Array.from(visibility.querySelectorAll('label')).find((label) => label.textContent?.includes('Sonnet model'))!
-    act(() => model.querySelector<HTMLInputElement>('input')!.click())
-    expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenModelIds: ['anthropic/sonnet'] }) }) }))
+    expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenProviderIds: ['openai'] }) }) }), '*')
+    const model = visibility.querySelector<HTMLInputElement>('input[aria-label*="Sonnet model"]')!
+    act(() => model.click())
+    expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenModelIds: ['anthropic/sonnet'] }) }) }), '*')
     expect(useAppStore.getState().providerModelCatalogs[0].availableModels).toHaveLength(2)
     act(() => root.unmount())
     host.remove()
@@ -900,11 +1610,13 @@ describe('SettingsModal memory settings', () => {
       }],
     })
     const { host, root } = renderModal()
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat defaults"]')?.click())
+    openProviderSection(host, 'OpenCode')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show OpenCode chat defaults"]')?.click())
     const section = host.querySelector('#opencode-cli-defaults-panel')!
     try {
-      expect(section.querySelector('[role="status"]')?.textContent).toBe(discovered ? 'Model catalog available' : 'Using provider defaults; refresh to discover models')
+      if (discovered) expect(section.querySelector('[role="img"][aria-label="Model catalog available"]')).not.toBeNull()
+      else expect(section.querySelector('[role="status"]')?.textContent).toBe('Using provider defaults; refresh to discover models')
       if (discovered) expect(section.textContent).toContain('Discovered model')
     } finally {
       act(() => root.unmount())
@@ -912,11 +1624,11 @@ describe('SettingsModal memory settings', () => {
     }
   })
 
-  it('keeps provider chat defaults collapsed until toggled', () => {
+  it('keeps provider chat defaults collapsed until toggled', async () => {
     const { host, root } = renderModal()
 
     const defaultsSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Chat Defaults')
+      (button) => button.textContent?.includes('Chat defaults')
     )
     expect(defaultsSectionButton).toBeTruthy()
 
@@ -924,46 +1636,48 @@ describe('SettingsModal memory settings', () => {
       defaultsSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(host.textContent).toContain('Chat Defaults')
+    expect(host.textContent).toContain('Chat defaults')
     expect(host.textContent).toContain('Gemini')
     expect(host.textContent).toContain('Codex')
     expect(host.querySelector('button[title="Codex default permissions"]')).toBeNull()
 
-    const codexDefaultsToggle = host.querySelector(
-      'button[aria-label="Show Codex chat defaults"]'
-    ) as HTMLButtonElement | null
-    expect(codexDefaultsToggle).toBeTruthy()
-
-    act(() => {
-      codexDefaultsToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    openProviderSection(host, 'Codex')
+    // Provider pages show defaults flat, without a disclosure toggle.
+    expect(host.querySelector('button[aria-label="Show Codex chat defaults"]')).toBeNull()
 
     expect(host.textContent).toContain('Reasoning')
-    expect(host.querySelector('[aria-label="AI Permission Reviewer"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="AI Permission Reviewer"]')).toBeNull()
     expect(host.querySelector('button[title="Codex default permissions"]')).toBeTruthy()
     expect(host.querySelector('#codex-cli-defaults-panel')?.className).not.toContain('animate-fade-in')
-    expect(host.querySelector('select')).toBeNull()
+    expect(host.querySelector('select[aria-label="Codex default model"]')).toBeNull()
     const memoryLevel = host.querySelector('button[title="Codex default memory level"]') as HTMLButtonElement
     expect(memoryLevel).toBeTruthy()
 
     act(() => memoryLevel.click())
+    expect(Array.from(document.body.querySelectorAll('[role="option"]')).map((option) => option.querySelector('span.block')?.textContent)).toEqual(['Default', 'Off', 'Read only', 'Strict creation', 'Balanced creation', 'Remember everything'])
     const openMemory = Array.from(document.body.querySelectorAll('button[role="option"]')).find((button) => button.textContent?.includes('Save every valid')) as HTMLButtonElement
     expect(openMemory).toBeTruthy()
-    act(() => openMemory.click())
+    await act(async () => openMemory.click())
     expect(useAppStore.getState().setProviderChatDefaults).toHaveBeenCalledWith(expect.objectContaining({
       providerChatDefaults: expect.objectContaining({
         'codex-cli': expect.objectContaining({ memoryLevel: 'open', memoryEnabled: true }),
       }),
-    }))
+    }), '*')
 
-    const smallModelWorkflow = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Architect + worker off')) as HTMLButtonElement
+    act(() => useAppStore.setState({ memoryEnabledDefault: false, memoryLevelDefault: 'off' }))
+    act(() => memoryLevel.click())
+    const inheritedMemory = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((button) => button.querySelector('span.block')?.textContent === 'Default')!
+    await act(async () => inheritedMemory.click())
+    expect(useAppStore.getState().setProviderChatDefaults).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'codex-cli': expect.objectContaining({ memoryLevel: 'default', memoryEnabled: false }) }) }), '*')
+
+    const smallModelWorkflow = host.querySelector<HTMLInputElement>('input[aria-label="Architect + worker"]')!
     expect(smallModelWorkflow).toBeTruthy()
     act(() => smallModelWorkflow.click())
     expect(useAppStore.getState().setProviderChatDefaults).toHaveBeenCalledWith(expect.objectContaining({
       providerChatDefaults: expect.objectContaining({
         'codex-cli': expect.objectContaining({ smallModelMode: true }),
       }),
-    }))
+    }), '*')
 
     act(() => {
       root.unmount()
@@ -973,17 +1687,19 @@ describe('SettingsModal memory settings', () => {
 
   it('keeps model refresh outside collapse and advanced preferences available', () => {
     const { host, root } = renderModal()
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat defaults"]')?.click())
+    openProviderSection(host, 'Codex')
     const refresh = host.querySelector<HTMLButtonElement>('[aria-label="Refresh Codex models"]')!
     expect(refresh).toBeTruthy()
-    expect(host.querySelector('#codex-cli-defaults-panel')).toBeNull()
+    expect(host.querySelector('#codex-cli-defaults-panel')).toBeTruthy()
     act(() => refresh.click())
     expect(useAppStore.getState().discoverProviderModels).toHaveBeenCalled()
+    openProviderSection(host, 'Codex')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex chat defaults"]')?.click())
     expect(host.querySelector('[aria-label="Codex provider usage"]')).toBeNull()
     expect(refresh.closest('#codex-cli-defaults-panel')).toBeNull()
-    const advanced = Array.from(host.querySelectorAll<HTMLDetailsElement>('#codex-cli-defaults-panel details')).find((details) => !details.querySelector('summary')?.textContent?.startsWith('Model visibility'))!
-    expect(advanced.open).toBe(false)
+    const advanced = Array.from(host.querySelectorAll<HTMLElement>('#codex-cli-defaults-panel .uam-disclosure')).find((disclosure) => disclosure.querySelector('.uam-disclosure__label')?.textContent === 'Advanced')!
+    expect(advanced.hasAttribute('data-open')).toBe(false)
     expect(advanced.textContent).toContain('Feature preference')
     expect(advanced.textContent).toContain('Architect + worker')
     act(() => root.unmount()); host.remove()
@@ -992,9 +1708,10 @@ describe('SettingsModal memory settings', () => {
   it('changes provider chat defaults with the keyboard', async () => {
     const { host, root } = renderModal()
     const defaultsSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Chat Defaults')
+      (button) => button.textContent?.includes('Chat defaults')
     )
     act(() => defaultsSectionButton?.click())
+    openProviderSection(host, 'Codex')
     act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show Codex chat defaults"]')?.click())
 
     const speed = host.querySelector<HTMLButtonElement>('button[title="Codex default speed"]')!
@@ -1020,7 +1737,7 @@ describe('SettingsModal memory settings', () => {
       providerChatDefaults: expect.objectContaining({
         'codex-cli': expect.objectContaining({ serviceTier: 'fast' }),
       }),
-    }))
+    }), '*')
 
     act(() => root.unmount())
     host.remove()
@@ -1068,9 +1785,10 @@ describe('SettingsModal memory settings', () => {
 
     const { host, root } = renderModal()
     act(() => Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Chat Defaults')
+      (button) => button.textContent?.includes('Chat defaults')
     )?.click())
 
+    openProviderSection(host, 'Codex')
     act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show Codex chat defaults"]')?.click())
     act(() => host.querySelector<HTMLButtonElement>('button[title="Codex default speed"]')?.click())
     let listbox = document.body.querySelector<HTMLElement>('[role="listbox"][aria-label="Codex default speed"]')!
@@ -1084,6 +1802,7 @@ describe('SettingsModal memory settings', () => {
     expect(listbox.textContent).not.toContain('Maximum reasoning with automatic delegation')
     act(() => document.body.querySelector<HTMLElement>('[role="listbox"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
 
+    openProviderSection(host, 'Copilot')
     act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show Copilot chat defaults"]')?.click())
     act(() => host.querySelector<HTMLButtonElement>('button[title="Copilot default model"]')?.click())
     listbox = document.body.querySelector<HTMLElement>('[role="listbox"][aria-label="Copilot default model"]')!
@@ -1103,22 +1822,23 @@ describe('SettingsModal memory settings', () => {
       discoverProviderModels,
     }))
     const { host, root } = renderModal()
-    const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults')) as HTMLButtonElement
+    const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat defaults')) as HTMLButtonElement
     act(() => defaults.click())
-    act(() => (host.querySelector('button[aria-label="Show Codex chat defaults"]') as HTMLButtonElement).click())
+    openProviderSection(host, 'Codex')
+    act(() => (host.querySelector('button[aria-label="Show Codex chat defaults"]') as HTMLButtonElement | null)?.click())
     act(() => (host.querySelector('button[aria-label="Refresh Codex models"]') as HTMLButtonElement).click())
 	expect(discoverProviderModels).toHaveBeenCalledWith('chat-model-cache', 'codex-cli', '/tmp/project')
 
     act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-model-cache': { ...state.acpBindingBySessionId['chat-model-cache'], modelRefreshError: 'Model refresh failed.' } } })))
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Model refresh failed.')
+    expect(host.querySelector('#codex-cli-defaults-panel [role="alert"]')?.textContent).toContain('Model refresh failed.')
     act(() => (host.querySelector('button[aria-label="Dismiss Codex model refresh error"]') as HTMLButtonElement).click())
     expect(host.textContent).not.toContain('Model refresh failed.')
     act(() => (host.querySelector('button[aria-label="Refresh Codex models"]') as HTMLButtonElement).click())
     expect(discoverProviderModels).toHaveBeenCalledTimes(2)
     act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-model-cache': { ...state.acpBindingBySessionId['chat-model-cache'], modelsLoading: true } } })))
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Refreshing models')
+    expect(host.querySelector('#codex-cli-defaults-panel [role="status"]')?.textContent).toContain('Refreshing models')
     act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-model-cache': { ...state.acpBindingBySessionId['chat-model-cache'], modelsLoading: false } } })))
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Model refresh failed.')
+    expect(host.querySelector('#codex-cli-defaults-panel [role="alert"]')?.textContent).toContain('Model refresh failed.')
 
     act(() => root.unmount())
     host.remove()
@@ -1128,9 +1848,10 @@ describe('SettingsModal memory settings', () => {
 	  const discoverProviderModels = vi.fn(() => Promise.resolve(true))
 	  useAppStore.setState({ sessions: [], acpBindingBySessionId: {}, discoverProviderModels })
 	  const { host, root } = renderModal()
-	  const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults')) as HTMLButtonElement
+	  const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat defaults')) as HTMLButtonElement
 	  act(() => defaults.click())
-	  act(() => (host.querySelector('button[aria-label="Show Codex chat defaults"]') as HTMLButtonElement).click())
+	  openProviderSection(host, 'Codex')
+	  act(() => (host.querySelector('button[aria-label="Show Codex chat defaults"]') as HTMLButtonElement | null)?.click())
 	  const refresh = host.querySelector('button[aria-label="Refresh Codex models"]') as HTMLButtonElement
 	  expect(refresh.disabled).toBe(false)
 	  act(() => refresh.click())
@@ -1144,7 +1865,7 @@ describe('SettingsModal memory settings', () => {
 
     openMemorySettingsSection(host)
 
-    expect(host.querySelector('[aria-label="Memory Workers"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="Memory workers"]')).toBeTruthy()
     expect(host.textContent).toContain('Gemini chats')
     expect(host.textContent).toContain('Default')
     expect(host.textContent).not.toContain('CLI default')
@@ -1165,7 +1886,7 @@ describe('SettingsModal memory settings', () => {
       aboutSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(host.querySelector('[aria-label="Universal Agent Manager"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="Updates"]')).toBeTruthy()
     expect(host.textContent).toContain(`V${packageVersion}`)
     expect(host.textContent).not.toContain('Gemini chats')
 
@@ -1179,8 +1900,8 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     openEditorsSection(host)
 
-    expect(host.querySelector('[aria-label="Workspace Editors"]')).toBeTruthy()
-    expect(host.querySelector('select')).toBeNull()
+    expect(host.querySelector('[aria-label="File types"]')).toBeTruthy()
+    expect(host.querySelector('select[aria-label="Codex default model"]')).toBeNull()
     expect(host.textContent).toContain('C++')
     expect(host.textContent).not.toContain('8 extensions open in VS Code')
 
@@ -1242,7 +1963,7 @@ describe('SettingsModal memory settings', () => {
     expect((host.querySelector('[aria-label="C++ file extensions"]') as HTMLInputElement).value.split(' ')).toHaveLength(8)
     expect(host.querySelector('#cpp-editor-group-panel')?.className).not.toContain('animate-fade-in')
     expect(host.querySelector('button[aria-label="Delete C++ editor group"]')).toBeTruthy()
-    expect(host.querySelector('button[aria-label="Add editor group"]')).toBeTruthy()
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Add group')).toBeTruthy()
 
     act(() => {
       root.unmount()
@@ -1254,7 +1975,7 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     openEditorsSection(host)
 
-    expect(host.querySelector('select')).toBeNull()
+    expect(host.querySelector('select[aria-label="Codex default model"]')).toBeNull()
 
     const cppGroupToggle = host.querySelector(
       'button[aria-label="Show C++ editor group"]'
@@ -1470,9 +2191,12 @@ describe('SettingsModal memory settings', () => {
       })),
     }))
     const { host, root } = renderModal()
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat defaults"]')?.click())
+    openProviderSection(host, 'Gemini')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Gemini chat defaults"]')?.click())
     for (const label of ['AI permission reviewer model', 'Gemini default model', 'Gemini goal reviewer model']) {
+      if (label === 'AI permission reviewer model') act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat defaults"]')?.click())
+      else { openProviderSection(host, 'Gemini'); act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Gemini chat defaults"]')?.click()) }
       act(() => host.querySelector<HTMLButtonElement>(`button[title="${label}"]`)?.click())
       const listbox = document.body.querySelector<HTMLElement>(`[role="listbox"][aria-label="${label}"]`)
       expect(listbox?.textContent).toContain('Local Model')
@@ -1510,10 +2234,11 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     openMarkdownStoreSection(host)
 
-    const saveButton = host.querySelector('button[aria-label="Save Skills directory"]') as HTMLButtonElement
     const library = host.querySelector('[role="region"][aria-label="Skills"]')
 
-    expect(saveButton.disabled).toBe(true)
+    // The folder setting is a row inside the Skills card, not a disclosure above it.
+    expect(host.querySelector('[role="region"][aria-label="Skills"] button[role="combobox"][aria-label="Change skills folder"]')).toBeTruthy()
+    expect(host.textContent).not.toContain('Enter folder path manually')
     expect(library).toBeTruthy()
     expect(host.querySelectorAll('[aria-modal="true"]')).toHaveLength(0)
 
@@ -1542,6 +2267,7 @@ describe('SettingsModal memory settings', () => {
     })
     const { host, root } = renderModal()
     openMarkdownStoreSection(host)
+    await folderAction(host, 'Enter path…')
 
     const input = host.querySelector('input[placeholder="Skills directory"]') as HTMLInputElement
     act(() => {
@@ -1549,12 +2275,12 @@ describe('SettingsModal memory settings', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => {
-      (host.querySelector('button[aria-label="Save Skills directory"]') as HTMLButtonElement).click()
+      (Array.from(host.querySelectorAll('button')).find((item) => item.textContent === 'Use path') as HTMLButtonElement).click()
       await Promise.resolve()
     })
 
     expect((host.querySelector('input[aria-label="Skills directory"]') as HTMLInputElement | null)?.value).toBe('/tmp/rejected-store')
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('That directory cannot be used.')
+    expect(failures.at(-1)?.detail).toContain('That directory cannot be used.')
 
     act(() => root.unmount())
     host.remove()
@@ -1574,28 +2300,29 @@ describe('SettingsModal memory settings', () => {
         useAppStore.setState({ markdownStoreError: '' })
         return '/tmp/chosen-store'
       })
-    useAppStore.setState({ browseMarkdownStoreDirectory: browse })
+    const setDirectory = vi.fn(async () => true)
+    useAppStore.setState({ browseMarkdownStoreDirectory: browse, setMarkdownStoreDirectory: setDirectory })
     const { host, root } = renderModal()
     openMarkdownStoreSection(host)
+    await folderAction(host, 'Enter path…')
 
     const input = host.querySelector('input[aria-label="Skills directory"]') as HTMLInputElement
-    const browseButton = host.querySelector('button[aria-label="Browse for Skills directory"]') as HTMLButtonElement
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, '/tmp/typed-store')
       input.dispatchEvent(new Event('input', { bubbles: true }))
     })
 
-    await act(async () => { browseButton.click(); await Promise.resolve() })
+    await folderAction(host, 'Choose folder…')
     expect(input.value).toBe('/tmp/typed-store')
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Folder picker failed.')
+    expect(failures.at(-1)?.detail).toContain('Folder picker failed.')
 
-    await act(async () => { browseButton.click(); await Promise.resolve() })
+    await folderAction(host, 'Choose folder…')
     expect(input.value).toBe('/tmp/typed-store')
     expect(host.querySelector('[role="alert"]')).toBeNull()
 
     act(() => useAppStore.setState({ markdownStoreError: 'Stale picker error.' }))
-    await act(async () => { browseButton.click(); await Promise.resolve() })
-    expect(input.value).toBe('/tmp/chosen-store')
+    await folderAction(host, 'Choose folder…')
+    expect(setDirectory).toHaveBeenCalledWith('/tmp/chosen-store')
     expect(host.querySelector('[role="alert"]')).toBeNull()
 
     act(() => root.unmount())
@@ -1604,9 +2331,12 @@ describe('SettingsModal memory settings', () => {
 
   it('describes the only supported native system dictation path', () => {
     const { host, root } = renderModal()
-    const voiceSection = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Voice Input'))
+    const voiceSection = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Voice input'))
     act(() => voiceSection?.click())
-    expect(host.textContent).toContain('native system speech service')
+    expect(host.textContent).toContain('Start dictation with the microphone button in the message box.')
+    expect(host.querySelector<HTMLButtonElement>('[role="group"][aria-label="Transcription service"] button[aria-pressed="true"]')?.textContent).toBe('System')
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Transcription service"] button')).find((button) => button.textContent === 'Server')?.disabled).toBe(true)
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Transcription service"] button')).find((button) => button.textContent === 'Local AI')?.disabled).toBe(true)
     expect(host.querySelector('button[aria-label="Speech-to-text service"]')).toBeNull()
     expect(host.querySelector('input[aria-label="Voice transcription server URL"]')).toBeNull()
     expect(host.textContent).not.toContain('OpenAI-compatible server')
@@ -1617,16 +2347,44 @@ describe('SettingsModal memory settings', () => {
   it('guards an embedded memory draft before changing Settings pages', () => {
     const {host,root} = renderModal()
     openMemoryStoreSection(host)
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Add memory"]')?.click())
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'New memory')?.click())
     const title = host.querySelector<HTMLInputElement>('[aria-label="Title"]')!
     act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set?.call(title,'Unsaved lesson'); title.dispatchEvent(new Event('input',{bubbles:true})) })
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Editors"]')?.click())
     expect(host.querySelector('[aria-label="Unsaved memory"]')).toBeTruthy()
     expect(host.querySelector('[aria-label="New memory"]')).toBeTruthy()
     act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Discard')?.click())
-    expect(host.querySelector('[aria-label="Add editor group"]')).toBeTruthy()
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Add group')).toBeTruthy()
     expect(useAppStore.getState().closeMemoryLibrary).toHaveBeenCalledTimes(1)
     act(() => root.unmount()); host.remove()
+  })
+
+  it('disables Save for clean and reverted existing theme drafts', () => {
+    const theme = { version: 1 as const, id: 'custom:ocean' as const, name: 'Ocean', base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } }
+    useAppStore.setState({ theme: theme.id, customThemes: [theme] })
+    const { host, root } = renderModal()
+    const button = (text: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.textContent === text)!
+    const changeName = (name: string) => act(() => {
+      const input = host.querySelector<HTMLInputElement>('[aria-label="Theme name"]')!
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, name)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const review = () => { act(() => button('Next').click()); act(() => button('Next').click()) }
+    const editName = () => { act(() => button('Back').click()); act(() => button('Back').click()) }
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Edit theme"]')!.click())
+      review()
+      expect(button('Save theme').disabled).toBe(true)
+      act(() => button('Save theme').click())
+      expect(useAppStore.getState().saveCustomTheme).not.toHaveBeenCalled()
+      editName(); changeName('Changed ocean'); review()
+      expect(button('Save theme').disabled).toBe(false)
+      editName(); changeName('Ocean'); review()
+      expect(button('Save theme').disabled).toBe(true)
+      act(() => button('Cancel').click())
+      expect(host.querySelector('[aria-label="Unsaved theme changes"]')).toBeNull()
+      expect(host.querySelector('[aria-label="Theme name"]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
   it('creates, previews, and saves a custom theme', async () => {
@@ -1635,13 +2393,13 @@ describe('SettingsModal memory settings', () => {
 
     act(() => createButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
 
-    expect(host.querySelector('[role="radiogroup"][aria-label="Theme base"]')).toBeTruthy()
+    expect(host.querySelector('[role="group"][aria-label="Theme base"]')).toBeTruthy()
     act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Next')?.click())
     const backgroundInput = host.querySelector('input[aria-label="Background color"]') as HTMLInputElement | null
     expect(backgroundInput).toBeTruthy()
     expect(host.querySelectorAll('input[type="color"]')).toHaveLength(0)
     expect(host.querySelectorAll('select')).toHaveLength(0)
-    expect(host.querySelectorAll('input[pattern="#[0-9A-Fa-f]{6}"]')).toHaveLength(12)
+    expect(host.querySelectorAll('input[pattern="#[0-9A-Fa-f]{6}"]')).toHaveLength(17)
 
     const nextButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Next') as HTMLButtonElement
     act(() => {
@@ -1740,7 +2498,8 @@ describe('SettingsModal memory settings', () => {
       importInput?.dispatchEvent(new Event('change', { bubbles: true }))
     })
 
-    expect(useAppStore.getState().saveCustomTheme).toHaveBeenCalledWith(imported)
+    // A theme exported before token-type colours existed imports with its base's defaults.
+    expect(useAppStore.getState().saveCustomTheme).toHaveBeenCalledWith({ ...imported, colors: { ...imported.colors, tokenInput: '#dc7ba3', tokenCacheRead: '#80b756', tokenCacheWrite: '#a3abf4', tokenOutput: '#e0bd85', tokenReasoning: '#b26dbd' } })
     expect(useAppStore.getState().setTheme).toHaveBeenCalledWith('custom:forest')
 
     act(() => root.unmount())
@@ -1762,12 +2521,12 @@ describe('SettingsModal memory settings', () => {
     const exportButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Export all chats') as HTMLButtonElement
     await act(async () => exportButton.click())
     expect(requests[0]).toMatchObject({ action: 'exportLocalChats', payload: { currentValue: '' } })
-    expect(host.textContent).toContain('Exported 2 chats to /tmp/uam-export.')
+    expect(failures.at(-1)).toMatchObject({ message: 'Exported 2 chats to /tmp/uam-export.', tone: 'success' })
 
     const importButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Import chat bundle') as HTMLButtonElement
     await act(async () => importButton.click())
     expect(requests[1]).toMatchObject({ action: 'importLocalChats', payload: { currentValue: '/tmp/uam-export' } })
-    expect(host.textContent).toContain('Imported 1 of 2 chats; 1 received new local IDs. One chat could not be saved.')
+    expect(failures.at(-1)?.message).toContain('Imported 1 of 2 chats; 1 were given new IDs. One chat could not be saved.')
 
     act(() => root.unmount())
     host.remove()
@@ -1785,33 +2544,30 @@ describe('SettingsModal memory settings', () => {
     expect(save).not.toHaveBeenCalled()
     expect(field.value).toBe('')
     expect(host.querySelector('[aria-label="Hide C++ editor group"]')).toBeTruthy()
-    expect(host.textContent).toContain('Enter a group name.')
+    expect(failures.at(-1)?.message).toBe('Enter a group name.')
     typeName('Native sources')
     expect(save).not.toHaveBeenCalled()
     await act(async () => field.dispatchEvent(new FocusEvent('focusout',{bubbles:true})))
     expect(save).toHaveBeenCalledWith(expect.objectContaining({editorFileAssociations:[expect.objectContaining({id:'cpp',name:'Native sources'})]}))
-    expect(host.textContent).toContain('Editor settings could not be saved.')
+    expect(failures.at(-1)?.message).toBe('Editor settings could not be saved.')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Back to chats"]')!.click())
-    expect(host.querySelector('[aria-label="Unsaved editor changes"]')).toBeTruthy()
+    expect(document.body.querySelector('[aria-label="Unsaved editor changes"]')).toBeTruthy()
     expect(useAppStore.getState().setSettingsOpen).not.toHaveBeenCalled()
     act(() => root.unmount()); host.remove()
   })
 
 
 
-  it('keeps all five CLI rows compact and confirms a latest download before calling the real action', () => {
+  it('scopes CLI controls to the selected provider and confirms a latest download before calling the real action', () => {
     const providers = ['gemini-cli','codex-cli','opencode-cli','claude-cli','copilot-cli'].map(fallbackProviderForId)
     const template = useAppStore.getState().cliVersionManager.providers[0]
     useAppStore.setState({providers,cliVersionManager:{providers:providers.map(provider => ({...template,providerId:provider.id,...(provider.id === 'codex-cli' ? {status:'known-incompatible' as const,message:'Structured chat is incompatible.',lastInstallStatus:'failed' as const} : {})}))}})
     const {host,root} = renderModal()
     openCliVersionSection(host)
-    expect(host.querySelectorAll('button[aria-label^="Show "][aria-label$="CLI version settings"]')).toHaveLength(5)
-    expect(host.querySelector('[aria-label="Refresh Codex CLI version"]')).toBeNull()
-    const toggle = host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')!
-    expect(toggle.previousElementSibling?.lastElementChild?.getAttribute("role")).toBe("img")
-    expect(toggle.previousElementSibling?.lastElementChild?.textContent).toBe("2")
-    act(() => toggle.click())
-    expect(host.querySelector('#codex-cli-cli-version-panel [aria-label="Refresh Codex CLI version"]')).toBeTruthy()
+    // Provider pages show their single provider flat: no disclosure toggle, issues badge in the status bar.
+    expect(host.querySelectorAll('button[aria-label^="Show "][aria-label$="CLI version settings"]')).toHaveLength(0)
+    expect(host.querySelector('.uam-status-count')?.textContent).toBe('2')
+    expect(host.querySelector('[aria-label="Refresh Codex CLI version"]')).toBeTruthy()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Download Codex CLI"]')!.click())
     act(() => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(button => button.textContent === 'Download latest')!.click())
     expect(useAppStore.getState().applyCliProviderVersion).not.toHaveBeenCalled()
@@ -1826,16 +2582,48 @@ describe('SettingsModal memory settings', () => {
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Add theme"]')!.click())
     expect(host.querySelector('[aria-label="Settings pages"]')).toBeTruthy()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Editors"]')!.click())
-    const confirmation = host.querySelector('[aria-label="Unsaved theme changes"]')!
+    const confirmation = document.body.querySelector('[aria-label="Unsaved theme changes"]')!
     expect(confirmation).toBeTruthy()
-    await act(async () => Array.from(confirmation.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Save and leave')!.click())
-    expect(host.textContent).toContain('Theme could not be saved.')
+    await act(async () => Array.from(confirmation.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Save theme')!.click())
+    expect(failures.some((failure) => JSON.stringify(failure).includes('Theme could not be saved.'))).toBe(true)
     expect(host.querySelector('[aria-label="Theme name"]')).toBeTruthy()
     act(() => Array.from(confirmation.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Discard')!.click())
     expect(host.querySelector('[aria-label="Theme name"]')).toBeNull()
-    expect(host.querySelector('[aria-label="Add editor group"]')).toBeTruthy()
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Add group')).toBeTruthy()
     expect(useAppStore.getState().setTheme).not.toHaveBeenCalled()
     act(() => root.unmount()); host.remove()
+  })
+
+  it.each(['Computer use', 'MCP servers'])('retries global cleanup from %s without changing OS permissions or target ownership', async page => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed)
+      onSuccess(JSON.stringify(parsed.action === 'setComputerUseSettings'
+        ? { computerUseGloballyEnabled: parsed.payload.computerUseGloballyEnabled, computerUseRevocationPending: false }
+        : {}))
+    }
+    useAppStore.setState({ computerUseEnabled: false, computerUseRevocationPending: true })
+    const { host, root } = renderModal()
+    try {
+      await act(async () => host.querySelector<HTMLButtonElement>(`nav button[aria-label="${page}"]`)!.click())
+      const toggle = () => host.querySelector<HTMLInputElement>('input[aria-label="UAM Computer Use"]')!
+      expect(toggle().checked).toBe(false)
+      expect(toggle().disabled).toBe(true)
+      expect(host.textContent).toContain('Cleanup pending.')
+      const retry = [...host.querySelectorAll('button')].find(button => button.textContent === 'Retry disabling')!
+      await act(async () => retry.click())
+      expect(host.textContent).toContain('Chat access cleared.')
+      expect(toggle().disabled).toBe(false)
+      await act(async () => toggle().click())
+      expect(toggle().checked).toBe(true)
+      expect(requests.filter(request => request.action === 'setComputerUseSettings')).toEqual([
+        { action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: false }, requestId: expect.any(String) },
+        { action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: true }, requestId: expect.any(String) },
+      ])
+      expect(requests.some(request => /ComputerUsePermission|ComputerUseSystemSettings|ChatComputerUse/.test(request.action))).toBe(false)
+      expect(useAppStore.getState().sessions[0].computerUseTargetId).toBeUndefined()
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
   it('checks Computer Use readiness honestly and persists friendly application selections', async () => {
@@ -1859,7 +2647,8 @@ describe('SettingsModal memory settings', () => {
       sessions: useAppStore.getState().sessions.map((session) => ({ ...session, providerId: 'gemini-cli' })),
     })
     const { host, root } = renderModal()
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Computer Use"]')!.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Computer use"]')!.click())
+    expect(host.textContent).toContain('UAM Computer Use')
     expect(host.textContent).toContain('Screen Recording')
     const uamControlToggle = host.querySelector<HTMLInputElement>('[aria-label="Allow UAM Control requests"]')
     expect(uamControlToggle?.disabled).toBe(false)
@@ -1871,12 +2660,12 @@ describe('SettingsModal memory settings', () => {
     expect(host.textContent).toContain('Request Accessibility')
     await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Check permissions')?.click())
     expect(host.textContent).toContain('Screen Recording')
-    expect(host.textContent).toContain('Available')
+    expect(host.querySelector('[role="img"][aria-label="Available"]')).not.toBeNull()
     expect(host.textContent).toContain('Accessibility')
     expect(host.textContent).toContain('Denied')
     expect(host.textContent).not.toContain('Accessibility request granted')
     await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Request Accessibility'))?.click())
-    expect(host.textContent).toContain('Permission is not granted. Opened')
+    expect(failures.at(-1)?.message).toContain('Permission is not granted. Opened')
     expect(requests.some((request) => request.action === 'openComputerUseSystemSettings' && request.payload?.permission === 'accessibility')).toBe(true)
     // Granted permissions offer no request button.
     expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).some((button) => button.textContent === 'Request Screen Recording')).toBe(false)
@@ -1897,8 +2686,126 @@ describe('SettingsModal memory settings', () => {
     act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '/Applications/Files.app'); input.dispatchEvent(new Event('input', { bubbles: true })) })
     await act(async () => Array.from(input.parentElement!.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Save')!.click())
     expect(useAppStore.getState().setEditorSettings).toHaveBeenCalledWith(expect.objectContaining({ fileExplorerApplication: '/Applications/Files.app' }))
-    expect(host.textContent).toContain('File explorer could not be saved.')
+    expect(failures.at(-1)?.message).toBe('File explorer could not be saved.')
     act(() => root.unmount()); host.remove()
+  })
+
+  it('chooses the Windows PowerShell only on Windows and reports rejected saves', async () => {
+    const platform = vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+    useAppStore.setState({ windowsPowerShell: 'auto', setEditorSettings: vi.fn().mockResolvedValue(false) })
+    const mac = renderModal()
+    openEditorsSection(mac.host)
+    expect(mac.host.querySelector('button[title="Terminal shell"]')).toBeNull()
+    act(() => mac.root.unmount()); mac.host.remove()
+
+    platform.mockReturnValue('Win32')
+    const { host, root } = renderModal()
+    openEditorsSection(host)
+    expect(host.textContent).toContain("Uses Windows PowerShell 5.1, or PowerShell 7 if it's missing.")
+    act(() => host.querySelector<HTMLButtonElement>('button[title="Terminal shell"]')!.click())
+    expect(Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="option"]')).map(button => button.textContent)).toEqual(['Automatic', 'Windows PowerShell 5.1', 'PowerShell 7'])
+    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="option"]')).find(button => button.textContent === 'PowerShell 7')!.click())
+    expect(useAppStore.getState().setEditorSettings).toHaveBeenCalledWith(expect.objectContaining({ windowsPowerShell: 'pwsh' }))
+    expect(failures.at(-1)?.message).toBe('Terminal shell could not be saved.')
+    act(() => root.unmount()); host.remove()
+    platform.mockRestore()
+  })
+
+  it('disables unsupported dictation modes and refuses invalid server URLs without saving', async () => {
+    const save = vi.fn(async () => true)
+    useAppStore.setState({ setVoiceInputSettings: save })
+    const { host, root } = renderModal()
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Voice input"]')!.click())
+      const mode = (label: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Transcription service"] button')).find((button) => button.textContent === label)!
+      expect(mode('Server').disabled).toBe(true)
+      expect(mode('Local AI').disabled).toBe(true)
+      act(() => useAppStore.setState({ voiceInputCapabilities: { system: { supported: true, reason: '' }, server: { supported: true, reason: '' }, local: { supported: false, reason: 'Not supported' } } }))
+      act(() => mode('Server').click())
+      const url = host.querySelector<HTMLInputElement>('input[aria-label="Server URL"]')!
+      act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(url, 'http://remote.example.test'); url.dispatchEvent(new Event('input', { bubbles: true })) })
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Use HTTPS')
+      const saveButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save voice settings')!
+      expect(saveButton.disabled).toBe(true)
+      await act(async () => saveButton.click())
+      expect(save).not.toHaveBeenCalled()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('guards unsaved voice choices and saves server fields while keeping credentials and capabilities separate', async () => {
+    const capabilities = { system: { supported: true, reason: '' }, server: { supported: true, reason: '' }, local: { supported: false, reason: 'Not supported' } }
+    const save = vi.fn(async (settings: import('../../store/cpp/types').VoiceInputSettingsRequest) => {
+      useAppStore.setState({ voiceInputMode: settings.mode, voiceInputServerBaseUrl: settings.serverBaseUrl, voiceInputServerEndpoint: settings.serverEndpoint, voiceInputServerModel: settings.serverModel, voiceInputApiKeyEnv: settings.apiKeyEnv })
+      return true
+    })
+    useAppStore.setState({ voiceInputCapabilities: capabilities, setVoiceInputSettings: save })
+    const { host, root } = renderModal()
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Voice input"]')!.click())
+      act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Transcription service"] button')).find((button) => button.textContent === 'Server')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Memory settings"]')!.click())
+      const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Unsaved voice settings"]')!
+      expect(dialog).toBeTruthy()
+      act(() => Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep editing')!.click())
+      await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save voice settings')!.click())
+      expect(save).toHaveBeenCalledWith({ mode: 'server', serverBaseUrl: 'https://api.openai.com', serverEndpoint: '/v1/audio/transcriptions', serverModel: 'whisper-1', apiKeyEnv: 'OPENAI_API_KEY' })
+      expect(useAppStore.getState().voiceInputCapabilities).toBe(capabilities)
+      expect(host.querySelector<HTMLInputElement>('input[type="password"]')).toBeNull()
+      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save voice settings')!.disabled).toBe(true)
+      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Memory settings"]')!.click())
+      expect(host.querySelector('[aria-label="Unsaved voice settings"]')).toBeNull()
+      expect(host.querySelector('[aria-label="Default memory level"]')).toBeTruthy()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('binds provider saves to the selected host and retains a failed draft for retry', async () => {
+    const save = vi.fn(async (_request: import('../../store/cpp/types').ProviderAvailabilityRequest) => false)
+    useAppStore.setState({ executionHosts: [{ id: 'local', label: 'This computer', transport: 'local' }, { id: 'lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }], providerAvailability: [{ providerId: 'codex-cli', executionHostId: 'local', enabled: false }], setProviderAvailability: save })
+    const { host, root } = renderModal()
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Codex"]')!.click())
+      const availability = () => host.querySelector<HTMLInputElement>('input[aria-label="Codex available"]')!
+      expect(availability().checked).toBe(false)
+      act(() => useAppStore.getState().setSettingsScopeHostId('lab'))
+      expect(availability().checked).toBe(true)
+      act(() => availability().click())
+      const saveButton = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save provider settings')!
+      await act(async () => saveButton().click())
+      expect(save).toHaveBeenCalledWith({ providerId: 'codex-cli', executionHostId: 'lab', enabled: false })
+      expect(failures.some((failure) => JSON.stringify(failure).includes('Could not save provider settings'))).toBe(true)
+      expect(availability().checked).toBe(false)
+      expect(saveButton().disabled).toBe(false)
+      save.mockImplementation(async (request) => { useAppStore.setState((state) => ({ providerAvailability: [...state.providerAvailability, request] })); return true })
+      await act(async () => saveButton().click())
+      expect(useAppStore.getState().providerAvailability).toEqual([{ providerId: 'codex-cli', executionHostId: 'local', enabled: false }, { providerId: 'codex-cli', executionHostId: 'lab', enabled: false }])
+      expect(saveButton().disabled).toBe(true)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('offers accessible Default recovery for an unavailable saved Gemini default effort', () => {
+    const save = vi.fn(async () => true)
+    useAppStore.setState({
+      providerChatDefaults: { 'gemini-cli': { modelId: 'auto-gemini-3', reasoningEffort: 'high', serviceTier: '', approvalMode: 'default', commandSafetyTier: 'off', memoryLevel: 'default', memoryEnabled: true, smallModelMode: false } },
+      setProviderChatDefaults: save,
+      providerModelCatalogs: [], acpBindingBySessionId: {},
+    })
+    const { host, root } = renderModal()
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat defaults"]')?.click())
+      openProviderSection(host, 'Gemini')
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Gemini chat defaults"]')?.click())
+      const trigger = host.querySelector<HTMLButtonElement>('[aria-label="Gemini default reasoning"]')
+      expect(trigger).not.toBeNull()
+      expect(trigger!.textContent).toContain('unavailable')
+      act(() => trigger!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+      const list = document.body.querySelector<HTMLElement>('[role="listbox"][aria-label="Gemini default reasoning"]')!
+      expect(list.querySelector<HTMLButtonElement>('[role="option"][disabled]')?.textContent).toContain('unavailable')
+      const clear = list.querySelector<HTMLButtonElement>('[role="option"]:not([disabled])')!
+      expect(document.activeElement).toBe(clear)
+      // Native button activation is a click; JSDOM does not synthesize it from Enter.
+      act(() => clear.click())
+      expect(save).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'gemini-cli': expect.objectContaining({ reasoningEffort: '' }) }) }), '*')
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
 })

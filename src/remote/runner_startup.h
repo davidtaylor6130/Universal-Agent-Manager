@@ -63,22 +63,50 @@ namespace uam::remote
 		{ error = "Another application owns this startup entry."; return false; }
 		const auto run = [&service](const std::vector<std::string>& args)
 		{ return service.ExecuteCommand(shell::JoinEscapedArgs(args), 15000); };
+		if (!enabled && previous.empty()) return true;
+		const ProcessExecutionResult registration = run({"systemctl", "--user", "is-enabled", name});
+		const bool previously_enabled = registration.output == "enabled\n" || registration.output == "enabled-runtime\n";
+		const bool runtime_enabled = registration.output.starts_with("enabled-runtime");
+		if (registration.output != "enabled\n" && registration.output != "enabled-runtime\n" &&
+		    registration.output != "disabled\n" && registration.output != "static\n" &&
+		    registration.output != "indirect\n" && registration.output != "masked\n" &&
+		    registration.output != "masked-runtime\n" && registration.output != "not-found\n")
+		{ error = "Runner startup requires a working systemd user session. " + registration.output; return false; }
+		const auto restore_registration = [&]()
+		{
+			return runtime_enabled ? run({"systemctl", "--user", "enable", "--runtime", name})
+			    : run({"systemctl", "--user", previously_enabled ? "enable" : "disable", name});
+		};
 		if (enabled)
 		{
 			if (!io::WriteTextFile(path, unit)) { error = "The runner login entry could not be written."; return false; }
 			const ProcessExecutionResult reload = run({"systemctl", "--user", "daemon-reload"});
 			const ProcessExecutionResult activate = reload.exit_code == 0
-			    ? run({"systemctl", "--user", "enable", name}) : reload;
+			    ? (previously_enabled ? reload : run({"systemctl", "--user", "enable", name})) : reload;
 			if (activate.exit_code == 0 && run({"systemctl", "--user", "is-enabled", "--quiet", name}).exit_code == 0) return true;
-			if (previous.empty()) std::filesystem::remove(path, ec); else (void)io::WriteTextFile(path, previous);
+			const ProcessExecutionResult rollback = previously_enabled ? ProcessExecutionResult{} : restore_registration();
+			const bool restored = previous.empty() ? (std::filesystem::remove(path, ec) && !ec) : io::WriteTextFile(path, previous);
 			(void)run({"systemctl", "--user", "daemon-reload"});
+			if ((!previously_enabled && rollback.exit_code != 0) || !restored)
+			{ error = "Runner startup failed and its previous registration could not be fully restored."; return false; }
 			error = "Runner startup requires a working systemd user session. " + activate.output;
 			return false;
 		}
-		if (previous.empty()) return true;
 		const ProcessExecutionResult deactivate = run({"systemctl", "--user", "disable", name});
-		if (deactivate.exit_code != 0) { error = "Runner startup could not be disabled. " + deactivate.output; return false; }
-		if (!std::filesystem::remove(path, ec) || ec) { error = "The runner login entry could not be removed."; return false; }
+		if (deactivate.exit_code != 0)
+		{
+			const ProcessExecutionResult rollback = restore_registration();
+			error = "Runner startup could not be disabled. " + deactivate.output;
+			if (rollback.exit_code != 0) error += " The previous registration could not be restored.";
+			return false;
+		}
+		if (!std::filesystem::remove(path, ec) || ec)
+		{
+			const ProcessExecutionResult rollback = restore_registration();
+			error = "The runner login entry could not be removed.";
+			if (rollback.exit_code != 0) error += " The previous registration could not be restored.";
+			return false;
+		}
 		(void)run({"systemctl", "--user", "daemon-reload"});
 		return true;
 	}

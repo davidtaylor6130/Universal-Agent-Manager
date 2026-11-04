@@ -1,6 +1,9 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, HTMLAttributes, RefObject } from 'react'
 import { createPortal } from 'react-dom'
+import { motionAllowed, usePresence } from './Overlay'
+import { cx } from './cx'
+import './viewport-menu.css'
 
 const VIEWPORT_GAP = 8
 export const VIEWPORT_MENU_Z_INDEX = 1100
@@ -53,6 +56,29 @@ export function placeViewportMenu(
   return { left, top }
 }
 
+/**
+ * Callers unmount menus on close, so the exit plays on an inert copy left at the same place.
+ * Skipped under reduced motion and Motion Off, before the menu was ever placed (StrictMode's simulated
+ * unmount), and when the caller already ran its own exit (`data-state` other than open).
+ */
+export function leaveMenuGhost(menu: HTMLElement | null) {
+  if (!menu?.isConnected || menu.style.visibility === 'hidden' || (menu.dataset.state && menu.dataset.state !== 'open') || !motionAllowed()) return
+  const ghost = menu.cloneNode(true) as HTMLElement
+  ghost.dataset.state = 'closed'
+  // The copy must not answer id lookups (ARIA references, a reopened picker) or test-id queries.
+  for (const node of [ghost, ...ghost.querySelectorAll<HTMLElement>('[id], [data-testid]')]) {
+    node.removeAttribute('id')
+    node.removeAttribute('data-testid')
+  }
+  ghost.setAttribute('aria-hidden', 'true')
+  ghost.inert = true
+  document.body.appendChild(ghost)
+  ghost.scrollTop = menu.scrollTop
+  const animations = typeof ghost.getAnimations === 'function' ? ghost.getAnimations() : []
+  if (animations.length === 0) { ghost.remove(); return }
+  void Promise.allSettled(animations.map((animation) => animation.finished)).then(() => ghost.remove())
+}
+
 export interface ViewportMenuProps extends HTMLAttributes<HTMLDivElement> {
   anchorRef?: RefObject<HTMLElement>
   point?: { x: number; y: number }
@@ -61,9 +87,14 @@ export interface ViewportMenuProps extends HTMLAttributes<HTMLDivElement> {
   gap?: number
   onRequestClose?: () => void
   manageFocus?: boolean
+  /**
+   * Controlled presence. Pass `open` on a persistently rendered menu so it plays its exit (scale back toward the
+   * trigger) before unmounting. Omit it for `cond && <ViewportMenu>`: the parent unmount then plays the inert-copy exit.
+   */
+  open?: boolean
 }
 
-export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(function ViewportMenu({
+const ViewportMenuPanel = forwardRef<HTMLDivElement, ViewportMenuProps & { closing?: boolean }>(function ViewportMenuPanel({
   anchorRef,
   point,
   side = 'bottom',
@@ -71,6 +102,8 @@ export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(functi
   gap = 4,
   onRequestClose,
   manageFocus,
+  closing,
+  className,
   style,
   ...props
 }, forwardedRef) {
@@ -79,6 +112,11 @@ export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(functi
   onRequestCloseRef.current = onRequestClose
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null)
   useImperativeHandle(forwardedRef, () => menuRef.current as HTMLDivElement)
+  // Runs before React detaches the portal, while the menu is still on screen.
+  useLayoutEffect(() => {
+    const menu = menuRef.current
+    return () => leaveMenuGhost(menu)
+  }, [])
 
   useLayoutEffect(() => {
     const update = () => {
@@ -119,7 +157,9 @@ export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(functi
     const menu = menuRef.current
     if (!menu || (manageFocus ?? props.role === 'menu') === false) return
     const items = () => Array.from(menu.querySelectorAll<HTMLElement>('[role^="menuitem"]:not([disabled])'))
-    items()[0]?.focus()
+    // Open on the first usable action; unavailable items stay reachable with the arrow keys.
+    const initial = items()
+    ;(initial.find((item) => item.getAttribute('aria-disabled') !== 'true') ?? initial[0])?.focus()
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && onRequestCloseRef.current) {
         event.preventDefault()
@@ -151,6 +191,9 @@ export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(functi
       ref={menuRef}
       data-viewport-menu=""
       data-menu-side={point ? 'point' : side}
+      data-menu-align={align}
+      data-state={(props as Record<string, unknown>)['data-state'] as string ?? (closing ? 'closed' : 'open')}
+      className={cx('uam-viewport-menu', className)}
       style={{
         ...style,
         position: 'fixed',
@@ -165,4 +208,13 @@ export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(functi
     />,
     document.body,
   )
+})
+
+export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(function ViewportMenu({ open = true, ...props }, forwardedRef) {
+  const { mounted, closing } = usePresence(open)
+  // Keep the last open props on screen while the exit plays.
+  const lastProps = useRef(props)
+  if (open) lastProps.current = props
+  if (!mounted) return null
+  return <ViewportMenuPanel ref={forwardedRef} {...(open ? props : lastProps.current)} closing={closing} />
 })

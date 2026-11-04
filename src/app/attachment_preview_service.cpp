@@ -1,0 +1,287 @@
+#include "app/attachment_preview_service.h"
+#include <algorithm>
+#include <array>
+#include <mutex>
+
+#include "common/paths/path_utils.h"
+#include "common/utils/io_utils.h"
+#include "common/chat/chat_repository.h"
+#include "common/chat/message_attachment_sources.h"
+#include "common/chat/native_attachment_assets.h"
+#include "common/chat/native_chat_identity.h"
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+namespace uam::attachment_preview
+{
+	namespace
+	{
+		std::mutex s_decodeMutex;
+
+		std::size_t MessageCount(const ChatSession& chat)
+		{
+			return chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+		}
+
+		std::optional<AttachmentSnapshot> FindAttachment(const ChatSession& chat, std::size_t index,
+		    std::string_view attachment_id)
+		{
+			if (!chat.messages_loaded || index >= chat.messages.size() || attachment_id.empty()) return std::nullopt;
+			const Message& message = chat.messages[index];
+			const std::vector<MessageAttachment>::const_iterator found = std::find_if(message.attachments.begin(), message.attachments.end(),
+			    [attachment_id](const MessageAttachment& value) { return value.id == attachment_id; });
+			if (found == message.attachments.end() || std::count_if(message.attachments.begin(), message.attachments.end(),
+			    [attachment_id](const MessageAttachment& value) { return value.id == attachment_id; }) != 1) return std::nullopt;
+			return AttachmentSnapshot{*found};
+		}
+
+		bool ReadRegular(const std::filesystem::path& path, std::size_t cap, std::string& bytes,
+		    std::size_t read_limit = kMaxSourceBytes, std::uintmax_t* source_size = nullptr)
+		{
+			if (path.empty() || path.native().find(std::filesystem::path::value_type{}) != std::filesystem::path::string_type::npos) return false;
+#if defined(_WIN32)
+			std::filesystem::path native_path;
+			std::string path_error;
+			if (!uam::io::NativeFilePath(path, native_path, path_error)) return false;
+			HANDLE handle = CreateFileW(native_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+			    FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+			if (handle == INVALID_HANDLE_VALUE) return false;
+			BY_HANDLE_FILE_INFORMATION info{};
+			const bool observed = GetFileInformationByHandle(handle, &info);
+			if (observed && source_size != nullptr) *source_size = (static_cast<std::uintmax_t>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+			const bool admitted = observed &&
+			    (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) == 0 &&
+			    info.nFileSizeHigh == 0 && info.nFileSizeLow > 0 && info.nFileSizeLow <= cap;
+			bool ok = false;
+			if (admitted)
+			{
+				bytes.resize(std::min<std::size_t>(info.nFileSizeLow, read_limit));
+				DWORD read = 0;
+				ok = ReadFile(handle, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) && read == bytes.size();
+			}
+			CloseHandle(handle);
+#else
+			const int fd = open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+			if (fd < 0) return false;
+			struct stat info{};
+			const bool observed = fstat(fd, &info) == 0;
+			if (observed && source_size != nullptr && info.st_size >= 0) *source_size = static_cast<std::uintmax_t>(info.st_size);
+			bool ok = observed && S_ISREG(info.st_mode) && info.st_size > 0 &&
+			    static_cast<std::uintmax_t>(info.st_size) <= cap;
+			if (ok)
+			{
+				bytes.resize(std::min<std::size_t>(static_cast<std::size_t>(info.st_size), read_limit));
+				std::size_t offset = 0;
+				while (offset < bytes.size())
+				{
+					const ssize_t count = read(fd, bytes.data() + offset, bytes.size() - offset);
+					if (count <= 0) { ok = false; break; }
+					offset += static_cast<std::size_t>(count);
+				}
+			}
+			close(fd);
+#endif
+			if (!ok) bytes.clear();
+			return ok;
+		}
+
+		bool CacheDirectory(std::filesystem::path& root, bool create)
+		{
+#if defined(_WIN32)
+			std::filesystem::path native_root;
+			std::string path_error;
+			if (!uam::io::NativeFilePath(root, native_root, path_error)) return false;
+			root = std::move(native_root);
+#endif
+			std::error_code ec;
+			if (create) std::filesystem::create_directory(root, ec);
+			const std::filesystem::file_status status = std::filesystem::symlink_status(root, ec);
+			if (ec || status.type() != std::filesystem::file_type::directory) return false;
+#if defined(_WIN32)
+			const DWORD attrs = GetFileAttributesW(root.c_str());
+			if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) return false;
+#endif
+			return true;
+		}
+
+		bool WriteExclusive(const std::filesystem::path& path, std::string_view bytes)
+		{
+#if defined(_WIN32)
+			std::filesystem::path native_path;
+			std::string path_error;
+			if (!uam::io::NativeFilePath(path, native_path, path_error)) return false;
+			HANDLE handle = CreateFileW(native_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+			    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+			if (handle == INVALID_HANDLE_VALUE) return false;
+			DWORD written = 0;
+			const bool ok = WriteFile(handle, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) &&
+			    written == bytes.size() && FlushFileBuffers(handle);
+			CloseHandle(handle);
+#else
+			const int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+			if (fd < 0) return false;
+			std::size_t offset = 0;
+			while (offset < bytes.size())
+			{
+				const ssize_t count = write(fd, bytes.data() + offset, bytes.size() - offset);
+				if (count <= 0) break;
+				offset += static_cast<std::size_t>(count);
+			}
+			const bool ok = offset == bytes.size() && fsync(fd) == 0;
+			close(fd);
+#endif
+			// A partial own immutable entry stays unusable: every read validates its content digest.
+			return ok;
+		}
+	}
+
+	ChatSnapshot CaptureChatSnapshot(const ChatSession& chat, const std::filesystem::path& data_root)
+	{
+		ChatSnapshot snapshot;
+		snapshot.chat_id = chat.id;
+		snapshot.execution_host_id = chat.execution_host_id;
+		snapshot.native_identity_key = uam::chat_identity::NativeIdentityKeyForHistoryImport(chat);
+		snapshot.message_count = MessageCount(chat);
+		snapshot.messages_digest = chat.persisted_messages_digest;
+		snapshot.messages_loaded = chat.messages_loaded;
+		snapshot.storage_revision_required = !data_root.empty();
+		if (snapshot.storage_revision_required) snapshot.storage_revision = ChatRepository::ChatStorageRevision(data_root, chat.id);
+		return snapshot;
+	}
+
+	std::optional<AttachmentSnapshot> LoadPersistedAttachmentSnapshot(const std::filesystem::path& data_root,
+	    const ChatSnapshot& expected, std::size_t message_index, std::string_view attachment_id)
+	{
+		if (expected.messages_loaded || expected.chat_id.empty() || attachment_id.empty() ||
+		    message_index >= expected.message_count ||
+		    (expected.storage_revision_required && (!expected.storage_revision ||
+		        ChatRepository::ChatStorageRevision(data_root, expected.chat_id) != expected.storage_revision))) return std::nullopt;
+		const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(data_root, expected.chat_id, true);
+		if (!persisted || persisted->id != expected.chat_id || !persisted->messages_loaded ||
+		    persisted->execution_host_id != expected.execution_host_id ||
+		    uam::chat_identity::NativeIdentityKeyForHistoryImport(*persisted) != expected.native_identity_key ||
+		    persisted->messages.size() != expected.message_count ||
+		    persisted->persisted_messages_digest != expected.messages_digest)
+			return std::nullopt;
+		if (expected.storage_revision_required &&
+		    ChatRepository::ChatStorageRevision(data_root, expected.chat_id) != expected.storage_revision) return std::nullopt;
+		return FindAttachment(*persisted, message_index, attachment_id);
+	}
+
+	bool MatchesCurrentAttachmentSnapshot(const ChatSession& current, const ChatSnapshot& original,
+	    std::size_t message_index, std::string_view attachment_id, const AttachmentSnapshot& snapshot)
+	{
+		if (current.id != original.chat_id || current.execution_host_id != original.execution_host_id ||
+		    uam::chat_identity::NativeIdentityKeyForHistoryImport(current) != original.native_identity_key ||
+		    MessageCount(current) != original.message_count) return false;
+		if (!current.messages_loaded)
+			return !original.messages_loaded && current.persisted_messages_digest == original.messages_digest;
+		const std::optional<AttachmentSnapshot> now = FindAttachment(current, message_index, attachment_id);
+		return now.has_value() && now->attachment == snapshot.attachment;
+	}
+
+	std::string ImageMime(std::string_view source)
+	{
+		if (source.starts_with(std::string_view("\x89PNG\r\n\x1a\n", 8))) return "image/png";
+		if (source.size() >= 3 && static_cast<unsigned char>(source[0]) == 0xff && static_cast<unsigned char>(source[1]) == 0xd8 && static_cast<unsigned char>(source[2]) == 0xff) return "image/jpeg";
+		if (source.starts_with("GIF87a") || source.starts_with("GIF89a")) return "image/gif";
+		if (source.size() >= 12 && source.substr(0, 4) == "RIFF" && source.substr(8, 4) == "WEBP") return "image/webp";
+		return {};
+	}
+
+	bool ReadDeliverySource(const std::filesystem::path& path, std::string& bytes, std::size_t max_bytes)
+	{
+		return ReadRegular(path, std::min(max_bytes, kMaxSourceBytes), bytes);
+	}
+
+	bool ValidateImageAttachmentFiles(const std::filesystem::path& workspace,
+	    const std::vector<MessageAttachment>& attachments, std::string& error)
+	{
+		error.clear();
+		std::size_t count = 0;
+		std::uintmax_t total = 0;
+		for (const MessageAttachment& attachment : attachments)
+		{
+			if (attachment.kind != "image") continue;
+			if (++count > 32) { error = "Send at most 32 images in one message."; return false; }
+			const std::filesystem::path path = uam::paths::PathFromUtf8(attachment.path);
+			const std::filesystem::path resolved = path.is_absolute() ? path : workspace / path;
+			std::string prefix;
+			std::uintmax_t size = 0;
+			const bool readable = ReadRegular(resolved, kMaxSourceBytes, prefix, 16, &size);
+			if (size > kMaxSourceBytes || size > 50 * 1024 * 1024 - total)
+			{ error = "Images must be nonempty, at most 25 MiB each and 50 MiB total."; return false; }
+			if (!readable)
+			{ error = "Attached image is no longer available or empty: " + attachment.name; return false; }
+			total += size;
+			if (ImageMime(prefix).empty())
+			{ error = "Unsupported image. Use PNG, JPEG, GIF or WebP: " + attachment.name; return false; }
+		}
+		return true;
+	}
+
+	bool IsKey(std::string_view key)
+	{
+		return key.size() == 64 && std::all_of(key.begin(), key.end(), [](char ch)
+		{
+			return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+		});
+	}
+
+	std::string Store(const std::filesystem::path& data_root, std::string_view source)
+	{
+		// Ordinary files have no preview: do not wait for an image decoder or ask
+		// the native codec registry to probe arbitrary attachment bytes.
+		if (source.empty() || source.size() > kMaxSourceBytes || ImageMime(source).empty()) return {};
+		std::lock_guard<std::mutex> lock(s_decodeMutex);
+		const Image image = Decode(source);
+		if (image.png.empty() || image.png.size() > kMaxPreviewBytes) return {};
+		const std::string key = Digest(image.png);
+		std::filesystem::path root = data_root / "attachment-previews";
+		if (!IsKey(key) || !CacheDirectory(root, true)) return {};
+		const std::filesystem::path path = root / (key + ".png");
+		if (WriteExclusive(path, image.png)) return key;
+		std::string existing;
+		return ReadRegular(path, kMaxPreviewBytes, existing) && Digest(existing) == key ? key : std::string{};
+	}
+
+	Image Read(const std::filesystem::path& data_root, const MessageAttachment& attachment, bool local_host,
+	    std::string_view saved_owner)
+	{
+		// Reject pending/URI and mixed source authority before any cache or path access.
+		if (!attachment_sources::IsPersistable(attachment, saved_owner) ||
+		    (attachment.source != AttachmentSource::LegacyPath && attachment.source != AttachmentSource::OwnedNativeAsset)) return {};
+		std::string bytes;
+		if (attachment.source == AttachmentSource::OwnedNativeAsset)
+		{
+			if (saved_owner.empty() || (attachment.mime_type != "image/png" && attachment.mime_type != "image/jpeg")) return {};
+			// A derived preview key cannot bypass the saved original's owner, declaration,
+			// publication-attempt receipt, exact size or digest. No staging occurs here.
+			auto original = native_assets::ReadOwned(data_root, saved_owner, attachment.native_asset_key, kMaxSourceBytes);
+			if (!original.ok || ImageMime(original.bytes) != attachment.mime_type) return {};
+			bytes = std::move(original.bytes);
+		}
+		if (!attachment.preview_key.empty())
+		{
+			std::filesystem::path root = data_root / "attachment-previews";
+			if (!IsKey(attachment.preview_key) || !CacheDirectory(root, false) ||
+			    !ReadRegular(root / (attachment.preview_key + ".png"), kMaxPreviewBytes, bytes) ||
+			    Digest(bytes) != attachment.preview_key) return {};
+		}
+		else if (attachment.source == AttachmentSource::LegacyPath)
+		{
+			// Relative historical paths have no immutable workspace origin. Never rebase them.
+			if (!local_host || (attachment.mime_type != "image/png" && attachment.mime_type != "image/jpeg")) return {};
+			const std::filesystem::path path = uam::paths::PathFromUtf8(
+			    attachment.preview_origin_path.empty() ? attachment.path : attachment.preview_origin_path);
+			if (!path.is_absolute() || !ReadRegular(path, kMaxSourceBytes, bytes)) return {};
+		}
+		std::lock_guard<std::mutex> lock(s_decodeMutex);
+		return Decode(bytes);
+	}
+}

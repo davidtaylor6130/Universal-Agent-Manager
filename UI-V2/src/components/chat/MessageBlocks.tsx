@@ -1,9 +1,15 @@
+import { InlineSubagentGroup } from './InlineSubagentGroup'
+import { groupInlineSubagents, isInlineSubagentLaunch, managedLaunchRunId } from './inlineSubagents'
 // Message block renderers: thinking blocks, plan blocks, goal review,
 // persisted message content, attachment list, and turn timeline.
 // Extracted from ChatView.tsx (MO-3).
 
+import { SubagentGroup, subagentState } from './SubagentGroup'
+import { isManagedSubagentTool } from './managedSubagents'
+import { ImageAttachmentPreview } from './ImageAttachmentPreview'
+import { ContextChip, type ContextChipKind } from './ContextChip'
 import { MarkdownContent } from '../markdown/Markdown'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import type {
   AcpPendingPermission,
@@ -14,21 +20,56 @@ import type {
 } from '../../store/useAppStore'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
 import { Button, Notice, Tooltip } from '../ui'
-import { BookOpen, Brain, ChevronRight } from 'lucide-react'
+import { ArrowRight, Brain, Check, ChevronRight, Circle, CircleAlert, Loader, X } from 'lucide-react'
 import { ConversationWork, ConversationWorkRow, useWorkTraceDisclosure, useThoughtDisclosure, type WorkTraceDisclosureState } from './ConversationWork'
 import {
   PermissionInlineCard,
   ToolCallModal,
   ToolCallInlineRows,
 } from './ToolCallViews'
+import { ContextMeter } from './StatusHelpers'
+import { CODEX_ENABLED } from '../../config/buildFeatures'
 import { DEFAULT_PROVIDER_ID, fallbackProviderForId, providerShortName } from '../../utils/providerMetadata'
 
+function isCompactNativeSubagentTool(tool: AcpToolCall) {
+  return tool.isSubAgent && tool.kind === 'collabAgentToolCall' &&
+    !isManagedSubagentTool(tool) && !managedLaunchRunId(tool)
+}
+
+/** Native collaboration stays a tool call; its recorded children remain explicitly reachable. */
+function NativeSubagentTools({ tools, sourceChatId, active = false, onSelectTool }: {
+  tools: AcpToolCall[]; sourceChatId?: string; active?: boolean; onSelectTool: (id: string) => void
+}) {
+  const renderHistory = sourceChatId ? (child: AcpToolCall) => <SubAgentHistory sourceChatId={sourceChatId} tool={child} /> : undefined
+  if (!tools.some(isCompactNativeSubagentTool)) return tools.every(tool => tool.isSubAgent)
+    ? <SubagentGroup active={active} tools={tools} sourceChatId={sourceChatId} onSelectTool={onSelectTool} renderHistory={renderHistory} />
+    : <ToolCallInlineRows tools={tools} onSelectTool={onSelectTool} />
+  return <>{tools.map(tool => isCompactNativeSubagentTool(tool)
+    ? <div key={tool.id} className="space-y-1">
+        <ConversationWorkRow tool={tool} onSelectTool={onSelectTool} />
+        <SubagentGroup compactNative active={active} tools={[tool]} sourceChatId={sourceChatId} onSelectTool={onSelectTool} renderHistory={renderHistory} />
+      </div>
+    : <NativeSubagentTools key={tool.id} tools={[tool]} sourceChatId={sourceChatId} active={active} onSelectTool={onSelectTool} />)}</>
+}
+
+function isExternalAttachmentReference(attachment: Attachment) {
+  return attachment.source === 'provider_uri' ||
+    Boolean((attachment.source === undefined || attachment.source === 'legacy_path') && attachment.sourceUri)
+}
+
 export function attachmentLabel(attachment: Attachment) {
+  if (isExternalAttachmentReference(attachment)) return attachment.sourceUri || attachment.name
+  if (attachment.source && attachment.source !== 'legacy_path') return attachment.name
   const path = attachment.path?.trim()
   return path || attachment.name
 }
 
-function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: AcpToolCall }) {
+function SubAgentHistory(props: { sourceChatId: string; tool: AcpToolCall }) {
+  if (isManagedSubagentTool(props.tool)) return <p className="text-xs text-muted">Open this run from the parent's child list to view its transcript.</p>
+  return <NativeSubAgentHistory {...props} />
+}
+
+function NativeSubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: AcpToolCall }) {
   const [chatId, setChatId] = useState('')
   const [error, setError] = useState('')
   const [refreshAttempt, setRefreshAttempt] = useState(0)
@@ -46,7 +87,7 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
   const historyStartIndex = useAppStore((state) => state.historyStartIndexBySessionId[chatId] ?? 0)
   const selectedTool = messages.find((message) => message.id === selectedToolRef?.messageId)
     ?.toolCalls?.find((candidate) => candidate.id === selectedToolRef?.toolId)
-  const isActive = tool.status === 'running' || tool.status === 'in_progress' || tool.status === 'pending'
+  const isActive = subagentState(tool.status).active
   const finalRefreshPending = useRef(isActive)
   const providerName = providerShortName(
     providers.find((candidate) => candidate.id === providerId) ?? fallbackProviderForId(providerId),
@@ -162,7 +203,7 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
     return (
       <section aria-label="Provider sub-agent event" className="space-y-1 text-xs">
         <div className="font-semibold" style={{ color: 'var(--text-2)' }}>No separate transcript</div>
-        <div style={{ color: 'var(--text-3)' }}>{providerName} did not expose a child session ID, so UAM cannot show an internal conversation for this event.</div>
+        <div style={{ color: 'var(--text-3)' }}>No transcript: the provider did not expose a session for this event.</div>
       </section>
     )
   }
@@ -180,7 +221,6 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
       {selectedTool && <ToolCallModal tool={selectedTool} chatId={chatId} messageIndex={messages.findIndex((message) => message.id === selectedToolRef?.messageId) + historyStartIndex} onClose={() => setSelectedToolRef(null)} />}
       <div>
         <div className="text-xs font-semibold" style={{ color: 'var(--blue)' }}>{session.name}</div>
-        <div className="text-[10px]" style={{ color: 'var(--text-3)' }}>{providerName} · Transcript available</div>
       </div>
       {messages.length === 0 && <div className="text-xs" style={{ color: 'var(--text-3)' }}>No messages recorded.</div>}
       {messages.map((message) => (
@@ -297,9 +337,16 @@ export function planStatusLabel(status: string) {
 }
 
 export function planStatusColor(status: string) {
-  if (status === 'completed') return 'var(--green)'
+  if (status === 'completed') return 'var(--success)'
   if (status === 'inProgress') return 'var(--blue)'
   return 'var(--text-3)'
+}
+
+function PlanStatusIcon({ status }: { status: string }) {
+  const label = planStatusLabel(status)
+  const color = planStatusColor(status)
+  const icon = status === 'completed' ? <Check size={14} aria-hidden /> : status === 'inProgress' ? <Loader size={14} aria-hidden /> : <Circle size={14} aria-hidden />
+  return <span role="img" aria-label={label} title={label} className="mt-px shrink-0" style={{ color }}>{icon}</span>
 }
 
 export function PlanBlock({
@@ -307,7 +354,7 @@ export function PlanBlock({
   entries,
   showActions = false,
   actionsDisabled = false,
-  disabledTitle = 'Codex is still working.',
+  disabledTitle = CODEX_ENABLED ? 'Codex is still working.' : 'Plan action is unavailable.',
   onApprove,
   onDeny,
 }: {
@@ -340,7 +387,6 @@ export function PlanBlock({
       }}
     >
       <div className="flex items-center gap-2 text-[11px] font-semibold" style={{ color: 'var(--text)' }}>
-        <span style={{ color: 'var(--blue)', fontSize: 9 }}>●</span>
         <span>Plan</span>
       </div>
       {planSummary && <MarkdownContent content={planSummary} />}
@@ -348,12 +394,9 @@ export function PlanBlock({
         <ol className="space-y-2">
           {planEntries.map((entry, index) => (
             <li key={`${entry.content}-${index}`} className="flex gap-2 text-xs" style={{ color: 'var(--text-2)' }}>
-              <span style={{ color: planStatusColor(entry.status), fontSize: 9, lineHeight: '20px' }}>●</span>
+              <PlanStatusIcon status={entry.status} />
               <div className="min-w-0 flex-1">
                 <div style={{ color: 'var(--text)' }}>{entry.content}</div>
-                <div className="text-[10px] uppercase" style={{ color: planStatusColor(entry.status) }}>
-                  {planStatusLabel(entry.status)}
-                </div>
               </div>
             </li>
           ))}
@@ -362,9 +405,9 @@ export function PlanBlock({
       {showActions && (
         <div className="flex flex-wrap gap-2 pt-1">
           <Tooltip label={actionsDisabled ? disabledTitle : 'Approve plan'}>
-            <button
-              type="button"
-              className="px-3 h-7 text-[11px] font-medium"
+            <Button
+              size="sm"
+              className="h-7 px-3 text-[11px] font-medium"
               disabled={actionsDisabled}
               // Radix tooltips don't fire on disabled buttons; native title carries the reason.
               title={actionsDisabled ? disabledTitle : undefined}
@@ -380,12 +423,12 @@ export function PlanBlock({
               }}
             >
               Approve
-            </button>
+            </Button>
           </Tooltip>
           <Tooltip label={actionsDisabled ? disabledTitle : 'Deny plan'}>
-            <button
-              type="button"
-              className="px-3 h-7 text-[11px] font-medium"
+            <Button
+              size="sm"
+              className="h-7 px-3 text-[11px] font-medium"
               disabled={actionsDisabled}
               title={actionsDisabled ? disabledTitle : undefined}
               style={{
@@ -400,7 +443,7 @@ export function PlanBlock({
               }}
             >
               Deny
-            </button>
+            </Button>
           </Tooltip>
         </div>
       )}
@@ -461,9 +504,9 @@ export function goalReviewForMessage(message: Message): GoalReviewDecision | nul
 }
 
 export function goalReviewDecisionStyle(decision: GoalReviewDecision['decision']) {
-  if (decision === 'complete') return { color: 'var(--green)', label: 'Complete' }
-  if (decision === 'blocked') return { color: 'var(--red)', label: 'Blocked' }
-  return { color: 'var(--purple)', label: 'Continue' }
+  if (decision === 'complete') return { color: 'var(--success)', label: 'Complete', icon: <Check size={12} aria-hidden /> }
+  if (decision === 'blocked') return { color: 'var(--error)', label: 'Blocked', icon: <X size={12} aria-hidden /> }
+  return { color: 'var(--purple)', label: 'Continue', icon: <ArrowRight size={12} aria-hidden /> }
 }
 
 export function GoalReviewBlock({ review }: { review: GoalReviewDecision }) {
@@ -484,16 +527,16 @@ export function GoalReviewBlock({ review }: { review: GoalReviewDecision }) {
       }}
     >
       <div className="flex items-center gap-2 text-[11px] font-semibold">
-        <span style={{ color: 'var(--purple)', fontSize: 9 }}>●</span>
         <span>Goal Review</span>
         <span
-          className="ml-auto rounded px-1.5 py-0.5 text-[10px] uppercase"
+          className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] uppercase"
           style={{
             border: `1px solid color-mix(in srgb, ${decision.color} 48%, var(--border))`,
             color: decision.color,
             background: 'color-mix(in srgb, var(--surface-up) 70%, transparent)',
           }}
         >
+          {decision.icon}
           {decision.label}
         </span>
       </div>
@@ -526,11 +569,43 @@ export function GoalReviewBlock({ review }: { review: GoalReviewDecision }) {
   )
 }
 
-export function CompactionSeparator({ summary }: { summary: string }) {
+/** Static transcript divider for an interrupted, unsent or stopped response. */
+export function InterruptedDivider({ label }: { label: string }) {
+  return <div className="conversation-interrupted"><CircleAlert size={12} aria-hidden /><span>{label}</span></div>
+}
+
+export function CompactionSeparator({ summary, tokensBefore, tokensAfter, interrupted = false }: { summary: string; tokensBefore?: number; tokensAfter?: number; interrupted?: boolean }) {
+  const known = (value: number | undefined): value is number => value !== undefined && Number.isSafeInteger(value) && value >= 0
+  const counts = !interrupted && known(tokensBefore) && known(tokensAfter) ? `${tokensBefore.toLocaleString()} → ${tokensAfter.toLocaleString()} tokens` : undefined
+  const reduction = counts && tokensBefore! > 0 && tokensAfter! <= tokensBefore! ? ` (${Math.round((1 - tokensAfter! / tokensBefore!) * 100)}% reduced)` : ''
+  const remaining = counts && tokensBefore! > 0 ? tokensAfter! / tokensBefore! : undefined
   return <details className="context-compaction">
-    <summary>Context compacted</summary>
-    <div>{summary.trim() ? <MarkdownContent content={summary} /> : 'The provider did not include a summary.'}</div>
+    <summary>{interrupted ? 'Context compaction interrupted' : 'Context compacted'}</summary>
+    <div>
+      {counts && <div className="text-xs" style={{ color: 'var(--text-3)' }}>{counts}{reduction}{remaining !== undefined && <ContextMeter ratio={remaining} />}</div>}
+      {summary.trim() ? <MarkdownContent content={summary} /> : 'The provider did not include a summary.'}
+    </div>
   </details>
+}
+
+/** Parse contiguous provider text together, retaining raw spacing and nontext boundaries. */
+function coalesceAssistantText<T extends { type: string; text?: string }>(entries: readonly T[], preserveEmpty = false): T[] {
+  const result: T[] = []
+  let run: T | undefined
+  const flush = () => {
+    if (run && (preserveEmpty || run.text?.trim())) result.push(run)
+    run = undefined
+  }
+  for (const entry of entries) {
+    if (entry.type === 'assistant_text') {
+      run = run ? { ...run, text: (run.text ?? '') + (entry.text ?? '') } : { ...entry }
+    } else {
+      flush()
+      result.push(entry)
+    }
+  }
+  flush()
+  return result
 }
 
 export function PersistedMessageBlocksContent({
@@ -542,6 +617,7 @@ export function PersistedMessageBlocksContent({
   sourceChatId,
   workingMode = 'verbose',
   workedSeconds,
+  launchesOnly = false,
 }: {
   disclosureState?: WorkTraceDisclosureState
   message: Message
@@ -550,6 +626,7 @@ export function PersistedMessageBlocksContent({
   sourceChatId?: string
   workingMode?: WorkingDisplayMode
   workedSeconds?: number
+  launchesOnly?: boolean
   planActions?: {
     show: boolean
     disabled: boolean
@@ -560,13 +637,16 @@ export function PersistedMessageBlocksContent({
 }) {
   const { expanded, toggle, state: traceDisclosure } = useWorkTraceDisclosure(disclosureState)
   const toolById = new Map((message.toolCalls ?? []).map((tool) => [tool.id, tool]))
+  // Group recorded launches independently of read/control scope; empty text still separates groups.
+  const renderedBlocks = coalesceAssistantText(blocks, true)
+  const orderedBlocks = groupInlineSubagents(renderedBlocks, toolById)
   let thoughtIndex = 0
-  const lastAssistantBlockIndex = blocks.reduce((latest, block, index) => block.type === 'assistant_text' && block.text.trim() ? index : latest, -1)
-  const lastPlanBlockIndex = blocks.reduce((latest, block, index) => block.type === 'plan' ? index : latest, -1)
+  const lastAssistantBlockIndex = renderedBlocks.reduce((latest, block, index) => block.type === 'assistant_text' && block.text.trim() ? index : latest, -1)
+  const lastPlanBlockIndex = renderedBlocks.reduce((latest, block, index) => block.type === 'plan' ? index : latest, -1)
 
   return (
     <div className="space-y-2">
-      {(
+      {!launchesOnly && (
         <CompactWorkingSummary
           headerOnly
           expanded={expanded}
@@ -581,13 +661,21 @@ export function PersistedMessageBlocksContent({
         />
       )}
       <div className={workingMode === 'compact' && expanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
-      {blocks.map((block, index) => {
-        if (block.type === 'context_compaction') return <CompactionSeparator key={`compaction-${index}`} summary={block.text} />
+      {orderedBlocks.map(entry => {
+        const index = entry.index
+        if (entry.kind === 'subagents') return <InlineSubagentGroup key={`launches-${entry.tools[0].id}`} tools={entry.tools} sourceChatId={sourceChatId}
+          onSelectTool={id => onSelectTool(message.id, id)} renderNative={tools => <NativeSubagentTools tools={tools} sourceChatId={sourceChatId}
+            onSelectTool={id => onSelectTool(message.id, id)} />} />
+        if (launchesOnly) return null
+        const block = entry.entry
+        if (block.type === 'context_compaction_summary') return null
+        if (block.type === 'context_compaction' || block.type === 'context_compaction_interrupted') return <CompactionSeparator key={`compaction-${index}`} summary={block.text} tokensBefore={block.tokensBefore} tokensAfter={block.tokensAfter} interrupted={block.type === 'context_compaction_interrupted'} />
         if (block.type === 'assistant_text') {
+          if (!block.text.trim()) return null
           if (!expanded && index !== lastAssistantBlockIndex) return null
           const review = parseGoalReviewDecision(block.text)
           if (review) return <div className="conversation-trace__text" key={`block-goal-review-${index}`}><GoalReviewBlock review={review} /></div>
-          return <div className="conversation-trace__text" key={`block-text-${index}`}><MarkdownContent content={block.text} /></div>
+          return <div className="conversation-trace__text" key={`block-text-${index}`}><MarkdownContent content={block.text} chips /></div>
         }
 
         if (block.type === 'thought') {
@@ -600,14 +688,17 @@ export function PersistedMessageBlocksContent({
         }
 
         if (block.type === 'tool_call') {
+          const tool = toolById.get(block.toolCallId)
+          if (!tool) return <div key={`missing-tool-${block.toolCallId}-${index}`} role="status" className="conversation-trace__internal text-xs text-muted">
+            Tool activity is unavailable in this stored transcript.
+          </div>
+          // Unclassified child activity stays at its original tool slot; it is not a new launch group.
+          if (isCompactNativeSubagentTool(tool)) return <NativeSubagentTools key={`native-tool-${block.toolCallId}-${index}`}
+            tools={[tool]} sourceChatId={sourceChatId} onSelectTool={id => onSelectTool(message.id, id)} />
+          if (tool.isSubAgent) return <SubagentGroup key={`child-activity-${block.toolCallId}-${index}`}
+            tools={[tool]} sourceChatId={sourceChatId} onSelectTool={id => onSelectTool(message.id, id)}
+            renderHistory={sourceChatId ? child => <SubAgentHistory sourceChatId={sourceChatId} tool={child} /> : undefined} />
           if (!expanded) return null
-          const tool = toolById.get(block.toolCallId) ?? {
-            id: block.toolCallId,
-            title: block.toolCallId,
-            kind: 'tool',
-            status: 'pending',
-            content: '',
-          }
           if (workingMode === 'compact') return <div className="conversation-trace__internal" key={`block-tool-${block.toolCallId}-${index}`}><ConversationWorkRow
             tool={tool}
             onSelectTool={(toolId) => onSelectTool(message.id, toolId)}
@@ -620,6 +711,15 @@ export function PersistedMessageBlocksContent({
               renderSubAgentHistory={sourceChatId ? (tool) => <SubAgentHistory sourceChatId={sourceChatId} tool={tool} /> : undefined}
             />
           )
+        }
+
+        if (block.type === 'permission_request' || block.type === 'user_input_request') {
+          // Recorded (already resolved) requests are work-trace evidence; pending ones render live elsewhere.
+          if (!expanded) return null
+          return <div key={`recorded-request-${block.requestId}-${index}`} role="note" className="conversation-trace__text">
+            <strong>{block.type === 'permission_request' ? 'Recorded permission request' : 'Recorded question'}</strong>
+            <MarkdownContent content={block.text || 'Details are unavailable in this stored history.'} />
+          </div>
         }
 
         if (block.type === 'plan') {
@@ -649,13 +749,20 @@ export function PersistedMessageContent({
   disclosureState,
   onSelectTool,
   planActions,
-  sourceChatId,
+  sourceChatId: requestedSourceChatId,
   workingMode = 'verbose',
+  omitImages = false,
+  launchesOnly = false,
+  passive = false,
 }: {
   disclosureState?: WorkTraceDisclosureState
   message: Message
   onSelectTool: (messageId: string, toolId: string) => void
   sourceChatId?: string
+  /** Read-only child history: no subagent history reads, runtime refresh or attachment preview IPC, whatever chat IDs exist. */
+  passive?: boolean
+  omitImages?: boolean
+  launchesOnly?: boolean
   workingMode?: WorkingDisplayMode
   planActions?: {
     show: boolean
@@ -666,29 +773,57 @@ export function PersistedMessageContent({
   }
 }) {
   const { expanded, toggle, state: traceDisclosure } = useWorkTraceDisclosure(disclosureState)
+  const sourceChatId = passive ? undefined : requestedSourceChatId
+  const attachmentChatId = passive ? undefined : sourceChatId ?? message.sessionId
   const thoughts = message.role === 'assistant' ? message.thoughts?.trim() ?? '' : ''
   const toolCalls = message.role === 'assistant' ? message.toolCalls ?? [] : []
   const planSummary = message.role === 'assistant' ? message.planSummary ?? '' : ''
   const planEntries = message.role === 'assistant' ? message.planEntries ?? [] : []
   const blocks = message.role === 'assistant' ? message.blocks ?? [] : []
-  const attachments = message.attachments ?? []
+  // A partial event inventory must not erase separately retained answer, reasoning or tool records.
+  // Existing assistant text blocks own their ordered prose; avoid duplicating the aggregate content alongside them.
+  const hasCompactionEnvelope = blocks.some(block => block.type === 'context_compaction_summary' ||
+    block.type === 'context_compaction' || block.type === 'context_compaction_interrupted')
+  const orderedBlocks: MessageBlock[] = blocks.length ? [
+    ...(!hasCompactionEnvelope && message.content && !blocks.some(block => (block.type === 'assistant_text' && block.text.trim()) ||
+      ('text' in block && block.text === message.content)) ? [{ type: 'assistant_text' as const, text: message.content }] : []),
+    ...(!hasCompactionEnvelope && thoughts && !blocks.some(block => block.type === 'thought') ? [{ type: 'thought' as const, text: thoughts }] : []),
+    ...blocks,
+    ...toolCalls.filter(tool => !blocks.some(block => block.type === 'tool_call' && block.toolCallId === tool.id))
+      .map(tool => ({ type: 'tool_call' as const, toolCallId: tool.id })),
+    ...(planSummary || planEntries.length ? blocks.some(block => block.type === 'plan') ? [] : [{ type: 'plan' as const }] : []),
+  ] : toolCalls.some(tool => tool.isSubAgent || isInlineSubagentLaunch(tool)) ? [
+    ...(thoughts ? [{ type: 'thought' as const, text: thoughts }] : []),
+    ...toolCalls.map(tool => ({ type: 'tool_call' as const, toolCallId: tool.id })),
+    ...(message.content ? [{ type: 'assistant_text' as const, text: message.content }] : []),
+    ...(planSummary || planEntries.length ? [{ type: 'plan' as const }] : []),
+  ] : blocks
+  const imageAttachments = omitImages ? [] : (message.attachments ?? []).filter(isImageAttachment)
+  const attachments = (message.attachments ?? []).filter((attachment) => !isImageAttachment(attachment))
   const goalReview = goalReviewForMessage(message)
   const workedSeconds = (message.processingTimeMs ?? 0) / 1000
 
-  if (blocks.length > 0) {
+  // Group the original event stream before filtering; collapsed traces keep launch boundaries.
+  if (launchesOnly) return orderedBlocks.length > 0 ? <PersistedMessageBlocksContent
+    message={message} disclosureState={traceDisclosure} blocks={orderedBlocks} onSelectTool={onSelectTool}
+    sourceChatId={sourceChatId} workingMode={workingMode} workedSeconds={workedSeconds} launchesOnly
+  /> : null
+
+  if (orderedBlocks.length > 0) {
     return (
       <div className="space-y-2">
+        <AttachmentList attachments={imageAttachments} chatId={attachmentChatId} nativeMessageIndex={message.nativeMessageIndex} previews={!passive} />
         <PersistedMessageBlocksContent
           message={message}
           disclosureState={traceDisclosure}
-          blocks={blocks}
+          blocks={orderedBlocks}
           onSelectTool={onSelectTool}
           planActions={planActions}
           sourceChatId={sourceChatId}
           workingMode={workingMode}
           workedSeconds={workedSeconds}
         />
-        <AttachmentList attachments={attachments} />
+        <AttachmentList attachments={attachments} chatId={attachmentChatId} nativeMessageIndex={message.nativeMessageIndex} previews={!passive} />
       </div>
     )
   }
@@ -696,14 +831,16 @@ export function PersistedMessageContent({
   if (!thoughts && toolCalls.length === 0 && !planSummary.trim() && planEntries.length === 0) {
     return (
       <div className="space-y-2">
-        {goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} />}
-        <AttachmentList attachments={attachments} />
+        <AttachmentList attachments={imageAttachments} chatId={attachmentChatId} nativeMessageIndex={message.nativeMessageIndex} previews={!passive} />
+        {goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} chips={message.role === 'assistant'} />}
+        <AttachmentList attachments={attachments} chatId={attachmentChatId} nativeMessageIndex={message.nativeMessageIndex} previews={!passive} />
       </div>
     )
   }
 
   return (
     <div className="space-y-2">
+      <AttachmentList attachments={imageAttachments} chatId={attachmentChatId} nativeMessageIndex={message.nativeMessageIndex} previews={!passive} />
       {(thoughts || toolCalls.length > 0) ? (
         <CompactWorkingSummary
           headerOnly={workingMode !== 'compact'}
@@ -731,7 +868,7 @@ export function PersistedMessageContent({
           />
         </>
       )}
-      {message.content.trim() && (goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} />)}
+      {message.content.trim() && (goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} chips={message.role === 'assistant'} />)}
       <PlanBlock
         summary={planSummary}
         entries={planEntries}
@@ -741,12 +878,23 @@ export function PersistedMessageContent({
         onApprove={planActions?.onApprove}
         onDeny={planActions?.onDeny}
       />
-      <AttachmentList attachments={attachments} />
+      <AttachmentList attachments={attachments} chatId={attachmentChatId} nativeMessageIndex={message.nativeMessageIndex} previews={!passive} />
     </div>
   )
 }
 
-export function AttachmentList({ attachments }: { attachments: Attachment[] }) {
+export function isImageAttachment(attachment: Attachment): boolean {
+  return attachment.type === 'image' || Boolean(attachment.mimeType?.startsWith('image/'))
+}
+
+export function attachmentChipKind(attachment: Attachment): ContextChipKind {
+  if (attachment.type === 'markdown-store') return 'skill'
+  if (attachment.type === 'directory') return 'directory'
+  return isImageAttachment(attachment) ? 'image' : 'file'
+}
+
+/** `previews={false}` renders the same chips with an explicit unavailable note and never requests preview bytes. */
+export function AttachmentList({ attachments, chatId, nativeMessageIndex, previews = true }: { attachments: Attachment[]; chatId?: string; nativeMessageIndex?: number; previews?: boolean }) {
   if (attachments.length === 0) return null
 
   const markdownStoreAttachments = attachments.filter((attachment) => attachment.type === 'markdown-store')
@@ -757,44 +905,25 @@ export function AttachmentList({ attachments }: { attachments: Attachment[] }) {
       {markdownStoreAttachments.length > 0 && (
         <div className="flex flex-wrap gap-2" aria-label="Skills context">
           {markdownStoreAttachments.map((attachment) => (
-            <span
-              key={attachment.id}
-              className="inline-flex items-center gap-2 max-w-full text-[11px]"
-              title={attachmentLabel(attachment)}
-              style={{
-                border: '1px solid color-mix(in srgb, var(--purple) 45%, var(--border))',
-                borderRadius: 7,
-                background: 'color-mix(in srgb, var(--purple) 10%, var(--surface-up))',
-                color: 'var(--text-2)',
-                padding: '5px 8px',
-              }}
-            >
-              <BookOpen size={13} aria-hidden style={{ color: 'var(--purple)' }} />
-              <span style={{ color: 'var(--purple)' }}>Skills</span>
-              <span className="truncate max-w-[320px]">{attachment.name}</span>
-            </span>
+            <ContextChip key={attachment.id} kind="skill" name={attachment.name} detail={attachmentLabel(attachment)} />
           ))}
         </div>
       )}
       {fileAttachments.length > 0 && (
         <div className="flex flex-wrap gap-2" aria-label="File attachments">
-          {fileAttachments.map((attachment) => (
-            <span
-              key={attachment.id}
-              className="inline-flex items-center gap-2 max-w-full text-[11px]"
-              title={attachmentLabel(attachment)}
-              style={{
-                border: '1px solid var(--border)',
-                borderRadius: 999,
-                background: 'var(--surface-up)',
-                color: 'var(--text-2)',
-                padding: '3px 7px',
-              }}
-            >
-              <span className="truncate max-w-[320px]">{attachment.path || attachment.name}</span>
-              <span style={{ color: 'var(--text-3)' }}>{attachment.type}</span>
-            </span>
-          ))}
+          {fileAttachments.map((attachment) => {
+            const external = isExternalAttachmentReference(attachment)
+            const native = external || Boolean(attachment.source && attachment.source !== 'legacy_path')
+            const chip = <ContextChip kind={attachmentChipKind(attachment)} name={attachment.name} detail={attachmentLabel(attachment)}
+              path={native ? undefined : attachment.path} meta={native ? external ? 'External reference' : 'Recorded file' : undefined} />
+            const unavailable = native ? <span className="inline-flex max-w-full flex-wrap items-center gap-2">{chip}<span className="text-xs text-muted">
+              {external || attachment.source === 'native_inline_pending' ? 'Bytes unavailable' : 'Preview unavailable'}
+            </span></span> : chip
+            if (!previews) return <span key={attachment.id} className="inline-flex max-w-full flex-wrap items-center gap-2">{chip}
+              {isImageAttachment(attachment) && <span className="text-xs text-muted">Preview unavailable (read-only)</span>}</span>
+            return <ImageAttachmentPreview key={attachment.id} chatId={chatId} messageIndex={nativeMessageIndex} attachment={attachment}
+              fallback={chip} unavailableFallback={unavailable} />
+          })}
         </div>
       )}
     </div>
@@ -809,7 +938,7 @@ export function stoppedResponseLabel(reason: string | undefined, interrupted?: b
   return interrupted ? 'Response interrupted' : ''
 }
 
-export function TurnTimelineContent({
+export const TurnTimelineContent = memo(function TurnTimelineContent({
   disclosureState,
   interrupted = false,
   stopReason,
@@ -863,21 +992,24 @@ export function TurnTimelineContent({
   workedSeconds?: number
 }) {
   const { expanded, toggle, state: traceDisclosure } = useWorkTraceDisclosure(disclosureState)
+  const renderedEvents = coalesceAssistantText(events, Boolean(sourceChatId))
   const traceExpanded = active ? true : expanded
-  const lastAssistantEventIndex = events.reduce((latest, event, index) => event.type === 'assistant_text' && event.text.trim() ? index : latest, -1)
+  const lastAssistantEventIndex = renderedEvents.reduce((latest, event, index) => event.type === 'assistant_text' && event.text.trim() ? index : latest, -1)
   let thoughtIndex = 0
-  const activeEventIndex = active && !pendingPermission && !pendingUserInput ? events.reduce((latest, event, index) =>
-    (event.type === 'assistant_text' || event.type === 'thought') && !event.text.trim() ? latest : index, -1) : -1
+  const activeEventIndex = active && !pendingPermission && !pendingUserInput ? renderedEvents.reduce((latest, event, index) =>
+    event.type === 'context_compaction_summary' || (event.type === 'assistant_text' || event.type === 'thought') && !event.text.trim() ? latest : index, -1) : -1
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
-  const hasPlanEvent = events.some((event) => event.type === 'plan')
-  const lastPlanEventIndex = events.reduce((latest, event, index) => event.type === 'plan' ? index : latest, -1)
+  const launchTools = new Map([...toolById].filter(([id]) => id !== pendingPermission?.toolCallId))
+  const orderedEvents = sourceChatId ? groupInlineSubagents(renderedEvents, launchTools) : renderedEvents.map((entry, index) => ({ kind: 'entry' as const, entry, index }))
+  const hasPlanEvent = renderedEvents.some((event) => event.type === 'plan')
+  const lastPlanEventIndex = renderedEvents.reduce((latest, event, index) => event.type === 'plan' ? index : latest, -1)
   const hasPendingPermissionEvent = Boolean(
     pendingPermission &&
-      events.some((event) => event.type === 'permission_request' && event.requestId === pendingPermission.requestId)
+      renderedEvents.some((event) => event.type === 'permission_request' && event.requestId === pendingPermission.requestId)
   )
   const hasPendingPermissionToolEvent = Boolean(
     pendingPermission &&
-      events.some((event) => event.type === 'tool_call' && event.toolCallId === pendingPermission.toolCallId)
+      renderedEvents.some((event) => event.type === 'tool_call' && event.toolCallId === pendingPermission.toolCallId)
   )
 
   return (
@@ -898,11 +1030,17 @@ export function TurnTimelineContent({
         />
       )}
       <div className={workingMode === 'compact' && traceExpanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
-      {events.map((event, index) => {
-        if (event.type === 'context_compaction') return <CompactionSeparator key={`compaction-${index}`} summary={event.text} />
+      {orderedEvents.map(entry => {
+        const index = entry.index
+        if (entry.kind === 'subagents') return <InlineSubagentGroup key={`launches-${entry.tools[0].id}`} tools={entry.tools} sourceChatId={sourceChatId!}
+          onSelectTool={onSelectTool} renderNative={tools => <NativeSubagentTools active={active} tools={tools} sourceChatId={sourceChatId}
+            onSelectTool={onSelectTool} />} />
+        const event = entry.entry
+        if (event.type === 'context_compaction_summary') return null
+        if (event.type === 'context_compaction' || event.type === 'context_compaction_interrupted') return <CompactionSeparator key={`compaction-${index}`} summary={event.text} tokensBefore={event.tokensBefore} tokensAfter={event.tokensAfter} interrupted={event.type === 'context_compaction_interrupted'} />
         if (event.type === 'assistant_text') {
           if (!traceExpanded && index !== lastAssistantEventIndex) return null
-          return <div className="conversation-trace__text" key={`text-${index}`}><MarkdownContent content={event.text} /></div>
+          return <div className="conversation-trace__text" key={`text-${index}`}><MarkdownContent content={event.text} chips /></div>
         }
 
         if (event.type === 'thought') {
@@ -943,9 +1081,17 @@ export function TurnTimelineContent({
             pendingPermission.toolCallId === event.toolCallId
 
 
+          // A native kind/receiver can describe wait or result activity too. Preserve its
+          // individual tool-slot preview without reclassifying it as a consecutive launch.
+          const childActivity = sourceChatId && tool.isSubAgent && pendingPermission?.toolCallId !== event.toolCallId
+            ? isCompactNativeSubagentTool(tool)
+              ? <NativeSubagentTools active={active} tools={[tool]} sourceChatId={sourceChatId} onSelectTool={onSelectTool} />
+              : <SubagentGroup active={active} tools={[tool]} sourceChatId={sourceChatId} onSelectTool={onSelectTool}
+                  renderHistory={child => <SubAgentHistory sourceChatId={sourceChatId} tool={child} />} /> : null
           return (
             <div key={`tool-${event.toolCallId}-${index}`} className="space-y-2">
-              {traceExpanded && <div className="conversation-trace__internal" data-processing-step={index === activeEventIndex && ['pending', 'in_progress', 'running'].includes(tool.status) || undefined}>
+              {childActivity}
+              {traceExpanded && !childActivity && <div className="conversation-trace__internal" data-processing-step={index === activeEventIndex && ['pending', 'in_progress', 'running'].includes(tool.status) || undefined}>
                 {workingMode === 'compact' ? <ConversationWorkRow tool={tool} onSelectTool={onSelectTool}
                   renderSubAgentHistory={sourceChatId ? (subAgentTool) => <SubAgentHistory sourceChatId={sourceChatId} tool={subAgentTool} /> : undefined} /> : <ToolCallInlineRows
                   tools={[tool]}
@@ -1004,7 +1150,7 @@ export function TurnTimelineContent({
           waitIsStale={waitIsStale} waitStaleReason={waitStaleReason} waitSeconds={waitSeconds}
           onCancelTurn={onCancelTurn} onStopRuntime={onStopRuntime} />
       )}
-      {stoppedResponseLabel(stopReason, interrupted) && <div className="conversation-interrupted">{stoppedResponseLabel(stopReason, interrupted)}</div>}
+      {stoppedResponseLabel(stopReason, interrupted) && <InterruptedDivider label={stoppedResponseLabel(stopReason, interrupted)} />}
     </div>
   )
-}
+})

@@ -1,4 +1,5 @@
 import { Component, createRef, type ErrorInfo, type ReactNode } from 'react'
+import { WindowRecovery } from '../layout/WindowChrome'
 
 interface Props {
   children: ReactNode
@@ -22,7 +23,7 @@ export class InterfaceErrorBoundary extends Component<Props, { failed: boolean }
 
   render() {
     if (!this.state.failed) return this.props.children
-    return (
+    const recovery = (
       <section ref={this.recoveryRef} tabIndex={-1} role="alert" aria-label="Interface recovery" style={{ background: '#000', color: '#fff', padding: 24, fontFamily: 'system-ui', position: this.props.panel ? 'fixed' : undefined, inset: this.props.panel ? 'auto 16px 16px' : undefined, zIndex: this.props.panel ? 1000 : undefined }}>
         <h1 style={{ fontSize: 16, margin: '0 0 12px' }}>{this.props.panel ? 'This panel could not load.' : 'The interface could not load.'}</h1>
         <p style={{ margin: '0 0 16px' }}>{this.props.panel ? 'Other chats remain available.' : 'Reload the interface to try again.'}</p>
@@ -31,5 +32,6 @@ export class InterfaceErrorBoundary extends Component<Props, { failed: boolean }
         <button className="uam-recovery-button" onClick={() => window.location.reload()}>Reload interface</button>
       </section>
     )
+    return this.props.panel ? recovery : <WindowRecovery>{recovery}</WindowRecovery>
   }
 }

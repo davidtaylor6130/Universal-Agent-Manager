@@ -26,6 +26,13 @@ void ResetAcpPendingInteractionState(AcpSessionState& session)
 
 void ResetAcpTurnStreamState(AcpSessionState& session)
 {
+	session.queued_skill_spans.clear();
+	if (session.attached_skill_preparation != nullptr) session.attached_skill_preparation->cancel.request_stop();
+	session.attached_skill_preparation.reset();
+	session.claude_quota_delivery_id.clear();
+	session.claude_quota_usage_error = false;
+	session.claude_quota_reset_epoch_s = 0;
+	session.claude_quota_evidence_turn_serial = 0;
 	session.pending_assistant_thoughts.clear();
 	session.tool_calls.clear();
 	session.tool_call_message_indices.clear();
@@ -36,6 +43,7 @@ void ResetAcpTurnStreamState(AcpSessionState& session)
 	session.codex_streamed_reasoning_keys.clear();
 	session.codex_last_reasoning_section.clear();
 	session.turn_events.clear();
+	session.stream_watch = {};
 	session.turn_protocol_bytes = 0;
 	session.turn_output_warning_emitted = false;
 	session.turn_output_bytes_per_second.fill(0);

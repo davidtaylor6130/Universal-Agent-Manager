@@ -122,3 +122,25 @@ UAM_TEST(ChatFileReceiptsRejectWrongDiskChatIdentityOrHistorySnapshot)
 	loaded.messages_loaded = false;
 	UAM_ASSERT(!uam::ChatFileChangeReceiptService::MatchesPersistedSnapshot(loaded, loaded.id, 1, "digest"));
 }
+
+UAM_TEST(ReceiptSnapshotsIgnoreLargeProseAndRejectChangedRecordedEdits)
+{
+	ChatSession chat = ReceiptChat(nlohmann::json::array({ReceiptChange("src/main.cpp")}));
+	chat.messages.front().content.assign(8 * 1024 * 1024, 'x');
+	ToolCall output;
+	output.kind = "execute";
+	output.status = "completed";
+	output.result_text.assign(8 * 1024 * 1024, 'y');
+	chat.messages.front().tool_calls.push_back(std::move(output));
+	const auto snapshot = uam::ChatFileChangeReceiptService::Capture(chat);
+	UAM_ASSERT(snapshot.chat.messages.front().content.empty());
+	UAM_ASSERT_EQ(snapshot.chat.messages.front().tool_calls.size(), std::size_t{1});
+	UAM_ASSERT(uam::ChatFileChangeReceiptService::Matches(chat, snapshot));
+	const auto captured = uam::ChatFileChangeReceiptService::Extract(snapshot.chat, "/workspace");
+	const auto original = uam::ChatFileChangeReceiptService::Extract(chat, "/workspace");
+	UAM_ASSERT_EQ(captured.receipts.front().patch, original.receipts.front().patch);
+	chat.messages.front().content[0] = 'z';
+	UAM_ASSERT(uam::ChatFileChangeReceiptService::Matches(chat, snapshot));
+	chat.messages.front().tool_calls.front().result_text[0] = 'x';
+	UAM_ASSERT(!uam::ChatFileChangeReceiptService::Matches(chat, snapshot));
+}

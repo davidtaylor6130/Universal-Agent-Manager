@@ -1,16 +1,23 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Columns2, MessageSquare, Plus, PowerOff, Rows2, SquareTerminal, X } from 'lucide-react'
+import { NativeConversation, SubagentPaneContent } from '../chat/SubagentPaneContent'
+import { SubagentHeader } from '../chat/SubagentTranscript'
+import { SubagentRouteStage, subagentStageKey } from './SubagentRouteStage'
+import { activateSubagentLeaf, canExecuteNativeSubagent, hasNativeSubagentLineage, clearSubagentView, subagentRouteFor, type SubagentRoute, subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
+import { ExecutionRoutingWaitNotice } from '../modals/ExecutionRoutingDialog'
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { AlertTriangle, CheckCircle2, Columns2, MessageSquare, Plus, PowerOff, Rows2, SquareTerminal, X, XCircle } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
 import { isCefContext, isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
-import { Button, IconButton, Notice, StatusDot, Tooltip } from '../ui'
+import { Button, IconButton, SegmentedControl, Tooltip } from '../ui'
 import { shortcutLabel } from '../../utils/shortcuts'
+import { reportAppFailure } from '../../utils/appFailure'
 import type { Session } from '../../types/session'
 import type { Message } from '../../types/message'
 import { RuntimeTimeout } from '../shared/RuntimeTimeout'
 import { useRuntimeActivity } from '../../hooks/useRuntimeActivity'
+import { useCountdownClock } from '../../hooks/useCountdownClock'
 import './MainPanel.css'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
@@ -33,24 +40,27 @@ import {
   type ChatPaneNode,
   type ChatSplitDirection,
 } from '../../utils/chatGridStorage'
+import { SSH_ENABLED } from '../../config/buildFeatures'
 
 const PushStatusDot = memo(function PushStatusDot() {
   const pushChannelStatus = useAppStore((s) => s.pushChannelStatus)
   const pushChannelError = useAppStore((s) => s.pushChannelError)
   const lastPushAtMs = useAppStore((s) => s.lastPushAtMs)
-  const uiBuildId = useAppStore((s) => s.uiBuildId)
 
   const tooltip =
     pushChannelStatus === 'connected'
-      ? `Push connected • last update ${lastPushAtMs ? new Date(lastPushAtMs).toLocaleTimeString() : '—'} • UI ${uiBuildId}`
+      ? `Connected. Last update ${lastPushAtMs ? new Date(lastPushAtMs).toLocaleTimeString() : '—'}.`
       : pushChannelStatus === 'no-push-yet'
-        ? `Waiting for backend push channel • UI ${uiBuildId}`
+        ? 'Waiting for the backend.'
         : `Push error: ${pushChannelError}`
+  const state = pushChannelStatus === 'connected' ? 'connected' : pushChannelStatus === 'no-push-yet' ? 'waiting' : 'error'
+  const StateIcon = pushChannelStatus === 'connected' ? CheckCircle2 : pushChannelStatus === 'no-push-yet' ? AlertTriangle : XCircle
+  const tone = pushChannelStatus === 'connected' ? 'var(--success)' : pushChannelStatus === 'no-push-yet' ? 'var(--warning)' : 'var(--error)'
 
   return (
     <Tooltip label={tooltip} side="bottom">
-      <span className="mr-3 inline-flex h-7 items-center px-2" aria-label={`Backend connection: ${pushChannelStatus}`}>
-        <StatusDot tone={pushChannelStatus === 'connected' ? 'success' : pushChannelStatus === 'no-push-yet' ? 'warning' : 'error'} pulse={pushChannelStatus === 'connected'} size={7} />
+      <span role="status" className="mr-3 inline-flex h-7 items-center px-2" aria-label={`Backend connection: ${state}`} style={{ color: tone }}>
+        <StateIcon size={14} aria-hidden />
       </span>
     </Tooltip>
   )
@@ -62,7 +72,9 @@ function hasNonBlankChatContent(messages: Message[] | undefined) {
     Boolean(message.blocks?.some((block) => 'text' in block && Boolean(block.text?.trim())))))
 }
 
-const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, multiPane, glide, onActivate, onClose }: {
+type ChildLineage = { orphan?: true; parentId?: string; parentCreatedAtMs?: number; parentName?: string; onBack?: () => void; onClose?: () => void }
+
+const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, multiPane, glide, onActivate, onClose, lineage }: {
   session: Session
   active: boolean
   leafId: string
@@ -71,8 +83,27 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   glide: boolean
   onActivate: (leafId: string, sessionId?: string) => void
   onClose: (leafId: string, sessionId: string) => void
+  /** Executable native child: the single subagent bar replaces the chat header; Chat view only, no close or view toggles. */
+  lineage?: ChildLineage
 }) {
-  const view = session.importedReadOnly ? 'chat' : session.viewMode
+  // Display-only access to this already executable, actually linked child; never a runtime grant.
+  const nativeFollowupAllowed = useAppStore(state => {
+    if (!lineage) return false
+    const live = state.sessions.find(candidate => candidate.id === session.id)
+    if (!live || live.createdAt.getTime() !== session.createdAt.getTime() || !canExecuteNativeSubagent(live)) return false
+    const parent = subagentParentFor(live, state.sessions)
+    const renderedParent = subagentParentFor(session, state.sessions)
+    // This discriminator is supplied only by the actual unavailable-parent route, never a failed requested-parent view.
+    if (lineage.orphan) return !lineage.parentId && !lineage.onBack && Boolean(lineage.onClose) &&
+      hasNativeSubagentLineage(live) && hasNativeSubagentLineage(session) && canExecuteNativeSubagent(session) && !parent && !renderedParent
+    return Boolean(parent && renderedParent && parent.id === lineage.parentId && renderedParent.id === parent.id &&
+      parent.createdAt.getTime() === lineage.parentCreatedAtMs)
+  })
+  const nativeFollowupOwnerKey = JSON.stringify([leafId, session.id, session.createdAt.getTime(), lineage?.parentId, lineage?.parentCreatedAtMs, lineage?.orphan === true])
+  const [nativeFollowupOwner, setNativeFollowupOwner] = useState<string | null>(null)
+  const nativeFollowupOpen = nativeFollowupAllowed && nativeFollowupOwner === nativeFollowupOwnerKey
+  useLayoutEffect(() => { setNativeFollowupOwner(null) }, [nativeFollowupOwnerKey, nativeFollowupAllowed])
+  const view = session.importedReadOnly || lineage ? 'chat' : session.viewMode
   const setView = (requestedView: 'chat' | 'cli') => {
     const nextView = session.importedReadOnly ? 'chat' : requestedView
     useAppStore.setState((state) => ({ sessions: state.sessions.map((current) =>
@@ -92,13 +123,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
       timeout: acp?.idleShutdownTimeoutSeconds,
     }
   }))
-  const [runtimeClockMs, setRuntimeClockMs] = useState(Date.now)
-  useEffect(() => {
-    if (!runtimeStopState.visible || runtimeStopState.disabled || !runtimeStopState.deadline) return
-    setRuntimeClockMs(Date.now())
-    const interval = window.setInterval(() => setRuntimeClockMs(Date.now()), 1000)
-    return () => window.clearInterval(interval)
-  }, [runtimeStopState.visible, runtimeStopState.disabled, runtimeStopState.deadline])
+  const runtimeClockMs = useCountdownClock(runtimeStopState.visible && !runtimeStopState.disabled, runtimeStopState.countdownStarts, runtimeStopState.deadline)
   const idleSecondsLeft = runtimeStopState.deadline && runtimeStopState.countdownStarts && runtimeClockMs >= runtimeStopState.countdownStarts
     ? Math.max(0, Math.ceil((runtimeStopState.deadline - runtimeClockMs) / 1000))
     : null
@@ -109,6 +134,25 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
   const [stopRuntimeError, setStopRuntimeError] = useState('')
   useEffect(() => setStopRuntimeError(''), [session.id])
+  useEffect(() => {
+    if (!stopRuntimeError) return
+    reportAppFailure('Runtime stop failed', stopRuntimeError)
+    setStopRuntimeError('')
+  }, [stopRuntimeError])
+  const refreshFor = useRef({ key: nativeFollowupOwnerKey })
+  if (refreshFor.current.key !== nativeFollowupOwnerKey) refreshFor.current = { key: nativeFollowupOwnerKey }
+  const refreshOwner = refreshFor.current
+  const [refreshState, setRefreshState] = useState({ owner: refreshOwner, pending: false, error: '' })
+  // Derive flags during render so a changed owner never paints the previous owner's state.
+  const refreshing = refreshState.owner === refreshOwner && refreshState.pending
+  const refreshError = refreshState.owner === refreshOwner ? refreshState.error : ''
+  // Pane failures go to the shared notifications path; the retained entry keeps the detail.
+  useEffect(() => {
+    if (!refreshError) return
+    reportAppFailure('Refresh failed', refreshError)
+    setRefreshState(current => current.owner === refreshOwner ? { ...current, error: '' } : current)
+  }, [refreshError, refreshOwner])
+  useLayoutEffect(() => { setRefreshState({ owner: refreshOwner, pending: false, error: '' }) }, [refreshOwner])
   const cliSwitchLocked = useAppStore((s) => {
     const acpBinding = s.acpBindingBySessionId[session.id]
     const cliBinding = s.cliBindingBySessionId[session.id]
@@ -126,7 +170,8 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
   const workspaceLabel = workspaceDirectory.split(/[\\/]/).filter(Boolean).pop() ?? workspaceDirectory
   const executionHost = executionHosts.find((candidate) => candidate.id === session.executionHostId)
-  const executionHostLabel = session.executionHostId && session.executionHostId !== 'local'
+  const executionHostIsRemote = Boolean(session.executionHostId && session.executionHostId !== 'local')
+  const executionHostLabel = executionHostIsRemote
     ? `Remote · ${executionHost?.label?.trim() || executionHost?.sshAlias?.trim() || session.executionHostId}`
     : 'Local'
 
@@ -138,6 +183,53 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
       ) }))
     }
   }, [session.id, session.importedReadOnly, session.viewMode])
+
+  const runtimePill = runtimeStopState.visible && (() => {
+    const countdown = idleSecondsLeft !== null
+      ? `${Math.floor(idleSecondsLeft / 60)}:${String(idleSecondsLeft % 60).padStart(2, '0')}`
+      : ''
+    const phase = runtimeStopState.disabled ? 'busy' : idleSecondsLeft !== null && idleSecondsLeft <= 60 ? 'ending' : countdown ? 'idle' : 'live'
+    return (
+      <Tooltip
+        label={runtimeStopState.disabled
+          ? 'Runtime busy · stop is available when this turn finishes'
+          : countdown
+            ? `Runtime idle · shuts down automatically in ${countdown}. Click to stop now.`
+            : 'Runtime running · click to stop it'}
+        side="bottom"
+      >
+        {/* ui: raw button kept — runtime pill has its own chrome (uam-runtime-pill); Button would restyle it */}
+        <button
+          type="button"
+          className="uam-runtime-pill"
+          data-phase={phase}
+          aria-label="Stop runtime"
+          disabled={runtimeStopState.disabled}
+          onClick={() => {
+            setStopRuntimeError('')
+            void stopAcpSession(session.id, 'timeout').then((ok) => {
+              if (!ok) setStopRuntimeError('The runtime did not stop. Try again.')
+            }).catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
+          }}
+        >
+          <span className="uam-runtime-stop-icon">
+            <PowerOff size={12} aria-hidden />
+            {!runtimeStopState.disabled && idleFraction !== null && (
+              <svg className="uam-runtime-stop-timer" viewBox="0 0 28 28" aria-hidden="true">
+                <circle className="uam-runtime-stop-track" cx="14" cy="14" r="12" fill="none" strokeWidth="2.5" />
+                <circle cx="14" cy="14" r="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
+                  strokeDasharray={`${(2 * Math.PI * 12 * idleFraction).toFixed(2)} 75.40`} />
+              </svg>
+            )}
+          </span>
+          <span className="uam-runtime-pill__label" aria-hidden>
+            <span className="uam-runtime-pill__state">{phase === 'busy' ? 'Busy' : countdown || 'Live'}</span>
+            <span className="uam-runtime-pill__stop">Stop</span>
+          </span>
+        </button>
+      </Tooltip>
+    )
+  })()
 
   return (
     <div
@@ -156,11 +248,36 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
         '--pane-color': paneColor,
       } as React.CSSProperties}
     >
-      {/* Header bar */}
+      {lineage ? (
+        <SubagentHeader title={session.name} parentName={lineage.parentName} onBack={lineage.onBack} onClose={lineage.onClose}
+          refreshing={refreshing} refreshDisabled={refreshing}
+          onRefresh={() => {
+            // Explicit read of this child's history only; never sends input or touches the parent. Loaded messages stay
+            // shown on failure; results belong only to this displayed child birth/pane/lineage visit.
+            const id = session.id
+            const owner = refreshOwner
+            setRefreshState({ owner, pending: true, error: '' })
+            const settle = (failed: boolean) => {
+              if (refreshFor.current !== owner) return
+              setRefreshState(current => current.owner !== owner ? current : { owner, pending: false,
+                error: failed ? 'The conversation could not be refreshed. Loaded messages are still shown.' : '' })
+            }
+            Promise.resolve().then(() => loadSessionMessages(id, true)).then(result => settle(result === false), () => settle(true))
+          }}>
+          {nativeFollowupAllowed && <Button variant="ghost" size="sm" aria-expanded={nativeFollowupOpen}
+            aria-label={nativeFollowupOpen ? 'Hide follow-up input' : 'Follow up'}
+            onClick={event => {
+              // Hide changes presentation only: no draft/resource clearing, retry, replay or runtime Stop.
+              setNativeFollowupOwner(nativeFollowupOpen ? null : nativeFollowupOwnerKey)
+              if (nativeFollowupOpen) event.currentTarget.focus({ preventScroll: true })
+            }}>{nativeFollowupOpen ? 'Hide input' : 'Follow up'}</Button>}
+          {runtimePill}
+        </SubagentHeader>
+      ) : (
       <div
         className="uam-chat-pane__header flex items-center gap-3 flex-shrink-0 px-4"
         style={{
-          height: 44,
+          height: 'var(--pane-header-h)',
           borderBottom: '1px solid var(--border)',
           background: 'var(--surface)',
         }}
@@ -170,12 +287,12 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
           <span className="uam-chat-pane__title truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{session.name}</span>
           <span
             data-testid={`chat-workspace-${session.id}`}
-            className="uam-chat-pane__workspace flex min-w-0 text-[10px] font-normal"
+            className="uam-chat-pane__workspace flex min-w-0 gap-1 text-[10px] font-normal"
             style={{ color: 'var(--text-3)' }}
             title={workspaceDirectory ? `${workspaceDirectory} · ${executionHostLabel}` : executionHostLabel}
           >
             {workspaceLabel && <span className="min-w-0 truncate">{workspaceLabel}</span>}
-            <span data-testid={`chat-host-${session.id}`} className="shrink-0">{workspaceLabel ? ` · ${executionHostLabel}` : executionHostLabel}</span>
+            {executionHostIsRemote && <span data-testid={`chat-host-${session.id}`} className="shrink-0">{workspaceLabel ? ` · ${executionHostLabel}` : executionHostLabel}</span>}
           </span>
         </div>
 
@@ -186,98 +303,36 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             background: 'var(--surface-up)',
           }}
         >
-          <Tooltip label="Chat view" side="bottom">
-            <button
-              type="button"
-              onClick={() => {
+          <SegmentedControl
+            aria-label="Session view"
+            value={view}
+            onChange={(next) => {
+              if (next === 'chat') {
                 if (view === 'cli') void loadSessionMessages(session.id, true, true)
                 setView('chat')
-              }}
-              aria-label="Chat view"
-              aria-pressed={view === 'chat'}
-              className="uam-segment-button flex h-7 w-7 items-center justify-center"
-              style={{
-                borderRadius: 5,
-                color: view === 'chat' ? 'var(--text)' : 'var(--text-2)',
-                background: view === 'chat' ? 'var(--surface-high)' : 'transparent',
-              }}
-            >
-              <MessageSquare size={14} aria-hidden />
-            </button>
-          </Tooltip>
-          <Tooltip label={session.importedReadOnly ? 'Imported transcripts are read-only' : cliSwitchLocked && view !== 'cli' ? 'Wait for current output to finish' : 'Terminal fallback'} side="bottom">
-            <button
-              type="button"
-              disabled={session.importedReadOnly || (cliSwitchLocked && view !== 'cli')}
-              aria-label="Terminal fallback"
-              aria-pressed={view === 'cli'}
-              onClick={() => {
-                if (!session.importedReadOnly && !cliSwitchLocked) {
-                  setView('cli')
-                }
-              }}
-              className="uam-segment-button flex h-7 w-7 items-center justify-center"
-              style={{
-                borderRadius: 5,
-                color: view === 'cli' ? 'var(--text)' : 'var(--text-2)',
-                background: view === 'cli' ? 'var(--surface-high)' : 'transparent',
-                opacity: session.importedReadOnly || cliSwitchLocked && view !== 'cli' ? 0.5 : 1,
-                cursor: session.importedReadOnly || cliSwitchLocked && view !== 'cli' ? 'not-allowed' : 'default',
-              }}
-            >
-              <SquareTerminal size={14} aria-hidden />
-            </button>
-          </Tooltip>
+              } else if (!session.importedReadOnly && !cliSwitchLocked) {
+                setView('cli')
+              }
+            }}
+            options={[
+              { value: 'chat', label: 'Chat view', icon: <MessageSquare size={14} aria-hidden />, iconOnly: true },
+              {
+                value: 'cli',
+                label: 'Terminal fallback',
+                icon: <SquareTerminal size={14} aria-hidden />,
+                iconOnly: true,
+                disabled: session.importedReadOnly || (cliSwitchLocked && view !== 'cli'),
+                tooltip: session.importedReadOnly ? 'Imported transcripts are read-only' : cliSwitchLocked && view !== 'cli' ? 'Wait for current output to finish' : 'Terminal fallback',
+              },
+            ]}
+          />
         </div>
         {view === 'cli' && <RuntimeTimeout chatId={session.id} />}
-        {runtimeStopState.visible && (() => {
-          const countdown = idleSecondsLeft !== null
-            ? `${Math.floor(idleSecondsLeft / 60)}:${String(idleSecondsLeft % 60).padStart(2, '0')}`
-            : ''
-          const phase = runtimeStopState.disabled ? 'busy' : idleSecondsLeft !== null && idleSecondsLeft <= 60 ? 'ending' : countdown ? 'idle' : 'live'
-          return (
-            <Tooltip
-              label={runtimeStopState.disabled
-                ? 'Runtime busy · stop is available when this turn finishes'
-                : countdown
-                  ? `Runtime idle · shuts down automatically in ${countdown}. Click to stop now.`
-                  : 'Runtime running · click to stop it'}
-              side="bottom"
-            >
-              <button
-                type="button"
-                className="uam-runtime-pill"
-                data-phase={phase}
-                aria-label="Stop runtime"
-                disabled={runtimeStopState.disabled}
-                onClick={() => {
-                  setStopRuntimeError('')
-                  void stopAcpSession(session.id, 'timeout').then((ok) => {
-                    if (!ok) setStopRuntimeError('The runtime did not stop. Try again.')
-                  }).catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
-                }}
-              >
-                <span className="uam-runtime-stop-icon">
-                  <PowerOff size={12} aria-hidden />
-                  {!runtimeStopState.disabled && idleFraction !== null && (
-                    <svg className="uam-runtime-stop-timer" viewBox="0 0 28 28" aria-hidden="true">
-                      <circle className="uam-runtime-stop-track" cx="14" cy="14" r="12" fill="none" strokeWidth="2.5" />
-                      <circle cx="14" cy="14" r="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
-                        strokeDasharray={`${(2 * Math.PI * 12 * idleFraction).toFixed(2)} 75.40`} />
-                    </svg>
-                  )}
-                </span>
-                <span className="uam-runtime-pill__label" aria-hidden>
-                  <span className="uam-runtime-pill__state">{phase === 'busy' ? 'Busy' : countdown || 'Live'}</span>
-                  <span className="uam-runtime-pill__stop">Stop</span>
-                </span>
-              </button>
-            </Tooltip>
-          )
-        })()}
+        {runtimePill}
         <IconButton
           icon={<X size={14} aria-hidden />}
           label={`Close ${session.name}`}
+          variant="danger"
           tooltip="Close chat"
           tooltipSide="bottom"
           size="sm"
@@ -286,22 +341,48 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
         />
 
       </div>
-
-      {stopRuntimeError && (
-        <Notice tone="error" title="Runtime stop failed" dismissLabel="Dismiss runtime error" onDismiss={() => setStopRuntimeError('')}>
-          {stopRuntimeError}
-        </Notice>
       )}
+
+      {SSH_ENABLED && <ExecutionRoutingWaitNotice session={session} />}
 
       {/* View content */}
       <div key={`${session.id}:${view}`} className={`${glide && !multiPane ? 'uam-pane-glide ' : ''}flex-1 overflow-hidden`} data-pane-content={session.id} data-view={view}>
         {view === 'chat'
-          ? <ChatView session={session} />
+          ? <ChatView key={lineage ? nativeFollowupOwnerKey : undefined} session={session} navigationKey={leafId} showSubagentLineage={false} showComposer={!lineage || nativeFollowupOpen} />
           : <Suspense fallback={<div className="flex h-full items-center justify-center text-sm" style={{ color: 'var(--text-2)' }}>Loading terminal…</div>}><CLIView session={session} /></Suspense>}
       </div>
     </div>
   )
 })
+
+function SubagentPane({ parent, route, leafId, paneIndex, active, multiPane, onActivate, onBack }: {
+  parent: Session; route: SubagentRoute; leafId: string; paneIndex: number; active: boolean; multiPane: boolean
+  onActivate: (leafId: string, sessionId?: string) => void; onBack: () => void
+}) {
+  const child = useAppStore(state => route.kind === 'native' ? state.sessions.find(candidate => candidate.id === route.chatId) : undefined)
+  const executable = child && canExecuteNativeSubagent(child) && subagentParentFor(child, useAppStore.getState().sessions)?.id === parent.id
+  const selectedId = useAppStore(state => state.activeSessionId)
+  useEffect(() => {
+    if (active && executable && selectedId !== child.id) useAppStore.getState().setActiveSession(child.id, { preserveSubagentRoute: true, leafId })
+  }, [active, Boolean(executable), child?.id, selectedId, leafId])
+  // One bar only: the child content (or the executable child's ChatPane) owns the subagent header.
+  return <div className="uam-chat-pane flex h-full min-h-0 flex-col overflow-hidden" data-testid={`subagent-pane-${parent.id}`} data-pane={paneIndex + 1} data-focused={active} data-multi-pane={multiPane}
+    style={{ '--pane-color': chatPaneColors[paneIndex] } as React.CSSProperties}
+    onMouseDown={() => { if (!active) onActivate(leafId) }} onFocusCapture={() => { if (!active) onActivate(leafId) }}>
+    <div className="min-h-0 flex-1 overflow-hidden">{executable
+      ? <ChatPane session={child} active={active} leafId={leafId} paneIndex={paneIndex} multiPane={multiPane} glide={false} onActivate={onActivate} onClose={onBack} lineage={{ parentId: parent.id, parentCreatedAtMs: parent.createdAt.getTime(), parentName: parent.name, onBack }} />
+      : <SubagentPaneContent parent={parent} route={route} active={active} navigationKey={leafId} onBack={onBack} />}</div>
+  </div>
+}
+
+function OrphanSubagentPane({ child, leafId, paneIndex, active, multiPane, onActivate, onClose }: { child: Session; leafId: string; paneIndex: number; active: boolean; multiPane: boolean; onActivate: () => void; onClose: () => void }) {
+  return <div className="uam-chat-pane flex h-full min-h-0 flex-col overflow-hidden" data-testid={`orphan-subagent-pane-${child.id}`} data-pane={paneIndex + 1} data-focused={active} data-multi-pane={multiPane}
+    style={{ '--pane-color': chatPaneColors[paneIndex] } as React.CSSProperties} onMouseDown={() => { if (!active) onActivate() }} onFocusCapture={() => { if (!active) onActivate() }}>
+    <div className="min-h-0 flex-1 overflow-hidden">{canExecuteNativeSubagent(child)
+      ? <ChatPane session={child} active={active} leafId={leafId} paneIndex={paneIndex} multiPane={multiPane} glide={false} onActivate={onActivate} onClose={onClose} lineage={{ orphan: true, onClose }} />
+      : <NativeConversation chatId={child.id} autoFocus={active} navigationKey={leafId} onClose={onClose} />}</div>
+  </div>
+}
 
 const EmptyPane = memo(function EmptyPane({ active, leafId, paneIndex, multiPane, onActivate, onClose }: {
   active: boolean
@@ -323,22 +404,24 @@ const EmptyPane = memo(function EmptyPane({ active, leafId, paneIndex, multiPane
       onFocusCapture={() => { if (!active) onActivate(leafId) }}
       style={{ color: 'var(--text-3)', '--pane-color': paneColor } as React.CSSProperties}
     >
-      {multiPane && <div className="absolute right-2 top-2"><IconButton size="sm" icon={<X size={14} />} label="Close view" onClick={() => onClose(leafId)} /></div>}
+      {multiPane && <div className="absolute right-2 top-2"><IconButton size="sm" variant="danger" icon={<X size={14} />} label="Close view" onClick={() => onClose(leafId)} /></div>}
       <div className="flex max-w-xs flex-col items-center gap-4 px-4">
-        <button type="button" className="flex cursor-pointer flex-col items-center gap-2 rounded-lg p-2 text-sm hover:text-[var(--text-2)] focus-visible:outline" onClick={() => onActivate(leafId)}>
+        {/* ui: raw button kept — large text-link placeholder with custom layout; Button would restyle it */}
+        <button type="button" className="flex cursor-pointer flex-col items-center gap-2 rounded-lg p-2 text-sm hover:text-[var(--text-2)]" onClick={() => onActivate(leafId)}>
           <MessageSquare size={28} aria-hidden style={{ opacity: 0.35 }} />
           Drag a chat here or select one
         </button>
         <Button variant="primary" size="sm" onClick={() => {
           onActivate(leafId)
           useAppStore.getState().setNewChatModalOpen(true)
-        }}>New Chat</Button>
+        }}>New chat</Button>
       </div>
     </div>
   )
 })
 
 export function MainPanel() {
+  const subagentNavigationVersion = useSyncExternalStore(subscribeSubagentNavigation, subagentNavigationRevision)
   const sessions = useAppStore(useShallow((s) => s.sessions))
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const previousActiveSessionId = useRef<string | null>(activeSessionId)
@@ -348,9 +431,30 @@ export function MainPanel() {
   const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
   const unloadSessionMessages = useAppStore((s) => s.unloadSessionMessages)
   const [layout, setLayout] = useState<ChatGridLayout>(readChatGridLayout)
+  const [returnFocusLeaf, setReturnFocusLeaf] = useState('')
+  const panelRef = useRef<HTMLDivElement>(null)
   const [dropTargetPane, setDropTargetPane] = useState<string | null>(null)
   const leaves = chatGridLeaves(layout.root)
-  const visibleIds = leaves.map((leaf) => leaf.sessionId)
+  const visibleIds = [...new Set(leaves.flatMap(leaf => {
+    const parent = sessions.find(session => session.id === leaf.sessionId)
+    const route = parent && subagentRouteFor(leaf.id, parent)
+    return route?.kind === 'native' && sessions.some(session => session.id === route.chatId) ? [leaf.sessionId, route.chatId] : [leaf.sessionId]
+  }))]
+  useLayoutEffect(() => {
+    const selected = sessions.find(session => session.id === activeSessionId)
+    const parent = selected && subagentParentFor(selected, sessions)
+    if (selected && parent) {
+      const activeLeaf = chatGridLeaves(layout.root).find(leaf => leaf.id === layout.activeLeafId)
+      // A selected native child can itself own the displayed passive/managed route.
+      // Retain that immediate-parent view instead of reopening the selected child's parent.
+      if (activeLeaf?.sessionId === selected.id && subagentRouteFor(activeLeaf.id, selected)) return
+      const route = activeLeaf && subagentRouteFor(activeLeaf.id, parent)
+      if (route?.kind === 'native' && route.chatId === selected.id && canExecuteNativeSubagent(selected)) return
+      // A restored backend selection can bypass the explicit sidebar action.
+      setActiveSession(selected.id)
+      setLayout(readChatGridLayout())
+    }
+  }, [activeSessionId, sessions, subagentNavigationVersion, setActiveSession])
   useLayoutEffect(() => {
     const previousId = previousActiveSessionId.current
     const state = useAppStore.getState()
@@ -361,7 +465,9 @@ export function MainPanel() {
       (activeSession?.importedReadOnly || activeSession?.viewMode === 'chat') &&
       (previousSession?.importedReadOnly || previousSession?.viewMode === 'chat') &&
       hasNonBlankChatContent(state.messages[activeSessionId]) &&
-      hasNonBlankChatContent(state.messages[previousId])
+      hasNonBlankChatContent(state.messages[previousId]) &&
+      // Parent/child moves belong to the route stage's spring, not the session glide.
+      !(activeSession && previousSession && (subagentParentFor(activeSession, state.sessions)?.id === previousId || subagentParentFor(previousSession, state.sessions)?.id === activeSessionId))
         ? activeSessionId
         : null,
     )
@@ -369,23 +475,31 @@ export function MainPanel() {
   }, [activeSessionId])
   const visibleAcpSignatures = useAppStore(useShallow((s) => visibleIds.map((id) => {
     const binding = id ? s.acpBindingBySessionId[id] : undefined
-    return `${binding?.processing ? 1 : 0}:${binding?.turnSerial ?? 0}`
+    const messageCount = id ? s.sessions.find((session) => session.id === id)?.messageCount ?? 0 : 0
+    return `${binding?.processing ? 1 : 0}:${binding?.turnSerial ?? 0}:${messageCount}`
   })))
-  const previousVisibleAcp = useRef(new Map<string, { processing: boolean; turnSerial: number }>())
+  const previousVisibleAcp = useRef(new Map<string, { processing: boolean; turnSerial: number; messageCount: number }>())
   const previousVisibleIds = useRef(new Set(visibleIds.filter(Boolean)))
   const pendingEvictionIds = useRef(new Set<string>())
   const pendingNativeReleaseIds = useRef(new Set<string>())
 
+  useLayoutEffect(() => {
+    if (!returnFocusLeaf) return
+    const target = [...(panelRef.current?.querySelectorAll<HTMLElement>('[data-leaf-id]') || [])].find(element => element.dataset.leafId === returnFocusLeaf)
+    target?.querySelector<HTMLTextAreaElement>('textarea')?.focus({ preventScroll: true })
+    setReturnFocusLeaf('')
+  }, [returnFocusLeaf])
   useEffect(() => writeChatGridLayout(layout), [layout])
   useEffect(() => subscribeChatGridLayout((next) => setLayout((current) => current === next ? current : next)), [])
   useEffect(() => useAppStore.subscribe((state) => {
     for (const id of pendingEvictionIds.current) {
+      if (state.activeSessionId === id || previousVisibleIds.current.has(id)) { pendingEvictionIds.current.delete(id); continue }
       if (state.acpBindingBySessionId[id]?.processing || state.cliBindingBySessionId[id]?.processing) continue
       pendingEvictionIds.current.delete(id)
       state.unloadSessionMessages(id)
     }
     for (const id of pendingNativeReleaseIds.current) {
-      if (previousVisibleIds.current.has(id)) { pendingNativeReleaseIds.current.delete(id); continue }
+      if (state.activeSessionId === id || previousVisibleIds.current.has(id)) { pendingNativeReleaseIds.current.delete(id); continue }
       const acp = state.acpBindingBySessionId[id]
       const cli = state.cliBindingBySessionId[id]
       if (acp && (acp.running || acp.processing || !['stopped', 'failed', 'error'].includes(acp.lifecycleState))) continue
@@ -404,16 +518,19 @@ export function MainPanel() {
     if (!activeSessionId) return
     const sessionsById = new Map(sessions.map((session) => [session.id, session]))
     const selectedSession = sessionsById.get(activeSessionId)
-    if (!selectedSession) return
-    const selectedBranchRoot = selectedSession.branchRootChatId || selectedSession.parentChatId || selectedSession.id
+    if (!selectedSession || subagentParentFor(selectedSession, sessions)) return
+    const familyKey = (candidate: Session) => hasNativeSubagentLineage(candidate) ? candidate.id : candidate.branchRootChatId || candidate.parentChatId || candidate.id
+    const selectedBranchRoot = familyKey(selectedSession)
     setLayout((current) => {
       const currentLeaves = chatGridLeaves(current.root)
       const activeLeaf = currentLeaves.find((leaf) => leaf.id === current.activeLeafId)
+      const activeParent = sessionsById.get(activeLeaf?.sessionId || '')
+      if (activeLeaf && activeParent && subagentRouteFor(activeLeaf.id, activeParent) && activeParent.id === activeSessionId) return current
       const branchLeaves = currentLeaves.filter((leaf) => {
         const session = sessionsById.get(leaf.sessionId)
-        return session && (session.branchRootChatId || session.parentChatId || session.id) === selectedBranchRoot
+        return session && familyKey(session) === selectedBranchRoot && (!subagentRouteFor(leaf.id, session) || leaf.id === current.activeLeafId)
       })
-      const existingPane = branchLeaves.find((leaf) => leaf.sessionId === activeSessionId)
+      const existingPane = branchLeaves.find((leaf) => leaf.id === current.activeLeafId && leaf.sessionId === activeSessionId) ?? branchLeaves.find((leaf) => leaf.sessionId === activeSessionId)
       const branchTarget = existingPane ?? branchLeaves.find((leaf) => leaf.id === current.activeLeafId) ?? branchLeaves[0]
       if (branchTarget) {
         if (branchLeaves.length === 1 && existingPane && current.activeLeafId === branchTarget.id) return current
@@ -430,7 +547,7 @@ export function MainPanel() {
         : currentLeaves.find((leaf) => !leaf.sessionId) ?? activeLeaf ?? currentLeaves[0]
       return targetLeaf ? setChatInLeaf(current, activeSessionId, targetLeaf.id) : current
     })
-  }, [activeSessionId, sessions])
+  }, [activeSessionId, sessions, subagentNavigationVersion])
 
   useEffect(() => {
     if (isCefContext() && !isCompanionContext()) {
@@ -438,11 +555,22 @@ export function MainPanel() {
     }
   }, [visibleIds.join('|')])
 
+  // Restored pane IDs can exist before their session summaries arrive.
+  const visibleHistoryOwners = visibleIds.map((id) => {
+    const birth = sessions.find((session) => session.id === id)?.createdAt.getTime()
+    return [id, Number.isFinite(birth) ? birth! : null] as const
+  })
+  const visibleHistoryOwnerKey = JSON.stringify(visibleHistoryOwners)
+  const previousVisibleHistoryOwners = useRef({ loader: loadSessionMessages, owners: new Map<string, number | null>() })
   useEffect(() => {
-    for (const id of visibleIds) {
-      if (id) loadSessionMessages(id)
+    const previous = previousVisibleHistoryOwners.current
+    const current = new Map(visibleHistoryOwners)
+    previousVisibleHistoryOwners.current = { loader: loadSessionMessages, owners: current }
+    for (const [id, birth] of current) {
+      if (!id || birth === null || (previous.loader === loadSessionMessages && previous.owners.get(id) === birth)) continue
+      if (useAppStore.getState().chatSearchNavigation?.chatId !== id) loadSessionMessages(id)
     }
-  }, [loadSessionMessages, visibleIds.join('|')])
+  }, [loadSessionMessages, visibleIds.join('|'), visibleHistoryOwnerKey])
 
   useEffect(() => {
     const current = new Set(visibleIds.filter(Boolean))
@@ -465,20 +593,25 @@ export function MainPanel() {
 
   useEffect(() => {
     const previous = previousVisibleAcp.current
-    const current = new Map<string, { processing: boolean; turnSerial: number }>()
+    const current = new Map<string, { processing: boolean; turnSerial: number; messageCount: number }>()
     for (const id of visibleIds) {
       if (!id) continue
-      const binding = useAppStore.getState().acpBindingBySessionId[id]
+      const state = useAppStore.getState()
+      const binding = state.acpBindingBySessionId[id]
       const snapshot = {
         processing: Boolean(binding?.processing),
         turnSerial: binding?.turnSerial ?? 0,
+        messageCount: state.sessions.find((session) => session.id === id)?.messageCount ?? 0,
       }
       const prior = previous.get(id)
-      if (id !== activeSessionId && prior?.processing) {
+      if (id !== activeSessionId && prior?.processing && useAppStore.getState().chatSearchNavigation?.chatId !== id) {
         if (!snapshot.processing) {
           loadSessionMessages(id, true)
         } else if (snapshot.turnSerial > prior.turnSerial) {
           loadSessionMessages(id)
+        } else if (snapshot.messageCount > prior.messageCount) {
+          // Mirrors the active chat's appendedTurnMessages refresh so a long background turn keeps committing.
+          loadSessionMessages(id, true)
         }
       }
       current.set(id, snapshot)
@@ -498,11 +631,13 @@ export function MainPanel() {
   })
 
   const clearChat = useCallback((leafId: string, sessionId: string) => {
+    clearSubagentView(leafId)
     setLayout((current) => clearChatLeaf(current, leafId))
     if (useAppStore.getState().activeSessionId === sessionId) setActiveSession(null)
   }, [setActiveSession])
 
   const closePane = useCallback((leafId: string) => {
+    clearSubagentView(leafId)
     setLayout((current) => {
       const next = closeChatLeaf(current, leafId)
       setActiveSession(chatGridLeaves(next.root).find((leaf) => leaf.id === next.activeLeafId)?.sessionId || null)
@@ -512,9 +647,28 @@ export function MainPanel() {
 
   const pane = (leafId: string, index: number, sessionId: string) => {
     const session = sessions.find((candidate) => candidate.id === sessionId)
+    const route = session && subagentRouteFor(leafId, session)
+    // An orphan can still own a valid child route; its unavailable-parent view is the return destination.
+    if (session && !route && hasNativeSubagentLineage(session) && !subagentParentFor(session, sessions)) return <OrphanSubagentPane key={`orphan:${session.id}`} child={session} leafId={leafId} paneIndex={index} active={layout.activeLeafId === leafId} multiPane={leaves.length > 1} onActivate={() => selectPane(leafId, session.id)} onClose={() => clearChat(leafId, session.id)} />
+    if (session && route) return <SubagentPane key={`child:${session.id}`} parent={session} route={route} leafId={leafId} paneIndex={index} active={layout.activeLeafId === leafId} multiPane={leaves.length > 1} onActivate={() => {
+      activateSubagentLeaf(leafId)
+      const child = route.kind === 'native' ? sessions.find(candidate => candidate.id === route.chatId) : undefined
+      setActiveSession(child && canExecuteNativeSubagent(child) ? child.id : session.id, { preserveSubagentRoute: true, leafId })
+    }} onBack={() => {
+      clearSubagentView(leafId)
+      setReturnFocusLeaf(leafId)
+      setLayout(current => ({ ...current, activeLeafId: leafId }))
+      setActiveSession(session.id, { preserveSubagentRoute: true, leafId })
+    }} />
     return session
       ? <ChatPane key={session.id} session={session} active={layout.activeLeafId === leafId} leafId={leafId} paneIndex={index} multiPane={leaves.length > 1} glide={glideSessionId === session.id} onActivate={selectPane} onClose={clearChat} />
       : <EmptyPane active={layout.activeLeafId === leafId} leafId={leafId} paneIndex={index} multiPane={leaves.length > 1} onActivate={selectPane} onClose={closePane} />
+  }
+
+  const stageKey = (leafId: string, sessionId: string) => {
+    const session = sessions.find((candidate) => candidate.id === sessionId)
+    const route = session && subagentRouteFor(leafId, session)
+    return route ? subagentStageKey(sessionId, route.kind === 'native' ? route.chatId : route.runId) : sessionId
   }
 
   const paneDropTarget = (leafId: string, index: number, sessionId: string) => (
@@ -543,7 +697,7 @@ export function MainPanel() {
         setActiveSession(sessionId)
       }}
     >
-      {pane(leafId, index, sessionId)}
+      <SubagentRouteStage routeKey={stageKey(leafId, sessionId)}>{pane(leafId, index, sessionId)}</SubagentRouteStage>
     </div>
   )
 
@@ -572,42 +726,37 @@ export function MainPanel() {
   const splitButton = (direction: ChatSplitDirection, icon: React.ReactNode) => {
     const label = `Split active pane ${direction === 'horizontal' ? 'into columns' : 'into rows'}`
     return (
-      <Tooltip label={paneLimitReached ? `Maximum ${MAX_CHAT_PANES} panes` : label} side="bottom">
-        <button
-          type="button"
-          className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
-          aria-label={label}
-          disabled={paneLimitReached}
-          onClick={() => splitActivePane(direction)}
-          style={{ color: 'var(--text-2)', background: 'transparent' }}
-        >
-          {icon}
-        </button>
-      </Tooltip>
+      <IconButton
+        icon={icon}
+        label={label}
+        tooltip={paneLimitReached ? `Maximum ${MAX_CHAT_PANES} panes` : undefined}
+        tooltipSide="bottom"
+        className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
+        disabled={paneLimitReached}
+        onClick={() => splitActivePane(direction)}
+        style={{ color: 'var(--text-2)', background: 'transparent' }}
+      />
     )
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div ref={panelRef} className="flex h-full flex-col overflow-hidden">
       <div
-        className="flex h-9 flex-shrink-0 items-center justify-between px-2"
+        className="uam-layout-toolbar flex h-9 flex-shrink-0 items-center justify-between px-2"
         style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}
       >
-        <div className="flex items-center gap-1" aria-label={`Chat pane layout, ${leaves.length} of ${MAX_CHAT_PANES} panes`}>
+        <div role="group" className="flex items-center gap-1" aria-label={`Chat pane layout, ${leaves.length} of ${MAX_CHAT_PANES} panes`}>
           {splitButton('horizontal', <Columns2 size={15} aria-hidden />)}
           {splitButton('vertical', <Rows2 size={15} aria-hidden />)}
           {leaves.length > 1 && (
-            <Tooltip label="Close active pane" side="bottom">
-              <button
-                type="button"
-                className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
-                aria-label="Close active pane"
-                onClick={() => activeLeaf && closePane(activeLeaf.id)}
-                style={{ color: 'var(--text-2)', background: 'transparent' }}
-              >
-                <X size={15} aria-hidden />
-              </button>
-            </Tooltip>
+            <IconButton
+              icon={<X size={15} aria-hidden />}
+              label="Close active pane"
+              tooltipSide="bottom"
+              variant="danger"
+              className="flex h-7 w-8 items-center justify-center rounded"
+              onClick={() => activeLeaf && closePane(activeLeaf.id)}
+            />
           )}
         </div>
         {isCefContext() && <PushStatusDot />}

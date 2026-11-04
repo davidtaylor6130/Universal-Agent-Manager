@@ -1,0 +1,35 @@
+# Settings design language
+
+Settings use the single approved V5 row language, modelled on the Appearance page. The shell supplies a title-only page header; short section labels organise related rows without decorative descriptions or nested cards. Each row has one concept, a concise consequence where needed and a right-aligned control. Rows are one line; a second line appears only when content truly needs it. This page owns presentation; [Settings](../settings/settings.md) and its feature pages own behaviour.
+
+The [Appearance](../settings/appearance.md) page is the reference layout; the [About](../settings/about.md) page is the reference simple page. Usage top selectors use the shared sliding selector.
+
+The native iPhone counterpart uses iOS grouped list rows and navigation sheets with large touch targets. Each group retains one heading and each row one concept; values and connection status remain distinct from save success. Phone-only preferences stay local, while controller-owned changes use the shared authenticated protocol and disclose unsupported desktop-only operations.
+
+## Controls and disclosure
+
+Use [settings primitives](primitives.md#settings-primitives), with `Switch hideLabel` inside a SettingRow to avoid duplicate labels, MenuSelect for choices and small secondary/ghost buttons for actions. Every switch inside Settings uses the single settings Switch look (neutral track, tick or X in the thumb), scoped to Settings so the composer and other non-settings switches keep their plain look; there is no accent variant. Labels sit above wide text inputs. Primary settings stay visible; disclose genuinely optional advanced details. No hard-coded colours, ad-hoc boxes, repeated headings or wrapper cards that only add a heading. No heading-on-heading: a section with a single subject uses that subject as its title, so a code-font setting is titled “Code blocks and diffs in messages”, not a broader “Code” heading with a subtitle. No live-preview or example boxes for settings that apply live to the whole UI; theme, typography and motion choices use live values rather than preview boxes. The Fonts and sizes page follows this rule, with subject titles and no preview boxes.
+
+Every item in a settings card (row, Disclosure trigger, Notice, empty-state row, warning line) sits on the card's row inset with balanced sp-3 vertical padding and one divider from the item before it. A Disclosure trigger in a card is a full row the height of a SettingRow, with its chevron on the label edge. A multi-column row of fields (`uam-set-fields`) is one card item with no divider between its columns, and a footer action row (`uam-set-actions`) is padded like a row so its button never touches the card edge. Progress fills only the row or action row doing the work, never a whole section or card. A problem that belongs to one row, such as an invalid server, is that row's status line; related diagnostics such as a last run and its log form their own section after the settings they describe. Sections on one page are separated by the section margin alone (`grid gap-0` wrappers); full-height store pages fill the content pane without the 960px column.
+
+## Copy and lists
+
+Use sentence case and plain consequences. A row description is roughly one short line, about 60 characters, and does not repeat its title; a trivially obvious row can omit it. Merge one- or two-row sections with a related neighbour. Hosts, servers, agents, skills and editors use identity/detail/status rows with labelled icon actions and an Add section action; multi-field add/edit flows use the shared Overlay/Presence modal. MCP summaries omit endpoints, executable paths, arguments and workspace directories, which remain in the editor. Empty states have one muted sentence and the add action.
+
+## State and drafts
+
+Observed connected/running/version/failed state is a status line, separate from saved configuration. Keep current content during refresh and disable only the control being saved. Loading uses SettingsLoading. Save/Discard and unsaved-changes handling follow the feature’s real draft state: unchanged saves stay disabled, validation blocks invalid saves, and failures retain drafts and show useful nearby feedback. Retained choices whose save outcome is unknown must stay visibly marked as unconfirmed drafts that may differ from the running app; navigation or an unrelated refresh does not dismiss that status. Group collapse must retain drafts. When applying a connection change needs a restart, put Restart Universal Agent Manager beside the status. A definitive pairing scan or confirmation advances to a dedicated progress step and an explicit success/failure result, with recovery and completion actions visible above the keyboard and safe area.
+
+Safety controls with incomplete native cleanup keep a pending status and truthful recovery beside their switch; saved Off offers an explicit disable retry, while On with per-chat cleanup identifies a new global Off by its consequence. An unknown state requires a status check before enabling. The [Computer Use row](../settings/computer-use.md) follows this rule on both of its settings surfaces.
+
+## Navigation and motion
+
+The active settings item has its tinted `--accent-dim` background and one straight 3 px vertical accent line at the left edge. The tint and line form one indicator that glides between items using transform only; hover and active backgrounds share the same item box. Reduced motion and Motion Off move it without the glide. Sections use the existing fade/rise and disclosure presence patterns, with shared [motion tokens](motion.md), not flashing lists.
+
+## Environment control
+
+Use one SettingsScopeBar above applicable page content, labelled “Applying settings for”, with All environments and configured SSH environments. Pages must not invent their own host selectors. The broader behaviour and current implementation gaps live in [Environment scope](../settings/environment-scope.md); the currently narrower UI must not redefine that agreement. `settingsScopeHostId` is session-only and scope changes clear pending CLI installation. Host saves send `scopeExecutionHostId` only when the backend advertises `hostScopedSettings`; otherwise the supported provider-computer actions remain distinct from global saves.
+
+[Reusable primitives](primitives.md) · [Accessibility](accessibility.md) · [Historical settings choices](../reference/settings-history.md).
+
+A status mark (the rounded tick or cross box) or a Switch carries no visible state word such as On, Off, Connected or Ready beside it; the mark or toggle is the state, and its accessible name carries the word for screen readers. A short reason that explains a problem, such as "Not signed in", stays visible.

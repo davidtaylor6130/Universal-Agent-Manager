@@ -1,7 +1,16 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { UPDATE_REQUEST_TIMEOUT_MS, availableRemoteHelperUpdates, availableUpdates, compareVersions, fetchLatestUpdateCatalog, readCachedUpdateCatalog } from './updateCatalog'
 
 describe('update catalog', () => {
+  beforeEach(() => {
+    const values = new Map<string, string>()
+    Object.defineProperty(window, 'localStorage', { configurable: true, value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    } })
+  })
+
   afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
@@ -15,6 +24,95 @@ describe('update catalog', () => {
     expect(compareVersions('4.5.7-alpha.10', '4.5.7-alpha.2')).toBeGreaterThan(0)
     expect(compareVersions('4.8.0-alpha-2', '4.8.0-alpha')).toBeGreaterThan(0)
 	expect(compareVersions('4.9.0-alpha-10', '4.9.0-alpha-9')).toBeGreaterThan(0)
+  })
+
+  it('fetches provider notes for exact npm and Homebrew versions and projects the selected method', async () => {
+    const noteUrls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/releases/tags/')) {
+        noteUrls.push(url)
+        const tag = decodeURIComponent(url.split('/').at(-1)!)
+        return { ok: true, json: async () => ({ tag_name: tag, body: `# Notes\n- **Fixed** ${tag}` }) }
+      }
+      return { ok: true, json: async () => url.includes('api.github.com')
+        ? { tag_name: 'v1.0.0' }
+        : { version: url.includes('formula/gemini-cli') ? '1.8.0' : '2.0.0' } }
+    }))
+    const catalog = await fetchLatestUpdateCatalog()
+    expect(catalog.providers['codex-cli']).toMatchObject({ releaseNotesExcerpt: 'Notes Fixed rust-v2.0.0' })
+    expect(catalog.providers['gemini-cli'].homebrew).toMatchObject({ releaseNotesExcerpt: 'Notes Fixed v1.8.0' })
+    expect(noteUrls.filter((url) => url.includes('/openai/codex/'))).toHaveLength(1)
+    expect(noteUrls).toHaveLength(6)
+    expect(readCachedUpdateCatalog()?.providers).toEqual(catalog.providers)
+    const installed = { installedVersion: '1.0.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest', status: 'verified' as const, message: '', running: false, lastCommand: '', lastOutput: '' }
+    const updates = availableUpdates(catalog, '1.0.0', {
+      providers: [{ ...installed, providerId: 'codex-cli', installMethod: 'npm' }],
+      remoteProviders: [{ ...installed, providerId: 'gemini-cli', installMethod: 'homebrew-formula', executionHostId: 'lab' }],
+    }, [], {})
+    expect(updates).toEqual([
+      expect.objectContaining({ providerId: 'codex-cli', releaseNotesExcerpt: 'Notes Fixed rust-v2.0.0' }),
+      expect.objectContaining({ providerId: 'gemini-cli', executionHostId: 'lab', latestVersion: '1.8.0', releaseNotesExcerpt: 'Notes Fixed v1.8.0' }),
+    ])
+  })
+
+  it('keeps provider update versions when their notes are missing, malformed or for another tag', async () => {
+    for (const mode of ['missing', 'malformed', 'mismatched', 'offline']) {
+      window.localStorage.removeItem('uam-update-catalog-v1')
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/releases/tags/')) {
+          if (mode === 'offline') throw new Error('offline')
+          return { ok: mode !== 'missing', json: async () => ({
+            tag_name: mode === 'mismatched' ? 'v9.0.0' : decodeURIComponent(url.split('/').at(-1)!),
+            body: mode === 'malformed' ? { text: 'Invalid body' } : 'Wrong or unavailable notes',
+          }) }
+        }
+        return { ok: true, json: async () => url.includes('api.github.com') ? { tag_name: 'v1.0.0' } : { version: '2.0.0' } }
+      }))
+      const catalog = await fetchLatestUpdateCatalog()
+      expect(catalog.providers['codex-cli'].version).toBe('2.0.0')
+      expect(catalog.providers['codex-cli']).not.toHaveProperty('releaseNotesExcerpt')
+      expect(catalog.providers['codex-cli'].homebrew).not.toHaveProperty('releaseNotesExcerpt')
+    }
+  })
+
+  it('sanitizes optional provider cache notes and preserves version-specific entries', () => {
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({
+      checkedAt: '2026-10-14T00:00:00Z', uam: { version: '1.0.0', url: '' },
+      providers: { 'codex-cli': { version: '2.0.0', url: '', releaseNotesExcerpt: '<script>unsafe()</script>' + 'A'.repeat(1_000),
+        homebrew: { version: '1.9.0', url: '', releaseNotesExcerpt: { text: 'Invalid body' } } } },
+    }))
+    const cached = readCachedUpdateCatalog()
+    expect(cached?.providers['codex-cli']).toMatchObject({ version: '2.0.0', releaseNotesExcerpt: 'A'.repeat(500) })
+    expect(cached?.providers['codex-cli'].homebrew).toEqual({ version: '1.9.0', url: '' })
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({
+      checkedAt: '2026-10-14T00:00:00Z', uam: { version: '1.0.0', url: '' },
+      providers: { 'codex-cli': { version: '3.0.0', url: '' } },
+    }))
+    expect(readCachedUpdateCatalog()?.providers['codex-cli']).toEqual({ version: '3.0.0', url: '' })
+  })
+
+  it('bounds provider notes by the shared deadline without losing successful version checks', async () => {
+    vi.useFakeTimers()
+    const pendingNotes: AbortSignal[] = []
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/releases/tags/')) {
+        pendingNotes.push(init!.signal!)
+        return new Promise<Response>((_resolve, reject) => init!.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))))
+      }
+      return new Promise((resolve) => window.setTimeout(() => resolve({ ok: true, json: async () =>
+        url.includes('api.github.com') ? { tag_name: 'v1.0.0' } : { version: '2.0.0' } }), 10_000))
+    }))
+    const result = fetchLatestUpdateCatalog()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(pendingNotes).toHaveLength(5)
+    await vi.advanceTimersByTimeAsync(UPDATE_REQUEST_TIMEOUT_MS - 10_000)
+    const catalog = await result
+    expect(pendingNotes.every((signal) => signal.aborted)).toBe(true)
+    expect(catalog.providers['codex-cli'].version).toBe('2.0.0')
+    expect(catalog.providers['codex-cli']).not.toHaveProperty('releaseNotesExcerpt')
   })
 
   it('reports an older SSH helper independently of the online catalog', () => {
@@ -43,6 +141,36 @@ describe('update catalog', () => {
     ], {}).map((update) => update.id)).toEqual(['remote-helper-same', 'remote-helper-missing'])
   })
 
+  it('compares the bundled helper checksum when the helper version is unchanged', () => {
+    const oldBuild = 'a'.repeat(64)
+    const newBuild = 'b'.repeat(64)
+    const host = { label: 'Host', transport: 'ssh' as const, runnerStatus: 'ready' as const, runnerVersion: '5.0.0', runnerProtocolVersion: 3, architecture: 'x86_64', lastSeenAt: '', bundledRunnerSha256: newBuild }
+    const hosts = [
+      { ...host, id: 'linux-rebuilt', sshAlias: 'linux-rebuilt', platform: 'linux', runnerSha256: oldBuild },
+      { ...host, id: 'windows-rebuilt', sshAlias: 'windows-rebuilt', platform: 'windows', runnerSha256: oldBuild },
+      { ...host, id: 'linux-same', sshAlias: 'linux-same', platform: 'linux', runnerSha256: newBuild },
+      { ...host, id: 'windows-same', sshAlias: 'windows-same', platform: 'windows', runnerSha256: newBuild },
+      { ...host, id: 'unknown', sshAlias: 'unknown', platform: 'linux' },
+    ]
+    const updates = availableRemoteHelperUpdates('5.0.0', 3, hosts, {})
+    expect(updates.map((update) => update.id)).toEqual(['remote-helper-linux-rebuilt', 'remote-helper-windows-rebuilt', 'remote-helper-unknown'])
+    expect(updates[0]).toMatchObject({ currentVersion: '5.0.0 · build aaaaaaaaaaaa', latestVersion: '5.0.0 · helper protocol 3 · build bbbbbbbbbbbb' })
+    expect(updates[2].currentVersion).toBe('5.0.0 · build unknown')
+
+    // Dismissal lasts for this bundled build only.
+    const dismissed = Object.fromEntries(updates.map((update) => [update.id, update.latestVersion]))
+    expect(availableRemoteHelperUpdates('5.0.0', 3, hosts, dismissed)).toEqual([])
+    const nextBuild = hosts.map((entry) => ({ ...entry, bundledRunnerSha256: 'c'.repeat(64) }))
+    expect(availableRemoteHelperUpdates('5.0.0', 3, nextBuild, dismissed)).toHaveLength(5)
+  })
+
+  it('keeps an earlier version offer dismissal when the bundled checksum also differs', () => {
+    const host = { id: 'lab', label: 'Lab', transport: 'ssh' as const, sshAlias: 'lab', runnerStatus: 'ready' as const, runnerVersion: '5.0.0', runnerProtocolVersion: 3, platform: 'linux', architecture: 'x86_64', lastSeenAt: '', runnerSha256: 'a'.repeat(64), bundledRunnerSha256: 'b'.repeat(64) }
+    const [offer] = availableRemoteHelperUpdates('5.1.0', 3, [host], {})
+    expect(offer.latestVersion).toBe('5.1.0 · helper protocol 3')
+    expect(availableRemoteHelperUpdates('5.1.0', 3, [host], { 'remote-helper-lab': '5.1.0 · helper protocol 3' })).toEqual([])
+  })
+
   it('rejects malformed cached catalog entries', () => {
     const values = new Map<string, string>()
     Object.defineProperty(window, 'localStorage', {
@@ -69,6 +197,73 @@ describe('update catalog', () => {
     const result = expect(fetchLatestUpdateCatalog()).rejects.toThrow('Update check timed out.')
     await vi.advanceTimersByTimeAsync(UPDATE_REQUEST_TIMEOUT_MS)
     await result
+  })
+
+  it.each([undefined, null, 123, { text: 'Unexpected object' }, ['Unexpected array'], '   '])('omits missing or malformed release bodies (%j)', async (body) => {
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({
+      checkedAt: '2026-07-13T00:00:00.000Z', uam: { version: '4.1.0', url: '', releaseNotesExcerpt: 'Older release notes.' }, providers: {},
+    }))
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => String(input).includes('api.github.com')
+        ? { tag_name: 'V4.2.0', html_url: 'https://example.test/release', body }
+        : { version: '1.0.0' },
+    })))
+    const catalog = await fetchLatestUpdateCatalog()
+    expect(catalog.uam.version).toBe('V4.2.0')
+    expect(catalog.uam).not.toHaveProperty('releaseNotesExcerpt')
+  })
+
+  it('normalizes release text, caches it, and projects it only onto the UAM update', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => String(input).includes('api.github.com')
+        ? { tag_name: 'V4.2.0', html_url: 'https://example.test/release', body: '# Fixes\r\n- **Faster** [startup](https://example.test).\n<p>Stable `sessions`.</p><script>unsafe()</script>\u0000' }
+        : { version: '2.0.0' },
+    })))
+    const catalog = await fetchLatestUpdateCatalog()
+    expect(catalog.uam.releaseNotesExcerpt).toBe('Fixes Faster startup. Stable sessions.')
+    expect(readCachedUpdateCatalog()?.uam).toEqual(catalog.uam)
+    const updates = availableUpdates(catalog, '4.1.0', {
+      providers: [{ providerId: 'codex-cli', installedVersion: '1.0.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest', status: 'verified', message: '', running: false, lastCommand: '', lastOutput: '' }],
+    }, [], {})
+    expect(updates[0].releaseNotesExcerpt).toBe(catalog.uam.releaseNotesExcerpt)
+    expect(updates[1]).not.toHaveProperty('releaseNotesExcerpt')
+    expect(fetch).toHaveBeenCalledTimes(16)
+  })
+
+  it('bounds oversized release bodies before caching and projection', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => String(input).includes('api.github.com')
+        ? { tag_name: 'V4.2.0', body: 'A'.repeat(20_000) }
+        : { version: '1.0.0' },
+    })))
+    const catalog = await fetchLatestUpdateCatalog()
+    expect(catalog.uam.releaseNotesExcerpt).toBe('A'.repeat(500))
+    expect(readCachedUpdateCatalog()?.uam.releaseNotesExcerpt).toHaveLength(500)
+    expect(availableUpdates(catalog, '4.1.0', { providers: [] }, [], {})[0].releaseNotesExcerpt).toHaveLength(500)
+  })
+
+  it('accepts legacy cache entries and ignores malformed optional excerpts', () => {
+    const legacy = { checkedAt: '2026-07-13T00:00:00.000Z', uam: { version: '4.2.0', url: 'https://example.test/uam' }, providers: {} }
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify(legacy))
+    expect(readCachedUpdateCatalog()).toEqual(legacy)
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({ ...legacy, uam: { ...legacy.uam, releaseNotesExcerpt: { text: 'Invalid' } } }))
+    expect(readCachedUpdateCatalog()).toEqual(legacy)
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({ ...legacy, uam: { ...legacy.uam, releaseNotesExcerpt: 'B'.repeat(1_000) } }))
+    expect(readCachedUpdateCatalog()?.uam.releaseNotesExcerpt).toBe('B'.repeat(500))
+  })
+
+  it('retains cached notes with their version when GitHub is unavailable', async () => {
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({
+      checkedAt: '2026-07-13T00:00:00.000Z', uam: { version: '4.2.0', url: 'https://example.test/uam', releaseNotesExcerpt: 'Existing fixes.' }, providers: {},
+    }))
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => ({
+      ok: !String(input).includes('api.github.com'),
+      json: async () => ({ version: '1.0.0' }),
+    })))
+    expect((await fetchLatestUpdateCatalog()).uam).toMatchObject({ version: '4.2.0', releaseNotesExcerpt: 'Existing fixes.' })
   })
 
   it('reports UAM and installed provider updates while respecting dismissals', () => {
@@ -201,7 +396,7 @@ describe('update catalog', () => {
     expect(catalog.uam.version).toBe('V4.2.0')
     expect(catalog.providers['codex-cli'].version).toBe('0.130.0')
     expect(catalog.providers['opencode-cli'].homebrew?.version).toBe('1.18.0')
-    expect(fetch).toHaveBeenCalledTimes(11)
+    expect(fetch).toHaveBeenCalledTimes(17)
   })
 
   it('keeps independent provider releases when GitHub is unavailable', async () => {

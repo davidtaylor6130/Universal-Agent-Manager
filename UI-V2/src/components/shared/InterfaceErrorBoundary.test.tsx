@@ -39,4 +39,21 @@ describe('interface failure containment', () => {
     expect(host.textContent).toContain('Unsaved drafts may be lost')
     act(() => root.unmount())
   })
+  it('retains Windows window controls when the root React surface crashes', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Win32')
+    window.cefQuery = ({onSuccess}) => onSuccess(JSON.stringify({platform:'windows',maximized:false,fullscreen:false}))
+    function Broken(): never { throw new Error('Render failure') }
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<InterfaceErrorBoundary><Broken /></InterfaceErrorBoundary>))
+      expect(host.querySelector('[aria-label="Close window"]')).toBeTruthy()
+      expect(host.querySelector('[aria-label="Minimize window"]')).toBeTruthy()
+      expect(host.querySelector('[aria-label="Maximize window"]')).toBeTruthy()
+      expect(host.querySelector('.uam-window-recovery')?.getAttribute('data-window-platform')).toBe('windows')
+      expect(host.textContent).toContain('Reload interface')
+    } finally { act(() => root.unmount()); delete window.cefQuery }
+  })
+
 })

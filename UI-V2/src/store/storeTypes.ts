@@ -1,5 +1,9 @@
 import type { ContextReference } from '../types/contextReference'
-import type { OrganizationChange, OrganizationUndo } from '../types/organization'
+import type { WorkspaceFilePreview } from '../types/filePreview'
+import type { StartupNativeImportStatus } from '../types/startupNativeImports'
+import type { ExecutionRoutingSettings, RoutingReservation } from '../types/executionRouting'
+import type { ChatSearchHit, ChatSearchNavigation } from '../types/chatSearch'
+import type { OrganizationChange } from '../types/organization'
 import type { CustomIconInput, CustomIconTarget } from '../types/customIcon'
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, ExecutionHost, RemoteDirectoryBrowseResult, Session, Folder, ViewMode, WorkspaceFolderRecoveryPreview } from '../types/session'
 import type { Message, Attachment } from '../types/message'
@@ -18,7 +22,9 @@ import type {
   CliTranscript,
   CliVersionManager,
   CppAppState,
+  CppSettings,
   CppCliDebugState,
+  CppDeletionProgress,
   EditorFileAssociation,
   GitWorktreeResult,
   GitWorktreeStatus,
@@ -28,6 +34,15 @@ import type {
   McpServerConfiguration,
   CentralProviderConfiguration,
   ProviderChatDefaults,
+  CreateSessionOptions,
+  NewChatWorktreeContext,
+  ProviderAvailabilityOverride,
+  VoiceInputSettings,
+  VcsStorageSettings,
+  VcsSettingsRequest,
+  StorageSettingsRequest,
+  ProviderAvailabilityRequest,
+  VoiceInputSettingsRequest,
   ProviderModelCatalog,
   ProviderAgentImportPreview,
   UamAgentCycleShortcut,
@@ -39,20 +54,37 @@ import type {
   VcsCommitStatus,
   VcsType,
   ComputerUseAllowedApplication,
+  WindowsPowerShellPreference,
 } from './cpp/types'
+import type { CEFResponse } from '../ipc/cefBridge'
 import type { StoreApi } from 'zustand'
+
+/** Positive evidence of a guarded, immutable saved-history tail; never input authority. */
+export type AcceptedHistoryPage = {
+  chatId: string; birth: number; requestId: string; session: Session
+  summaryDigest: string | undefined; summaryCount: number | undefined
+  messagesDigest: string; startIndex: number; totalCount: number; messages: Message[]
+}
 
 export type MutationResult = { ok: boolean; error?: string }
 export type CommandSafetyTierResult = MutationResult & { cancelled?: boolean }
 export type GoalCreateResult = MutationResult & { goalId?: string }
 
-export interface AppState {
+/** Optional presentation observation only; action result, child controls and delivery authority remain separate. */
+export type AcpPromptPresentationObserver = ((identity: { requestId: string; sessionId: string; createdAtMs: number }) => void) & {
+  onInputRecorded?: (identity: { requestId: string; sessionId: string; createdAtMs: number; message: Message }) => void
+}
+
+export interface AppState extends VoiceInputSettings, VcsStorageSettings {
+  providerAvailability: ProviderAvailabilityOverride[]
+  startupNativeImports: StartupNativeImportStatus
+  startupNativeImportReviewSequence: number
+  startupNativeImportFolderId: string | null
+  openStartupNativeImportReview: (folderId?: string) => void
   // Data
   folders: Folder[]
   resourceCollections: ResourceCollection[]
-  organizationUndo: OrganizationUndo | null
   organizationMutationSequence: number
-  undoOrganization: () => Promise<boolean>
   applyOrganizationChange: (change: OrganizationChange) => Promise<boolean>
   moveResourceToCollection: (collectionId: string | null, type: ResourceReferenceType, target: string, label: string) => Promise<boolean>
   sessions: Session[]
@@ -60,11 +92,20 @@ export interface AppState {
   lastAppliedStateRevision: number
   messages: Record<string, Message[]>
   historyStartIndexBySessionId: Record<string, number>
+  chatSearchNavigation: ChatSearchNavigation | null
+  jumpToSessionMessage: (chatId: string, messageIndex: number) => Promise<boolean>
+  jumpToChatSearchHit: (hit: ChatSearchHit, queryRequestId: string) => Promise<boolean>
+  consumeChatSearchJump: (chatId: string, generation: number) => boolean
+  clearChatSearchNavigation: (queryRequestId?: string) => Promise<void>
   chatHistoryErrorBySessionId: Record<string, string>
+  // Failed request context changes notice wording only, never native save authority.
+  chatHistoryErrorWasRefreshBySessionId: Record<string, boolean>
+  /** refreshNative marks an explicit native refresh, shown while it runs even over loaded messages. */
+  chatHistoryReadBySessionId: Record<string, { requestId: string; birth: number; refreshNative?: boolean }>
+  chatHistoryPageBySessionId: Record<string, AcceptedHistoryPage>
   goalsByChatId: Record<string, Goal[]>
   activeGoalIdByChatId: Record<string, string | null>
   goalModeByChatId: Record<string, boolean>
-  defaultGoalTokenBudgetByChatId: Record<string, number>
 
   // Providers
   providers: Provider[]
@@ -78,17 +119,24 @@ export interface AppState {
   memoryIdleDelaySeconds: number
   memoryRecallBudgetBytes: number
   goalMaxLoopIterations: number
+  goalTokenBudget: number
   acpSetupInactivityTimeoutSeconds: number
+  activeTurnInactivityTimeoutSeconds: number
+  streamLoopRepeatLimit: number
   acpTurnOutputLimitMiB: number
   appVersion: string
   runnerProtocolVersion: number
   showProviderIconsInSidebar: boolean
   showWorktreePathInSidebar: boolean
+  gitEnabled: boolean
+  svnEnabled: boolean
   updateChecksEnabled: boolean
   automaticProviderUpdates: boolean
   updateLastCheckedAt: string
   dismissedUpdateVersions: Record<string, string>
   memoryLastStatus: string
+  /** Local display metadata, never native saved values or permission authority. */
+  memorySettingsUnconfirmedFields: string[]
   memoryWorkerBindings: Record<string, MemoryWorkerBinding>
   permissionReviewerProviderId: string
   permissionReviewerModelId: string
@@ -98,19 +146,43 @@ export interface AppState {
   defaultNewChatProviderId: string
   providerChatDefaults: Record<string, ProviderChatDefaults>
   fileExplorerApplication: string
+  windowsPowerShell: WindowsPowerShellPreference
   defaultEditorPresetId: string
   editorFileAssociations: EditorFileAssociation[]
   centralProviderConfiguration: CentralProviderConfiguration
   mcpServers: McpServerConfiguration[]
+  executionRouting: ExecutionRoutingSettings
+  setExecutionRoutingSettings: (settings: ExecutionRoutingSettings) => Promise<void>
+  releaseExecutionRoutingReservation: (expected: RoutingReservation) => Promise<void>
   executionHosts: ExecutionHost[]
   favoriteUamAgentIds: string[]
+  /** Native sessions whose title starts with one of these (ignoring case) are never offered for import. */
+  nativeImportExcludedTitlePrefixes: string[]
+  /** Native sessions in one of these folders, or below one, are never offered for import. */
+  nativeImportExcludedDirectories: string[]
   uamAgentCycleShortcut: UamAgentCycleShortcut
+  computerUseEnabled?: boolean
+  computerUseRevocationPending?: boolean
+  /** Native publication witness for these two fields; never a consent grant. */
+  computerUseSettingsStateRevision?: number
+  /** Session-only global settings request, shared across both settings surfaces. */
+  computerUseSettingsOperation?: 'check' | 'enable' | 'disable'
+  computerUseSettingsError?: string
+  /** Native observation current when the session-only failure was received. */
+  computerUseSettingsErrorStateRevision?: number
   computerUseAllowlistEnabled: boolean
   computerUseAllowedApplications: ComputerUseAllowedApplication[]
+  branchSwitching?: boolean
+  /** Backend accepts scopeExecutionHostId on settings saves. Scope selector is disabled when absent. */
+  hostScopedSettings?: boolean
+  hostScopedSettingsValues: NonNullable<CppSettings['hostScopedSettingsValues']>
+  /** Settings page scope: '*' for all environments, otherwise an SSH execution host id. Session only. */
+  settingsScopeHostId: string
   uamAgentsBySessionId: Record<string, UamAgentSummary[]>
   shellActions: ShellAction[]
   shellActionNotification: string
   statusLine: string
+  deletionProgress?: CppDeletionProgress
   workspaceFolderRecoveryError: string
 
   // UI
@@ -121,6 +193,7 @@ export interface AppState {
   collapsibleWorkSections: boolean
   isNewChatModalOpen: boolean
   newChatFolderId: string | null
+  newChatWorktreeContext: NewChatWorktreeContext | null
   isSettingsOpen: boolean
   memoryLibraryScope: MemoryScope | null
   memoryLibraryEntries: MemoryEntry[]
@@ -150,22 +223,26 @@ export interface AppState {
 
   // Session actions
   acknowledgeChatAttention: (id: string, revision: string) => Promise<boolean>
+  setChatSnoozedUntil: (id: string, untilMs: number) => Promise<{ ok: boolean; error?: string }>
   setChatSettled: (id: string, settled: boolean) => Promise<boolean>
-  setActiveSession: (id: string | null) => void
-  loadSessionMessages: (id: string, force?: boolean, refreshNative?: boolean) => Promise<void | false> | void
+  setActiveSession: (id: string | null, navigation?: { preserveSubagentRoute?: boolean; leafId?: string }) => void
+  loadSessionMessages: (id: string, force?: boolean, refreshNative?: boolean) => Promise<void | false | AcceptedHistoryPage> | void
   loadOlderSessionMessages: (id: string) => Promise<boolean>
   unloadSessionMessages: (id: string) => void
-  addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string) => Promise<boolean>
-  branchFromMessage: (id: string, messageIndex: number, content?: string) => Promise<string | null>
+  addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string, routingMode?: 'explicit' | 'automatic', options?: CreateSessionOptions) => Promise<boolean>
+  branchFromMessage: (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[]) => Promise<string | null>
   retryFailedMessage: (id: string, messageIndex: number) => Promise<{ ok: boolean; error?: string }>
+  discardUnsentMessage: (id: string, messageIndex: number, expectedMessageId: string) => Promise<boolean>
+  editUnsentMessage: (id: string, messageIndex: number, expectedMessage: Message, text: string, retainedAttachments: Attachment[]) => Promise<{ ok: boolean; error?: string }>
   renameSession: (id: string, name: string) => void
-  setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>
+  /** `quiet` leaves failure reporting to a caller that names each chat. */
+  setSessionPinned: (id: string, pinned: boolean, options?: { quiet?: boolean }) => Promise<boolean>
   setSessionProvider: (id: string, providerId: string) => Promise<boolean>
   setSessionModel: (id: string, modelId: string) => Promise<boolean>
   setSessionReviewerModel: (id: string, modelId: string) => Promise<boolean>
   setSessionApprovalMode: (id: string, modeId: string) => Promise<boolean>
   setSessionUamAgent: (id: string, agentId: string) => Promise<boolean>
-  setSessionUamControlEnabled: (id: string, enabled: boolean) => Promise<boolean>
+  setSessionUamControlEnabled: (id: string, enabled: boolean, applyOnNextLaunch?: boolean) => Promise<boolean>
   refreshUamAgents: (id: string) => Promise<boolean>
   browseProviderAgentImport: (currentValue?: string) => Promise<string | null>
   previewProviderAgentImport: (providerId: string, sourcePath: string) => Promise<ProviderAgentImportPreview | null>
@@ -177,14 +254,17 @@ export interface AppState {
   setSessionMemoryEnabled: (id: string, enabled: boolean) => Promise<boolean>
   setSessionMemoryLevel: (id: string, level: MemoryLevel) => Promise<boolean>
   setSessionSmallModelMode: (id: string, enabled: boolean) => Promise<boolean>
-  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'acpSetupInactivityTimeoutSeconds' | 'acpTurnOutputLimitMiB' | 'memoryWorkerBindings' | 'permissionReviewerProviderId' | 'permissionReviewerModelId'>>) => Promise<boolean>
+  /** Internal display observation/overlay; never publication or native mutation authority. */
+  reconcileMemorySettingsProjection: (projection: Partial<AppState>, suppliedNativeSettings?: Partial<CppSettings>) => Partial<AppState>
+  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'goalTokenBudget' | 'acpSetupInactivityTimeoutSeconds' | 'activeTurnInactivityTimeoutSeconds' | 'streamLoopRepeatLimit' | 'acpTurnOutputLimitMiB' | 'memoryWorkerBindings' | 'permissionReviewerProviderId' | 'permissionReviewerModelId'>>) => Promise<boolean>
   setUpdateSettings: (settings: Partial<Pick<AppState, 'automaticProviderUpdates' | 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
   setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }) => Promise<boolean>
-  setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }) => Promise<boolean>
-  setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication'>>) => Promise<boolean>
+  setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }, scopeExecutionHostId?: string) => Promise<boolean>
+  setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication' | 'windowsPowerShell'>>) => Promise<boolean>
   setCentralProviderConfiguration: (configuration: CentralProviderConfiguration) => Promise<{ ok: boolean; error?: string }>
-  setMcpServers: (servers: McpServerConfiguration[]) => Promise<{ ok: boolean; error?: string }>
+  setMcpServers: (servers: McpServerConfiguration[], scopeExecutionHostId?: string) => Promise<{ ok: boolean; error?: string }>
   setUamAgentPreferences: (settings: { favoriteUamAgentIds: string[]; uamAgentCycleShortcut: UamAgentCycleShortcut }) => Promise<boolean>
+  setNativeImportFilters: (filters: { titlePrefixes: string[]; directories: string[] }) => Promise<boolean>
   setShellActions: (actions: ShellAction[]) => Promise<boolean>
   applyShellActions: () => Promise<boolean>
   dismissShellActionNotification: () => Promise<void>
@@ -209,7 +289,7 @@ export interface AppState {
   openSessionWorkspace: (id: string) => Promise<boolean>
   openSessionWorkspaceEditor: (id: string) => Promise<boolean>
   openSessionTerminal: (id: string) => Promise<boolean>
-  openSubAgentSession: (sourceChatId: string, nativeSessionId: string, title?: string, selectChat?: boolean) => Promise<string | null>
+  openSubAgentSession: (sourceChatId: string, nativeSessionId: string, title?: string, selectChat?: boolean, onFailure?: (message: string) => void) => Promise<string | null>
   getChatWorktreeStatus: (id: string) => Promise<GitWorktreeStatus | null>
   createChatWorktree: (id: string) => Promise<GitWorktreeResult>
   discardChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
@@ -218,6 +298,7 @@ export interface AppState {
   rollbackChatTurn: (id: string, messageIndex: number) => Promise<GitTurnCheckpointResult | null>
   getChatFileChangeReceipts: (id: string) => Promise<ChatFileChangeReceiptsResponse>
   getVcsCommitStatus: (id: string, vcsType?: VcsType, options?: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string }) => Promise<VcsCommitStatus | null>
+  getWorkspaceFilePreview: (id: string, path: string) => Promise<WorkspaceFilePreview>
   getVcsFileDiff: (id: string, path: string, vcsType: VcsType, comparisonRef?: string) => Promise<string>
   commitVcsChanges: (id: string, vcsType: VcsType, message: string, files: string[]) => Promise<VcsCommitResult>
   generateVcsCommitMessage: (id: string, vcsType: VcsType, files: string[]) => Promise<VcsCommitMessageSuggestion | null>
@@ -231,7 +312,6 @@ export interface AppState {
   removeGoal: (chatId: string, goalId: string) => Promise<MutationResult>
   resumeGoal: (chatId: string, goalId: string, restart?: boolean) => Promise<MutationResult>
   setGoalMode: (chatId: string, active: boolean) => void
-  setDefaultGoalTokenBudget: (chatId: string, tokenBudget: number) => void
   clearActiveGoal: (chatId: string) => Promise<MutationResult>
 
   // Folder actions
@@ -242,6 +322,7 @@ export interface AppState {
   previewUnsortedWorkspaceFolders: () => Promise<WorkspaceFolderRecoveryPreview | null>
   rebuildUnsortedWorkspaceFolders: () => Promise<boolean>
   renameFolder: (id: string, name: string, directory: string) => Promise<boolean>
+  workspaceDeletionError: string
   deleteFolder: (id: string) => Promise<boolean>
   deleteFolders: (ids: string[]) => Promise<boolean>
   browseFolderDirectory: (currentValue: string) => Promise<string | null>
@@ -265,6 +346,7 @@ export interface AppState {
   deleteMemoryEntries: (entryIds: string[]) => Promise<boolean>
   openMemoryRoot: () => Promise<boolean>
   revealMemoryEntry: (entryId: string) => Promise<boolean>
+  readMemoryEntry: (request: Pick<MemoryScope, 'scopeType' | 'folderId'> & { entryId: string }) => Promise<CEFResponse<{ content: string }>>
   openMemoryScanModal: () => Promise<boolean>
   closeMemoryScanModal: () => void
   toggleMemoryScanChat: (chatId: string) => void
@@ -278,10 +360,12 @@ export interface AppState {
   // ACP actions
   stageChatContextReference: (sessionId: string, reference: ContextReference) => boolean
   stageChatAttachments: (sessionId: string, items: ChatAttachmentInput[]) => Promise<Attachment[]>
-  sendAcpPrompt: (sessionId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => Promise<boolean>
-  removeQueuedAcpPrompt: (sessionId: string, index: number) => Promise<boolean>
-  steerQueuedAcpPrompt: (sessionId: string, index: number) => Promise<boolean>
-  editQueuedAcpPrompt: (sessionId: string, promptId: string, expectedRevision: number, text: string) => Promise<boolean>
+  sendAcpPrompt: (sessionId: string, text: string, attachments?: Attachment[], steerNow?: boolean, onStarted?: AcpPromptPresentationObserver) => Promise<boolean>
+  removeQueuedAcpPrompt: (sessionId: string, index: number, expected?: { id: string; revision: number }) => Promise<boolean>
+  retryUnsentAcpPrompt: (sessionId: string, expected: { id: string; revision: number }) => Promise<boolean>
+  steerQueuedAcpPrompt: (sessionId: string, index: number, expected?: { id: string; revision: number }) => Promise<boolean>
+  resumeQueuedAcpPrompts: (sessionId: string, expected: { id: string; revision: number }[]) => Promise<boolean>
+  editQueuedAcpPrompt: (sessionId: string, promptId: string, expectedRevision: number, text: string, retainedAttachmentIds?: string[]) => Promise<boolean>
   reorderQueuedAcpPrompts: (sessionId: string, expected: { id: string; revision: number }[], orderedIds: string[]) => Promise<boolean>
   discoverProviderModels: (sessionId: string, providerId?: string, workspaceDirectory?: string, executionHostId?: string) => Promise<boolean>
   setAcpConfigOption: (sessionId: string, configId: string, value: string) => Promise<boolean>
@@ -298,9 +382,14 @@ export interface AppState {
   refreshCustomThemes: () => Promise<boolean>
   saveCustomTheme: (theme: CustomTheme) => Promise<CustomTheme | null>
   deleteCustomTheme: (id: string) => Promise<boolean>
+  setVcsSettings: (settings: VcsSettingsRequest) => Promise<boolean>
+  setProviderAvailability: (settings: ProviderAvailabilityRequest) => Promise<boolean>
+  setVoiceInputSettings: (settings: VoiceInputSettingsRequest) => Promise<boolean>
+  setStorageSettings: (settings: StorageSettingsRequest) => Promise<boolean>
   setSidebarSettings: (settings: Pick<AppState, 'showProviderIconsInSidebar' | 'showWorktreePathInSidebar'>) => Promise<boolean>
-  setNewChatModalOpen: (open: boolean, folderId?: string | null) => void
+  setNewChatModalOpen: (open: boolean, folderId?: string | null, worktreeContext?: NewChatWorktreeContext | null) => void
   setSettingsOpen: (open: boolean) => void
+  setSettingsScopeHostId: (hostId: string) => void
   setSidebarCollapsed: (collapsed: boolean) => void
   setCommitPanelOpen: (open: boolean) => void
   setSidebarWidthPx: (width: number) => void

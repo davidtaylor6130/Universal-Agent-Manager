@@ -1,10 +1,13 @@
 #include "app/shell_action_service.h"
+#include "app/data_folder_transition.h"
+#include "common/platform/data_folder_writer_lease.h"
 
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
 #include "app/markdown_store_service.h"
 #include "app/persistence_coordinator.h"
 #include "common/chat/chat_repository.h"
+#include "common/config/provider_availability.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
@@ -239,7 +242,8 @@ namespace
 			if (error_out != nullptr) *error_out = "Shell action '" + result.label + "' requires a skill file.";
 			return false;
 		}
-		if (!result.provider_id.empty() && !uam::provider_ids::IsKnownCliProviderId(result.provider_id))
+		// An action saved for a provider this build excludes stays in the list, inert: it is neither installed nor run.
+		if (!result.provider_id.empty() && !uam::provider_ids::IsKnownCliProviderId(result.provider_id) && !uam::provider_ids::IsRetainedExcludedProviderId(result.provider_id))
 		{
 			if (error_out != nullptr) *error_out = "Shell action '" + result.label + "' has an unsupported provider.";
 			return false;
@@ -535,9 +539,15 @@ namespace
 	{
 		const std::string action_id = SafeId(request.value("actionId", ""));
 		const auto action_it = std::find_if(app.shell_actions.begin(), app.shell_actions.end(), [&](const ShellAction& action) { return action.id == action_id; });
-		if (action_it == app.shell_actions.end() || !action_it->enabled)
+		if (action_it == app.shell_actions.end() || !action_it->enabled || uam::provider_ids::IsRetainedExcludedProviderId(action_it->provider_id))
 		{
 			status = "Shell action is no longer available.";
+			return false;
+		}
+		const std::string provider_id = action_it->provider_id.empty() ? app.settings.default_new_chat_provider_id : action_it->provider_id;
+		if (!uam::provider_availability::IsEnabled(app.settings, provider_id))
+		{
+			status = "Shell action '" + action_it->label + "' uses a provider that is disabled on this computer. Enable it in Settings > Providers.";
 			return false;
 		}
 
@@ -583,11 +593,10 @@ namespace
 			return false;
 		}
 
-		ChatSession chat = ChatDomainService().CreateNewChat(
-		    folder_id,
-		    action_it->provider_id.empty() ? app.settings.default_new_chat_provider_id : action_it->provider_id);
+		ChatSession chat = ChatDomainService().CreateNewChat(folder_id, provider_id);
 		chat.title = action_it->open_workspace ? FolderTitle(workspace) : action_it->label;
 		chat.workspace_directory = uam::paths::Utf8PathString(workspace);
+		chat.svn_update_pending = app.settings.svn_enabled && app.settings.svn_update_before_chat;
 		uam::provider_chat_defaults::ApplyToChat(app.settings, chat);
 		if (!action_it->model_id.empty()) chat.model_id = action_it->model_id;
 		app.chats.push_back(std::move(chat));
@@ -705,6 +714,7 @@ bool ShellActionService::Apply(const uam::AppState& app, const std::filesystem::
 	{
 		ShellAction normalized;
 		if (!NormalizeAction(action, normalized, error_out)) return false;
+		if (uam::provider_ids::IsRetainedExcludedProviderId(normalized.provider_id)) normalized.enabled = false;
 		if (normalized.enabled && !normalized.open_workspace)
 		{
 			std::filesystem::path skill;
@@ -772,6 +782,20 @@ bool ShellActionService::QueueLaunchRequest(const std::filesystem::path& data_ro
 	const auto flag = std::find(args.begin(), args.end(), kLaunchFlag);
 	if (flag == args.end()) return true;
 	if (recognized_out != nullptr) *recognized_out = true;
+	std::string ownership_error;
+	if (!uam::paths::CreateDirectoriesNoThrow(data_root))
+	{
+		if (error_out)
+			*error_out = "The application data folder is unavailable for shell actions.";
+		return false;
+	}
+	const auto writer = uam::platform::DataFolderWriterLease::TryAcquire(data_root, uam::platform::DataFolderWriterLease::Access::Shared, ownership_error);
+	if (!writer || !uam::DataFolderTransition::CheckExternalSourceFence(data_root, ownership_error, true))
+	{
+		if (error_out)
+			*error_out = ownership_error;
+		return false;
+	}
 	if (std::distance(flag, args.end()) < 3)
 	{
 		if (error_out != nullptr) *error_out = "Shell action invocation requires an action id and selected path.";
@@ -798,6 +822,13 @@ bool ShellActionService::QueueLaunchRequest(const std::filesystem::path& data_ro
 	if (!uam::io::WriteTextFile(RequestsPath(data_root) / (token + ".json"), request.dump() + "\n"))
 	{
 		if (error_out != nullptr) *error_out = "Failed to queue the shell action request.";
+		return false;
+	}
+	if (!uam::DataFolderTransition::CheckExternalSourceFence(data_root, ownership_error, true))
+	{
+		// Retain the uncertain request; never acknowledge it through a newly fenced source.
+		if (error_out)
+			*error_out = ownership_error;
 		return false;
 	}
 	return true;

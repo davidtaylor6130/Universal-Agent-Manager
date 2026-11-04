@@ -154,3 +154,16 @@ it('fails a concurrent transfer when any chunk request fails and does not fetch 
   expect(fetch.mock.calls.filter((call) => JSON.parse(String(call[1].body)).action === 'getChatMessages')).toHaveLength(1)
   expect(fetch.mock.calls.some((call) => JSON.parse(String(call[1].body)).payload?.offset === Math.floor((bytes.length - 1) / chunkBytes) * chunkBytes)).toBe(false)
 })
+
+it('reports the HTTP status when a failed response has no JSON body', async () => {
+  window.history.replaceState(null, '', '/companion')
+  window.localStorage.setItem('uam-companion-token', 'test-token')
+  const notJson = async () => { throw new SyntaxError('Unexpected token <') }
+  const fetch = vi.fn()
+    .mockResolvedValueOnce({ ok: false, status: 502, json: notJson })
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ uamTransfer: { id: 'transfer', totalBytes: 10, chunkBytes: 10 } }) })
+    .mockResolvedValueOnce({ ok: false, status: 504, json: notJson })
+  vi.stubGlobal('fetch', fetch)
+  expect(await sendToCEF({ action: 'sendAcpPrompt' })).toMatchObject({ ok: false, error: 'Request failed (502).' })
+  expect(await sendToCEF({ action: 'getChatMessages' })).toMatchObject({ ok: false, error: 'Could not load the rest of this response.' })
+})

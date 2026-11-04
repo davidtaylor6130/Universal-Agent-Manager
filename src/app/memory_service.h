@@ -3,7 +3,9 @@
 #include "common/state/app_state.h"
 
 #include <filesystem>
+#include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class MemoryService
@@ -27,12 +29,24 @@ class MemoryService
 	static std::filesystem::path LocalMemoryRoot(const std::filesystem::path& workspace_root);
 	static std::filesystem::path CategoryPath(const std::filesystem::path& root, const std::string& category);
 	static bool EnsureMemoryLayout(const std::filesystem::path& root);
-	static std::string BuildRecallPreface(const uam::AppState& app, const ChatSession& chat, const std::string& prompt);
-	static bool ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, const std::filesystem::path& workspace_root, const std::string& output, int processed_message_count = -1, std::string* error_out = nullptr);
+	static std::string BuildRecallPreface(const uam::AppState& app, const ChatSession& chat, const std::string& prompt, std::stop_token stop_token = {});
+	/// <summary>Stages scoped memory detail files without changing the caller's resources on failure.</summary>
+	static bool BuildRecallResources(const std::filesystem::path& data_root, const AppSettings& settings, const ChatSession& chat, const std::filesystem::path& workspace, std::map<std::string, std::string>& files, std::string& error);
+	static bool ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, const std::filesystem::path& workspace_root, const std::string& output, int processed_message_count = -1, std::string* error_out = nullptr, bool refresh_counts_async = false);
+	/// <summary>Reads memory metadata and syncs private temporary entries without replacing saved memories.</summary>
+	static std::shared_ptr<PreparedMemoryOutput> PrepareWorkerOutput(const std::filesystem::path& data_root, const ChatSession& chat, const std::filesystem::path& workspace_root, const std::string& output, int processed_message_count, std::string* error_out = nullptr, std::stop_token stop_token = {});
+	/// <summary>Publishes prepared entries only while their chat, scope and saved category revisions still match.</summary>
+	static bool PublishPreparedWorkerOutput(uam::AppState& app, ChatSession& chat, const std::filesystem::path& workspace_root, const std::shared_ptr<PreparedMemoryOutput>& prepared, std::string* error_out = nullptr, bool refresh_counts_async = false);
 	static uam::MemoryActivityState BuildMemoryActivity(const uam::AppState& app);
 	static void RefreshMemoryActivity(uam::AppState& app);
+	static void RefreshMemoryActivityAsync(uam::AppState& app);
+	static bool PollMemoryActivity(uam::AppState& app);
 	static std::string BuildWorkerCommandForTests(const ProviderProfile& profile, const AppSettings& settings, const std::string& prompt, const std::string& model_id);
 	static std::string BuildWorkerPromptForTests(const ChatSession& chat, int start_message_index = -1);
+	/// <summary>Test-only fault injection called inside memory worker threads at "history" (saved-history read) and "output" (after the worker process returns); nullptr disables it.</summary>
+	static void SetWorkerFaultForTests(void (*fault)(std::string_view stage));
+	/// <summary>Captures extraction text from the requested scan start while retaining message positions and excluding unused payloads. Zero captures all text; negative uses the automatic overlap.</summary>
+	static ChatSession CaptureWorkerInput(const ChatSession& chat, int start_message_index = 0);
 	static std::vector<ManualScanCandidate> ListManualScanCandidates(const uam::AppState& app);
 	static bool QueueManualScan(uam::AppState& app, const std::vector<std::string>& chat_ids, int* queued_count_out = nullptr, std::string* error_out = nullptr);
 	static bool ProcessDueMemoryWork(uam::AppState& app);

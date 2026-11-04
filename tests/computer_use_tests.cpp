@@ -1,4 +1,6 @@
 #include "test_harness.h"
+#include "app/uam_control_service.h"
+#include "common/runtime/acp/acp_session_internal.h"
 
 using namespace uam_test;
 
@@ -322,17 +324,29 @@ UAM_TEST(ComputerUseStructuredFallbackProvidersInjectUam)
 	{
 		chat.provider_id = provider_id;
 		std::string method;
-		const nlohmann::json setup = ProviderRuntimeRegistry::ResolveById(provider_id)
-		    .OnAcpBuildSetupRequest(41, chat, "/tmp/project", true, method);
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(provider_id);
+		nlohmann::json setup = runtime.OnAcpBuildSetupRequest(41, chat, "/tmp/project", true, method);
+		runtime.PrepareStructuredMessage(setup);
 		const nlohmann::json& servers = setup["params"]["mcpServers"];
 		UAM_ASSERT_EQ(servers.size(), static_cast<std::size_t>(1));
-		UAM_ASSERT_EQ(servers[0].value("name", ""),
-		    std::string(uam::computer_use::kMcpServerName));
 		if (provider_id == "copilot-cli")
 		{
+			UAM_ASSERT_EQ(method, std::string("session.create"));
+			UAM_ASSERT(servers.is_object() && servers.contains(uam::computer_use::kMcpServerName));
+			const auto& server = servers[uam::computer_use::kMcpServerName];
+			UAM_ASSERT_EQ(server["command"], nlohmann::json(uam::computer_use::McpExecutablePath()));
+			UAM_ASSERT_EQ(server["args"], nlohmann::json(uam::computer_use::McpServerArguments(chat)));
+			UAM_ASSERT_EQ(server["env"], nlohmann::json::object());
+			UAM_ASSERT_EQ(server["tools"], nlohmann::json::array({"*"}));
+			UAM_ASSERT(!server.contains("name"));
 			const auto arguments = uam::BuildAcpLaunchArgvForTests(chat);
 			UAM_ASSERT(uam::ranges::Contains(arguments,
 			    "--allow-tool=uam-computer(computer_observe),uam-computer(computer_action)"));
+		}
+		else
+		{
+			UAM_ASSERT(servers.is_array());
+			UAM_ASSERT_EQ(servers[0].value("name", ""), std::string(uam::computer_use::kMcpServerName));
 		}
 		if (provider_id == "gemini-cli")
 		{
@@ -619,6 +633,9 @@ UAM_TEST(ComputerUseModelMustNameItsTargetBeforeSelection)
 {
 	TempDir temp("uam-computer-use-request");
 	ScopedEnvVar data_root("UAM_DATA_DIR", temp.root.string());
+	AppSettings settings;
+	settings.computer_use_globally_enabled = true;
+	UAM_ASSERT(SettingsStore::Save(AppPaths::SettingsFilePath(temp.root), settings));
 	const fs::path directory = temp.root / "computer-use" / "request-chat";
 	UAM_ASSERT(fs::create_directories(directory));
 	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json", R"({"state":"armed"})" "\n"));
@@ -752,4 +769,247 @@ UAM_TEST(ChatRepositoryPersistsOnlyComputerUseBackendAndDropsRuntimeGrant)
 	UAM_ASSERT_EQ(loaded[0].computer_use_backend, std::string("uam"));
 	UAM_ASSERT(!loaded[0].computer_use_enabled);
 	UAM_ASSERT(loaded[0].computer_use_target_id.empty());
+}
+
+UAM_TEST(ComputerUseBackgroundPollPreservesTranscriptAndHonorsStopAndDeletion)
+{
+	TempDir temp("uam-computer-use-background-poll");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "background-chat";
+	chat.provider_id = "claude-cli";
+	chat.computer_use_backend = "uam";
+	Message message;
+	message.content = std::string(8 * 1024 * 1024, 'x');
+	chat.messages.push_back(std::move(message));
+	app.chats.push_back(std::move(chat));
+	ChatSession other;
+	other.id = "other-chat";
+	other.provider_id = "claude-cli";
+	other.computer_use_backend = "uam";
+	app.chats.push_back(std::move(other));
+	for (int index = 0; index < 256; ++index)
+	{
+		ChatSession idle;
+		idle.id = "idle-background-" + std::to_string(index);
+		idle.provider_id = "claude-cli";
+		idle.computer_use_backend = "uam";
+		app.chats.push_back(std::move(idle));
+	}
+	const Message* body = app.chats.front().messages.data();
+	const fs::path directory = temp.root / "computer-use/background-chat";
+	UAM_ASSERT(fs::create_directories(directory));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json", "{\"state\":\"armed\"}\n"));
+	uam::ComputerUseService service;
+	UAM_ASSERT(!service.PollInBackground(app));
+	std::swap(app.chats.front(), app.chats.back());
+	const double deadline = uam::GetAppTimeSeconds() + 5.0;
+	while (!app.chats.back().computer_use_enabled && uam::GetAppTimeSeconds() < deadline)
+	{
+		(void)service.PollInBackground(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	UAM_ASSERT(app.chats.back().computer_use_enabled);
+	UAM_ASSERT(!app.chats.front().computer_use_enabled);
+	UAM_ASSERT_EQ(app.chats.back().messages.data(), body);
+	std::string error;
+	UAM_ASSERT(uam::ComputerUseService::SetControlState(app, "background-chat", "stopped", &error));
+	(void)service.PollInBackground(app);
+	UAM_ASSERT(!app.chats.back().computer_use_enabled);
+	app.chats.clear();
+	const double finish = uam::GetAppTimeSeconds() + 0.3;
+	while (uam::GetAppTimeSeconds() < finish)
+	{
+		(void)service.PollInBackground(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	UAM_ASSERT(app.chats.empty());
+	UAM_ASSERT_EQ(app.computer_use_by_chat_id.at("background-chat").state, std::string("stopped"));
+}
+
+
+UAM_TEST(ComputerUseBackgroundPollPublishesSignatureOnlyChangesAndRemovesRemoteState)
+{
+	TempDir temp("uam-computer-use-background-delta");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "delta-chat";
+	chat.provider_id = "claude-cli";
+	chat.computer_use_backend = "uam";
+	app.chats.push_back(std::move(chat));
+	const fs::path control = temp.root / "computer-use/delta-chat/control.json";
+	UAM_ASSERT(fs::create_directories(control.parent_path()));
+	UAM_ASSERT(uam::io::WriteTextFile(control, "{\"state\":\"armed\"}\n"));
+	uam::ComputerUseService service;
+	const double load_deadline = uam::GetAppTimeSeconds() + 5.0;
+	while (!app.computer_use_by_chat_id.contains("delta-chat") && uam::GetAppTimeSeconds() < load_deadline)
+	{
+		(void)service.PollInBackground(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	UAM_ASSERT(app.computer_use_by_chat_id.contains("delta-chat"));
+	const std::string signature = app.computer_use_by_chat_id.at("delta-chat").source_signature;
+	const std::string fingerprint = app.computer_use_by_chat_id.at("delta-chat").fingerprint;
+	fs::last_write_time(control, fs::last_write_time(control) + std::chrono::seconds(1));
+	const double signature_deadline = uam::GetAppTimeSeconds() + 5.0;
+	while (app.computer_use_by_chat_id.at("delta-chat").source_signature == signature && uam::GetAppTimeSeconds() < signature_deadline)
+	{
+		(void)service.PollInBackground(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	UAM_ASSERT(app.computer_use_by_chat_id.at("delta-chat").source_signature != signature);
+	UAM_ASSERT_EQ(app.computer_use_by_chat_id.at("delta-chat").fingerprint, fingerprint);
+	UAM_ASSERT(app.chats.front().computer_use_enabled);
+	app.chats.front().execution_host_id = "remote-host";
+	const double removal_deadline = uam::GetAppTimeSeconds() + 5.0;
+	while (app.computer_use_by_chat_id.contains("delta-chat") && uam::GetAppTimeSeconds() < removal_deadline)
+	{
+		(void)service.PollInBackground(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	UAM_ASSERT(!app.computer_use_by_chat_id.contains("delta-chat"));
+	UAM_ASSERT(!app.chats.front().computer_use_enabled);
+}
+
+
+namespace
+{
+	struct ComputerApprovalFixture
+	{
+		TempDir temp{"uam-computer-approval-origin"};
+		uam::AppState app;
+		ComputerApprovalFixture()
+		{
+			app.data_root = temp.root;
+			app.settings.computer_use_globally_enabled = true;
+			app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
+			ChatSession chat;
+			chat.id = "owned-computer-task";
+			chat.provider_id = "opencode-cli";
+			chat.uam_control_enabled = true;
+			chat.messages.push_back(Message{MessageRole::User, "Open Safari and inspect my original task."});
+			chat.messages.back().created_at = "original-user-identity";
+			// A later queued user turn must never become this running turn's trusted task.
+			chat.messages.push_back(Message{MessageRole::User, "Unrelated queued task mentioning Calculator."});
+			chat.messages.back().acp_prompt_not_sent = true;
+			app.chats.push_back(std::move(chat));
+			app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+			auto& session = Session();
+			session.chat_id = Chat().id;
+			session.provider_id = Chat().provider_id;
+			session.running = session.processing = true;
+			session.turn_first_user_message_index = session.turn_user_message_index = 0;
+			session.turn_serial = 1;
+			UAM_ASSERT(uam::UamControlService::Initialize(app));
+			nlohmann::json setup = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
+			UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, session, Chat(), "session/new", setup));
+		}
+		~ComputerApprovalFixture() { uam::UamControlService::Shutdown(app); }
+		ChatSession& Chat() { return app.chats.front(); }
+		uam::AcpSessionState& Session() { return *app.acp_sessions.front(); }
+		fs::path TaskPath() const { return temp.root / "computer-use/owned-computer-task/task.json"; }
+		nlohmann::json Request()
+		{
+			return uam::UamControlService::HandleRequestForTests(app, Session().uam_control_capability_id,
+			    {{"requestId", "computer-approval"}, {"method", "computer_use_request"},
+			     {"arguments", {{"reason", "Model-provided reason mentioning Terminal must not be trusted."}}}},
+			    uam::time::SystemEpochMillisecondsNow());
+		}
+		std::string Queue()
+		{
+			UAM_ASSERT(Request().value("pendingApproval", false));
+			const auto pending = uam::UamControlService::PendingApprovalForChat(app, Chat().id);
+			UAM_ASSERT(pending.has_value());
+			return pending->request_id_json;
+		}
+		bool Allow(const std::string& request)
+		{
+			return uam::UamControlService::ResolveApproval(app, Chat().id, request, {{"computerUse", {"Allow"}}});
+		}
+	};
+}
+
+UAM_TEST(ComputerUseApprovalPersistsExactOwnedOriginalTaskAndReplacesStaleTask)
+{
+	ComputerApprovalFixture fixture;
+	fs::create_directories(fixture.TaskPath().parent_path());
+	UAM_ASSERT(uam::io::WriteTextFile(fixture.TaskPath(), R"({"id":"stale-task","prompt":"Use Terminal from a previous turn"})"));
+	const std::string request = fixture.Queue();
+	UAM_ASSERT(!fixture.Chat().computer_use_enabled);
+	UAM_ASSERT(fixture.Allow(request));
+	const auto task = nlohmann::json::parse(ReadFile(fixture.TaskPath()));
+	UAM_ASSERT_EQ(task.value("prompt", ""), fixture.Chat().messages[0].content);
+	UAM_ASSERT(task.value("id", "") != "stale-task");
+	UAM_ASSERT(fixture.Chat().computer_use_enabled);
+	UAM_ASSERT_EQ(fixture.app.computer_use_by_chat_id.at(fixture.Chat().id).state, std::string("armed"));
+}
+
+UAM_TEST(ComputerUseApprovalRejectsMissingOwnedTurnInsteadOfLatestUserOrReason)
+{
+	for (const int invalid : {0, 1, 2, 3})
+	{
+		ComputerApprovalFixture fixture;
+		if (invalid == 0) fixture.Session().turn_first_user_message_index = -1;
+		if (invalid == 1) fixture.Session().processing = false;
+		if (invalid == 2) fixture.Chat().messages[0].acp_prompt_not_sent = true;
+		if (invalid == 3) fixture.Chat().messages[0].role = MessageRole::Assistant;
+		UAM_ASSERT(!fixture.Request().value("pendingApproval", false));
+		UAM_ASSERT(!fixture.Chat().computer_use_enabled);
+		UAM_ASSERT(!fs::exists(fixture.TaskPath()));
+	}
+}
+
+UAM_TEST(ComputerUseApprovalRevokesChangedTurnChatProviderHostAndPermission)
+{
+	for (int mutation = 0; mutation < 14; ++mutation)
+	{
+		ComputerApprovalFixture fixture;
+		const std::string request = fixture.Queue();
+		if (mutation == 0) ++fixture.Session().turn_serial;
+		if (mutation == 1) fixture.Chat().messages[0].content = "Changed original task";
+		if (mutation == 2) fixture.Chat().metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+		if (mutation == 3) fixture.Chat().provider_id = "antigravity-cli";
+		if (mutation == 4) fixture.Chat().execution_host_id = "remote";
+		if (mutation == 5) fixture.app.settings.execution_hosts.front().runner_directory = "different-host-configuration";
+		if (mutation == 6) fixture.Session().processing = false;
+		if (mutation == 7) fixture.Chat().approval_mode = "plan";
+		if (mutation == 8) fixture.app.settings.computer_use_globally_enabled = false;
+		if (mutation == 9) fixture.Session().active_uam_agent_workspace_access = "read";
+		if (mutation == 10) fixture.Session().provider_id = "antigravity-cli";
+		if (mutation == 11) fixture.Session().cancel_requested = true;
+		if (mutation == 12) fixture.Session().turn_first_user_message_index = 1;
+		if (mutation == 13) fixture.Session().last_process_id = "different-owned-process";
+		UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(fixture.app, fixture.Chat().id).has_value());
+		UAM_ASSERT(!fixture.Allow(request));
+		UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_approval.has_value());
+		UAM_ASSERT(!fixture.Chat().computer_use_enabled);
+		UAM_ASSERT(!fs::exists(fixture.TaskPath()));
+	}
+}
+
+UAM_TEST(ComputerUseApprovalTaskSaveFailureNeverArmsOrReturnsSuccess)
+{
+	ComputerApprovalFixture fixture;
+	const std::string request = fixture.Queue();
+	fs::create_directories(fixture.TaskPath());
+	UAM_ASSERT(fixture.Allow(request)); // The denial response itself was delivered successfully.
+	UAM_ASSERT(!fixture.Chat().computer_use_enabled);
+	const auto response = nlohmann::json::parse(ReadFile(fixture.app.uam_control_capabilities.front().directory / "responses/computer-approval.json"));
+	UAM_ASSERT(!response.value("ok", true));
+	const auto control = fixture.app.computer_use_by_chat_id.find(fixture.Chat().id);
+	UAM_ASSERT(control == fixture.app.computer_use_by_chat_id.end() || control->second.state == "stopped");
+}
+
+UAM_TEST(ComputerUseApprovalPollingClearsStaleTurnBeforeAnotherRequest)
+{
+	ComputerApprovalFixture fixture;
+	(void)fixture.Queue();
+	++fixture.Session().turn_serial;
+	UAM_ASSERT(uam::UamControlService::ProcessPendingRequests(fixture.app));
+	UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_approval.has_value());
+	const auto response = nlohmann::json::parse(ReadFile(fixture.app.uam_control_capabilities.front().directory / "responses/computer-approval.json"));
+	UAM_ASSERT(!response.value("ok", true));
+	UAM_ASSERT(!fixture.Chat().computer_use_enabled);
 }

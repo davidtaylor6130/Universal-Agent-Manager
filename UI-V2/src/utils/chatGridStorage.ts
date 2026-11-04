@@ -137,15 +137,22 @@ function migrateLegacy(value: unknown): ChatGridLayout | null {
   return { version: 2, root, activeLeafId: leaves[activeIndex].id }
 }
 
+let cachedLayoutRaw: string | null = null
+let cachedLayout: ChatGridLayout = defaultChatGridLayout
+
+/** Sidebar rows read this on every store change; reparse only when the stored text changes (callers never mutate the result). */
 export function readChatGridLayout(): ChatGridLayout {
   try {
     const raw = localStorage.getItem(storageKey)
+    if (raw && raw === cachedLayoutRaw) return cachedLayout
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<ChatGridLayout>
       const root = parseNode(parsed.root, new Set())
       if (parsed.version === 2 && root && chatGridLeaves(root).length <= MAX_CHAT_PANES) {
         const leaves = chatGridLeaves(root)
-        return { version: 2, root, activeLeafId: leaves.some((leaf) => leaf.id === parsed.activeLeafId) ? parsed.activeLeafId! : leaves[0].id }
+        cachedLayout = { version: 2, root, activeLeafId: leaves.some((leaf) => leaf.id === parsed.activeLeafId) ? parsed.activeLeafId! : leaves[0].id }
+        cachedLayoutRaw = raw
+        return cachedLayout
       }
     }
     const legacyRaw = localStorage.getItem(legacyStorageKey)
@@ -210,7 +217,9 @@ export function assignChatToPane(sessionId: string, leafId: string): ChatGridLay
 /** Activate the pane that already displays this chat. */
 export function activateExistingChatPane(sessionId: string): void {
   const layout = readChatGridLayout()
-  const target = chatGridLeaves(layout.root).find((leaf) => leaf.sessionId === sessionId)
+  const leaves = chatGridLeaves(layout.root)
+  const target = leaves.find(leaf => leaf.id === layout.activeLeafId && leaf.sessionId === sessionId)
+    || leaves.find(leaf => leaf.sessionId === sessionId)
   if (!target) return
   if (layout.activeLeafId !== target.id) writeChatGridLayout({ ...layout, activeLeafId: target.id })
 }

@@ -1,9 +1,9 @@
 import { useEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
-import { TriangleAlert } from 'lucide-react'
+import { TriangleAlert, X } from 'lucide-react'
 import { Button } from './Button'
 import { Overlay } from './Overlay'
-import { getTopmostModal } from '../../utils/modalFocus'
+import { fromViewportMenu, getTopmostModal } from '../../utils/modalFocus'
 
 export interface ConfirmDialogProps {
   open: boolean
@@ -17,16 +17,28 @@ export interface ConfirmDialogProps {
   tone?: 'danger' | 'primary'
   busy?: boolean
   error?: string
+  /** Defaults to Cancel. */
+  cancelLabel?: string
+  /** Optional middle action between cancel and confirm. */
+  secondaryAction?: { label: string; onClick: () => void }
+  /** False keeps Escape and backdrop clicks from cancelling, for choices that must be made explicitly. */
+  dismissible?: boolean
+  /** Blocks the confirm action while a reason shown in children (or error) prevents it. */
+  confirmDisabled?: boolean
+  /** Marks the dialog so the Settings modal's keyboard owner lets it handle Escape and Tab. */
+  settingsOwned?: boolean
 }
 
-/** Small alert dialog for confirming a (usually destructive) action. Escape cancels while idle. */
-export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, onCancel, label, tone = 'danger', busy = false, error }: ConfirmDialogProps) {
+/** Small alert dialog for confirming a (usually destructive) action. Escape cancels while idle unless dismissible is false. */
+export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, onCancel, label, tone = 'danger', busy = false, error, cancelLabel = 'Cancel', secondaryAction, dismissible = true, confirmDisabled = false, settingsOwned = false }: ConfirmDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
   const busyRef = useRef(busy)
   busyRef.current = busy
   const onCancelRef = useRef(onCancel)
   onCancelRef.current = onCancel
+  const dismissibleRef = useRef(dismissible)
+  dismissibleRef.current = dismissible
 
   useEffect(() => {
     if (!open) return
@@ -37,11 +49,11 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
       else cancelRef.current?.focus()
     }
     const onKey = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || getTopmostModal() !== dialog) return
+      if (event.defaultPrevented || fromViewportMenu(event) || getTopmostModal() !== dialog) return
       if (event.key === 'Escape') {
         event.preventDefault()
         event.stopPropagation()
-        if (!busyRef.current) onCancelRef.current()
+        if (!busyRef.current && dismissibleRef.current) onCancelRef.current()
         return
       }
       if (event.key !== 'Tab') return
@@ -67,7 +79,7 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
   }, [open, busy])
 
   return (
-    <Overlay open={open} zIndex={70} onBackdropMouseDown={() => { if (!busy) onCancel() }}>
+    <Overlay open={open} zIndex={70} onBackdropMouseDown={() => { if (!busy && dismissible) onCancel() }}>
       <div
         ref={dialogRef}
         tabIndex={-1}
@@ -75,6 +87,7 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
         role="alertdialog"
         aria-modal="true"
         aria-label={label ?? title}
+        data-settings-owned-overlay={settingsOwned || undefined}
         className="uam-confirm-dialog w-full max-w-sm rounded-xl"
       >
         <div className="flex gap-3 p-5">
@@ -86,12 +99,13 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
           <div className="min-w-0 flex-1">
             <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>{title}</div>
             <div className="mt-1.5 text-sm leading-5" style={{ color: 'var(--text-2)', overflowWrap: 'anywhere' }}>{children}</div>
-            {error && <p role="alert" className="mt-3 text-sm" style={{ color: 'var(--red)' }}>{error}</p>}
+            {error && <p role="alert" className="mt-3 flex items-start gap-1.5 text-sm" style={{ color: 'var(--error)' }}><X size={13} className="mt-0.5 shrink-0" aria-hidden />{error}</p>}
           </div>
         </div>
         <div className="flex justify-end gap-2 px-5 pb-5">
-          <Button ref={cancelRef} size="sm" disabled={busy} onClick={onCancel}>Cancel</Button>
-          <Button size="sm" variant={tone === 'danger' ? 'danger' : 'primary'} loading={busy} onClick={onConfirm}>{confirmLabel}</Button>
+          <Button ref={cancelRef} size="sm" disabled={busy} onClick={onCancel}>{cancelLabel}</Button>
+          {secondaryAction && <Button size="sm" disabled={busy} onClick={secondaryAction.onClick}>{secondaryAction.label}</Button>}
+          <Button size="sm" variant={tone === 'danger' ? 'danger' : 'primary'} loading={busy} disabled={confirmDisabled} onClick={onConfirm}>{confirmLabel}</Button>
         </div>
       </div>
     </Overlay>

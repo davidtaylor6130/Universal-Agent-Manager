@@ -1,6 +1,8 @@
 #pragma once
 
 #include "common/platform/platform_state_fields.h"
+#include "common/provider/provider_setup_input.h"
+#include "remote/native_history_snapshot.h"
 
 #include <nlohmann/json_fwd.hpp>
 
@@ -17,12 +19,14 @@
 #include <utility>
 #include <vector>
 
+namespace uam::usage { class Collector; }
+
 namespace uam::remote
 {
 	class RunnerState
 	{
 	  public:
-		explicit RunnerState(std::uintmax_t max_spool_bytes_per_stream = 1024ull * 1024ull * 1024ull);
+		explicit RunnerState(std::uintmax_t max_spool_bytes_per_stream = 1024ull * 1024ull * 1024ull, std::shared_ptr<uam::usage::Collector> usage_history = {});
 		~RunnerState();
 		RunnerState(const RunnerState&) = delete;
 		RunnerState& operator=(const RunnerState&) = delete;
@@ -48,6 +52,8 @@ namespace uam::remote
 			std::vector<std::string> arguments;
 			std::vector<std::pair<std::string, std::string>> environment;
 			std::string control_token;
+			std::string provider_protocol_instructions;
+			uam::codex::SetupInputState provider_setup_input;
 			std::uintmax_t stdout_offset = 0;
 			std::uintmax_t stderr_offset = 0;
 			std::uintmax_t stdout_base_cursor = 0;
@@ -63,6 +69,9 @@ namespace uam::remote
 			std::atomic<std::int64_t> lease_deadline_ms{0};
 			std::mutex mutex;
 			std::jthread drainer;
+			std::atomic<bool> retirement_cleanup_active{false};
+			/// Set by the drainer before it terminates an expired lease under the process mutex.
+			std::atomic<bool> lease_terminating{false};
 			std::atomic<bool> ready{false};
 			std::atomic<bool> exited{false};
 			std::atomic<int> exit_code{-1};
@@ -103,8 +112,10 @@ namespace uam::remote
 		};
 
 	  private:
+		friend struct RunnerStateRetirementTestAccess;
 		void SweepExpiredTransientProcesses();
 		std::mutex m_stateMutex;
+		std::shared_ptr<uam::usage::Collector> m_usageHistory;
 		std::mutex m_memoryMutex;
 		struct TextWorker
 		{
@@ -116,7 +127,9 @@ namespace uam::remote
 		std::filesystem::path m_spoolDirectory;
 		std::uintmax_t m_maxSpoolBytesPerStream;
 		std::unordered_map<std::string, std::shared_ptr<Process>> m_processes;
+		std::unordered_map<std::string, std::shared_ptr<Process>> m_retiringProcesses;
 		std::unordered_map<std::string, Channel> m_channels;
 		std::unordered_map<std::string, std::shared_ptr<Upload>> m_uploads;
+		std::unordered_map<std::string, std::shared_ptr<native_history::Snapshot>> m_nativeHistorySnapshots;
 	};
 }

@@ -362,7 +362,7 @@ void AppendRecentStderr(AcpSessionState& session, const std::string& chunk)
 	session.recent_stderr += chunk;
 	if (session.recent_stderr.size() > kMaxRecentStderrBytes)
 	{
-		session.recent_stderr.erase(0, session.recent_stderr.size() - kMaxRecentStderrBytes);
+		session.recent_stderr = std::string(uam::strings::Utf8Suffix(session.recent_stderr, kMaxRecentStderrBytes));
 	}
 }
 

@@ -8,7 +8,10 @@
 namespace uam::acp_detail
 {
 
-bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& goal_id, std::string* error_out = nullptr, bool restart = false);
+/// Separates CEF metadata preparation from execution after an owned FULL receipt.
+enum class GoalResumeStage { Normal, PrepareOnly, AfterReceipt };
+bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& goal_id, std::string* error_out = nullptr, bool restart = false, bool user_action = false, bool replace_native = false, GoalResumeStage stage = GoalResumeStage::Normal, std::function<bool()> admitted_owner = {}, std::function<bool()> continuation_owned = {},
+    std::function<void(bool, std::string)> completion = {});
 bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser);
 void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser);
 void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session, ChatSession& chat, std::string_view lifecycle_state, CefRefPtr<CefBrowser> browser, bool continue_goal_loop = true);

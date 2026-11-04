@@ -1,9 +1,18 @@
-import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './types'
+import { sanitizeStartupNativeImportStatus } from '../../types/startupNativeImports'
+import { sanitizeExecutionRouting } from '../../types/executionRouting'
+import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration, type WindowsPowerShellPreference } from './types'
 import { sanitizeCustomIcon } from '../../types/customIcon'
 // Sanitiser and normaliser functions for raw C++ state payloads.
 // Extracted from useAppStore.ts (MO-1). Pure functions — no side effects.
 
 import type {
+  ManualCompactionAvailability,
+  CopilotAutoRoutingProjection,
+  CopilotAutoTierDescriptor,
+  NativeModelOptionOwnership,
+  NativeModelOptions,
+  NativeOptionPresence,
+  NativeOptionStatus,
   AcpAgentInfo,
   AcpAttentionKind,
   AcpCommand,
@@ -27,6 +36,7 @@ import type {
   CppAppState,
   CppChat,
   CppCliDebugState,
+  CppDeletionProgress,
   CppCliDebugTerminal,
   CppFolder,
   CppGoal,
@@ -42,6 +52,11 @@ import type {
   MemoryActivity,
   MemoryWorkerBinding,
   ProviderChatDefaults,
+  ProviderAvailabilityOverride,
+  VoiceInputMode,
+  VoiceInputCapabilities,
+  VoiceInputSettings,
+  VcsStorageSettings,
   ProviderModelCatalog,
   ShellAction,
   VcsCommitResult,
@@ -54,10 +69,12 @@ import type { MemoryLevel } from '../../types/memory'
 import type { ResourceCollection, ResourceReferenceType } from '../../types/resourceCollection'
 import { normalizeStoredTheme } from '../../utils/themeStorage'
 import {
-  DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
+  DEFAULT_PROVIDER_ID,
   normalizeCliProviderIdAlias,
+  SUPPORTED_CLI_PROVIDER_IDS,
   providerCapabilities,
 } from '../../utils/providerMetadata'
+import { SSH_ENABLED } from '../../config/buildFeatures'
 
 // ---------------------------------------------------------------------------
 // Memory settings constants (re-exported so useAppStore.ts and slices can use them)
@@ -70,11 +87,17 @@ export const DEFAULT_MEMORY_RECALL_BUDGET_BYTES = 2048
 export const MIN_MEMORY_RECALL_BUDGET_BYTES = 512
 export const MAX_MEMORY_RECALL_BUDGET_BYTES = 8192
 export const DEFAULT_GOAL_MAX_LOOP_ITERATIONS = 200
-export const MIN_GOAL_MAX_LOOP_ITERATIONS = 1
 export const MAX_GOAL_MAX_LOOP_ITERATIONS = 200
 export const DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 600
 export const MIN_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 60
 export const MAX_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 3600
+export const DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS = 1800
+export const MIN_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS = 60
+export const MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS = 86400
+/** Stream loop stop (#636): repeats of the same output in one turn; 0 turns it off. Mirrors stream_watch.h. */
+export const DEFAULT_STREAM_LOOP_REPEAT_LIMIT = 20
+/** The offered choices; any other value rounds up to the next one, as the native normalizer does. */
+export const STREAM_LOOP_REPEAT_LIMIT_OPTIONS = [0, 10, 20, 50] as const
 export const DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB = 1024
 export const MIN_ACP_TURN_OUTPUT_LIMIT_MIB = 256
 export const MAX_ACP_TURN_OUTPUT_LIMIT_MIB = 4096
@@ -95,12 +118,29 @@ export function normalizeAcpSetupInactivityTimeoutSeconds(value: unknown): numbe
   return clampedFiniteNumberOr(value, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, MIN_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, MAX_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS)
 }
 
-export function normalizeMemoryLevel(value: unknown, legacyEnabled = true): MemoryLevel {
-  if (!legacyEnabled) return 'off'
+export function normalizeStreamLoopRepeatLimit(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_STREAM_LOOP_REPEAT_LIMIT
+  return STREAM_LOOP_REPEAT_LIMIT_OPTIONS.find((option) => value <= option) ?? 50
+}
+
+export function normalizeActiveTurnInactivityTimeoutSeconds(value: unknown): number {
+  return Math.floor(clampedFiniteNumberOr(value, DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, MIN_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS))
+}
+
+export function normalizeMemoryLevel(value: unknown, legacyEnabled = true, allowDefault = true): MemoryLevel {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  if (allowDefault && normalized === 'default') return 'default'
+  if (!legacyEnabled) return 'off'
+  if (normalized === 'readonly') return 'readOnly'
   return normalized === 'off' || normalized === 'strict' || normalized === 'balanced' || normalized === 'open'
     ? normalized
     : 'strict'
+}
+
+/** Default retains the native resolved enabled flag instead of treating the marker as an enabled policy. */
+export function memoryEnabledForLevel(value: unknown, nativeEnabled = true): boolean {
+  const level = normalizeMemoryLevel(value, nativeEnabled)
+  return level === 'default' ? nativeEnabled : level !== 'off'
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +282,26 @@ export function sanitizePlanEntry(value: unknown): AcpPlanEntry | null {
   }
 }
 
+function sanitizeSubAgentChildren(value: unknown): AcpToolCall['subAgentChildren'] {
+  if (!Array.isArray(value)) return undefined
+  const seen = new Set<string>()
+  const children: NonNullable<AcpToolCall['subAgentChildren']> = []
+  for (const entry of value) {
+    if (!isRecord(entry) || !isString(entry.id) || !entry.id.trim() || seen.has(entry.id)) continue
+    seen.add(entry.id)
+    children.push({
+      id: entry.id,
+      ...(isString(entry.title) && entry.title ? { title: entry.title } : {}),
+      ...(isString(entry.status) && entry.status ? { status: entry.status } : {}),
+      ...Object.fromEntries(['startedAtEpochMs', 'finishedAtEpochMs', 'durationMs'].flatMap(key => {
+        const clock = entry[key]
+        return typeof clock === 'number' && Number.isSafeInteger(clock) && clock >= 0 && clock <= 8640000000000000 ? [[key, clock]] : []
+      })),
+    })
+  }
+  return children
+}
+
 export function sanitizeToolCall(value: unknown): AcpToolCall | null {
   if (!isRecord(value)) return null
   const id = stringOr(value.id)
@@ -255,16 +315,27 @@ export function sanitizeToolCall(value: unknown): AcpToolCall | null {
     content: stringOr(value.content),
     contentDeferred: booleanOr(value.contentDeferred),
     contentDigest: stringOr(value.contentDigest),
+    ...(isString(value.historyDigest) && /^[a-f0-9]{16}$/.test(value.historyDigest) ? { historyDigest: value.historyDigest } : {}),
+    managedLaunchRunId: value.contentDeferred === true ? sanitizeManagedOriginRunId(value.managedLaunchRunId) : undefined,
     isSubAgent: booleanOr(value.isSubAgent),
     subAgentId: stringOr(value.subAgentId),
     subAgentTitle: stringOr(value.subAgentTitle),
+    subAgentResultContent: isString(value.subAgentResultContent) && value.subAgentResultContent.length <= 8192 ? value.subAgentResultContent : undefined,
+    subAgentChildren: sanitizeSubAgentChildren(value.subAgentChildren),
+    currentActivity: stringOr(value.currentActivity).slice(0, 240),
   }
 }
 
 export function sanitizeTurnEvent(value: unknown): AcpTurnEvent | null {
   if (!isRecord(value)) return null
   const type = value.type
-  if (type === 'assistant_text' || type === 'thought' || type === 'context_compaction') {
+  if (type === 'context_compaction' || type === 'context_compaction_interrupted') {
+    const count = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+    return { type, text: stringOr(value.text), toolCallId: isString(value.toolCallId) ? value.toolCallId : undefined,
+      requestId: isString(value.requestId) ? value.requestId : undefined,
+      tokensBefore: count(value.tokensBefore), tokensAfter: count(value.tokensAfter) }
+  }
+  if (type === 'assistant_text' || type === 'thought' || type === 'context_compaction_summary') {
     return {
       type,
       text: stringOr(value.text),
@@ -320,7 +391,9 @@ export function sanitizeTurnEvent(value: unknown): AcpTurnEvent | null {
 
 export function sanitizeAttachment(value: unknown): Attachment | null {
   if (!isRecord(value)) return null
-  const path = isString(value.path) ? value.path : ''
+  const legacy = value.source === undefined || value.source === 'legacy_path'
+  const source = value.source === 'legacy_path' || value.source === 'native_inline_pending' || value.source === 'owned_native_asset' || value.source === 'provider_uri' ? value.source : undefined
+  const path = legacy && isString(value.path) ? value.path : ''
   const name = isString(value.name) ? value.name : path.split(/[\\/]/).pop() || ''
   const id = isString(value.id) ? value.id : path || name
   if (!id || !name) return null
@@ -329,18 +402,36 @@ export function sanitizeAttachment(value: unknown): Attachment | null {
     : isString(value.type)
       ? value.type
       : 'file'
+  const mimeType = isString(value.mimeType) ? value.mimeType : isString(value.type) && value.type.includes('/') ? value.type : undefined
   return {
     id,
     name,
     type,
+    ...(mimeType ? { mimeType } : {}),
+    ...((legacy || source === 'owned_native_asset') && isString(value.previewKey) && /^[a-f0-9]{64}$/.test(value.previewKey) ? { previewKey: value.previewKey } : {}),
+    ...(legacy && isString(value.previewOriginPath) ? { previewOriginPath: value.previewOriginPath } : {}),
+    ...(source ? { source } : {}),
+    ...(isString(value.sourceUri) ? { sourceUri: value.sourceUri } : {}),
+    ...(isString(value.originExecutionHostId) ? { originExecutionHostId: value.originExecutionHostId } : {}),
+    ...(isString(value.nativePartKey) ? { nativePartKey: value.nativePartKey } : {}),
+    ...(isString(value.nativeToolCallId) ? { nativeToolCallId: value.nativeToolCallId } : {}),
+    ...(isString(value.nativeSourceField) ? { nativeSourceField: value.nativeSourceField } : {}),
+    ...(isString(value.nativeAssetKey) ? { nativeAssetKey: value.nativeAssetKey } : {}),
+    ...(isString(value.contentDigest) ? { contentDigest: value.contentDigest } : {}),
+    ...(isString(value.historyDigest) && /^[a-f0-9]{16}$/.test(value.historyDigest) ? { historyDigest: value.historyDigest } : {}),
     size: finiteNumberOr(value.size, finiteNumberOr(value.sizeBytes, 0)),
-    path,
+    ...(legacy ? { path } : {}),
   }
 }
 
 export function messageAttachments(message: Pick<CppMessage, 'markdownStoreFiles' | 'attachments'>): Attachment[] {
   const markdownStoreFiles = message.markdownStoreFiles ?? []
-  if (markdownStoreFiles.length === 0) return message.attachments ?? []
+  const attachments = (message.attachments ?? []).flatMap((value) => {
+    const attachment = sanitizeAttachment(value)
+    if (attachment && value.path === undefined) delete attachment.path
+    return attachment ? [attachment] : []
+  })
+  if (markdownStoreFiles.length === 0) return attachments
   const markdownAttachments = markdownStoreFiles.map((filePath) => ({
     id: filePath,
     name: filePath.split(/[\\/]/).pop() || filePath,
@@ -348,33 +439,59 @@ export function messageAttachments(message: Pick<CppMessage, 'markdownStoreFiles
     size: 0,
     path: filePath,
   }))
-  return [...markdownAttachments, ...(message.attachments ?? [])]
+  return [...markdownAttachments, ...attachments]
+}
+
+export function sanitizeNativeInputId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length === 36 && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value : undefined
+}
+
+export function sanitizeOriginRequestId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 && value.length <= 128 && /^[\x20-\x7e]+$/.test(value) ? value : undefined
 }
 
 export function sanitizeQueuedPrompt(value: unknown): AcpQueuedPrompt | null {
-  if (!isRecord(value)) return null
-  const text = stringOr(value.text).trim()
-  if (!text) return null
+  if (!isRecord(value) || !isString(value.text)) return null
+  const text = value.text
+  const attachments = Array.isArray(value.attachments)
+    ? value.attachments.flatMap((attachment) => {
+        const sanitized = sanitizeAttachment(attachment)
+        return sanitized ? [sanitized] : []
+      })
+    : []
+  // Native admission permits attachment-only input. Preserve authored bytes for
+  // exact receipt matching; only the native ASCII blank set determines emptiness.
+  if (!text.replace(/^[ \t\r\n\f\v]+|[ \t\r\n\f\v]+$/g, '') && attachments.length === 0) return null
   return {
+    nativeInputId: sanitizeNativeInputId(value.nativeInputId),
+    originRequestId: sanitizeOriginRequestId(value.originRequestId),
     ...(isString(value.id) && value.id.trim() ? { id: value.id } : {}),
     ...(Number.isSafeInteger(value.revision) && Number(value.revision) > 0 ? { revision: Number(value.revision) } : {}),
+    ...(value.prepared === true ? { prepared: true } : {}),
+    ...(typeof value.retryAllowed === 'boolean' ? { retryAllowed: value.retryAllowed } : {}),
+    ...(Number.isSafeInteger(value.existingUserMessageIndex) && Number(value.existingUserMessageIndex) >= 0 ? { existingUserMessageIndex: Number(value.existingUserMessageIndex) } : {}),
+    ...(isString(value.referencedMessageCreatedAt) && value.referencedMessageCreatedAt.length <= 128 &&
+      Number.isFinite(Date.parse(value.referencedMessageCreatedAt)) && Number.isSafeInteger(value.existingUserMessageIndex) && Number(value.existingUserMessageIndex) >= 0
+      ? { referencedMessageCreatedAt: value.referencedMessageCreatedAt } : {}),
     text,
     uamAgentId: stringOr(value.uamAgentId).trim() || 'build',
     markdownStoreFiles: Array.isArray(value.markdownStoreFiles)
       ? value.markdownStoreFiles.filter(isString)
       : [],
-    attachments: Array.isArray(value.attachments)
-      ? value.attachments.flatMap((attachment) => {
-          const sanitized = sanitizeAttachment(attachment)
-          return sanitized ? [sanitized] : []
-        })
-      : [],
+    attachments,
     goalMode: Boolean(value.goalMode),
     goalId: stringOr(value.goalId),
     ...(value.computerUseMode === true ? { computerUseMode: true } : {}),
     prioritySteer: typeof value.prioritySteer === 'boolean' ? value.prioritySteer : undefined,
   }
 }
+
+export function sanitizeManagedOriginRunId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length === 36 && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value : undefined
+}
+
+// Same validated set buildMessageFromCpp accepts; anything else is dropped rather than shown as a stop label.
+const KNOWN_STOP_REASONS = new Set(['timeout', 'provider-update', 'forced', 'failed', 'unknown', 'interrupt'])
 
 export function sanitizeCppMessage(value: unknown): CppMessage | null {
   if (!isRecord(value)) return null
@@ -384,6 +501,10 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
 
   return {
     role,
+    managedOriginRunId: sanitizeManagedOriginRunId(value.managedOriginRunId),
+    nativeInputId: sanitizeNativeInputId(value.nativeInputId),
+    originRequestId: sanitizeOriginRequestId(value.originRequestId),
+    inputWriteCompleted: role === 'user' && sanitizeNativeInputId(value.nativeInputId) && value.inputWriteCompleted === true ? true : undefined,
     content: value.content,
     modelId: isString(value.modelId) ? value.modelId : undefined,
     providerId: isString(value.providerId) ? value.providerId : undefined,
@@ -417,10 +538,12 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
       })
       : undefined,
     processingTimeMs: Math.max(0, finiteNumberOr(value.processingTimeMs, 0)),
-		interrupted: booleanOr(value.interrupted),
-		acpPromptNotSent: booleanOr(value.acpPromptNotSent),
-		prioritySteer: booleanOr(value.prioritySteer),
-		continuesTurn: booleanOr(value.continuesTurn),
+    interrupted: booleanOr(value.interrupted),
+    acpPromptNotSent: booleanOr(value.acpPromptNotSent),
+    acpPromptDiscarded: value.acpPromptDiscarded === true,
+    prioritySteer: booleanOr(value.prioritySteer),
+    continuesTurn: booleanOr(value.continuesTurn),
+    stopReason: isString(value.stopReason) && KNOWN_STOP_REASONS.has(value.stopReason) ? value.stopReason : undefined,
     checkpointSha: isString(value.checkpointSha) ? value.checkpointSha : undefined,
     checkpointParentSha: isString(value.checkpointParentSha) ? value.checkpointParentSha : undefined,
     createdAt: stringOr(value.createdAt),
@@ -432,6 +555,7 @@ export function sanitizeCppCliTerminal(value: unknown): CppChat['cliTerminal'] |
 
   return {
     terminalId: isString(value.terminalId) ? value.terminalId : undefined,
+    startupTime: typeof value.startupTime === 'number' && Number.isFinite(value.startupTime) && value.startupTime >= 0 ? value.startupTime : undefined,
     frontendChatId: isString(value.frontendChatId) ? value.frontendChatId : undefined,
     sourceChatId: isString(value.sourceChatId) ? value.sourceChatId : undefined,
     idleCountdownStartsAtMs: typeof value.idleCountdownStartsAtMs === 'number' && Number.isFinite(value.idleCountdownStartsAtMs) ? value.idleCountdownStartsAtMs : undefined,
@@ -595,6 +719,8 @@ export function sanitizeAcpModel(value: unknown): AcpModel | null {
     defaultReasoningEffort: normalizeCodexReasoningEffort(value.defaultReasoningEffort),
     supportedReasoningEfforts,
     additionalSpeedTiers,
+    contextWindowTokens: nonNegativeInteger(value.contextWindowTokens),
+    maxOutputTokens: nonNegativeInteger(value.maxOutputTokens),
   }
 }
 
@@ -672,12 +798,19 @@ function sanitizeSpendControlLimit(value: unknown) {
 function sanitizeProviderUsage(value: unknown): AcpProviderUsage | null {
   if (!isRecord(value)) return null
 
+  let contextUsage = null
+  if (isRecord(value.contextUsage)) {
+    const updatedAt = nonNegativeInteger(value.contextUsage.updatedAt)
+    const usedTokens = nonNegativeInteger(value.contextUsage.usedTokens)
+    const windowTokens = nonNegativeInteger(value.contextUsage.windowTokens)
+    if (updatedAt !== null && usedTokens !== null && windowTokens !== null && windowTokens > 0 && usedTokens <= windowTokens) contextUsage = { updatedAt, usedTokens, windowTokens }
+  }
   let tokenUsage = null
   if (isRecord(value.tokenUsage)) {
     const updatedAt = nonNegativeInteger(value.tokenUsage.updatedAt)
     const total = sanitizeTokenUsageBreakdown(value.tokenUsage.total)
     const last = sanitizeTokenUsageBreakdown(value.tokenUsage.last)
-    if (updatedAt !== null && total && last) {
+    if (updatedAt !== null && total && (last || value.tokenUsage.last === null)) {
       tokenUsage = {
         updatedAt,
         total,
@@ -704,7 +837,80 @@ function sanitizeProviderUsage(value: unknown): AcpProviderUsage | null {
     }
   }
 
-  return tokenUsage || rateLimits ? { tokenUsage, rateLimits } : null
+  return tokenUsage || rateLimits || contextUsage ? { tokenUsage, rateLimits, contextUsage } : null
+}
+
+// Native model options are an allowlist, never a bridge for private adapter JSON.
+function nativeOptionString(value: unknown, maximum: number, nonempty = true): value is string {
+  return typeof value === 'string' && value.length <= maximum && (!nonempty || value.length > 0)
+    && new TextEncoder().encode(value).length <= maximum
+}
+
+function nativeOptionPresence<T>(value: unknown, parse: (raw: unknown) => T | undefined): NativeOptionPresence<T> | undefined {
+  if (!isRecord(value) || typeof value.present !== 'boolean') return undefined
+  if (!value.present) return { present: false }
+  const parsed = parse(value.value)
+  return parsed === undefined ? undefined : { present: true, value: parsed }
+}
+
+function nativeOptionOwner(value: unknown): NativeModelOptionOwnership | undefined {
+  if (!isRecord(value) || !nativeOptionString(value.chatId, 512) || !nativeOptionString(value.nativeSessionId, 512)
+    || !nativeOptionString(value.executionHostId, 512) || !nativeOptionString(value.lifetime, 128)) return undefined
+  return { chatId: value.chatId, nativeSessionId: value.nativeSessionId, executionHostId: value.executionHostId, lifetime: value.lifetime }
+}
+
+function nativeAutoTiers(value: unknown): CopilotAutoTierDescriptor[] | undefined {
+  if (!Array.isArray(value) || value.length > 64) return undefined
+  const seen = new Set<string>()
+  const result: CopilotAutoTierDescriptor[] = []
+  for (const tier of value) {
+    if (!isRecord(tier) || !nativeOptionString(tier.id, 512) || seen.has(tier.id)
+      || !nativeOptionString(tier.displayName, 256, false) || !nativeOptionString(tier.description, 2048, false)
+      || !nativeOptionString(tier.type, 64) || !isRecord(tier.status) || typeof tier.status.enabled !== 'boolean'
+      || (tier.status.reason !== undefined && !nativeOptionString(tier.status.reason, 128, false))
+      || (tier.status.message !== undefined && !nativeOptionString(tier.status.message, 2048, false))) return undefined
+    seen.add(tier.id)
+    result.push({ id: tier.id, displayName: tier.displayName, description: tier.description, type: tier.type,
+      status: { enabled: tier.status.enabled,
+        ...(tier.status.reason !== undefined ? { reason: tier.status.reason as string } : {}),
+        ...(tier.status.message !== undefined ? { message: tier.status.message as string } : {}) } })
+  }
+  return new TextEncoder().encode(JSON.stringify(result)).length <= 65536 ? result : undefined
+}
+
+export function sanitizeNativeModelOptions(value: unknown): NativeModelOptions | undefined {
+  if (!isRecord(value) || !isRecord(value.autoRouting)) return undefined
+  const raw = value.autoRouting
+  const statuses: NativeOptionStatus[] = ['unknown', 'ready', 'invalid', 'unsupported']
+  if (!statuses.includes(raw.catalogStatus as NativeOptionStatus) || !statuses.includes(raw.stateStatus as NativeOptionStatus)
+    || typeof raw.available !== 'boolean' || typeof raw.requestPending !== 'boolean'
+    || !nativeOptionString(raw.disabledCode, 128, false) || !nativeOptionString(raw.disabledReason, 2048, false)
+    || !nativeOptionString(raw.lastError, 2048, false) || !['', 'pending', 'unchanged'].includes(raw.lastAckStatus as string)) return undefined
+  const parseTier = (entry: unknown) => nativeOptionString(entry, 512) ? entry : undefined
+  const parseNullableTier = (entry: unknown) => entry === null ? null : parseTier(entry)
+  const eligibleTiers = nativeOptionPresence(raw.eligibleTiers, nativeAutoTiers)
+  const providerDefault = nativeOptionPresence(raw.providerDefault, parseTier)
+  const currentModel = nativeOptionPresence(raw.currentModel, parseTier)
+  const effective = nativeOptionPresence(raw.effective, parseTier)
+  const pending = nativeOptionPresence(raw.pending, parseNullableTier)
+  const activating = nativeOptionPresence(raw.activating, parseNullableTier)
+  const ownership = raw.ownership === undefined ? undefined : nativeOptionOwner(raw.ownership)
+  if (!eligibleTiers || !providerDefault || !currentModel || !effective || !pending || !activating
+    || (raw.ownership !== undefined && !ownership)) return undefined
+  const autoRouting: CopilotAutoRoutingProjection = {
+    ...(ownership ? { ownership } : {}), catalogStatus: raw.catalogStatus as NativeOptionStatus, stateStatus: raw.stateStatus as NativeOptionStatus,
+    eligibleTiers, providerDefault, currentModel, effective, pending, activating,
+    requestPending: raw.requestPending, available: raw.available, disabledCode: raw.disabledCode, disabledReason: raw.disabledReason,
+    lastAckStatus: raw.lastAckStatus as CopilotAutoRoutingProjection['lastAckStatus'], lastError: raw.lastError,
+  }
+  return { autoRouting }
+}
+
+export function sanitizeManualCompaction(value: unknown): ManualCompactionAvailability | undefined {
+  if (!isRecord(value) || typeof value.available !== 'boolean' || !isString(value.providerId)
+    || !isString(value.modelId) || !isString(value.nativeSessionId)) return undefined
+  if (value.available && (!value.providerId || !value.nativeSessionId)) return undefined
+  return { available: value.available, providerId: value.providerId, modelId: value.modelId, nativeSessionId: value.nativeSessionId }
 }
 
 export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {
@@ -720,12 +926,29 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     idleShutdownTimeoutSeconds: typeof value.idleShutdownTimeoutSeconds === 'number' && Number.isFinite(value.idleShutdownTimeoutSeconds) ? value.idleShutdownTimeoutSeconds : undefined,
     running: typeof value.running === 'boolean' ? value.running : undefined,
     processing: typeof value.processing === 'boolean' ? value.processing : undefined,
+    compacting: value.compacting === true,
+    manualCompaction: sanitizeManualCompaction(value.manualCompaction),
+    backgroundTaskCount: nonNegativeInteger(value.backgroundTaskCount) ?? 0,
     readySinceLastSelect: typeof value.readySinceLastSelect === 'boolean' ? value.readySinceLastSelect : undefined,
     attentionKind: sanitizeAcpAttentionKind(value.attentionKind),
     lifecycleState: isString(value.lifecycleState) ? value.lifecycleState : undefined,
     lastError: isString(value.lastError) ? value.lastError : undefined,
     recentStderr: isString(value.recentStderr) ? value.recentStderr : undefined,
     lastStopReason: isString(value.lastStopReason) ? value.lastStopReason : undefined,
+    timeoutStop: isRecord(value.timeoutStop) && isString(value.timeoutStop.label) && value.timeoutStop.label
+      ? {
+          label: value.timeoutStop.label,
+          seconds: nonNegativeInteger(value.timeoutStop.seconds) ?? 0,
+          ...(value.timeoutStop.kind === 'loop'
+            ? {
+                kind: 'loop' as const,
+                channel: isString(value.timeoutStop.channel) ? value.timeoutStop.channel : '',
+                count: nonNegativeInteger(value.timeoutStop.count) ?? 0,
+                example: isString(value.timeoutStop.example) ? value.timeoutStop.example : '',
+              }
+            : {}),
+        }
+      : undefined,
     lastExitCode: typeof value.lastExitCode === 'number' && Number.isFinite(value.lastExitCode) ? value.lastExitCode : null,
     diagnostics: Array.isArray(value.diagnostics)
       ? value.diagnostics.flatMap((entry) => {
@@ -766,6 +989,7 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
           return sanitized ? [sanitized] : []
         })
       : [],
+    nativeModelOptions: sanitizeNativeModelOptions(value.nativeModelOptions),
     configOptions: Array.isArray(value.configOptions)
       ? value.configOptions.slice(0, 64).flatMap((option) => {
           const sanitized = sanitizeAcpConfigOption(option)
@@ -784,8 +1008,23 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     turnUserMessageIndex: finiteNumberOr(value.turnUserMessageIndex, -1),
     turnAssistantMessageIndex: finiteNumberOr(value.turnAssistantMessageIndex, -1),
     turnSerial: finiteNumberOr(value.turnSerial, 0),
+    queueHeld: booleanOr(value.queueHeld),
+    unsentMessageIndices: Array.isArray(value.unsentMessageIndices) ? value.unsentMessageIndices.filter((index): index is number => typeof index === 'number' && Number.isSafeInteger(index) && index >= 0) : [],
+    recoverableUnsentMessageIndices: Array.isArray(value.recoverableUnsentMessageIndices) ? value.recoverableUnsentMessageIndices.filter((index): index is number => typeof index === 'number' && Number.isSafeInteger(index) && index >= 0) : [],
     queuedPrompts: Array.isArray(value.queuedPrompts)
       ? value.queuedPrompts.flatMap((prompt) => {
+          const sanitized = sanitizeQueuedPrompt(prompt)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+    pendingDirectPrompts: Array.isArray(value.pendingDirectPrompts)
+      ? value.pendingDirectPrompts.flatMap((prompt) => {
+          const sanitized = sanitizeQueuedPrompt(prompt)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+    unsentDirectPrompts: Array.isArray(value.unsentDirectPrompts)
+      ? value.unsentDirectPrompts.flatMap((prompt) => {
           const sanitized = sanitizeQueuedPrompt(prompt)
           return sanitized ? [sanitized] : []
         })
@@ -816,7 +1055,7 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
     tokensUsed: finiteNumberOr(value.tokensUsed, 0),
     blockedTurnCount: finiteNumberOr(value.blockedTurnCount, 0),
     lastBlocker: isString(value.lastBlocker) ? value.lastBlocker : undefined,
-		lastBlockerKind: isString(value.lastBlockerKind) ? value.lastBlockerKind : undefined,
+    lastBlockerKind: isString(value.lastBlockerKind) ? value.lastBlockerKind : undefined,
     lastDiagnostic: isString(value.lastDiagnostic) ? value.lastDiagnostic : undefined,
     pendingContinuation: value.pendingContinuation === true,
     completedItems: Array.isArray(value.completedItems) ? value.completedItems.filter(isString) : undefined,
@@ -828,10 +1067,10 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
     loopCount: finiteNumberOr(value.loopCount, 0),
     createdAt: stringOr(value.createdAt),
     updatedAt: stringOr(value.updatedAt),
-	executionOwner: value.executionOwner === 'provider' ? 'provider' : 'uam',
-	workerModelId: isString(value.workerModelId) ? value.workerModelId : '',
-	reviewerModelId: isString(value.reviewerModelId) ? value.reviewerModelId : '',
-	providerCommand: isString(value.providerCommand) ? value.providerCommand : '',
+    executionOwner: value.executionOwner === 'provider' ? 'provider' : 'uam',
+    workerModelId: isString(value.workerModelId) ? value.workerModelId : '',
+    reviewerModelId: isString(value.reviewerModelId) ? value.reviewerModelId : '',
+    providerCommand: isString(value.providerCommand) ? value.providerCommand : '',
   }
 }
 
@@ -850,19 +1089,27 @@ export function sanitizeCppFolder(value: unknown): CppFolder | null {
   }
 }
 
+/** Native branch override boundary: undefined is invalid/absent, empty means explicit HEAD. */
+export function sanitizeGitBaseBranch(value: unknown): string | undefined {
+  if (typeof value !== 'string' || /[\u0000-\u001f\u007f]/.test(value) || new TextEncoder().encode(value).length > 255) return undefined
+  return value.replace(/^ +| +$/g, '')
+}
+
 export function sanitizeCppChat(value: unknown): CppChat | null {
   if (!isRecord(value)) return null
   const id = stringOr(value.id).trim()
   if (!id) return null
   return {
+    gitBaseBranch: value.gitBaseBranch === null ? null : sanitizeGitBaseBranch(value.gitBaseBranch),
     id,
     executionHostId: stringOr(value.executionHostId).trim() || 'local',
     remoteRecoveryEnabled: booleanOr(value.remoteRecoveryEnabled, false),
     remoteRecoveryState: stringOr(value.remoteRecoveryState),
     title: stringOr(value.title, 'Untitled'),
+    customIcon: sanitizeCustomIcon(value.customIcon),
     folderId: stringOr(value.folderId),
     pinned: booleanOr(value.pinned),
-    providerId: stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID),
+    providerId: stringOr(value.providerId, DEFAULT_PROVIDER_ID),
     temporaryParentChatId: isString(value.temporaryParentChatId) ? value.temporaryParentChatId : undefined,
     sideCleanupRequested: booleanOr(value.sideCleanupRequested),
     parentChatId: isString(value.parentChatId) ? value.parentChatId : undefined,
@@ -904,7 +1151,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
             : [],
         }
       : undefined,
-    memoryEnabled: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)) !== 'off',
+    memoryEnabled: memoryEnabledForLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)),
     memoryLevel: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)),
     smallModelMode: booleanOr(value.smallModelMode),
     memoryLastProcessedMessageCount: finiteNumberOr(value.memoryLastProcessedMessageCount, 0),
@@ -914,6 +1161,16 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     workspaceSourceDirectory: isString(value.workspaceSourceDirectory) ? value.workspaceSourceDirectory : undefined,
     workspaceBaseRef: isString(value.workspaceBaseRef) ? value.workspaceBaseRef : undefined,
     workspaceBranchName: isString(value.workspaceBranchName) ? value.workspaceBranchName : undefined,
+    pendingGitBranch: isString(value.pendingGitBranch) ? value.pendingGitBranch : undefined,
+    routingMode: value.routingMode === 'automatic' ? 'automatic' : 'explicit',
+    routingSourceFolderId: isString(value.routingSourceFolderId) ? value.routingSourceFolderId : undefined,
+    routingSourceDirectory: isString(value.routingSourceDirectory) ? value.routingSourceDirectory : undefined,
+    routingAssignedConnectionIdentity: isString(value.routingAssignedConnectionIdentity) ? value.routingAssignedConnectionIdentity : undefined,
+    routingAssignedProviderConfigurationIdentity: isString(value.routingAssignedProviderConfigurationIdentity) ? value.routingAssignedProviderConfigurationIdentity : undefined,
+    routingWaitReason: isString(value.routingWaitReason) ? value.routingWaitReason : undefined,
+    routingReservationPending: booleanOr(value.routingReservationPending),
+    routingUnresolvedReservation: booleanOr(value.routingUnresolvedReservation),
+
     workspaceWorktreeDirectory: isString(value.workspaceWorktreeDirectory) ? value.workspaceWorktreeDirectory : undefined,
     importedReadOnly: booleanOr(value.importedReadOnly),
     createdAt: stringOr(value.createdAt),
@@ -922,7 +1179,13 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     lastOpenedAt: isString(value.lastOpenedAt) ? value.lastOpenedAt : undefined,
     attentionRevision: isString(value.attentionRevision) ? value.attentionRevision : undefined,
     settledAt: isString(value.settledAt) && value.settledAt ? value.settledAt : undefined,
-    messageCount: finiteNumberOr(value.messageCount, 0),
+    snoozedUntilMs: Number.isSafeInteger(value.snoozedUntilMs) && (value.snoozedUntilMs as number) >= 0 && (value.snoozedUntilMs as number) <= 8_640_000_000_000_000 ? value.snoozedUntilMs as number : 0,
+    messageCount: typeof value.messageCount === 'number' && Number.isSafeInteger(value.messageCount) && value.messageCount >= 0 ? value.messageCount : undefined,
+    subagentParentChatId: isString(value.subagentParentChatId) ? value.subagentParentChatId : undefined,
+    subagentParentCreatedAt: isString(value.subagentParentCreatedAt) ? value.subagentParentCreatedAt : undefined,
+    createdByChatId: isString(value.createdByChatId) && value.createdByChatId ? value.createdByChatId : undefined,
+    managedSubagentCount: typeof value.managedSubagentCount === 'number' && Number.isSafeInteger(value.managedSubagentCount) && value.managedSubagentCount >= 0 ? value.managedSubagentCount : 0,
+    managedSubagentRevision: typeof value.managedSubagentRevision === 'number' && Number.isSafeInteger(value.managedSubagentRevision) && value.managedSubagentRevision >= 0 ? value.managedSubagentRevision : 0,
     messagesDigest: isString(value.messagesDigest) ? value.messagesDigest : undefined,
     messages: Array.isArray(value.messages)
       ? value.messages.flatMap((message) => {
@@ -957,7 +1220,7 @@ export function sanitizeCppProvider(value: unknown): CppProvider | null {
     structuredPermissionControl: value.structuredPermissionControl === 'uam' ? 'uam' : 'provider',
     terminalPermissionControl: 'provider',
     npmPackageName: isString(value.npmPackageName) ? value.npmPackageName.trim() : undefined,
-	nativeGoalCommand: isString(value.nativeGoalCommand) ? value.nativeGoalCommand.trim() : undefined,
+    nativeGoalCommand: isString(value.nativeGoalCommand) ? value.nativeGoalCommand.trim() : undefined,
   }
 }
 
@@ -1009,7 +1272,7 @@ export function sanitizeGitWorktreeStatus(value: unknown): GitWorktreeStatus | n
   return {
     isGitRepository: booleanOr(value.isGitRepository),
     isSvnWorkspace: booleanOr(value.isSvnWorkspace),
-	managedRepository: booleanOr(value.managedRepository),
+    managedRepository: booleanOr(value.managedRepository),
     isolated: booleanOr(value.isolated),
     sourceDirty: booleanOr(value.sourceDirty),
     worktreeDirty: booleanOr(value.worktreeDirty),
@@ -1099,28 +1362,13 @@ export function sanitizeVcsCommitResult(value: unknown): VcsCommitResult {
 // CLI version manager sanitisers
 // ---------------------------------------------------------------------------
 
-export const emptyCliVersionProviderState: CliVersionProviderState = {
-  providerId: GEMINI_CLI_PROVIDER_ID,
-  installedVersion: '',
-  selectedVersion: '',
-  availableVersions: [],
-  preferredVersion: '',
-  status: 'unknown',
-  message: '',
-  running: false,
-  installMethod: 'npm',
-  lastInstallStatus: 'none',
-  lastCommand: '',
-  lastOutput: '',
-}
-
 export const emptyCliVersionManager: CliVersionManager = {
   providers: [],
 }
 
 export function sanitizeCliVersionProviderState(value: unknown): CliVersionProviderState | null {
   if (!isRecord(value)) return null
-  const providerId = stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID).trim()
+  const providerId = stringOr(value.providerId, DEFAULT_PROVIDER_ID).trim()
   if (!providerId) return null
   const status = stringOr(value.status)
   const normalizedStatus: CliVersionProviderState['status'] =
@@ -1143,6 +1391,7 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
   const lastInstallStatus = stringOr(value.lastInstallStatus)
   const normalizedLastInstallStatus: NonNullable<CliVersionProviderState['lastInstallStatus']> =
     lastInstallStatus === 'running' ||
+    lastInstallStatus === 'awaiting-verification' ||
     lastInstallStatus === 'succeeded' ||
     lastInstallStatus === 'failed'
       ? lastInstallStatus
@@ -1151,6 +1400,8 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
   return {
     providerId,
     ...(stringOr(value.executionHostId).trim() ? { executionHostId: stringOr(value.executionHostId).trim(), executionHostName: stringOr(value.executionHostName).trim() } : {}),
+    routingConnectionIdentity: isString(value.routingConnectionIdentity) ? value.routingConnectionIdentity.slice(0, 128) : undefined,
+    routingProviderConfigurationIdentity: isString(value.routingProviderConfigurationIdentity) ? value.routingProviderConfigurationIdentity.slice(0, 128) : undefined,
     installedVersion: stringOr(value.installedVersion),
     selectedVersion: stringOr(value.selectedVersion),
     availableVersions: Array.isArray(value.availableVersions)
@@ -1161,6 +1412,7 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
         })
       : [],
     preferredVersion: stringOr(value.preferredVersion),
+    ...(typeof value.canInstall === 'boolean' ? { canInstall: value.canInstall } : {}),
     verifiedVersion: stringOr(value.verifiedVersion),
     verifiedAt: stringOr(value.verifiedAt),
     status: normalizedStatus,
@@ -1196,15 +1448,6 @@ export function sanitizeCliVersionManager(value: unknown): CliVersionManager | u
 
   const legacy = sanitizeCliVersionProviderState(value)
   return { providers: legacy ? [legacy] : [] }
-}
-
-export function upsertCliVersionProviderState(
-  providers: CliVersionProviderState[],
-  next: CliVersionProviderState
-): CliVersionProviderState[] {
-  const found = providers.some((provider) => provider.providerId === next.providerId)
-  if (!found) return [...providers, next]
-  return providers.map((provider) => provider.providerId === next.providerId ? next : provider)
 }
 
 // ---------------------------------------------------------------------------
@@ -1312,6 +1555,10 @@ function normalizeEditorExtension(value: string) {
   return trimmed.startsWith('.') ? trimmed : `.${trimmed}`
 }
 
+export function sanitizeWindowsPowerShell(value: unknown): WindowsPowerShellPreference {
+  return value === 'windows-powershell' || value === 'pwsh' ? value : 'auto'
+}
+
 export function sanitizeEditorPresetId(value: unknown) {
   const preset = stringOr(value, 'vscode').trim()
   return EDITOR_PRESET_IDS.includes(preset) ? preset : 'vscode'
@@ -1363,7 +1610,7 @@ export function sanitizeProviderChatDefaults(value: unknown): ProviderChatDefaul
     commandSafetyTier: normalizeCommandSafetyTier(
       isString(value.commandSafetyTier) ? value.commandSafetyTier : booleanOr(value.autoApproveCommands) ? 'yolo' : 'off'
     ),
-    memoryEnabled: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)) !== 'off',
+    memoryEnabled: memoryEnabledForLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)),
     memoryLevel: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)),
     smallModelMode: booleanOr(value.smallModelMode),
     reasoningEffort: normalizeCodexReasoningEffort(value.reasoningEffort),
@@ -1393,7 +1640,7 @@ export function providerChatDefaultsForNewChat(
   const saved = state.providerChatDefaults[providerId]
   const defaults = sanitizeProviderChatDefaults(saved ?? null)
   if (!saved) {
-    defaults.memoryLevel = normalizeMemoryLevel(state.memoryLevelDefault, state.memoryEnabledDefault)
+    defaults.memoryLevel = normalizeMemoryLevel(state.memoryLevelDefault, state.memoryEnabledDefault, false)
     defaults.memoryEnabled = defaults.memoryLevel !== 'off'
   }
   const caps = providerCapabilities(providerId)
@@ -1417,22 +1664,113 @@ export function sanitizeCentralProviderConfiguration(value: unknown): CentralPro
     enabled: booleanOr(value.enabled, false), instructions: stringOr(value.instructions),
     instructionFiles: paths(value.instructionFiles), skillDirectories: paths(value.skillDirectories),
     defaultAgentId: stringOr(value.defaultAgentId, 'build'), uamControlEnabled: booleanOr(value.uamControlEnabled, true),
+    defaultSkills: Array.isArray(value.defaultSkills) ? value.defaultSkills.filter((entry): entry is string => typeof entry === 'string').slice(0, 256) : [],
+    defaultAgents: Array.isArray(value.defaultAgents) ? value.defaultAgents.filter((entry): entry is string => typeof entry === 'string').slice(0, 256) : [],
+    mcpOverrides: Array.isArray(value.mcpOverrides) ? value.mcpOverrides.filter(isRecord).flatMap(entry => typeof entry.providerId === 'string' && typeof entry.executionHostId === 'string' && typeof entry.serverId === 'string' && typeof entry.enabled === 'boolean' && (entry.kind === undefined || entry.kind === 'preference') ? [{ providerId: entry.providerId, executionHostId: entry.executionHostId, serverId: entry.serverId, enabled: entry.enabled, ...(entry.kind === 'preference' ? { kind: 'preference' as const } : {}) }] : []).slice(0, 4096) : [],
   }
+}
+
+/** Reject an invalid override set instead of accidentally enabling a previously disabled provider. */
+export function sanitizeProviderAvailability(value: unknown): ProviderAvailabilityOverride[] | undefined {
+  if (!Array.isArray(value) || value.length > 4096) return undefined
+  const entries = new Map<string, ProviderAvailabilityOverride>()
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.providerId !== 'string' || typeof item.executionHostId !== 'string' || typeof item.enabled !== 'boolean') return undefined
+    const providerId = normalizeCliProviderIdAlias(item.providerId)
+    const executionHostId = item.executionHostId.trim() || 'local'
+    if (!SUPPORTED_CLI_PROVIDER_IDS.includes(providerId) || !/^[a-zA-Z0-9_-]{1,64}$/.test(executionHostId)) return undefined
+    entries.set(JSON.stringify([providerId, executionHostId]), { providerId, executionHostId, enabled: item.enabled })
+  }
+  return [...entries.values()]
+}
+
+function voiceText(value: unknown, limit: number): string | undefined {
+  if (typeof value !== 'string' || /[\u0000-\u001f\u007f]/.test(value) || new TextEncoder().encode(value).length > limit) return undefined
+  return value.trim()
+}
+
+/** Preserve only validated native settings and explicit capability observations; never infer platform support. */
+export function sanitizeVoiceInputSettings(value: unknown): VoiceInputSettings {
+  if (!isRecord(value)) return {}
+  const settings: VoiceInputSettings = {}
+  if (typeof value.voiceInputMode === 'string') {
+    const mode = value.voiceInputMode.trim().toLowerCase()
+    if (mode === 'system' || mode === 'local' || mode === 'server') settings.voiceInputMode = mode
+  }
+  const url = voiceText(value.voiceInputServerBaseUrl, 4096)
+  if (url !== undefined && !/[\\@?#\s]/.test(url)) {
+    const lower = url.toLowerCase()
+    const https = lower.startsWith('https://')
+    const http = lower.startsWith('http://')
+    const authority = lower.slice(https ? 8 : 7).split('/')[0]
+    if (authority && (https || (http && /^(localhost(?::.*)?|127\.0\.0\.1(?::.*)?|\[::1\](?::.*)?)$/.test(authority)))) settings.voiceInputServerBaseUrl = url
+  }
+  const endpoint = voiceText(value.voiceInputServerEndpoint, 2048)
+  if (endpoint?.startsWith('/') && !endpoint.startsWith('//') && !/[ \\?#]/.test(endpoint)) settings.voiceInputServerEndpoint = endpoint
+  const model = voiceText(value.voiceInputServerModel, 256)
+  if (model) settings.voiceInputServerModel = model
+  const env = voiceText(value.voiceInputApiKeyEnv, 128)
+  if (env !== undefined && (env === '' || /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(env))) settings.voiceInputApiKeyEnv = env
+  if (isRecord(value.voiceInputCapabilities)) {
+    const capabilities: VoiceInputCapabilities = {}
+    let valid = true
+    for (const mode of ['system', 'local', 'server'] as VoiceInputMode[]) {
+      if (!(mode in value.voiceInputCapabilities)) continue
+      const entry = value.voiceInputCapabilities[mode]
+      const reason = isRecord(entry) ? voiceText(entry.reason, 4096) : undefined
+      if (!isRecord(entry) || typeof entry.supported !== 'boolean' || reason === undefined) { valid = false; break }
+      capabilities[mode] = { supported: entry.supported, reason }
+    }
+    if (valid) settings.voiceInputCapabilities = capabilities
+  }
+  return settings
+}
+
+export function sanitizeVcsStorageSettings(value: unknown): Partial<VcsStorageSettings> {
+  if (!isRecord(value)) return {}
+  const settings: Partial<VcsStorageSettings> = {}
+  for (const key of ['gitAutoWorktree', 'gitSnapshotSvn', 'gitSnapshotPlainFolders', 'gitPullBeforeChat', 'svnUpdateBeforeChat', 'worktreeCleanupEnabled'] as const) {
+    if (typeof value[key] === 'boolean') settings[key] = value[key]
+  }
+  const branch = sanitizeGitBaseBranch(value.gitDefaultBaseBranch)
+  if (branch !== undefined) settings.gitDefaultBaseBranch = branch
+  if (value.gitPortMethod === 'patch' || value.gitPortMethod === 'merge' || value.gitPortMethod === 'squash') settings.gitPortMethod = value.gitPortMethod
+  for (const key of ['worktreeRetentionDays', 'backupLogRetentionDays', 'httpCacheClearIntervalDays'] as const) {
+    const days = value[key]
+    if (typeof days === 'number' && Number.isInteger(days) && days >= (key === 'worktreeRetentionDays' ? 1 : 0) && days <= 3650) settings[key] = days
+  }
+  return settings
+}
+
+/** Partial bridge updates carry only explicitly supplied settings, so omitted values cannot reset saved configuration. */
+function sanitizeCppSettingsPatch(value: Record<string, unknown>): Partial<CppSettings> {
+  const sanitized = sanitizeCppSettings(value)
+  return Object.fromEntries(Object.keys(value).flatMap((key) => {
+    if (!Object.prototype.hasOwnProperty.call(sanitized, key)) return []
+    if ((key === 'gitEnabled' || key === 'svnEnabled') && typeof value[key] !== 'boolean') return []
+    const field = sanitized[key as keyof CppSettings]
+    return field === undefined ? [] : [[key, field]]
+  })) as Partial<CppSettings>
 }
 
 export function sanitizeCppSettings(value: unknown): CppSettings {
   if (!isRecord(value)) {
     return {
-      activeProviderId: GEMINI_CLI_PROVIDER_ID,
+      activeProviderId: DEFAULT_PROVIDER_ID,
       theme: 'focus',
       showProviderIconsInSidebar: true,
       showWorktreePathInSidebar: true,
+      gitEnabled: true,
+      svnEnabled: true,
       memoryEnabledDefault: true,
       memoryLevelDefault: 'strict',
       memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
       memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
       goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
+      goalTokenBudget: 0,
       acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
+      activeTurnInactivityTimeoutSeconds: DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS,
+      streamLoopRepeatLimit: DEFAULT_STREAM_LOOP_REPEAT_LIMIT,
       acpTurnOutputLimitMiB: DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
       updateChecksEnabled: true,
       automaticProviderUpdates: false,
@@ -1442,10 +1780,11 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       memoryWorkerBindings: {},
       permissionReviewerProviderId: '',
       permissionReviewerModelId: '',
-      defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
+      defaultNewChatProviderId: DEFAULT_PROVIDER_ID,
       providerChatDefaults: {},
       markdownStoreDirectory: '',
       fileExplorerApplication: '',
+      windowsPowerShell: 'auto',
       defaultEditorPresetId: 'vscode',
       editorFileAssociations: defaultEditorFileAssociations(),
       centralProviderConfiguration: { ...DEFAULT_CENTRAL_PROVIDER_CONFIGURATION },
@@ -1455,6 +1794,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '',
       }],
       favoriteUamAgentIds: [],
+      nativeImportExcludedTitlePrefixes: [],
+      nativeImportExcludedDirectories: [],
       uamAgentCycleShortcut: 'shift+tab',
       computerUseAllowlistEnabled: false,
       computerUseAllowedApplications: [],
@@ -1497,7 +1838,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
           executionHostId: stringOr(entry.executionHostId),
           transport,
           command: stringOr(entry.command),
-		  args: Array.isArray(entry.args) ? entry.args.filter((arg): arg is string => typeof arg === 'string') : [],
+          args: Array.isArray(entry.args) ? entry.args.filter((arg): arg is string => typeof arg === 'string') : [],
           url: stringOr(entry.url),
           environment: references(entry.environment),
           headers: references(entry.headers),
@@ -1512,6 +1853,12 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         .filter((id) => id !== 'build' && id !== 'plan' && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(id))))
         .slice(0, 64)
     : []
+  const importRules = (raw: unknown) => Array.isArray(raw)
+    ? Array.from(new Set(raw.filter((rule): rule is string => typeof rule === 'string').map((rule) => rule.trim())
+        .filter((rule) => rule && rule.length <= 4096))).slice(0, 100)
+    : []
+  const nativeImportExcludedTitlePrefixes = importRules(value.nativeImportExcludedTitlePrefixes)
+  const nativeImportExcludedDirectories = importRules(value.nativeImportExcludedDirectories)
   const executionHosts: NonNullable<CppSettings['executionHosts']> = [{
     id: 'local', label: 'This computer', transport: 'local' as const, sshAlias: '',
     runnerStatus: 'ready' as const, runnerVersion: '', platform: '', architecture: '', lastSeenAt: '',
@@ -1524,6 +1871,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         executionHosts[0].customIcon = sanitizeCustomIcon(entry.customIcon)
         continue
       }
+      if (!SSH_ENABLED) continue // Builds without SSH keep only this computer.
       const id = stringOr(entry.id).trim()
       const sshAlias = stringOr(entry.sshAlias).trim()
       if (!/^[A-Za-z0-9_-]{1,64}$/.test(id) || id === 'local' ||
@@ -1532,6 +1880,10 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       const runnerStatus = ['uninstalled', 'installing', 'ready', 'offline', 'error'].includes(stringOr(entry.runnerStatus))
         ? stringOr(entry.runnerStatus) as 'uninstalled' | 'installing' | 'ready' | 'offline' | 'error'
         : 'uninstalled'
+      const runnerStartupApplied = ['enabled', 'disabled', 'pending', 'failed'].includes(stringOr(entry.runnerStartupApplied))
+        ? stringOr(entry.runnerStartupApplied) as 'enabled' | 'disabled' | 'pending' | 'failed'
+        : undefined
+      const runnerStartupError = stringOr(entry.runnerStartupError).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 300)
       executionHosts.push({
         id,
         label: stringOr(entry.label).trim() || sshAlias,
@@ -1545,9 +1897,15 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         customIcon: sanitizeCustomIcon(entry.customIcon),
         runnerDirectory: stringOr(entry.runnerDirectory),
         runnerProtocolVersion: finiteNumberOr(entry.runnerProtocolVersion, 0),
+        ...(/^[0-9a-f]{64}$/.test(stringOr(entry.runnerSha256)) ? { runnerSha256: stringOr(entry.runnerSha256) } : {}),
+        ...(/^[0-9a-f]{64}$/.test(stringOr(entry.bundledRunnerSha256)) ? { bundledRunnerSha256: stringOr(entry.bundledRunnerSha256) } : {}),
         instructionFile: stringOr(entry.instructionFile),
+        instructionText: typeof entry.instructionText === 'string' ? entry.instructionText : undefined,
         startupEnabled: booleanOr(entry.startupEnabled, false),
+        cliUpdatesAsAdmin: booleanOr(entry.cliUpdatesAsAdmin, false),
         startupStatus: stringOr(entry.startupStatus, 'disabled'),
+        ...(runnerStartupApplied ? { runnerStartupApplied } : {}),
+        ...(runnerStartupError ? { runnerStartupError } : {}),
       })
     }
   }
@@ -1556,16 +1914,24 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     ? requestedUamAgentCycleShortcut as CppSettings['uamAgentCycleShortcut']
     : 'shift+tab'
   return {
-    activeProviderId: stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID),
+    ...sanitizeVoiceInputSettings(value),
+    ...sanitizeVcsStorageSettings(value),
+    providerAvailability: sanitizeProviderAvailability(value.providerAvailability),
+    activeProviderId: stringOr(value.activeProviderId, DEFAULT_PROVIDER_ID),
     theme,
     showProviderIconsInSidebar: booleanOr(value.showProviderIconsInSidebar, true),
     showWorktreePathInSidebar: booleanOr(value.showWorktreePathInSidebar, true),
-    memoryEnabledDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true)) !== 'off',
-    memoryLevelDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true)),
+    gitEnabled: booleanOr(value.gitEnabled, true),
+    svnEnabled: booleanOr(value.svnEnabled, true),
+    memoryEnabledDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true), false) !== 'off',
+    memoryLevelDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true), false),
     memoryIdleDelaySeconds: clampedFiniteNumberOr(value.memoryIdleDelaySeconds, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS),
     memoryRecallBudgetBytes: clampedFiniteNumberOr(value.memoryRecallBudgetBytes, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES),
     goalMaxLoopIterations: normalizeGoalMaxLoopIterations(value.goalMaxLoopIterations),
+    goalTokenBudget: Math.max(0, Math.floor(typeof value.goalTokenBudget === 'number' && Number.isFinite(value.goalTokenBudget) ? value.goalTokenBudget : 0)),
     acpSetupInactivityTimeoutSeconds: normalizeAcpSetupInactivityTimeoutSeconds(value.acpSetupInactivityTimeoutSeconds),
+    activeTurnInactivityTimeoutSeconds: normalizeActiveTurnInactivityTimeoutSeconds(value.activeTurnInactivityTimeoutSeconds),
+    streamLoopRepeatLimit: normalizeStreamLoopRepeatLimit(value.streamLoopRepeatLimit),
     acpTurnOutputLimitMiB: normalizeAcpTurnOutputLimitMiB(value.acpTurnOutputLimitMiB),
     updateChecksEnabled: booleanOr(value.updateChecksEnabled, true),
     automaticProviderUpdates: booleanOr(value.automaticProviderUpdates, false),
@@ -1575,18 +1941,33 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     memoryWorkerBindings: bindings,
     permissionReviewerProviderId: stringOr(value.permissionReviewerProviderId),
     permissionReviewerModelId: stringOr(value.permissionReviewerModelId),
-    defaultNewChatProviderId: stringOr(value.defaultNewChatProviderId, stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID)),
+    defaultNewChatProviderId: stringOr(value.defaultNewChatProviderId, stringOr(value.activeProviderId, DEFAULT_PROVIDER_ID)),
     providerChatDefaults: sanitizeProviderChatDefaultsMap(value.providerChatDefaults),
     markdownStoreDirectory: stringOr(value.markdownStoreDirectory),
     fileExplorerApplication: stringOr(value.fileExplorerApplication),
+    windowsPowerShell: sanitizeWindowsPowerShell(value.windowsPowerShell),
     defaultEditorPresetId: sanitizeEditorPresetId(value.defaultEditorPresetId),
     editorFileAssociations: sanitizeEditorFileAssociations(value.editorFileAssociations),
     centralProviderConfiguration: sanitizeCentralProviderConfiguration(value.centralProviderConfiguration),
     mcpServers,
+    executionRouting: sanitizeExecutionRouting(value.executionRouting),
     executionHosts,
     favoriteUamAgentIds,
+    nativeImportExcludedTitlePrefixes,
+    nativeImportExcludedDirectories,
     uamAgentCycleShortcut,
+    computerUseGloballyEnabled: typeof value.computerUseGloballyEnabled === 'boolean' ? value.computerUseGloballyEnabled : undefined,
+    computerUseRevocationPending: typeof value.computerUseRevocationPending === 'boolean' ? value.computerUseRevocationPending : undefined,
     computerUseAllowlistEnabled: booleanOr(value.computerUseAllowlistEnabled, false),
+    branchSwitching: typeof value.branchSwitching === 'boolean' ? value.branchSwitching : undefined,
+    hostScopedSettings: typeof value.hostScopedSettings === 'boolean' ? value.hostScopedSettings : undefined,
+    hostScopedSettingsValues: isRecord(value.hostScopedSettingsValues)
+      ? Object.fromEntries(Object.entries(value.hostScopedSettingsValues).flatMap(([hostId, entry]) => {
+          if (!hostId || hostId === '*' || hostId === 'local' || !isRecord(entry)) return []
+          const scoped = sanitizeCppSettings({ defaultNewChatProviderId: entry.defaultNewChatProviderId, providerChatDefaults: entry.providerChatDefaults, mcpServers: entry.mcpServers })
+          return [[hostId, { defaultNewChatProviderId: scoped.defaultNewChatProviderId ?? '', providerChatDefaults: scoped.providerChatDefaults ?? {}, mcpServers: scoped.mcpServers ?? [] }]]
+        }))
+      : {},
     computerUseAllowedApplications: Array.isArray(value.computerUseAllowedApplications)
       ? value.computerUseAllowedApplications.flatMap((entry): ComputerUseAllowedApplication[] => {
           if (!isRecord(entry)) return []
@@ -1630,7 +2011,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
       })
     : []
   const resourceCollections = sanitizeResourceCollections(value.resourceCollections)
-	const providerModelCatalogs = sanitizeProviderModelCatalogs(value.providerModelCatalogs)
+  const providerModelCatalogs = sanitizeProviderModelCatalogs(value.providerModelCatalogs)
 
   const selectedChatId =
     isString(value.selectedChatId)
@@ -1657,18 +2038,35 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
     selectedChatIndex: finiteNumberOr(value.selectedChatIndex, -1),
     providers,
     providerModelCatalogs,
+    startupNativeImports: sanitizeStartupNativeImportStatus(value.startupNativeImports),
     settings,
     memoryActivity: sanitizeMemoryActivity(value.memoryActivity, settings.memoryLastStatus),
     cliVersionManager: sanitizeCliVersionManager(value.cliVersionManager),
     shellActions,
     shellActionNotification: stringOr(value.shellActionNotification),
     statusLine: stringOr(value.statusLine),
+    deletionProgress: sanitizeDeletionProgress(value.deletionProgress),
+  }
+}
+
+export function sanitizeDeletionProgress(value: unknown): CppDeletionProgress | undefined {
+  if (!isRecord(value)) return undefined
+  const { completed, total } = value
+  if (!Number.isFinite(completed) || !Number.isFinite(total)) return undefined
+  const done = completed as number
+  const all = total as number
+  if (done < 0 || all < 0 || done > all) return undefined
+  return {
+    requestId: isString(value.requestId) ? value.requestId : undefined,
+    completed: done,
+    total: all,
+    currentLabel: isString(value.currentLabel) ? value.currentLabel : undefined,
   }
 }
 
 function sanitizeProviderModelCatalogs(value: unknown): ProviderModelCatalog[] {
   if (!Array.isArray(value)) return []
-  return value.slice(0, 512).flatMap((entry) => {
+  return value.flatMap((entry) => {
     if (!isRecord(entry)) return []
     const providerId = normalizeCliProviderIdAlias(stringOr(entry.providerId))
     const workspaceDirectory = stringOr(entry.workspaceDirectory).trim()
@@ -1676,19 +2074,19 @@ function sanitizeProviderModelCatalogs(value: unknown): ProviderModelCatalog[] {
     return [{
       providerId,
       workspaceDirectory,
-	  executionHostId: stringOr(entry.executionHostId, 'local').trim() || 'local',
+      executionHostId: stringOr(entry.executionHostId, 'local').trim() || 'local',
       availableModels: Array.isArray(entry.availableModels)
         ? entry.availableModels.flatMap((model) => {
             const sanitized = sanitizeAcpModel(model)
             return sanitized ? [sanitized] : []
           })
         : [],
-	  configOptions: Array.isArray(entry.configOptions)
-		? entry.configOptions.flatMap((option) => {
-			const sanitized = sanitizeAcpConfigOption(option)
-			return sanitized ? [sanitized] : []
-		  })
-		: [],
+      configOptions: Array.isArray(entry.configOptions)
+        ? entry.configOptions.flatMap((option) => {
+          const sanitized = sanitizeAcpConfigOption(option)
+          return sanitized ? [sanitized] : []
+        })
+        : [],
       currentModelId: normalizeAcpModelId(entry.currentModelId),
       modelsLoading: booleanOr(entry.modelsLoading),
       modelRefreshError: stringOr(entry.modelRefreshError),
@@ -1800,7 +2198,8 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
     providerModelCatalogs: value.providerModelCatalogs !== undefined
       ? sanitizeProviderModelCatalogs(value.providerModelCatalogs)
       : undefined,
-    settings: isRecord(value.settings) ? sanitizeCppSettings(value.settings) : undefined,
+    startupNativeImports: value.startupNativeImports !== undefined ? sanitizeStartupNativeImportStatus(value.startupNativeImports) : undefined,
+    settings: isRecord(value.settings) ? sanitizeCppSettingsPatch(value.settings) : undefined,
     memoryActivity: value.memoryActivity !== undefined ? sanitizeMemoryActivity(value.memoryActivity) : undefined,
     cliVersionManager: value.cliVersionManager !== undefined ? sanitizeCliVersionManager(value.cliVersionManager) : undefined,
     shellActions: value.shellActions !== undefined ? sanitizeShellActions(value.shellActions) : undefined,

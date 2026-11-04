@@ -1,17 +1,19 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
-import { Brain, ChevronRight, FileText, MessageSquare, Search, Terminal, Users, Wrench } from 'lucide-react'
+import { Brain, ChevronRight, Clock3, FileText, LoaderCircle, MessageSquare, Search, Terminal, Users, Wrench } from 'lucide-react'
 import type { AcpToolCall, AcpTurnEvent } from '../../store/useAppStore'
 import { useAppStore } from '../../store/useAppStore'
 import { MarkdownContent } from '../markdown/Markdown'
+import { RowButton, StatusDot } from '../ui'
+import { usePresence } from '../ui/Overlay'
 import { toolDisplayTitle } from './StatusHelpers'
 import './conversation.css'
 
 const SubAgentDisclosureContext = createContext<Set<string> | null>(null)
 
-/** Keep expanded children across live/saved row replacement, only for this mounted chat. */
-export function SubAgentDisclosureProvider({ children }: { children: ReactNode }) {
-  const [expandedTools] = useState(() => new Set<string>())
-  return <SubAgentDisclosureContext.Provider value={expandedTools}>{children}</SubAgentDisclosureContext.Provider>
+/** Keep explicit child disclosures across row replacement and a parent pane visit. */
+export function SubAgentDisclosureProvider({ children, expandedTools }: { children: ReactNode; expandedTools?: Set<string> }) {
+  const [localTools] = useState(() => new Set<string>())
+  return <SubAgentDisclosureContext.Provider value={expandedTools ?? localTools}>{children}</SubAgentDisclosureContext.Provider>
 }
 
 export function useSubAgentDisclosure(toolId: string) {
@@ -35,7 +37,7 @@ export function WorkingHeading({ active, duration = '0s', startedAt }: { active:
   }, [active, startedAt])
   const seconds = Math.max(0, Math.floor((now - (startedAt ?? now)) / 1000))
   const elapsed = startedAt == null ? duration : seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`
-  return <span>{active ? `Working ${elapsed}` : `Worked for ${duration}`}</span>
+  return <span>{active ? `Working ${elapsed}` : `Worked ${duration}`}</span>
 }
 
 export const WorkSectionContext = createContext<{ expanded: boolean; toggle: () => void } | null>(null)
@@ -96,8 +98,14 @@ function ConversationTool({ tool, onSelectTool, renderSubAgentHistory }: {
   return <li className="conversation-work__event">
     <button type="button" className="conversation-work__tool" title={title} onClick={() => onSelectTool(tool.id)} aria-label={`${title}, ${status}`}>
       <Icon size={15} className="conversation-work__event-icon" aria-hidden />
-      <span className="conversation-work__tool-title">{title}</span>
-      <span className="conversation-work__status" data-failed={['failed', 'error'].includes(status) || undefined}>{status}</span>
+      <span className="conversation-work__tool-title">{title}{tool.isSubAgent && tool.currentActivity && <span className="conversation-work__activity">{tool.currentActivity}</span>}</span>
+      <span className="conversation-work__status" data-failed={['failed', 'error'].includes(status) || undefined}>
+        {['failed', 'error'].includes(status) ? <StatusDot tone="error" />
+          : ['completed', 'complete'].includes(status) ? <StatusDot tone="success" />
+          : ['running', 'in progress', 'inprogress'].includes(status) ? <LoaderCircle size={12} aria-hidden style={{ color: 'var(--blue)' }} />
+          : <Clock3 size={12} aria-hidden />}
+        <span className="sr-only">{status}</span>
+      </span>
     </button>
     {tool.isSubAgent && renderSubAgentHistory && <details className="conversation-work__subagent" open={historyOpen}>
       <summary onClick={(event) => { event.preventDefault(); setHistoryOpen(!historyOpen) }}>Sub-agent transcript <ChevronRight size={12} aria-hidden /></summary>
@@ -141,18 +149,21 @@ export function ConversationWork({ events, tools, active, duration, onSelectTool
   const disclosure = useWorkTraceDisclosure(disclosureState)
   const open = expanded ?? disclosure.expanded
   const visibleOpen = active ? true : open
+  // Keep the trace mounted while it collapses so the grid-rows exit can play.
+  const trace = usePresence(visibleOpen)
   const toggle = onToggle ?? disclosure.toggle
   if (headerOnly && section && !sectionHeading) return null
   if (headerOnly) return <div className="conversation-work" data-testid="working-summary" data-active={active}>
     {active ? (
       <span className="conversation-work__heading" aria-label="Work in progress">
+        <span className="conversation-work__live" aria-hidden />
         <WorkingHeading active={active} duration={duration} startedAt={startedAt} />
       </span>
     ) : collapsible ? (
-      <button type="button" className="conversation-work__heading conversation-work__toggle" aria-expanded={open} aria-label={open ? 'Collapse work trace' : 'Expand work trace'} onClick={toggle}>
+      <RowButton className="conversation-work__heading conversation-work__toggle" aria-expanded={open} aria-label={open ? 'Collapse work trace' : 'Expand work trace'} onClick={toggle}>
         <WorkingHeading active={active} duration={duration} startedAt={startedAt} />
         <ChevronRight size={14} className="conversation-work__chevron" aria-hidden />
-      </button>
+      </RowButton>
     ) : (
       <span className="conversation-work__heading">
         <WorkingHeading active={active} duration={duration} startedAt={startedAt} />
@@ -166,31 +177,33 @@ export function ConversationWork({ events, tools, active, duration, onSelectTool
   const referencedTools = new Set(events.flatMap((event) => event.type === 'tool_call' ? [event.toolCallId] : []))
   let thoughtIndex = 0
   const Container = section ? 'div' : 'details'
-  return <Container className="conversation-work" data-testid={section ? undefined : "working-summary"} data-active={active} {...(section ? {} : { open: visibleOpen })}>
+  return <Container className="conversation-work" data-testid={section ? undefined : "working-summary"} data-active={active} {...(section ? {} : { open: trace.mounted })}>
     {!section && <summary className="conversation-work__summary" onClick={active ? undefined : (event) => { event.preventDefault(); toggle() }}>
       <span className="conversation-work__heading"><span><WorkingHeading active={active} duration={duration} startedAt={startedAt} /></span>{!active && <ChevronRight size={14} className="conversation-work__chevron" aria-hidden />}</span>
       <span className="conversation-work__divider" aria-hidden />
     </summary>}
-    {visibleOpen && <div className="conversation-work__expanded">
-      <ol className="conversation-work__timeline" aria-label="Work activity">
-        {events.map((event, index) => {
-          if (event.type === 'tool_call') {
-            const tool = toolById.get(event.toolCallId) ?? {
-              id: event.toolCallId, title: event.toolCallId, kind: 'tool', status: 'pending', content: '',
+    {trace.mounted && <div className="conversation-work__collapse" data-state={trace.closing ? 'closed' : 'open'}>
+      <div className="conversation-work__expanded">
+        <ol className="conversation-work__timeline" aria-label="Work activity">
+          {events.map((event, index) => {
+            if (event.type === 'tool_call') {
+              const tool = toolById.get(event.toolCallId) ?? {
+                id: event.toolCallId, title: event.toolCallId, kind: 'tool', status: 'pending', content: '',
+              }
+              return <ConversationTool key={`tool-${tool.id}-${index}`} tool={tool} onSelectTool={onSelectTool} renderSubAgentHistory={renderSubAgentHistory} />
             }
-            return <ConversationTool key={`tool-${tool.id}-${index}`} tool={tool} onSelectTool={onSelectTool} renderSubAgentHistory={renderSubAgentHistory} />
-          }
-          if (event.type === 'thought' && event.text.trim()) return <ConversationThought key={`thought-${index}`} text={event.text} disclosureState={disclosure.state} thoughtIndex={thoughtIndex++} />
-          if (event.type === 'assistant_text' && event.text.trim()) {
-            return <li key={`text-${index}`} className="conversation-work__event conversation-work__note">
-              <MessageSquare size={15} className="conversation-work__event-icon" aria-hidden />
-              <MarkdownContent content={event.text} />
-            </li>
-          }
-          return null
-        })}
-        {tools.filter((tool) => !referencedTools.has(tool.id)).map((tool) => <ConversationTool key={`extra-${tool.id}`} tool={tool} onSelectTool={onSelectTool} renderSubAgentHistory={renderSubAgentHistory} />)}
-      </ol>
-      </div>}
+            if (event.type === 'thought' && event.text.trim()) return <ConversationThought key={`thought-${index}`} text={event.text} disclosureState={disclosure.state} thoughtIndex={thoughtIndex++} />
+            if (event.type === 'assistant_text' && event.text.trim()) {
+              return <li key={`text-${index}`} className="conversation-work__event conversation-work__note">
+                <MessageSquare size={15} className="conversation-work__event-icon" aria-hidden />
+                <MarkdownContent content={event.text} chips />
+              </li>
+            }
+            return null
+          })}
+          {tools.filter((tool) => !referencedTools.has(tool.id)).map((tool) => <ConversationTool key={`extra-${tool.id}`} tool={tool} onSelectTool={onSelectTool} renderSubAgentHistory={renderSubAgentHistory} />)}
+        </ol>
+      </div>
+    </div>}
   </Container>
 }

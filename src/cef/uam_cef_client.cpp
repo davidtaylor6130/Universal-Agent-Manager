@@ -2,6 +2,9 @@
 #include "cef/cef_push.h"
 #include "cef/state_serializer.h"
 #include "cef/uam_cef_security.h"
+#include "cef/uam_window_chrome.h"
+#include "include/views/cef_browser_view.h"
+#include "include/views/cef_window.h"
 #include "common/utils/diagnostic_log.h"
 #include "include/cef_task.h"
 
@@ -316,6 +319,41 @@ bool UamCefClient::OnProcessMessageReceived(CefRefPtr<CefBrowser>        browser
 	}
 
 	return m_router->OnProcessMessageReceived(browser, frame, source_process, message);
+}
+
+// ---------------------------------------------------------------------------
+// CefDragHandler
+// ---------------------------------------------------------------------------
+
+void UamCefClient::OnDraggableRegionsChanged(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const std::vector<CefDraggableRegion>& regions)
+{
+	CEF_REQUIRE_UI_THREAD();
+	if (!uam::cef::kCustomWindowChrome || browser == nullptr || m_browser == nullptr || !browser->IsSame(m_browser) || !IsTrustedMainFrame(frame))
+	{
+		return;
+	}
+	// The browser view fills the window, so browser and window coordinates match.
+	m_windowDragRegions = regions;
+	SetWindowRecoveryMode(m_windowRecoveryVisible);
+}
+
+void UamCefClient::SetWindowRecoveryMode(bool visible)
+{
+	CEF_REQUIRE_UI_THREAD();
+	m_windowRecoveryVisible = visible;
+	if (!uam::cef::kCustomWindowChrome || !m_browser) return;
+	const CefRefPtr<CefBrowserView> view = CefBrowserView::GetForBrowser(m_browser);
+	if (const CefRefPtr<CefWindow> window = view ? view->GetWindow() : nullptr)
+	{
+		if (visible)
+		{
+			CefDraggableRegion strip;
+			strip.bounds = CefRect(0, 0, window->GetBounds().width, static_cast<int>(uam::cef::kWindowStripHeight));
+			strip.draggable = true;
+			window->SetDraggableRegions({strip});
+		}
+		else window->SetDraggableRegions(m_windowDragRegions);
+	}
 }
 
 // ---------------------------------------------------------------------------

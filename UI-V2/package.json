@@ -1,13 +1,15 @@
 {
   "name": "uam-ui-v2",
   "private": true,
-  "version": "4.11.0",
+  "version": "5.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "npm run test:unit && npm run test:performance",
+    "test:unit": "vitest run --exclude \"src/**/*.performance.test.{ts,tsx}\"",
+    "test:performance": "vitest run .performance.test --maxWorkers=1 --no-file-parallelism"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.0.19",
@@ -15,6 +17,7 @@
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
     "lucide-react": "^1.23.0",
+    "qrcode.react": "^4.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-resizable-panels": "^2.0.19",
@@ -30,6 +33,9 @@
     "tailwindcss": "^3.4.1",
     "typescript": "^5.5.3",
     "vite": "^6.4.3",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.12"
+  },
+  "overrides": {
+    "postcss-selector-parser": "^7.1.6"
   }
 }

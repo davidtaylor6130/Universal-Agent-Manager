@@ -1,6 +1,8 @@
 #include "computer_use/computer_use_mcp_server.h"
 
 #include "computer_use/computer_use_mcp_config.h"
+#include "app/data_folder_transition.h"
+#include "common/platform/data_folder_writer_lease.h"
 #if defined(__APPLE__)
 #include "computer_use/computer_use_launch_macos.h"
 #endif
@@ -46,11 +48,25 @@ namespace uam::computer_use
 
 		std::filesystem::path ResolveDataRoot()
 		{
+			std::filesystem::path root;
+			std::string error;
 			if (const auto configured = uam::env::GetTrimmedPath("UAM_DATA_DIR"))
 			{
-				return *configured;
+				root = *configured; // Effective root inherited from the owning desktop process.
 			}
-			return AppPaths::DefaultDataRootPath();
+			else if (!DataFolderTransition::ProbeStartupRoot(AppPaths::DefaultDataRootPath(), {}, root, error))
+				return {};
+			return DataFolderTransition::CheckExternalSourceFence(root, error, true) ? root : std::filesystem::path{};
+		}
+
+		bool LoadLivePolicy(AppSettings& settings)
+		{
+			const auto root = ResolveDataRoot();
+			if (root.empty())
+				return false;
+			const SettingsLoadResult result = SettingsStore::Load(AppPaths::SettingsFilePath(root), settings);
+			// A recovery backup may contain an older grant, so live control fails closed.
+			return result.loaded && !result.recovered_from_backup;
 		}
 
 		nlohmann::json ObserveSchema()
@@ -283,12 +299,28 @@ namespace uam::computer_use
 		class Server
 		{
 		  public:
-			explicit Server(std::string chat_id, std::string chat_label, std::string target_kind, std::uint64_t target_id, std::uint64_t target_process_id) : m_chatId(std::move(chat_id)), m_targetKind(target_kind == "screen" ? "screen" : "window"), m_targetId(target_id), m_targetProcessId(target_process_id), m_sessionDirectory(ResolveDataRoot() / "computer-use" / m_chatId), m_controlFile(m_sessionDirectory / "control.json"), m_historyFile(m_sessionDirectory / "history.jsonl")
+			explicit Server(std::string chat_id, std::string chat_label, std::string target_kind, std::uint64_t target_id, std::uint64_t target_process_id) : m_chatId(std::move(chat_id)), m_targetKind(target_kind == "screen" ? "screen" : "window"), m_targetId(target_id), m_targetProcessId(target_process_id)
 			{
-				ConfigureVirtualCursorIdentity(uam::strings::SafeLine(uam::strings::TrimOrFallback(chat_label, "Chat"), 48, true), m_chatId);
+				const auto root = ResolveDataRoot();
+				std::string ownership_error;
+				if (root.empty())
+					return;
+				m_writerLease = platform::DataFolderWriterLease::TryAcquire(root, platform::DataFolderWriterLease::Access::Shared, ownership_error);
+				if (!m_writerLease || !DataFolderTransition::CheckExternalSourceFence(root, ownership_error, true))
+					return;
+				m_sessionDirectory = root / "computer-use" / m_chatId;
+				m_controlFile = m_sessionDirectory / "control.json";
+				m_historyFile = m_sessionDirectory / "history.jsonl";
 				std::error_code error;
-				uam::paths::CreateDirectoriesNoThrow(m_sessionDirectory, &error);
+				if (!uam::paths::CreateDirectoriesNoThrow(m_sessionDirectory, &error))
+					return;
+				m_storageReady = true;
+				ConfigureVirtualCursorIdentity(uam::strings::SafeLine(uam::strings::TrimOrFallback(chat_label, "Chat"), 48, true), m_chatId);
 				Record("server", "started", "Computer-use MCP server started.");
+			}
+			bool Ready() const
+			{
+				return m_storageReady;
 			}
 
 			nlohmann::json Handle(const nlohmann::json& request)
@@ -325,6 +357,8 @@ namespace uam::computer_use
 			}
 
 		  private:
+			std::shared_ptr<platform::DataFolderWriterLease> m_writerLease;
+			bool m_storageReady = false;
 			std::string m_chatId;
 			std::string m_targetKind;
 			std::uint64_t m_targetId = 0;
@@ -353,6 +387,11 @@ namespace uam::computer_use
 
 			std::string ControlState() const
 			{
+				// Re-read policy at each input cancellation boundary, including an already-running helper.
+				AppSettings settings;
+				if (!LoadLivePolicy(settings) ||
+				    !settings.computer_use_globally_enabled)
+					return "stopped";
 				std::string text;
 				if (!uam::io::TryReadTextFile(m_controlFile, text, kMaxControlBytes))
 					return "stopped";
@@ -473,6 +512,8 @@ namespace uam::computer_use
 
 			std::optional<std::string> ValidateTargetPolicy(const Target& target, const AppSettings& settings) const
 			{
+				if (!settings.computer_use_globally_enabled)
+					return "Computer Use is disabled globally.";
 				if (target.kind != "window")
 					return "Computer Use requires an application window. Whole-display fallback is not allowed.";
 				if (!settings.computer_use_allowlist_enabled)
@@ -489,7 +530,7 @@ namespace uam::computer_use
 			std::optional<std::string> ValidateTargetPolicy(const Target& target) const
 			{
 				AppSettings settings;
-				if (!SettingsStore::Load(AppPaths::SettingsFilePath(ResolveDataRoot()), settings).loaded)
+				if (!LoadLivePolicy(settings))
 					return "Computer Use policy could not be read; control is blocked.";
 				if (const auto error = ValidateTargetPolicy(target, settings)) return error;
 				return ValidateApplicationScope(ApplicationIdentityForTarget(target.kind, target.id, target.process_id));
@@ -498,12 +539,11 @@ namespace uam::computer_use
 			std::vector<Target> VisibleTargets(const std::vector<Target>& targets) const
 			{
 				AppSettings settings;
-				if (!SettingsStore::Load(AppPaths::SettingsFilePath(ResolveDataRoot()), settings).loaded)
+				if (!LoadLivePolicy(settings))
 					return {};
 				std::vector<Target> visible;
 				for (const Target& target : targets)
-					if (target.kind == "window" && !ValidateTargetPolicy(target, settings) &&
-					    !ValidateApplicationScope(ApplicationIdentityForTarget(target.kind, target.id, target.process_id)))
+					if (target.kind == "window" && !ValidateTargetPolicy(target, settings))
 						visible.push_back(target);
 				return visible;
 			}
@@ -553,8 +593,10 @@ namespace uam::computer_use
 					if (!application) return error + (application_error.empty() ? "" : " " + application_error);
 					if (const auto scope_error = ValidateApplicationScope(*application, query)) return scope_error;
 					AppSettings settings;
-					if (!SettingsStore::Load(AppPaths::SettingsFilePath(ResolveDataRoot()), settings).loaded)
+					if (!LoadLivePolicy(settings))
 						return "Computer Use settings could not be read; application launch was blocked.";
+					if (!settings.computer_use_globally_enabled || ControlState() != control_state)
+						return "Computer Use was disabled before opening the application.";
 					if (settings.computer_use_allowlist_enabled && !std::ranges::any_of(settings.computer_use_allowed_applications, [&application](const ComputerUseApplicationRule& rule) {
 						return (rule.identity_kind == "bundleid" || rule.identity_kind == "executablepath") && rule.identity == application->id;
 					})) return "This application is not allowed by Computer Use Settings.";
@@ -597,7 +639,7 @@ namespace uam::computer_use
 					return permission_error.empty() ? "Computer use permissions are unavailable." : permission_error;
 				}
 				AppSettings settings;
-				if (!SettingsStore::Load(AppPaths::SettingsFilePath(ResolveDataRoot()), settings).loaded)
+				if (!LoadLivePolicy(settings))
 					return "Computer Use policy could not be read; control is blocked.";
 				if (const auto policy_error = ValidateTargetPolicy(*requested, settings))
 					return *policy_error;
@@ -1174,6 +1216,13 @@ namespace uam::computer_use
 				    }
 					    else if (settings_action == "request")
 					    {
+						    AppSettings settings;
+						    if (!LoadLivePolicy(settings) || !settings.computer_use_globally_enabled)
+						    {
+							    result = {{"error", "Computer Use is disabled globally or its live policy is unavailable."}, {"granted", false}};
+							    std::cout << result.dump() << '\n' << std::flush;
+							    return 1;
+						    }
 						    const std::string permission = StringArgument(arguments, "--permission");
 						    if (permission != "screenRecording" && permission != "accessibility") { result = {{"error", "permission must be screenRecording or accessibility."}}; std::cout << result.dump() << '\n' << std::flush; return 1; }
 						    const bool granted = permission == "screenRecording" ? RequestCapturePermission(&error) : permission == "accessibility" ? RequestActionPermission(&error) : false;
@@ -1215,6 +1264,11 @@ namespace uam::computer_use
 				    return 2;
 			    }
 			Server server(chat_id, chat_label, target_kind, target_id, target_process_id);
+			if (!server.Ready())
+			{
+				std::cerr << "Computer-use profile ownership is unavailable or a data-folder transfer is held.\n";
+				return 2;
+			}
 			    std::vector<char> line(kMaxJsonRpcLineBytes);
 			    std::size_t line_size = 0;
 			    bool oversized = false;

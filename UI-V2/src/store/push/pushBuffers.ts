@@ -5,7 +5,7 @@
 export const pendingRequestIdsByKey = new Map<string, string>()
 export const pendingModelByChatId = new Map<string, { requestId: string; modelId: string; reasoningEffort: string; serviceTier: string; serviceTierExplicit: boolean }>()
 export const pendingViewModeBySessionId = new Map<string, 'chat' | 'cli'>()
-export const pendingCliTranscriptChunksBySessionId = new Map<string, { terminalId: string; chunks: string[] }>()
+export const pendingCliTranscriptChunksBySessionId = new Map<string, { terminalId: string; startupTime?: number; chunks: string[] }>()
 export const CLI_TRANSCRIPT_FLUSH_DELAY_MS = 32
 
 // Stream tokens can arrive far faster than the UI needs to repaint; applying

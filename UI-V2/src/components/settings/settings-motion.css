@@ -1,12 +1,17 @@
-.uam-settings-motion {
-  animation: uam-settings-enter 150ms ease-out backwards;
+/* Settings enter: opacity + 4px rise over --dur-base. Exits stay instant (the modal unmounts). */
+.uam-settings-motion,
+.uam-settings-motion .uam-settings-page,
+.uam-settings-motion .uam-settings-page-header .uam-reveal {
+  animation: uam-settings-enter var(--dur-base) var(--ease-out-soft) backwards;
 }
 
 @keyframes uam-settings-enter {
-  from { transform: translateY(5px); }
-  to { transform: translateY(0); }
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .uam-settings-motion { animation: none; }
+  .uam-settings-motion,
+  .uam-settings-motion .uam-settings-page,
+  .uam-settings-motion .uam-settings-page-header .uam-reveal { animation: none; }
 }

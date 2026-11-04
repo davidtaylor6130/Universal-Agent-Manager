@@ -7,18 +7,25 @@ export interface MenuSelectOption {
   label: string
   description?: string
   icon?: ReactNode
-  /** Options sharing a group render under one heading; keep them adjacent. */
+  disabled?: boolean
   group?: string
 }
 
 export function MenuSelect({
+  id,
+  describedBy,
   label,
   value,
   options,
   onChange,
   disabled = false,
   placeholder,
+  matchTriggerWidth = false,
 }: {
+  /** Applied to the trigger button so a `<label htmlFor>` can reference it. */
+  id?: string
+  /** Id of text explaining the control, such as why it is disabled. */
+  describedBy?: string
   label: string
   value: string
   options: MenuSelectOption[]
@@ -26,6 +33,8 @@ export function MenuSelect({
   disabled?: boolean
   /** Trigger text when no option matches value (for action pickers). */
   placeholder?: string
+  /** Keep long labels wrapped within the trigger's width instead of widening the menu. */
+  matchTriggerWidth?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [focusIndex, setFocusIndex] = useState(0)
@@ -40,7 +49,7 @@ export function MenuSelect({
 
   useEffect(() => {
     if (!open) return
-    setFocusIndex(selectedIndex)
+    setFocusIndex(options[selectedIndex]?.disabled ? options.findIndex((option) => !option.disabled) : selectedIndex)
     const onPointerDown = (event: MouseEvent) => {
       const target = event.target as Node
       if (!rootRef.current?.contains(target) && !listRef.current?.contains(target)) setOpen(false)
@@ -50,8 +59,20 @@ export function MenuSelect({
   }, [open, selectedIndex])
 
   useEffect(() => {
-    if (open) optionRefs.current[focusIndex]?.focus()
-  }, [focusIndex, open])
+    if (!open) return
+    if (options[focusIndex]?.disabled) {
+      setFocusIndex(options.findIndex((option) => !option.disabled))
+      return
+    }
+    const focusOption = () => {
+      if (options[focusIndex]) optionRefs.current[focusIndex]?.focus()
+      else triggerRef.current?.focus()
+    }
+    focusOption()
+    // ViewportMenu is hidden until its first layout pass; browsers reject focus there.
+    const frame = requestAnimationFrame(focusOption)
+    return () => cancelAnimationFrame(frame)
+  }, [focusIndex, open, options])
 
   const close = () => {
     setOpen(false)
@@ -70,19 +91,28 @@ export function MenuSelect({
     }
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
     event.preventDefault()
-    if (event.key === 'Home') setFocusIndex(0)
-    else if (event.key === 'End') setFocusIndex(options.length - 1)
-    else setFocusIndex((index) => (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length)
+    const enabled = options.flatMap((option, index) => option.disabled ? [] : [index])
+    if (enabled.length === 0) return
+    if (event.key === 'Home') setFocusIndex(enabled[0])
+    else if (event.key === 'End') setFocusIndex(enabled[enabled.length - 1])
+    else {
+      const current = enabled.indexOf(focusIndex)
+      const direction = event.key === 'ArrowDown' ? 1 : -1
+      setFocusIndex(current < 0 ? enabled[direction > 0 ? 0 : enabled.length - 1]
+        : enabled[(current + direction + enabled.length) % enabled.length])
+    }
   }
 
   return (
     <div ref={rootRef} className="relative">
       <button
         ref={triggerRef}
+        id={id}
         type="button"
         role="combobox"
         title={label}
         aria-label={label}
+        aria-describedby={describedBy}
         aria-controls={listId}
         aria-expanded={open}
         aria-haspopup="listbox"
@@ -102,8 +132,8 @@ export function MenuSelect({
         </span>
         <ChevronDown className={open ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
       </button>
-      {open && (
-        <ViewportMenu
+      <ViewportMenu
+          open={open}
           ref={listRef}
           anchorRef={triggerRef}
           id={listId}
@@ -111,7 +141,7 @@ export function MenuSelect({
           aria-label={label}
           onKeyDown={onListKeyDown}
           className="rounded-md p-1"
-          style={{ minWidth: triggerRef.current?.getBoundingClientRect().width, maxHeight: 240, background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}
+          style={{ minWidth: triggerRef.current?.getBoundingClientRect().width, width: matchTriggerWidth ? triggerRef.current?.getBoundingClientRect().width : undefined, maxHeight: 240, background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}
         >
           {options.map((option, index) => [
             option.group && option.group !== options[index - 1]?.group && <div key={`group:${option.group}`} role="presentation" className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-3)' }}>{option.group}</div>,
@@ -121,15 +151,17 @@ export function MenuSelect({
               type="button"
               role="option"
               aria-selected={option.value === value}
-              onMouseEnter={() => setFocusIndex(index)}
+              disabled={option.disabled}
+              onMouseEnter={() => { if (!option.disabled) setFocusIndex(index) }}
               onClick={() => {
+                if (option.disabled) return
                 onChange(option.value)
                 close()
               }}
               className={`uam-menu-select__option flex w-full items-start gap-2 rounded px-2 py-2 text-left text-sm${option.value === value ? ' is-selected' : ''}`}
             >
               {option.icon && <span data-menu-select-icon aria-hidden className="mt-0.5 shrink-0">{option.icon}</span>}
-              <span className="min-w-0 flex-1">
+              <span className="min-w-0 flex-1" style={matchTriggerWidth ? { overflowWrap: 'anywhere' } : undefined}>
                 <span className="block">{option.label}</span>
                 {option.description && <span className="block text-[11px]" style={{ color: 'var(--text-3)' }}>{option.description}</span>}
               </span>
@@ -137,7 +169,6 @@ export function MenuSelect({
             </button>,
           ])}
         </ViewportMenu>
-      )}
     </div>
   )
 }

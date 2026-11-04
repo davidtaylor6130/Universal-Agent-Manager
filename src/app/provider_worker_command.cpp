@@ -1,5 +1,7 @@
 #include "common/provider/provider_text_worker.h"
 #include "app/provider_worker_command.h"
+#include "common/config/execution_host_config.h"
+#include "common/config/provider_availability.h"
 
 #include "common/platform/platform_services.h"
 #include "common/platform/platform_state_fields.h"
@@ -9,7 +11,9 @@
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/state/app_state.h"
 #include "common/utils/io_utils.h"
+#include "remote/runner_client.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <iterator>
@@ -86,16 +90,17 @@ namespace
 		Error,
 	};
 
-	ProviderWorkerReadStatus ReadProviderWorkerOutput(IPlatformProcessService& process_service, uam::platform::StdioProcessPlatformFields& process, ProcessExecutionResult& result, bool preserve_existing_error)
+	ProviderWorkerReadStatus ReadProviderWorkerOutput(IPlatformProcessService& process_service, uam::platform::StdioProcessPlatformFields& process, ProcessExecutionResult& result, bool preserve_existing_error, const std::function<bool(std::string_view)>& sink = {})
 	{
 		std::array<char, 4096> buffer{};
 		std::string read_error;
 		const std::ptrdiff_t bytes_read = process_service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &read_error);
 		if (bytes_read > 0)
 		{
-			if (!uam::platform::AppendCapturedCommandOutput(result, buffer.data(), static_cast<std::size_t>(bytes_read)))
+			if (sink ? !sink(std::string_view(buffer.data(), static_cast<std::size_t>(bytes_read))) :
+			    !uam::platform::AppendCapturedCommandOutput(result, buffer.data(), static_cast<std::size_t>(bytes_read)))
 			{
-				result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
+				result.error = sink ? "Failed to write provider worker output." : std::string(uam::platform::kCapturedCommandOutputLimitError);
 				return ProviderWorkerReadStatus::Error;
 			}
 			return ProviderWorkerReadStatus::Data;
@@ -138,23 +143,49 @@ namespace
 		}
 	}
 
+	ProviderWorkerReadStatus DrainStructuredWorkerDiagnostic(IPlatformProcessService& process_service, uam::platform::StdioProcessPlatformFields& process, ProcessExecutionResult& result)
+	{
+		std::array<char, 4096> buffer{};
+		std::string read_error;
+		const std::ptrdiff_t bytes = process_service.ReadStdioProcessStderr(process, buffer.data(), buffer.size(), &read_error);
+		if (bytes > 0)
+		{
+			constexpr std::size_t kMaxDiagnosticTail = 4096;
+			result.diagnostic_tail.append(buffer.data(), static_cast<std::size_t>(bytes));
+			if (result.diagnostic_tail.size() > kMaxDiagnosticTail) result.diagnostic_tail.erase(0, result.diagnostic_tail.size() - kMaxDiagnosticTail);
+			return ProviderWorkerReadStatus::Data;
+		}
+		if (bytes == 0) return ProviderWorkerReadStatus::Closed;
+		if (bytes == -2) return ProviderWorkerReadStatus::NoData;
+		result.error = "Failed to read provider worker diagnostics.";
+		return ProviderWorkerReadStatus::Error;
+	}
+
 	ProcessExecutionResult ExecuteProviderWorkerDirect(const uam::ProviderWorkerInvocation& invocation, const std::filesystem::path& working_directory, int timeout_ms, std::stop_token stop_token)
 	{
 		ProcessExecutionResult result;
 		auto& process_service = PlatformServicesFactory::Instance().process_service;
 		uam::platform::StdioProcessPlatformFields process;
-		if (!process_service.StartStdioProcessWithInput(process, working_directory, invocation.argv, invocation.standard_input, &result.error, invocation.environment_overrides))
+		if (invocation.structured_stdout && !invocation.standard_input.empty())
 		{
+			result.error = "Structured provider workers require empty input.";
 			return result;
 		}
+		const bool started = invocation.structured_stdout
+		    ? process_service.StartStdioProcess(process, working_directory, invocation.argv, &result.error, invocation.environment_overrides)
+		    : process_service.StartStdioProcessWithInput(process, working_directory, invocation.argv, invocation.standard_input, &result.error, invocation.environment_overrides);
+		if (!started) return result;
+		if (invocation.structured_stdout) process_service.CloseStdioProcessInput(process);
 
 		const auto deadline = timeout_ms >= 0 ? std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms) : std::chrono::steady_clock::time_point::max();
 
 		int exit_code = -1;
 		for (;;)
 		{
-			const ProviderWorkerReadStatus read_status = ReadProviderWorkerOutput(process_service, process, result, false);
-			if (read_status == ProviderWorkerReadStatus::Error)
+			const ProviderWorkerReadStatus read_status = ReadProviderWorkerOutput(process_service, process, result, false, invocation.output_sink);
+			const ProviderWorkerReadStatus diagnostic_status = invocation.structured_stdout
+			    ? DrainStructuredWorkerDiagnostic(process_service, process, result) : ProviderWorkerReadStatus::Closed;
+			if (read_status == ProviderWorkerReadStatus::Error || diagnostic_status == ProviderWorkerReadStatus::Error)
 			{
 				process_service.TerminateStdioProcess(process, true);
 				DrainProviderWorkerTail(process_service, process, result, true);
@@ -185,27 +216,70 @@ namespace
 				return result;
 			}
 
-			if (read_status != ProviderWorkerReadStatus::Data)
+			if (read_status != ProviderWorkerReadStatus::Data && diagnostic_status != ProviderWorkerReadStatus::Data)
 			{
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
 		}
 
-		DrainProviderWorkerTail(process_service, process, result, false);
+		if (invocation.output_sink || invocation.structured_stdout)
+		{
+			for (;;)
+			{
+				const ProviderWorkerReadStatus status = ReadProviderWorkerOutput(process_service, process, result, false, invocation.output_sink);
+				const ProviderWorkerReadStatus diagnostic_status = invocation.structured_stdout
+				    ? DrainStructuredWorkerDiagnostic(process_service, process, result) : ProviderWorkerReadStatus::Closed;
+				if (status == ProviderWorkerReadStatus::Error || diagnostic_status == ProviderWorkerReadStatus::Error ||
+				    (status == ProviderWorkerReadStatus::Closed && diagnostic_status == ProviderWorkerReadStatus::Closed)) break;
+				if (stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline)
+				{
+					result.canceled = stop_token.stop_requested();
+					result.timed_out = !result.canceled;
+					result.error = result.canceled ? "Command canceled." : "Command output did not close before its deadline.";
+					break;
+				}
+				if (status != ProviderWorkerReadStatus::Data && diagnostic_status != ProviderWorkerReadStatus::Data) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+		}
+		else DrainProviderWorkerTail(process_service, process, result, false);
 		process_service.CloseStdioProcessHandles(process);
 		result.exit_code = exit_code;
 		result.ok = result.error.empty() && result.exit_code == 0;
 		return result;
 	}
+	// Copilot 1.0.103 removed --no-remote and renamed --no-remote-export to --sync-session=off; older CLIs reject the new flag.
+	// ponytail: trusts the last version check; a CLI self-updated across 1.0.103 gets the right flags after its next check.
+	void UseLegacyCopilotWorkerFlagsBefore103(const uam::AppState& app, std::string_view host_id, std::vector<std::string>& argv)
+	{
+		const auto state = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(uam::provider_ids::kCopilotCli, host_id));
+		if (state == app.runtime_cli_versions_by_provider_id.end() || state->second.installed_version.empty() ||
+		    CliProviderVersionAtLeast(state->second.installed_version, "1.0.103"))
+		{
+			return;
+		}
+		// Skip "copilot -p <prompt>" so a prompt equal to the flag is never rewritten.
+		const auto sync = std::find(argv.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(3, argv.size())), argv.end(), std::string_view("--sync-session=off"));
+		if (sync != argv.end())
+		{
+			*sync = "--no-remote-export";
+			argv.insert(sync, "--no-remote");
+		}
+	}
 } // namespace
 
 namespace uam
 {
-	ProviderWorkerInvocation BuildProviderWorkerInvocation(const AppState& app, const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id, ProviderWorkerPathMode path_mode, std::string* error_out, bool remote_target)
+	ProviderWorkerInvocation BuildProviderWorkerInvocation(const AppState& app, const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id, ProviderWorkerPathMode path_mode, std::string* error_out, std::string_view remote_host_id)
 	{
+		const bool remote_target = !remote_host_id.empty() && remote_host_id != uam::execution_hosts::kLocalHostId;
 		if (error_out != nullptr)
 		{
 			error_out->clear();
+		}
+		if (!remote_target && !provider_availability::IsEnabled(settings, profile.id))
+		{
+			SetError(error_out, provider_availability::DisabledReason());
+			return {};
 		}
 		if (const std::string update_error = remote_target ? std::string{} : ProviderCliLaunchBlockReason(app, profile.id); !update_error.empty())
 		{
@@ -223,9 +297,20 @@ namespace uam
 
 		const auto& runtime = ProviderRuntimeRegistry::Resolve(profile);
 		auto argv = runtime.BuildWorkerArgv(profile, settings, prompt, model_id);
+		if (IsProvider(profile, uam::provider_ids::kCopilotCli))
+		{
+			UseLegacyCopilotWorkerFlagsBefore103(app, remote_host_id, argv);
+		}
 		if (argv.empty())
 		{
 			SetError(error_out, "This provider does not support text workers.");
+			return {};
+		}
+		std::string launch_error;
+		bool private_isolation = false;
+		if (!remote_target && !runtime.PrepareLocalWorkerLaunch(app, profile, argv, launch_error, &private_isolation))
+		{
+			SetError(error_out, launch_error);
 			return {};
 		}
 
@@ -235,12 +320,12 @@ namespace uam
 			SetError(error_out, "Failed to prepare the isolated provider worker directory.");
 			return {};
 		}
-		if (!uam::provider_workers::ApplyWorkerIsolationPolicy(profile, *isolation_directory, argv))
+		if (!uam::provider_workers::ApplyWorkerIsolationPolicy(profile, *isolation_directory, argv, private_isolation))
 		{
 			SetError(error_out, "Failed to prepare the provider worker safety policy.");
 			return {};
 		}
-		if (!uam::provider_workers::RemoveWorkerPromptArgument(profile, argv))
+		if (!private_isolation && !uam::provider_workers::RemoveWorkerPromptArgument(profile, argv))
 		{
 			SetError(error_out, "Provider worker prompt arguments are invalid.");
 			return {};
@@ -263,10 +348,10 @@ namespace uam
 
 	ProcessExecutionResult ExecuteProviderWorkerInvocation(const ProviderWorkerInvocation& invocation, const std::filesystem::path& working_directory, int timeout_ms, std::stop_token stop_token)
 	{
-		if (invocation.Empty())
+		if (invocation.Empty() || (invocation.output_sink && !invocation.direct_process))
 		{
 			ProcessExecutionResult result;
-			result.error = "Provider worker command is empty.";
+			result.error = invocation.Empty() ? "Provider worker command is empty." : "Provider worker output streaming requires a direct process.";
 			return result;
 		}
 		const std::filesystem::path& actual_working_directory = invocation.isolated_working_directory == nullptr ? working_directory : *invocation.isolated_working_directory;
@@ -282,6 +367,27 @@ namespace uam
 			result = process_service.ExecuteCommand(shell_command, timeout_ms, stop_token);
 		}
 
+		return result;
+	}
+
+	ProcessExecutionResult ExecuteIsolatedProviderTextWorker(const ProviderWorkerInvocation& invocation, std::string_view provider_id, const ExecutionHost* remote_host, int timeout_ms, std::stop_token stop_token)
+	{
+		if (remote_host == nullptr) return ExecuteProviderWorkerInvocation(invocation, {}, timeout_ms, stop_token);
+		ProcessExecutionResult result;
+		if (stop_token.stop_requested()) { result.canceled = true; return result; }
+		if (!uam::remote::CanAttemptRunnerConnection(*remote_host)) { result.error = "The selected remote runner is not ready. Recheck it in Settings."; return result; }
+		if (!invocation.direct_process || invocation.argv.empty()) { result.error = "This provider cannot run an isolated remote text worker."; return result; }
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		uam::remote::RunnerClient client(service, *remote_host);
+		const std::string id = service.GenerateUuid();
+		std::filesystem::path directory;
+		if (!client.PrepareTextWorker(id, provider_id, directory, &result.error, stop_token)) return result;
+		std::vector<std::string> argv = invocation.argv;
+		uam::provider_workers::RemapWorkerPaths(argv, invocation.isolated_working_directory ? *invocation.isolated_working_directory : std::filesystem::path{}, directory, remote_host->platform);
+		try { result = client.ExecuteCommand(id, directory, argv, timeout_ms, stop_token, invocation.standard_input); }
+		catch (...) { (void)client.RemoveTextWorker(id); throw; }
+		std::string cleanup_error;
+		if (!client.RemoveTextWorker(id, &cleanup_error) && result.ok) { result.ok = false; result.error = cleanup_error; }
 		return result;
 	}
 } // namespace uam

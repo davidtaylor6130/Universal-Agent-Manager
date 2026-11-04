@@ -1,6 +1,8 @@
 #include "remote/runner_service_windows.h"
+#include "remote/runner_endpoint_identity.h"
 
 #include "common/utils/hash_utils.h"
+#include "common/utils/env_utils.h"
 #include "remote/runner_protocol.h"
 #include "remote/runner_state.h"
 
@@ -64,16 +66,29 @@ namespace uam::remote
 			return value;
 		}
 
+		/// <summary>Directory file identity stays stable across case, short-path and junction aliases.</summary>
+		std::string InstallationIdentity()
+		{
+			std::array<wchar_t, 32768> executable{};
+			const DWORD length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+			if (length == 0 || length >= executable.size()) return {};
+			const std::filesystem::path root = std::filesystem::path(std::wstring(executable.data(), length)).parent_path().parent_path();
+			Handle directory(CreateFileW(root.c_str(), FILE_READ_ATTRIBUTES,
+			    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+			if (directory.Get() == INVALID_HANDLE_VALUE) return {};
+			BY_HANDLE_FILE_INFORMATION info{};
+			if (!GetFileInformationByHandle(directory.Get(), &info)) return {};
+			return std::to_string(info.dwVolumeSerialNumber) + ":" + std::to_string(info.nFileIndexHigh) + ":" + std::to_string(info.nFileIndexLow);
+		}
+
 		std::wstring EndpointName(std::string_view runner_version, std::wstring_view kind)
 		{
 			const std::wstring sid = CurrentUserSid();
-			std::uint64_t digest = uam::hashing::kFnv1a64OffsetBasis;
-			uam::hashing::UpdateFnv1a64(
-			    digest, reinterpret_cast<const unsigned char*>(sid.data()),
-			    sid.size() * sizeof(wchar_t));
-			uam::hashing::UpdateFnv1a64(digest, runner_version);
-			uam::hashing::UpdateFnv1a64(digest, std::to_string(kRunnerProtocolVersion));
-			const std::string suffix = uam::hashing::Hex64Padded(digest);
+			const std::string scope = uam::env::GetNonEmptyString("UAM_RUNNER_SERVICE_NAMESPACE").value_or("");
+			const std::string suffix = WindowsRunnerEndpointDigest(
+			    std::string_view(reinterpret_cast<const char*>(sid.data()), sid.size() * sizeof(wchar_t)),
+			    runner_version, kRunnerProtocolVersion, scope.empty() ? InstallationIdentity() : "", scope);
+			if (suffix.empty()) return {};
 			return std::wstring(kind) +
 			       std::wstring(suffix.begin(), suffix.end());
 		}
@@ -396,14 +411,20 @@ namespace uam::remote
 		return 2;
 	}
 
-	int RunRunnerBridge(std::string_view runner_version)
+	bool EnableRunnerBinaryStdio()
 	{
 		if (_setmode(_fileno(stdin), _O_BINARY) == -1 ||
 		    _setmode(_fileno(stdout), _O_BINARY) == -1)
 		{
 			std::cerr << "Runner bridge could not enable binary stdio.\n";
-			return 2;
+			return false;
 		}
+		return true;
+	}
+
+	int RunRunnerBridge(std::string_view runner_version)
+	{
+		if (!EnableRunnerBinaryStdio()) return 2;
 		Handle service = ConnectPipe(runner_version);
 		if (service.Get() == INVALID_HANDLE_VALUE)
 		{

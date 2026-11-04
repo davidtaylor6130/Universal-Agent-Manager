@@ -5,11 +5,14 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace uam::io { enum class AtomicWriteStage; }
 
 namespace uam
 {
@@ -18,6 +21,10 @@ namespace uam
 	  public:
 		static bool IsStdioServerInvocation(const std::vector<std::string>& arguments);
 		static bool SupportsStructuredProtocol(std::string_view protocol);
+		/// Resolve launch intent consistently with provider/host settings and explicit chat opt-out.
+		static bool EnabledForChat(const AppSettings& settings, const ChatSession& chat);
+		/// Enabling for the next launch changes saved intent without attaching to an active process.
+		static bool RequiresSessionStopForEnable(const AcpSessionState* session, bool apply_on_next_launch);
 		static int RunStdioServerFromEnvironment();
 		static bool Initialize(AppState& app, std::string* error_out = nullptr);
 		static void Shutdown(AppState& app);
@@ -25,8 +32,12 @@ namespace uam
 		                                   const ChatSession& chat, std::string_view setup_method,
 		                                   nlohmann::json& request, std::string* error_out = nullptr);
 		static bool PrepareTerminalMcpServer(AppState& app, CliTerminalState& terminal, const ChatSession& chat, nlohmann::json& server, std::string& error);
+		static void RevokeForChat(AppState& app, std::string_view chat_id);
 		static void RevokeForSession(AppState& app, AcpSessionState& session);
 		static bool ProcessPendingRequests(AppState& app);
+		/// Per-call actual response-writer stage seam for deterministic focused IO failures; no global hooks.
+		static bool ProcessPendingRequests(AppState& app,
+		    const std::function<bool(io::AtomicWriteStage)>& response_write_hook);
 		static std::optional<AcpPendingUserInputState> PendingApprovalForChat(const AppState& app,
 		                                                                 std::string_view chat_id);
 		static bool ResolveApproval(AppState& app, std::string_view chat_id,
@@ -40,5 +51,8 @@ namespace uam
 		                                            int64_t now_epoch_ms);
 		static bool ValidStdioToolCallForTests(const nlohmann::json& request);
 		static nlohmann::json ToolDefinitionsForTests();
+		/// <summary>Sends a chat_create first prompt; production uses the ordinary structured send.</summary>
+		using ChatCreateSender = std::function<bool(AppState&, const std::string&, const std::string&, std::string*)>;
+		static void FlushChatCreateLaunchesForTests(AppState& app, const ChatCreateSender& send);
 	};
 } // namespace uam

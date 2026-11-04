@@ -12,6 +12,11 @@ beforeEach(() => {
   writeChatComposerDraft('target', { text: 'Unsent draft', references: [], attachments: [{ id: 'attachment', name: 'file.txt', type: 'file', size: 1 }] })
 })
 describe('staged context provenance', () => {
+  it.each(['file', 'branch', 'worktree'] as const)('refuses caller-supplied %s snapshots on the synchronous message/terminal staging action', (kind) => {
+    const reference = captureContextReference({ ...source, kind, sourcePath: '/isolated/file.txt', sourceChatCreatedAt: source.capturedAt, branchName: 'feature/context', worktreeDirectory: '/isolated' })!
+    expect(useAppStore.getState().stageChatContextReference('target', reference)).toBe(false)
+    expect(readChatComposerDraft('target').references).toBeUndefined()
+  })
   it('stages a loaded saved message using its absolute index without changing the composer draft', () => {
     const reference = captureContextReference({ ...source, kind: 'message', sourceMessageIndex: 4, sourceMessageId: 'saved' })!
     expect(useAppStore.getState().stageChatContextReference('target', reference)).toBe(true)

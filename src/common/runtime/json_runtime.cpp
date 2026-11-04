@@ -314,12 +314,22 @@ class JsonParser
 		return ParseStringBody();
 	}
 
+	/// <summary>Copies ordinary bytes in spans while validating escapes and string boundaries.</summary>
 	std::string ParseStringBody()
 	{
 		std::string out;
 
 		while (pos_ < input_.size())
 		{
+			const std::size_t span_start = pos_;
+			while (pos_ < input_.size())
+			{
+				const unsigned char byte = static_cast<unsigned char>(input_[pos_]);
+				if (byte < 0x20 || byte == '"' || byte == '\\') break;
+				++pos_;
+			}
+			if (pos_ != span_start) out.append(input_.substr(span_start, pos_ - span_start));
+			if (pos_ == input_.size()) break;
 			const char ch = input_[pos_++];
 
 			if (ch == '"')
@@ -402,20 +412,16 @@ class JsonParser
 					return {};
 				}
 			}
-				else
-				{
-					if (static_cast<unsigned char>(ch) < 0x20)
-					{
-						error_ = true;
-						return {};
-					}
-					out.push_back(ch);
-				}
+			else
+			{
+				error_ = true;
+				return {};
 			}
-
-			error_ = true;
-			return {};
 		}
+
+		error_ = true;
+		return {};
+	}
 
 		bool ParseHexCodeUnit(uint32_t& value)
 		{
@@ -545,8 +551,15 @@ void AppendJsonEscapedString(const std::string& value, Output& out)
 {
 	out.push_back('"');
 
-	for (const unsigned char ch : value)
+	// Count and append ordinary UTF-8 bytes as spans, retaining identical escaping
+	// and the bounded serializer's overflow check for each complete span.
+	std::size_t span_start = 0;
+	for (std::size_t index = 0; index < value.size(); ++index)
 	{
+		const unsigned char ch = static_cast<unsigned char>(value[index]);
+		if (ch >= 0x20 && ch != '"' && ch != '\\') continue;
+		if (index != span_start) out += std::string_view(value).substr(span_start, index - span_start);
+		span_start = index + 1;
 		switch (ch)
 		{
 		case '"':
@@ -579,14 +592,11 @@ void AppendJsonEscapedString(const std::string& value, Output& out)
 				out.push_back(kHex[ch >> 4]);
 				out.push_back(kHex[ch & 0x0f]);
 			}
-			else
-			{
-				out.push_back(static_cast<char>(ch));
-			}
 
 			break;
 		}
 	}
+	if (span_start != value.size()) out += std::string_view(value).substr(span_start);
 
 	out.push_back('"');
 }

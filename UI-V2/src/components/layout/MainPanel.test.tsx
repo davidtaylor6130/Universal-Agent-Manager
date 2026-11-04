@@ -1,3 +1,4 @@
+import { rememberSubagentParent } from '../../utils/subagentNavigation'
 import { act, Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -6,6 +7,8 @@ vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     rows = 24
     cols = 80
+    options: { fontFamily?: string; fontSize?: number }
+    constructor(options: { fontFamily?: string; fontSize?: number }) { this.options = options }
     loadAddon() {}
     open() {}
     write() {}
@@ -28,6 +31,7 @@ vi.mock('@xterm/addon-fit', () => ({
 
 import { MainPanel } from './MainPanel'
 import { useAppStore } from '../../store/useAppStore'
+import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 import { assignChatToPane, chatGridLeaves, defaultChatGridLayout, readChatGridLayout, readChatViewMode, setChatInLeaf, splitChatLeaf, writeChatGridLayout, writeChatViewMode } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -125,8 +129,8 @@ describe('MainPanel', () => {
 
     expect(chatButton().textContent).toBe('')
     expect(cliButton().textContent).toBe('')
-    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('project · Local')
-    expect(host.querySelector('[data-testid="chat-host-chat-1"]')?.className).toContain('shrink-0')
+    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('project')
+    expect(host.querySelector('[data-testid="chat-host-chat-1"]')).toBeNull()
     expect(cliButton().disabled).toBe(true)
 
     act(() => {
@@ -733,7 +737,7 @@ describe('MainPanel', () => {
     const root = createRoot(host)
     act(() => root.render(<MainPanel />))
 
-    const newChat = Array.from(host.querySelectorAll('button')).filter((button) => button.textContent === 'New Chat')[1]
+    const newChat = Array.from(host.querySelectorAll('button')).filter((button) => button.textContent === 'New chat')[1]
     act(() => newChat.click())
     expect(readChatGridLayout().activeLeafId).toBe(chatGridLeaves(layout.root)[2].id)
     expect(setNewChatModalOpen).toHaveBeenCalledWith(true)
@@ -899,6 +903,154 @@ describe('MainPanel', () => {
     host.remove()
   })
 
+  it('loads a persisted main pane after its same visible owner hydrates without a transcript', async () => {
+    // Conditional caller/loader regression, not proof of the installed R9 incident's cause.
+    const previous = useAppStore.getState()
+    const previousCef = window.cefQuery
+    const realLoadSessionMessages = useAppStore.getInitialState().loadSessionMessages
+    expect(vi.isMockFunction(realLoadSessionMessages)).toBe(false)
+    const owner = {
+      ...previous.sessions[0], id: 'r9-cold-main-parent', name: 'Cold main parent',
+      providerId: 'gemini-cli', viewMode: 'chat' as const, importedReadOnly: false,
+      parentChatId: undefined, branchRootChatId: undefined,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'), messageCount: 1,
+      messagesDigest: 'r9-owner-summary',
+    }
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    const pending: Array<{ settled: boolean; reply: () => void; fail: () => void }> = []
+    const historyRequests = () => requests.filter(request => request.action === 'getChatMessages')
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed)
+      if (parsed.action !== 'getChatMessages') { onSuccess('{}'); return }
+      const read = {
+        settled: false,
+        reply: () => {
+          if (read.settled) return
+          read.settled = true
+          onSuccess(JSON.stringify({ chatId: owner.id, startIndex: 0, totalCount: 1,
+            messagesDigest: 'r9-authoritative-page', messages: [{ role: 'user',
+              content: 'Private saved main history', createdAt: '2026-01-01T00:00:01.000Z' }] }))
+        },
+        fail: () => {
+          if (read.settled) return
+          read.settled = true
+          onFailure(500, 'Private history fixture cleanup')
+        },
+      }
+      pending.push(read)
+    }
+    writeChatGridLayout(paneLayout(owner.id))
+    useAppStore.setState({
+      sessions: [], activeSessionId: null, lastAppliedStateRevision: -1, messages: {},
+      historyStartIndexBySessionId: {}, chatSearchNavigation: null,
+      chatHistoryErrorBySessionId: {}, chatHistoryReadBySessionId: {}, chatHistoryPageBySessionId: {},
+      acpBindingBySessionId: {}, cliBindingBySessionId: {},
+      loadSessionMessages: realLoadSessionMessages,
+      // Isolate unrelated composer reads; the history action and transport stay real.
+      refreshUamAgents: vi.fn(async () => true), getVcsCommitStatus: vi.fn(async () => null),
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<MainPanel />))
+      const persistedLeaf = chatGridLeaves(readChatGridLayout().root)[0]
+      expect(persistedLeaf.sessionId).toBe(owner.id)
+      expect(historyRequests()).toEqual([]) // No history IPC without a session owner.
+      expect(useAppStore.getState().chatHistoryReadBySessionId[owner.id]).toBeUndefined()
+
+      await act(async () => useAppStore.setState({
+        sessions: [owner], activeSessionId: owner.id, lastAppliedStateRevision: 1,
+        // Summary-only owner hydration intentionally supplies NO transcript.
+      }))
+      expect(chatGridLeaves(readChatGridLayout().root)[0]).toMatchObject({ id: persistedLeaf.id, sessionId: owner.id })
+      expect(useAppStore.getState().activeSessionId).toBe(owner.id)
+      expect(useAppStore.getState().messages[owner.id]).toBeUndefined()
+      expect(historyRequests()).toHaveLength(1)
+      expect(historyRequests()[0].payload).toEqual({
+        chatId: owner.id, limit: 50, deferToolCallContent: true, messagesDigest: '',
+      }) // Ordinary UAM saved-history read; no refreshNative, selection or send.
+      expect(useAppStore.getState().chatHistoryReadBySessionId[owner.id]?.birth).toBe(owner.createdAt.getTime())
+      expect(useAppStore.getState().loadSessionMessages).toBe(realLoadSessionMessages)
+
+      // Metadata-only updates must not supersede the owned in-flight read.
+      const pendingRead = useAppStore.getState().chatHistoryReadBySessionId[owner.id]
+      await act(async () => useAppStore.setState({ sessions: [{ ...owner,
+        name: 'Renamed while loading', updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+        messagesDigest: 'new-summary-only', messageCount: 2,
+      }] }))
+      expect(historyRequests()).toHaveLength(1)
+      expect(useAppStore.getState().chatHistoryReadBySessionId[owner.id]).toBe(pendingRead)
+
+      await act(async () => pending[0].reply())
+      expect(historyRequests()).toHaveLength(1)
+      expect(useAppStore.getState().messages[owner.id]).toHaveLength(1)
+      expect(useAppStore.getState().messages[owner.id][0].content).toBe('Private saved main history')
+      expect(useAppStore.getState().historyStartIndexBySessionId[owner.id] ?? 0).toBe(0)
+      expect(useAppStore.getState().chatHistoryPageBySessionId[owner.id]?.startIndex).toBe(0)
+      expect(useAppStore.getState().messages[owner.id][0].nativeMessageIndex).toBe(0)
+      expect(useAppStore.getState().chatHistoryReadBySessionId[owner.id]).toBeUndefined()
+      expect(useAppStore.getState().chatHistoryErrorBySessionId[owner.id]).toBeUndefined()
+      expect(requests.every(request => request.action === 'getChatMessages' || request.action === 'setVisibleChatIds')).toBe(true)
+    } finally {
+      await act(async () => { pending.forEach(read => read.fail()); root.unmount() })
+      host.remove()
+      useAppStore.setState(previous, true)
+      window.cefQuery = previousCef
+    }
+  })
+
+  it('wakes only the newly hydrated visible owner while another pane read is pending', async () => {
+    const previous = useAppStore.getState(), previousCef = window.cefQuery
+    const realLoad = useAppStore.getInitialState().loadSessionMessages
+    const first = { ...previous.sessions[0], id: 'r9-present-pane', name: 'Present pane',
+      createdAt: new Date('2026-02-01T00:00:00.000Z'), messageCount: 1, messagesDigest: 'first-summary' }
+    const second = { ...first, id: 'r9-late-pane', name: 'Late pane',
+      createdAt: new Date('2026-02-02T00:00:00.000Z') }
+    const reads: Array<{ chatId: string; done: () => void }> = []
+    const actions: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const value = JSON.parse(request); actions.push(value.action)
+      if (value.action !== 'getChatMessages') { onSuccess('{}'); return }
+      let settled = false
+      reads.push({ chatId: value.payload.chatId, done: () => {
+        if (settled) return
+        settled = true
+        onSuccess(JSON.stringify({ chatId: value.payload.chatId, startIndex: 0, totalCount: 1,
+          messagesDigest: 'bounded-page-' + value.payload.chatId,
+          messages: [{ role: 'user', content: value.payload.chatId, createdAt: '2026-02-01T00:00:01.000Z' }] }))
+      } })
+    }
+    writeChatGridLayout(paneLayout(first.id, second.id))
+    useAppStore.setState({ sessions: [first], activeSessionId: first.id,
+      lastAppliedStateRevision: -1, messages: {}, historyStartIndexBySessionId: {},
+      chatSearchNavigation: null, chatHistoryReadBySessionId: {}, chatHistoryErrorBySessionId: {},
+      chatHistoryPageBySessionId: {}, acpBindingBySessionId: {}, cliBindingBySessionId: {},
+      loadSessionMessages: realLoad, refreshUamAgents: vi.fn(async () => true),
+      getVcsCommitStatus: vi.fn(async () => null) })
+    const host = document.createElement('div'); document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<MainPanel />))
+      expect(reads.map(read => read.chatId)).toEqual([first.id])
+      const firstPending = useAppStore.getState().chatHistoryReadBySessionId[first.id]
+      expect(firstPending?.birth).toBe(first.createdAt.getTime())
+      await act(async () => useAppStore.setState({ sessions: [first, second], lastAppliedStateRevision: 1 }))
+      expect(chatGridLeaves(readChatGridLayout().root).map(leaf => leaf.sessionId)).toEqual([first.id, second.id])
+      expect(reads.map(read => read.chatId)).toEqual([first.id, second.id])
+      expect(useAppStore.getState().chatHistoryReadBySessionId[first.id]).toBe(firstPending)
+      await act(async () => reads.forEach(read => read.done()))
+      expect(useAppStore.getState().messages[first.id][0].content).toBe(first.id)
+      expect(useAppStore.getState().messages[second.id][0].content).toBe(second.id)
+      expect(useAppStore.getState().activeSessionId).toBe(first.id)
+      expect(actions.every(action => action === 'getChatMessages' || action === 'setVisibleChatIds')).toBe(true)
+    } finally {
+      await act(async () => { root.unmount(); reads.forEach(read => read.done()) })
+      host.remove(); useAppStore.setState(previous, true); window.cefQuery = previousCef
+    }
+  })
+
   it('refreshes a visible background pane once when its turn completes', () => {
     const loadSessionMessages = vi.fn()
     useAppStore.setState((state) => ({
@@ -976,6 +1128,38 @@ describe('MainPanel', () => {
     act(() => root.unmount())
     host.remove()
   })
+  it('keeps a visible background pane live while its turn appends messages', () => {
+    const loadSessionMessages = vi.fn()
+    useAppStore.setState((state) => ({
+      sessions: [
+        state.sessions[0],
+        { ...state.sessions[0], id: 'chat-2', name: 'Background chat', messageCount: 2 },
+      ],
+      messages: { 'chat-1': [], 'chat-2': [] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-2': { ...state.acpBindingBySessionId['chat-1'], sessionId: 'native-2', processing: true, turnSerial: 1 },
+      },
+      loadSessionMessages,
+    }))
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<MainPanel />))
+      loadSessionMessages.mockClear()
+
+      act(() => useAppStore.setState((state) => ({
+        sessions: state.sessions.map((session) => session.id === 'chat-2' ? { ...session, messageCount: 4 } : session),
+      })))
+
+      expect(loadSessionMessages.mock.calls.filter((call) => call[0] === 'chat-2')).toEqual([['chat-2', true]])
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
   it('returns from a temporary side chat in the current pane without stopping either runtime', async () => {
     const parent = useAppStore.getState().sessions[0]
     const side = { ...parent, id: 'side-1', temporaryParentChatId: parent.id, name: 'Side chat' }
@@ -984,7 +1168,7 @@ describe('MainPanel', () => {
     writeChatGridLayout(paneLayout(side.id))
     const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
     await act(async () => root.render(<MainPanel />))
-    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Return')!.click())
+    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.getAttribute('aria-label') === 'Return to main chat')!.click())
     expect(readChatGridLayout().root).toMatchObject({ sessionId: parent.id })
     expect(stop).not.toHaveBeenCalled()
     act(() => root.unmount()); host.remove()
@@ -997,14 +1181,21 @@ describe('MainPanel', () => {
     writeChatGridLayout(paneLayout(side.id))
     const requests: { action: string; payload?: Record<string, unknown> }[] = []
     window.cefQuery = ({ request, onSuccess, onFailure }) => { const parsed = JSON.parse(request); requests.push(parsed); if (parsed.action === 'dismissSideChat') onFailure(500, 'Cleanup could not be saved.'); else onSuccess('{}') }
+    const failures: AppFailure[] = []
+    const listen = (event: Event) => failures.push((event as CustomEvent<AppFailure>).detail)
+    window.addEventListener(APP_FAILURE_EVENT, listen)
     const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
-    await act(async () => root.render(<MainPanel />))
-    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Dismiss')!.click())
-    expect(requests.filter(request => request.action === 'dismissSideChat')).toEqual([expect.objectContaining({ payload: { chatId: side.id } })])
-    expect(host.textContent).toContain('Cleanup could not be saved.')
-    expect(readChatGridLayout().root).toMatchObject({ sessionId: side.id })
-    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Dismiss')?.disabled).toBe(false)
-    act(() => root.unmount()); host.remove(); delete window.cefQuery
+    try {
+      await act(async () => root.render(<MainPanel />))
+      await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.getAttribute('aria-label') === 'Dismiss side chat')!.click())
+      expect(requests.filter(request => request.action === 'dismissSideChat')).toEqual([expect.objectContaining({ payload: { chatId: side.id } })])
+      expect(failures).toEqual([expect.objectContaining({ detail: 'Cleanup could not be saved.' })])
+      expect(readChatGridLayout().root).toMatchObject({ sessionId: side.id })
+      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.getAttribute('aria-label') === 'Dismiss side chat')?.disabled).toBe(false)
+    } finally {
+      window.removeEventListener(APP_FAILURE_EVENT, listen)
+      act(() => root.unmount()); host.remove(); delete window.cefQuery
+    }
   })
 
   it('resumes the live side chat locally instead of creating another one', async () => {
@@ -1067,6 +1258,116 @@ describe('MainPanel', () => {
       await act(async () => root.unmount())
       delete window.cefQuery
     }
+  })
+
+  it.each([
+    ['acp', false, true], ['acp', true, true],
+    ['cli', false, true], ['cli', true, true],
+    ['acp', false, false], ['acp', true, false],
+  ] as const)('preserves a reopened transcript across idle selection: %s side=%s sameUpdate=%s', (runtime, side, sameUpdate) => {
+    const saved = [{ id: 'earlier-answer', sessionId: 'chat-2', role: 'assistant' as const, content: 'Earlier assistant remains.', thoughts: 'Earlier work trace remains.', createdAt: new Date(0) }]
+    const concurrent = [{ ...saved[0], id: 'concurrent-answer', sessionId: 'chat-1', content: 'Concurrent assistant remains.', thoughts: 'Concurrent work trace remains.' }]
+    useAppStore.setState((state) => ({
+      sessions: [state.sessions[0], { ...state.sessions[0], id: 'chat-2', name: 'Second', ...(side ? { temporaryParentChatId: 'chat-1' } : {}) }],
+      activeSessionId: 'chat-1',
+      messages: { 'chat-1': concurrent, 'chat-2': saved },
+      workingDisplayMode: 'compact', expandWorkTraces: true,
+      acpBindingBySessionId: {
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true },
+        ...(runtime === 'acp' ? { 'chat-2': { ...state.acpBindingBySessionId['chat-1'], processing: true } } : {}),
+      },
+      cliBindingBySessionId: runtime === 'cli' ? { 'chat-2': { terminalId: 'term-2', boundChatId: 'chat-2', running: true, lifecycleState: 'busy', turnState: 'busy', processing: true, readySinceLastSelect: false, active: true, lastError: '' } } : {},
+    }))
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<MainPanel />))
+      act(() => (host.querySelector('button[aria-label="Close Second"]') as HTMLButtonElement).click())
+      expect(useAppStore.getState().messages['chat-2']).toBe(saved)
+      if (!sameUpdate) act(() => useAppStore.setState({ activeSessionId: 'chat-2' }))
+      act(() => useAppStore.setState((state) => ({
+        activeSessionId: 'chat-2',
+        ...(runtime === 'acp'
+          ? { acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-2': { ...state.acpBindingBySessionId['chat-2'], processing: false, lifecycleState: 'ready' } } }
+          : { cliBindingBySessionId: { ...state.cliBindingBySessionId, 'chat-2': { ...state.cliBindingBySessionId['chat-2'], processing: false, lifecycleState: 'ready', turnState: 'idle' } } }),
+      })))
+      expect(useAppStore.getState().messages['chat-1']).toBe(concurrent)
+      expect(useAppStore.getState().messages['chat-2']).toBe(saved)
+      const pane = host.querySelector('[data-testid="chat-pane-chat-2"]')
+      expect(pane?.textContent).toContain('Earlier assistant remains.')
+      expect(pane?.textContent).toContain('Earlier work trace remains.')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('retains hidden CLI history while processing and evicts it after idle', () => {
+    const saved = [{ id: 'answer', sessionId: 'chat-2', role: 'assistant' as const, content: 'Hidden answer.', createdAt: new Date(0) }]
+    useAppStore.setState((state) => ({
+      sessions: [state.sessions[0], { ...state.sessions[0], id: 'chat-2', name: 'Second' }],
+      messages: { 'chat-1': [], 'chat-2': saved },
+      cliBindingBySessionId: { 'chat-2': { terminalId: 'term-2', boundChatId: 'chat-2', running: true, lifecycleState: 'busy', turnState: 'busy', processing: true, readySinceLastSelect: false, active: true, lastError: '' } },
+    }))
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<MainPanel />))
+      act(() => (host.querySelector('button[aria-label="Close Second"]') as HTMLButtonElement).click())
+      act(() => useAppStore.setState({ activeSessionId: 'chat-1' }))
+      expect(useAppStore.getState().messages['chat-2']).toBe(saved)
+      act(() => useAppStore.setState((state) => ({ cliBindingBySessionId: { ...state.cliBindingBySessionId, 'chat-2': { ...state.cliBindingBySessionId['chat-2'], processing: false, lifecycleState: 'ready', turnState: 'idle' } } })))
+      expect(useAppStore.getState().messages['chat-2']).toBeUndefined()
+    } finally {
+      act(() => root.unmount())
+    }
+  })
+
+  it.each([false, true])('releases hidden native history unless reselected in the idle update: %s', async (reopened) => {
+    const initial = useAppStore.getState()
+    useAppStore.setState({
+      sessions: [initial.sessions[0], { ...initial.sessions[0], id: 'chat-2', name: 'Second' }],
+      acpBindingBySessionId: { 'chat-1': { ...initial.acpBindingBySessionId['chat-1'], processing: false, running: true, lifecycleState: 'ready' } },
+    })
+    writeChatGridLayout(paneLayout('chat-1'))
+    const requests: Array<{ action: string; payload?: { chatId?: string } }> = []
+    window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}'); return 1 }
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<MainPanel />))
+      await act(async () => { useAppStore.setState({ activeSessionId: 'chat-2' }); writeChatGridLayout(paneLayout('chat-2')) })
+      requests.length = 0
+      await act(async () => useAppStore.setState((state) => ({
+        activeSessionId: reopened ? 'chat-1' : 'chat-2',
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], running: false, processing: false, lifecycleState: 'stopped' } },
+      })))
+      expect(requests.filter((request) => request.action === 'releaseChatMessages')).toEqual(reopened ? [] : [{ action: 'releaseChatMessages', payload: { chatId: 'chat-1' }, requestId: expect.any(String) }])
+    } finally {
+      await act(async () => root.unmount())
+      delete window.cefQuery
+    }
+  })
+
+  it('opens a validated native child in its parent pane while retaining the unrelated pane', async () => {
+    const parent = { ...useAppStore.getState().sessions[0], providerId: 'gemini-cli' }
+    const other = { ...parent, id: 'unrelated-pane', name: 'Unrelated chat' }
+    const child = { ...parent, id: 'native-child-pane', name: 'Native child', importedReadOnly: true, parentChatId: parent.id }
+    rememberSubagentParent(parent, child.id)
+    useAppStore.setState({ sessions: [parent, other, child], activeSessionId: other.id, messages: { [parent.id]: [], [other.id]: [], [child.id]: [] }, acpBindingBySessionId: {} })
+    const layout = paneLayout(parent.id, other.id)
+    writeChatGridLayout({ ...layout, activeLeafId: chatGridLeaves(layout.root)[1].id })
+    const host = document.createElement('div'); const root = createRoot(host)
+    try {
+      await act(async () => root.render(<MainPanel />))
+      await act(async () => useAppStore.getState().setActiveSession(child.id))
+      expect(chatGridLeaves(readChatGridLayout().root).map(leaf => leaf.sessionId)).toEqual([parent.id, other.id])
+      expect(host.querySelector('[data-testid="subagent-pane-chat-1"]')).not.toBeNull()
+      expect(host.querySelector('[aria-label="Subagent lineage"]')?.textContent).toContain('Subagent of Gemini Session')
+    } finally { await act(async () => root.unmount()); host.remove() }
   })
 
 })

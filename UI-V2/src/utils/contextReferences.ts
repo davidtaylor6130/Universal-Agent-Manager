@@ -2,13 +2,24 @@ import type { ContextReference } from '../types/contextReference'
 export const CONTEXT_REFERENCE_MAX_BYTES = 16 * 1024
 export const CONTEXT_REFERENCE_MAX_COUNT = 4
 
-/** Captures explicit selected text; never reads an entire transcript or terminal buffer. */
+/** Captures explicit context; never reads files, a transcript or a terminal buffer. */
 export function captureContextReference(input: Omit<ContextReference, 'id' | 'truncated'> & { id?: string }): ContextReference | null {
-  if ((input.kind !== 'message' && input.kind !== 'terminal') || !input.sourceChatId || input.sourceChatId.length > 128 ||
+  if ((input.kind !== 'message' && input.kind !== 'terminal' && input.kind !== 'file' && input.kind !== 'branch' && input.kind !== 'worktree') || !input.sourceChatId || input.sourceChatId.length > 128 ||
     !input.executionHostId || input.executionHostId.length > 256 || input.workspaceDirectory.length > 4096 || input.label.length > 160 ||
-    input.capturedAt.length > 64 || !Number.isFinite(Date.parse(input.capturedAt)) || !input.text.trim()) return null
+    input.capturedAt.length > 64 || !Number.isFinite(Date.parse(input.capturedAt)) || (input.kind !== 'file' && !input.text.trim())) return null
   if (input.kind === 'message' && (!Number.isSafeInteger(input.sourceMessageIndex) || Number(input.sourceMessageIndex) < 0)) return null
   if (input.kind === 'terminal' && (!input.terminalId || input.terminalId.length > 256)) return null
+  if (input.kind === 'file' && (typeof input.sourcePath !== 'string' || !input.sourcePath || input.sourcePath.length > 16384 || /[\x00-\x1f\x7f]/.test(input.sourcePath))) return null
+  if (input.sourceChatCreatedAt !== undefined && (typeof input.sourceChatCreatedAt !== 'string' || input.sourceChatCreatedAt.length > 64 || !Number.isFinite(Date.parse(input.sourceChatCreatedAt)))) return null
+  const repository = input.kind === 'branch' || input.kind === 'worktree'
+  if (repository) {
+    if (!input.sourceChatCreatedAt || typeof input.branchName !== 'string' || (input.kind === 'branch' && !input.branchName)) return null
+    for (const key of ['branchName', 'worktreeDirectory', 'sourceDirectory', 'baseRef'] as const) {
+      const value = input[key]
+      if (value !== undefined && (typeof value !== 'string' || value.length > (key === 'branchName' || key === 'baseRef' ? 1024 : 4096) || /[\x00-\x1f\x7f]/.test(value))) return null
+    }
+    if (input.kind === 'worktree' && (!input.worktreeDirectory || input.worktreeDirectory !== input.workspaceDirectory)) return null
+  }
   if (['sourceMessageId', 'nativeSessionId', 'terminalId', 'id'].some((key) => { const value = input[key as keyof typeof input]; return value !== undefined && (typeof value !== 'string' || value.length > (key === 'id' ? 128 : 256)) })) return null
   let text = ''
   let bytes = 0
@@ -21,7 +32,11 @@ export function captureContextReference(input: Omit<ContextReference, 'id' | 'tr
   }
   return {
     id: input.id || crypto.randomUUID(), kind: input.kind, sourceChatId: input.sourceChatId,
-    ...(input.kind === 'message' ? { sourceMessageIndex: input.sourceMessageIndex, ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}) } : { terminalId: input.terminalId }),
+    ...(input.sourceChatCreatedAt ? { sourceChatCreatedAt: input.sourceChatCreatedAt } : {}),
+    ...(input.kind === 'message' ? { sourceMessageIndex: input.sourceMessageIndex, ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}) }
+      : input.kind === 'terminal' ? { terminalId: input.terminalId } : input.kind === 'file' ? { sourcePath: input.sourcePath }
+      : { branchName: input.branchName, ...(input.kind === 'worktree' ? { worktreeDirectory: input.worktreeDirectory } : {}),
+        ...(input.sourceDirectory ? { sourceDirectory: input.sourceDirectory } : {}), ...(input.baseRef ? { baseRef: input.baseRef } : {}) }),
     ...(input.nativeSessionId ? { nativeSessionId: input.nativeSessionId } : {}),
     executionHostId: input.executionHostId, workspaceDirectory: input.workspaceDirectory,
     capturedAt: input.capturedAt, label: input.label, text, truncated: text.length < input.text.length,

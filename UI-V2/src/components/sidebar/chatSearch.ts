@@ -1,3 +1,4 @@
+import { hasNativeSubagentLineage, nativeSubagentChildren } from '../../utils/subagentNavigation'
 import type { Folder, Session } from '../../types/session'
 import type { AcpAttentionKind } from '../../store/useAppStore'
 import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
@@ -20,6 +21,7 @@ interface ChatSearchCliBinding {
 interface ChatSearchAcpBinding {
   running?: boolean
   processing?: boolean
+  backgroundTaskCount?: number
   lifecycleState?: string
   readySinceLastSelect?: boolean
   attentionKind?: AcpAttentionKind | null
@@ -33,6 +35,7 @@ export type DisplayedChatStatus =
   | null
 
 export interface ChatSearchFilterContext {
+  nowMs?: number
   cliBindingBySessionId?: Record<string, ChatSearchCliBinding>
   acpBindingBySessionId?: Record<string, ChatSearchAcpBinding>
 }
@@ -47,18 +50,27 @@ export interface ChatSearchModel {
   isSearching: boolean
   pinnedSessionIds: string[]
   /** Running and open chats in one list, newest activity first. */
+  snoozedSessionIds: string[]
   activeSessionIds: string[]
   folderRows: ChatSearchFolderRow[]
   unfolderedSessionIds: string[]
+  /** Native recovery paths, kept separate from ordinary catalogue and Active rows. */
+  orphanSessionIds: string[]
   hasMatches: boolean
+  /** Native subagent sessions that themselves match the search; their parents open to show them. */
+  matchedSubagentChildIds: Set<string>
 }
 
 export interface ChatSearchSessionGroups {
   isSearching: boolean
   sessionIdsByFolderId: Map<string, string[]>
   pinnedSessionIds: string[]
+  snoozedSessionIds: string[]
   activeSessionIds: string[]
   unfolderedSessionIds: string[]
+  /** Native recovery paths, kept separate from ordinary catalogue and Active rows. */
+  orphanSessionIds: string[]
+  matchedSubagentChildIds: Set<string>
 }
 
 // ponytail: fixed window; promote to a setting if people want longer inboxes.
@@ -121,7 +133,7 @@ export function displayedChatStatus(
   const attention = acpBindings.find((binding) => binding?.attentionKind && binding.attentionKind !== 'error')?.attentionKind
   if (attention) return { type: 'attention', kind: attention }
   if (
-    acpBindings.some((binding) => binding?.processing || binding?.lifecycleState === 'waitingPermission') ||
+    acpBindings.some((binding) => binding?.processing || (binding?.backgroundTaskCount ?? 0) > 0 || binding?.lifecycleState === 'waitingPermission') ||
     cliBindings.some((binding) => binding?.processing || binding?.lifecycleState === 'busy' || binding?.lifecycleState === 'shuttingDown')
   ) return { type: 'processing' }
   if (acpBindings.some((binding) => binding?.readySinceLastSelect) || cliBindings.some((binding) => binding?.readySinceLastSelect)) {
@@ -214,31 +226,48 @@ export function buildChatSearchSessionGroups(
   const isTextSearching = searchTokens.length > 0
   const isFiltering = hasActiveChatSearchFilters(filters)
   const isSearching = isTextSearching || isFiltering
+  const nativeParentIds = new Map(sessions.flatMap(session => nativeSubagentChildren(session.id, sessions).map(child => [child.id, session.id] as const)))
+  const nativeChildIds = new Set(sessions.filter(hasNativeSubagentLineage).map(session => session.id))
+  // Follow validated native links to the reachable owner. Ordinary catalogue and
+  // orphan recovery emit it separately; recursive disclosure keeps every immediate parent.
+  const catalogueAncestor = (id: string) => {
+    const seen = new Set<string>()
+    let parentId = nativeParentIds.get(id)
+    while (parentId && !seen.has(parentId)) {
+      seen.add(id)
+      id = parentId
+      parentId = nativeParentIds.get(id)
+    }
+    return id
+  }
   const branchRootId = (session: Session) => session.branchRootChatId || session.parentChatId || session.id
   const familyActivity = new Map<string, number>()
   for (const session of sessions) {
     const rootId = branchRootId(session)
     familyActivity.set(rootId, Math.max(familyActivity.get(rootId) ?? 0, sessionRecentTime(session)))
   }
-  const sortedSessions = sessions.filter((session) => !session.temporaryParentChatId).sort((a, b) =>
+  const visibleSessions = sessions.filter((session) => !session.temporaryParentChatId)
+  const sortedSessions = visibleSessions.filter(session => !nativeChildIds.has(session.id)).sort((a, b) =>
     (familyActivity.get(branchRootId(b)) ?? 0) - (familyActivity.get(branchRootId(a)) ?? 0) || compareSessionsByRecent(a, b)
   )
-  const matchingSessionIds = new Set(
-    sortedSessions
-      .filter((session) => {
-        const searchMatch = isTextSearching
-          ? deepSearchSessionIds
-            ? deepSearchSessionIds.has(session.id)
-            : sessionMatchesChatSearch(searchIndex[session.id], searchTokens)
-          : true
-        const filterMatch = sessionMatchesChatSearchFilters(session, filters, filterContext)
-        return searchMatch && filterMatch
-      })
-      .map((session) => session.id)
-  )
+  const matchedSessions = visibleSessions.filter((session) => {
+    const searchMatch = isTextSearching
+      ? deepSearchSessionIds
+        ? deepSearchSessionIds.has(session.id)
+        : sessionMatchesChatSearch(searchIndex[session.id], searchTokens)
+      : true
+    const filterMatch = sessionMatchesChatSearchFilters(session, filters, filterContext)
+    return searchMatch && filterMatch
+  })
+  const matchingSessionIds = new Set(matchedSessions.map((session) => catalogueAncestor(session.id)))
+  const matchedSubagentChildIds = new Set(isSearching ? matchedSessions.filter(session => nativeChildIds.has(session.id)).map(session => session.id) : [])
+
+  const orphanSessionIds = visibleSessions.filter(session => nativeChildIds.has(session.id) && !nativeParentIds.has(session.id) &&
+    (!isSearching || matchingSessionIds.has(session.id))).map(session => session.id)
 
   const sessionIdsByFolderId = new Map<string, string[]>()
   const pinnedSessionIds: string[] = []
+  const snoozedSessionIds: string[] = []
   const activeSessionIds: string[] = []
   const unfolderedSessionIds: string[] = []
   // Sections follow structured runtimes only: a CLI terminal looks busy as soon as it
@@ -252,7 +281,7 @@ export function buildChatSearchSessionGroups(
     familyStatus.set(rootId, mergeDisplayedStatus(familyStatus.get(rootId) ?? null, sessionStatus(candidate)))
     familyUpdatedMs.set(rootId, Math.max(familyUpdatedMs.get(rootId) ?? 0, candidate.interactionAt === null ? 0 : sessionRecentTime(candidate)))
   }
-  const nowMs = Date.now()
+  const nowMs = filterContext.nowMs ?? Date.now()
   const returnedAtMs = new Map<string, number>()
 
   for (const session of sortedSessions) {
@@ -267,12 +296,15 @@ export function buildChatSearchSessionGroups(
       : familyUpdatedMs.get(rootId) ?? 0
     // Marking done clears a stale "ready" too; only running turns and questions outrank it.
     const unsettled = isUnsettledChat(updatedMs, session.settledAt, nowMs)
-    if (status?.type === 'processing' || status?.type === 'attention' || unsettled || (status?.type === 'done' && !session.settledAt)) {
+    const snoozed = (session.snoozedUntilMs ?? 0) > nowMs && (status?.type !== 'attention' || status.kind === 'error')
+    const wokeAt = (session.snoozedUntilMs ?? 0) > 0 && !snoozed ? session.snoozedUntilMs! : 0
+    if (snoozed) snoozedSessionIds.push(session.id)
+    if (!snoozed && (status?.type === 'processing' || status?.type === 'attention' || unsettled || isUnsettledChat(wokeAt, session.settledAt, nowMs) || (status?.type === 'done' && !session.settledAt))) {
       activeSessionIds.push(session.id)
-      returnedAtMs.set(session.id, updatedMs)
+      returnedAtMs.set(session.id, Math.max(updatedMs, wokeAt))
     }
 
-    if (session.isPinned) {
+    if (session.isPinned && !snoozed) {
       pinnedSessionIds.push(session.id)
     }
 
@@ -293,8 +325,11 @@ export function buildChatSearchSessionGroups(
     isSearching,
     sessionIdsByFolderId,
     pinnedSessionIds,
+    snoozedSessionIds,
     activeSessionIds,
     unfolderedSessionIds,
+    orphanSessionIds,
+    matchedSubagentChildIds,
   }
 }
 
@@ -322,19 +357,25 @@ export function buildChatSearchModelFromGroups(
     })
     .filter((row) => !groups.isSearching || row.sessionIds.length > 0)
 
+  const orphanSessionIds = groups.orphanSessionIds
   const hasMatches =
+    orphanSessionIds.length > 0 ||
     groups.pinnedSessionIds.length > 0 ||
     groups.activeSessionIds.length > 0 ||
+    groups.snoozedSessionIds.length > 0 ||
     folderRows.some((row) => row.sessionIds.length > 0) ||
     unfolderedSessionIds.length > 0
 
   return {
     isSearching: groups.isSearching,
     pinnedSessionIds: groups.pinnedSessionIds,
+    snoozedSessionIds: groups.snoozedSessionIds,
     activeSessionIds: groups.activeSessionIds,
     folderRows,
     unfolderedSessionIds,
+    orphanSessionIds,
     hasMatches,
+    matchedSubagentChildIds: groups.matchedSubagentChildIds,
   }
 }
 

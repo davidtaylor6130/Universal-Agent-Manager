@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { preferredBranch, setPreferredBranch } from './branchPreferenceStorage'
+import { preferredBranch, preferredFamilyChat, setPreferredBranch, setPreferredFamilyChat } from './branchPreferenceStorage'
 
 describe('branch preference storage', () => {
   const values = new Map<string, string>()
@@ -22,5 +22,37 @@ describe('branch preference storage', () => {
     setPreferredBranch('root', 2, 'deleted')
     expect(preferredBranch('root', 2, ['root', 'branch-a'])).toBe('root')
     expect(preferredBranch('root', 2, ['root', 'branch-a'])).toBeNull()
+  })
+
+  it('restores a stable family chat ID across reorder and drops deleted chats', () => {
+    setPreferredFamilyChat('root', 'branch-b')
+    expect(preferredFamilyChat('root', ['root', 'branch-a', 'branch-b'])).toBe('branch-b')
+    expect(preferredFamilyChat('root', ['branch-b', 'root', 'branch-a'])).toBe('branch-b')
+    expect(preferredFamilyChat('root', ['root', 'branch-a'])).toBeNull()
+    expect(preferredFamilyChat('root', ['root', 'branch-a'])).toBeNull()
+  })
+
+  it('keeps family preferences separate from message branch points', () => {
+    setPreferredBranch('root', 2, 'message-branch')
+    setPreferredFamilyChat('root', 'family-branch')
+    expect(preferredBranch('root', 2, ['root', 'message-branch'])).toBe('message-branch')
+    expect(preferredFamilyChat('root', ['root', 'family-branch'])).toBe('family-branch')
+  })
+})
+
+describe('branch preference storage size', () => {
+  it('keeps only the most recent preferences when writing', () => {
+    const values = new Map<string, string>()
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    } })
+    setPreferredFamilyChat('kept', 'kept-branch')
+    for (let index = 0; index < 250; index += 1) setPreferredBranch(`chat-${index}`, 1, `branch-${index}`)
+    setPreferredFamilyChat('kept', 'kept-branch')
+    expect(Object.keys(JSON.parse(values.get('uam-preferred-branches-v1')!)).length).toBeLessThanOrEqual(200)
+    expect(preferredBranch('chat-249', 1, ['branch-249'])).toBe('branch-249')
+    expect(preferredBranch('chat-0', 1, ['branch-0'])).toBeNull()
+    expect(preferredFamilyChat('kept', ['kept-branch'])).toBe('kept-branch')
   })
 })

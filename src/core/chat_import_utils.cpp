@@ -3,9 +3,12 @@
 #include "common/paths/path_utils.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/workspace_root.h"
+#include "common/utils/hash_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 
+#include <algorithm>
+#include <array>
 #include <string_view>
 
 namespace
@@ -160,14 +163,16 @@ namespace uam
 			{
 				// Stop at the nearest repository boundary, including submodules and ordinary checkouts.
 				std::string git_file;
-				if (!uam::io::TryReadTextFile(marker, git_file, 16384)) return workspace;
+				if (!uam::paths::IsRegularFileNoThrow(marker) || !uam::io::TryReadTextFile(marker, git_file, 16384)) return workspace;
 				const std::string_view pointer = uam::strings::TrimAsciiView(git_file);
 				if (!pointer.starts_with("gitdir: ")) return workspace;
 				const fs::path git_directory = uam::paths::NormalizeExistingOrAbsolutePath(
 				    root / uam::paths::PathFromUtf8(uam::strings::TrimAsciiView(pointer.substr(8))));
 				std::string common_file;
 				std::string backlink;
-				if (!uam::io::TryReadTextFile(git_directory / "commondir", common_file, 16384) ||
+				if (!uam::paths::IsRegularFileNoThrow(git_directory / "commondir") ||
+				    !uam::paths::IsRegularFileNoThrow(git_directory / "gitdir") ||
+				    !uam::io::TryReadTextFile(git_directory / "commondir", common_file, 16384) ||
 				    !uam::io::TryReadTextFile(git_directory / "gitdir", backlink, 16384) ||
 				    !FolderDirectoryMatches(git_directory / uam::paths::PathFromUtf8(uam::strings::Trim(backlink)), marker)) return workspace;
 				const fs::path common = uam::paths::NormalizeExistingOrAbsolutePath(
@@ -175,35 +180,125 @@ namespace uam
 				// A standard main checkout owns the common .git directory. Do not infer bare repositories.
 				if (common.filename() != ".git" || !uam::paths::IsDirectoryNoThrow(common)) return workspace;
 				const fs::path resolved = common.parent_path() / location.lexically_relative(root);
-				return uam::paths::IsDirectoryNoThrow(resolved) ? uam::paths::NormalizeExistingPath(resolved) : workspace;
+				return uam::paths::NormalizeExistingOrAbsolutePath(resolved);
 			}
 			if (root == root.parent_path()) break;
 		}
 		return workspace;
 	}
 
+	/// <summary>Containment stops before a distinct nested repository or worktree.</summary>
+	static bool MatchesRegisteredParent(const std::filesystem::path& location, const std::filesystem::path& owner)
+	{
+		// Resolve the owner once rather than at every ancestor.
+		const std::filesystem::path owner_key = FolderDirectoryCompareKey(owner);
+		for (std::filesystem::path current = location; !current.empty(); current = current.parent_path())
+		{
+			if (FolderDirectoryKeysMatch(FolderDirectoryCompareKey(current), owner_key)) return true;
+			if (uam::paths::PathExistsNoThrow(current / ".git") || uam::paths::PathExistsNoThrow(current / ".svn")) break;
+			if (current == current.parent_path()) break;
+		}
+		return false;
+	}
+
+	/// <summary>Resolved ancestors MatchesRegisteredParent would visit, up to and including the first repository boundary.</summary>
+	static std::vector<std::filesystem::path> RegisteredParentKeys(const std::filesystem::path& location)
+	{
+		std::vector<std::filesystem::path> keys;
+		for (std::filesystem::path current = location; !current.empty(); current = current.parent_path())
+		{
+			keys.push_back(FolderDirectoryCompareKey(current));
+			if (uam::paths::PathExistsNoThrow(current / ".git") || uam::paths::PathExistsNoThrow(current / ".svn")) break;
+			if (current == current.parent_path()) break;
+		}
+		return keys;
+	}
+
+	/// <summary>Depth of the UAM-managed worktree bucket for source <paramref name="folder"/> containing location, or 0.</summary>
+	/// UAM creates managed worktrees at &lt;data-root&gt;/worktrees/&lt;source key&gt;/&lt;branch&gt;, keyed like
+	/// GitWorktreeService::WorktreeRootForChat. The bucket still names its source after the worktree is removed.
+	/// The key hashes the Git top level of the source, so only a folder registered at exactly that directory
+	/// matches; a folder registered at a parent or subdirectory of it falls back to ordinary containment.
+	/// ponytail: bucket-name match only; a 64-bit FNV collision between registered folders is the ceiling.
+	static std::size_t ManagedWorktreeBucketDepth(const std::filesystem::path& location, const std::filesystem::path& folder)
+	{
+		std::array<std::string, 2> keys;
+		for (std::filesystem::path current = location; current.has_parent_path() && current != current.parent_path(); current = current.parent_path())
+		{
+			if (current.parent_path().filename() != "worktrees") continue;
+			// Hash only once a candidate bucket exists, so ordinary workspaces pay no extra path resolution.
+			if (keys[0].empty())
+			{
+				keys[0] = uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(folder)));
+				keys[1] = uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(uam::paths::NormalizeExistingOrAbsolutePath(folder))));
+			}
+			const std::string bucket = uam::paths::Utf8PathString(current.filename());
+			if (bucket == keys[0] || bucket == keys[1]) return static_cast<std::size_t>(std::distance(current.begin(), current.end()));
+		}
+		return 0;
+	}
+
 	bool ImportedWorkspaceMatchesFolder(const std::filesystem::path& workspace, const std::filesystem::path& folder)
 	{
-		return !workspace.empty() && !folder.empty() &&
-		    (FolderDirectoryMatches(workspace, folder) ||
-		     FolderDirectoryMatches(ResolveImportedWorkspaceFolderDirectory(workspace), folder));
+		if (workspace.empty() || folder.empty()) return false;
+		const std::filesystem::path owner = uam::paths::NormalizeExistingOrAbsolutePath(folder);
+		const std::filesystem::path location = uam::paths::NormalizeExistingOrAbsolutePath(workspace);
+		return MatchesRegisteredParent(location, owner) ||
+		    MatchesRegisteredParent(ResolveImportedWorkspaceFolderDirectory(location), owner) ||
+		    ManagedWorktreeBucketDepth(location, folder) > 0;
 	}
 
 	const ChatFolder* FindImportedWorkspaceFolder(const std::vector<ChatFolder>& folders, const std::filesystem::path& workspace)
 	{
 		if (workspace.empty()) return nullptr;
+		// Resolve every registered folder once per call instead of once per candidate ancestor.
+		struct RegisteredFolder
+		{
+			const ChatFolder* folder;
+			std::filesystem::path key;
+			std::size_t depth;
+		};
+		std::vector<RegisteredFolder> registered;
 		for (const ChatFolder& folder : folders)
 		{
-			if (uam::paths::IsControllerLocalWorkspace(folder) && !folder.directory.empty() &&
-			    FolderDirectoryMatches(uam::paths::PathFromUtf8(folder.directory), workspace)) return &folder;
+			if (!uam::paths::IsControllerLocalWorkspace(folder) || folder.directory.empty()) continue;
+			const std::filesystem::path directory = uam::paths::NormalizeExistingOrAbsolutePath(uam::paths::PathFromUtf8(folder.directory));
+			registered.push_back({&folder, FolderDirectoryCompareKey(directory), static_cast<std::size_t>(std::distance(directory.begin(), directory.end()))});
 		}
-		const std::filesystem::path resolved = ResolveImportedWorkspaceFolderDirectory(workspace);
-		for (const ChatFolder& folder : folders)
+		if (registered.empty()) return nullptr;
+		const std::filesystem::path location = uam::paths::NormalizeExistingOrAbsolutePath(workspace);
+		const std::filesystem::path resolved = uam::paths::NormalizeExistingOrAbsolutePath(ResolveImportedWorkspaceFolderDirectory(location));
+		const ChatFolder* managed_owner = nullptr;
+		std::size_t managed_depth = 0;
+		for (const RegisteredFolder& folder : registered)
 		{
-			if (uam::paths::IsControllerLocalWorkspace(folder) && !folder.directory.empty() &&
-			    FolderDirectoryMatches(uam::paths::PathFromUtf8(folder.directory), resolved)) return &folder;
+			if (const std::size_t depth = ManagedWorktreeBucketDepth(location, uam::paths::PathFromUtf8(folder.folder->directory)); depth > 0)
+			{
+				managed_owner = folder.folder;
+				managed_depth = depth;
+				break;
+			}
 		}
-		return nullptr;
+		// A verified linked worktree belongs to its main checkout when both are registered.
+		const std::array<std::filesystem::path, 2> candidates = resolved == location
+		    ? std::array<std::filesystem::path, 2>{location, resolved}
+		    : std::array<std::filesystem::path, 2>{resolved, location};
+		for (std::size_t index = 0; index < candidates.size(); ++index)
+		{
+			// An identical second candidate cannot find an owner the first missed.
+			if (index > 0 && candidates[index] == candidates[0]) break;
+			const std::vector<std::filesystem::path> parents = RegisteredParentKeys(candidates[index]);
+			const ChatFolder* owner = nullptr;
+			std::size_t owner_depth = 0;
+			for (const RegisteredFolder& folder : registered)
+			{
+				if (std::ranges::none_of(parents, [&](const std::filesystem::path& parent) { return FolderDirectoryKeysMatch(parent, folder.key); })) continue;
+				if (owner == nullptr || folder.depth > owner_depth) { owner = folder.folder; owner_depth = folder.depth; }
+			}
+			// A broad folder that merely contains the data root does not outrank the managed source.
+			if (owner != nullptr) return managed_owner != nullptr && candidates[index] == location && owner_depth <= managed_depth ? managed_owner : owner;
+		}
+		return managed_owner;
 	}
 
 	std::string BuildImportedChatTitle(const std::vector<Message>& messages, const std::string& created_at, std::size_t max_length)

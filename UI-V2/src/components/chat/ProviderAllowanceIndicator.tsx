@@ -1,0 +1,62 @@
+import { useState } from 'react'
+import { Coins, History, Infinity as InfinityIcon } from 'lucide-react'
+import type { AcpRateLimits } from '../../store/cpp/types'
+import { Tooltip, UsageGauge } from '../ui'
+import { providerShortName } from '../../utils/providerMetadata'
+import { formatCreditBalance } from '../../utils/providerAllowanceFormatting'
+
+type Props = {
+  providerId: string
+  sourceProviderId: string | undefined
+  rateLimits?: AcpRateLimits | null
+  running: boolean
+  nowMs?: number
+}
+
+const validPercent = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100
+const resetLabel = (seconds: number | null) => typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0 && Number.isFinite(new Date(seconds * 1000).getTime())
+  ? `Resets ${new Date(seconds * 1000).toLocaleString()}` : 'Reset time unavailable'
+
+/** Displays only account limits reported by the matching native session. Token counts are a separate source. */
+export function ProviderAllowanceIndicator({ providerId, sourceProviderId, rateLimits, running, nowMs }: Props) {
+  const [interactionTime, setInteractionTime] = useState(() => Date.now())
+  const currentTime = nowMs ?? Math.max(interactionTime, Date.now())
+  const limits = sourceProviderId === providerId ? rateLimits : null
+  const windows = limits ? [['Primary', limits.primary], ['Secondary', limits.secondary]] as const : []
+  const remaining = windows.flatMap(([, window]) => window && validPercent(window.usedPercent) ? [100 - window.usedPercent] : [])
+  if (limits?.individualLimit && validPercent(limits.individualLimit.remainingPercent)) remaining.push(limits.individualLimit.remainingPercent)
+  if (limits?.spendControlReached === true) remaining.push(0)
+  const timestampValid = Boolean(limits && Number.isFinite(limits.updatedAt) && limits.updatedAt > 0 && limits.updatedAt <= currentTime)
+  const ageMinutes = timestampValid && limits ? Math.floor((currentTime - limits.updatedAt) / 60_000) : 0
+  const resetPassed = [...windows.map(([, window]) => window?.resetsAt), limits?.individualLimit?.resetsAt].some(at => typeof at === 'number' && Number.isFinite(at) && at > 0 && at * 1000 <= currentTime)
+  const cached = !running || ageMinutes >= 5 || resetPassed || !timestampValid
+  const percent = remaining.length ? Math.floor(Math.min(...remaining)) : null
+  const creditOnly = limits?.credits?.unlimited ? 'Unlimited' : limits?.credits?.hasCredits ? 'Credits available' : null
+  const value = percent === null ? creditOnly : `${percent}% remaining`
+  const label = limits && timestampValid && value ? `${cached ? 'Cached ' : ''}${value}` : 'Unavailable'
+  // The gauge needle shows the most-used window; unknown, unavailable and credit-only (including unlimited) stay neutral.
+  const usedPercent = percent === null || label === 'Unavailable' ? null : 100 - percent
+  // Visible, non-colour cues for states the label carries: a history mark for cached snapshots and the credit kind for credit-only.
+  const cachedMark = label.startsWith('Cached ')
+  const creditMark = label === 'Unavailable' || percent !== null ? null : limits?.credits?.unlimited ? 'unlimited' : creditOnly ? 'credits' : null
+  const detail = limits ? <div className="flex flex-col gap-1">
+    <span>{providerShortName(undefined, providerId)} session-reported account allowance</span>
+    <span>{running ? 'Live' : 'Last checked'}</span>
+    <span>{timestampValid ? ageMinutes ? `Updated ${ageMinutes} min ago${ageMinutes >= 5 ? ' (stale)' : ''}` : 'Updated just now' : 'Update time unavailable'}</span>
+    {resetPassed && <span>Reset time passed; awaiting a new snapshot</span>}
+    {windows.map(([name, window]) => window && <span key={name}>{name}: {validPercent(window.usedPercent) ? `${Math.floor(100 - window.usedPercent)}% remaining` : 'Usage unavailable'}. {resetLabel(window.resetsAt)}</span>)}
+    {limits.credits && <span title={limits.credits.balance ?? undefined}>{limits.credits.unlimited ? 'Unlimited credits' : limits.credits.hasCredits ? `Credits: ${limits.credits.balance === null ? 'balance unavailable' : formatCreditBalance(limits.credits.balance)}` : 'No credits available'}</span>}
+    {limits.individualLimit && <span>Spend limit: {limits.individualLimit.used} of {limits.individualLimit.limit}. {resetLabel(limits.individualLimit.resetsAt)}</span>}
+    {limits.spendControlReached && <span>Spend limit reached</span>}
+    {limits.planType && <span>Plan: {limits.planType}</span>}
+  </div> : <span>{providerShortName(undefined, providerId)} has not reported an account allowance for this session.</span>
+  return <Tooltip label={detail}>
+    {/* ui: raw button kept — inline meter-plus-label trigger, neither icon-only nor a button or row shape any primitive covers */}
+    <button type="button" onFocus={() => setInteractionTime(Date.now())} onMouseEnter={() => setInteractionTime(Date.now())} aria-label={`Account allowance: ${label}`} data-cached={cachedMark || undefined} data-credit={creditMark ?? undefined} className="uam-composer-action inline-flex h-[26px] shrink-0 items-center gap-1 px-1.5" style={{ color: 'var(--text-2)', border: '1px solid transparent', borderRadius: 'var(--r-sm)', background: 'transparent' }}>
+      <UsageGauge usedPercent={usedPercent} decorative />
+      {cachedMark && <History size={12} aria-hidden />}
+      {creditMark === 'unlimited' && <InfinityIcon size={12} aria-hidden />}
+      {creditMark === 'credits' && <Coins size={12} aria-hidden />}
+    </button>
+  </Tooltip>
+}

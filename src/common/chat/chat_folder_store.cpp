@@ -1,4 +1,6 @@
 #include "common/chat/chat_folder_store.h"
+#include "common/chat/chat_ids.h"
+#include "common/platform/platform_services.h"
 #include "common/config/custom_icon.h"
 #include "common/config/line_value_codec.h"
 #include "common/paths/path_utils.h"
@@ -102,6 +104,23 @@ namespace
 	}
 
 } // namespace
+
+std::string ChatFolderStore::AllocateId(const std::unordered_set<std::string>& used_ids)
+{
+	for (int attempt = 0; attempt < 16; ++attempt)
+	{
+		const std::string id = uam::chat_ids::NewFolderId(PlatformServicesFactory::Instance().process_service.GenerateUuid());
+		if (!id.empty() && !used_ids.contains(id)) return id;
+	}
+	return {};
+}
+
+std::string ChatFolderStore::AllocateId(const std::vector<ChatFolder>& folders)
+{
+	std::unordered_set<std::string> used_ids;
+	for (const ChatFolder& folder : folders) used_ids.insert(folder.id);
+	return AllocateId(used_ids);
+}
 
 std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_root)
 {

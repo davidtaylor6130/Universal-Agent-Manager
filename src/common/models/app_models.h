@@ -3,14 +3,35 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include "common/provider/runtime/provider_build_config.h"
+#include "common/utils/uuid.h"
+
+// Inert authored-input provenance. Never delivery, replay, cancellation or ownership authority.
+namespace uam::input_provenance
+{
+	inline bool ValidNativeInputId(std::string_view value)
+	{
+		return uam::uuid::IsCanonicalUuid(value);
+	}
+
+	inline bool ValidOriginRequestId(std::string_view value)
+	{
+		if (value.empty() || value.size() > 128) return false;
+		for (const unsigned char byte : value)
+			if (byte < 0x20 || byte > 0x7e) return false;
+		return true;
+	}
+}
 
 /// <summary>
 /// Message role marker persisted with each chat message entry.
@@ -20,6 +41,18 @@ enum class MessageRole
 	User,
 	Assistant,
 	System
+};
+
+/// <summary>One addressable native child with provider-reported metadata.</summary>
+struct SubAgentChild
+{
+	std::string id;
+	std::string title;
+	std::string status;
+	std::optional<std::int64_t> started_at_epoch_ms;
+	std::optional<std::int64_t> finished_at_epoch_ms;
+	std::optional<std::int64_t> duration_ms;
+	bool operator==(const SubAgentChild&) const = default;
 };
 
 /// <summary>
@@ -39,6 +72,9 @@ struct ToolCall
 	std::string approval_status;
 	std::string task_id;
 	std::string child_activity;
+	std::vector<SubAgentChild> sub_agent_children;
+	// Native receiver metadata was normalized, including an empty or rejected list.
+	bool sub_agent_children_authoritative = false;
 	bool operator==(const ToolCall&) const = default;
 };
 
@@ -56,7 +92,23 @@ struct MessageBlock
 	std::string text;
 	std::string tool_call_id;
 	std::string request_id_json;
+		int64_t compaction_tokens_before = -1;
+		int64_t compaction_tokens_after = -1;
 	bool operator==(const MessageBlock&) const = default;
+};
+
+namespace uam::native_assets
+{
+	class InlinePayload;
+}
+
+// Source metadata never grants file, provider or preview authority.
+enum class AttachmentSource
+{
+	LegacyPath,
+	NativeInlinePending,
+	OwnedNativeAsset,
+	ProviderUri
 };
 
 struct MessageAttachment
@@ -68,11 +120,154 @@ struct MessageAttachment
 	std::string path;
 	std::uintmax_t size_bytes = 0;
 	bool copied = false;
-	bool operator==(const MessageAttachment&) const = default;
+	std::string preview_key;
+	std::string preview_origin_path;
+	AttachmentSource source = AttachmentSource::LegacyPath;
+	std::string source_uri;
+	std::string origin_execution_host_id;
+	std::string native_part_key;
+	std::string native_tool_call_id;
+	std::string native_source_field;
+	std::string native_asset_key;
+	std::string content_digest;
+	// Runtime-only shared immutable original; repository preparation must consume it.
+	std::shared_ptr<const uam::native_assets::InlinePayload> native_inline_payload;
+	bool operator==(const MessageAttachment& other) const
+	{
+		// A validated digest represents original bytes. Allocation/pointer identity
+		// and encoded bytes are deliberately absent from semantic comparisons.
+		return std::tie(id, name, kind, mime_type, path, size_bytes, copied, preview_key, preview_origin_path, source, source_uri,
+		           origin_execution_host_id, native_part_key, native_tool_call_id, native_source_field, native_asset_key, content_digest) ==
+		    std::tie(other.id, other.name, other.kind, other.mime_type, other.path, other.size_bytes, other.copied, other.preview_key,
+		        other.preview_origin_path, other.source, other.source_uri, other.origin_execution_host_id, other.native_part_key,
+		        other.native_tool_call_id, other.native_source_field, other.native_asset_key, other.content_digest);
+	}
 };
 
 namespace uam
 {
+	enum class ManagedRunTurnStatus
+	{
+		Queued, Running, Completed, Failed, Cancelled, Interrupted
+	};
+
+	enum class ManagedRunPrincipalKind
+	{
+		UserRoot, AgentRoot, AgentRun
+	};
+
+	enum class ManagedRunContinuity
+	{
+		Native
+	};
+
+	enum class ManagedRunRecoveryDecision
+	{
+		None, ContinueWithoutReplay
+	};
+
+	struct ManagedRunPrincipal
+	{
+		ManagedRunPrincipalKind kind = ManagedRunPrincipalKind::UserRoot;
+		std::string root_chat_id;
+		std::string root_birth_id;
+		// Both empty for UserRoot/AgentRoot; both required for AgentRun.
+		std::string parent_run_id;
+		std::string parent_transcript_birth_id;
+		bool operator==(const ManagedRunPrincipal&) const = default;
+	};
+
+	struct ManagedRunOwnerBinding
+	{
+		std::string root_birth_id;
+		std::string transcript_birth_id;
+		// Null for user-created delegation; only original agent_delegate may create it.
+		std::optional<ManagedRunPrincipal> delegation_grant;
+		bool operator==(const ManagedRunOwnerBinding&) const = default;
+	};
+
+	struct ManagedRunExecutionBinding
+	{
+		// Canonical exact JSON projections, not hashes or renderer-supplied values.
+		std::string connection_configuration_json;
+		std::string provider_configuration_json;
+		std::string execution_host_id;
+		std::string workspace_directory;
+		std::string workspace_worktree_directory;
+		std::string workspace_source_directory;
+		std::string routing_mode;
+		std::string routing_source_folder_id;
+		std::string routing_source_directory;
+		std::string effective_model_id;
+		// Empty until adapter-owned evidence exists; exact-requested or advertised-resolution.
+		std::string model_identity_source;
+		std::string reasoning_effort;
+		std::string service_tier;
+		bool service_tier_explicit = false;
+		std::string approval_mode;
+		std::string command_safety_tier;
+		std::string native_session_id;
+		bool operator==(const ManagedRunExecutionBinding&) const = default;
+	};
+
+	struct ManagedRunTurnReceipt
+	{
+		// Initial entry: turn_id == run.id, number == 1, request/predecessor/text empty.
+		std::string turn_id;
+		std::uint32_t turn_number = 0;
+		std::string client_request_id;
+		std::string after_turn_id;
+		ManagedRunPrincipal principal;
+		std::string text;
+		ManagedRunContinuity continuity = ManagedRunContinuity::Native;
+		ManagedRunRecoveryDecision recovery_decision = ManagedRunRecoveryDecision::None;
+		std::string retry_of_turn_id;
+		ManagedRunTurnStatus status = ManagedRunTurnStatus::Queued;
+		std::string delivery_id;
+		bool dispatch_attempted = false;
+		int expected_turn_serial = 0;
+		int first_user_message_index = -1;
+		std::string user_message_created_at;
+		int64_t started_at_epoch_ms = 0;
+		int64_t finished_at_epoch_ms = 0;
+		bool result_required = false;
+		bool result_delivered = false;
+		int result_delivery_attempts = 0;
+		bool audit_pending = false;
+		std::string diagnostic_code;
+		bool operator==(const ManagedRunTurnReceipt&) const = default;
+	};
+
+	struct ManagedRunContinuation
+	{
+		ManagedRunOwnerBinding owner;
+		// May be absent during an initial turn; absence never enables follow-up.
+		std::optional<ManagedRunExecutionBinding> execution;
+		std::string current_turn_id;
+		std::uint32_t current_turn_number = 0;
+		std::uint64_t state_revision = 0;
+		// Initial entry plus at most 32 follow-ups, in turn-number order.
+		std::vector<ManagedRunTurnReceipt> turns;
+		bool operator==(const ManagedRunContinuation&) const = default;
+	};
+
+	struct ManagedRunPromptIdentity
+	{
+		std::string run_id;
+		std::string turn_id;
+		std::uint32_t turn_number = 0;
+		std::string expected_native_session_id;
+		ManagedRunContinuity continuity = ManagedRunContinuity::Native;
+		bool operator==(const ManagedRunPromptIdentity&) const = default;
+	};
+
+	/// Runtime-only immutable metadata for a passive transcript; never dispatched as queued input.
+	struct PassiveQueuedPromptArchive
+	{
+		std::string owner_chat_id;
+		std::string canonical_prompts_json;
+	};
+
 	/// <summary>
 	/// A bounded follow-up prompt persisted until the ACP runtime accepts it for delivery.
 	/// </summary>
@@ -91,7 +286,17 @@ namespace uam
 		std::vector<std::string> markdown_store_prompt_blocks;
 		std::vector<MessageAttachment> attachments;
 		bool append_user_message = true;
+		/// <summary>Optional exact durable raw row reused by prepared agent input instead of appending it twice.</summary>
+		int existing_user_message_index = -1;
+		std::string existing_user_message_created_at;
+		/// <summary>Expand branch context at dispatch while persisted text still identifies the raw row.</summary>
+		bool include_prior_context = false;
+		/// <summary>Direct input awaiting admission, distinct from a follow-up queued behind active work.</summary>
+		bool direct_admission = false;
+		/// <summary>Held because its pre-launch repository baseline failed; explicit receipt Retry re-runs that baseline.</summary>
+		bool repository_baseline_hold = false;
 		bool prepared_for_delivery = false;
+		std::string claude_quota_continuation_id;
 		int prepared_user_message_count = 0;
 		bool goal_mode = false;
 		std::string goal_id;
@@ -99,6 +304,33 @@ namespace uam
 		bool priority_steer = false;
 		std::string id;
 		int revision = 1;
+		std::optional<ManagedRunPromptIdentity> managed_turn;
+		/// Optional per-input provenance, independent of queue id/revision; batches may omit it.
+		std::optional<std::string> native_input_id;
+		std::optional<std::string> origin_request_id;
+		bool operator==(const AcpQueuedUserPromptState&) const = default;
+	};
+
+	/// Inert policy associated with one definitely unsent authored row; never dispatch authority.
+	struct AcpUnsentPromptRecovery
+	{
+		int version = 1;
+		std::string chat_id;
+		std::string provider_id;
+		int user_message_index = -1;
+		std::string user_message_created_at;
+		std::string row_witness;
+		std::string admission_id;
+		int admission_revision = 1;
+		std::string uam_agent_id;
+		std::string uam_agent_definition_hash;
+		std::string uam_agent_definition_snapshot;
+		std::string uam_agent_instructions;
+		std::vector<std::string> uam_agent_skills;
+		std::vector<std::string> uam_agent_delegates;
+		std::string uam_agent_workspace_access;
+		std::string uam_agent_execution_capability;
+		bool operator==(const AcpUnsentPromptRecovery&) const = default;
 	};
 
 	/// <summary>
@@ -159,6 +391,16 @@ struct Message
 	std::string model_id;
 	bool continues_turn = false;
 	bool acp_prompt_not_sent = false;
+	bool acp_prompt_discarded = false;
+	/// Native event receipts are saved with their projected message before remote output is acknowledged.
+	std::vector<std::string> provider_event_ids;
+	/// Output-only authored-row correlation; never execution or control authority.
+	std::optional<std::string> managed_origin_run_id;
+	/// Inert provenance only; copies retain history, never current action authority.
+	std::optional<std::string> native_input_id;
+	/// Exact original local stdio entry completed at the OS sink; not provider processing or input authority.
+	bool input_write_completed = false;
+	std::optional<std::string> origin_request_id;
 	bool operator==(const Message&) const = default;
 };
 
@@ -171,6 +413,37 @@ enum class GoalStatus
 	Complete,
 	Blocked,
 	Paused
+};
+
+/// <summary>Persists the first objective row; Attempted denotes transport ambiguity rather than provider acceptance.</summary>
+struct NativeGoalInitialDelivery
+{
+	enum class State { Pending, Attempted, Accepted };
+	std::int64_t user_message_index = -1;
+	std::string user_message_created_at;
+	State state = State::Pending;
+	std::string turn_id;
+	bool operator==(const NativeGoalInitialDelivery&) const = default;
+};
+
+/// <summary>Receipt evidence for explicit native resume; creation time is not a unique provider ID or CAS token.</summary>
+struct NativeGoalBinding
+{
+	int version = 1;
+	std::string provider_id;
+	std::string execution_host_id;
+	std::string thread_id;
+	std::string uam_chat_id;
+	std::string uam_goal_id;
+	std::string objective;
+	std::int64_t created_at = 0;
+	std::int64_t last_updated_at = 0;
+	std::int64_t uam_tokens_at_creation = 0;
+	std::int64_t uam_budget_at_creation = 0;
+	std::optional<std::int64_t> native_token_budget;
+	std::int64_t last_native_tokens_used = 0;
+	std::optional<NativeGoalInitialDelivery> initial_delivery;
+	bool operator==(const NativeGoalBinding&) const = default;
 };
 
 /// <summary>
@@ -202,6 +475,7 @@ struct Goal
 	std::string updated_at;
 	std::string execution_owner = "uam";
 	std::string provider_command;
+	std::optional<NativeGoalBinding> native_binding;
 	std::string worker_model_id;
 	std::string reviewer_model_id;
 	std::string creator = "user";
@@ -225,6 +499,8 @@ struct UamControlAuditRecord
 
 struct AgentRun
 {
+	/// Inert v2 persistence; startup excludes these records until execution integration exists.
+	std::optional<uam::ManagedRunContinuation> managed_continuation;
 	std::string id;
 	std::string root_chat_id;
 	std::string parent_run_id;
@@ -246,6 +522,8 @@ struct AgentRun
 	int depth = 1;
 	int expected_turn_serial = 0;
 	int64_t started_at_epoch_ms = 0;
+	/// Zero on older ledgers; otherwise captured at the terminal write, never parsed from local time.
+	int64_t finished_at_epoch_ms = 0;
 	int64_t deadline_at_epoch_ms = 0;
 	std::string created_at;
 	std::string started_at;
@@ -271,12 +549,108 @@ struct ProviderHandoffCliContext
 	bool operator==(const ProviderHandoffCliContext&) const = default;
 };
 
-struct ChatSession
+/// <summary>One durable native-session continuation; claimed delivery is never replayed after restart.</summary>
+struct ClaudeQuotaContinuation
 {
 	std::string id;
+	std::string state;
+	std::string chat_id;
+	std::string native_session_id;
+	std::string context;
+	std::string accepted_message_digest;
+	std::string agent_id;
+	std::string agent_definition_hash;
+	std::string agent_workspace_access;
+	std::string agent_execution_capability;
+	int64_t observed_at_epoch_s = 0;
+	int64_t resets_at_epoch_s = 0;
+	int user_message_index = -1;
+	std::size_t message_count = 0;
+	bool operator==(const ClaudeQuotaContinuation&) const = default;
+};
+
+/// <summary>Portable custom icon metadata. PNG values name assets under the data root.</summary>
+struct CustomIcon
+{
+	std::string type;
+	std::string value;
+	bool operator==(const CustomIcon&) const = default;
+};
+
+/// Process-local evidence for an already-owned terminal transcript's normal retirement.
+/// It permits result reads only; persistence/catalogue loaders never mint this witness.
+struct ManagedTerminalRetirementWitness
+{
+	struct RunIdentity
+	{
+		std::string id, root_id, parent_id, transcript_id, provider_id, model_id, definition_hash, created_at;
+		std::string agent_id, execution_capability, resumed_from_id, result_delivery_id, workspace_access, definition_snapshot;
+		static RunIdentity Capture(const AgentRun& run)
+		{
+			return {run.id, run.root_chat_id, run.parent_run_id, run.transcript_chat_id, run.provider_id,
+			    run.model_id, run.definition_hash, run.created_at, run.agent_id, run.execution_capability,
+			    run.resumed_from_run_id, run.result_delivery_id, run.effective_workspace_access, run.definition_snapshot};
+		}
+		bool operator==(const RunIdentity&) const = default;
+	};
+	std::shared_ptr<const std::uint8_t> original_birth;
+	std::filesystem::path data_root;
+	RunIdentity run;
+	std::string provider_id, host_id, workspace, worktree, native_session_id, created_at;
+};
+
+/// Durable DATA only. Loading this record never reconstructs continuation authority.
+struct ManagedParentResultRecord
+{
+	int version = 1;
+	std::string id, stage = "collecting", reason;
+	std::string root_id, provider_id, host_id, workspace, native_thread, policy_digest;
+	std::string origin_turn, origin_user_digest, payload;
+	std::vector<std::string> run_ids, delivered_ids, batch_ids;
+	std::string native_request_id, accepted_turn_id;
+	bool operator==(const ManagedParentResultRecord&) const = default;
+};
+
+/// Append-only canonical parent DATA for one actual internal input; never a runtime execution lease.
+struct ManagedParentInputReceipt
+{
+	int version = 1;
+	std::string id, origin_id, root_id, provider_id, host_id, workspace, native_thread;
+	std::string origin_turn, payload, native_request_id, accepted_turn_id;
+	std::vector<std::string> run_ids;
+	bool operator==(const ManagedParentInputReceipt&) const = default;
+};
+
+struct ChatSession
+{
+	/// <summary>Runtime identity retained by copies; a recreated chat receives a fresh tag.</summary>
+	std::shared_ptr<const std::uint8_t> metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+	/// Runtime-only immutable terminal-retirement proof, distinct from inspection metadata birth.
+	std::shared_ptr<const ManagedTerminalRetirementWitness> managed_terminal_retirement_witness;
+	/// Ephemeral UI refresh signal only; never persisted or used as execution authority.
+	std::uint64_t managed_subagent_revision = 0;
+	/// Durable birth witness; empty on legacy/unwitnessed data and never minted by a codec.
+	std::string managed_followup_incarnation;
+	/// Runtime-only fail-closed marker; preserve raw managed input until its consumer exists.
+	bool managed_followup_input_unavailable = false;
+	std::string id;
 	std::string execution_host_id = "local";
+	std::string routing_mode = "explicit";
+	std::string routing_source_folder_id;
+	std::string routing_source_directory;
+	std::string routing_assigned_connection_identity;
+	std::string routing_assigned_provider_configuration_identity;
+	bool routing_reservation_pending = false;
+	std::vector<std::string> routing_inherited_default_fields;
 	std::string provider_id;
 	std::string native_session_id;
+	/// Inert V2 origin/refusal hint, bound to that exact native ID; never resume or input authority.
+	std::optional<std::string> opencode_v2_session_id;
+	std::optional<ManagedParentResultRecord> managed_parent_result;
+	std::vector<ManagedParentInputReceipt> managed_parent_input_receipts;
+	/// Codec presence only; an absent legacy key is distinct from a present empty/invalid collection.
+	bool managed_parent_input_receipts_present = false;
+	ClaudeQuotaContinuation claude_quota_continuation;
 	bool native_session_reset_pending = false;
 	// New Claude chats may assign an owned CLI ID on first local or remote launch.
 	// Keep the persisted legacy field name; older unbound chats may already have history.
@@ -287,6 +661,12 @@ struct ChatSession
 	// Conservatively remains true from remote proxy launch until helper process
 	// removal is confirmed. This is independent of whether a turn is active.
 	bool remote_process_exists = false;
+	bool remote_prompt_image_supported = false;
+	std::string remote_structured_protocol;
+	int remote_opencode_native_port = 0;
+	std::string remote_opencode_native_token;
+	bool remote_manual_compaction_pending = false;
+	std::string remote_manual_compaction_boundary_json;
 	// Persisted until a previously requested idle remote stop is confirmed.
 	bool remote_stop_cleanup_pending = false;
 	// Persisted from a stop-then-restart request until the replacement prompt is
@@ -317,19 +697,39 @@ struct ChatSession
 	int remote_turn_serial = 0;
 	int remote_turn_user_message_index = -1;
 	std::vector<uam::AcpQueuedUserPromptState> acp_queued_prompts;
+	/// Absent is legacy unknown; a version-zero record means malformed-present.
+	std::vector<uam::AcpUnsentPromptRecovery> acp_unsent_prompt_recoveries;
+	// Null is unknown, distinct from a validated empty archive; shared copies stay immutable.
+	std::shared_ptr<const uam::PassiveQueuedPromptArchive> passive_queued_prompt_archive;
+	std::string acp_queue_storage_revision;
+	// Successful persistence refreshes this stamp; copied snapshots keep their earlier stamp.
+	mutable std::string acp_queue_full_save_revision;
+	bool acp_queue_storage_error = false;
+	bool acp_queue_held = false;
 	std::size_t acp_dispatched_queued_prompt_count = 0;
 	std::string temporary_parent_chat_id;
+	/// <summary>Storage incarnation for temporary children, independent of provider identity.</summary>
+	std::string temporary_storage_owner_token;
 	bool side_cleanup_requested = false;
 	double side_cleanup_retry_time_s = 0.0;
 	std::shared_ptr<std::atomic<bool>> side_cleanup_stop_finished;
 	std::string parent_chat_id;
 	std::string branch_root_chat_id;
+	/// Display-only native-child navigation; never branch, resume, permission or execution authority.
+	std::string subagent_parent_chat_id;
+	/// Exact creation timestamp of the originating UAM parent, preventing ID-reuse attachment.
+	std::string subagent_parent_created_at;
+	/// Display provenance for a top-level chat started through UAM chat_create; grants no lineage or authority.
+	std::string created_by_chat_id;
+	/// Hash of the creating request's arguments, so a model retry returns the same chat.
+	std::string created_by_request_key;
 	int branch_from_message_index = -1;
 	bool branch_message_edited = false;
 	std::string branch_operation_id;
 	std::string branch_retry_error;
 	std::string folder_id;
 	std::string title;
+	CustomIcon custom_icon;
 	std::string created_at;
 	std::string updated_at;
 	std::string last_opened_at;
@@ -337,6 +737,8 @@ struct ChatSession
 	std::string attention_revision;
 	/// Set when the user marks the chat done in Active chats; newer activity reopens it.
 	std::string settled_at;
+	/// Snooze affects sidebar attention only; the provider and queued inputs remain owned.
+	std::int64_t snoozed_until_ms = 0;
 	std::string last_stop_reason;
 	/// Changes only for explicit goal commands, invalidating older completions.
 	std::string goal_command_revision;
@@ -354,8 +756,13 @@ struct ChatSession
 	std::string workspace_isolation_kind;
 	std::string workspace_source_directory;
 	std::string workspace_base_ref;
+	/// <summary>Absent inherits Settings; empty explicitly starts at HEAD without switching source.</summary>
+	std::optional<std::string> git_base_branch_override;
 	std::string workspace_branch_name;
+	/// <summary>Branch chosen before the first message; created in the worktree when that message is sent.</summary>
+	std::string pending_git_branch_name;
 	std::string workspace_worktree_directory;
+	bool svn_update_pending = false;
 	bool imported_read_only = false;
 	std::string approval_mode;
 	std::string uam_agent_id = "build";
@@ -374,9 +781,12 @@ struct ChatSession
 	std::string goal_iteration_turn_kind;
 	int goal_iteration_repair_attempts = 0;
 	bool uam_control_enabled = false;
+	bool uam_control_explicitly_disabled = false;
 	std::string command_safety_tier = "off";
 	// Enablement and the selected OS target are intentionally runtime-only.
 	// Only the backend preference is persisted with the chat.
+	/// <summary>Launch-only policy snapshot; global consent is persisted in AppSettings.</summary>
+	bool computer_use_globally_enabled = true;
 	bool computer_use_enabled = false;
 	std::string computer_use_backend = "auto";
 	std::string computer_use_target_kind = "window";
@@ -433,14 +843,6 @@ struct ProviderChatDefaults
 /// <summary>
 /// User-defined chat folder metadata.
 /// </summary>
-/// <summary>Portable custom icon metadata. PNG values name assets under the data root.</summary>
-struct CustomIcon
-{
-	std::string type;
-	std::string value;
-	bool operator==(const CustomIcon&) const = default;
-};
-
 struct ChatFolder
 {
 	std::string id;
@@ -449,6 +851,10 @@ struct ChatFolder
 	bool collapsed = false;
 	std::string execution_host_id;
 	CustomIcon custom_icon;
+	// Transient worker probe; never persisted with workspace metadata.
+	std::string availability_directory;
+	std::string availability_host_id;
+	bool directory_missing = false;
 };
 
 struct ResourceReference
@@ -505,6 +911,35 @@ struct McpServerConfiguration
 	bool enabled = true;
 };
 
+struct ExecutionRoutingProviderConfirmation
+{
+	std::string provider_id;
+	std::string connection_identity;
+	std::string provider_configuration_identity;
+};
+
+struct ExecutionRoutingWorkspaceMapping
+{
+	std::string source_folder_id;
+	std::string source_directory;
+	std::string destination_folder_id;
+};
+
+struct ExecutionRoutingHostPolicy
+{
+	std::string host_id;
+	bool enabled = false;
+	std::size_t max_active_turns = 0;
+	std::vector<ExecutionRoutingProviderConfirmation> provider_confirmations;
+	std::vector<ExecutionRoutingWorkspaceMapping> workspace_mappings;
+};
+
+struct ExecutionRoutingSettings
+{
+	bool enabled = false;
+	std::vector<ExecutionRoutingHostPolicy> hosts;
+};
+
 struct ExecutionHost
 {
 	std::string id = "local";
@@ -522,6 +957,17 @@ struct ExecutionHost
 	bool startup_enabled = false;
 	std::string startup_status = "disabled";
 	CustomIcon custom_icon;
+	bool cli_updates_as_admin = false;
+	/// Absent uses the legacy remote file; an empty value explicitly disables host instructions.
+	std::optional<std::string> instruction_text;
+	std::optional<std::string> runner_startup_applied;
+	std::string runner_startup_error;
+	/// Durable installation authority fence; a health handshake cannot clear it.
+	bool runner_install_unresolved = false;
+	std::string runner_install_nonce;
+	std::string runner_install_identity;
+	/// SHA-256 of the helper this computer verified and published at installation; empty is unknown.
+	std::string runner_sha256;
 	bool operator==(const ExecutionHost&) const = default;
 };
 
@@ -532,10 +978,17 @@ struct ComputerUseApplicationRule
 	bool operator==(const ComputerUseApplicationRule&) const = default;
 };
 
-/// <summary>
-/// Persisted application settings.
-/// </summary>
-/// <summary>Resources UAM installs privately for every configured provider launch.</summary>
+/// <summary>A provider and host's override of a shared resource default.</summary>
+struct ProviderMcpOverride
+{
+	std::string provider_id;
+	std::string execution_host_id;
+	std::string server_id;
+	bool enabled = true;
+	bool is_preference = false;
+};
+
+/// <summary>Resources UAM installs privately for configured provider launches.</summary>
 struct CentralProviderConfiguration
 {
 	bool enabled = false;
@@ -544,21 +997,60 @@ struct CentralProviderConfiguration
 	std::vector<std::string> skill_directories;
 	std::string default_agent_id = "build";
 	bool uam_control_enabled = true;
+	std::vector<ProviderMcpOverride> mcp_overrides;
 	std::vector<std::string> default_skills;
 	std::vector<std::string> default_agents;
 };
 
+/// <summary>A provider's independent runtime availability on one configured execution host.</summary>
+struct ProviderAvailabilityOverride
+{
+	std::string provider_id;
+	std::string execution_host_id;
+	bool enabled = true;
+};
+
+enum class GitPortMethod { Patch, Merge, Squash };
+
+struct HostScopedSettings
+{
+	std::optional<std::string> default_new_chat_provider_id;
+	std::map<std::string, ProviderChatDefaults> provider_chat_defaults;
+	std::optional<std::vector<McpServerConfiguration>> mcp_servers;
+};
+
 struct AppSettings
 {
+	std::string voice_input_mode = "system";
+	std::string voice_input_server_base_url = "https://api.openai.com";
+	std::string voice_input_server_endpoint = "/v1/audio/transcriptions";
+	std::string voice_input_server_model = "whisper-1";
+	std::string voice_input_api_key_env = "OPENAI_API_KEY";
+
+	bool computer_use_globally_enabled = true;
 	bool computer_use_allowlist_enabled = false;
 	std::vector<ComputerUseApplicationRule> computer_use_allowed_applications;
 	std::string active_provider_id = provider_build_config::FirstEnabledProviderId();
 	std::string provider_extra_flags;
 	int cli_idle_timeout_seconds = 600;
 	int active_turn_inactivity_timeout_seconds = 1800;
+	int stream_loop_repeat_limit = 20; // 0 turns stream loop stops off; see stream_watch.h.
 	std::string ui_theme = "focus";
 	bool show_provider_icons_in_sidebar = true;
 	bool show_worktree_path_in_sidebar = true;
+	bool git_enabled = true;
+	bool git_auto_worktree = true;
+	bool git_snapshot_svn = true;
+	bool git_snapshot_plain_folders = true;
+	bool git_pull_before_chat = false;
+	GitPortMethod git_port_method = GitPortMethod::Patch;
+	std::string git_default_base_branch;
+	bool worktree_cleanup_enabled = true;
+	int worktree_retention_days = 14;
+	int backup_log_retention_days = 14;
+	int http_cache_clear_interval_days = 0;
+	bool svn_enabled = true;
+	bool svn_update_before_chat = false;
 	bool confirm_delete_chat = true;
 	bool confirm_delete_folder = true;
 	bool remember_last_chat = true;
@@ -572,6 +1064,7 @@ struct AppSettings
 	int memory_idle_delay_seconds = 60;
 	int memory_recall_budget_bytes = 2048;
 	int goal_max_loop_iterations = 200;
+	int goal_token_budget = 0;
 	int acp_setup_inactivity_timeout_seconds = 600;
 	int acp_turn_output_limit_mib = 1024;
 	bool update_checks_enabled = true;
@@ -580,18 +1073,29 @@ struct AppSettings
 	std::map<std::string, std::string> dismissed_update_versions;
 	std::map<std::string, MemoryWorkerBinding> memory_worker_bindings;
 	std::string permission_reviewer_provider_id;
+	/// <summary>Settings key to {saved id of a provider this build excludes, included fallback used instead}. Saving writes the
+	/// saved id back while the fallback is still selected, so a build that includes the provider finds the choice again.</summary>
+	std::map<std::string, std::pair<std::string, std::string>> excluded_provider_selections;
 	std::string permission_reviewer_model_id;
 	std::string default_new_chat_provider_id = provider_build_config::FirstEnabledProviderId();
 	std::map<std::string, ProviderChatDefaults> provider_chat_defaults;
+	std::map<std::string, HostScopedSettings> host_scoped_settings;
+	std::vector<ProviderAvailabilityOverride> provider_availability;
 	std::string markdown_store_directory;
 	std::string default_editor_preset_id = "vscode";
 	std::string file_explorer_application;
+	std::string windows_powershell = "auto";
 	int editor_default_groups_version = 0;
 	std::vector<EditorFileAssociation> editor_file_associations;
 	CentralProviderConfiguration central_provider_configuration;
 	std::vector<McpServerConfiguration> mcp_servers;
 	std::vector<ExecutionHost> execution_hosts;
+	ExecutionRoutingSettings execution_routing;
 	std::vector<std::string> favorite_uam_agent_ids;
+	/// <summary>Native sessions whose title (the first user message for most providers) starts with one of these, ignoring case, are never offered for import.</summary>
+	std::vector<std::string> native_import_excluded_title_prefixes;
+	/// <summary>Native sessions whose workspace is one of these folders, or inside one, are never offered for import.</summary>
+	std::vector<std::string> native_import_excluded_directories;
 	std::string uam_agent_cycle_shortcut = "shift+tab";
 	std::string memory_level_default = "strict";
 };
@@ -608,6 +1112,8 @@ struct ProcessExecutionResult
 	int exit_code = -1;
 	std::string output;
 	std::string error;
+	// Bounded stderr tail of a structured-stdout worker; never logged without a caller-owned filter.
+	std::string diagnostic_tail;
 };
 
 struct AsyncProcessTaskState

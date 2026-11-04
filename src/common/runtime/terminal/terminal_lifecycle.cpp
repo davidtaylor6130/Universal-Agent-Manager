@@ -1,4 +1,6 @@
+#include "common/config/provider_availability.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
+#include "common/runtime/terminal_polling.h"
 
 #include "app/chat_domain_service.h"
 #include "app/provider_resolution_service.h"
@@ -390,6 +392,12 @@ bool IsCliTerminalEligibleForBackgroundIdleShutdown(const AppState& app,
 
 void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTerminalStopMode stop_mode)
 {
+	terminal.repository_baseline_pending = false;
+	if (terminal.repository_baseline_cancel)
+	{
+		terminal.repository_baseline_cancel->request_stop();
+		terminal.repository_baseline_cancel.reset();
+	}
 	terminal.uam_control_relay.reset();
 	terminal.uam_control_session.reset();
 	if (terminal.context_preparation != nullptr)
@@ -412,13 +420,14 @@ void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTermina
 	}
 
 	CloseCliTerminalHandles(terminal);
+	if (terminal.native_history_generation) terminal.native_history_generation->stopped.store(true, std::memory_order_release);
 	terminal.running = false;
 	terminal.native_identity_query_phase = 0;
 	terminal.native_identity_output.clear();
 	terminal.native_identity_deferred_input.clear();
 	terminal.native_session_discovery_ambiguous = false;
 	terminal.input_ready = false;
-	terminal.startup_time_s = 0.0;
+	// Retain the launch identity for final output; the next launch assigns a new timestamp.
 	MarkCliTerminalStopped(terminal);
 	terminal.last_output_time_s = 0.0;
 	terminal.idle_interaction_started_time_s = 0.0;
@@ -454,6 +463,11 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 	if (const ChatSession* chat = ChatDomainService().FindChatById(app, std::string(chat_id)))
 	{
 		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, *chat);
+		if (!provider_availability::IsEnabled(app.settings, provider.id, chat->execution_host_id))
+		{
+			if (error_out != nullptr) *error_out = provider_availability::DisabledReason();
+			return false;
+		}
 		if (const std::string update_error = ProviderCliLaunchBlockReason(app, provider.id, chat->execution_host_id); !update_error.empty())
 		{
 			if (error_out != nullptr) *error_out = update_error;
@@ -499,15 +513,9 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 	return true;
 }
 
-void SyncCliTerminalToNativeHistory(AppState& app, const CliTerminalState& terminal)
+void SyncCliTerminalToNativeHistory(AppState& app, const CliTerminalState& terminal, bool wait_for_stop)
 {
-	const ChatSession* chat = ChatDomainService().FindChatById(app, terminal.attached_chat_id);
-	if (chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId) return;
-	const std::string sync_target_id = CliTerminalSyncTargetId(terminal);
-	if (!sync_target_id.empty())
-	{
-		SyncChatsFromNative(app, sync_target_id, true);
-	}
+	(void)SyncChatsFromFinalCliTerminal(app, terminal, wait_for_stop);
 }
 
 bool StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, bool sync_to_history)
@@ -521,7 +529,7 @@ bool StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, boo
 
 		if (sync_to_history)
 		{
-			SyncCliTerminalToNativeHistory(app, *terminal);
+			SyncCliTerminalToNativeHistory(app, *terminal, true);
 		}
 
 		StopCliTerminal(*terminal, true, CliTerminalStopMode::FastExit);
@@ -529,6 +537,9 @@ bool StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, boo
 	};
 
 	std::erase_if(app.cli_terminals, matches_chat_terminal);
+	// Includes sync=false delete/provider-switch. Keep a parser key while any
+	// other real running terminal consumes it; never cancel a final receipt.
+	SweepTerminalNativeChatLoads(app);
 	return std::ranges::none_of(app.cli_terminals, [chat_id](const std::unique_ptr<CliTerminalState>& terminal)
 	{
 		return terminal != nullptr && CliTerminalMatchesChatId(*terminal, chat_id);
@@ -548,6 +559,7 @@ void ClearStoppedCliTerminalAttachmentForChat(AppState& app, std::string_view ch
 		if (terminal != nullptr && !terminal->running && CliTerminalMatchesChatId(*terminal, target_chat_id))
 		{
 			StopCliTerminal(*terminal, true);
+			SweepTerminalNativeChatLoads(app);
 		}
 	}
 }
@@ -558,10 +570,11 @@ void StopAllCliTerminals(AppState& app, bool clear_identity)
 	{
 		if (terminal != nullptr)
 		{
-			SyncCliTerminalToNativeHistory(app, *terminal);
+			SyncCliTerminalToNativeHistory(app, *terminal, true);
 			StopCliTerminal(*terminal, clear_identity);
 		}
 	}
+	SweepTerminalNativeChatLoads(app);
 }
 
 void FastStopCliTerminalsForExit(AppState& app)
@@ -573,9 +586,10 @@ void FastStopCliTerminalsForExit(AppState& app)
 			continue;
 		}
 
-		SyncCliTerminalToNativeHistory(app, *terminal_ptr);
+		SyncCliTerminalToNativeHistory(app, *terminal_ptr, true);
 		StopCliTerminal(*terminal_ptr, true, CliTerminalStopMode::FastExit);
 	}
+	SweepTerminalNativeChatLoads(app);
 }
 
 } // namespace uam

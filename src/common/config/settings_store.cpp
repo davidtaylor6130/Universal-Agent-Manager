@@ -1,3 +1,4 @@
+#include "common/config/voice_input_settings.h"
 #include "common/config/central_provider_configuration.h"
 #include "common/config/settings_store.h"
 
@@ -7,8 +8,11 @@
 #include "common/config/line_value_codec.h"
 #include "common/config/mcp_server_config.h"
 #include "common/config/provider_chat_defaults.h"
+#include "common/config/host_scoped_settings.h"
+#include "common/config/provider_availability.h"
 #include "common/config/settings_normalization.h"
 #include "common/memory/memory_levels.h"
+#include "common/platform/powershell_selection.h"
 #include "common/paths/path_utils.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
@@ -25,6 +29,8 @@
 #include <sstream>
 #include <string_view>
 #include <vector>
+#include <unordered_set>
+#include <stdexcept>
 
 #include <nlohmann/json.hpp>
 
@@ -42,10 +48,22 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kProviderExtraFlagsKey = "provider_extra_flags";
 	constexpr std::string_view kCliIdleTimeoutSecondsKey = "cli_idle_timeout_seconds";
 	constexpr std::string_view kActiveTurnInactivityTimeoutSecondsKey = "active_turn_inactivity_timeout_seconds";
+	constexpr std::string_view kStreamLoopRepeatLimitKey = "stream_loop_repeat_limit";
 	constexpr std::string_view kAcpSetupInactivityTimeoutSecondsKey = "acp_setup_inactivity_timeout_seconds";
 	constexpr std::string_view kUiThemeKey = "ui_theme";
 	constexpr std::string_view kShowProviderIconsInSidebarKey = "show_provider_icons_in_sidebar";
 	constexpr std::string_view kShowWorktreePathInSidebarKey = "show_worktree_path_in_sidebar";
+	constexpr std::string_view kGitEnabledKey = "git_enabled";
+	constexpr std::string_view kGitAutoWorktreeKey = "git_auto_worktree";
+	constexpr std::string_view kGitSnapshotSvnKey = "git_snapshot_svn";
+	constexpr std::string_view kGitSnapshotPlainFoldersKey = "git_snapshot_plain_folders";
+	constexpr std::string_view kGitPortMethodKey = "git_port_method";
+	constexpr std::string_view kGitPullBeforeChatKey = "git_pull_before_chat";
+	constexpr std::string_view kGitDefaultBaseBranchKey = "git_default_base_branch";
+	constexpr std::string_view kWorktreeCleanupEnabledKey = "worktree_cleanup_enabled";
+	constexpr std::string_view kWorktreeRetentionDaysKey = "worktree_retention_days";
+	constexpr std::string_view kSvnEnabledKey = "svn_enabled";
+	constexpr std::string_view kSvnUpdateBeforeChatKey = "svn_update_before_chat";
 	constexpr std::string_view kConfirmDeleteChatKey = "confirm_delete_chat";
 	constexpr std::string_view kConfirmDeleteFolderKey = "confirm_delete_folder";
 	constexpr std::string_view kRememberLastChatKey = "remember_last_chat";
@@ -55,11 +73,17 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kWindowWidthKey = "window_width";
 	constexpr std::string_view kWindowHeightKey = "window_height";
 	constexpr std::string_view kWindowMaximizedKey = "window_maximized";
+	constexpr std::string_view kVoiceInputModeKey = "voice_input_mode";
+	constexpr std::string_view kVoiceInputServerBaseUrlKey = "voice_input_server_base_url";
+	constexpr std::string_view kVoiceInputServerEndpointKey = "voice_input_server_endpoint";
+	constexpr std::string_view kVoiceInputServerModelKey = "voice_input_server_model";
+	constexpr std::string_view kVoiceInputApiKeyEnvKey = "voice_input_api_key_env";
 	constexpr std::string_view kMemoryEnabledDefaultKey = "memory_enabled_default";
 	constexpr std::string_view kMemoryLevelDefaultKey = "memory_level_default";
 	constexpr std::string_view kMemoryIdleDelaySecondsKey = "memory_idle_delay_seconds";
 	constexpr std::string_view kMemoryRecallBudgetBytesKey = "memory_recall_budget_bytes";
 	constexpr std::string_view kGoalMaxLoopIterationsKey = "goal_max_loop_iterations";
+	constexpr std::string_view kGoalTokenBudgetKey = "goal_token_budget";
 	constexpr std::string_view kAcpTurnOutputLimitMiBKey = "acp_turn_output_limit_mib";
 	constexpr std::string_view kUpdateChecksEnabledKey = "update_checks_enabled";
 	constexpr std::string_view kUpdateLastCheckedAtKey = "update_last_checked_at";
@@ -71,13 +95,19 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kProviderChatDefaultsKey = "provider_chat_defaults";
 	constexpr std::string_view kMarkdownStoreDirectoryKey = "markdown_store_directory";
 	constexpr std::string_view kFileExplorerApplicationKey = "file_explorer_application";
+	constexpr std::string_view kWindowsPowerShellKey = "windows_powershell";
 	constexpr std::string_view kDefaultEditorPresetIdKey = "default_editor_preset_id";
 	constexpr std::string_view kEditorDefaultGroupsVersionKey = "editor_default_groups_version";
 	constexpr std::string_view kEditorFileAssociationsKey = "editor_file_associations";
 	constexpr std::string_view kMcpServersKey = "mcp_servers";
 	constexpr std::string_view kExecutionHostsKey = "execution_hosts";
+	constexpr std::string_view kProviderAvailabilityKey = "provider_availability";
+	constexpr std::string_view kExecutionRoutingKey = "execution_routing";
 	constexpr std::string_view kFavoriteUamAgentIdsKey = "favorite_uam_agent_ids";
+	constexpr std::string_view kNativeImportExcludedTitlePrefixesKey = "native_import_excluded_title_prefixes";
+	constexpr std::string_view kNativeImportExcludedDirectoriesKey = "native_import_excluded_directories";
 	constexpr std::string_view kUamAgentCycleShortcutKey = "uam_agent_cycle_shortcut";
+	constexpr std::string_view kComputerUseGloballyEnabledKey = "computer_use_globally_enabled";
 	constexpr std::string_view kComputerUseAllowlistEnabledKey = "computer_use_allowlist_enabled";
 	constexpr std::string_view kComputerUseAllowedApplicationsKey = "computer_use_allowed_applications";
 
@@ -85,6 +115,16 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kLegacyGeminiExtraFlagsKey = "gemini_extra_flags";
 
 	std::string NormalizeProviderId(std::string_view value);
+
+	/// <summary>Per-provider saved entries keep an excluded provider's id as inert data instead of dropping the entry;
+	/// lookups only ever use included ids. Selections such as the active provider keep using NormalizeProviderId.</summary>
+	std::string NormalizeStoredProviderId(std::string_view value)
+	{
+		const std::string normalized = uam::provider_ids::NormalizeCliProviderAlias(value);
+		if (!normalized.empty()) return normalized;
+		const std::string lowered = uam::strings::TrimAndLowerAscii(value);
+		return uam::provider_ids::IsRetainedExcludedProviderId(lowered) ? lowered : "";
+	}
 
 	bool IsValidSettingsText(std::string_view text)
 	{
@@ -124,6 +164,17 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			else if (key == kActiveProviderIdKey)
 			{
 				saw_active_provider = !uam::strings::IsBlank(uam::DecodeLineValue(value));
+			}
+			else if (key == kExecutionRoutingKey)
+			{
+				ExecutionRoutingSettings routing;
+				std::string error;
+				if (!SettingsStore::ParseExecutionRoutingSettings(nlohmann::json::parse(uam::DecodeLineValue(value), nullptr, false), routing, error)) return false;
+			}
+			else if (key == kProviderAvailabilityKey)
+			{
+				std::vector<ProviderAvailabilityOverride> policy;
+				if (!uam::provider_availability::Parse(nlohmann::json::parse(uam::DecodeLineValue(value), nullptr, false), policy)) return false;
 			}
 			else if (key == kExecutionHostsKey)
 			{
@@ -174,8 +225,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	                                     std::string& normalized_chat_provider_id,
 	                                     MemoryWorkerBinding& normalized_binding)
 	{
-		normalized_chat_provider_id = NormalizeProviderId(chat_provider_id);
-		normalized_binding.worker_provider_id = NormalizeProviderId(binding.worker_provider_id);
+		normalized_chat_provider_id = NormalizeStoredProviderId(chat_provider_id);
+		normalized_binding.worker_provider_id = NormalizeStoredProviderId(binding.worker_provider_id);
 		normalized_binding.worker_model_id = uam::strings::Trim(binding.worker_model_id);
 		return !normalized_chat_provider_id.empty() && !normalized_binding.worker_provider_id.empty();
 	}
@@ -294,7 +345,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		defaults.command_safety_tier = uam::command_safety::NormalizeTier(defaults.command_safety_tier);
 		defaults.reasoning_effort = uam::provider_chat_defaults::NormalizeReasoningEffort(provider_id, defaults.reasoning_effort);
 		defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
-		defaults.memory_level = uam::memory_levels::Normalize(defaults.memory_level, defaults.memory_enabled);
+		defaults.memory_level = uam::memory_levels::NormalizeSelection(defaults.memory_level, defaults.memory_enabled);
 		defaults.memory_enabled = uam::memory_levels::IsEnabled(defaults.memory_level);
 		return defaults;
 	}
@@ -304,7 +355,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	                                      std::string& normalized_provider_id,
 	                                      ProviderChatDefaults& normalized_defaults)
 	{
-		normalized_provider_id = NormalizeProviderId(provider_id);
+		normalized_provider_id = NormalizeStoredProviderId(provider_id);
 		if (normalized_provider_id.empty())
 		{
 			return false;
@@ -380,7 +431,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			defaults.memory_enabled = BoolFieldOr(fields, 4, true);
 			defaults.reasoning_effort = uam::DecodedLineFieldOr(fields, 5, "");
 			defaults.service_tier = uam::DecodedLineFieldOr(fields, 6, "");
-			defaults.memory_level = uam::memory_levels::Normalize(uam::DecodedLineFieldOr(fields, 7, ""), defaults.memory_enabled);
+			defaults.memory_level = uam::memory_levels::NormalizeSelection(uam::DecodedLineFieldOr(fields, 7, ""), defaults.memory_enabled);
 			defaults.small_model_mode = BoolFieldOr(fields, 8, false);
 			defaults.reviewer_model_id = uam::DecodedLineFieldOr(fields, 9, "");
 			defaults.feature_preference = uam::DecodedLineFieldOr(fields, 10, "uam");
@@ -477,6 +528,27 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		return uam::provider_ids::NormalizeCliProviderAlias(value);
 	}
 
+	/// <summary>A single provider choice must name an included provider at runtime. A saved choice of an excluded provider
+	/// is remembered (see AppSettings::excluded_provider_selections) and the fallback is used instead.</summary>
+	std::string SelectIncludedProvider(AppSettings& settings, std::string_view key, std::string_view value, std::string_view fallback)
+	{
+		const std::string stored = NormalizeStoredProviderId(value);
+		if (uam::provider_ids::IsRetainedExcludedProviderId(stored))
+		{
+			settings.excluded_provider_selections[std::string(key)] = {stored, std::string(fallback)};
+			return std::string(fallback);
+		}
+		return uam::strings::NonEmptyOrFallback(NormalizeProviderId(value), fallback);
+	}
+
+	/// <summary>The value to save for a provider choice: the remembered excluded provider while its fallback is still selected.</summary>
+	// ponytail: re-selecting the fallback by hand also restores the excluded choice; track an explicit edit if that matters.
+	std::string SavedProviderSelection(const AppSettings& settings, std::string_view key, const std::string& value)
+	{
+		const auto found = settings.excluded_provider_selections.find(std::string(key));
+		return found != settings.excluded_provider_selections.end() && found->second.second == value ? found->second.first : value;
+	}
+
 	void EnsureMemoryWorkerBinding(AppSettings& settings, std::string_view provider_id)
 	{
 		const std::string provider_key(provider_id);
@@ -491,7 +563,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		const std::string provider_key(provider_id);
 		if (!settings.provider_chat_defaults.contains(provider_key))
 		{
-			settings.provider_chat_defaults[provider_key] = ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, "off", settings.memory_enabled_default, "", "", settings.memory_level_default};
+			settings.provider_chat_defaults[provider_key] = ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, "off", true, "", "", uam::memory_levels::kDefault};
 			return;
 		}
 
@@ -500,10 +572,17 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 
 	void ClampSettings(AppSettings& settings)
 	{
-		settings.active_provider_id = uam::strings::NonEmptyOrFallback(NormalizeProviderId(settings.active_provider_id), provider_build_config::FirstEnabledProviderId());
-		settings.default_new_chat_provider_id = uam::strings::NonEmptyOrFallback(
-		    NormalizeProviderId(settings.default_new_chat_provider_id), settings.active_provider_id);
+		settings.voice_input_mode = uam::voice_input::NormalizeMode(settings.voice_input_mode);
+		settings.voice_input_server_base_url = uam::strings::Trim(settings.voice_input_server_base_url);
+		settings.voice_input_server_endpoint = uam::strings::Trim(settings.voice_input_server_endpoint);
+		settings.voice_input_server_model = uam::strings::Trim(settings.voice_input_server_model);
+		settings.voice_input_api_key_env = uam::strings::Trim(settings.voice_input_api_key_env);
+
+		settings.active_provider_id = SelectIncludedProvider(settings, kActiveProviderIdKey, settings.active_provider_id, provider_build_config::FirstEnabledProviderId());
+		settings.default_new_chat_provider_id = SelectIncludedProvider(settings, kDefaultNewChatProviderIdKey, settings.default_new_chat_provider_id, settings.active_provider_id);
 		uam::settings::ClampRuntimeTimeoutSettings(settings);
+		settings.git_default_base_branch = uam::strings::Trim(settings.git_default_base_branch);
+		if (settings.worktree_retention_days < 1 || settings.worktree_retention_days > 3650) settings.worktree_retention_days = 14;
 		settings.ui_theme = uam::settings::NormalizeThemeId(settings.ui_theme);
 		uam::settings::ClampWindowSettings(settings);
 		uam::settings::ClampMemorySettings(settings);
@@ -515,6 +594,12 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		uam::editor_file_associations::NormalizeEditorFileAssociations(settings.editor_file_associations);
 		if (!uam::mcp_server_config::NormalizeAndValidate(settings.mcp_servers)) settings.mcp_servers.clear();
 		uam::execution_hosts::Normalize(settings.execution_hosts);
+		std::erase_if(settings.host_scoped_settings, [&](const std::pair<const std::string, HostScopedSettings>& entry) { const ExecutionHost* host = uam::execution_hosts::Find(settings.execution_hosts, entry.first); return host == nullptr || host->transport != "ssh"; });
+		uam::provider_availability::Normalize(settings.provider_availability);
+		std::string routing_error;
+		ExecutionRoutingSettings validated_routing;
+		if (SettingsStore::ParseExecutionRoutingSettings(SettingsStore::SerializeExecutionRoutingSettings(settings.execution_routing), validated_routing, routing_error)) settings.execution_routing = std::move(validated_routing);
+		else settings.execution_routing = {};
 		uam::settings::NormalizeUamAgentPreferences(settings);
 		std::vector<ComputerUseApplicationRule> allowed;
 		for (const ComputerUseApplicationRule& rule : settings.computer_use_allowed_applications)
@@ -527,7 +612,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		settings.computer_use_allowed_applications = std::move(allowed);
 		uam::editor_file_associations::AppendMissingDefaultEditorGroups(settings);
 		NormalizeMemoryWorkerBindings(settings.memory_worker_bindings);
-		settings.permission_reviewer_provider_id = NormalizeProviderId(settings.permission_reviewer_provider_id);
+		settings.permission_reviewer_provider_id = SelectIncludedProvider(settings, kPermissionReviewerProviderIdKey, settings.permission_reviewer_provider_id, "");
 		settings.permission_reviewer_model_id = uam::strings::Trim(settings.permission_reviewer_model_id);
 		NormalizeProviderChatDefaultsByProvider(settings.provider_chat_defaults);
 
@@ -550,65 +635,234 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 
 bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSettings& settings)
 {
-	uam::paths::CreateDirectoriesNoThrow(settings_file.parent_path());
+	return Save(settings_file, settings, nullptr);
+}
 
-	AppSettings normalized = settings;
-	ClampSettings(normalized);
+bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSettings& settings,
+    SettingsMemoryWriteReceipt* memory_receipt,
+    const std::function<bool(uam::io::AtomicWriteStage)>& stage_gate)
+{
+	return SaveInternal(settings_file, settings, memory_receipt, nullptr, stage_gate);
+}
 
-	std::ostringstream lines;
-	WriteRawSetting(lines, kSettingsFormatVersionKey, "1");
-	WriteEncodedSetting(lines, kActiveProviderIdKey, normalized.active_provider_id);
-	WriteEncodedSetting(lines, kProviderExtraFlagsKey, normalized.provider_extra_flags);
-	WriteSettingValue(lines, kCliIdleTimeoutSecondsKey, normalized.cli_idle_timeout_seconds);
-	WriteSettingValue(lines, kActiveTurnInactivityTimeoutSecondsKey, normalized.active_turn_inactivity_timeout_seconds);
-	WriteSettingValue(lines, kAcpSetupInactivityTimeoutSecondsKey, normalized.acp_setup_inactivity_timeout_seconds);
-	WriteEncodedSetting(lines, kUiThemeKey, normalized.ui_theme);
-	WriteBoolSetting(lines, kShowProviderIconsInSidebarKey, normalized.show_provider_icons_in_sidebar);
-	WriteBoolSetting(lines, kShowWorktreePathInSidebarKey, normalized.show_worktree_path_in_sidebar);
-	WriteBoolSetting(lines, kConfirmDeleteChatKey, normalized.confirm_delete_chat);
-	WriteBoolSetting(lines, kConfirmDeleteFolderKey, normalized.confirm_delete_folder);
-	WriteBoolSetting(lines, kRememberLastChatKey, normalized.remember_last_chat);
-	WriteEncodedSetting(lines, kLastSelectedChatIdKey, normalized.last_selected_chat_id);
-	WriteSettingValue(lines, kUiScaleMultiplierKey, normalized.ui_scale_multiplier);
-	WriteSettingValue(lines, kSidebarWidthKey, normalized.sidebar_width);
-	WriteSettingValue(lines, kWindowWidthKey, normalized.window_width);
-	WriteSettingValue(lines, kWindowHeightKey, normalized.window_height);
-	WriteBoolSetting(lines, kWindowMaximizedKey, normalized.window_maximized);
-	WriteBoolSetting(lines, kMemoryEnabledDefaultKey, normalized.memory_enabled_default);
-	WriteEncodedSetting(lines, kMemoryLevelDefaultKey, normalized.memory_level_default);
-	WriteSettingValue(lines, kMemoryIdleDelaySecondsKey, normalized.memory_idle_delay_seconds);
-	WriteSettingValue(lines, kMemoryRecallBudgetBytesKey, normalized.memory_recall_budget_bytes);
-	WriteSettingValue(lines, kGoalMaxLoopIterationsKey, normalized.goal_max_loop_iterations);
-	WriteSettingValue(lines, kAcpTurnOutputLimitMiBKey, normalized.acp_turn_output_limit_mib);
-	WriteBoolSetting(lines, kUpdateChecksEnabledKey, normalized.update_checks_enabled);
-	WriteBoolSetting(lines, "automatic_provider_updates", normalized.automatic_provider_updates);
-	WriteEncodedSetting(lines, kUpdateLastCheckedAtKey, normalized.update_last_checked_at);
-	WriteEncodedSetting(lines, kDismissedUpdateVersionsKey, EncodeDismissedUpdateVersions(normalized.dismissed_update_versions));
-	WriteRawSetting(lines, kMemoryWorkerBindingsKey, EncodeMemoryWorkerBindings(normalized.memory_worker_bindings));
-	WriteEncodedSetting(lines, kPermissionReviewerProviderIdKey, normalized.permission_reviewer_provider_id);
-	WriteEncodedSetting(lines, kPermissionReviewerModelIdKey, normalized.permission_reviewer_model_id);
-	WriteEncodedSetting(lines, kDefaultNewChatProviderIdKey, normalized.default_new_chat_provider_id);
-	WriteRawSetting(lines, kProviderChatDefaultsKey, EncodeProviderChatDefaults(normalized.provider_chat_defaults));
-	WriteEncodedSetting(lines, kMarkdownStoreDirectoryKey, normalized.markdown_store_directory);
-	WriteEncodedSetting(lines, kFileExplorerApplicationKey, normalized.file_explorer_application);
-	WriteEncodedSetting(lines, kDefaultEditorPresetIdKey, normalized.default_editor_preset_id);
-	WriteSettingValue(lines, kEditorDefaultGroupsVersionKey, normalized.editor_default_groups_version);
-	WriteRawSetting(lines, kEditorFileAssociationsKey, EncodeEditorFileAssociations(normalized.editor_file_associations));
-	WriteEncodedSetting(lines, "central_provider_configuration", uam::central_configuration::Serialize(settings.central_provider_configuration).dump());
-	WriteEncodedSetting(lines, kMcpServersKey, uam::mcp_server_config::Serialize(normalized.mcp_servers).dump());
-	WriteEncodedSetting(lines, kExecutionHostsKey, uam::execution_hosts::Serialize(normalized.execution_hosts).dump());
-	WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
-	WriteEncodedSetting(lines, kUamAgentCycleShortcutKey, normalized.uam_agent_cycle_shortcut);
-	WriteBoolSetting(lines, kComputerUseAllowlistEnabledKey, normalized.computer_use_allowlist_enabled);
-	nlohmann::json allowed = nlohmann::json::array();
-	for (const auto& rule : normalized.computer_use_allowed_applications)
-		allowed.push_back({{"identityKind", rule.identity_kind}, {"identity", rule.identity}});
-	WriteEncodedSetting(lines, kComputerUseAllowedApplicationsKey, allowed.dump());
-	WriteRawSetting(lines, kSettingsCompleteKey, "1");
-	return uam::io::WriteTextFileWithBackup(settings_file, lines.str());
+bool SettingsStore::SaveObserved(const std::filesystem::path& settings_file, const AppSettings& settings,
+    SettingsWriteObservation& observation,
+    const std::function<bool(uam::io::AtomicWriteStage)>& stage_gate)
+{
+	observation = SettingsWriteObservation{};
+	return SaveInternal(settings_file, settings, nullptr, &observation, stage_gate);
+}
+
+bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, const AppSettings& settings,
+    SettingsMemoryWriteReceipt* memory_receipt, SettingsWriteObservation* observation,
+    const std::function<bool(uam::io::AtomicWriteStage)>& stage_gate)
+{
+	if (memory_receipt != nullptr) *memory_receipt = SettingsMemoryWriteReceipt{};
+	const auto save_settings = [&]() -> bool
+	{
+		uam::paths::CreateDirectoriesNoThrow(settings_file.parent_path());
+
+		AppSettings normalized = settings;
+		ClampSettings(normalized);
+
+		std::ostringstream lines;
+		WriteRawSetting(lines, kSettingsFormatVersionKey, "1");
+		WriteEncodedSetting(lines, kActiveProviderIdKey, SavedProviderSelection(normalized, kActiveProviderIdKey, normalized.active_provider_id));
+		WriteEncodedSetting(lines, kProviderExtraFlagsKey, normalized.provider_extra_flags);
+		WriteSettingValue(lines, kCliIdleTimeoutSecondsKey, normalized.cli_idle_timeout_seconds);
+		WriteSettingValue(lines, kActiveTurnInactivityTimeoutSecondsKey, normalized.active_turn_inactivity_timeout_seconds);
+		WriteSettingValue(lines, kStreamLoopRepeatLimitKey, normalized.stream_loop_repeat_limit);
+		WriteSettingValue(lines, kAcpSetupInactivityTimeoutSecondsKey, normalized.acp_setup_inactivity_timeout_seconds);
+		WriteEncodedSetting(lines, kUiThemeKey, normalized.ui_theme);
+		WriteBoolSetting(lines, kShowProviderIconsInSidebarKey, normalized.show_provider_icons_in_sidebar);
+		WriteBoolSetting(lines, kShowWorktreePathInSidebarKey, normalized.show_worktree_path_in_sidebar);
+		WriteBoolSetting(lines, kGitEnabledKey, normalized.git_enabled);
+		WriteBoolSetting(lines, kGitAutoWorktreeKey, normalized.git_auto_worktree);
+		WriteBoolSetting(lines, kGitSnapshotSvnKey, normalized.git_snapshot_svn);
+		WriteBoolSetting(lines, kGitSnapshotPlainFoldersKey, normalized.git_snapshot_plain_folders);
+		WriteBoolSetting(lines, kGitPullBeforeChatKey, normalized.git_pull_before_chat);
+		WriteRawSetting(lines, kGitPortMethodKey, normalized.git_port_method == GitPortMethod::Merge ? "merge" : normalized.git_port_method == GitPortMethod::Squash ? "squash" : "patch");
+		WriteEncodedSetting(lines, kGitDefaultBaseBranchKey, normalized.git_default_base_branch);
+		WriteBoolSetting(lines, kWorktreeCleanupEnabledKey, normalized.worktree_cleanup_enabled);
+		WriteSettingValue(lines, kWorktreeRetentionDaysKey, normalized.worktree_retention_days);
+		WriteBoolSetting(lines, kSvnEnabledKey, normalized.svn_enabled);
+		WriteBoolSetting(lines, kSvnUpdateBeforeChatKey, normalized.svn_update_before_chat);
+		WriteBoolSetting(lines, kConfirmDeleteChatKey, normalized.confirm_delete_chat);
+		WriteBoolSetting(lines, kConfirmDeleteFolderKey, normalized.confirm_delete_folder);
+		WriteBoolSetting(lines, kRememberLastChatKey, normalized.remember_last_chat);
+		WriteEncodedSetting(lines, kLastSelectedChatIdKey, normalized.last_selected_chat_id);
+		WriteSettingValue(lines, kUiScaleMultiplierKey, normalized.ui_scale_multiplier);
+		WriteSettingValue(lines, kSidebarWidthKey, normalized.sidebar_width);
+		WriteSettingValue(lines, kWindowWidthKey, normalized.window_width);
+		WriteSettingValue(lines, kWindowHeightKey, normalized.window_height);
+		WriteBoolSetting(lines, kWindowMaximizedKey, normalized.window_maximized);
+		WriteEncodedSetting(lines, kVoiceInputModeKey, normalized.voice_input_mode);
+		WriteEncodedSetting(lines, kVoiceInputServerBaseUrlKey, normalized.voice_input_server_base_url);
+		WriteEncodedSetting(lines, kVoiceInputServerEndpointKey, normalized.voice_input_server_endpoint);
+		WriteEncodedSetting(lines, kVoiceInputServerModelKey, normalized.voice_input_server_model);
+		WriteEncodedSetting(lines, kVoiceInputApiKeyEnvKey, normalized.voice_input_api_key_env);
+		WriteBoolSetting(lines, kMemoryEnabledDefaultKey, normalized.memory_enabled_default);
+		WriteEncodedSetting(lines, kMemoryLevelDefaultKey, normalized.memory_level_default);
+		WriteSettingValue(lines, kMemoryIdleDelaySecondsKey, normalized.memory_idle_delay_seconds);
+		WriteSettingValue(lines, kMemoryRecallBudgetBytesKey, normalized.memory_recall_budget_bytes);
+		WriteSettingValue(lines, kGoalMaxLoopIterationsKey, normalized.goal_max_loop_iterations);
+		WriteSettingValue(lines, kGoalTokenBudgetKey, normalized.goal_token_budget);
+		WriteSettingValue(lines, kAcpTurnOutputLimitMiBKey, normalized.acp_turn_output_limit_mib);
+		WriteBoolSetting(lines, kUpdateChecksEnabledKey, normalized.update_checks_enabled);
+		WriteBoolSetting(lines, "automatic_provider_updates", normalized.automatic_provider_updates);
+		WriteEncodedSetting(lines, kUpdateLastCheckedAtKey, normalized.update_last_checked_at);
+		WriteEncodedSetting(lines, kDismissedUpdateVersionsKey, EncodeDismissedUpdateVersions(normalized.dismissed_update_versions));
+		WriteRawSetting(lines, kMemoryWorkerBindingsKey, EncodeMemoryWorkerBindings(normalized.memory_worker_bindings));
+		WriteEncodedSetting(lines, kPermissionReviewerProviderIdKey, SavedProviderSelection(normalized, kPermissionReviewerProviderIdKey, normalized.permission_reviewer_provider_id));
+		WriteEncodedSetting(lines, kPermissionReviewerModelIdKey, normalized.permission_reviewer_model_id);
+		WriteEncodedSetting(lines, kDefaultNewChatProviderIdKey, SavedProviderSelection(normalized, kDefaultNewChatProviderIdKey, normalized.default_new_chat_provider_id));
+		WriteRawSetting(lines, kProviderChatDefaultsKey, EncodeProviderChatDefaults(normalized.provider_chat_defaults));
+		nlohmann::json host_settings = nlohmann::json::object();
+		for (const std::pair<const std::string, HostScopedSettings>& entry : normalized.host_scoped_settings)
+		{
+			const ExecutionHost* host = uam::execution_hosts::Find(normalized.execution_hosts, entry.first);
+			if (host == nullptr || host->transport != "ssh") continue;
+			nlohmann::json scoped = {{"defaults", EncodeProviderChatDefaults(entry.second.provider_chat_defaults)}};
+			if (entry.second.default_new_chat_provider_id) scoped["defaultProviderId"] = *entry.second.default_new_chat_provider_id;
+			else if (const std::string remembered = SavedProviderSelection(normalized, "host:" + entry.first, ""); !remembered.empty()) scoped["defaultProviderId"] = remembered;
+			if (entry.second.mcp_servers) scoped["servers"] = uam::mcp_server_config::Serialize(*entry.second.mcp_servers);
+			host_settings[entry.first] = std::move(scoped);
+		}
+		WriteEncodedSetting(lines, "host_scoped_settings", host_settings.dump());
+		WriteEncodedSetting(lines, kMarkdownStoreDirectoryKey, normalized.markdown_store_directory);
+		WriteEncodedSetting(lines, kFileExplorerApplicationKey, normalized.file_explorer_application);
+		WriteEncodedSetting(lines, kWindowsPowerShellKey, normalized.windows_powershell);
+		WriteEncodedSetting(lines, kDefaultEditorPresetIdKey, normalized.default_editor_preset_id);
+		WriteSettingValue(lines, kEditorDefaultGroupsVersionKey, normalized.editor_default_groups_version);
+		WriteRawSetting(lines, kEditorFileAssociationsKey, EncodeEditorFileAssociations(normalized.editor_file_associations));
+		WriteEncodedSetting(lines, "central_provider_configuration", uam::central_configuration::Serialize(settings.central_provider_configuration).dump());
+		WriteEncodedSetting(lines, kMcpServersKey, uam::mcp_server_config::Serialize(normalized.mcp_servers).dump());
+		WriteEncodedSetting(lines, kExecutionHostsKey, uam::execution_hosts::Serialize(normalized.execution_hosts).dump());
+		WriteEncodedSetting(lines, kProviderAvailabilityKey, uam::provider_availability::Serialize(normalized.provider_availability).dump());
+		WriteEncodedSetting(lines, kExecutionRoutingKey, SettingsStore::SerializeExecutionRoutingSettings(normalized.execution_routing).dump());
+		WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
+		WriteEncodedSetting(lines, kNativeImportExcludedTitlePrefixesKey, EncodeFavoriteUamAgentIds(normalized.native_import_excluded_title_prefixes));
+		WriteEncodedSetting(lines, kNativeImportExcludedDirectoriesKey, EncodeFavoriteUamAgentIds(normalized.native_import_excluded_directories));
+		WriteEncodedSetting(lines, kUamAgentCycleShortcutKey, normalized.uam_agent_cycle_shortcut);
+		WriteBoolSetting(lines, kComputerUseGloballyEnabledKey, normalized.computer_use_globally_enabled);
+		WriteBoolSetting(lines, kComputerUseAllowlistEnabledKey, normalized.computer_use_allowlist_enabled);
+		nlohmann::json allowed = nlohmann::json::array();
+		for (const auto& rule : normalized.computer_use_allowed_applications)
+			allowed.push_back({{"identityKind", rule.identity_kind}, {"identity", rule.identity}});
+		WriteEncodedSetting(lines, kComputerUseAllowedApplicationsKey, allowed.dump());
+		WriteRawSetting(lines, kSettingsCompleteKey, "1");
+		if (memory_receipt == nullptr)
+		{
+			if (observation == nullptr)
+				return uam::io::WriteTextFileWithBackup(settings_file, lines.str());
+			// Same detailed backup/sync operation as WriteTextFileWithBackup. Observe
+			// only after a supplied gate permits the stage, including BeforeReplace.
+			const auto observe_stage = [&](uam::io::AtomicWriteStage stage)
+			{
+				if (stage_gate && !stage_gate(stage)) return false;
+				if (stage == uam::io::AtomicWriteStage::BeforeReplace)
+					observation->before_replace_permitted = true;
+				return true;
+			};
+			const uam::io::AtomicWriteResult result = uam::io::AtomicWriteFileDetailed(
+			    settings_file, lines.str(), observe_stage, true);
+			observation->atomic_write_returned = true;
+			observation->write_success = result.success;
+			observation->primary_committed = result.primary_committed;
+			observation->backup_degraded = result.backup_degraded;
+			observation->outcome = result.success && result.primary_committed
+			    ? SettingsMemoryWriteOutcome::Committed
+			    : observation->before_replace_permitted
+			    ? SettingsMemoryWriteOutcome::UnknownAfterReplacePermission
+			    : SettingsMemoryWriteOutcome::RejectedBeforeReplace;
+			return result.success;
+		}
+
+		const std::string content = lines.str();
+		memory_receipt->canonical = SettingsMemoryCanonicalValues{
+		    normalized.memory_enabled_default,
+		    normalized.memory_level_default,
+		    normalized.memory_idle_delay_seconds,
+		    normalized.memory_recall_budget_bytes,
+		    normalized.goal_max_loop_iterations,
+		    normalized.goal_token_budget,
+		    normalized.acp_setup_inactivity_timeout_seconds,
+		    normalized.acp_turn_output_limit_mib,
+		    normalized.memory_worker_bindings,
+		    normalized.permission_reviewer_provider_id,
+		    normalized.permission_reviewer_model_id,
+		    normalized.active_turn_inactivity_timeout_seconds,
+		    normalized.stream_loop_repeat_limit};
+		memory_receipt->canonical_values_ready = true;
+		const auto observe_stage = [&](uam::io::AtomicWriteStage stage)
+		{
+			// Reaching the hook is not permission: a rejecting or throwing gate comes first.
+			if (stage_gate && !stage_gate(stage)) return false;
+			if (stage == uam::io::AtomicWriteStage::BeforeReplace)
+			{
+				memory_receipt->before_replace_permitted = true;
+			}
+			return true;
+		};
+		const uam::io::AtomicWriteResult result = uam::io::AtomicWriteFileDetailed(
+		    settings_file, content, observe_stage, true);
+		memory_receipt->atomic_write_returned = true;
+		memory_receipt->write_success = result.success;
+		memory_receipt->primary_committed = result.primary_committed;
+		memory_receipt->backup_degraded = result.backup_degraded;
+		memory_receipt->outcome = result.success && result.primary_committed
+		    ? SettingsMemoryWriteOutcome::Committed
+		    : memory_receipt->before_replace_permitted
+		    ? SettingsMemoryWriteOutcome::UnknownAfterReplacePermission
+		    : SettingsMemoryWriteOutcome::RejectedBeforeReplace;
+		return result.success;
+	};
+	if (observation != nullptr)
+	{
+		try
+		{
+			return save_settings();
+		}
+		catch (...)
+		{
+			observation->exception_observed = true;
+			observation->outcome = observation->before_replace_permitted
+			    ? SettingsMemoryWriteOutcome::UnknownAfterReplacePermission
+			    : SettingsMemoryWriteOutcome::RejectedBeforeReplace;
+			throw;
+		}
+	}
+	// Preserve legacy bool callers, including exception propagation and generic I/O behavior.
+	if (memory_receipt == nullptr) return save_settings();
+	try
+	{
+		return save_settings();
+	}
+	catch (...)
+	{
+		memory_receipt->exception_observed = true;
+		if (memory_receipt->outcome != SettingsMemoryWriteOutcome::Committed)
+		{
+			memory_receipt->outcome = memory_receipt->before_replace_permitted
+			    ? SettingsMemoryWriteOutcome::UnknownAfterReplacePermission
+			    : SettingsMemoryWriteOutcome::RejectedBeforeReplace;
+		}
+		return false;
+	}
 }
 
 SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings& settings)
+{
+	return LoadInternal(settings_file, settings, true);
+}
+
+SettingsLoadResult SettingsStore::LoadPrimary(const std::filesystem::path& settings_file, AppSettings& settings)
+{
+	return LoadInternal(settings_file, settings, false);
+}
+
+SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& settings_file,
+    AppSettings& settings, bool allow_backup)
 {
 	SettingsLoadResult result;
 	bool legacy_yolo = false;
@@ -618,6 +872,13 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 	const bool primary_valid = uam::io::TryReadTextFile(settings_file, text) && IsValidSettingsText(text);
 	if (!primary_valid)
 	{
+		if (!allow_backup)
+		{
+			result.unrecovered_error = primary_exists;
+			result.warning = primary_exists ? "The primary settings file is invalid or unreadable. No backup was loaded."
+			                                : "The primary settings file is missing. No backup was loaded.";
+			return result;
+		}
 		const std::filesystem::path backup = uam::io::MakeBackupPath(settings_file);
 		const bool backup_exists = uam::paths::PathExistsNoThrow(backup);
 		std::string backup_text;
@@ -639,6 +900,7 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		}
 	}
 	result.loaded = true;
+	settings.excluded_provider_selections.clear(); // Only this file's choices may be remembered.
 
 	std::istringstream lines(text);
 	std::string line;
@@ -678,6 +940,10 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		{
 			settings.cli_idle_timeout_seconds = uam::parse::IntOr(value, settings.cli_idle_timeout_seconds);
 		}
+		else if (key == kStreamLoopRepeatLimitKey)
+		{
+			settings.stream_loop_repeat_limit = uam::parse::IntOr(value, settings.stream_loop_repeat_limit);
+		}
 		else if (key == kActiveTurnInactivityTimeoutSecondsKey)
 		{
 			settings.active_turn_inactivity_timeout_seconds = uam::parse::IntOr(value, settings.active_turn_inactivity_timeout_seconds);
@@ -697,6 +963,50 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kShowWorktreePathInSidebarKey)
 		{
 			settings.show_worktree_path_in_sidebar = uam::parse::BoolOr(value, settings.show_worktree_path_in_sidebar);
+		}
+		else if (key == kGitEnabledKey)
+		{
+			settings.git_enabled = uam::parse::BoolOr(value, settings.git_enabled);
+		}
+		else if (key == kGitAutoWorktreeKey)
+		{
+			settings.git_auto_worktree = uam::parse::BoolOr(value, settings.git_auto_worktree);
+		}
+		else if (key == kGitSnapshotSvnKey)
+		{
+			settings.git_snapshot_svn = uam::parse::BoolOr(value, settings.git_snapshot_svn);
+		}
+		else if (key == kGitSnapshotPlainFoldersKey)
+		{
+			settings.git_snapshot_plain_folders = uam::parse::BoolOr(value, settings.git_snapshot_plain_folders);
+		}
+		else if (key == kGitPortMethodKey)
+		{
+			settings.git_port_method = value == "merge" ? GitPortMethod::Merge : value == "squash" ? GitPortMethod::Squash : GitPortMethod::Patch;
+		}
+		else if (key == kGitPullBeforeChatKey)
+		{
+			settings.git_pull_before_chat = uam::parse::BoolOr(value, settings.git_pull_before_chat);
+		}
+		else if (key == kGitDefaultBaseBranchKey)
+		{
+			settings.git_default_base_branch = uam::DecodeLineValue(value);
+		}
+		else if (key == kWorktreeCleanupEnabledKey)
+		{
+			settings.worktree_cleanup_enabled = uam::parse::BoolOr(value, settings.worktree_cleanup_enabled);
+		}
+		else if (key == kWorktreeRetentionDaysKey)
+		{
+			settings.worktree_retention_days = uam::parse::IntOr(value, settings.worktree_retention_days);
+		}
+		else if (key == kSvnEnabledKey)
+		{
+			settings.svn_enabled = uam::parse::BoolOr(value, settings.svn_enabled);
+		}
+		else if (key == kSvnUpdateBeforeChatKey)
+		{
+			settings.svn_update_before_chat = uam::parse::BoolOr(value, settings.svn_update_before_chat);
 		}
 		else if (key == kConfirmDeleteChatKey)
 		{
@@ -734,6 +1044,26 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		{
 			settings.window_maximized = uam::parse::BoolOr(value, settings.window_maximized);
 		}
+		else if (key == kVoiceInputModeKey)
+		{
+			settings.voice_input_mode = uam::DecodeLineValue(value);
+		}
+		else if (key == kVoiceInputServerBaseUrlKey)
+		{
+			settings.voice_input_server_base_url = uam::DecodeLineValue(value);
+		}
+		else if (key == kVoiceInputServerEndpointKey)
+		{
+			settings.voice_input_server_endpoint = uam::DecodeLineValue(value);
+		}
+		else if (key == kVoiceInputServerModelKey)
+		{
+			settings.voice_input_server_model = uam::DecodeLineValue(value);
+		}
+		else if (key == kVoiceInputApiKeyEnvKey)
+		{
+			settings.voice_input_api_key_env = uam::DecodeLineValue(value);
+		}
 		else if (key == kMemoryEnabledDefaultKey)
 		{
 			settings.memory_enabled_default = uam::parse::BoolOr(value, settings.memory_enabled_default);
@@ -753,6 +1083,10 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kGoalMaxLoopIterationsKey)
 		{
 			settings.goal_max_loop_iterations = uam::parse::IntOr(value, settings.goal_max_loop_iterations);
+		}
+		else if (key == kGoalTokenBudgetKey)
+		{
+			settings.goal_token_budget = uam::parse::IntOr(value, settings.goal_token_budget);
 		}
 		else if (key == kAcpTurnOutputLimitMiBKey)
 		{
@@ -802,6 +1136,10 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		{
 			settings.file_explorer_application = decoded_value;
 		}
+		else if (key == kWindowsPowerShellKey)
+		{
+			if (uam::powershell::IsPreference(decoded_value)) settings.windows_powershell = decoded_value;
+		}
 		else if (key == kDefaultEditorPresetIdKey)
 		{
 			settings.default_editor_preset_id = decoded_value;
@@ -819,23 +1157,70 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 			std::string error;
 			(void)uam::central_configuration::Parse(nlohmann::json::parse(decoded_value, nullptr, false), settings.central_provider_configuration, error);
 		}
+		else if (key == "host_scoped_settings")
+		{
+			const nlohmann::json scoped = nlohmann::json::parse(decoded_value, nullptr, false);
+			if (scoped.is_object() && scoped.size() <= 256)
+			{
+				for (nlohmann::json::const_iterator entry = scoped.begin(); entry != scoped.end(); ++entry)
+				{
+					if (!entry.value().is_object()) continue;
+					HostScopedSettings next;
+					if (entry.value().contains("defaults") && entry.value()["defaults"].is_string()) DecodeProviderChatDefaults(entry.value()["defaults"].get<std::string>(), next.provider_chat_defaults);
+					if (entry.value().contains("defaultProviderId") && entry.value()["defaultProviderId"].is_string())
+					{
+						// A host default of an excluded provider is remembered and the host falls back to the global default.
+						const std::string saved = entry.value()["defaultProviderId"].get<std::string>();
+						if (uam::provider_ids::IsRetainedExcludedProviderId(NormalizeStoredProviderId(saved))) (void)SelectIncludedProvider(settings, "host:" + entry.key(), saved, "");
+						else next.default_new_chat_provider_id = NormalizeProviderId(saved);
+					}
+					if (entry.value().contains("servers") && entry.value()["servers"].is_array())
+					{
+						std::vector<McpServerConfiguration> servers = uam::mcp_server_config::Parse(entry.value()["servers"]);
+						if (uam::mcp_server_config::NormalizeAndValidate(servers)) next.mcp_servers = std::move(servers);
+					}
+					settings.host_scoped_settings[entry.key()] = std::move(next);
+				}
+			}
+		}
 		else if (key == kMcpServersKey)
 		{
 			const nlohmann::json parsed = nlohmann::json::parse(decoded_value, nullptr, false);
 			settings.mcp_servers = uam::mcp_server_config::Parse(parsed);
+		}
+		else if (key == kProviderAvailabilityKey)
+		{
+			(void)uam::provider_availability::Parse(nlohmann::json::parse(decoded_value, nullptr, false), settings.provider_availability);
 		}
 		else if (key == kExecutionHostsKey)
 		{
 			const nlohmann::json parsed = nlohmann::json::parse(decoded_value, nullptr, false);
 			settings.execution_hosts = uam::execution_hosts::Parse(parsed);
 		}
+		else if (key == kExecutionRoutingKey)
+		{
+			std::string error;
+			(void)SettingsStore::ParseExecutionRoutingSettings(nlohmann::json::parse(decoded_value, nullptr, false), settings.execution_routing, error);
+		}
 		else if (key == kFavoriteUamAgentIdsKey)
 		{
 			DecodeFavoriteUamAgentIds(decoded_value, settings.favorite_uam_agent_ids);
 		}
+		else if (key == kNativeImportExcludedTitlePrefixesKey)
+		{
+			DecodeFavoriteUamAgentIds(decoded_value, settings.native_import_excluded_title_prefixes);
+		}
+		else if (key == kNativeImportExcludedDirectoriesKey)
+		{
+			DecodeFavoriteUamAgentIds(decoded_value, settings.native_import_excluded_directories);
+		}
 		else if (key == kUamAgentCycleShortcutKey)
 		{
 			settings.uam_agent_cycle_shortcut = decoded_value;
+		}
+		else if (key == kComputerUseGloballyEnabledKey)
+		{
+			settings.computer_use_globally_enabled = uam::parse::BoolOr(value, false);
 		}
 		else if (key == kComputerUseAllowlistEnabledKey)
 		{
@@ -866,4 +1251,84 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		}
 	}
 	return result;
+}
+
+nlohmann::json SettingsStore::SerializeExecutionRoutingSettings(const ExecutionRoutingSettings& settings)
+{
+	nlohmann::json hosts = nlohmann::json::array();
+	for (const ExecutionRoutingHostPolicy& host : settings.hosts)
+	{
+		nlohmann::json providers = nlohmann::json::array();
+		for (const ExecutionRoutingProviderConfirmation& provider : host.provider_confirmations)
+			providers.push_back({{"providerId", provider.provider_id}, {"connectionIdentity", provider.connection_identity},
+			    {"providerConfigurationIdentity", provider.provider_configuration_identity}});
+		nlohmann::json mappings = nlohmann::json::array();
+		for (const ExecutionRoutingWorkspaceMapping& mapping : host.workspace_mappings)
+			mappings.push_back({{"sourceFolderId", mapping.source_folder_id}, {"sourceDirectory", mapping.source_directory},
+			    {"destinationFolderId", mapping.destination_folder_id}});
+		hosts.push_back({{"hostId", host.host_id}, {"enabled", host.enabled}, {"maxActiveTurns", host.max_active_turns},
+		    {"providers", providers}, {"workspaceMappings", mappings}});
+	}
+	return {{"enabled", settings.enabled}, {"hosts", hosts}, {"repositoryMatching", true}};
+}
+
+bool SettingsStore::ParseExecutionRoutingSettings(const nlohmann::json& value, ExecutionRoutingSettings& settings, std::string& error)
+{
+	ExecutionRoutingSettings parsed;
+	try
+	{
+		if (!value.is_object() || !value.contains("enabled") || !value["enabled"].is_boolean() ||
+		    !value.contains("hosts") || !value["hosts"].is_array() || value["hosts"].size() > 128)
+			throw std::runtime_error("Routing requires enabled and a bounded host list.");
+		parsed.enabled = value["enabled"].get<bool>();
+		std::unordered_set<std::string> host_ids;
+		for (const nlohmann::json& entry : value["hosts"])
+		{
+			ExecutionRoutingHostPolicy host;
+			host.host_id = entry.at("hostId").get<std::string>();
+			if (!uam::execution_hosts::IsPortableId(host.host_id) || host.host_id == "local" || !host_ids.insert(host.host_id).second)
+				throw std::runtime_error("Routing host IDs must be unique remote hosts.");
+			if (!entry.at("enabled").is_boolean() || !entry.at("maxActiveTurns").is_number_integer())
+				throw std::runtime_error("Routing host slots must be an integer.");
+			host.enabled = entry["enabled"].get<bool>();
+			const std::int64_t slots = entry["maxActiveTurns"].get<std::int64_t>();
+			if (slots < 0 || slots > 1024 || (host.enabled && slots == 0)) throw std::runtime_error("Enabled routing hosts need 1 to 1024 slots.");
+			host.max_active_turns = static_cast<std::size_t>(slots);
+			const nlohmann::json& providers = entry.at("providers");
+			const nlohmann::json& mappings = entry.at("workspaceMappings");
+			if (!providers.is_array() || !mappings.is_array() || providers.size() > 64 || mappings.size() > 256)
+				throw std::runtime_error("Routing providers and workspace mappings must be bounded lists.");
+			std::unordered_set<std::string> provider_ids;
+			for (const nlohmann::json& confirmation : providers)
+			{
+				ExecutionRoutingProviderConfirmation provider{confirmation.at("providerId").get<std::string>(),
+				    confirmation.at("connectionIdentity").get<std::string>(), confirmation.at("providerConfigurationIdentity").get<std::string>()};
+				if (!uam::execution_hosts::IsPortableId(provider.provider_id) || !provider_ids.insert(provider.provider_id).second ||
+				    provider.connection_identity.empty() || provider.connection_identity.size() > 128 ||
+				    provider.provider_configuration_identity.empty() || provider.provider_configuration_identity.size() > 128)
+					throw std::runtime_error("Routing confirmations must identify a unique provider and current configuration.");
+				host.provider_confirmations.push_back(std::move(provider));
+			}
+			std::unordered_set<std::string> workspace_ids;
+			for (const nlohmann::json& entry_mapping : mappings)
+			{
+				ExecutionRoutingWorkspaceMapping mapping{entry_mapping.at("sourceFolderId").get<std::string>(),
+				    entry_mapping.at("sourceDirectory").get<std::string>(), entry_mapping.at("destinationFolderId").get<std::string>()};
+				if (mapping.source_folder_id.empty() || mapping.source_folder_id.size() > 256 || (!entry_mapping.value("useAutomaticMatch", false) && mapping.destination_folder_id.empty()) ||
+				    mapping.destination_folder_id.size() > 256 || mapping.source_directory.empty() || mapping.source_directory.size() > 4096 ||
+				    !workspace_ids.insert(mapping.source_folder_id + "\n" + mapping.source_directory).second)
+					throw std::runtime_error("Routing workspace mappings must be exact and unique.");
+				if (!entry_mapping.value("useAutomaticMatch", false)) host.workspace_mappings.push_back(std::move(mapping));
+			}
+			parsed.hosts.push_back(std::move(host));
+		}
+	}
+	catch (const std::exception& exception)
+	{
+		error = exception.what();
+		return false;
+	}
+	settings = std::move(parsed);
+	error.clear();
+	return true;
 }

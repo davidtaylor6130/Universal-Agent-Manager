@@ -1,6 +1,7 @@
 #include "app/vcs_commit_service.h"
 
 #include "app/provider_resolution_service.h"
+#include "app/chat_domain_service.h"
 #include "app/provider_worker_command.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
@@ -8,6 +9,7 @@
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/provider_text_worker.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
@@ -20,26 +22,48 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <mutex>
+#include <thread>
 #include <cctype>
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
 #include <set>
 #include <sstream>
-#include <thread>
 #include <utility>
 
 namespace uam
 {
+	ChatSession CaptureVcsChatContext(const ChatSession& chat)
+	{
+		ChatSession result;
+		result.id = chat.id;
+		result.provider_id = chat.provider_id;
+		result.execution_host_id = chat.execution_host_id;
+		result.folder_id = chat.folder_id;
+		result.imported_read_only = chat.imported_read_only;
+		result.workspace_directory = chat.workspace_directory;
+		result.workspace_isolation_kind = chat.workspace_isolation_kind;
+		result.workspace_source_directory = chat.workspace_source_directory;
+		result.workspace_worktree_directory = chat.workspace_worktree_directory;
+		result.svn_update_pending = chat.svn_update_pending;
+		result.workspace_branch_name = chat.workspace_branch_name;
+		result.git_base_branch_override = chat.git_base_branch_override;
+		result.routing_mode = chat.routing_mode;
+		result.messages_loaded = false;
+		return result;
+	}
+
 	namespace
 	{
 		constexpr int kDefaultCommandTimeoutMs = 120000;
 		constexpr std::size_t kGitPorcelainStatusCodeWidth = 2;
 		constexpr std::size_t kGitPorcelainPathOffset = 3;
 		constexpr std::size_t kSvnStatusCodeWidth = 7;
-		constexpr std::size_t kSvnStatusPathOffset = 7;
+		constexpr std::size_t kSvnStatusPathOffset = 8;
 		constexpr std::string_view kRemoteVcsUnavailable =
 		    "The remote VCS helper is unavailable.";
 
@@ -83,6 +107,7 @@ namespace uam
 		{
 		  public:
 			RemoteVcsContext(const AppState& app, const ChatSession& chat)
+			    : m_workspace(uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)))
 			{
 				m_host = uam::execution_hosts::Find(app.settings.execution_hosts,
 				                                      chat.execution_host_id);
@@ -91,19 +116,24 @@ namespace uam
 					m_error = "The remote execution host no longer exists.";
 					return;
 				}
-				if (m_host->runner_status != "ready")
+				if (!uam::execution_hosts::IsAbsoluteRemotePath(m_host->platform, m_workspace))
+				{
+					m_error = "The remote workspace directory is unavailable.";
+					return;
+				}
+				if (!uam::remote::CanAttemptRunnerConnection(*m_host))
 				{
 					m_error = "The selected remote runner is not ready. Recheck it in Settings.";
 					return;
 				}
 				m_client = std::make_unique<uam::remote::RunnerClient>(
 				    PlatformServicesFactory::Instance().process_service,
-				    uam::remote::SshBridgeArgv(m_host->ssh_alias, m_host->platform,
-				                               m_host->runner_version,
-				                               m_host->runner_directory,
-				                               m_host->runner_protocol_version),
-				    m_host->runner_version, m_host->runner_protocol_version);
+				    *m_host);
 			}
+
+			const std::string& WorkspaceDirectory() const { return m_workspace; }
+
+			std::string_view Platform() const { return m_host ? m_host->platform : std::string_view{}; }
 
 			bool Ready(std::string* error_out = nullptr)
 			{
@@ -118,10 +148,10 @@ namespace uam
 			                           const std::vector<std::string>& argv,
 			                           const std::vector<std::pair<std::string, std::string>>& environment = {},
 			                           std::string_view standard_input = {},
-			                           int timeout_ms = kDefaultCommandTimeoutMs)
+			                           int timeout_ms = kDefaultCommandTimeoutMs, std::stop_token cancellation = {})
 			{
 				ProcessExecutionResult result;
-				if (argv.empty() || !Ready(&result.error)) return result;
+				if (cancellation.stop_requested() || argv.empty() || !Ready(&result.error)) return result;
 				const std::string session_id = "vcs-" +
 				    PlatformServicesFactory::Instance().process_service.GenerateUuid();
 				if (!m_client->StartProcess(session_id, std::filesystem::path(working_directory),
@@ -142,7 +172,7 @@ namespace uam
 
 				const auto deadline = std::chrono::steady_clock::now() +
 				                      std::chrono::milliseconds(timeout_ms);
-				while (std::chrono::steady_clock::now() < deadline)
+				while (!cancellation.stop_requested() && std::chrono::steady_clock::now() < deadline)
 				{
 					uam::remote::ProcessPollResult polled;
 					if (!m_client->PollProcess(session_id, polled, &result.error)) break;
@@ -205,6 +235,7 @@ namespace uam
 			}
 
 		  private:
+			std::string m_workspace;
 			const ExecutionHost* m_host = nullptr;
 			std::unique_ptr<uam::remote::RunnerClient> m_client;
 			std::string m_error;
@@ -237,14 +268,51 @@ namespace uam
 			return BuildGitCommandInDirectory(cwd, "--literal-pathspecs " + args);
 		}
 
-		std::string BuildSvnCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
+		constexpr std::string_view kSvnClientMissing =
+		    "The svn command-line client was not found. Install Subversion and make sure svn is on PATH.";
+
+		/// UTF-8 path encoding and parseable messages regardless of the GUI launch locale; Windows svn ignores LC_ALL.
+		std::vector<std::pair<std::string, std::string>> SvnEnvironment(std::string_view platform)
 		{
-			return "svn " + args + " " + uam::shell::EscapeArg(uam::paths::Utf8PathString(cwd));
+			if (platform == "windows" || platform == "Windows") return {};
+#if defined(__APPLE__)
+			if (platform.empty()) return {{"LC_ALL", "en_US.UTF-8"}};
+#elif defined(_WIN32)
+			if (platform.empty()) return {};
+#endif
+			return {{"LC_ALL", "C.UTF-8"}};
 		}
 
-		std::string BuildSvnPathArgument(const std::filesystem::path& cwd, const std::string& path)
+		/// Runs `svn args...` in the captured workspace, locally or through the remote runner. Targets are workspace-relative.
+		using SvnRunner = std::function<ProcessExecutionResult(const std::vector<std::string>&)>;
+
+		SvnRunner LocalSvnRunner(const std::filesystem::path& workspace)
 		{
-			return uam::shell::EscapeArg(uam::paths::NormalizedNativePathString(cwd / uam::paths::PathFromUtf8(path)));
+			return [workspace](const std::vector<std::string>& args) { return RunSvn(workspace, args); };
+		}
+
+		SvnRunner RemoteSvnRunner(RemoteVcsContext& context, const std::string& cwd)
+		{
+			return [&context, cwd](const std::vector<std::string>& args)
+			{
+				std::vector<std::string> argv = {"svn"};
+				argv.insert(argv.end(), args.begin(), args.end());
+				return context.Run(cwd, argv, SvnEnvironment(context.Platform()));
+			};
+		}
+
+		bool SvnOutput(const SvnRunner& svn, const std::vector<std::string>& args, std::string* output_out, std::string& error, bool* output_limited = nullptr)
+		{
+			const ProcessExecutionResult result = svn(args);
+			if (output_limited != nullptr)
+				*output_limited = result.output_truncated || result.error.find(uam::platform::kCapturedCommandOutputLimitError) != std::string::npos;
+			if (!CommandSucceeded(result))
+			{
+				error = CommandOutputOrError(result);
+				return false;
+			}
+			if (output_out != nullptr) *output_out = result.output;
+			return true;
 		}
 
 		enum class CommandOutputMode
@@ -328,24 +396,6 @@ namespace uam
 			return uam::paths::PathExistsNoThrow(workspace / ".git");
 		}
 
-		bool HasSvnDirectory(const std::filesystem::path& workspace)
-		{
-			if (uam::paths::PathExistsNoThrow(workspace / ".svn"))
-			{
-				return true;
-			}
-			std::filesystem::path current = workspace;
-			while (!current.empty() && current.has_parent_path() && current != current.parent_path())
-			{
-				if (uam::paths::PathExistsNoThrow(current / ".svn"))
-				{
-					return true;
-				}
-				current = current.parent_path();
-			}
-			return false;
-		}
-
 		bool GitAvailable(const std::filesystem::path& workspace, std::string* root_out = nullptr, bool validate = false)
 		{
 			std::string root;
@@ -362,8 +412,9 @@ namespace uam
 
 		bool SvnAvailable(const std::filesystem::path& workspace, bool validate = false)
 		{
-			std::string ignored;
-			return (!validate && HasSvnDirectory(workspace)) || OutputCommand(BuildSvnCommandInDirectory(workspace, "info"), &ignored);
+			// A nearer .git owns nested repositories; svn info would otherwise find the outer checkout.
+			if (!uam::paths::FindNearestVcsRoot(workspace).svn) return false;
+			return !validate || CommandSucceeded(RunSvn(workspace, {"info", "--non-interactive", "--", "."}));
 		}
 
 		std::vector<VcsChangedFile> ParseGitStatus(const std::string& status)
@@ -400,6 +451,113 @@ namespace uam
 			return (value.size() == 40 || value.size() == 64) && std::ranges::all_of(value, [](unsigned char ch) { return std::isxdigit(ch) != 0; });
 		}
 
+		std::filesystem::path ChatBaselinePath(const AppState& app, const ChatSession& chat)
+		{
+			return app.data_root / "repository-review" / (uam::hashing::Hex64(uam::hashing::Fnv1a64(chat.id)) + ".json");
+		}
+
+		std::string ChatBaselineHostIdentity(const AppState& app, const ChatSession& chat)
+		{
+			if (uam::paths::IsControllerLocalWorkspace(chat)) return "local";
+			const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+			if (!host) return "missing:" + chat.execution_host_id;
+			return nlohmann::json::array({host->id, host->transport, host->ssh_alias, host->platform, host->runner_directory}).dump();
+		}
+
+		class GitReviewIndex
+		{
+		  public:
+			explicit GitReviewIndex(const std::filesystem::path& root, std::stop_token cancellation = {}, RemoteVcsContext* remote = nullptr) : m_root(root), m_cancellation(cancellation), m_remote(remote)
+			{
+				if (m_remote)
+				{
+					const ProcessExecutionResult directory = Run({"rev-parse", "--absolute-git-dir"}, false);
+					if (CommandSucceeded(directory)) m_remoteIndex = uam::execution_hosts::JoinRemotePath(m_remote->Platform(), uam::strings::Trim(directory.output), "uam-review-" + PlatformServicesFactory::Instance().process_service.GenerateUuid());
+					return;
+				}
+				const std::optional<std::filesystem::path> temp = uam::paths::TempDirectoryPathNoThrow();
+				if (temp) m_index = *temp / ("uam-review-" + PlatformServicesFactory::Instance().process_service.GenerateUuid());
+			}
+			~GitReviewIndex()
+			{
+				if (m_remote)
+				{
+					if (m_remoteIndex.empty()) return;
+					(void)m_remote->RemoveFile(m_remoteIndex);
+					(void)m_remote->RemoveFile(m_remoteIndex + ".lock");
+					return;
+				}
+				if (m_index.empty()) return;
+				std::error_code error;
+				std::filesystem::remove(m_index, error);
+				std::filesystem::remove(m_index.string() + ".lock", error);
+			}
+			ProcessExecutionResult SeedSourceIndex() const
+			{
+				ProcessExecutionResult result = Run({"rev-parse", "--git-path", "index"}, false);
+				if (!CommandSucceeded(result)) return result;
+				const std::string source_path = uam::strings::Trim(result.output);
+				if (m_remote)
+				{
+					const std::string absolute = uam::execution_hosts::IsAbsoluteRemotePath(m_remote->Platform(), source_path) ? source_path : uam::execution_hosts::JoinRemotePath(m_remote->Platform(), uam::paths::Utf8PathString(m_root), source_path);
+					if (m_remote->CopyFile(absolute, m_remoteIndex, false, &result.error)) return Run({"rev-parse", "--git-dir"});
+					const ProcessExecutionResult entries = Run({"ls-files", "--stage"}, false);
+					if (CommandSucceeded(entries) && entries.output.empty()) return Run({"read-tree", "--empty"});
+					result.ok = false;
+					result.exit_code = 1;
+					return result;
+				}
+				const std::filesystem::path source = uam::paths::PathFromUtf8(source_path);
+				const std::filesystem::path absolute = source.is_absolute() ? source : m_root / source;
+				if (!uam::paths::PathExistsNoThrow(absolute)) return Run({"read-tree", "--empty"});
+				std::error_code error;
+				std::filesystem::copy_file(absolute, m_index, std::filesystem::copy_options::none, error);
+				result.ok = !error;
+				result.exit_code = error ? 1 : 0;
+				if (error) result.error = "Failed to copy the repository index for review: " + error.message();
+				return result;
+			}
+			ProcessExecutionResult Run(std::vector<std::string> args, bool use_index = true) const
+			{
+				if (use_index && (m_remote ? m_remoteIndex.empty() : m_index.empty()))
+				{
+					ProcessExecutionResult result;
+					result.error = "The temporary directory is unavailable for repository review.";
+					return result;
+				}
+				ProviderWorkerInvocation invocation;
+				invocation.direct_process = true;
+				invocation.argv = {"git", "-C", uam::paths::Utf8PathString(m_root)};
+				invocation.argv.insert(invocation.argv.end(), args.begin(), args.end());
+				if (use_index) invocation.environment_overrides = {{"GIT_INDEX_FILE", m_remote ? m_remoteIndex : uam::paths::Utf8PathString(m_index)}};
+				if (m_remote) return m_remote->Run(uam::paths::Utf8PathString(m_root), invocation.argv, invocation.environment_overrides, {}, kDefaultCommandTimeoutMs, m_cancellation);
+				return ExecuteProviderWorkerInvocation(invocation, m_root, kDefaultCommandTimeoutMs, m_cancellation);
+			}
+		  private:
+			std::filesystem::path m_root;
+			std::filesystem::path m_index;
+			std::string m_remoteIndex;
+			std::stop_token m_cancellation;
+			RemoteVcsContext* m_remote = nullptr;
+		};
+
+		std::string SavedChatBaseline(const AppState& app, const ChatSession& chat, const std::filesystem::path& root, std::string* error_out)
+		{
+			std::string text;
+			if (!uam::io::TryReadTextFile(ChatBaselinePath(app, chat), text, 16384))
+			{
+				if (error_out) *error_out = "This chat has no saved repository baseline.";
+				return {};
+			}
+			const nlohmann::json saved = nlohmann::json::parse(text, nullptr, false);
+			if (!saved.is_object() || !saved.contains("workspace") || !saved["workspace"].is_string() || !saved.contains("ref") || !saved["ref"].is_string() || saved["workspace"].get<std::string>() != uam::paths::Utf8PathString(root) || !IsCommitId(saved["ref"].get<std::string>()) || saved.value("hostIdentity", std::string("local")) != ChatBaselineHostIdentity(app, chat))
+			{
+				if (error_out) *error_out = "The saved repository baseline does not match this workspace.";
+				return {};
+			}
+			return saved.value("ref", "");
+		}
+
 		std::vector<VcsChangedFile> ParseGitNameStatus(const std::string& output)
 		{
 			std::vector<VcsChangedFile> files;
@@ -413,33 +571,190 @@ namespace uam
 				const std::size_t path_end = output.find('\0', position);
 				if (path_end == std::string::npos) break;
 				std::string path = output.substr(position, path_end - position);
+				std::string previous_path;
 				position = path_end + 1;
 				if (!status.empty() && (status[0] == 'R' || status[0] == 'C'))
 				{
 					const std::size_t destination_end = output.find('\0', position);
 					if (destination_end == std::string::npos) break;
+					previous_path = path;
 					path = output.substr(position, destination_end - position);
 					position = destination_end + 1;
 				}
-				if (!status.empty() && !path.empty()) files.push_back({path, " " + status.substr(0, 1), false});
+				if (!status.empty() && !path.empty())
+				{
+					VcsChangedFile file;
+					file.path = std::move(path);
+					file.status = " " + status.substr(0, 1);
+					file.previous_path = std::move(previous_path);
+					files.push_back(std::move(file));
+				}
 			}
 			return files;
 		}
 
-		std::vector<VcsChangedFile> ParseSvnStatus(const std::string& status)
+		std::set<std::string> TrimmedFileSet(const std::vector<std::string>& files);
+
+		/// Windows svn prints `/` in diff headers but `\` in status rows; compare both with forward slashes.
+		// ponytail: a POSIX file name containing a literal backslash is rewritten too; svn then refuses it rather than publishing elsewhere.
+		std::string SlashKey(std::string path)
 		{
-			std::vector<VcsChangedFile> files;
-			std::istringstream lines(status);
-			std::string line;
-			while (std::getline(lines, line))
+			std::ranges::replace(path, '\\', '/');
+			return path;
+		}
+
+		struct SvnCommitPlan
+		{
+			std::vector<std::string> targets;
+			/// Workspace-relative peg targets; true schedules the selected new item with its non-ignored contents.
+			std::vector<std::pair<std::string, bool>> additions;
+			std::vector<std::string> deletions;
+			/// Selected unversioned items whose newly scheduled descendants are published with them.
+			std::vector<std::string> contents;
+			std::set<std::string> seen;
+			void AddTarget(const std::string& target) { if (seen.insert(target).second) targets.push_back(target); }
+		};
+
+		/// `local_root` enables symlink-resolving containment and on-disk race checks for controller-local workspaces.
+		/// Directory externals ('X' rows) are separate working copies; publishing into them would cross repositories.
+		std::vector<std::filesystem::path> SvnExternalRoots(const VcsCommitStatus& status)
+		{
+			std::vector<std::filesystem::path> roots;
+			for (const VcsChangedFile& file : status.changed_files)
+				if (!file.status.empty() && file.status.front() == 'X') roots.push_back(uam::paths::PathFromUtf8(file.path).lexically_normal());
+			return roots;
+		}
+
+		bool PrepareSvnCommitTargets(const SvnRunner& svn, const std::filesystem::path* local_root, const std::vector<std::string>& files, const std::vector<std::filesystem::path>& external_roots, SvnCommitPlan& plan, std::string& error)
+		{
+			const std::set<std::string> selected = TrimmedFileSet(files);
+			std::error_code path_error;
+			std::filesystem::path root;
+			if (local_root != nullptr)
 			{
-				if (line.size() <= kSvnStatusPathOffset)
-				{
-					continue;
-				}
-				files.push_back({uam::strings::Trim(line.substr(kSvnStatusPathOffset)), uam::strings::Trim(line.substr(0, kSvnStatusCodeWidth)), true});
+				root = std::filesystem::weakly_canonical(*local_root, path_error);
+				if (path_error) { error = "Failed to resolve the SVN workspace."; return false; }
 			}
-			return files;
+			for (const std::string& file : selected)
+			{
+				const std::filesystem::path relative = uam::paths::PathFromUtf8(file);
+				if (relative.is_absolute() || relative.has_root_name() || relative.has_root_directory() || relative.empty()) { error = "SVN selections must be workspace-relative paths."; return false; }
+				for (const std::filesystem::path& component : relative)
+					if (component == ".." || component == ".svn") { error = "SVN selection escapes the workspace or targets administrative data."; return false; }
+				const std::filesystem::path normal = relative.lexically_normal();
+				for (const std::filesystem::path& external : external_roots)
+					if (std::mismatch(external.begin(), external.end(), normal.begin(), normal.end()).first == external.end())
+					{ error = "Resolve SVN conflicts, obstructions or external paths before committing."; return false; }
+				if (local_root == nullptr) continue;
+				const std::filesystem::path resolved = std::filesystem::weakly_canonical(root / relative, path_error);
+				const std::filesystem::path contained = resolved.lexically_relative(root);
+				if (path_error || contained.empty() || *contained.begin() == "..") { error = "SVN selection is outside the workspace."; return false; }
+			}
+			std::set<std::filesystem::path> selected_paths;
+			for (const std::string& file : selected) selected_paths.insert(uam::paths::PathFromUtf8(file).lexically_normal());
+			const auto exists_locally = [&](const std::filesystem::path& relative, bool& exists)
+			{
+				exists = std::filesystem::exists(root / relative, path_error);
+				return !path_error;
+			};
+			for (const std::string& file : selected)
+			{
+				const std::filesystem::path relative = uam::paths::PathFromUtf8(file).lexically_normal();
+				std::filesystem::path current;
+				bool unversioned_parent = false;
+				for (const std::filesystem::path& component : relative)
+				{
+					current /= component;
+					const bool leaf = current == relative;
+					const std::string target = uam::paths::PortablePathString(current) + "@";
+					// A selected new folder already schedules its contents; re-adding a descendant would fail.
+					if (!leaf && std::ranges::find(plan.additions, std::pair<std::string, bool>(target, true)) != plan.additions.end()) break;
+					std::string code;
+					if (!unversioned_parent)
+					{
+						std::string output;
+						if (!SvnOutput(svn, {"status", "--non-interactive", "--depth", "empty", "--", target}, &output, error)) return false;
+						const std::vector<VcsChangedFile> status = ParseSvnStatusOutput(output);
+						if (!status.empty()) code = status.front().status;
+					}
+					const char item = code.empty() ? ' ' : code.front();
+					if (code.find_first_of("C~X") != std::string::npos || item == 'I') { error = "Resolve SVN conflicts, obstructions or external paths before committing."; return false; }
+					bool exists = true;
+					if (unversioned_parent || item == '?')
+					{
+						unversioned_parent = true;
+						if (local_root != nullptr && (!exists_locally(current, exists) || !exists)) { error = "A selected SVN addition no longer exists."; return false; }
+						// Parents are added alone; a selected new folder brings its contents (svn add honours svn:ignore).
+						if (plan.seen.insert(target).second) { plan.additions.emplace_back(target, leaf); plan.targets.push_back(target); }
+						if (leaf) plan.contents.push_back(target);
+					}
+					else if (item == 'A' && leaf)
+					{
+						// After a failed commit the folder's scheduled contents are listed as their own rows. Publishing them
+						// unticked, or publishing the folder without them, would both diverge from the selection.
+						std::string listing;
+						if (!SvnOutput(svn, {"status", "--non-interactive", "--", target}, &listing, error)) return false;
+						for (const VcsChangedFile& added : ParseSvnStatusOutput(listing))
+						{
+							const std::filesystem::path child = uam::paths::PathFromUtf8(SlashKey(added.path)).lexically_normal();
+							if (!added.status.empty() && added.status.front() == 'A' && child != current && !selected_paths.contains(child))
+							{ error = "Select the scheduled items inside this new SVN folder too; committing the folder alone would leave them unpublished."; return false; }
+						}
+					}
+					if (item == 'A' && !leaf) plan.AddTarget(target);
+					if (!leaf) continue;
+					if (!unversioned_parent && code.empty()) { error = "A selected SVN path is no longer changed: " + file; return false; }
+					if (item == '!' || item == 'D')
+					{
+						std::string kind;
+						if (!SvnOutput(svn, {"info", "--non-interactive", "--show-item", "kind", "--", target}, &kind, error)) return false;
+						if (uam::strings::Trim(kind) == "dir") { error = "Select deleted SVN files individually; directory deletion can include unselected descendants."; return false; }
+						if (item == '!')
+						{
+							if (local_root != nullptr && (!exists_locally(current, exists) || exists)) { error = "A missing SVN path changed before scheduling."; return false; }
+							plan.deletions.push_back(target);
+						}
+					}
+					if (!unversioned_parent) plan.AddTarget(target);
+				}
+			}
+			return !plan.targets.empty();
+		}
+
+		/// Schedules only the selected paths, then publishes them with empty depth so unselected descendants stay local.
+		bool CommitSvnSelection(const SvnRunner& svn, const std::filesystem::path* local_root, const std::string& message, const std::vector<std::string>& files, const std::vector<std::filesystem::path>& external_roots, ProcessExecutionResult& committed, std::string& error)
+		{
+			SvnCommitPlan plan;
+			if (!PrepareSvnCommitTargets(svn, local_root, files, external_roots, plan, error)) return false;
+			constexpr std::string_view retained = " Local SVN scheduling is retained; no commit was attempted.";
+			for (const auto& [target, with_contents] : plan.additions)
+			{
+				if (!SvnOutput(svn, {"add", "--non-interactive", "--depth", with_contents ? "infinity" : "empty", "--", target}, nullptr, error))
+				{ error += retained; return false; }
+			}
+			for (const std::string& target : plan.contents)
+			{
+				std::string output;
+				if (!SvnOutput(svn, {"status", "--non-interactive", "--", target}, &output, error)) { error += retained; return false; }
+				// ponytail: every added descendant becomes an argv target; very large new trees can reach OS argv limits.
+				for (const VcsChangedFile& added : ParseSvnStatusOutput(output))
+					if (!added.status.empty() && added.status.front() == 'A') plan.AddTarget(SlashKey(added.path) + "@");
+			}
+			for (const std::string& target : plan.deletions)
+			{
+				std::error_code path_error;
+				if (local_root != nullptr && (std::filesystem::exists(*local_root / uam::paths::PathFromUtf8(target.substr(0, target.size() - 1)), path_error) || path_error))
+				{ error = "A missing SVN path changed before scheduling; local scheduling is retained."; return false; }
+				// --keep-local never removes a file that reappeared after the status check.
+				if (!SvnOutput(svn, {"delete", "--non-interactive", "--keep-local", "--", target}, nullptr, error))
+				{ error += retained; return false; }
+			}
+			std::vector<std::string> commit = {"commit", "--non-interactive", "--depth", "empty", "--force-log", "-m", message, "--"};
+			commit.insert(commit.end(), plan.targets.begin(), plan.targets.end());
+			committed = svn(commit);
+			if (CommandSucceeded(committed)) return true;
+			error = CommandOutputOrError(committed) + " Local SVN scheduling is retained; verify repository publication before retrying.";
+			return false;
 		}
 
 		struct LineStats
@@ -707,18 +1022,134 @@ namespace uam
 			return stats;
 		}
 
-		void ApplySvnLineStats(const std::filesystem::path& workspace, std::vector<VcsChangedFile>& files)
+		std::vector<std::string> SvnDiffArgs(const std::string& target)
 		{
+			// The internal engine never runs a configured diff-cmd.
+			return {"diff", "--internal-diff", "--non-interactive", "--", target};
+		}
+
+		/// Splits svn diff output on "Index: " headers, keyed by slash-normalised path.
+		std::map<std::string, std::string> SvnDiffSections(const std::string& output)
+		{
+			std::map<std::string, std::string> sections;
+			std::string* section = nullptr;
+			std::istringstream lines(output);
+			std::string line;
+			while (std::getline(lines, line))
+			{
+				if (!line.empty() && line.back() == '\r') line.pop_back();
+				if (line.starts_with("Index: ")) { section = &sections[SlashKey(line.substr(7))]; continue; }
+				if (section != nullptr) { *section += line; *section += '\n'; }
+			}
+			return sections;
+		}
+
+		/// SVN 1.15 diff reads a trailing peg '@' as part of the name, while older clients need it for names containing '@'
+		/// (unescaped, "name@123" could diff revision 123 of "name"). Names with '@' try the peg form first; 1.15 then misses it.
+		bool SvnFileDiff(const SvnRunner& svn, const std::string& path, std::string& output, std::string& error, bool* output_limited = nullptr)
+		{
+			const bool has_at = path.find('@') != std::string::npos;
+			if (has_at)
+			{
+				if (SvnOutput(svn, SvnDiffArgs(path + "@"), &output, error, output_limited)) return true;
+				// Only a client that reads the suffix as part of the name (E155010) retries; other failures are real.
+				if (error.find("E155010") == std::string::npos) return false;
+			}
+			if (!SvnOutput(svn, SvnDiffArgs(path), &output, error, output_limited)) return false;
+			if (!has_at || output.empty()) return true;
+			// Accept the unescaped spelling only when svn diffed this path (or, for a folder, its children).
+			const std::string key = SlashKey(path);
+			for (const auto& [section_path, section] : SvnDiffSections(output))
+				if (section_path == key || section_path.starts_with(key + "/")) return true;
+			error = "SVN compared a different path for this file name.";
+			return false;
+		}
+
+		bool IsSvnUnversioned(const VcsChangedFile& file) { return file.status == "?"; }
+
+		/// One workspace diff split on "Index: " headers instead of one process per changed file.
+		void ApplySvnLineStats(const SvnRunner& svn, std::vector<VcsChangedFile>& files)
+		{
+			std::string output;
+			std::string ignored;
+			if (files.empty()) return;
+			std::map<std::string, std::string> sections;
+			const bool workspace_diffed = SvnOutput(svn, SvnDiffArgs("."), &output, ignored);
+			if (workspace_diffed) sections = SvnDiffSections(output);
+			// A failed workspace diff (for example one file's huge diff exceeding the capture limit) still counts each
+			// file from its own diff, until one fails for another reason (a locked working copy would fail them all).
+			bool per_file = !workspace_diffed;
 			for (VcsChangedFile& file : files)
 			{
-				std::string output;
-				if (OutputCommand("svn diff " + BuildSvnPathArgument(workspace, file.path), &output))
+				// SVN never diffs unversioned items; callers count those as new files.
+				if (IsSvnUnversioned(file)) continue;
+				auto found = sections.find(SlashKey(file.path));
+				if (found == sections.end() && per_file)
 				{
-					const LineStats stats = ParseUnifiedDiffLineStats(output);
-					file.additions = stats.additions;
-					file.deletions = stats.deletions;
+					std::string single;
+					bool limited = false;
+					const bool diffed = SvnFileDiff(svn, file.path, single, ignored, &limited);
+					per_file = diffed || limited;
+					// A folder's own diff lists its children, which have their own rows; count only this path's section.
+					if (diffed) for (auto& [path, section] : SvnDiffSections(single)) sections.try_emplace(path, std::move(section));
+					found = sections.find(SlashKey(file.path));
 				}
+				if (found == sections.end()) continue;
+				file.binary = found->second.find("Cannot display: file marked as a binary type.") != std::string::npos;
+				const LineStats stats = ParseUnifiedDiffLineStats(found->second);
+				file.additions = stats.additions;
+				file.deletions = stats.deletions;
 			}
+		}
+
+		constexpr std::uintmax_t kMaxUnversionedDiffBytes = 4 * 1024 * 1024;
+
+		/// Shows an unversioned SVN file as entirely added, in svn's own header format, without needing Git.
+		bool SvnUnversionedFileDiff(const std::filesystem::path& workspace, const std::string& path, std::string& output, std::string& error)
+		{
+			const std::filesystem::path file = uam::paths::LexicallyNormalPath(workspace / uam::paths::PathFromUtf8(path));
+			std::error_code status_error;
+			const std::filesystem::file_status status = std::filesystem::symlink_status(file, status_error);
+			if (!status_error && std::filesystem::is_directory(status))
+			{
+				error = "This new folder is listed as one item; its files are not compared individually.";
+				return false;
+			}
+			std::error_code size_error;
+			const std::uintmax_t size = status_error ? 0 : std::filesystem::file_size(file, size_error);
+			std::string content;
+			if (status_error || size_error || !std::filesystem::is_regular_file(status) ||
+			    (size <= kMaxUnversionedDiffBytes && !uam::io::TryReadBinaryFile(file, content)))
+			{
+				error = "The new file could not be read.";
+				return false;
+			}
+			output = "Index: " + path + "\n===================================================================\n";
+			if (size > kMaxUnversionedDiffBytes)
+			{
+				output += "Cannot display: the new file is larger than 4 MB.\n";
+				return true;
+			}
+			if (content.find('\0') != std::string::npos)
+			{
+				output += "Cannot display: file marked as a binary type.\n";
+				return true;
+			}
+			std::string body;
+			int lines = 0;
+			for (std::size_t start = 0; start < content.size();)
+			{
+				const std::size_t end = content.find('\n', start);
+				body += '+';
+				body.append(content, start, (end == std::string::npos ? content.size() : end) - start);
+				body += '\n';
+				++lines;
+				if (end == std::string::npos) { body += "\\ No newline at end of file\n"; break; }
+				start = end + 1;
+			}
+			output += "--- " + path + "\t(nonexistent)\n+++ " + path + "\t(working copy)\n";
+			if (lines > 0) output += "@@ -0,0 +1," + std::to_string(lines) + " @@\n" + body;
+			return true;
 		}
 
 		template <typename QuoteFile> std::string JoinNonEmptyFiles(const std::vector<std::string>& files, QuoteFile quote_file)
@@ -740,11 +1171,6 @@ namespace uam
 		std::string JoinQuotedFiles(const std::vector<std::string>& files)
 		{
 			return JoinNonEmptyFiles(files, [](const std::string& file) { return uam::shell::EscapeArg(file); });
-		}
-
-		std::string JoinQuotedSvnFiles(const std::filesystem::path& workspace, const std::vector<std::string>& files)
-		{
-			return JoinNonEmptyFiles(files, [&workspace](const std::string& file) { return BuildSvnPathArgument(workspace, file); });
 		}
 
 		std::set<std::string> TrimmedFileSet(const std::vector<std::string>& files)
@@ -791,15 +1217,6 @@ namespace uam
 			return !error;
 		}
 
-		std::string BuildVcsDiffCommand(const std::filesystem::path& workspace, const std::string& path, const VcsType type)
-		{
-			if (type == VcsType::Git)
-			{
-				return BuildLiteralGitCommandInDirectory(workspace, "diff HEAD -- " + uam::shell::EscapeArg(path));
-			}
-			return "svn diff " + BuildSvnPathArgument(workspace, path);
-		}
-
 		bool OutputGitUntrackedDiff(const std::filesystem::path& workspace, const std::string& path, std::string* output_out, std::string* error_out)
 		{
 			if (output_out != nullptr)
@@ -842,10 +1259,10 @@ namespace uam
 			result.message = CommandOutputOrFallback(commit_result, fallback_message);
 		}
 
-		void PopulateAvailableVcsTypes(VcsCommitStatus& status, const std::filesystem::path& workspace, std::filesystem::path& git_root, bool validate = false)
+		void PopulateAvailableVcsTypes(VcsCommitStatus& status, const std::filesystem::path& workspace, std::filesystem::path& git_root, bool validate, const AppSettings& settings)
 		{
 			std::string root;
-			if (GitAvailable(workspace, &root, validate))
+			if (settings.git_enabled && GitAvailable(workspace, &root, validate))
 			{
 				status.vcs_types.push_back(VcsType::Git);
 				if (!root.empty())
@@ -853,7 +1270,7 @@ namespace uam
 					git_root = uam::paths::PathFromUtf8(root);
 				}
 			}
-			if (SvnAvailable(workspace, validate))
+			if (settings.svn_enabled && SvnAvailable(workspace, validate))
 			{
 				status.vcs_types.push_back(VcsType::Svn);
 			}
@@ -927,34 +1344,81 @@ namespace uam
 				for (const VcsChangedFile& working_file : ParseGitStatus(porcelain))
 				{
 					auto existing = std::ranges::find_if(status.changed_files, [&](const VcsChangedFile& file) { return file.path == working_file.path; });
-					if (existing == status.changed_files.end()) status.changed_files.push_back(working_file);
-					else existing->staged = working_file.staged;
+					if (existing != status.changed_files.end()) existing->staged = working_file.staged;
+					else if (working_file.status == "??") status.changed_files.push_back(working_file);
 				}
 			}
 			if (include_line_stats) ApplyGitComparisonDetails(git_root, comparison_ref, status.changed_files);
 		}
 
-		void PopulateSvnStatusDetails(VcsCommitStatus& status, const std::filesystem::path& workspace, bool include_line_stats, bool context_only = false)
+		bool PrepareChatReviewIndex(GitReviewIndex& index, const std::string& ref, std::string* error_out)
+		{
+			ProcessExecutionResult result = index.Run({"read-tree", ref});
+			if (CommandSucceeded(result)) result = index.Run({"add", "-A", "--", "."});
+			if (CommandSucceeded(result)) return true;
+			if (error_out) *error_out = CommandOutputOrError(result);
+			return false;
+		}
+
+		void PopulateChatComparisonDetails(const AppState& app, const ChatSession& chat, VcsCommitStatus& status, const std::filesystem::path& root, bool include_line_stats, RemoteVcsContext* remote = nullptr)
+		{
+			const std::string ref = SavedChatBaseline(app, chat, root, &status.error);
+			if (ref.empty()) return;
+			GitReviewIndex index(root, {}, remote);
+			if (!PrepareChatReviewIndex(index, ref, &status.error)) return;
+			const ProcessExecutionResult names = index.Run({"diff", "--cached", "--no-ext-diff", "--no-textconv", "--name-status", "-z", ref, "--"});
+			if (!CommandSucceeded(names))
+			{
+				status.error = CommandOutputOrError(names);
+				return;
+			}
+			status.changed_files = ParseGitNameStatus(names.output);
+			const ProcessExecutionResult working = index.Run({"--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"}, false);
+			const std::string& porcelain = working.output;
+			if (CommandSucceeded(working))
+			{
+				for (const VcsChangedFile& file : ParseGitStatus(porcelain))
+				{
+					const auto selected = std::ranges::find(status.changed_files, file.path, &VcsChangedFile::path);
+					if (selected != status.changed_files.end()) selected->staged = file.staged;
+				}
+			}
+			if (!include_line_stats) return;
+			const ProcessExecutionResult numstat = index.Run({"diff", "--cached", "--no-ext-diff", "--no-textconv", "--numstat", ref, "--"});
+			if (!CommandSucceeded(numstat))
+			{
+				status.error = CommandOutputOrError(numstat);
+				return;
+			}
+			const std::map<std::string, LineStats> stats = ParseGitNumstat(numstat.output);
+			for (VcsChangedFile& file : status.changed_files)
+			{
+				if (const auto entry = stats.find(file.path); entry != stats.end())
+				{
+					file.additions = entry->second.additions;
+					file.deletions = entry->second.deletions;
+					file.binary = entry->second.binary;
+				}
+			}
+			if (!remote) ApplyContentFingerprints(root, status.changed_files);
+		}
+
+		/// Shared local/remote SVN status; returns true when changed files were read.
+		bool PopulateSvnStatusDetails(const SvnRunner& svn, VcsCommitStatus& status, bool include_line_stats, bool context_only = false)
 		{
 			std::string output;
 			std::string error;
-			if (OutputCommand(BuildSvnCommandInDirectory(workspace, "info --show-item revision"), &output))
+			if (SvnOutput(svn, {"info", "--non-interactive", "--show-item", "revision", "--", "."}, &output, error))
+				status.branch_or_revision = uam::strings::Trim(output);
+			if (context_only) return false;
+			if (!SvnOutput(svn, {"status", "--non-interactive", "--", "."}, &output, error))
 			{
-				status.branch_or_revision = output;
+				status.error = uam::strings::NonEmptyOrFallback(error, "Failed to read SVN status.");
+				return false;
 			}
-			if (context_only) return;
-			if (OutputCommandRaw(BuildSvnCommandInDirectory(workspace, "status"), &output, &error))
-			{
-				status.changed_files = ParseSvnStatus(output);
-				if (include_line_stats)
-				{
-					ApplySvnLineStats(workspace, status.changed_files);
-					ApplyContentFingerprints(workspace, status.changed_files);
-				}
-				return;
-			}
-
-			status.error = uam::strings::NonEmptyOrFallback(error, "Failed to read SVN status.");
+			status.changed_files = ParseSvnStatusOutput(output, status.workspace_directory);
+			if (include_line_stats) ApplySvnLineStats(svn, status.changed_files);
+			return true;
 		}
 
 		ProviderWorkerInvocation BuildCommitMessageWorkerInvocation(const AppState& app, const ProviderProfile& profile, const std::string& prompt, const std::string& model_id, std::string* error_out)
@@ -1127,9 +1591,10 @@ namespace uam
 			return suggestion;
 		}
 
-		VcsCommitMessageSuggestion SuggestionFromWorkerOutput(const std::string& output)
+		VcsCommitMessageSuggestion SuggestionFromWorkerOutput(const std::string& output, std::string_view worker_provider_id = {})
 		{
-			const std::optional<nlohmann::json> parsed = ExtractSuggestionJson(output);
+			const std::optional<std::string> text = uam::provider_workers::CompletedTextWorkerOutput(worker_provider_id, output, uam::platform::kCapturedCommandMaxOutputBytes);
+			const std::optional<nlohmann::json> parsed = text ? ExtractSuggestionJson(*text) : std::nullopt;
 			if (!parsed || !parsed->is_object())
 			{
 				VcsCommitMessageSuggestion suggestion;
@@ -1151,6 +1616,25 @@ namespace uam
 					file.content_fingerprint = output;
 				else if (file.status.find('D') != std::string::npos)
 					file.content_fingerprint = "missing";
+			}
+		}
+
+		/// Counts a new file as added lines on the remote host; SVN-only hosts without Git keep zero counts.
+		void ApplyRemoteUntrackedLineStats(RemoteVcsContext& context, const std::string& root, VcsChangedFile& file)
+		{
+			const ProcessExecutionResult untracked = context.Run(
+			    root, {"git", "diff", "--no-index", "--numstat", "--",
+			           context.NullDevice(), file.path});
+			if (!untracked.ok || untracked.timed_out || untracked.canceled ||
+			    (untracked.exit_code != 0 && untracked.exit_code != 1))
+				return;
+			const auto parsed = ParseGitNumstat(untracked.output);
+			// Windows SVN status rows use `\`; Git prints `/`.
+			if (const auto found = parsed.find(SlashKey(file.path)); found != parsed.end())
+			{
+				file.additions = found->second.additions;
+				file.deletions = found->second.deletions;
+				file.binary = found->second.binary;
 			}
 		}
 
@@ -1179,22 +1663,8 @@ namespace uam
 					file.deletions = found->second.deletions;
 					file.binary = found->second.binary;
 				}
-				if (file.status != "??" || file.additions != 0 || file.deletions != 0)
-					continue;
-				const ProcessExecutionResult untracked = context.Run(
-				    root, {"git", "diff", "--no-index", "--numstat", "--",
-				           context.NullDevice(), file.path});
-				if (untracked.ok && !untracked.timed_out && !untracked.canceled &&
-				    (untracked.exit_code == 0 || untracked.exit_code == 1))
-				{
-					const auto parsed = ParseGitNumstat(untracked.output);
-					if (const auto found = parsed.find(file.path); found != parsed.end())
-					{
-						file.additions = found->second.additions;
-						file.deletions = found->second.deletions;
-						file.binary = found->second.binary;
-					}
-				}
+				if (file.status == "??" && file.additions == 0 && file.deletions == 0)
+					ApplyRemoteUntrackedLineStats(context, root, file);
 			}
 			ApplyRemoteGitFingerprints(context, root, files);
 		}
@@ -1221,23 +1691,22 @@ namespace uam
 			ApplyRemoteGitFingerprints(context, root, files);
 		}
 
-		VcsCommitStatus RemoteStatus(RemoteVcsContext& context, const ChatSession& chat,
+		VcsCommitStatus RemoteStatus(RemoteVcsContext& context, const AppState& app, const ChatSession& chat,
 		                             const VcsType requested_type,
 		                             const bool include_line_stats,
-		                             const std::string& comparison_ref, bool context_only = false)
+		                             const std::string& comparison_ref, bool context_only, const AppSettings& settings)
 		{
 			VcsCommitStatus status;
 			status.line_stats_ready = include_line_stats;
-			status.workspace_directory = uam::strings::Trim(chat.workspace_directory);
+			status.workspace_directory = context.WorkspaceDirectory();
 			if (!context.Ready(&status.error)) return status;
 
 			std::string git_root;
-			if (RemoteOutput(context, status.workspace_directory,
+			if (settings.git_enabled && RemoteOutput(context, status.workspace_directory,
 			                 {"git", "rev-parse", "--show-toplevel"}, &git_root))
 				status.vcs_types.push_back(VcsType::Git);
-			std::string ignored;
-			if (RemoteOutput(context, status.workspace_directory,
-			                 {"svn", "info", "--show-item", "revision", "."}, &ignored))
+			if (settings.svn_enabled && CommandSucceeded(RemoteSvnRunner(context, status.workspace_directory)(
+			                 {"info", "--non-interactive", "--show-item", "revision", "--", "."})))
 				status.vcs_types.push_back(VcsType::Svn);
 			status.available = !status.vcs_types.empty();
 			if (!status.available)
@@ -1249,25 +1718,9 @@ namespace uam
 
 			if (status.active_vcs_type == VcsType::Svn)
 			{
-				RemoteOutput(context, status.workspace_directory,
-				             {"svn", "info", "--show-item", "revision", "."},
-				             &status.branch_or_revision);
-				if (context_only) return status;
-				std::string output;
-				if (!RemoteOutput(context, status.workspace_directory, {"svn", "status"},
-				                  &output, &status.error, true)) return status;
-				status.changed_files = ParseSvnStatus(output);
-				if (include_line_stats)
-				{
+				if (PopulateSvnStatusDetails(RemoteSvnRunner(context, status.workspace_directory), status, include_line_stats, context_only) && include_line_stats)
 					for (VcsChangedFile& file : status.changed_files)
-					{
-						if (!RemoteOutput(context, status.workspace_directory,
-						                  {"svn", "diff", file.path}, &output)) continue;
-						const LineStats stats = ParseUnifiedDiffLineStats(output);
-						file.additions = stats.additions;
-						file.deletions = stats.deletions;
-					}
-				}
+						if (IsSvnUnversioned(file)) ApplyRemoteUntrackedLineStats(context, status.workspace_directory, file);
 				return status;
 			}
 
@@ -1293,6 +1746,13 @@ namespace uam
 				return status;
 			}
 
+			if (comparison_ref == "chat")
+			{
+				PopulateChatComparisonDetails(app, chat, status, uam::paths::PathFromUtf8(git_root), include_line_stats, &context);
+				ApplyRemoteGitFingerprints(context, git_root, status.changed_files);
+				return status;
+			}
+
 			if (!IsCommitId(comparison_ref))
 			{
 				status.error = "The saved chat comparison point is invalid.";
@@ -1314,9 +1774,8 @@ namespace uam
 				{
 					auto existing = std::ranges::find_if(status.changed_files,
 					    [&](const VcsChangedFile& file) { return file.path == working_file.path; });
-					if (existing == status.changed_files.end())
-						status.changed_files.push_back(working_file);
-					else existing->staged = working_file.staged;
+					if (existing != status.changed_files.end()) existing->staged = working_file.staged;
+					else if (working_file.status == "??") status.changed_files.push_back(working_file);
 				}
 			}
 			if (include_line_stats)
@@ -1325,12 +1784,12 @@ namespace uam
 			return status;
 		}
 
-		std::string RemoteDiff(RemoteVcsContext& context, const ChatSession& chat,
+		std::string RemoteDiff(RemoteVcsContext& context, const AppState& app, const ChatSession& chat,
 		                       const std::string& path, const VcsType type,
-		                       std::string* error_out, const std::string& comparison_ref)
+		                       std::string* error_out, const std::string& comparison_ref, const AppSettings& settings)
 		{
-			const VcsCommitStatus status = RemoteStatus(context, chat, type, false,
-			                                                  comparison_ref);
+			const VcsCommitStatus status = RemoteStatus(context, app, chat, type, false,
+			                                                  comparison_ref, false, settings);
 			if (!status.error.empty())
 			{
 				if (error_out != nullptr) *error_out = status.error;
@@ -1355,13 +1814,27 @@ namespace uam
 				if (RemoteOutput(context, cwd, {"git", "rev-parse", "--show-toplevel"}, &root))
 					cwd = std::move(root);
 			}
-			if (type == VcsType::Svn)
+			if (type == VcsType::Svn && !IsSvnUnversioned(*selected))
 			{
 				std::string output;
-				return RemoteOutput(context, cwd, {"svn", "diff", path}, &output, error_out)
-				    ? output : "";
+				std::string error;
+				if (SvnFileDiff(RemoteSvnRunner(context, cwd), path, output, error)) return uam::strings::Trim(output);
+				if (error_out != nullptr) *error_out = error;
+				return {};
 			}
-			if (selected->status == "??")
+			if (type == VcsType::Git && comparison_ref == "chat")
+			{
+				const std::filesystem::path root = uam::paths::PathFromUtf8(cwd);
+				const std::string ref = SavedChatBaseline(app, chat, root, error_out);
+				GitReviewIndex index(root, {}, &context);
+				if (ref.empty() || !PrepareChatReviewIndex(index, ref, error_out)) return {};
+				std::vector<std::string> args = {"--literal-pathspecs", "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", ref, "--", path};
+				if (!selected->previous_path.empty()) args.push_back(selected->previous_path);
+				const ProcessExecutionResult patch = index.Run(std::move(args));
+				if (!CommandSucceeded(patch)) { if (error_out) *error_out = CommandOutputOrError(patch); return {}; }
+				return patch.output;
+			}
+			if (selected->status == "??" || IsSvnUnversioned(*selected))
 			{
 				const ProcessExecutionResult result = context.Run(
 				    cwd, {"git", "--literal-pathspecs", "diff", "--no-index",
@@ -1369,7 +1842,10 @@ namespace uam
 				if (result.ok && !result.timed_out && !result.canceled &&
 				    (result.exit_code == 0 || result.exit_code == 1))
 					return uam::strings::Trim(result.output);
-				if (error_out != nullptr) *error_out = CommandOutputOrError(result);
+				if (error_out != nullptr)
+					*error_out = IsSvnUnversioned(*selected)
+					    ? "This new SVN item could not be compared on the remote host; new folders and hosts without Git have no file diff."
+					    : CommandOutputOrError(result);
 				return {};
 			}
 			std::vector<std::string> argv = {"git", "--literal-pathspecs", "diff"};
@@ -1380,12 +1856,12 @@ namespace uam
 			return RemoteOutput(context, cwd, argv, &output, error_out) ? output : "";
 		}
 
-		VcsCommitResult RemoteCommit(RemoteVcsContext& context, const ChatSession& chat,
+		VcsCommitResult RemoteCommit(RemoteVcsContext& context, const AppState& app, const ChatSession& chat,
 		                             const VcsType type, const std::string& message,
-		                             const std::vector<std::string>& files)
+		                             const std::vector<std::string>& files, const AppSettings& settings)
 		{
 			VcsCommitResult result;
-			result.status = RemoteStatus(context, chat, type, true, {});
+			result.status = RemoteStatus(context, app, chat, type, true, {}, false, settings);
 			if (!result.status.available)
 			{
 				result.error = uam::strings::NonEmptyOrFallback(result.status.error,
@@ -1416,9 +1892,15 @@ namespace uam
 			ProcessExecutionResult committed;
 			if (type == VcsType::Svn)
 			{
-				std::vector<std::string> argv = {"svn", "commit", "-m", message};
-				argv.insert(argv.end(), selected_files.begin(), selected_files.end());
-				committed = context.Run(cwd, argv);
+				// A Windows host reports `\` separators that a POSIX controller would read as one path component;
+				// svn accepts `/`, so containment and external checks see real components.
+				VcsCommitStatus remote_status = result.status;
+				if (context.Platform() == "windows" || context.Platform() == "Windows")
+				{
+					for (std::string& file : selected_files) file = SlashKey(std::move(file));
+					for (VcsChangedFile& file : remote_status.changed_files) file.path = SlashKey(std::move(file.path));
+				}
+				if (!CommitSvnSelection(RemoteSvnRunner(context, cwd), nullptr, message, selected_files, SvnExternalRoots(remote_status), committed, result.error)) return result;
 			}
 			else
 			{
@@ -1473,7 +1955,7 @@ namespace uam
 				result.error = CommandOutputOrError(committed);
 				return result;
 			}
-			CompleteSuccessfulCommit(result, RemoteStatus(context, chat, type, true, {}),
+			CompleteSuccessfulCommit(result, RemoteStatus(context, app, chat, type, true, {}, false, settings),
 			                         committed, type == VcsType::Git
 			                             ? "Git commit created." : "SVN commit created.");
 			return result;
@@ -1490,13 +1972,284 @@ namespace uam
 		return uam::strings::TrimmedEqualsIgnoreCase(value, "svn") ? VcsType::Svn : VcsType::Git;
 	}
 
+	ProcessExecutionResult RunSvn(const std::filesystem::path& cwd, const std::vector<std::string>& args, const int timeout_ms, std::stop_token stop)
+	{
+		ProviderWorkerInvocation invocation;
+		invocation.direct_process = true;
+		invocation.argv = {"svn"};
+		invocation.argv.insert(invocation.argv.end(), args.begin(), args.end());
+		invocation.environment_overrides = SvnEnvironment({});
+		ProcessExecutionResult result = ExecuteProviderWorkerInvocation(invocation, cwd, timeout_ms, stop);
+		// ponytail: a process that never started has no exit code or output; the directory check rules out a missing workspace.
+		if (!result.ok && !result.timed_out && !result.canceled && result.exit_code == -1 && result.output.empty() && uam::paths::IsDirectoryNoThrow(cwd))
+			result.error = std::string(kSvnClientMissing);
+		return result;
+	}
+
+	std::string SvnFailureSummary(const ProcessExecutionResult& result)
+	{
+		if (result.error == kSvnClientMissing) return result.error;
+		std::istringstream lines(result.output + "\n" + result.error);
+		std::string line;
+		while (std::getline(lines, line))
+		{
+			std::size_t code = line.find("svn: E");
+			if (code != std::string::npos) code += 5;
+			else if ((code = line.find("svn: warning: W")) != std::string::npos) code += 14;
+			else continue;
+			std::string summary = uam::strings::Trim(line.substr(code));
+			constexpr std::size_t kMaxSummaryBytes = 240;
+			if (summary.size() > kMaxSummaryBytes)
+			{
+				std::size_t end = kMaxSummaryBytes;
+				while (end > 0 && (static_cast<unsigned char>(summary[end]) & 0xc0) == 0x80) --end;
+				summary.resize(end);
+			}
+			while (!summary.empty() && summary.back() == '.') summary.pop_back();
+			return summary;
+		}
+		return {};
+	}
+
+	std::vector<VcsChangedFile> ParseSvnStatusOutput(std::string_view output, std::string_view workspace)
+	{
+		// Valid characters per status column; anything else is a header, summary or tree-conflict detail line.
+		static constexpr std::string_view columns[kSvnStatusCodeWidth] = {" ADMRCXI?!~", " MC", " L", " +", " SX", " KOTB", " C"};
+		std::vector<VcsChangedFile> files;
+		std::size_t position = 0;
+		while (position < output.size())
+		{
+			std::size_t end = output.find('\n', position);
+			if (end == std::string_view::npos) end = output.size();
+			std::string_view line = output.substr(position, end - position);
+			position = end + 1;
+			if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+			if (line.size() <= kSvnStatusPathOffset || line[kSvnStatusCodeWidth] != ' ') continue;
+			bool valid = true;
+			for (std::size_t column = 0; column < kSvnStatusCodeWidth && valid; ++column)
+				valid = columns[column].find(line[column]) != std::string_view::npos;
+			if (!valid || line.substr(0, kSvnStatusCodeWidth) == "       ") continue;
+			std::string code(line.substr(0, kSvnStatusCodeWidth));
+			while (!code.empty() && code.back() == ' ') code.pop_back();
+			std::string path(line.substr(kSvnStatusPathOffset));
+			// Defensive: svn echoes absolute targets; selections must stay workspace-relative.
+			if (!workspace.empty() && path.size() > workspace.size() + 1 && path.starts_with(workspace) &&
+			    (path[workspace.size()] == '/' || path[workspace.size()] == '\\'))
+				path.erase(0, workspace.size() + 1);
+			files.push_back({std::move(path), std::move(code), true});
+		}
+		return files;
+	}
+
+	struct ChatBaselinePreparation
+	{
+		std::filesystem::path workspace;
+		std::string host_id;
+		std::shared_ptr<std::stop_source> cancellation = std::make_shared<std::stop_source>();
+		std::mutex mutex;
+		ChatBaselineReadiness result = ChatBaselineReadiness::Pending;
+		std::string error;
+		// Destroy the worker first so its result fields remain alive until it exits.
+		std::jthread worker;
+	};
+
+	void CancelChatRepositoryBaseline(AppState& app, const std::string& chat_id)
+	{
+		const auto found = app.repository_baseline_preparations.find(chat_id);
+		if (found != app.repository_baseline_preparations.end()) found->second->cancellation->request_stop();
+	}
+
+	ChatBaselineReadiness WaitForChatRepositoryBaseline(const std::shared_ptr<ChatBaselinePreparation>& task, std::stop_token cancellation, std::string* error_out)
+	{
+		while (!cancellation.stop_requested())
+		{
+			{
+				std::scoped_lock lock(task->mutex);
+				if (task->result != ChatBaselineReadiness::Pending)
+				{
+					if (error_out) *error_out = task->error;
+					return task->result;
+				}
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		if (error_out) *error_out = "Repository baseline capture was canceled.";
+		return ChatBaselineReadiness::Failed;
+	}
+
+	ChatBaselineReadiness PrepareChatRepositoryBaseline(AppState& app, const ChatSession& chat, std::string* error_out, std::shared_ptr<std::stop_source>* cancellation_out, bool retry_failed)
+	{
+		std::erase_if(app.retired_repository_baseline_preparations, [](const auto& task)
+		{
+			std::scoped_lock lock(task->mutex);
+			return task->result != ChatBaselineReadiness::Pending;
+		});
+		if (error_out) error_out->clear();
+		if (cancellation_out) cancellation_out->reset();
+		if (!chat.goal_owner_chat_id.empty())
+		{
+			const ChatSession* owner = ChatDomainService().FindChatById(app, chat.goal_owner_chat_id);
+			if (owner && !chat.messages.empty() && !uam::paths::PathExistsNoThrow(ChatBaselinePath(app, *owner))) return ChatBaselineReadiness::Unavailable;
+			return owner == nullptr || owner->id == chat.id || !owner->goal_owner_chat_id.empty() ? ChatBaselineReadiness::Unavailable : PrepareChatRepositoryBaseline(app, *owner, error_out, cancellation_out, retry_failed);
+		}
+		if (app.data_root.empty() || chat.id.empty()) return ChatBaselineReadiness::Unavailable;
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+			if (!host || host->runner_status != "ready" || host->runner_protocol_version < 3) return ChatBaselineReadiness::Unavailable;
+		}
+		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
+		if (uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			std::filesystem::path ancestor = workspace;
+			while (!ancestor.empty() && !uam::paths::PathExistsNoThrow(ancestor / ".git"))
+			{
+				const std::filesystem::path parent = ancestor.parent_path();
+				if (parent == ancestor) return ChatBaselineReadiness::Unavailable;
+				ancestor = parent;
+			}
+			if (ancestor.empty()) return ChatBaselineReadiness::Unavailable;
+		}
+		auto found = app.repository_baseline_preparations.find(chat.id);
+		bool failed = false;
+		if (found != app.repository_baseline_preparations.end())
+		{
+			std::scoped_lock lock(found->second->mutex);
+			failed = found->second->result == ChatBaselineReadiness::Failed;
+		}
+		if (found != app.repository_baseline_preparations.end() &&
+		    ((retry_failed && failed) || found->second->workspace != workspace || found->second->host_id != ChatBaselineHostIdentity(app, chat) || found->second->cancellation->stop_requested()))
+		{
+			found->second->cancellation->request_stop();
+			{
+				std::scoped_lock lock(found->second->mutex);
+				if (found->second->result == ChatBaselineReadiness::Pending)
+				{
+					if (cancellation_out) *cancellation_out = found->second->cancellation;
+					return ChatBaselineReadiness::Pending;
+				}
+			}
+			app.retired_repository_baseline_preparations.push_back(found->second);
+			app.repository_baseline_preparations.erase(found);
+			found = app.repository_baseline_preparations.end();
+		}
+		if (found == app.repository_baseline_preparations.end())
+		{
+			const bool runtime_already_started = std::ranges::any_of(app.acp_sessions, [&](const auto& session) { return session && session->chat_id == chat.id && (session->running || session->processing || session->session_ready || !session->session_id.empty()); }) ||
+			    std::ranges::any_of(app.cli_terminals, [&](const auto& terminal) { return terminal && terminal->running && (terminal->frontend_chat_id == chat.id || terminal->attached_chat_id == chat.id); });
+			if (!uam::paths::PathExistsNoThrow(ChatBaselinePath(app, chat)) &&
+			    (chat.imported_read_only || !chat.messages.empty() || chat.persisted_message_count != 0 || runtime_already_started || !chat.native_session_id.empty() || chat.remote_process_exists || chat.remote_turn_reconnect_pending)) return ChatBaselineReadiness::Unavailable;
+			std::shared_ptr<ChatBaselinePreparation> task = std::make_shared<ChatBaselinePreparation>();
+			task->workspace = workspace;
+			task->host_id = ChatBaselineHostIdentity(app, chat);
+			const std::filesystem::path data_root = app.data_root;
+			const AppSettings settings = app.settings;
+			ChatSession captured_chat = chat;
+			if (uam::paths::IsGitWorktreeIsolated(captured_chat)) captured_chat.workspace_worktree_directory = uam::paths::Utf8PathString(workspace);
+			else captured_chat.workspace_directory = uam::paths::Utf8PathString(workspace);
+			ChatBaselinePreparation* target = task.get();
+			task->worker = std::jthread([target, data_root, settings, chat = std::move(captured_chat), workspace](std::stop_token stopping)
+			{
+				std::stop_callback on_shutdown(stopping, [target] { target->cancellation->request_stop(); });
+				AppState snapshot;
+				snapshot.data_root = data_root;
+				snapshot.settings = settings;
+				std::string error;
+				ChatBaselineReadiness result = ChatBaselineReadiness::Unavailable;
+				try
+				{
+					std::unique_ptr<RemoteVcsContext> remote;
+					if (!uam::paths::IsControllerLocalWorkspace(chat)) remote = std::make_unique<RemoteVcsContext>(snapshot, chat);
+					GitReviewIndex probe(workspace, target->cancellation->get_token(), remote.get());
+					const ProcessExecutionResult repository = probe.Run({"rev-parse", "--show-toplevel"});
+					if (CommandSucceeded(repository))
+					{
+						if (uam::paths::PathExistsNoThrow(ChatBaselinePath(snapshot, chat)))
+							result = SavedChatBaseline(snapshot, chat, uam::paths::PathFromUtf8(uam::strings::Trim(repository.output)), &error).empty() ? ChatBaselineReadiness::Unavailable : ChatBaselineReadiness::Ready;
+						else result = VcsCommitService().CaptureChatBaseline(snapshot, chat, &error, target->cancellation->get_token()) ? ChatBaselineReadiness::Ready : ChatBaselineReadiness::Failed;
+					}
+				}
+				catch (const std::exception& failure) { result = ChatBaselineReadiness::Failed; error = failure.what(); }
+				catch (...) { result = ChatBaselineReadiness::Failed; error = "Repository baseline capture failed."; }
+				std::scoped_lock lock(target->mutex);
+				target->result = result;
+				target->error = std::move(error);
+			});
+			found = app.repository_baseline_preparations.emplace(chat.id, std::move(task)).first;
+		}
+		if (cancellation_out) *cancellation_out = found->second->cancellation;
+		std::scoped_lock lock(found->second->mutex);
+		if (error_out) *error_out = found->second->error;
+		return found->second->result;
+	}
+
+	bool VcsCommitService::CaptureChatBaseline(const AppState& app, const ChatSession& chat, std::string* error_out, std::stop_token cancellation) const
+	{
+		if (error_out) error_out->clear();
+		if (chat.id.empty() || app.data_root.empty())
+		{
+			if (error_out) *error_out = "A chat workspace is required for a repository baseline.";
+			return false;
+		}
+		std::unique_ptr<RemoteVcsContext> remote;
+		if (!uam::paths::IsControllerLocalWorkspace(chat)) remote = std::make_unique<RemoteVcsContext>(app, chat);
+		GitReviewIndex probe(uam::paths::ResolveWorkspaceRootPath(app, chat), cancellation, remote.get());
+		const ProcessExecutionResult repository = probe.Run({"rev-parse", "--show-toplevel"});
+		const std::string root = uam::strings::Trim(repository.output);
+		if (!CommandSucceeded(repository))
+		{
+			if (error_out) *error_out = "No Git repository is available for this chat.";
+			return false;
+		}
+		const std::filesystem::path workspace = uam::paths::PathFromUtf8(root);
+		if (uam::paths::PathExistsNoThrow(ChatBaselinePath(app, chat))) return !SavedChatBaseline(app, chat, workspace, error_out).empty();
+		if (chat.imported_read_only || !chat.messages.empty() || chat.persisted_message_count != 0)
+		{
+			if (error_out) *error_out = "The original baseline is unavailable for an existing conversation. Create a new chat to record its changes.";
+			return false;
+		}
+		GitReviewIndex index(workspace, cancellation, remote.get());
+		ProcessExecutionResult result = index.SeedSourceIndex();
+		if (CommandSucceeded(result)) result = index.Run({"add", "-A", "--", "."});
+		if (CommandSucceeded(result)) result = index.Run({"write-tree"});
+		const std::string tree = uam::strings::Trim(result.output);
+		if (CommandSucceeded(result) && IsCommitId(tree)) result = index.Run({"-c", "user.name=UAM", "-c", "user.email=uam@local.invalid", "commit-tree", tree, "-m", "UAM chat review baseline"});
+		const std::string ref = uam::strings::Trim(result.output);
+		if (CommandSucceeded(result) && IsCommitId(ref)) result = index.Run({"update-ref", "refs/uam/chat-baselines/" + uam::hashing::Hex64(uam::hashing::Fnv1a64(chat.id)) + "/" + ref, ref});
+		if (!CommandSucceeded(result) || !IsCommitId(ref))
+		{
+			if (error_out) *error_out = CommandOutputOrError(result);
+			return false;
+		}
+		if (cancellation.stop_requested())
+		{
+			if (error_out) *error_out = "Repository baseline capture was canceled.";
+			return false;
+		}
+		std::error_code directory_error;
+		std::filesystem::create_directories(ChatBaselinePath(app, chat).parent_path(), directory_error);
+		const nlohmann::json saved = {{"workspace", root}, {"ref", ref}, {"hostIdentity", ChatBaselineHostIdentity(app, chat)}};
+		if (directory_error || !uam::io::AtomicWriteFileDetailed(ChatBaselinePath(app, chat), saved.dump()).success)
+		{
+			if (error_out) *error_out = "Failed to save the chat repository baseline.";
+			return false;
+		}
+		return true;
+	}
+
 	VcsCommitStatus VcsCommitService::Status(const AppState& app, const ChatSession& chat, VcsType requested_type, bool include_line_stats, std::string_view comparison_ref, bool context_only) const
 	{
+		if (!app.settings.git_enabled && !app.settings.svn_enabled)
+		{
+			VcsCommitStatus disabled;
+			disabled.warning = "Version control is disabled in Settings.";
+			return disabled;
+		}
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			RemoteVcsContext context(app, chat);
-			return RemoteStatus(context, chat, requested_type, include_line_stats,
-			                    uam::strings::Trim(comparison_ref), context_only);
+			return RemoteStatus(context, app, chat, requested_type, include_line_stats,
+			                    uam::strings::Trim(comparison_ref), context_only, app.settings);
 		}
 		VcsCommitStatus status;
 		status.line_stats_ready = include_line_stats;
@@ -1504,7 +2257,7 @@ namespace uam
 		status.workspace_directory = uam::paths::Utf8PathString(workspace);
 		std::filesystem::path git_root = workspace;
 
-		PopulateAvailableVcsTypes(status, workspace, git_root, context_only);
+		PopulateAvailableVcsTypes(status, workspace, git_root, context_only, app.settings);
 		if (!status.available)
 		{
 			status.warning = "No Git or SVN repository detected for this workspace.";
@@ -1515,19 +2268,36 @@ namespace uam
 		if (status.active_vcs_type == VcsType::Git)
 		{
 			const std::string ref = uam::strings::Trim(comparison_ref);
-			if (!ref.empty() && !IsCommitId(ref)) status.error = "The saved chat comparison point is invalid.";
+			if (ref == "chat") PopulateChatComparisonDetails(app, chat, status, git_root, include_line_stats);
+			else if (!ref.empty() && !IsCommitId(ref)) status.error = "The saved chat comparison point is invalid.";
 			else if (!ref.empty()) PopulateGitComparisonDetails(status, workspace, git_root, include_line_stats, ref);
 			else PopulateGitStatusDetails(status, workspace, git_root, include_line_stats, context_only);
 		}
 		else
 		{
-			PopulateSvnStatusDetails(status, workspace, include_line_stats, context_only);
+			if (PopulateSvnStatusDetails(LocalSvnRunner(workspace), status, include_line_stats, context_only) && include_line_stats)
+			{
+				for (VcsChangedFile& file : status.changed_files)
+				{
+					if (!IsSvnUnversioned(file)) continue;
+					const std::filesystem::path path = uam::paths::LexicallyNormalPath(workspace / uam::paths::PathFromUtf8(file.path));
+					std::error_code error;
+					// Unversioned folders stay one row; only a new regular file within the diff size limit is counted.
+					if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(path, error)) || error ||
+					    std::filesystem::file_size(path, error) > kMaxUnversionedDiffBytes || error) continue;
+					if (const std::optional<int> lines = CountTextFileLines(path)) file.additions = *lines;
+					else file.binary = true;
+				}
+				ApplyContentFingerprints(workspace, status.changed_files);
+			}
 		}
 		return status;
 	}
 
 	std::string VcsCommitService::Diff(const AppState& app, const ChatSession& chat, const std::string& path, const VcsType type, std::string* error_out, std::string_view comparison_ref) const
 	{
+		if (!(type == VcsType::Git ? app.settings.git_enabled : app.settings.svn_enabled))
+		{ if (error_out != nullptr) *error_out = "This version control system is disabled in Settings."; return {}; }
 		const std::string trimmed_path = uam::strings::Trim(path);
 		if (trimmed_path.empty())
 		{
@@ -1540,14 +2310,48 @@ namespace uam
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			RemoteVcsContext context(app, chat);
-			return RemoteDiff(context, chat, trimmed_path, type, error_out,
-			                  uam::strings::Trim(comparison_ref));
+			return RemoteDiff(context, app, chat, trimmed_path, type, error_out,
+			                  uam::strings::Trim(comparison_ref), app.settings);
 		}
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
 		std::filesystem::path diff_workspace = workspace;
 		if (type == VcsType::Git)
 		{
 			const std::string ref = uam::strings::Trim(comparison_ref);
+			if (ref == "chat")
+			{
+				std::string root;
+				if (!GitAvailable(workspace, &root))
+				{
+					if (error_out) *error_out = "No Git repository is available for this chat.";
+					return {};
+				}
+				const std::filesystem::path review_root = uam::paths::PathFromUtf8(root);
+				const VcsCommitStatus status = Status(app, chat, type, false, "chat");
+				if (!status.error.empty())
+				{
+					if (error_out) *error_out = status.error;
+					return {};
+				}
+				const auto selected = std::ranges::find(status.changed_files, trimmed_path, &VcsChangedFile::path);
+				if (selected == status.changed_files.end())
+				{
+					if (error_out) *error_out = "The selected file is no longer changed in this chat.";
+					return {};
+				}
+				const std::string saved_ref = SavedChatBaseline(app, chat, review_root, error_out);
+				GitReviewIndex index(review_root);
+				if (saved_ref.empty() || !PrepareChatReviewIndex(index, saved_ref, error_out)) return {};
+				std::vector<std::string> args = {"--literal-pathspecs", "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", saved_ref, "--", trimmed_path};
+				if (!selected->previous_path.empty()) args.push_back(selected->previous_path);
+				const ProcessExecutionResult patch = index.Run(std::move(args));
+				if (!CommandSucceeded(patch))
+				{
+					if (error_out) *error_out = CommandOutputOrError(patch);
+					return {};
+				}
+				return patch.output;
+			}
 			if (!ref.empty() && !IsCommitId(ref))
 			{
 				if (error_out != nullptr) *error_out = "The saved chat comparison point is invalid.";
@@ -1573,20 +2377,27 @@ namespace uam
 			}
 		}
 		std::string output;
-		const std::string command = BuildVcsDiffCommand(diff_workspace, trimmed_path, type);
-		if (!OutputCommand(command, &output, error_out))
-		{
-			return "";
-		}
-		return output;
+		if (type == VcsType::Git)
+			return OutputCommand(BuildLiteralGitCommandInDirectory(diff_workspace, "diff HEAD -- " + uam::shell::EscapeArg(trimmed_path)), &output, error_out) ? output : "";
+		std::string error;
+		const VcsCommitStatus status = Status(app, chat, type, false);
+		const auto selected = std::ranges::find(status.changed_files, trimmed_path, &VcsChangedFile::path);
+		const bool diffed = selected != status.changed_files.end() && IsSvnUnversioned(*selected)
+		    ? SvnUnversionedFileDiff(workspace, trimmed_path, output, error)
+		    : SvnFileDiff(LocalSvnRunner(workspace), trimmed_path, output, error);
+		if (diffed) return uam::strings::Trim(output);
+		if (error_out != nullptr) *error_out = error;
+		return {};
 	}
 
 	VcsCommitResult VcsCommitService::Commit(const AppState& app, const ChatSession& chat, const VcsType type, const std::string& message, const std::vector<std::string>& files) const
 	{
+		if (!(type == VcsType::Git ? app.settings.git_enabled : app.settings.svn_enabled))
+		{ VcsCommitResult disabled; disabled.error = "This version control system is disabled in Settings."; return disabled; }
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			RemoteVcsContext context(app, chat);
-			return RemoteCommit(context, chat, type, message, files);
+			return RemoteCommit(context, app, chat, type, message, files, app.settings);
 		}
 		VcsCommitResult result;
 		result.status = Status(app, chat, type);
@@ -1607,7 +2418,6 @@ namespace uam
 			result.error = "Select at least one changed file to commit.";
 			return result;
 		}
-		const std::string quoted_svn_files = JoinQuotedSvnFiles(workspace, files);
 
 		if (type == VcsType::Git)
 		{
@@ -1632,10 +2442,7 @@ namespace uam
 		else
 		{
 			ProcessExecutionResult commit_result;
-			if (!Command("svn commit -m " + uam::shell::EscapeArg(message) + " " + quoted_svn_files, &commit_result, &result.error))
-			{
-				return result;
-			}
+			if (!CommitSvnSelection(LocalSvnRunner(workspace), &workspace, message, files, SvnExternalRoots(result.status), commit_result, result.error)) return result;
 			CompleteSuccessfulCommit(result, Status(app, chat, type), commit_result, "SVN commit created.");
 		}
 
@@ -1644,6 +2451,8 @@ namespace uam
 
 	VcsCommitMessageSuggestion VcsCommitService::GenerateMessage(const AppState& app, const ChatSession& chat, const VcsType type, const std::vector<std::string>& files) const
 	{
+		if (!(type == VcsType::Git ? app.settings.git_enabled : app.settings.svn_enabled))
+		{ VcsCommitMessageSuggestion disabled; disabled.error = "This version control system is disabled in Settings."; return disabled; }
 		VcsCommitMessageSuggestion suggestion;
 		if (TrimmedFileSet(files).empty())
 		{
@@ -1689,7 +2498,7 @@ namespace uam
 		else
 		{
 			RemoteVcsContext context(app, chat);
-			result = context.Run(chat.workspace_directory, invocation.argv, {},
+			result = context.Run(context.WorkspaceDirectory(), invocation.argv, {},
 			                     invocation.standard_input);
 		}
 		if (!CommandSucceeded(result))
@@ -1698,7 +2507,12 @@ namespace uam
 			return suggestion;
 		}
 
-		return SuggestionFromWorkerOutput(result.output);
+		if (result.output_truncated)
+		{
+			suggestion.error = "Commit message worker output was truncated.";
+			return suggestion;
+		}
+		return SuggestionFromWorkerOutput(result.output, worker_provider->id);
 	}
 
 	std::string VcsCommitService::BuildCommitMessagePromptForTests(const VcsCommitStatus& status, const std::vector<std::string>& selected_files)
@@ -1706,8 +2520,19 @@ namespace uam
 		return BuildCommitMessagePrompt(status, selected_files);
 	}
 
-	VcsCommitMessageSuggestion VcsCommitService::ParseWorkerOutputForTests(const std::string& output)
+	VcsCommitMessageSuggestion VcsCommitService::ParseWorkerOutputForTests(const std::string& output, std::string_view worker_provider_id)
 	{
-		return SuggestionFromWorkerOutput(output);
+		return SuggestionFromWorkerOutput(output, worker_provider_id);
+	}
+
+	bool VcsCommitService::CommitSvnSelectionForTests(const std::function<ProcessExecutionResult(const std::vector<std::string>&)>& svn, const std::string& message, const std::vector<std::string>& files, std::string& error)
+	{
+		ProcessExecutionResult committed;
+		return CommitSvnSelection(svn, nullptr, message, files, {}, committed, error);
+	}
+
+	void VcsCommitService::ApplySvnLineStatsForTests(const std::function<ProcessExecutionResult(const std::vector<std::string>&)>& svn, std::vector<VcsChangedFile>& files)
+	{
+		ApplySvnLineStats(svn, files);
 	}
 } // namespace uam

@@ -36,3 +36,6 @@ class AppPaths
 };
 
 bool FolderDirectoryMatches(const std::filesystem::path& lhs, const std::filesystem::path& rhs);
+/// <summary>Resolved comparison form; FolderDirectoryMatches(a, b) equals FolderDirectoryKeysMatch(FolderDirectoryCompareKey(a), FolderDirectoryCompareKey(b)).</summary>
+std::filesystem::path FolderDirectoryCompareKey(const std::filesystem::path& directory);
+bool FolderDirectoryKeysMatch(const std::filesystem::path& lhs_key, const std::filesystem::path& rhs_key);

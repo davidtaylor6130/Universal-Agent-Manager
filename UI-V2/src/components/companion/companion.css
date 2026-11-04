@@ -21,8 +21,8 @@
 .uam-companion-header strong { flex: 1; min-width: 0; }
 .uam-companion-brand { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; }
 .uam-companion-brand img { width: 27px; height: 27px; border-radius: 6px; }
-.uam-companion-brand strong { font-size: 14px; }
-.uam-companion-error { padding: 8px 16px; color: var(--red); font-size: 12px; overflow-wrap: anywhere; }
+.uam-companion-brand strong { font-size: var(--fs-md); }
+.uam-companion-error { padding: 8px 16px; color: var(--red); font-size: var(--fs-sm); overflow-wrap: anywhere; }
 .uam-companion-main { flex: 1; min-height: 0; overflow: hidden; }
 .uam-companion-page-viewport { height: 100%; overflow: hidden; }
 .uam-companion-page-track { display: flex; width: 200%; height: 100%; transform: translateX(0); transition: transform 200ms ease-out; }
@@ -39,7 +39,7 @@
   align-items: center;
   justify-content: center;
 }
-.uam-companion-list h1 { margin: 0; font-size: 22px; line-height: 1.15; letter-spacing: -.035em; }
+.uam-companion-list h1 { margin: 0; font-size: var(--fs-xl); line-height: 1.15; letter-spacing: -.035em; }
 .uam-companion-list > .flex { padding: 0; margin-bottom: 4px; }
 
 .uam-companion-scope {
@@ -50,12 +50,12 @@
   min-height: 52px;
   margin: 8px 0 14px;
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .uam-companion-scope-label {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: .04em;
   text-transform: uppercase;
@@ -69,7 +69,7 @@
   border-radius: 6px;
   background: var(--surface);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .uam-companion-refresh-stack {
@@ -80,7 +80,7 @@
 
 .uam-companion-refresh-stack small {
   color: var(--text-3);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -96,27 +96,27 @@
   cursor: pointer;
 }
 .uam-companion-refresh:hover { color: var(--accent); }
-.uam-companion-refresh:focus-visible { color: var(--accent); outline: none; border-radius: 8px; box-shadow: var(--focus-ring); }
+.uam-companion-refresh:focus-visible { color: var(--accent); outline: none; border-radius: 8px; outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-companion-refresh:disabled { cursor: wait; opacity: .55; }
 
 .uam-companion-section { margin-top: 16px; }
-.uam-companion-section h2 { margin: 0 0 7px 4px; color: var(--text-3); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-.uam-companion-empty { margin: 0; padding: 14px 4px; color: var(--text-2); font-size: 12px; }
+.uam-companion-section h2 { margin: 0 0 7px 4px; color: var(--text-3); font-size: var(--fs-xs); font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.uam-companion-empty { margin: 0; padding: 14px 4px; color: var(--text-2); font-size: var(--fs-sm); }
 .uam-companion-activity-row { width: 100%; min-height: 67px; display: flex; align-items: center; gap: 10px; padding: 9px 4px; text-align: left; border: 0; border-top: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; }
 .uam-companion-activity-row:hover { background: var(--surface); }
-.uam-companion-activity-row:focus-visible { background: var(--surface); outline: none; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 60%, transparent); }
+.uam-companion-activity-row:focus-visible { background: var(--surface); outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 .uam-companion-provider { flex: 0 0 24px; }
 .uam-companion-row-copy { flex: 1; min-width: 0; display: grid; gap: 3px; }
-.uam-companion-row-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
+.uam-companion-row-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); font-weight: 600; }
 .uam-companion-row-copy small,
-.uam-companion-row-state small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: 11px; }
+.uam-companion-row-state small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: var(--fs-xs); }
 .uam-companion-row-state { display: grid; justify-items: end; gap: 2px; min-width: 82px; }
 .uam-companion-review-status { color: var(--accent) !important; }
 
-.uam-companion .uam-companion-page input.uam-companion-search { width: 100%; margin: 0 0 10px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 15px; }
-.uam-companion input { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 16px; }
-.uam-companion .uam-companion-page [data-testid^="session-row-"] span.text-\[13px\] { font-size: 14px !important; }
-.uam-companion .uam-companion-page [data-testid^="folder-header-"] span.font-semibold { font-size: 14px !important; }
+.uam-companion .uam-companion-page input.uam-companion-search { width: 100%; margin: 0 0 10px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: var(--fs-md); }
+.uam-companion input { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: var(--fs-lg); }
+.uam-companion .uam-companion-page [data-testid^="session-row-"] span.text-\[13px\] { font-size: var(--fs-md) !important; }
+.uam-companion .uam-companion-page [data-testid^="folder-header-"] span.font-semibold { font-size: var(--fs-md) !important; }
 .uam-companion-connect { display: grid; gap: 12px; padding: 24px 16px; max-width: 480px; width: 100%; margin: 0 auto; }
 
 .uam-companion-nav { position: relative; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); flex: 0 0 auto; align-items: center; min-height: 64px; padding: 8px 0 0; border-top: 1px solid var(--border); background: var(--surface); padding-bottom: env(safe-area-inset-bottom); }
@@ -124,15 +124,15 @@
 .uam-companion-nav > button:first-child { grid-column: 1; justify-self: center; }
 .uam-companion-nav > button:nth-child(3) { grid-column: 3; justify-self: center; }
 .uam-companion-nav button:hover { color: var(--text); }
-.uam-companion-nav button:focus-visible { color: var(--text); outline: none; border-radius: 10px; box-shadow: var(--focus-ring); }
+.uam-companion-nav button:focus-visible { color: var(--text); outline: none; border-radius: 10px; outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-companion-nav button[aria-current="page"] { color: var(--accent); }
 .uam-companion-nav-indicator { position: absolute; bottom: 4px; left: calc(16.6667% - 12px); width: 24px; height: 2px; background: var(--accent); transition: left 180ms ease; }
 .uam-companion-nav-indicator--chats { left: calc(83.3333% - 12px); }
-.uam-companion-nav .uam-companion-new-chat { position: absolute; left: 50%; top: -29px; transform: translateX(-50%); width: 58px; height: 58px; border: 5px solid var(--bg); border-radius: 50%; background: var(--accent); color: var(--bg); }
+.uam-companion-nav .uam-companion-new-chat { position: absolute; left: 50%; top: -29px; transform: translateX(-50%); width: 58px; height: 58px; border: 5px solid var(--bg); border-radius: 50%; background: var(--accent); color: var(--on-accent); }
 .uam-companion-new-chat:hover,
-.uam-companion-new-chat:focus-visible { filter: brightness(1.1); outline: 3px solid var(--accent-dim); outline-offset: 2px; }
+.uam-companion-new-chat:focus-visible { filter: brightness(1.1); outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-companion-settings { display: flex; flex-direction: column; align-items: flex-start; gap: 16px; padding: 16px; }
-.uam-companion-settings h1 { font-size: 25px; }
+.uam-companion-settings h1 { font-size: var(--fs-2xl); }
 .uam-companion .uam-chat-transcript { overscroll-behavior: contain; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -142,12 +142,16 @@
 }
 
 .uam-companion-header select { color: #fff; background: #000; border: 1px solid var(--border); min-height: 36px; max-width: 112px; cursor: pointer; }
-.uam-companion [aria-label="Runtime idle timeout"] { font-size: 11px; }
+.uam-companion [aria-label="Runtime idle timeout"] { font-size: var(--fs-xs); }
 .uam-companion .xterm { touch-action: pan-x pan-y; }
 .uam-companion .xterm-viewport { overscroll-behavior: contain; }
 .uam-companion [data-cli-controls] button { min-height: 44px; min-width: 44px; padding: 4px 12px; border: 1px solid var(--border); cursor: pointer; }
 .uam-companion [data-cli-controls] button:hover { background: var(--surface-up); }
-.uam-companion [data-cli-controls] button:focus-visible { outline: 2px solid var(--accent); }
+.uam-companion [data-cli-controls] button:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 .uam-companion-timeout-row { padding: 4px 16px; border-bottom: 1px solid var(--border); }
 .uam-companion-timeout-row:empty { display: none; }
+
+.uam-companion-settings { overflow-y: auto; }
+.uam-companion-setting { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 16px; }
+.uam-companion-setting select { background: var(--surface); color: var(--text); border: 1px solid var(--border); padding: 10px; }

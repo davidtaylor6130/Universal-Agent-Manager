@@ -35,4 +35,9 @@ describe('theme token contract', () => {
     expect(selectionRule).toMatch(/color:\s*var\(--text\)/)
   })
 
+  it('keeps the hidden native input of a disabled switch invisible over the global disabled-checkbox opacity', () => {
+    expect(styles).toContain('input[type="checkbox"]:disabled { opacity: .45;')
+    // The switch override must outrank input[type="checkbox"]:disabled (0,2,1) regardless of source order.
+    expect(styles).toMatch(/\.uam-switch input\[type="checkbox"\]:disabled \{[^}]*opacity: 0;/)
+  })
 })

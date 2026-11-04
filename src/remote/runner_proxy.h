@@ -1,6 +1,8 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <cstdint>
 #include <string>
@@ -15,6 +17,9 @@ namespace uam::remote
 {
 	inline constexpr const char* kRemoteProcessSpecEnvironment = "UAM_REMOTE_PROCESS_SPEC";
 	inline constexpr std::string_view kRemoteStopOutcomePrefix = "UAM_REMOTE_STOP_OUTCOME ";
+	// Only the proxy emits this before attempting to create a provider process.
+	inline constexpr int kRemoteConfigurationStartupFailureExitCode = 71;
+	inline constexpr std::string_view kRemoteStartupFailurePrefix = "UAM_REMOTE_STARTUP_FAILURE ";
 	inline constexpr std::string_view kRemoteStopControlLine = "\x1eUAM_REMOTE_STOP\n";
 	inline constexpr std::string_view kRemoteMcpControlPrefix = "\x1eUAM_REMOTE_MCP ";
 	inline constexpr std::string_view kRemoteOutputMarkerPrefix = "\x1eUAM_REMOTE_OUTPUT ";
@@ -39,8 +44,16 @@ namespace uam::remote
 	    std::uintmax_t delivered_stderr_cursor = 0,
 	    const std::string& context_provider_id = {},
 	    const std::string& context_directory = {},
-	    const std::string& configuration_provider = {}, const std::string& configuration_directory = {}, const nlohmann::json& session_mcp_servers = nlohmann::json::array());
+	    const std::string& configuration_provider = {}, const std::string& configuration_directory = {}, const nlohmann::json& session_mcp_servers = nlohmann::json::array(), bool transient_process = false);
 	std::filesystem::path PackagedRunnerPath();
+	using PackagedRunnerChecksums = std::map<std::string, std::string, std::less<>>;
+	/// Reads `<root>/<platform>-<architecture>/uam-runner.sha256` for each packaged helper target.
+	PackagedRunnerChecksums ReadPackagedRunnerChecksums(const std::filesystem::path& root);
+	/// Packaged helper SHA-256 for a host platform and architecture, read once; empty when none is packaged.
+	/// Installation plans and update offers both use this cache, so they agree.
+	std::string PackagedRunnerSha256(std::string_view platform, std::string_view architecture);
+	/// Test seam: replaces the process-wide cache and returns the previous values.
+	PackagedRunnerChecksums SetPackagedRunnerChecksumsForTesting(PackagedRunnerChecksums checksums);
 	std::vector<std::string> BuildRemoteTerminalSshArgv(
 	    const std::string& ssh_alias, const std::string& platform,
 	    const std::string& version, const std::filesystem::path& working_directory,

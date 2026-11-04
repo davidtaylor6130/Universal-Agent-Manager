@@ -1,9 +1,11 @@
+import { FilePreviewDialog } from './FilePreviewDialog'
 import { useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { FileText, X } from 'lucide-react'
+import { Columns2, FileText, Rows3, X } from 'lucide-react'
 import type { VcsChangedFile, VcsType } from '../../store/useAppStore'
 import { CopyTextButton } from '../chat/StatusHelpers'
-import { IconButton } from '../ui'
+import { Button, IconButton, Notice, Overlay, Tooltip } from '../ui'
+import './review.css'
+import { UnifiedDiff } from './UnifiedDiff'
 import { getTopmostModal } from '../../utils/modalFocus'
 
 export function RepositoryDiffDialog({
@@ -13,6 +15,10 @@ export function RepositoryDiffDialog({
   comparisonRef,
   getDiff,
   onClose,
+  sourcePath,
+  comparisonLabel,
+  zIndex = 1000,
+  showFileStats = true,
 }: {
   chatId: string
   file: VcsChangedFile
@@ -20,10 +26,23 @@ export function RepositoryDiffDialog({
   comparisonRef?: string
   getDiff: (chatId: string, path: string, vcsType: VcsType, comparisonRef?: string) => Promise<string>
   onClose: () => void
+  sourcePath?: string
+  comparisonLabel?: string
+  zIndex?: number
+  showFileStats?: boolean
 }) {
   const dialogRef = useRef<HTMLElement>(null)
   const [diff, setDiff] = useState<string | null>(file.binary ? '' : null)
   const [error, setError] = useState('')
+  const [inspection, setInspection] = useState<{ chatId: string; path: string } | null>(null)
+  const inspecting = inspection?.chatId === chatId && inspection.path === (sourcePath ?? file.path)
+  const [layout, setLayout] = useState<'unified' | 'split'>(() => {
+    try { return localStorage.getItem('uam-diff-layout') === 'unified' ? 'unified' : 'split' } catch { return 'split' }
+  })
+  const chooseLayout = (next: 'unified' | 'split') => {
+    setLayout(next)
+    try { localStorage.setItem('uam-diff-layout', next) } catch { /* The view still works when storage is unavailable. */ }
+  }
 
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null
@@ -45,7 +64,11 @@ export function RepositoryDiffDialog({
   }, [onClose])
 
   useEffect(() => {
-    if (file.binary) return
+    if (file.binary) {
+      setDiff('')
+      setError('')
+      return
+    }
     let cancelled = false
     setDiff(null)
     setError('')
@@ -59,76 +82,56 @@ export function RepositoryDiffDialog({
     return () => { cancelled = true }
   }, [chatId, comparisonRef, file.binary, file.path, getDiff, vcsType])
 
-  const lines = diff?.split('\n') ?? []
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[1000] flex items-center justify-center p-2 sm:p-4"
-      style={{ background: 'rgba(0, 0, 0, 0.48)', backdropFilter: 'blur(3px)' }}
-      onMouseDown={onClose}
-    >
+  // Inspecting replaces this dialog's content in place; closing the inspection returns to the diff.
+  if (inspecting) return <FilePreviewDialog zIndex={zIndex} chatId={chatId} reference={{ path: inspection.path }} onClose={() => setInspection(null)} onBack={() => setInspection(null)} />
+
+  return (
+    <Overlay open zIndex={zIndex} onBackdropMouseDown={onClose}>
       <section
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={`Changes in ${file.path}`}
         tabIndex={-1}
-        className="flex h-[calc(100dvh-1rem)] w-full max-w-5xl flex-col overflow-hidden rounded-lg sm:h-auto sm:max-h-[88vh]"
-        style={{ border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
+        className="uam-rv-dialog flex h-[calc(100dvh-1rem)] w-full max-w-5xl sm:h-auto sm:max-h-[88vh]"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <header className="flex min-h-12 items-center gap-3 px-3 sm:px-4" style={{ borderBottom: '1px solid var(--border)' }}>
-          <FileText size={17} aria-hidden className="shrink-0" style={{ color: 'var(--accent)' }} />
+        <header className="uam-rv-dialog__header">
+          <FileText size={16} aria-hidden className="shrink-0" style={{ color: 'var(--accent)' }} />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold" title={file.path} style={{ color: 'var(--text)' }}>{file.path}</div>
-            <div className="flex gap-3 font-mono text-[11px]">
-              <span style={{ color: 'var(--text-3)' }}>{file.status.trim() || 'M'}</span>
-              {!file.binary && <><span style={{ color: 'var(--green)' }}>+{file.additions}</span><span style={{ color: 'var(--red)' }}>-{file.deletions}</span></>}
-            </div>
+            <Tooltip label={file.path}><div className="truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{file.path}</div></Tooltip>
+            {(comparisonLabel || comparisonRef || showFileStats) && <div className="flex min-w-0 items-center gap-2 text-xs" style={{ color: 'var(--text-3)' }}>
+              {(comparisonLabel || comparisonRef) && <span className="truncate">{comparisonLabel || `Against ${comparisonRef}`}</span>}
+              {showFileStats && <span className="uam-rv-stat shrink-0">
+                <span style={{ color: 'var(--text-3)' }}>{file.status.trim() || 'M'}</span>
+                {!file.binary && <><span style={{ color: 'var(--success)' }}>+{file.additions}</span><span style={{ color: 'var(--error)' }}>-{file.deletions}</span></>}
+              </span>}
+            </div>}
           </div>
+          <Button type="button" size="sm" variant="ghost" onClick={() => setInspection({ chatId, path: sourcePath ?? file.path })}>Inspect file</Button>
+          {!file.binary && <div role="group" aria-label="Diff layout" className="uam-rv-segmented">
+            {/* ui: raw buttons kept — per-option Tooltip and aria-label ("... diff view") that SegmentedControl options cannot carry */}
+            <Tooltip label="Unified diff view"><button type="button" aria-label="Unified diff view" aria-pressed={layout === 'unified'} onClick={() => chooseLayout('unified')}><Rows3 size={14} aria-hidden />Unified</button></Tooltip>
+            <Tooltip label="Split diff view"><button type="button" aria-label="Split diff view" aria-pressed={layout === 'split'} onClick={() => chooseLayout('split')}><Columns2 size={14} aria-hidden />Split</button></Tooltip>
+          </div>}
           {diff && <CopyTextButton text={diff} label="Copy diff" title="Copy file diff" />}
           <IconButton icon={<X size={16} />} label="Close file changes" onClick={onClose} />
         </header>
-        <div className="min-h-0 flex-1 overflow-auto" style={{ background: 'var(--bg)' }}>
+        <div className="min-h-0 flex-1 flex flex-col overflow-auto" style={{ background: 'var(--bg)' }}>
           {file.binary ? (
             <div className="p-6 text-center text-sm" style={{ color: 'var(--text-2)' }}>Binary changes cannot be previewed.</div>
           ) : error ? (
-            <div role="alert" className="m-4 rounded-md p-3 text-sm" style={{ border: '1px solid var(--red)', color: 'var(--red)' }}>{error}</div>
+            <div className="m-4"><Notice tone="error" dismissLabel="Dismiss">{error}</Notice></div>
           ) : diff === null ? (
             <div role="status" className="p-6 text-center text-sm" style={{ color: 'var(--text-3)' }}>Loading file changes…</div>
           ) : diff.length === 0 ? (
             <div className="p-6 text-center text-sm" style={{ color: 'var(--text-2)' }}>No textual diff is available for this file.</div>
           ) : (
-            <pre className="min-w-full w-max py-2 font-mono text-[11px] leading-5 sm:text-xs" aria-label={`Unified diff for ${file.path}`}>
-              {lines.map((line, index) => {
-                const added = line.startsWith('+') && !line.startsWith('+++')
-                const removed = line.startsWith('-') && !line.startsWith('---')
-                const hunk = line.startsWith('@@')
-                const header = line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')
-                return (
-                  <span
-                    key={`${index}-${line}`}
-                    className="block min-h-5 whitespace-pre px-3 sm:px-4"
-                    style={{
-                      color: added ? 'var(--green)' : removed ? 'var(--red)' : hunk ? 'var(--accent)' : header ? 'var(--text-2)' : 'var(--text)',
-                      background: added
-                        ? 'color-mix(in srgb, var(--green) 9%, transparent)'
-                        : removed
-                          ? 'color-mix(in srgb, var(--red) 9%, transparent)'
-                          : hunk
-                            ? 'var(--accent-dim)'
-                            : 'transparent',
-                    }}
-                  >
-                    {line || ' '}
-                  </span>
-                )
-              })}
-            </pre>
+            <UnifiedDiff key={`${chatId}:${file.path}:${comparisonRef ?? ""}`} diff={diff} path={file.path} layout={layout} />
           )}
         </div>
       </section>
-    </div>,
-    document.body
+    </Overlay>
   )
 }

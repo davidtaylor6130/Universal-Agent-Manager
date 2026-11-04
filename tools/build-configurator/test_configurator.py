@@ -23,9 +23,33 @@ class BuildConfiguratorTests(unittest.TestCase):
         prepare = module.commands(*config)[1][0]
         self.assertIn('-DUAM_ENABLE_RUNTIME_CODEX_CLI=ON', prepare)
         self.assertIn('-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF', prepare)
+        self.assertIn('-DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF', prepare)
         self.assertIn('-DUAM_ENABLE_COMPUTER_USE=OFF', prepare)
         self.assertIn('-DUAM_ENABLE_SSH=ON', prepare)
         self.assertEqual(config[1], (self.source / 'Builds/configured').resolve())
+
+    def test_antigravity_can_be_selected_without_enabling_other_providers(self):
+        config = module.configuration({'source': str(self.source), 'providers': ['ANTIGRAVITY'], 'features': []})
+        prepare = module.commands(*config)[1][0]
+        self.assertIn('-DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=ON', prepare)
+        for provider in ('GEMINI', 'CODEX', 'CLAUDE', 'OPENCODE', 'COPILOT'):
+            self.assertIn(f'-DUAM_ENABLE_RUNTIME_{provider}_CLI=OFF', prepare)
+
+    def test_browser_provider_choices_match_backend(self):
+        from html.parser import HTMLParser
+
+        class ProviderInputs(HTMLParser):
+            choices = set()
+
+            def handle_starttag(self, tag, attrs):
+                values = dict(attrs)
+                if tag == 'input' and values.get('name') == 'providers':
+                    self.choices.add(values.get('value'))
+
+        parser = ProviderInputs()
+        parser.feed(Path(module.__file__).with_name('index.html').read_text())
+        self.assertEqual(parser.choices, set(module.PROVIDERS))
+        self.assertIn('ANTIGRAVITY', parser.choices)
 
     def test_refuses_arbitrary_output_existing_builds_and_symlink_escape(self):
         for folder in [str(self.source.parent / 'outside'), 'Builds', '../outside']:

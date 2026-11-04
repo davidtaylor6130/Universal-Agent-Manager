@@ -1,12 +1,18 @@
+import { applyTypography, useTypographyStore } from './store/typographyStore'
 import { StrictMode } from 'react'
 import { InterfaceErrorBoundary } from './components/shared/InterfaceErrorBoundary'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import { isCefContext } from './ipc/cefBridge'
 import { applyDocumentTheme, readStoredTheme } from './utils/themeStorage'
+import { applyAppearance, readAppearance } from './utils/appearancePreferences'
+import { applyMotionSpeed, readStoredMotion } from './utils/motionStorage'
 
-// Apply persisted theme before first render to prevent flash
+// Apply persisted theme and motion speed before first render to prevent flash
 applyDocumentTheme(readStoredTheme() ?? 'focus')
+applyAppearance(readAppearance())
+applyMotionSpeed(readStoredMotion())
+applyTypography(useTypographyStore.getState().preferences)
 
 const root = createRoot(document.getElementById('root')!)
 
@@ -20,9 +26,7 @@ function BrowserLaunchGuard() {
           <div className="browser-guard__eyebrow">Native shell required</div>
           <h1 className="browser-guard__title">This UI is not meant to run inside Chrome.</h1>
           <p className="browser-guard__body">
-            UAM removes browser tabs and the URL bar by hosting the React UI inside the
-            native CEF desktop window. Opening the bundled HTML directly will always show
-            browser chrome.
+            Open UAM from the desktop app. Browser mode shows browser tabs and the URL bar.
           </p>
           <div className="browser-guard__callout">
             {openedFromFile

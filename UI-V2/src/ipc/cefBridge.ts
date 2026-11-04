@@ -1,3 +1,6 @@
+import { companionPlatformAction } from './companionPlatform'
+import { MOBILE_COMPANION_ENABLED } from '../config/buildFeatures'
+
 /**
  * Routes requests through the C++ CefMessageRouter when hosted in CEF.
  * Standalone browser previews receive mock responses.
@@ -17,7 +20,7 @@ declare global {
 
 /** Identifies the companion route sharing the desktop UI and store. */
 export function isCompanionContext(): boolean {
-  return typeof window !== 'undefined' && window.location.pathname.replace(/\/$/, '') === '/companion'
+  return MOBILE_COMPANION_ENABLED && typeof window !== 'undefined' && window.location.pathname.replace(/\/$/, '') === '/companion'
 }
 
 export function isCefContext(): boolean {
@@ -34,6 +37,8 @@ export interface CEFResponse<T = unknown> {
   ok: boolean
   data?: T
   error?: string
+  /** Native CEF failure code; absent for companion and transport failures. */
+  code?: number
   requestId?: string
 }
 
@@ -61,6 +66,8 @@ export async function sendToCEF<T = unknown>(
   if (isCompanionContext()) {
     // Selection belongs to this client; never move the desktop's current chat.
     if (['selectSession', 'toggleFolder', 'toggleResourceCollection'].includes(request.action)) return { ok: true, data: {} as T, requestId }
+    const local = await companionPlatformAction(request.action, request.payload)
+    if (local) return { ...local, data: local.data as T, requestId }
     const token = window.localStorage.getItem('uam-companion-token')
     if (!token) return { ok: false, error: 'Connect to UAM first.', requestId }
     let transferFailure = ''
@@ -73,12 +80,12 @@ export async function sendToCEF<T = unknown>(
         redirect: 'error',
         cache: 'no-store',
       })
-      let data = await response.json()
       if (!response.ok) {
-        const error = data.error ?? `Request failed (${response.status}).`
+        const error = (await response.json().catch(() => null))?.error ?? `Request failed (${response.status}).`
         if (logFailures) console.error(`[CEF] ${request.action}: ${error}`)
         return { ok: false, error, requestId }
       }
+      let data = await response.json()
       if (data?.uamTransfer) {
         const { id, totalBytes, chunkBytes } = data.uamTransfer
         if (typeof id !== 'string' || !Number.isSafeInteger(totalBytes) || totalBytes <= 0) {
@@ -102,11 +109,11 @@ export async function sendToCEF<T = unknown>(
             redirect: 'error',
             cache: 'no-store',
           })
-          const chunk = await chunkResponse.json()
           if (!chunkResponse.ok) {
-            transferFailure = chunk.error || 'Could not load the rest of this response.'
+            transferFailure = (await chunkResponse.json().catch(() => null))?.error || 'Could not load the rest of this response.'
             throw new Error(transferFailure)
           }
+          const chunk = await chunkResponse.json()
           if (typeof chunk.base64 !== 'string') throw new Error('Invalid response chunk.')
           const decoded = Uint8Array.from(atob(chunk.base64), (character) => character.charCodeAt(0))
           const expectedLength = Math.min(transferChunkBytes, totalBytes - offset)
@@ -155,7 +162,7 @@ export async function sendToCEF<T = unknown>(
         },
         onFailure: (code, message) => {
           if (logFailures) console.error(`[CEF] Error ${code}: ${message}`)
-          resolve({ ok: false, error: message, requestId })
+          resolve({ ok: false, error: message, code, requestId })
         },
       })
     }).catch((cause: unknown) => {

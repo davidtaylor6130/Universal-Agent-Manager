@@ -1,14 +1,29 @@
+#include "app/managed_parent_continuation_service.h"
+#include "common/platform/background_thread_priority.h"
+#include "common/config/provider_availability.h"
 #include "common/provider/provider_setup.h"
+#include <condition_variable>
+#include <mutex>
 #include "app/uam_control_service.h"
+#include "app/data_folder_transition.h"
+#include "common/platform/data_folder_writer_lease.h"
 
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
+#include "app/provider_model_catalog_service.h"
+#include "common/config/execution_host_config.h"
+#include "common/provider/provider_ids.h"
+#include "common/provider/provider_runtime.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
 #include "app/chat_domain_service.h"
 #include "app/computer_use_service.h"
 #include "app/goal_service.h"
+#include "app/git_worktree_service.h"
 #include "app/markdown_store_service.h"
+#include "app/managed_subagent_control_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/approval_modes.h"
+#include "common/config/central_provider_configuration.h"
 #include "common/config/settings_normalization.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
@@ -16,17 +31,25 @@
 #include "common/provider/provider_profile_constants.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_control_capability_retention.h"
+#include "common/runtime/app_time.h"
 #include "common/security/command_safety.h"
 #include "common/utils/env_utils.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "common/utils/diagnostic_log.h"
+#include "common/config/provider_chat_defaults.h"
 #include "computer_use/computer_use_mcp_config.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
+#include <deque>
+#include <functional>
+#include <future>
 #include <iomanip>
 #include <initializer_list>
 #include <iostream>
@@ -38,6 +61,48 @@
 
 namespace uam
 {
+	struct UamWaitResponsePublication
+	{
+		io::AtomicWriteResult write;
+		bool rename_crossed = false;
+		bool outcome_unknown = false;
+	};
+
+	// Opaque shared ownership lets capability copies/retirement retain real IO futures safely.
+	struct UamAgentWait
+	{
+		using Clock = std::chrono::steady_clock;
+		struct RunIdentity
+		{
+			std::string id, root_id, parent_id, transcript_id, provider_id, model_id, definition_hash, created_at;
+			std::string agent_id, execution_capability, resumed_from_id, result_delivery_id, workspace_access, definition_snapshot;
+			std::shared_ptr<const std::uint8_t> transcript_incarnation;
+			std::string host_id; // Execution host is birth scope; native identity/model/worktree publication is late-bound.
+		};
+		enum class Phase { Waiting, AuditPending, ResponsePending, Published, Retired };
+		Phase phase = Phase::Waiting;
+		std::filesystem::path data_root, directory;
+		std::string capability_id, request_id, run_id, root_id, session_chat_id, provider_id, connection_id;
+		std::shared_ptr<const std::uint8_t> root_incarnation, chat_incarnation;
+		std::shared_ptr<const char> launch_incarnation;
+		const AcpSessionState* original_session = nullptr; // Compared only on the owner; never dereferenced by a worker.
+		std::string session_id, native_session_id, process_id, process_host_id, remote_delivery_token, native_turn_id;
+		int turn_serial = 0;
+		ExecutionHost host;
+		std::string root_workspace, root_worktree, workspace, worktree;
+		std::string root_provider_id, root_model_id, root_native_id, chat_provider_id, chat_model_id, origin_agent_run_id;
+		std::vector<RunIdentity> ancestry;
+		Clock::time_point semantic_deadline, publication_deadline, retry_at;
+		std::string sealed_response;
+		UamControlAuditRecord audit;
+		std::shared_ptr<ControlAuditSaveTicket> audit_ticket;
+		ControlAuditSaveResult audit_result;
+		std::shared_ptr<std::atomic<bool>> publish_lease = std::make_shared<std::atomic<bool>>(true);
+		std::future<UamWaitResponsePublication> response_future;
+		UamWaitResponsePublication response_result;
+		bool response_observed = false;
+	};
+
 	namespace
 	{
 		constexpr std::size_t kMaxRequestBytes = 64U * 1024U;
@@ -50,11 +115,132 @@ namespace uam
 		constexpr std::size_t kMaxSeenRequests = 256;
 		constexpr std::size_t kMaxAuditRecords = 64;
 		constexpr std::size_t kMaxProcessedPerTick = 16;
+		constexpr std::size_t kMaxActiveWaits = 16;
+		constexpr std::size_t kMaxChatCreatesPerTurn = 2;
+		constexpr std::size_t kMaxChatCreatesPerCaller = 8;
+		constexpr std::size_t kMaxChatTitleBytes = 256;
+		constexpr std::size_t kMaxWaitActionsPerTick = 2;
+		constexpr std::size_t kMaxCancelledWaitsPerConnection = 8;
+		constexpr auto kAgentWaitSlice = std::chrono::seconds(80);
+		constexpr auto kAgentWaitPublicationBudget = std::chrono::seconds(100);
 		constexpr int64_t kCapabilityLifetimeMs = 24LL * 60LL * 60LL * 1000LL;
 		constexpr int64_t kApprovalLifetimeMs = 90LL * 1000LL;
 		constexpr int64_t kModelGoalTokenBudget = 200000;
 		constexpr std::string_view kServerFlag = "--uam-control-mcp";
 		constexpr const char* kCapabilityDirectoryEnvironment = "UAM_CONTROL_CAPABILITY_DIR";
+
+		enum class WaitAbortReason { None, Cancelled, InputClosed, InputError, Deadline };
+
+		/// Sole stdin consumer; no blocked reader thread can survive an error/early return.
+		class StdioInputPump
+		{
+		  public:
+			explicit StdioInputPump(IPlatformProcessService& service) : m_service(service) {}
+
+			bool Next(std::string& line)
+			{
+				while (m_lines.empty() && !m_eof && !m_failed)
+				{
+					Pump();
+					if (m_lines.empty() && !m_eof && !m_failed)
+						std::this_thread::sleep_for(std::chrono::milliseconds(25));
+				}
+				if (m_failed || m_lines.empty()) return false;
+				line = std::move(m_lines.front());
+				m_lines.pop_front();
+				return true;
+			}
+
+			void BeginWait(const nlohmann::json& id)
+			{
+				m_wait_id = id;
+				m_waiting = true;
+				m_cancelled = false;
+				// A request and its cancellation may already share the same input chunk.
+				for (auto line = m_lines.begin(); line != m_lines.end();)
+				{
+					if (IsMatchingCancellation(*line))
+					{
+						m_cancelled = true;
+						line = m_lines.erase(line);
+					}
+					else ++line;
+				}
+			}
+
+			WaitAbortReason ProbeWait()
+			{
+				Pump();
+				if (m_failed) return WaitAbortReason::InputError;
+				if (m_eof) return WaitAbortReason::InputClosed;
+				return m_cancelled ? WaitAbortReason::Cancelled : WaitAbortReason::None;
+			}
+
+			void EndWait() { m_waiting = false; m_wait_id = nullptr; m_cancelled = false; }
+			bool Failed() const { return m_failed; }
+
+		  private:
+			bool IsMatchingCancellation(std::string_view line) const
+			{
+				if (!m_waiting) return false;
+				const nlohmann::json message = nlohmann::json::parse(line, nullptr, false);
+				if (!message.is_object() || message.contains("id") ||
+				    message.value("method", nlohmann::json{}) != "notifications/cancelled" ||
+				    !message.contains("params") || !message["params"].is_object()) return false;
+				const auto id = message["params"].find("requestId");
+				return id != message["params"].end() &&
+				       (id->is_string() || id->is_number_integer()) && *id == m_wait_id;
+			}
+
+			void CompleteLine()
+			{
+				if (IsMatchingCancellation(m_partial)) m_cancelled = true;
+				else
+				{
+					if (m_lines.size() >= kMaxQueuedRequests) { m_failed = true; return; }
+					m_lines.push_back(std::move(m_partial));
+				}
+				m_partial.clear();
+			}
+
+			void Pump()
+			{
+				using platform::StandardInputReadStatus;
+				// Bound work per mailbox tick as well as total queued input memory.
+				for (int chunk = 0; chunk < 16 && !m_eof && !m_failed; ++chunk)
+				{
+					std::array<char, 4096> bytes{};
+					const auto read = m_service.ReadStandardInput(bytes.data(), bytes.size());
+					if (read.status == StandardInputReadStatus::Pending) return;
+					if (read.status == StandardInputReadStatus::EndOfStream)
+					{
+						m_eof = true;
+						if (!m_partial.empty()) CompleteLine(); // Preserve final non-newline line.
+						return;
+					}
+					if (read.status != StandardInputReadStatus::Data || read.size == 0 || read.size > bytes.size())
+					{
+						m_failed = true;
+						return;
+					}
+					for (std::size_t i = 0; i < read.size && !m_failed; ++i)
+					{
+						if (bytes[i] == '\n') CompleteLine();
+						else if (m_partial.size() >= kMaxRequestBytes) m_failed = true;
+						else m_partial.push_back(bytes[i]);
+					}
+				}
+			}
+
+			IPlatformProcessService& m_service;
+			std::deque<std::string> m_lines;
+			std::string m_partial;
+			nlohmann::json m_wait_id;
+			bool m_waiting = false;
+			bool m_cancelled = false;
+			bool m_eof = false;
+			bool m_failed = false;
+		};
 
 		struct ToolResult
 		{
@@ -123,15 +309,23 @@ namespace uam
 
 		bool ValidToolArguments(std::string_view method, const nlohmann::json& arguments)
 		{
+			if (method == "_mcp_cancel_request")
+				return HasOnlyStringArguments(arguments, {"connectionId", "requestId"}) &&
+				    SafeRequestId(arguments["connectionId"].get_ref<const std::string&>()) &&
+				    SafeRequestId(arguments["requestId"].get_ref<const std::string&>());
+			if (method == "_mcp_initialized" || method == "_mcp_disconnected" || method == "_mcp_heartbeat")
+				return HasOnlyStringArguments(arguments, {"connectionId"}) && SafeRequestId(arguments["connectionId"].get_ref<const std::string&>());
 			if (method == "skill_list" || method == "agent_list" || method == "goal_get")
 				return arguments.is_object() && arguments.empty();
 			if (method == "skill_read") return HasOnlyStringArguments(arguments, {"id"}, {"path"});
-			if (method == "agent_status" || method == "agent_cancel")
+			if (method == "agent_status" || method == "agent_cancel" || method == "agent_wait")
 				return HasOnlyStringArguments(arguments, {"runId"});
 			if (method == "agent_delegate")
 				return HasOnlyStringArguments(arguments, {"agentId", "task"}, {"providerId", "modelId"});
 			if (method == "goal_create")
 				return HasOnlyStringArguments(arguments, {"objective", "idempotencyKey"});
+			if (method == "chat_create")
+				return HasOnlyStringArguments(arguments, {"task"}, {"providerId", "modelId", "title"});
 			if (method == "computer_use_request")
 				return HasOnlyStringArguments(arguments, {"reason"});
 			if (method == "user_question")
@@ -162,7 +356,8 @@ namespace uam
 			return request.is_object() && request.contains("method") && request["method"].is_string() &&
 			       request["method"] == "tools/call" && request.contains("params") && request["params"].is_object() &&
 			       request["params"].contains("name") && request["params"]["name"].is_string() &&
-			       request["params"].contains("arguments") && request["params"]["arguments"].is_object();
+			       request["params"].contains("arguments") && request["params"]["arguments"].is_object() &&
+			       !request["params"]["name"].get_ref<const std::string&>().starts_with("_mcp_");
 		}
 
 		bool Contains(const std::vector<std::string>& values, std::string_view value)
@@ -172,7 +367,7 @@ namespace uam
 
 		bool IsMutation(std::string_view method)
 		{
-			return method == "agent_delegate" || method == "agent_cancel" || method == "goal_create";
+			return method == "agent_delegate" || method == "agent_cancel" || method == "goal_create" || method == "chat_create";
 		}
 
 		bool ReadOnlyAgent(const AppState& app, const UamControlCapability& capability)
@@ -238,6 +433,13 @@ namespace uam
 			return false;
 		}
 
+		/// A provider override grants this launch; later settings changes do not alter its authority.
+		bool ControlEnabled(const ChatSession* chat, const UamControlCapability& capability, bool root)
+		{
+			return chat != nullptr && !chat->uam_control_explicitly_disabled && (chat->uam_control_enabled ||
+			    (root ? capability.root_control_override_at_launch : capability.session_control_override_at_launch));
+		}
+
 		std::string GoalStatusName(GoalStatus status)
 		{
 			switch (status)
@@ -263,7 +465,7 @@ namespace uam
 			    {"lastVerification", goal->last_verification}, {"currentStep", goal->current_step},
 			    {"completedItems", goal->completed_items}, {"remainingItems", goal->remaining_items},
 			    {"maxLoopIterations", bounded_settings.goal_max_loop_iterations},
-			    {"executionOwner", "uam"}, {"creator", goal->creator},
+			    {"executionOwner", goal->execution_owner == "provider" ? "provider" : "uam"}, {"creator", goal->creator},
 			    {"creatorProviderId", goal->creator_provider_id}, {"creatorAgentId", goal->creator_agent_id},
 			    {"creatorRunId", goal->creator_run_id},
 			};
@@ -414,11 +616,49 @@ namespace uam
 			return {.error = "Approved skill snapshot is unavailable."};
 		}
 
+		/// <summary>Lists bounded worker targets without probing providers or asserting authentication.</summary>
+		nlohmann::json AgentProviderTargets(const AppState& app, const ChatSession& chat)
+		{
+			nlohmann::json targets = nlohmann::json::array();
+			const std::string host_id = strings::NonEmptyOrFallback(chat.execution_host_id, "local");
+			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, host_id);
+			const std::string workspace = paths::ResolveWorkspaceRootPath(app, chat).generic_string();
+			const std::string parent_provider = provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id);
+			std::set<std::string> seen;
+			for (const ProviderProfile& profile : app.provider_profiles)
+			{
+				const std::string id = provider_ids::NormalizeCliProviderAliasOrSelf(profile.id);
+				// Managed children use structured chat with its native permission boundary;
+				// SupportsTextWorkers describes the separate tool-free worker launcher.
+				if (!provider_ids::IsKnownCliProviderId(id) || !profile.supports_cli || !profile.supports_structured || !ProviderRuntimeRegistry::ResolveById(id).IsEnabled() || !seen.insert(id).second) continue;
+				std::string reason;
+				const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(id, host_id));
+				if (host == nullptr) reason = "Execution host unavailable.";
+				else if (host->transport == "ssh" && host->runner_status != "ready") reason = "Execution host is not ready.";
+				else if (host->transport == "ssh" && !execution_hosts::IsAbsoluteRemotePath(host->platform, workspace)) reason = "Remote workspace unavailable.";
+				else if (!provider_availability::IsEnabled(app.settings, id, host_id)) reason = provider_availability::DisabledReason();
+				else if (version == app.runtime_cli_versions_by_provider_id.end() || !version->second.checked) reason = "CLI compatibility has not been checked.";
+				else if (!execution_hosts::SameConnection(*host, version->second.execution_host)) reason = "CLI observation belongs to a different host configuration.";
+				else if (!version->second.supported || version->second.installed_version.empty() || !version->second.check_error.empty()) reason = "CLI is unavailable or incompatible.";
+				else reason = ProviderCliLaunchBlockReason(app, id, host_id);
+				nlohmann::json choices = app.provider_model_catalog != nullptr
+				    ? app.provider_model_catalog->GetCachedProviderModelChoices(id, workspace, host_id) : nlohmann::json::array();
+				const std::string default_model = id == parent_provider ? chat.model_id : std::string{};
+				targets.push_back({{"providerId", id}, {"title", profile.title}, {"executionHostId", host_id},
+				    {"eligible", reason.empty()}, {"availability", reason.empty() ? "installed-compatible" : "unavailable"},
+				    {"unavailableReason", reason}, {"authentication", "unverified"},
+				    {"defaultModelId", default_model}, {"models", std::move(choices)}});
+				if (targets.size() == 8) break;
+			}
+			return targets;
+		}
+
 		ToolResult AgentList(const AppState& app, const UamControlCapability& capability,
 		                     const ChatSession& chat)
 		{
 			ToolResult out{.ok = true, .result = nlohmann::json::array(), .reason = "Listed bounded delegate metadata."};
 			const AgentDefinitionCatalog catalog = AgentCatalog(app, chat);
+			const nlohmann::json targets = AgentProviderTargets(app, chat);
 			for (const AgentDefinition& definition : catalog.definitions)
 			{
 				if (definition.mode != "subagent" && definition.mode != "both") continue;
@@ -428,7 +668,12 @@ namespace uam
 				                          FindRun(app, capability.agent_run_id)->effective_workspace_access == "read");
 				out.result.push_back({{"id", definition.id}, {"description", definition.description},
 				                      {"workspaceAccess", forced_read ? "read" : "write"},
-				                      {"providerNeutral", true}});
+				                      {"providerNeutral", true}, {"providerTargets", targets}});
+				if (out.result.dump().size() > kMaxResponseBytes - 1024)
+				{
+					out.result.erase(out.result.end() - 1);
+					break;
+				}
 				if (out.result.size() == 64) break;
 			}
 			return out;
@@ -445,11 +690,26 @@ namespace uam
 			std::string run_id;
 			std::string error;
 			if (!AgentRunScheduler::Enqueue(app, capability.chat_id, capability.agent_run_id,
-			                                agent_id, task, &run_id, &error, provider_id, model_id))
+			                                agent_id, task, &run_id, &error, provider_id, model_id, ReadOnlyAgent(app, capability)))
 				return {.error = std::move(error)};
 			capability.owned_agent_run_ids.insert(run_id);
-			return {.ok = true, .result = {{"runId", run_id}, {"status", "queued"}},
+			const auto child = std::ranges::find(app.agent_runs, run_id, &AgentRun::id);
+			const std::string delivery = child == app.agent_runs.end() ? "cooperative-only" :
+			    ManagedParentContinuationService::StageDelegation(app, capability, *child);
+			return {.ok = true, .result = {{"runId", run_id}, {"status", "queued"}, {"resultDelivery", delivery}, {"resultDeliveryReason", delivery == "automatic-pending" ? "same_live_local_codex" : delivery == "held" ? "continuation_held" : "adapter_or_scope_unavailable"}},
 			        .reason = "Queued one bounded child run."};
+		}
+
+		nlohmann::json AgentStatusPayload(const AgentRun& run)
+		{
+			return {{"runId", run.id}, {"status", run.status}, {"agentId", run.agent_id},
+			                   {"providerId", run.provider_id}, {"modelId", run.model_id},
+			                   {"executionCapability", run.execution_capability},
+			                   {"resumedFromRunId", run.resumed_from_run_id},
+			                   {"definitionHash", run.definition_hash},
+			                   {"transcriptChatId", run.transcript_chat_id},
+			                   {"result", run.result_excerpt}, {"diagnosticCode", run.diagnostic_code},
+			                   {"diagnostic", run.diagnostic}};
 		}
 
 		ToolResult AgentStatus(const AppState& app, const UamControlCapability& capability,
@@ -460,14 +720,7 @@ namespace uam
 			if (run == nullptr || !IsOwnedDescendant(app, capability, *run))
 				return {.error = "Agent run is outside this capability's descendant scope."};
 			return {.ok = true,
-			        .result = {{"runId", run->id}, {"status", run->status}, {"agentId", run->agent_id},
-			                   {"providerId", run->provider_id}, {"modelId", run->model_id},
-			                   {"executionCapability", run->execution_capability},
-			                   {"resumedFromRunId", run->resumed_from_run_id},
-			                   {"definitionHash", run->definition_hash},
-			                   {"transcriptChatId", run->transcript_chat_id},
-			                   {"result", run->result_excerpt}, {"diagnosticCode", run->diagnostic_code},
-			                   {"diagnostic", run->diagnostic}},
+			        .result = AgentStatusPayload(*run),
 			        .reason = "Read one owned descendant status."};
 		}
 
@@ -493,9 +746,10 @@ namespace uam
 			        uam::approval_modes::kPlanApprovalMode;
 			return {.ok = true,
 			        .result = {{"goal", GoalJson(GoalService::FindActiveOrLatestTerminalGoal(app, capability.chat_id), app)},
-			                   {"controlEnabled", chat != nullptr && chat->uam_control_enabled},
+			                   {"controlEnabled", ControlEnabled(chat, capability, true)},
 			                   {"mutationToolsEnabled", mutations_allowed},
 			                   {"mutationPolicy", mutations_allowed ? "yoloAutoApprove" : "readOnly"},
+			                   {"delegationPolicy", "inheritParentPermissions"},
 			                   {"agentGoalManagementEnabled", goal_creation_allowed}, {"lifecycleOwner", "uam"},
 			                   {"modelMayCreateOnly", goal_creation_allowed},
 			                   {"goalCreationPolicy", mutations_allowed ? "yoloAutoApprove" :
@@ -534,6 +788,195 @@ namespace uam
 			        .reason = "Created one visible bounded UAM-owned goal."};
 		}
 
+		const AcpSessionState* WaitSession(const AppState& app, const UamControlCapability& capability);
+
+		/// <summary>Shared chat_create ceilings for immediate and user-approved creation; YOLO is checked by the caller.</summary>
+		std::string ChatCreateRefusal(const AppState& app, const UamControlCapability& capability, const ChatSession* caller)
+		{
+			if (!ControlEnabled(caller, capability, true)) return "UAM Control is disabled or the owning chat is unavailable.";
+			if (!capability.agent_run_id.empty()) return "Managed subagents cannot start top-level chats.";
+			if (ReadOnlyAgent(app, capability)) return "This UAM agent has read-only access. Mutation tools are unavailable.";
+			if (uam::approval_modes::AppApprovalModeOrEmpty(caller->approval_mode) == uam::approval_modes::kPlanApprovalMode)
+				return "Chats cannot be started in Plan mode.";
+			if (caller->imported_read_only || !caller->temporary_parent_chat_id.empty() || !caller->goal_owner_chat_id.empty())
+				return "This chat cannot start other chats.";
+			// ponytail: depth 1 only; a created chat would need its own provenance chain to delegate further.
+			if (!caller->created_by_chat_id.empty()) return "A chat started by another chat cannot start further chats.";
+			return {};
+		}
+
+		std::string ChatCreateArgumentError(const nlohmann::json& arguments)
+		{
+			const std::string task = uam::strings::Trim(arguments.value("task", ""));
+			if (task.empty() || !SafeText(task, kMaxTaskBytes)) return "The first prompt must be between 1 byte and 128 KiB.";
+			if (!SafeText(arguments.value("title", ""), kMaxChatTitleBytes)) return "The chat title exceeds 256 bytes.";
+			return {};
+		}
+
+		/// <summary>The isolated worktree the issue requires; a skipped worktree would share the caller's source tree.</summary>
+		std::string ChatCreateIsolationRefusal(const AppState& app, const ChatSession& chat)
+		{
+			if (!app.settings.git_enabled || !app.settings.git_auto_worktree)
+				return "Starting a chat requires Git and automatic worktrees to be enabled in VCS settings, so the new chat gets its own worktree.";
+			if (uam::strings::IsBlank(chat.workspace_directory)) return "This chat has no workspace for a new worktree.";
+			if (!uam::paths::IsControllerLocalWorkspace(chat))
+			{
+				const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+				if (host == nullptr || host->runner_protocol_version < 3)
+					return "SSH worktrees require an available protocol-3 helper.";
+				return {};
+			}
+			if (std::string reason = ManagedSnapshotDisabledReason(app, chat); !reason.empty())
+				return reason + " The new chat would otherwise share this chat's files.";
+			return {};
+		}
+
+		bool ChatCreateLaunchPending(const AppState& app, std::string_view chat_id)
+		{
+			return std::ranges::any_of(app.uam_chat_create_launches, [&](const auto& launch) { return launch.chat_id == chat_id; });
+		}
+
+		ToolResult ChatCreate(AppState& app, UamControlCapability& capability, std::string_view request_id, const nlohmann::json& arguments)
+		{
+			const ChatSession* caller = ChatDomainService().FindChatById(app, capability.chat_id);
+			if (std::string refusal = ChatCreateRefusal(app, capability, caller); !refusal.empty()) return {.error = std::move(refusal)};
+			if (std::string invalid = ChatCreateArgumentError(arguments); !invalid.empty()) return {.error = std::move(invalid)};
+			const std::string task = uam::strings::Trim(arguments.value("task", ""));
+			const std::string requested_provider = uam::strings::Trim(arguments.value("providerId", ""));
+			const std::string requested_model = uam::strings::Trim(arguments.value("modelId", ""));
+			const std::string title = uam::strings::SafeLine(uam::strings::Trim(arguments.value("title", "")), 120, true);
+			const std::string key = "fnv1a64:" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(
+			    nlohmann::json::array({caller->id, task, requested_provider, requested_model, title}).dump()));
+			// A model retry gets a new transport request ID; identical arguments return the chat already started.
+			// A chat whose first prompt failed is removed or loses its key, so it is never returned here.
+			const auto existing = std::ranges::find_if(app.chats, [&](const ChatSession& chat)
+			{ return chat.created_by_chat_id == caller->id && chat.created_by_request_key == key; });
+			if (existing != app.chats.end())
+			{
+				if (ChatCreateLaunchPending(app, existing->id))
+					return {.error = "An identical chat is still sending its first prompt; wait for that result."};
+				return {.ok = true, .result = {{"chatId", existing->id}, {"status", "started"}, {"reused", true}},
+				        .reason = "Returned the chat already started for identical arguments."};
+			}
+			const AcpSessionState* session = WaitSession(app, capability);
+			// ponytail: CLI View callers have no structured turn serial, so their per-turn limit is per connection.
+			const int turn = session != nullptr ? session->turn_serial : 0;
+			if (capability.chat_create_turn_serial != turn)
+			{
+				capability.chat_create_turn_serial = turn;
+				capability.chat_create_turn_count = 0;
+			}
+			if (capability.chat_create_turn_count >= kMaxChatCreatesPerTurn)
+				return {.error = "UAM may start at most 2 chats per turn."};
+			// Branches share the allowance: count live chats started by any chat in the caller's branch family.
+			const std::string family = uam::strings::NonEmptyOrFallback(caller->branch_root_chat_id, caller->id);
+			const auto in_family = [&](const std::string& id)
+			{
+				const ChatSession* creator = ChatDomainService().FindChatById(app, id);
+				return id == caller->id || (creator != nullptr && uam::strings::NonEmptyOrFallback(creator->branch_root_chat_id, creator->id) == family);
+			};
+			if (static_cast<std::size_t>(std::ranges::count_if(app.chats, [&](const ChatSession& chat)
+			    { return !chat.created_by_chat_id.empty() && in_family(chat.created_by_chat_id); })) >= kMaxChatCreatesPerCaller)
+				return {.error = "This chat and its branches may start at most 8 chats."};
+			const std::string provider_id = provider_ids::NormalizeCliProviderAliasOrSelf(
+			    uam::strings::NonEmptyOrFallback(requested_provider, caller->provider_id));
+			const nlohmann::json targets = AgentProviderTargets(app, *caller);
+			const auto target = std::ranges::find_if(targets, [&](const nlohmann::json& value) { return value.value("providerId", "") == provider_id; });
+			if (target == targets.end() || !target->value("eligible", false))
+				return {.error = "Requested provider is unavailable on this chat's execution host" +
+				                 (target == targets.end() ? std::string(".") : ": " + target->value("unavailableReason", std::string("unknown reason")))};
+
+			// The same constructor as the New chat action, always requesting a worktree.
+			ChatSession chat = ChatDomainService().CreateNewChat(caller->folder_id, provider_id, true);
+			chat.execution_host_id = uam::strings::NonEmptyOrFallback(caller->execution_host_id, "local");
+			chat.workspace_directory = uam::paths::IsGitWorktreeIsolated(*caller) && !caller->workspace_source_directory.empty()
+			    ? caller->workspace_source_directory : caller->workspace_directory;
+			if (chat.workspace_directory.empty())
+				if (const ChatFolder* folder = ChatDomainService().FindFolderById(app, caller->folder_id)) chat.workspace_directory = folder->directory;
+			if (std::string refusal = ChatCreateIsolationRefusal(app, chat); !refusal.empty()) return {.error = std::move(refusal)};
+			chat.svn_update_pending = chat.execution_host_id == execution_hosts::kLocalHostId &&
+			    app.settings.svn_enabled && app.settings.svn_update_before_chat;
+			if (!title.empty()) chat.title = title;
+			uam::provider_chat_defaults::ApplyToChat(app.settings, chat);
+			const bool same_provider = provider_id == provider_ids::NormalizeCliProviderAliasOrSelf(caller->provider_id);
+			if (!requested_model.empty()) chat.model_id = requested_model;
+			else if (same_provider) chat.model_id = caller->model_id;
+			if (same_provider && chat.model_id == caller->model_id)
+			{
+				chat.reasoning_effort = caller->reasoning_effort;
+				chat.service_tier = caller->service_tier;
+				chat.service_tier_explicit = caller->service_tier_explicit;
+			}
+			// Exact copies: the new chat can never be more permissive than its caller.
+			chat.approval_mode = caller->approval_mode;
+			chat.command_safety_tier = caller->command_safety_tier;
+			chat.uam_control_enabled = caller->uam_control_enabled;
+			chat.uam_agent_id = caller->uam_agent_id;
+			chat.created_by_chat_id = caller->id;
+			chat.created_by_request_key = key;
+			if (!ChatRepository::SaveChat(app.data_root, chat)) return {.error = "The new chat could not be saved."};
+			nlohmann::json result = {{"chatId", chat.id}, {"status", "started"}, {"providerId", chat.provider_id},
+			                         {"modelId", chat.model_id}, {"title", chat.title}, {"reused", false}};
+			app.uam_chat_create_launches.push_back({.chat_id = chat.id, .task = task, .request_id = std::string(request_id),
+			    .capability_id = capability.id, .directory = capability.directory, .root_chat_id = capability.chat_id,
+			    .provider_id = capability.provider_id, .agent_id = capability.agent_id, .agent_run_id = capability.agent_run_id,
+			    .result = std::move(result)});
+			app.chats.push_back(std::move(chat)); // Invalidates caller.
+			++capability.chat_create_turn_count;
+			// The reply and audit wait until the first prompt has been sent or refused.
+			return {.ok = true, .deferred = true};
+		}
+
+		/// <summary>Sends each new chat's first prompt, then records the audit and the deferred reply.
+		/// A refused send removes a still-empty chat, so a failed start is never reported or reused.</summary>
+		void FlushChatCreateLaunches(AppState& app, const UamControlService::ChatCreateSender& send)
+		{
+			for (auto& launch : std::exchange(app.uam_chat_create_launches, {}))
+			{
+				std::string error;
+				const bool sent = ChatDomainService().FindChatById(app, launch.chat_id) != nullptr && send(app, launch.chat_id, launch.task, &error);
+				ToolResult result;
+				if (sent)
+				{
+					result = {.ok = true, .result = launch.result, .reason = "Started one top-level chat."};
+					uam::diagnostics::Write("UAM chat_create: started chat " + launch.chat_id + " for " + launch.root_chat_id +
+					                        " provider=" + launch.result.value("providerId", "") + ".");
+				}
+				else
+				{
+					const std::string cause = uam::strings::SafeLine(uam::strings::NonEmptyOrFallback(error, std::string("The chat is no longer available.")), 240, true);
+					ChatSession* chat = ChatDomainService().FindChatById(app, launch.chat_id);
+					const bool clean = chat == nullptr || (chat->messages.empty() && FindAcpSessionForChat(app, launch.chat_id) == nullptr);
+					if (clean)
+					{
+						std::erase_if(app.chats, [&](const ChatSession& value) { return value.id == launch.chat_id; });
+						(void)ChatRepository::DeleteChatStorageFiles(app.data_root, launch.chat_id, "create_rollback");
+						result.error = "The new chat's first prompt could not be sent, so the chat was removed: " + cause;
+					}
+					else
+					{
+						// Runtime state now exists; keep the chat visible but never return it to a retry.
+						chat->created_by_request_key.clear();
+						(void)ChatRepository::SaveChat(app.data_root, *chat);
+						result.error = "The new chat " + launch.chat_id + " was kept, but its first prompt was not sent: " + cause;
+					}
+					if (UamControlCapability* owner = FindCapability(app, launch.capability_id); owner != nullptr && owner->chat_create_turn_count > 0)
+						--owner->chat_create_turn_count;
+					uam::diagnostics::Write("UAM chat_create: first prompt for chat " + launch.chat_id + " was not sent; chat " +
+					                        (clean ? "removed" : "kept") + ".");
+				}
+				UamControlCapability owner;
+				owner.chat_id = launch.root_chat_id;
+				owner.provider_id = launch.provider_id;
+				owner.agent_id = launch.agent_id;
+				owner.agent_run_id = launch.agent_run_id;
+				if (!AppendAuditAndSave(app, owner, launch.request_id, "chat_create", result))
+					uam::diagnostics::Write("UAM chat_create: audit for chat " + launch.chat_id + " could not be saved.");
+				(void)WriteResponse(launch.directory, launch.request_id, result.ok
+				    ? nlohmann::json{{"ok", true}, {"result", result.result}} : nlohmann::json{{"ok", false}, {"error", result.error}});
+			}
+		}
+
 		ToolResult QueueApproval(AppState& app, UamControlCapability& capability,
 		                         UamControlCapability::PendingApproval pending)
 		{
@@ -545,7 +988,7 @@ namespace uam
 			    (!(*session)->pending_user_input.request_id_json.empty() ||
 			     !(*session)->pending_permission.request_id_json.empty()))
 				return {.error = "Finish the current provider question or permission request first."};
-			const std::string_view target_chat_id = pending.method == "goal_create"
+			const std::string_view target_chat_id = pending.method == "goal_create" || pending.method == "chat_create"
 			    ? std::string_view(capability.chat_id) : std::string_view(capability.session_chat_id);
 			if (std::ranges::any_of(app.uam_control_capabilities, [&](const UamControlCapability& value) {
 				    return value.pending_approval.has_value() && ApprovalChatId(value) == target_chat_id;
@@ -555,7 +998,7 @@ namespace uam
 			if (ChatSession* chat = ChatDomainService().FindChatById(app, std::string(target_chat_id)))
 			{
 				chat->interaction_at = uam::time::InteractionTimestampNow();
-				if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat))
+				if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat, false))
 					app.pending_chat_save_at_by_chat_id[chat->id] = 0.0;
 			}
 			return {.deferred = true};
@@ -566,7 +1009,7 @@ namespace uam
 		                             int64_t now_epoch_ms)
 		{
 			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
-			if (chat == nullptr || !chat->uam_control_enabled)
+			if (!ControlEnabled(chat, capability, true))
 				return {.error = "UAM Control is disabled or the owning chat is unavailable."};
 			if (uam::approval_modes::AppApprovalModeOrEmpty(chat->approval_mode) ==
 			    uam::approval_modes::kPlanApprovalMode)
@@ -589,15 +1032,80 @@ namespace uam
 			                                     .expires_at_epoch_ms = now_epoch_ms + kApprovalLifetimeMs});
 		}
 
+		ToolResult ChatCreateRequest(AppState& app, UamControlCapability& capability,
+		                             std::string_view request_id, const nlohmann::json& arguments,
+		                             int64_t now_epoch_ms)
+		{
+			const ChatSession* caller = ChatDomainService().FindChatById(app, capability.chat_id);
+			if (std::string refusal = ChatCreateRefusal(app, capability, caller); !refusal.empty()) return {.error = std::move(refusal)};
+			if (std::string invalid = ChatCreateArgumentError(arguments); !invalid.empty()) return {.error = std::move(invalid)};
+			return QueueApproval(app, capability, {.request_id = std::string(request_id), .method = "chat_create",
+			                                     .chat_create_arguments = arguments,
+			                                     .expires_at_epoch_ms = now_epoch_ms + kApprovalLifetimeMs});
+		}
+
+		/// Capture only the original user message owned by this active structured turn.
+		/// A queued message or the model's permission reason cannot authorise application access.
+		bool CaptureComputerUseOrigin(const AppState& app, const UamControlCapability& capability,
+		                             std::string& task, std::string& origin)
+		{
+			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
+			const ChatSession* root = ChatDomainService().FindChatById(app, capability.chat_id);
+			const AcpSessionState* session = FindAcpSessionForChat(app, capability.session_chat_id);
+			if (!ControlEnabled(chat, capability, false) || !ControlEnabled(root, capability, true) ||
+			    !app.settings.computer_use_globally_enabled || !uam::computer_use::AvailableForChat(*chat) ||
+			    !uam::computer_use::UsesUamBackend(*chat) || ReadOnlyAgent(app, capability) ||
+			    uam::approval_modes::AppApprovalModeOrEmpty(chat->approval_mode) == uam::approval_modes::kPlanApprovalMode ||
+			    uam::approval_modes::AppApprovalModeOrEmpty(root->approval_mode) == uam::approval_modes::kPlanApprovalMode ||
+			    session == nullptr || !session->running || !session->processing || session->cancel_requested ||
+			    session->uam_control_capability_id != capability.id || session->provider_id != capability.provider_id ||
+			    provider_ids::NormalizeCliProviderAliasOrSelf(chat->provider_id) != provider_ids::NormalizeCliProviderAliasOrSelf(session->provider_id) ||
+			    session->turn_serial <= 0 || session->turn_first_user_message_index < 0 ||
+			    session->turn_user_message_index < session->turn_first_user_message_index ||
+			    session->turn_user_message_index >= static_cast<int>(chat->messages.size())) return false;
+			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat->execution_host_id);
+			if (host == nullptr || host->transport != "local") return false;
+			const Message& user = chat->messages[static_cast<std::size_t>(session->turn_first_user_message_index)];
+			if (user.role != MessageRole::User || user.acp_prompt_not_sent || user.created_at.empty() ||
+			    user.content.empty() || !SafeText(user.content, 1024U * 1024U)) return false;
+			task = user.content;
+			origin = nlohmann::json::array({app.data_root.generic_string(), chat->id, chat->created_at,
+			    root->id, root->created_at, root->provider_id, root->execution_host_id, root->workspace_directory,
+			    root->approval_mode, root->uam_control_enabled, root->uam_control_explicitly_disabled,
+			    chat->provider_id, chat->execution_host_id, chat->workspace_directory, chat->native_session_id,
+			    chat->approval_mode, chat->computer_use_backend, chat->computer_use_enabled,
+			    session->session_id, session->last_process_id, session->process_execution_host_id,
+			    session->turn_serial, session->turn_first_user_message_index, session->turn_user_message_index,
+			    session->active_uam_agent_id, session->active_uam_agent_definition_hash, session->active_uam_agent_workspace_access,
+			    user.created_at, user.content, host->id, host->transport, host->ssh_alias, host->platform,
+			    host->architecture, host->runner_version, host->runner_protocol_version, host->runner_directory,
+			    host->instruction_file, host->instruction_text ? nlohmann::json(*host->instruction_text) : nlohmann::json(nullptr)}).dump();
+			return true;
+		}
+
+		bool ComputerUseApprovalCurrent(const AppState& app, const UamControlCapability& capability)
+		{
+			if (!capability.pending_approval || capability.pending_approval->method != "computer_use_request") return true;
+			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
+			const ChatSession* root = ChatDomainService().FindChatById(app, capability.chat_id);
+			const auto& pending = *capability.pending_approval;
+			std::string task, origin;
+			return chat != nullptr && root != nullptr && pending.computer_use_chat_incarnation == chat->metadata_incarnation &&
+			    pending.computer_use_root_incarnation == root->metadata_incarnation &&
+			    CaptureComputerUseOrigin(app, capability, task, origin) &&
+			    task == pending.computer_use_task && origin == pending.computer_use_origin;
+		}
+
 		ToolResult ComputerUseRequest(AppState& app, UamControlCapability& capability,
 		                              std::string_view request_id, const nlohmann::json& arguments,
 		                              int64_t now_epoch_ms)
 		{
 			ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
 			const ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
-			if (chat == nullptr || !chat->uam_control_enabled || root_chat == nullptr ||
-			    !root_chat->uam_control_enabled)
+			if (!ControlEnabled(chat, capability, false) || !ControlEnabled(root_chat, capability, true))
 				return {.error = "UAM Control is disabled or the owning chat is unavailable."};
+			if (!app.settings.computer_use_globally_enabled)
+				return {.error = "Computer Use is disabled globally."};
 			if (!uam::computer_use::AvailableForChat(*chat) || !uam::computer_use::UsesUamBackend(*chat))
 				return {.error = "UAM Computer Use is unavailable for this chat or execution host."};
 			if (uam::approval_modes::AppApprovalModeOrEmpty(chat->approval_mode) ==
@@ -609,9 +1117,19 @@ namespace uam
 			if (chat->computer_use_enabled)
 				return {.ok = true, .result = {{"enabled", true}, {"chatId", chat->id}},
 				        .reason = "Computer Use was already enabled for this chat."};
-			return QueueApproval(app, capability, {.request_id = std::string(request_id),
-			                                     .method = "computer_use_request", .reason = reason,
-			                                     .expires_at_epoch_ms = now_epoch_ms + kApprovalLifetimeMs});
+			std::string task, origin;
+			if (!CaptureComputerUseOrigin(app, capability, task, origin))
+				return {.error = "The original owned computer-use user turn is unavailable."};
+			UamControlCapability::PendingApproval pending;
+			pending.request_id = std::string(request_id);
+			pending.method = "computer_use_request";
+			pending.reason = reason;
+			pending.computer_use_task = std::move(task);
+			pending.computer_use_origin = std::move(origin);
+			pending.computer_use_chat_incarnation = chat->metadata_incarnation;
+			pending.computer_use_root_incarnation = root_chat->metadata_incarnation;
+			pending.expires_at_epoch_ms = now_epoch_ms + kApprovalLifetimeMs;
+			return QueueApproval(app, capability, std::move(pending));
 		}
 
 		ToolResult UserQuestionRequest(AppState& app, UamControlCapability& capability,
@@ -620,8 +1138,7 @@ namespace uam
 		{
 			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
 			const ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
-			if (chat == nullptr || root_chat == nullptr || !chat->uam_control_enabled ||
-			    !root_chat->uam_control_enabled)
+			if (!ControlEnabled(chat, capability, false) || !ControlEnabled(root_chat, capability, true))
 				return {.error = "UAM Control is disabled or the owning chat is unavailable."};
 			std::vector<std::string> options;
 			for (const nlohmann::json& option : arguments.value("options", nlohmann::json::array()))
@@ -637,9 +1154,9 @@ namespace uam
 		                       std::string_view method, const nlohmann::json& arguments)
 		{
 			ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
-			if (chat == nullptr || !chat->uam_control_enabled)
+			if (!ControlEnabled(chat, capability, true))
 				return {.error = "Agent-goal management is disabled or the owning chat is unavailable."};
-			if (IsMutation(method) && !MutationsAllowed(*chat))
+			if (method != "agent_delegate" && IsMutation(method) && !MutationsAllowed(*chat))
 				return {.error = "UAM Control mutations require the owning chat's YOLO permission mode and are forbidden in Plan mode; this request was rejected without changing state."};
 			if (method == "skill_list") return SkillList(app, capability, *chat);
 			if (method == "skill_read") return SkillRead(app, capability, *chat, arguments);
@@ -672,6 +1189,342 @@ namespace uam
 			});
 		}
 
+		const AcpSessionState* WaitSession(const AppState& app, const UamControlCapability& capability)
+		{
+			for (const auto& session : app.acp_sessions)
+				if (session && session->chat_id == capability.session_chat_id && session->uam_control_capability_id == capability.id &&
+				    session->provider_id == capability.provider_id) return session.get();
+			// CLI View has no proven original native turn here; its other tools are unchanged.
+			return nullptr;
+		}
+
+		bool IsWaitOwnedDescendant(const AppState& app, const UamControlCapability& capability, const AgentRun& candidate)
+		{
+			std::array<std::string_view, 3> visited{};
+			bool owned = false;
+			const AgentRun* run = &candidate;
+			for (std::size_t depth = 0; depth < visited.size(); ++depth)
+			{
+				if (run->root_chat_id != capability.chat_id || run->id.empty() ||
+				    std::find(visited.begin(), visited.begin() + static_cast<std::ptrdiff_t>(depth), std::string_view(run->id)) != visited.begin() + static_cast<std::ptrdiff_t>(depth)) return false;
+				visited[depth] = run->id;
+				if (capability.agent_run_id.empty()) owned = owned || capability.owned_agent_run_ids.contains(run->id);
+				else if (depth != 0 && run->id == capability.agent_run_id) owned = true;
+				if (run->parent_run_id.empty()) return owned;
+				run = FindRun(app, run->parent_run_id);
+				if (!run) return false;
+			}
+			return false; // The existing maximum delegation depth cannot justify a longer chain.
+		}
+
+		struct WaitTranscriptView
+		{
+			const ChatSession* chat = nullptr;
+			std::shared_ptr<const std::uint8_t> birth;
+		};
+
+		WaitTranscriptView WaitTranscript(const AppState& app, const AgentRun& run, std::string_view root_id,
+		    std::string_view host_id)
+		{
+			if (run.root_chat_id != root_id || app.chats.size() > ManagedSubagentControlService::MaxChatMetadata ||
+			    app.agent_runs.size() > ManagedSubagentControlService::MaxLedgerRuns ||
+			    std::ranges::count(app.agent_runs, run.id, &AgentRun::id) != 1 ||
+			    std::ranges::count(app.agent_runs, run.transcript_chat_id, &AgentRun::transcript_chat_id) != 1) return {};
+			const auto live_count = std::ranges::count(app.chats, run.transcript_chat_id, &ChatSession::id);
+			if (live_count != 0)
+			{
+				// Never hide a live replacement behind an older retired birth.
+				const auto* chat = live_count == 1 ? ChatDomainService().FindChatById(app, run.transcript_chat_id) : nullptr;
+				return {chat, chat ? chat->metadata_incarnation : nullptr};
+			}
+			const bool terminal = run.status == "completed" || run.status == "failed" ||
+			                      run.status == "cancelled" || run.status == "interrupted";
+			const auto& ownership = app.hidden_agent_chat_ownership;
+			if (!terminal || ownership.data_root != app.data_root ||
+			    ownership.chats.size() > ManagedSubagentControlService::MaxChatMetadata ||
+			    std::ranges::count(ownership.chats, run.transcript_chat_id, &ChatSession::id) != 1) return {};
+			const auto chat = std::ranges::find(ownership.chats, run.transcript_chat_id, &ChatSession::id);
+			const auto& proof = chat->managed_terminal_retirement_witness;
+			if (!proof || !proof->original_birth || proof->data_root != app.data_root ||
+			    proof->run != ManagedTerminalRetirementWitness::RunIdentity::Capture(run) ||
+			    chat->agent_run_id != run.id || chat->provider_id != run.provider_id || chat->provider_id != proof->provider_id ||
+			    chat->execution_host_id != host_id || chat->execution_host_id != proof->host_id ||
+			    chat->workspace_directory != proof->workspace || chat->workspace_worktree_directory != proof->worktree ||
+			    chat->native_session_id != proof->native_session_id || chat->created_at != proof->created_at) return {};
+			return {&*chat, proof->original_birth};
+		}
+
+		bool WaitCurrent(const AppState& app, const UamControlCapability& capability, const UamAgentWait& wait)
+		{
+			if (!wait.publish_lease->load(std::memory_order_acquire) || app.data_root.native() != wait.data_root.native() ||
+			    UamAgentWait::Clock::now() >= wait.publication_deadline || capability.id != wait.capability_id ||
+			    capability.directory != wait.directory || capability.chat_id != wait.root_id ||
+			    capability.session_chat_id != wait.session_chat_id || capability.provider_id != wait.provider_id ||
+			    !capability.mcp_initialized || capability.mcp_connection_id != wait.connection_id ||
+			    !HasAuthority(app, capability, time::SystemEpochMillisecondsNow())) return false;
+			const ChatSession* root = ChatDomainService().FindChatById(app, wait.root_id);
+			const ChatSession* chat = ChatDomainService().FindChatById(app, wait.session_chat_id);
+			const AcpSessionState* session = WaitSession(app, capability);
+			if (!ControlEnabled(root, capability, true) || !ControlEnabled(chat, capability, false) ||
+			    root->imported_read_only || chat->imported_read_only ||
+			    !capability.wait_host_at_launch || !execution_hosts::SameConnection(*capability.wait_host_at_launch, wait.host) ||
+			    root->workspace_directory != capability.wait_root_workspace_at_launch || root->workspace_worktree_directory != capability.wait_root_worktree_at_launch ||
+			    chat->workspace_directory != capability.wait_workspace_at_launch || chat->workspace_worktree_directory != capability.wait_worktree_at_launch ||
+			    root->metadata_incarnation != capability.wait_root_incarnation_at_launch || chat->metadata_incarnation != capability.wait_chat_incarnation_at_launch ||
+			    root->provider_id != wait.root_provider_id || root->model_id != wait.root_model_id || root->native_session_id != wait.root_native_id ||
+			    chat->provider_id != wait.chat_provider_id || chat->model_id != wait.chat_model_id || capability.agent_run_id != wait.origin_agent_run_id ||
+			    root->metadata_incarnation != wait.root_incarnation || chat->metadata_incarnation != wait.chat_incarnation ||
+			    root->workspace_directory != wait.root_workspace || root->workspace_worktree_directory != wait.root_worktree ||
+			    root->execution_host_id != wait.host.id || chat->execution_host_id != wait.host.id ||
+			    chat->workspace_directory != wait.workspace || chat->workspace_worktree_directory != wait.worktree ||
+			    chat->native_session_id != wait.native_session_id || session != wait.original_session || !session ||
+			    session->permission_review_incarnation != wait.launch_incarnation || !session->running || !session->processing ||
+			    session->cancel_requested || session->local_stop_pending || session->remote_stop_pending || session->remote_stop_unconfirmed ||
+			    session->session_id != wait.session_id || session->last_process_id != wait.process_id ||
+			    session->process_execution_host_id != wait.process_host_id || session->process_execution_host_id != wait.host.id || session->remote_output_delivery_token != wait.remote_delivery_token ||
+			    session->codex_turn_id != wait.native_turn_id || session->turn_serial != wait.turn_serial) return false;
+			if (!wait.sealed_response.empty() && !std::ranges::any_of(root->uam_control_audit, [&](const auto& record)
+			{
+				const auto& audit = wait.audit;
+				return record.request_id == audit.request_id && record.method == audit.method && record.result == audit.result &&
+				    record.reason == audit.reason && record.provider_id == audit.provider_id && record.agent_id == audit.agent_id &&
+				    record.run_id == audit.run_id && record.created_at == audit.created_at;
+			})) return false;
+			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, wait.host.id);
+			if (!host || !execution_hosts::SameConnection(*host, wait.host)) return false;
+			const AgentRun* selected = FindRun(app, wait.run_id);
+			if (!selected || !IsWaitOwnedDescendant(app, capability, *selected)) return false;
+			for (const auto& identity : wait.ancestry)
+			{
+				const AgentRun* run = FindRun(app, identity.id);
+				const auto view = run ? WaitTranscript(app, *run, wait.root_id, identity.host_id) : WaitTranscriptView{};
+				const ChatSession* transcript = view.chat;
+				if (!run || !transcript || run->root_chat_id != identity.root_id || run->parent_run_id != identity.parent_id ||
+				    run->transcript_chat_id != identity.transcript_id || run->provider_id != identity.provider_id ||
+				    run->model_id != identity.model_id || run->definition_hash != identity.definition_hash || run->created_at != identity.created_at ||
+				    run->agent_id != identity.agent_id || run->execution_capability != identity.execution_capability ||
+				    run->resumed_from_run_id != identity.resumed_from_id || run->result_delivery_id != identity.result_delivery_id ||
+				    run->effective_workspace_access != identity.workspace_access || run->definition_snapshot != identity.definition_snapshot ||
+				    view.birth != identity.transcript_incarnation || transcript->agent_run_id != identity.id ||
+				    transcript->execution_host_id != identity.host_id || transcript->provider_id != identity.provider_id) return false;
+			}
+			return true;
+		}
+
+		void RetireAgentWait(AppState& app, UamControlCapability& capability)
+		{
+			if (!capability.pending_agent_wait) return;
+			const auto wait = std::move(capability.pending_agent_wait);
+			wait->publish_lease->store(false, std::memory_order_release);
+			wait->phase = UamAgentWait::Phase::Retired;
+			// Admission globally bounds live plus retired waits; never drop an in-flight future.
+			app.uam_wait_retirements.push_back(wait);
+		}
+
+		bool RetireCapabilityDirectory(AppState& app, UamControlCapability& capability)
+		{
+			RetireAgentWait(app, capability);
+			const bool writing = std::ranges::any_of(app.uam_wait_retirements, [&](const auto& wait)
+			{ return wait->directory == capability.directory && wait->response_future.valid(); });
+			if (!writing) (void)paths::RemoveTreeWithoutFollowingLinksNoThrow(capability.directory);
+			return !writing;
+		}
+
+		void HarvestWaitRetirements(AppState& app, bool shutdown = false)
+		{
+			for (auto it = app.uam_wait_retirements.begin(); it != app.uam_wait_retirements.end();)
+			{
+				const auto& wait = *it;
+				if (wait->response_future.valid())
+				{
+					if (!shutdown && wait->response_future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) { ++it; continue; }
+					try { wait->response_result = wait->response_future.get(); wait->response_observed = true; }
+					catch (...) { wait->response_result.outcome_unknown = true; wait->response_result.write.error = "Retired control response publisher failed."; }
+				}
+				const bool capability_exists = std::ranges::any_of(app.uam_control_capabilities, [&](const auto& capability)
+				{ return capability.id == wait->capability_id && capability.directory == wait->directory; });
+				if (!capability_exists) (void)paths::RemoveTreeWithoutFollowingLinksNoThrow(wait->directory);
+				// A revoked still-existing capability may have a raced original reply, never a successor reply.
+				else (void)paths::RemoveFileNoThrow(wait->directory / "responses" / (wait->request_id + ".json"));
+				it = app.uam_wait_retirements.erase(it);
+			}
+		}
+
+		ToolResult AgentWait(AppState& app, UamControlCapability& capability, const std::string& request_id,
+		    const nlohmann::json& arguments)
+		{
+			if (capability.wait_cancellation_overflow || capability.cancelled_wait_ids.contains(request_id))
+				return {.error = "This agent wait was cancelled or its connection requires renewal."};
+			if (capability.pending_agent_wait) return {.error = "One agent wait is already pending for this capability."};
+			const auto active_count = std::ranges::count_if(app.uam_control_capabilities, [](const auto& candidate) { return bool(candidate.pending_agent_wait); });
+			if (active_count + app.uam_wait_retirements.size() >= kMaxActiveWaits)
+				return {.error = "The bounded control wait queue is full. Inspect the run or wait again later."};
+			const std::string run_id = arguments.at("runId");
+			const AgentRun* run = FindRun(app, run_id);
+			if (!run || !IsWaitOwnedDescendant(app, capability, *run)) return {.error = "Agent run is outside this capability's descendant scope."};
+			const AcpSessionState* session = WaitSession(app, capability);
+			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
+			const ChatSession* root = ChatDomainService().FindChatById(app, capability.chat_id);
+			const ExecutionHost* host = chat ? execution_hosts::Find(app.settings.execution_hosts, chat->execution_host_id) : nullptr;
+			if (!session || !chat || !root || !host || !session->running || !session->processing || session->turn_serial <= 0 ||
+			    session->last_process_id.empty() || !capability.mcp_initialized || capability.mcp_connection_id.empty())
+				return {.error = "Agent wait requires a current owned active structured turn and MCP connection."};
+			const auto wait = std::make_shared<UamAgentWait>();
+			wait->data_root = app.data_root; wait->directory = capability.directory; wait->capability_id = capability.id;
+			wait->request_id = request_id; wait->run_id = run_id; wait->root_id = root->id; wait->session_chat_id = chat->id;
+			wait->provider_id = capability.provider_id; wait->connection_id = capability.mcp_connection_id;
+			wait->root_incarnation = root->metadata_incarnation; wait->chat_incarnation = chat->metadata_incarnation;
+			wait->original_session = session; wait->launch_incarnation = session->permission_review_incarnation;
+			wait->session_id = session->session_id; wait->native_session_id = chat->native_session_id;
+			wait->process_id = session->last_process_id; wait->process_host_id = session->process_execution_host_id;
+			wait->remote_delivery_token = session->remote_output_delivery_token; wait->native_turn_id = session->codex_turn_id;
+			wait->turn_serial = session->turn_serial; wait->host = *host;
+			wait->workspace = chat->workspace_directory; wait->worktree = chat->workspace_worktree_directory;
+			wait->root_workspace = root->workspace_directory; wait->root_worktree = root->workspace_worktree_directory;
+			wait->root_provider_id = root->provider_id; wait->root_model_id = root->model_id; wait->root_native_id = root->native_session_id;
+			wait->chat_provider_id = chat->provider_id; wait->chat_model_id = chat->model_id; wait->origin_agent_run_id = capability.agent_run_id;
+			const auto now = UamAgentWait::Clock::now();
+			wait->semantic_deadline = now + kAgentWaitSlice;
+			// Manager-local absolute cap. Proxy's own earlier absolute timeout must revoke this read.
+			wait->publication_deadline = now + kAgentWaitPublicationBudget;
+			for (const AgentRun* ancestor = run; ancestor; ancestor = ancestor->parent_run_id.empty() ? nullptr : FindRun(app, ancestor->parent_run_id))
+			{
+				if (wait->ancestry.size() == 3 || std::ranges::any_of(wait->ancestry, [&](const auto& value) { return value.id == ancestor->id; }))
+					return {.error = "Agent ancestry is invalid or outside its bounded depth."};
+				if (ancestor->root_chat_id != root->id || (!ancestor->parent_run_id.empty() && !FindRun(app, ancestor->parent_run_id)))
+					return {.error = "The owned descendant ancestry is incomplete or foreign."};
+				const auto view = WaitTranscript(app, *ancestor, root->id, host->id);
+				const ChatSession* transcript = view.chat;
+				if (!transcript || transcript->execution_host_id != host->id) return {.error = "The owned child transcript or execution host is unavailable."};
+				wait->ancestry.push_back({ancestor->id, ancestor->root_chat_id, ancestor->parent_run_id, ancestor->transcript_chat_id,
+				    ancestor->provider_id, ancestor->model_id, ancestor->definition_hash, ancestor->created_at,
+				    ancestor->agent_id, ancestor->execution_capability, ancestor->resumed_from_run_id, ancestor->result_delivery_id,
+				    ancestor->effective_workspace_access, ancestor->definition_snapshot,
+				    view.birth, transcript->execution_host_id});
+			}
+			if (!WaitCurrent(app, capability, *wait)) return {.error = "The original turn or descendant scope is no longer current."};
+			capability.pending_agent_wait = wait;
+			return {.ok = true, .deferred = true};
+		}
+
+		void ProcessAgentWaits(AppState& app, const std::function<bool(io::AtomicWriteStage)>& response_write_hook)
+		{
+			HarvestWaitRetirements(app);
+			if (std::ranges::any_of(app.uam_control_capabilities, [](const auto& capability)
+			    { return capability.pending_agent_wait && capability.pending_agent_wait->phase == UamAgentWait::Phase::AuditPending; }))
+				(void)FlushPendingChatSaves(app, false);
+			std::size_t actions = 0;
+			bool response_busy = std::ranges::any_of(app.uam_wait_retirements, [](const auto& wait) { return wait->response_future.valid(); });
+			for (const auto& capability : app.uam_control_capabilities)
+				response_busy = response_busy || (capability.pending_agent_wait && capability.pending_agent_wait->response_future.valid());
+			for (auto& capability : app.uam_control_capabilities)
+			{
+				const auto wait = capability.pending_agent_wait;
+				if (!wait) continue;
+				if (!WaitCurrent(app, capability, *wait)) { RetireAgentWait(app, capability); continue; }
+				if (actions == kMaxWaitActionsPerTick) continue;
+				if (wait->phase == UamAgentWait::Phase::Waiting)
+				{
+					const AgentRun* run = FindRun(app, wait->run_id);
+					const bool terminal = run->status == "completed" || run->status == "failed" || run->status == "cancelled" || run->status == "interrupted";
+					if (!terminal && run->status != "running" && run->status != "queued") { RetireAgentWait(app, capability); continue; }
+					if (!terminal && UamAgentWait::Clock::now() < wait->semantic_deadline) continue;
+					// Same scoped serializer as immediate inspection; payload is never recomputed after sealing.
+					ToolResult observation{.ok = true, .result = AgentStatusPayload(*run)}; // WaitCurrent already proved the complete bounded scope.
+					if (!observation.ok || !WaitCurrent(app, capability, *wait)) { RetireAgentWait(app, capability); continue; }
+					observation.result["timedOut"] = !terminal;
+					wait->sealed_response = nlohmann::json{{"ok", true}, {"result", std::move(observation.result)}}.dump();
+					if (wait->sealed_response.size() > kMaxResponseBytes) { RetireAgentWait(app, capability); continue; }
+					wait->audit = {AuditText(wait->request_id), "agent_wait", "ok", terminal ? "Read one completed owned descendant." : "Owned descendant is still running; explicit re-wait is permitted.",
+					    AuditText(capability.provider_id), AuditText(capability.agent_id), AuditText(capability.agent_run_id), time::TimestampNow()};
+					ChatSession* root = ChatDomainService().FindChatById(app, capability.chat_id);
+					root->uam_control_audit.push_back(wait->audit);
+					if (root->uam_control_audit.size() > kMaxAuditRecords) root->uam_control_audit.erase(root->uam_control_audit.begin());
+					wait->phase = UamAgentWait::Phase::AuditPending;
+					++actions;
+				}
+				if (wait->phase == UamAgentWait::Phase::AuditPending)
+				{
+					if (!wait->audit_ticket && UamAgentWait::Clock::now() >= wait->retry_at)
+					{
+						if (actions >= kMaxWaitActionsPerTick) continue;
+						++actions;
+						const std::weak_ptr<UamAgentWait> weak = wait;
+						const ChatSession* root = ChatDomainService().FindChatById(app, capability.chat_id);
+						wait->audit_ticket = ScheduleControlAuditSave(app, *root, wait->audit, [&app, weak]()
+						{
+							const auto owner = weak.lock();
+							if (!owner) return false;
+							const UamControlCapability* current = FindCapability(app, owner->capability_id);
+							return current && current->pending_agent_wait == owner && WaitCurrent(app, *current, *owner);
+						});
+						wait->retry_at = UamAgentWait::Clock::now() + std::chrono::seconds(1);
+					}
+					const auto receipt = PollControlAuditSave(wait->audit_ticket);
+					if (!receipt.finished) continue;
+					if (actions >= kMaxWaitActionsPerTick) continue;
+					++actions;
+					wait->audit_result = receipt;
+					if (!receipt.published) { wait->audit_ticket.reset(); continue; }
+					if (!receipt.eligible || !WaitCurrent(app, capability, *wait)) { RetireAgentWait(app, capability); continue; }
+					wait->phase = UamAgentWait::Phase::ResponsePending;
+					wait->retry_at = {};
+				}
+				if (wait->phase != UamAgentWait::Phase::ResponsePending) continue;
+				if (wait->response_future.valid())
+				{
+					if (wait->response_future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) continue;
+					try { wait->response_result = wait->response_future.get(); wait->response_observed = true; }
+					catch (...) { wait->response_result.outcome_unknown = true; wait->response_result.write.error = "Control response publisher failed."; }
+					response_busy = false;
+					++actions;
+					if (!WaitCurrent(app, capability, *wait)) { RetireAgentWait(app, capability); continue; }
+					if (wait->response_result.write.success || wait->response_result.write.primary_committed ||
+					    wait->response_result.rename_crossed || wait->response_result.outcome_unknown)
+					{
+						// POSIX may leave both legacy flags false after rename but before directory sync.
+						const bool published = wait->response_result.write.success;
+						wait->phase = published ? UamAgentWait::Phase::Published : UamAgentWait::Phase::Retired;
+						wait->publish_lease->store(false, std::memory_order_release);
+						capability.pending_agent_wait.reset();
+						if (!published) app.uam_wait_retirements.push_back(wait); // Preserve irreversible/uncertain facts through owned retirement.
+						continue;
+					}
+					wait->retry_at = UamAgentWait::Clock::now() + std::chrono::seconds(1);
+				}
+				if (response_busy || actions >= kMaxWaitActionsPerTick || UamAgentWait::Clock::now() < wait->retry_at) continue;
+				if (!wait->audit_result.published || !wait->audit_result.eligible || !WaitCurrent(app, capability, *wait))
+				{ RetireAgentWait(app, capability); continue; }
+				const auto path = wait->directory / "responses" / (wait->request_id + ".json");
+				const auto lease = wait->publish_lease;
+				const auto deadline = wait->publication_deadline;
+				std::packaged_task<UamWaitResponsePublication()> publisher([path, lease, deadline, bytes = wait->sealed_response, response_write_hook]()
+				{
+					UamWaitResponsePublication publication;
+					if (!lease->load(std::memory_order_acquire) || UamAgentWait::Clock::now() >= deadline ||
+					    paths::IsLinkOrReparsePointNoThrow(path) || paths::IsLinkOrReparsePointNoThrow(path.parent_path())) return publication;
+					try
+					{
+						publication.write = io::AtomicWriteFileDetailed(path, bytes, [&](io::AtomicWriteStage stage)
+						{
+							if (stage == io::AtomicWriteStage::AfterReplaceBeforeDirectorySync) publication.rename_crossed = true;
+							return lease->load(std::memory_order_acquire) && UamAgentWait::Clock::now() < deadline &&
+							    (!response_write_hook || response_write_hook(stage));
+						});
+					}
+					catch (...)
+					{
+						publication.outcome_unknown = true; // Never replay a possibly installed response after an exception.
+					}
+					return publication;
+				});
+				wait->response_future = publisher.get_future();
+				uam::platform::StartBackgroundThread(std::move(publisher)).detach();
+				response_busy = true;
+				++actions;
+			}
+		}
+
 		nlohmann::json HandleRequest(AppState& app, const std::string& capability_id,
 		                             const nlohmann::json& request, int64_t now_epoch_ms)
 		{
@@ -694,12 +1547,60 @@ namespace uam
 			if (!SafeRequestId(request_id) || method.empty() || method.size() > 64 ||
 			    !ValidToolArguments(method, arguments))
 				return reject("Control request has an unknown method or invalid arguments.");
-			if (ReadOnlyAgent(app, *capability) && (IsMutation(method) || method == "computer_use_request"))
+			if (method != "agent_delegate" && ReadOnlyAgent(app, *capability) && (IsMutation(method) || method == "computer_use_request"))
 				return reject("This UAM agent has read-only access. Mutation tools are unavailable.");
 			if (!capability->seen_request_ids.insert(request_id).second)
 				return reject("Control request replay was rejected.");
-			if (capability->seen_request_ids.size() > kMaxSeenRequests)
-				capability->seen_request_ids.erase(capability->seen_request_ids.begin());
+			capability->seen_request_order.push_back(request_id);
+			if (capability->seen_request_order.size() > kMaxSeenRequests)
+			{
+				capability->seen_request_ids.erase(capability->seen_request_order.front());
+				capability->seen_request_order.pop_front();
+			}
+
+
+
+			if (method == "_mcp_cancel_request")
+			{
+				if (capability->mcp_initialized && capability->mcp_connection_id == arguments.at("connectionId").get<std::string>())
+				{
+					const std::string cancelled_id = arguments.at("requestId");
+					if (capability->pending_agent_wait && capability->pending_agent_wait->request_id == cancelled_id)
+						RetireAgentWait(app, *capability);
+					if (!capability->cancelled_wait_ids.contains(cancelled_id) &&
+					    capability->cancelled_wait_ids.size() == kMaxCancelledWaitsPerConnection)
+					{
+						capability->wait_cancellation_overflow = true; // No eviction can revive a cancelled ID.
+						return reject("The bounded wait cancellation receipt queue is full; renew the connection.");
+					}
+					capability->cancelled_wait_ids.insert(cancelled_id);
+				}
+				return {{"ok", true}, {"result", nlohmann::json::object()}};
+			}
+			// Transport receipts are session-bound observations, not tools or durable chat mutations.
+			if (method == "_mcp_initialized" || method == "_mcp_disconnected" || method == "_mcp_heartbeat")
+			{
+				const std::string connection = arguments["connectionId"].get<std::string>();
+				if (method == "_mcp_heartbeat")
+				{
+					if (!capability->mcp_initialized || capability->mcp_connection_id != connection) return reject("MCP connection is no longer current.");
+					capability->mcp_heartbeat_at_epoch_ms = now_epoch_ms;
+					return {{"ok", true}, {"result", nlohmann::json::object()}};
+				}
+				if (method == "_mcp_disconnected" && capability->mcp_connection_id != connection)
+					return {{"ok", true}, {"result", nlohmann::json::object()}};
+				if (method == "_mcp_disconnected" || capability->mcp_connection_id != connection)
+				{
+					RetireAgentWait(app, *capability);
+					capability->cancelled_wait_ids.clear();
+					capability->wait_cancellation_overflow = false;
+				}
+				capability->mcp_heartbeat_at_epoch_ms = 0;
+				capability->mcp_connection_id = connection;
+				capability->mcp_initialized = method == "_mcp_initialized";
+				capability->mcp_initialized_at_epoch_ms = capability->mcp_initialized ? now_epoch_ms : 0;
+				return {{"ok", true}, {"result", nlohmann::json::object()}};
+			}
 
 			while (!capability->request_times_epoch_ms.empty() &&
 			       capability->request_times_epoch_ms.front() <= now_epoch_ms - 60000)
@@ -709,17 +1610,23 @@ namespace uam
 			capability->request_times_epoch_ms.push_back(now_epoch_ms);
 
 			const ChatSession* before_chat = ChatDomainService().FindChatById(app, capability->chat_id);
-			const std::optional<ChatSession> rollback = before_chat == nullptr ? std::nullopt : std::optional<ChatSession>{*before_chat};
-			const bool goal_needs_approval = method == "goal_create" && before_chat != nullptr &&
+			const std::optional<ChatSession> rollback = before_chat == nullptr || method == "agent_wait" ? std::nullopt : std::optional<ChatSession>{*before_chat};
+			const bool needs_approval = (method == "goal_create" || method == "chat_create") && before_chat != nullptr &&
 			    !MutationsAllowed(*before_chat);
-			ToolResult result = method == "computer_use_request"
+			ToolResult result = method == "agent_wait"
+			                        ? AgentWait(app, *capability, request_id, arguments)
+			                        : method == "computer_use_request"
 			                        ? ComputerUseRequest(app, *capability, request_id, arguments, now_epoch_ms)
 			                        : method == "user_question"
 			                            ? UserQuestionRequest(app, *capability, request_id, arguments, now_epoch_ms)
-			                        : goal_needs_approval
-			                            ? GoalCreateRequest(app, *capability, request_id, arguments, now_epoch_ms)
+			                        : needs_approval
+			                            ? (method == "goal_create" ? GoalCreateRequest(app, *capability, request_id, arguments, now_epoch_ms)
+			                                                       : ChatCreateRequest(app, *capability, request_id, arguments, now_epoch_ms))
+			                        : method == "chat_create"
+			                            ? ChatCreate(app, *capability, request_id, arguments)
 			                            : ExecuteTool(app, *capability, method, arguments);
-			if (result.deferred) return {{"pendingApproval", true}};
+			if (result.deferred) return method == "agent_wait" ? nlohmann::json{{"pendingAgentWait", true}} :
+			    method == "chat_create" && result.ok ? nlohmann::json{{"pendingChatCreate", true}} : nlohmann::json{{"pendingApproval", true}};
 			const UamControlCapability capability_snapshot = *capability;
 			if (!AppendAuditAndSave(app, capability_snapshot, request_id, method, result))
 			{
@@ -727,6 +1634,7 @@ namespace uam
 				{
 					std::string cancel_error;
 					(void)AgentRunScheduler::CancelTree(app, result.result.value("runId", ""), &cancel_error);
+					ManagedParentContinuationService::Revoke(app, capability_snapshot.chat_id, "delegation_save_failed");
 				}
 				if (rollback.has_value())
 				{
@@ -734,6 +1642,13 @@ namespace uam
 						*chat = *rollback;
 				}
 				return reject("Control result could not be durably recorded.");
+			}
+			if (result.ok && method == "agent_delegate" && result.result.value("resultDelivery", "") == "automatic-pending" &&
+			    !ManagedParentContinuationService::DelegationCommitConfirmed(app, capability_snapshot.chat_id))
+			{
+				ManagedParentContinuationService::Revoke(app, capability_snapshot.chat_id, "activation_changed");
+				result.result["resultDelivery"] = "held";
+				result.result["resultDeliveryReason"] = "activation_changed";
 			}
 			nlohmann::json response = result.ok
 			                              ? nlohmann::json{{"ok", true}, {"result", std::move(result.result)}}
@@ -771,41 +1686,96 @@ namespace uam
 			                       {"options", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 3}}} },
 			    {"question"});
 			user_question["description"] = "Ask the user one bounded question in UAM. The request is shown in the chat and waits for an explicit answer; free text is always available. Do not retry after timeout.";
-			return nlohmann::json::array({
+			nlohmann::json agent_list = ToolSchema("agent_list");
+			agent_list["description"] = "List permitted agents and providerTargets on this chat's execution host. Only eligible targets have an installed compatible worker CLI; authentication remains unverified. Same-provider defaultModelId inherits the parent; an empty cross-provider default uses that provider's default.";
+			nlohmann::json agent_delegate = MutationToolSchema("agent_delegate", {{"agentId", {{"type", "string"}}}, {"task", {{"type", "string"}}},
+			    {"providerId", {{"type", "string"}}}, {"modelId", {{"type", "string"}}}}, {"agentId", "task"});
+			agent_delegate["description"] = "Start one permitted agent using optional providerId and modelId from agent_list providerTargets. Omitting providerId inherits the parent provider; switching provider without modelId uses the target provider's default. CLI availability does not verify login. resultDelivery reports cooperative-only, automatic-pending or held. An accepted direct-root delegation may deliver bounded child results after a normal turn end on the SAME still-live local Codex session; it never restarts a parent or replays uncertain input.";
+			nlohmann::json chat_create = MutationToolSchema("chat_create", {{"task", {{"type", "string"}, {"description", "First prompt for the new chat."}}},
+			    {"providerId", {{"type", "string"}}}, {"modelId", {{"type", "string"}}}, {"title", {{"type", "string"}}}}, {"task"});
+			chat_create["description"] = "Start one separate top-level UAM chat in this chat's workspace and execution host and send task as its first prompt. Optional providerId and modelId come from agent_list providerTargets; omitted values inherit this chat's provider and model. The new chat copies this chat's permission modes, so it is never more permissive, and always gets its own Git worktree; UAM refuses when Git automatic worktrees are off or the workspace cannot be isolated. In YOLO it starts immediately; otherwise it waits for the user's approval in UAM. Unavailable in Plan mode, to read-only agents and to subagents. At most 2 per turn and 8 per chat; a chat started this way cannot start others. Retrying identical arguments returns the same chat. The reply arrives after the first prompt is sent; if it cannot be sent the empty chat is removed and an error is returned.";
+			nlohmann::json agent_wait = ToolSchema("agent_wait", {{"runId", {{"type", "string"}}}}, {"runId"});
+			agent_wait["description"] = "Wait in this active turn for one owned child for up to 80 seconds. Returns its exact status/result and timedOut. If still running, another explicit agent_wait on the same run is allowed; do not redelegate. This read never cancels the child or starts a new turn.";
+			nlohmann::json tools = nlohmann::json::array({
+			    std::move(agent_wait),
 			    ToolSchema("skill_list"),
 			    ToolSchema("skill_read", {{"id", {{"type", "string"}}}, {"path", {{"type", "string"}, {"description", "Relative asset path inside the installed skill; defaults to SKILL.md."}}}}, {"id"}),
-			    ToolSchema("agent_list"),
+			    std::move(agent_list),
 			    ToolSchema("agent_status", {{"runId", {{"type", "string"}}}}, {"runId"}),
 			    ToolSchema("goal_get"),
-			    MutationToolSchema("agent_delegate", {{"agentId", {{"type", "string"}}}, {"task", {{"type", "string"}}},
-			                                                 {"providerId", {{"type", "string"}}}, {"modelId", {{"type", "string"}}}},
-			                               {"agentId", "task"}),
+			    std::move(agent_delegate),
 			    MutationToolSchema("agent_cancel", {{"runId", {{"type", "string"}}}}, {"runId"}),
 			    std::move(goal_create),
+			    std::move(chat_create),
 			    std::move(user_question),
 			    { {"name", "computer_use_request"},
 			      {"description", "Ask the user in UAM to enable Computer Use for this local chat. The tool waits for an explicit Allow or Deny decision; it never approves itself. Do not retry after denial or timeout."},
 			      {"inputSchema", {{"type", "object"}, {"properties", {{"reason", {{"type", "string"}}}}},
 			                       {"required", nlohmann::json::array({"reason"})}, {"additionalProperties", false}}} },
 			});
+			// Standard MCP hint: providers may run these in Plan/read-only mode without a prompt. They change no
+			// workspace, chat, run or goal state (only audit and pending-request bookkeeping; user_question reads
+			// the user's answer). The server still enforces every ceiling.
+			for (nlohmann::json& tool : tools)
+			{
+				const std::string name = tool.value("name", "");
+				if (name == "agent_list" || name == "agent_status" || name == "agent_wait" || name == "skill_list" ||
+				    name == "skill_read" || name == "goal_get" || name == "user_question")
+					tool["annotations"] = {{"readOnlyHint", true}};
+			}
+			return tools;
 		}
 
 		std::optional<nlohmann::json> SubmitToManager(const std::filesystem::path& capability,
 		                                              std::string_view method,
-		                                              const nlohmann::json& arguments)
+		                                              const nlohmann::json& arguments, std::stop_token cancel = {},
+		                                              const std::function<WaitAbortReason()>& wait_probe = {},
+		                                              std::string* request_id_out = nullptr,
+		                                              WaitAbortReason* abort_out = nullptr)
 		{
+			const bool wait_method = method == "agent_wait";
+			const bool cancel_receipt = method == "_mcp_cancel_request";
+			const auto deadline = std::chrono::steady_clock::now() +
+			    std::chrono::milliseconds(wait_method ? 100000 : cancel_receipt ? 2000 : 0);
+			if (abort_out != nullptr) *abort_out = WaitAbortReason::None;
+			const auto aborted = [&]()
+			{
+				WaitAbortReason reason = wait_method && wait_probe ? wait_probe() : WaitAbortReason::None;
+				if (reason == WaitAbortReason::None && wait_method && std::chrono::steady_clock::now() >= deadline)
+					reason = WaitAbortReason::Deadline;
+				if (abort_out != nullptr && reason != WaitAbortReason::None) *abort_out = reason;
+				return reason != WaitAbortReason::None;
+			};
 			if (!uam::paths::IsDirectoryNoThrow(capability) || uam::paths::IsLinkOrReparsePointNoThrow(capability))
 				return std::nullopt;
+			// Independent stdio clients must finish their file IO before a stopped transfer.
+			std::error_code path_error;
+			const auto absolute_capability = std::filesystem::absolute(capability, path_error);
+			if (path_error || absolute_capability.parent_path().parent_path().filename() != "uam-control")
+				return std::nullopt;
+			const auto root = absolute_capability.parent_path().parent_path().parent_path();
+			std::string ownership_error;
+			const auto writer = platform::DataFolderWriterLease::TryAcquire(root, platform::DataFolderWriterLease::Access::Shared, ownership_error);
+			if (!writer || !DataFolderTransition::CheckExternalSourceFence(root, ownership_error, true))
+				return std::nullopt;
 			const std::string id = RandomRequestId();
+			if (request_id_out != nullptr) *request_id_out = id;
+			if (aborted()) return std::nullopt;
 			const nlohmann::json request{{"requestId", id}, {"method", method}, {"arguments", arguments}};
 			const std::string request_text = request.dump();
 			if (request_text.size() > kMaxRequestBytes ||
 			    !uam::io::WriteTextFile(capability / "requests" / (id + ".json"), request_text)) return std::nullopt;
 			const std::filesystem::path response_path = capability / "responses" / (id + ".json");
-			const int max_attempts = method == "computer_use_request" || method == "goal_create" || method == "user_question"
+			const int max_attempts = method == "computer_use_request" || method == "goal_create" || method == "user_question" || method == "chat_create"
 			    ? 4000 : 400;
-			for (int attempt = 0; attempt < max_attempts; ++attempt)
+			for (int attempt = 0; !cancel.stop_requested(); ++attempt)
 			{
+				if (aborted()) break;
+				if (wait_method || cancel_receipt)
+				{
+					if (std::chrono::steady_clock::now() >= deadline) break;
+				}
+				else if (attempt >= max_attempts) break; // All other methods retain existing budgets.
 				const auto size = uam::paths::FileSizeNoThrow(response_path);
 				if (size.has_value())
 				{
@@ -814,18 +1784,52 @@ namespace uam
 					if (!uam::io::TryReadTextFile(response_path, text) || text.size() != *size) return std::nullopt;
 					uam::paths::RemoveFileNoThrow(response_path);
 					const nlohmann::json response = nlohmann::json::parse(text, nullptr, false);
-					return response.is_object() ? std::optional<nlohmann::json>{response} : std::nullopt;
+					if (!response.is_object() || !response.contains("ok") || !response["ok"].is_boolean()) return std::nullopt;
+					if (response["ok"].get<bool>() ? !response.contains("result") :
+					    (response.contains("error") && !response["error"].is_string())) return std::nullopt;
+					if (aborted()) return std::nullopt;
+					return response;
 				}
 				if (!uam::paths::IsDirectoryNoThrow(capability)) return std::nullopt;
-				std::this_thread::sleep_for(std::chrono::milliseconds(25));
+				const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+				std::this_thread::sleep_for(wait_method || cancel_receipt
+				    ? std::max(std::chrono::milliseconds(0), std::min(std::chrono::milliseconds(25), remaining))
+				    : std::chrono::milliseconds(25));
+			}
+			if (method == "_mcp_heartbeat")
+			{
+				(void)uam::paths::RemoveFileNoThrow(capability / "requests" / (id + ".json"));
+				(void)uam::paths::RemoveFileNoThrow(response_path);
 			}
 			return std::nullopt;
 		}
+
+		void CancelWait(const std::filesystem::path& capability, const std::string& connection,
+		                const std::string& original_request)
+		{
+			if (original_request.empty()) return;
+			// A timed-out receipt is NOT proof of retirement. Never print/adopt the abandoned payload.
+			(void)SubmitToManager(capability, "_mcp_cancel_request",
+			    {{"connectionId", connection}, {"requestId", original_request}});
+			// The manager retires the response; do not perform unleased cleanup after SubmitToManager.
+		}
+
 	} // namespace
 
 	bool UamControlService::IsStdioServerInvocation(const std::vector<std::string>& arguments)
 	{
 		return std::ranges::find(arguments, kServerFlag) != arguments.end();
+	}
+
+	bool UamControlService::EnabledForChat(const AppSettings& settings, const ChatSession& chat)
+	{
+		return !chat.uam_control_explicitly_disabled && central_configuration::McpEnabled(
+		    settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "uam-mcp", chat.uam_control_enabled);
+	}
+
+	bool UamControlService::RequiresSessionStopForEnable(const AcpSessionState* session, bool apply_on_next_launch)
+	{
+		return !apply_on_next_launch && session != nullptr && session->running && session->uam_control_capability_id.empty();
 	}
 
 	bool UamControlService::SupportsStructuredProtocol(std::string_view protocol)
@@ -834,21 +1838,56 @@ namespace uam
 		       protocol == uam::provider_profile_constants::kProtocolGeminiAcp ||
 		       protocol == uam::provider_profile_constants::kProtocolOpenCodeAcp ||
 		       protocol == uam::provider_profile_constants::kProtocolCopilotAcp ||
+		       protocol == uam::provider_profile_constants::kProtocolCopilotSdk ||
 		       protocol == uam::provider_profile_constants::kProtocolClaudeCodeStreamJson ||
-               protocol == uam::provider_profile_constants::kProtocolAntigravityStreamJson;
+		       protocol == uam::provider_profile_constants::kProtocolAntigravityStreamJson;
 	}
 
 		int UamControlService::RunStdioServerFromEnvironment()
 	{
 		const auto capability = uam::env::GetTrimmedPath(kCapabilityDirectoryEnvironment);
 		if (!capability.has_value()) return 2;
+		const std::string connection_id = RandomRequestId();
+		bool initialization_replied = false;
+		bool connection_recorded = false;
+		std::jthread heartbeat;
+		StdioInputPump input(PlatformServicesFactory::Instance().process_service);
+		int exit_code = 0;
 		std::string line;
-		while (std::getline(std::cin, line))
+		while (input.Next(line))
 		{
-			if (line.size() > kMaxRequestBytes) return 2;
 			const nlohmann::json request = nlohmann::json::parse(line, nullptr, false);
 			if (!request.is_object()) continue;
-			if (!request.contains("id")) continue;
+			if (!request.contains("id"))
+			{
+				if (initialization_replied && request.contains("method") && request["method"].is_string() && request["method"] == "notifications/initialized")
+				{
+					const std::optional<nlohmann::json> receipt = SubmitToManager(*capability, "_mcp_initialized", {{"connectionId", connection_id}});
+					connection_recorded = receipt.has_value() && receipt->value("ok", false);
+					if (connection_recorded && !heartbeat.joinable())
+					{
+						heartbeat = std::jthread([directory = *capability, connection_id](std::stop_token cancel)
+						{
+							std::condition_variable_any wake;
+							std::mutex mutex;
+							std::unique_lock<std::mutex> lock(mutex);
+							while (!cancel.stop_requested())
+							{
+								try
+								{
+									const std::optional<nlohmann::json> result = SubmitToManager(directory, "_mcp_heartbeat", {{"connectionId", connection_id}}, cancel);
+									if (cancel.stop_requested() || !uam::paths::IsDirectoryNoThrow(directory) ||
+									    (result.has_value() && result->value("error", "") == "MCP connection is no longer current.")) break;
+								}
+								catch (const std::exception&) { break; }
+								wake.wait_for(lock, cancel, std::chrono::seconds(5), [] { return false; });
+							}
+						});
+					}
+
+				}
+				continue;
+			}
 			const nlohmann::json id = request["id"];
 			nlohmann::json response{{"jsonrpc", "2.0"}, {"id", id}};
 			if (!request.contains("method") || !request["method"].is_string())
@@ -875,10 +1914,30 @@ namespace uam
 				}
 				else
 				{
-					const auto manager_response = SubmitToManager(
-					    *capability, request["params"]["name"].get<std::string>(), request["params"]["arguments"]);
-					const bool ok = manager_response.has_value() && manager_response->value("ok", false);
-					const nlohmann::json payload = ok ? (*manager_response)["result"] : nlohmann::json{{"error", manager_response.has_value() ? manager_response->value("error", "Control request failed.") : "Control manager is unavailable."}};
+					const std::string name = request["params"]["name"].get<std::string>();
+					const bool wait_call = name == "agent_wait";
+					if (wait_call) input.BeginWait(id);
+					std::string wait_request_id;
+					WaitAbortReason abort = WaitAbortReason::None;
+					const auto manager_response = SubmitToManager(*capability, name, request["params"]["arguments"], {},
+					    wait_call ? std::function<WaitAbortReason()>([&] { return input.ProbeWait(); }) : std::function<WaitAbortReason()>{},
+					    wait_call ? &wait_request_id : nullptr, wait_call ? &abort : nullptr);
+					if (wait_call)
+					{
+						const WaitAbortReason latest = input.ProbeWait();
+						if (latest != WaitAbortReason::None) abort = latest;
+						if (!manager_response || abort != WaitAbortReason::None)
+						{
+							CancelWait(*capability, connection_id, wait_request_id);
+							const WaitAbortReason after_cancel = input.ProbeWait();
+							if (after_cancel != WaitAbortReason::None) abort = after_cancel;
+						}
+						input.EndWait();
+						if (abort == WaitAbortReason::InputClosed || abort == WaitAbortReason::InputError) break;
+						if (abort == WaitAbortReason::Cancelled) continue; // MCP cancellation has no reply.
+					}
+					const bool ok = abort == WaitAbortReason::None && manager_response.has_value() && manager_response->value("ok", false);
+					const nlohmann::json payload = ok ? (*manager_response)["result"] : nlohmann::json{{"error", abort == WaitAbortReason::Deadline ? "Agent wait transport timed out; the wait was not retried." : manager_response.has_value() ? manager_response->value("error", "Control request failed.") : "Control manager is unavailable."}};
 					response["result"] = {{"content", nlohmann::json::array({{{"type", "text"}, {"text", payload.dump()}}})}, {"isError", !ok}};
 				}
 			}
@@ -887,10 +1946,20 @@ namespace uam
 				response["error"] = {{"code", -32601}, {"message", "Method not found."}};
 			}
 			const std::string output = response.dump();
-			if (output.size() > kMaxResponseBytes) return 2;
+			if (output.size() > kMaxResponseBytes) { exit_code = 2; break; }
 			std::cout << output << '\n' << std::flush;
+			if (method == "initialize" && std::cout.good()) initialization_replied = true;
 		}
-		return 0;
+		heartbeat.request_stop();
+		if (heartbeat.joinable()) heartbeat.join();
+		if (connection_recorded && uam::paths::IsDirectoryNoThrow(*capability))
+		{
+			// Do not delay provider shutdown waiting for the GUI to process the receipt.
+			const std::string id = RandomRequestId();
+			(void)uam::io::WriteTextFile(*capability / "requests" / (id + ".json"),
+			    nlohmann::json{{"requestId", id}, {"method", "_mcp_disconnected"}, {"arguments", {{"connectionId", connection_id}}}}.dump());
+		}
+		return input.Failed() ? 2 : exit_code;
 	}
 
 	bool UamControlService::Initialize(AppState& app, std::string* error_out)
@@ -923,9 +1992,14 @@ namespace uam
 
 	void UamControlService::Shutdown(AppState& app)
 	{
+		for (const auto& session : app.acp_sessions)
+			if (session) ManagedParentContinuationService::Revoke(app, session->chat_id, "control_shutdown");
+		for (auto& capability : app.uam_control_capabilities) RetireAgentWait(app, capability);
 		for (auto& session : app.acp_sessions)
 			if (session != nullptr) session->uam_control_capability_id.clear();
 		app.uam_control_capabilities.clear();
+		// Explicit shutdown barrier only; normal owner polling never waits for IO.
+		HarvestWaitRetirements(app, true);
 		if (!app.data_root.empty() && !app.uam_control_manager_id.empty())
 			(void)uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(ControlRoot(app));
 		app.uam_control_manager_id.clear();
@@ -935,8 +2009,8 @@ namespace uam
 	                                               const ChatSession& chat, std::string_view setup_method,
 	                                               nlohmann::json& request, std::string* error_out)
 	{
-		if (!chat.uam_control_enabled || session.model_discovery_only) return true;
-		if (setup_method != uam::acp_methods::kSessionNew && setup_method != uam::acp_methods::kSessionLoad && setup_method != uam::acp_methods::kSessionResume)
+		if (!EnabledForChat(app.settings, chat) || session.model_discovery_only) return true;
+		if (setup_method != uam::acp_methods::kSessionNew && setup_method != uam::acp_methods::kSessionLoad && setup_method != uam::acp_methods::kSessionResume && setup_method != "session.create" && setup_method != "session.resume")
 		{
 			if (error_out != nullptr) *error_out = "UAM control is available only during structured session creation, load, or resume.";
 			return false;
@@ -958,7 +2032,7 @@ namespace uam
 		const AgentRun* run = chat.agent_run_id.empty() ? nullptr : FindRun(app, chat.agent_run_id);
 		const std::string root_chat_id = run == nullptr ? chat.id : run->root_chat_id;
 		const ChatSession* root_chat = ChatDomainService().FindChatById(app, root_chat_id);
-		if (root_chat == nullptr || !root_chat->uam_control_enabled)
+		if (root_chat == nullptr || !EnabledForChat(app.settings, *root_chat))
 		{
 			if (error_out != nullptr) *error_out = "The owning root chat no longer permits UAM control.";
 			return false;
@@ -967,13 +2041,23 @@ namespace uam
 		capability.id = NewUuid();
 		capability.directory = ControlRoot(app) / app.uam_control_manager_id / capability.id;
 		capability.chat_id = root_chat_id;
+		capability.session_control_override_at_launch = !chat.uam_control_enabled;
+		capability.root_control_override_at_launch = !root_chat->uam_control_enabled;
 		capability.session_chat_id = chat.id;
+		if (const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id))
+			capability.wait_host_at_launch = *host;
+		capability.wait_root_incarnation_at_launch = root_chat->metadata_incarnation;
+		capability.wait_chat_incarnation_at_launch = chat.metadata_incarnation;
+		capability.wait_workspace_at_launch = chat.workspace_directory;
+		capability.wait_worktree_at_launch = chat.workspace_worktree_directory;
+		capability.wait_root_workspace_at_launch = root_chat->workspace_directory;
+		capability.wait_root_worktree_at_launch = root_chat->workspace_worktree_directory;
 		capability.provider_id = session.provider_id;
 		capability.agent_id = uam::strings::NonEmptyOrFallback(session.active_uam_agent_id, "build");
 		capability.agent_run_id = run == nullptr ? std::string{} : run->id;
 		capability.agent_skills = session.active_uam_agent_skills;
 		capability.provider_configuration_directory = session.provider_configuration_directory;
-		capability.central_skills_enabled = app.settings.central_provider_configuration.enabled && (capability.agent_id == "build" || capability.agent_id == "plan");
+		capability.central_skills_enabled = central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "shared-setup", app.settings.central_provider_configuration.enabled) && (capability.agent_id == "build" || capability.agent_id == "plan");
 		capability.agent_delegates = session.active_uam_agent_delegates;
 		capability.expires_at_epoch_ms = uam::time::SystemEpochMillisecondsNow() + kCapabilityLifetimeMs;
 		if (capability.id.empty() || !uam::paths::CreateDirectoriesNoThrow(capability.directory / "requests") ||
@@ -1014,7 +2098,7 @@ namespace uam
 		if (terminal.uam_control_session != nullptr) RevokeForSession(app, *terminal.uam_control_session);
 		terminal.uam_control_session.reset();
 		terminal.uam_control_relay.reset();
-		if (!chat.uam_control_enabled) return true;
+		if (!EnabledForChat(app.settings, chat)) return true;
 		const AgentDefinitionCatalog catalog = AgentCatalog(app, chat);
 		const auto selected = std::ranges::find_if(catalog.definitions, [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
 		if (selected == catalog.definitions.end()) { error = "The selected UAM agent is unavailable."; return false; }
@@ -1032,17 +2116,36 @@ namespace uam
 		return true;
 	}
 
+	void UamControlService::RevokeForChat(AppState& app, std::string_view chat_id)
+	{
+		std::set<std::string> ids;
+		for (const UamControlCapability& capability : app.uam_control_capabilities)
+			if (capability.chat_id == chat_id || capability.session_chat_id == chat_id) ids.insert(capability.id);
+		for (const std::unique_ptr<AcpSessionState>& session : app.acp_sessions)
+			if (session != nullptr && ids.contains(session->uam_control_capability_id)) RevokeForSession(app, *session);
+		for (const std::unique_ptr<CliTerminalState>& terminal : app.cli_terminals)
+			if (terminal != nullptr && terminal->uam_control_session != nullptr && ids.contains(terminal->uam_control_session->uam_control_capability_id))
+			{
+				RevokeForSession(app, *terminal->uam_control_session);
+				terminal->uam_control_relay.reset();
+			}
+		for (auto& capability : app.uam_control_capabilities)
+			if (ids.contains(capability.id)) (void)RetireCapabilityDirectory(app, capability);
+		std::erase_if(app.uam_control_capabilities, [&](const UamControlCapability& capability)
+		{ return ids.contains(capability.id); });
+	}
+
 	void UamControlService::RevokeForSession(AppState& app, AcpSessionState& session)
 	{
+		ManagedParentContinuationService::Revoke(app, session.chat_id, "control_revoked");
+		const std::string id = session.uam_control_capability_id;
+		for (auto& capability : app.uam_control_capabilities)
+			if (capability.id == id) (void)RetireCapabilityDirectory(app, capability);
 		session.uam_control_relay.reset();
-		if (session.uam_control_capability_id.empty()) return;
-		const std::string id = std::move(session.uam_control_capability_id);
+		if (id.empty()) return;
 		session.uam_control_capability_id.clear();
-		std::erase_if(app.uam_control_capabilities, [&](const UamControlCapability& capability) {
-			if (capability.id != id) return false;
-			(void)uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(capability.directory);
-			return true;
-		});
+		std::erase_if(app.uam_control_capabilities, [&](const UamControlCapability& capability)
+		{ return capability.id == id; });
 	}
 
 	std::optional<AcpPendingUserInputState> UamControlService::PendingApprovalForChat(
@@ -1053,7 +2156,7 @@ namespace uam
 		{
 			if (!capability.pending_approval.has_value() || ApprovalChatId(capability) != chat_id ||
 			    capability.pending_approval->expires_at_epoch_ms <= now ||
-			    !HasAuthority(app, capability, now)) continue;
+			    !HasAuthority(app, capability, now) || !ComputerUseApprovalCurrent(app, capability)) continue;
 			const ChatSession* chat = ChatDomainService().FindChatById(app, std::string(chat_id));
 			if (chat == nullptr) continue;
 			AcpPendingUserInputState input;
@@ -1063,14 +2166,25 @@ namespace uam
 			AcpUserInputQuestionState question;
 			const bool computer_use = capability.pending_approval->method == "computer_use_request";
 			const bool user_question = capability.pending_approval->method == "user_question";
-			question.id = computer_use ? "computerUse" : user_question ? "userQuestion" : "goalCreate";
-			question.header = computer_use ? "Computer Use" : user_question ? "Question" : "Goal";
+			const bool chat_create = capability.pending_approval->method == "chat_create";
+			question.id = computer_use ? "computerUse" : user_question ? "userQuestion" : chat_create ? "chatCreate" : "goalCreate";
+			question.header = computer_use ? "Computer Use" : user_question ? "Question" : chat_create ? "New chat" : "Goal";
 			if (computer_use)
 				question.question = "Allow " + uam::strings::SafeLine(capability.provider_id, 64, true) +
 				                   " to enable Computer Use in " + uam::strings::SafeLine(chat->title, 120, true) +
 				                   "? " + capability.pending_approval->reason;
 			else if (user_question)
 				question.question = uam::strings::SafeLine(capability.pending_approval->question, 2048, true);
+			else if (chat_create)
+			{
+				const nlohmann::json& arguments = capability.pending_approval->chat_create_arguments;
+				const std::string title = uam::strings::Trim(arguments.value("title", ""));
+				question.question = "Allow " + uam::strings::SafeLine(capability.provider_id, 64, true) + " in " +
+				                   uam::strings::SafeLine(chat->title, 120, true) + " to start a new " +
+				                   uam::strings::SafeLine(uam::strings::NonEmptyOrFallback(uam::strings::Trim(arguments.value("providerId", "")), chat->provider_id), 64, true) +
+				                   " chat" + (title.empty() ? std::string{} : " \"" + uam::strings::SafeLine(title, 120, true) + "\"") +
+				                   "? " + uam::strings::SafeLine(uam::strings::Trim(arguments.value("task", "")), 2048, true);
+			}
 			else
 				question.question = "Allow " + uam::strings::SafeLine(capability.provider_id, 64, true) +
 				                   " to create this goal in " + uam::strings::SafeLine(chat->title, 120, true) +
@@ -1084,6 +2198,9 @@ namespace uam
 			else question.options = computer_use
 			    ? std::vector<AcpUserInputOptionState>{{"Allow", "Enable Computer Use for this chat."},
 			                                          {"Deny", "Keep Computer Use disabled."}}
+			    : chat_create
+			    ? std::vector<AcpUserInputOptionState>{{"Allow", "Start this chat."},
+			                                          {"Deny", "Do not start this chat."}}
 			    : std::vector<AcpUserInputOptionState>{{"Allow", "Create this goal."},
 			                                          {"Deny", "Do not create this goal."}};
 			input.questions.push_back(std::move(question));
@@ -1106,12 +2223,22 @@ namespace uam
 		{
 			if (!capability.pending_approval.has_value() || ApprovalRequestId(capability) != request_id)
 				continue;
-			if (ApprovalChatId(capability) != chat_id || !HasAuthority(app, capability, now) ||
-			    capability.pending_approval->expires_at_epoch_ms <= now)
+			if (ApprovalChatId(capability) != chat_id)
 				return fail("This UAM request is no longer active in this chat.");
+			const bool authority_current = HasAuthority(app, capability, now) && capability.pending_approval->expires_at_epoch_ms > now;
+			if ((!authority_current && capability.pending_approval->method == "computer_use_request") ||
+			    !ComputerUseApprovalCurrent(app, capability))
+			{
+				(void)WriteResponse(capability.directory, capability.pending_approval->request_id,
+				    {{"ok", false}, {"error", "The original computer-use turn or launch authority changed. Request approval again."}});
+				capability.pending_approval.reset();
+				return fail("This computer-use approval no longer belongs to the active user turn.");
+			}
+			if (!authority_current) return fail("This UAM request is no longer active in this chat.");
 			const bool computer_use = capability.pending_approval->method == "computer_use_request";
 			const bool user_question = capability.pending_approval->method == "user_question";
-			const std::string question_id = computer_use ? "computerUse" : user_question ? "userQuestion" : "goalCreate";
+			const bool chat_create = capability.pending_approval->method == "chat_create";
+			const std::string question_id = computer_use ? "computerUse" : user_question ? "userQuestion" : chat_create ? "chatCreate" : "goalCreate";
 			if (answers.size() != 1 || !answers.contains(question_id) ||
 			    answers.at(question_id).size() != 1)
 				return fail(user_question ? "Provide one answer to this UAM question." : "Choose Allow or Deny for this UAM request.");
@@ -1123,12 +2250,13 @@ namespace uam
 			}
 			else if (answer != "Allow" && answer != "Deny")
 				return fail("Choose Allow or Deny for this UAM request.");
+			if (computer_use && !app.settings.computer_use_globally_enabled)
+				return fail("Computer Use is disabled globally.");
 			ChatSession* chat = ChatDomainService().FindChatById(app, std::string(chat_id));
 			ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
-			if (chat == nullptr || root_chat == nullptr || !root_chat->uam_control_enabled ||
-			    (user_question && !chat->uam_control_enabled) ||
-			    (computer_use && (!chat->uam_control_enabled ||
-			                      !uam::computer_use::AvailableForChat(*chat) ||
+			if (chat == nullptr || !ControlEnabled(root_chat, capability, true) ||
+			    ((user_question || computer_use) && !ControlEnabled(chat, capability, false)) ||
+			    (computer_use && (!uam::computer_use::AvailableForChat(*chat) ||
 			                      !uam::computer_use::UsesUamBackend(*chat))))
 				return fail("This UAM request is no longer available for this chat.");
 			if (!user_question && answer == "Allow" &&
@@ -1151,8 +2279,10 @@ namespace uam
 				{
 					chat->computer_use_enabled = true;
 					std::string error;
-					if (!ComputerUseService::SetControlState(app, chat->id, "armed", &error))
+					if (!ComputerUseService::PersistTrustedTask(app, chat->id, capability.pending_approval->computer_use_task, &error) ||
+					    !ComputerUseService::SetControlState(app, chat->id, "armed", &error))
 					{
+						(void)ComputerUseService::SetControlState(app, chat->id, "stopped");
 						*chat = before;
 						result.error = error.empty() ? "Computer Use could not be enabled." : error;
 					}
@@ -1163,6 +2293,19 @@ namespace uam
 						result.reason = "The user approved Computer Use for this chat.";
 					}
 				}
+				else if (chat_create)
+				{
+					result = ChatCreate(app, capability, capability.pending_approval->request_id, capability.pending_approval->chat_create_arguments);
+					if (result.deferred)
+					{
+						// The first-prompt send records the audit and the tool reply.
+						capability.pending_approval.reset();
+						return true;
+					}
+					// Creation appends to app.chats; reacquire the borrowed rows.
+					chat = ChatDomainService().FindChatById(app, std::string(chat_id));
+					root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
+				}
 				else
 				{
 					result = GoalCreate(app, capability,
@@ -1172,6 +2315,7 @@ namespace uam
 			}
 			else result.error = computer_use
 			    ? "The user denied Computer Use for this chat. Do not retry without a new user request."
+			    : chat_create ? "The user denied starting this chat. Do not retry without a new user request."
 			    : "The user denied goal creation for this chat. Do not retry without a new user request.";
 			const nlohmann::json response = result.ok
 			    ? nlohmann::json{{"ok", true}, {"result", result.result}}
@@ -1196,6 +2340,12 @@ namespace uam
 
 	bool UamControlService::ProcessPendingRequests(AppState& app)
 	{
+		return ProcessPendingRequests(app, {});
+	}
+
+	bool UamControlService::ProcessPendingRequests(AppState& app,
+	    const std::function<bool(io::AtomicWriteStage)>& response_write_hook)
+	{
 		bool changed = false;
 		std::size_t processed = 0;
 		const int64_t now = uam::time::SystemEpochMillisecondsNow();
@@ -1205,7 +2355,13 @@ namespace uam
 			UamControlCapability& capability = app.uam_control_capabilities[capability_index];
 			if (!HasAuthority(app, capability, now))
 			{
-				(void)uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(capability.directory);
+				// Keep only the actual owned launch reservation. It cannot process requests yet.
+				if (acp_detail::ShouldRetainPendingLocalAcpControlCapability(app, capability, now, GetAppTimeSeconds()))
+				{
+					++capability_index;
+					continue;
+				}
+				(void)RetireCapabilityDirectory(app, capability);
 				for (auto& session : app.acp_sessions)
 					if (session != nullptr && session->uam_control_capability_id == capability.id)
 						session->uam_control_capability_id.clear();
@@ -1214,9 +2370,10 @@ namespace uam
 				continue;
 			}
 			if (capability.pending_approval.has_value() &&
-			    capability.pending_approval->expires_at_epoch_ms <= now)
+			    (capability.pending_approval->expires_at_epoch_ms <= now || !ComputerUseApprovalCurrent(app, capability)))
 			{
-				const ToolResult expired{.error = "UAM approval timed out."};
+				const ToolResult expired{.error = capability.pending_approval->expires_at_epoch_ms <= now
+				    ? "UAM approval timed out." : "The original computer-use turn or launch authority changed. Request approval again."};
 				(void)AppendAuditAndSave(app, capability, capability.pending_approval->request_id,
 				                         capability.pending_approval->method, expired);
 				(void)WriteResponse(capability.directory, capability.pending_approval->request_id,
@@ -1241,7 +2398,7 @@ namespace uam
 			}
 			if (list_error || queue_overflow)
 			{
-				(void)uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(capability.directory);
+				(void)RetireCapabilityDirectory(app, capability);
 				for (auto& session : app.acp_sessions)
 					if (session != nullptr && session->uam_control_capability_id == capability.id)
 						session->uam_control_capability_id.clear();
@@ -1274,11 +2431,20 @@ namespace uam
 					}
 				}
 				(void)uam::paths::RemoveFileNoThrow(file);
-				if (!response.value("pendingApproval", false))
+				if (!response.value("pendingApproval", false) && !response.value("pendingAgentWait", false) &&
+				    !response.value("pendingChatCreate", false))
 					(void)WriteResponse(capability_directory, request_id, response);
 				changed = true;
 			}
 			++capability_index;
+		}
+		ProcessAgentWaits(app, response_write_hook);
+		// Sent after every capability borrow ends: a provider launch may issue new capabilities.
+		if (!app.uam_chat_create_launches.empty())
+		{
+			FlushChatCreateLaunches(app, [](AppState& state, const std::string& chat_id, const std::string& task, std::string* error)
+			{ return uam::SendAcpPrompt(state, chat_id, task, error); });
+			changed = true;
 		}
 		return changed;
 	}
@@ -1294,6 +2460,11 @@ namespace uam
 	bool UamControlService::ValidStdioToolCallForTests(const nlohmann::json& request)
 	{
 		return ValidStdioToolCall(request);
+	}
+
+	void UamControlService::FlushChatCreateLaunchesForTests(AppState& app, const ChatCreateSender& send)
+	{
+		FlushChatCreateLaunches(app, send);
 	}
 
 	nlohmann::json UamControlService::ToolDefinitionsForTests()

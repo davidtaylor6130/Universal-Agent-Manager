@@ -1,3 +1,4 @@
+#include "app/agent_run_scheduler.h"
 #include "common/runtime/acp/acp_polling.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -10,6 +11,8 @@
 #include "common/config/settings_normalization.h"
 #include "common/paths/workspace_root.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
+#include "common/runtime/acp/acp_statuses.h"
+#include "common/runtime/structured_framing.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 #include "remote/runner_proxy.h"
@@ -35,6 +38,21 @@ namespace uam::acp_detail
 		constexpr std::uint64_t kBytesPerMiB = 1024ull * 1024;
 		constexpr double kFatalTransportReconnectDelaySeconds = 0.25;
 		constexpr std::string_view kRemoteAttachedMethod = "uam/remoteAttached";
+
+		void SettleRemoteMaintenance(AppState& app, AcpSessionState& session, ChatSession& chat)
+		{
+			if (!chat.remote_manual_compaction_pending || session.manual_compaction_pending || session.pending_compaction || session.recovering_remote_process)
+				return;
+			chat.remote_manual_compaction_pending = false;
+			chat.remote_manual_compaction_boundary_json.clear();
+			if (!session.processing)
+			{
+				session.recovering_remote_turn = false;
+				chat.remote_turn_reconnect_pending = false;
+			}
+			// The same later output-cursor save must succeed before the runner is acknowledged.
+			(void)SaveChatQuietly(app, chat);
+		}
 
 		void ReactivateConfirmedRemoteGoal(AppState& app, const ChatSession& chat)
 		{
@@ -67,8 +85,26 @@ namespace uam::acp_detail
 		    AcpSessionState& session,
 		    ChatSession& chat,
 		    std::string message,
-		    bool recover_remote_disconnect = false)
+		    bool recover_remote_disconnect = false,
+		    bool hold_for_explicit_recovery = false)
 		{
+			// One rejected failure owns this transport until explicit Stop or owned replacement.
+			if (!session.transport_ownership_error.empty())
+				return;
+			std::string ownership_error;
+			if (session.running && !ValidateAcpRestartOwnership(app, session, chat, &ownership_error))
+			{
+				session.transport_ownership_error = std::move(ownership_error);
+				session.last_error = std::move(message);
+				session.lifecycle_state = kAcpLifecycleError;
+				return;
+			}
+			if (hold_for_explicit_recovery)
+			{
+				session.queue_held = chat.acp_queue_held = true;
+				session.reconnect_pending = false;
+				session.reconnect_not_before_time_s = 0.0;
+			}
 			const bool remote_helper_owned =
 			    chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
 			    (chat.remote_process_exists || chat.remote_turn_reconnect_pending);
@@ -125,7 +161,7 @@ namespace uam::acp_detail
 				if (app.provider_model_catalog != nullptr)
 				{
 					app.provider_model_catalog->RememberRefreshFailure(session.provider_id,
-					    message, uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string(), chat.execution_host_id);
+					    message, uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string(), chat.execution_host_id, session.model_catalog_scope_key);
 				}
 			}
 			session.queued_user_prompts = std::move(queued_prompts);
@@ -136,7 +172,7 @@ namespace uam::acp_detail
 			}
 			session.last_error = message;
 			session.lifecycle_state = kAcpLifecycleError;
-			if ((undelivered_prompt || !session.queued_user_prompts.empty()) && session.managed_agent_run_id.empty() &&
+			if (!hold_for_explicit_recovery && (undelivered_prompt || !session.queued_user_prompts.empty()) && session.managed_agent_run_id.empty() &&
 			    restart_safe)
 			{
 				session.reconnect_pending = true;
@@ -145,7 +181,7 @@ namespace uam::acp_detail
 				                    "Queued prompts will resume on a fresh structured transport.");
 			}
 			MarkAcpChatUnseenIfBackground(app, chat);
-			SaveChatQuietly(app, chat);
+			SaveChatQuietly(app, chat, hold_for_explicit_recovery ? AcpChatSavePurpose::PreserveQueuedIntent : AcpChatSavePurpose::SettleFailedDirect);
 		}
 
 		bool StopForAcpOutputSafety(
@@ -155,8 +191,10 @@ namespace uam::acp_detail
 		    const std::string& reason,
 		    const std::string& message)
 		{
+			if (!session.transport_ownership_error.empty())
+				return false;
 			AppendAcpDiagnostic(session, "read", reason, "", "", false, 0, message);
-			InvalidateAcpTransportImpl(app, session, chat, message);
+			InvalidateAcpTransport(app, session, chat, message);
 			return true;
 		}
 
@@ -274,8 +312,28 @@ namespace uam::acp_detail
 		{
 			BufferedStdoutResult result;
 			std::size_t consumed = 0;
-			while (result.lines < max_lines && PollClock::now() < deadline)
+			while (session.transport_ownership_error.empty() && result.lines < max_lines && PollClock::now() < deadline)
 			{
+				if (session.protocol_kind == uam::provider_profile_constants::kProtocolCopilotSdk && consumed < session.stdout_buffer.size() && session.stdout_buffer[consumed] != '\x1e')
+				{
+					const std::string_view buffered(session.stdout_buffer.data() + consumed, session.stdout_buffer.size() - consumed);
+					const auto frame = uam::structured_framing::Read(buffered, kMaxAcpStdoutLineBytes - 8196);
+					if (frame.status == uam::structured_framing::Status::Incomplete)
+						break;
+					if (frame.status == uam::structured_framing::Status::Invalid)
+					{
+						session.stdout_buffer.clear();
+						result.changed = StopForAcpOutputSafety(app, session, chat, "invalid_native_frame", "Copilot returned an invalid or oversized native protocol frame.");
+						return result;
+					}
+					const std::string body(buffered.substr(frame.body_offset, frame.body_bytes));
+					consumed += frame.consumed_bytes;
+					++result.lines;
+					result.changed = ProcessAcpLine(app, session, chat, body, browser) || result.changed;
+					if (!session.running)
+						break;
+					continue;
+				}
 				const std::size_t newline_pos = session.stdout_buffer.find('\n', consumed);
 				if (newline_pos == std::string::npos)
 				{
@@ -299,6 +357,17 @@ namespace uam::acp_detail
 				{
 					session.remote_source_exit_reported = true;
 					session.remote_source_exit_code = *source_exit;
+					// Persist the death and resolved wait in the same save as delivered output.
+					chat.remote_source_exit_pending = true;
+					chat.remote_source_exit_code = *source_exit;
+					if (session.waiting_for_permission || session.waiting_for_user_input)
+					{
+						(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
+						// Keep turn correlation until retained final output has been projected.
+						session.last_error = std::string(RuntimeDisplayName(session)) +
+						    " exited before the pending interaction could be answered.";
+						ResetAcpPendingInteractionState(session);
+					}
 					session.pending_remote_source_exit_ack_line =
 					    std::string(uam::remote::kRemoteSourceExitAckPrefix) +
 					    session.remote_output_delivery_token + " " +
@@ -343,6 +412,8 @@ namespace uam::acp_detail
 	    ChatSession& chat,
 	    const std::string& message)
 	{
+		if ((AcpSessionHasActiveTurn(session) || AcpSessionHasPendingCancel(session)) &&
+		    ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpHoldUnconfirmedInput(app, session, chat, message)) return;
 		InvalidateAcpTransportImpl(app, session, chat, message);
 	}
 
@@ -352,7 +423,24 @@ namespace uam::acp_detail
 	    ChatSession& chat,
 	    const std::string& message)
 	{
+		if ((AcpSessionHasActiveTurn(session) || AcpSessionHasPendingCancel(session)) &&
+		    ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpHoldUnconfirmedInput(app, session, chat, message)) return;
 		InvalidateAcpTransportImpl(app, session, chat, message, true);
+	}
+
+	void HoldAcpTransportForExplicitRecovery(AppState& app, AcpSessionState& session,
+	    ChatSession& chat, const std::string& message)
+	{
+		InvalidateAcpTransportImpl(app, session, chat, message, false, true);
+	}
+
+	bool HoldAcpUnconfirmedCancellationIfTimedOut(AppState& app, AcpSessionState& session,
+	    ChatSession& chat, double now_seconds)
+	{
+		return AcpSessionHasPendingCancel(session) && session.cancel_requested_time_s > 0.0 &&
+		    now_seconds - session.cancel_requested_time_s >= kAcpCancelTimeoutSeconds &&
+		    ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpHoldUnconfirmedInput(app, session, chat,
+		        "Cancellation was not confirmed by the owned provider before its deadline.");
 	}
 
 std::size_t ProcessBufferedAcpStdoutForTests(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser, std::size_t max_lines)
@@ -421,11 +509,19 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 	}
 	catch (const std::exception& ex)
 	{
-		const std::string error_message = std::string("Invalid JSON from ") + RuntimeDisplayName(session) + ": " + ex.what();
-		AppendAcpDiagnostic(session, "parse", "invalid_json", "", "", false, 0, error_message, CapDiagnosticString(trimmed, kMaxAcpDiagnosticDetailBytes));
+		const IProviderRuntime* const guard = session.native_pre_dispatch_runtime;
+		const bool observed_decode_failure = guard && guard->OnAcpPreDispatch(app, session, chat, nullptr);
+		const std::string error_message = observed_decode_failure ? "Invalid structured data during native process observation." :
+		    std::string("Invalid JSON from ") + RuntimeDisplayName(session) + ": " + ex.what();
+		AppendAcpDiagnostic(session, "parse", "invalid_json", "", "", false, 0, error_message,
+		    observed_decode_failure ? std::string{} : CapDiagnosticString(trimmed, kMaxAcpDiagnosticDetailBytes));
 		InvalidateAcpTransport(app, session, chat, error_message);
 		return true;
 	}
+	// The guard belongs to the captured process adapter, not mutable chat/provider
+	// metadata. It must precede reconnect, usage and every other shared projection.
+	if (const IProviderRuntime* guard = session.native_pre_dispatch_runtime;
+	    guard && guard->OnAcpPreDispatch(app, session, chat, &message)) return true;
 	if (JsonDiagnosticStringValue(message, "method") == kRemoteAttachedMethod)
 	{
 		if (!session.recovering_remote_turn && !session.recovering_remote_process) return true;
@@ -446,10 +542,45 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 		return true;
 	}
 
+	// Retained output may include another unanswered request. Its source is dead,
+	// so project ordinary final output but never reopen a wait or auto-answer it.
+	if (session.remote_source_exit_reported)
 	{
+		const std::string method = JsonDiagnosticStringValue(message, "method");
+		const bool interaction = method == uam::acp_methods::kSessionRequestPermission ||
+		    method == uam::acp_methods::kItemCommandExecutionRequestApproval ||
+		    method == uam::acp_methods::kItemFileChangeRequestApproval ||
+		    method == uam::acp_methods::kItemPermissionsRequestApproval ||
+		    method == uam::acp_methods::kItemToolRequestUserInput ||
+		    (JsonDiagnosticStringValue(message, "type") == "control_request" &&
+		     JsonDiagnosticStringValue(JsonObjectValue(message, "request"), "subtype") == "can_use_tool");
+		if (interaction)
+		{
+			AppendAcpDiagnostic(session, "process_exit", "unanswerable_interaction", method,
+			                    "", true, session.remote_source_exit_code,
+			                    "Discarded an interaction request from the confirmed exited provider.");
+			return true;
+		}
+	}
+
+	{
+		// Standard context updates must survive provider-specific notification interception.
+		if (uam::nlohmann_json::StringViewOrEmpty(message, "method") == uam::acp_methods::kSessionUpdate)
+		{
+			const nlohmann::json* standard_params = uam::nlohmann_json::FindObjectField(message, "params");
+			const nlohmann::json* standard_update = standard_params ? uam::nlohmann_json::FindObjectField(*standard_params, "update") : nullptr;
+			if (standard_update && uam::nlohmann_json::StringViewOrEmpty(*standard_update, "sessionUpdate") == "usage_update")
+			{
+				HandleSessionUpdate(app, session, chat, *standard_params, browser);
+				RetireRemoteAcpRequests(app, session, chat);
+				MarkAcpRuntimeActivity(session);
+				return true;
+			}
+		}
 		const IProviderRuntime& poll_runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
 		if (poll_runtime.OnAcpHandleMessage(app, session, chat, message, browser))
 		{
+			SettleRemoteMaintenance(app, session, chat);
 			RetireRemoteAcpRequests(app, session, chat);
 			return true;
 		}
@@ -485,6 +616,7 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 			try
 			{
 				HandleAcpResponse(app, session, chat, message);
+				SettleRemoteMaintenance(app, session, chat);
 				RetireRemoteAcpRequests(app, session, chat);
 				MarkAcpRuntimeActivity(session);
 			}
@@ -505,6 +637,8 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 
 bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser)
 {
+	if (!session.transport_ownership_error.empty())
+		return false;
 	if (!session.running)
 	{
 		return false;
@@ -522,6 +656,21 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		if (SaveChatQuietly(app, chat))
 		{
 			session.pending_remote_input_receipt_id.clear();
+			// The helper wrote this exact delivery to the provider: that is the remote input-write fact (#628).
+			// Only rows with one unique matching native input ID settle; unknown or duplicate IDs stay unconfirmed.
+			for (const std::string& input_id : session.pending_remote_delivery_input_ids)
+			{
+				Message* exact = nullptr;
+				int matches = 0;
+				for (Message& row : chat.messages)
+					if (row.role == MessageRole::User && row.native_input_id == input_id && ++matches == 1) exact = &row;
+				if (matches == 1 && !exact->input_write_completed)
+				{
+					exact->input_write_completed = true;
+					ScheduleChatSave(app, chat, 0.0);
+				}
+			}
+			session.pending_remote_delivery_input_ids.clear();
 			changed = true;
 		}
 		else
@@ -544,6 +693,8 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		    app, session, chat, browser, kAcpStdoutLinesPerPoll - lines_processed, deadline);
 		changed = buffered.changed || changed;
 		lines_processed += buffered.lines;
+		if (!session.transport_ownership_error.empty())
+			return changed;
 		if (!session.running)
 		{
 			return true;
@@ -585,6 +736,8 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		AppendAcpDiagnostic(session, "read", "stdout_read_failed", "", "", false, 0, message);
 		RecoverDisconnectedRemoteAcpTransport(app, session, chat, message);
 		changed = true;
+		if (!session.transport_ownership_error.empty())
+			return changed;
 		break;
 	}
 	if (bytes_read >= kAcpStdoutBytesPerPoll || lines_processed >= kAcpStdoutLinesPerPoll || PollClock::now() >= deadline)
@@ -611,7 +764,14 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		    { return request.response_consumed; });
 		chat.remote_delivered_stdout_cursor = session.pending_remote_stdout_cursor;
 		chat.remote_delivered_stderr_cursor = session.pending_remote_stderr_cursor;
-		chat.remote_interaction_responses.clear();
+		std::erase_if(chat.remote_interaction_responses,
+			          [](const AcpRemoteInteractionResponseState& response)
+			          {
+				          // Native HTTP decisions are retired only by their own confirmed HTTP
+				          // receipt; an unrelated ACP stdout acknowledgment does not deliver them.
+				          const auto id = nlohmann::json::parse(response.request_id_json, nullptr, false);
+				          return !id.is_string() || !id.get_ref<const std::string&>().starts_with("opencode-native:");
+			          });
 		if (!SaveChatQuietly(app, chat))
 		{
 			chat.remote_delivered_stdout_cursor = old_stdout_cursor;
@@ -665,6 +825,8 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 
 bool DrainStderr(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	if (!session.transport_ownership_error.empty())
+		return false;
 	bool changed = false;
 	session.stderr_poll_pending = false;
 	std::size_t bytes_read = 0;
@@ -709,16 +871,41 @@ bool DrainStderr(AppState& app, AcpSessionState& session, ChatSession& chat)
 	return changed;
 }
 
+bool SettleClaudeBackgroundTasks(AcpSessionState& session, ChatSession* chat, const char* status)
+{
+	if (session.claude_live_background_task_ids.empty()) return false;
+	const auto settle_child = [&session, status](const std::string& task_id, std::string& current_status)
+	{
+		if (!session.claude_live_background_task_ids.contains(task_id) ||
+		    (!uam::acp_statuses::IsActiveStatus(current_status) && current_status != "paused")) return false;
+		current_status = status;
+		return true;
+	};
+	bool changed = false;
+	for (AcpToolCallState& tool : session.tool_calls) changed |= settle_child(tool.task_id, tool.status);
+	if (chat != nullptr)
+	{
+		for (Message& message : chat->messages)
+			for (ToolCall& tool : message.tool_calls) changed |= settle_child(tool.task_id, tool.status);
+		if (changed) chat->updated_at = AcpTimestampNow();
+	}
+	session.claude_live_background_task_ids.clear();
+	return true;
+}
+
 void MarkAcpProcessExited(AcpSessionState& session, ChatSession* chat,
 	                      bool has_exit_code, int exit_code,
 	                      bool preserve_active_turn)
 {
+	session.pending_compaction.reset();
 	if (has_exit_code)
 	{
 		session.has_last_exit_code = true;
 		session.last_exit_code = exit_code;
 	}
 	const bool active_turn = uam::AcpSessionHasActiveTurn(session);
+	if (active_turn && !preserve_active_turn)
+		AgentRunScheduler::InitialTurnSettled(session, "failed", session.last_error);
 	std::ostringstream detail;
 	bool has_detail = false;
 	if (has_exit_code)
@@ -745,6 +932,19 @@ void MarkAcpProcessExited(AcpSessionState& session, ChatSession* chat,
 		detail << "pending_requests=" << pending_summary;
 	}
 	AppendAcpDiagnostic(session, "process_exit", active_turn ? "active_turn" : "idle", "", "", has_exit_code, exit_code, "", detail.str());
+	const bool remote_process = !session.process_execution_host_id.empty()
+	    ? session.process_execution_host_id != uam::execution_hosts::kLocalHostId
+	    : chat != nullptr && !uam::paths::IsControllerLocalWorkspace(*chat);
+	// A proxy exit alone does not establish that its runner-owned native process exited.
+	if (!remote_process || session.remote_source_exit_reported)
+	{
+		session.codex_known_child_thread_ids.clear();
+		session.codex_live_background_thread_ids.clear();
+	}
+	if ((!remote_process || session.remote_source_exit_reported) && !session.claude_live_background_task_ids.empty())
+	{
+		(void)SettleClaudeBackgroundTasks(session, chat, uam::acp_statuses::kFailed);
+	}
 	session.running = false;
 	session.initialized = false;
 	session.session_ready = false;

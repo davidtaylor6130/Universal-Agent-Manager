@@ -1,12 +1,27 @@
 #pragma once
 
 #include "common/runtime/acp/acp_tool_items.h"
+#include "common/provider/provider_ids.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
 
 namespace uam::codex
 {
+	/// Exact operation spelling or the native/legacy spawn aliases recognized by
+	/// this adapter. Opaque tool names are not generically case/separator folded.
+	inline bool HistoryToolOperationEquivalent(std::string_view provider_id, std::string_view saved, std::string_view incoming)
+	{
+		if (provider_id != uam::provider_ids::kCodexCli || saved.empty() || incoming.empty()) return false;
+		if (saved == incoming) return true;
+		const auto spawn_operation = [](std::string_view value)
+		{
+			return value == "spawn_agent" || value == "spawnAgent" || value == "multi_agent_v1.spawn_agent" || value == "functions.spawn_agent";
+		};
+		return spawn_operation(saved) && spawn_operation(incoming);
+	}
+
 	/// <summary>Uses the same lossless tool projection for app-server events and reloaded thread items.</summary>
 	inline std::string ToolItemTitle(const nlohmann::json& item)
 	{

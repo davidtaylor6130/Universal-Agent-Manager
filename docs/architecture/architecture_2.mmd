@@ -9,7 +9,7 @@ flowchart TB
   DATA --> DELETE["Recoverable deletion intents"]
 
   WORKSPACE["Selected workspace"] --> WAGENTS[".uam/agents/*.md"]
-  WORKSPACE --> WMEMORY[".codex/memories/*.md"]
+  WORKSPACE --> WMEMORY[".UAM/ memory files"]
   WORKSPACE --> WORKTREE["Isolated Git worktree + turn checkpoints"]
 
   CHATS --> WRITER["Atomic replace + sync + validated recovery"]

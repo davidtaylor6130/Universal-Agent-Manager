@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { fromViewportMenu } from '../../utils/modalFocus'
 
 /** Keep keyboard focus inside the topmost tool/question overlay and return it on dismissal. */
 export function useToolQuestionDialog(onClose: () => void)
@@ -12,7 +13,7 @@ export function useToolQuestionDialog(onClose: () => void)
         dialog?.focus()
         const onKey = (event: KeyboardEvent) => {
             const modals = document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]')
-            if (modals[modals.length - 1] !== dialog || event.defaultPrevented || event.isComposing) return
+            if (modals[modals.length - 1] !== dialog || event.defaultPrevented || event.isComposing || fromViewportMenu(event)) return
             if (event.key === 'Escape') {
                 event.preventDefault()
                 event.stopImmediatePropagation()

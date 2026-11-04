@@ -1,7 +1,11 @@
+#include <fstream>
+#include "common/platform/observed_process_stop.h"
+#include "common/utils/io_utils.h"
 #include "common/provider/provider_setup.h"
 #include "common/config/build_features.h"
 #include "remote/memory_protocol.h"
 #include "remote/runner_client.h"
+#include "remote/native_history_snapshot.h"
 
 #include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
@@ -9,6 +13,9 @@
 #include "common/utils/base64.h"
 #include "common/utils/hash_utils.h"
 #include "remote/runner_protocol.h"
+#include "common/usage/usage_store.h"
+#include "common/usage/antigravity_accounting.h"
+#include <unordered_set>
 
 #include <nlohmann/json.hpp>
 
@@ -83,6 +90,21 @@ namespace uam::remote
 			    (exit_code->is_number_integer() && *exit_code >= std::numeric_limits<int>::min() &&
 			     *exit_code <= std::numeric_limits<int>::max());
 		}
+
+		// Native OpenCode responses are opaque provider values, not runner transport records.
+		// Keep generic object/field validation unchanged for every other request type.
+		bool ValidOpenCodeNativeResult(const nlohmann::json& request, const nlohmann::json& result)
+		{
+			const auto operation = request.find("operation");
+			if (operation == request.end() || !operation->is_object()) return false;
+			const auto field = operation->find("operation");
+			if (field == operation->end() || !field->is_string() || result.dump().size() > 262144) return false;
+			const std::string& kind = field->get_ref<const std::string&>();
+			if (kind == "permissions" || kind == "messages") return result.is_array();
+			if (kind == "reply") return result.is_boolean();
+			if (kind == "health" || kind == "configProviders" || kind == "session" || kind == "status" || kind == "enableTask" || kind == "disableTask") return result.is_object();
+			return false;
+		}
 	}
 
 	std::vector<std::string> SshBridgeArgv(const std::string& ssh_alias,
@@ -123,6 +145,28 @@ namespace uam::remote
 		        "ServerAliveCountMax=2", ssh_alias, std::move(command)};
 	}
 
+	bool CanAttemptRunnerConnection(const ExecutionHost& host)
+	{
+		return UAM_ENABLE_SSH && uam::execution_hosts::CanConnectRunner(host) &&
+		       !SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
+		                      host.runner_directory, host.runner_protocol_version).empty();
+	}
+
+	bool ValidateRemoteWorkspaceDirectory(IPlatformProcessService& service, const ExecutionHost& host,
+	    const std::filesystem::path& directory, std::string* error_out)
+	{
+		RunnerClient client(service, host);
+		DirectoryListing listing;
+		return client.ListDirectories(directory, listing, error_out);
+	}
+
+	RunnerClient::RunnerClient(IPlatformProcessService& process_service, const ExecutionHost& host)
+	    : RunnerClient(process_service, SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
+	          host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version)
+	{
+		m_connectionAllowed = CanAttemptRunnerConnection(host);
+	}
+
 	RunnerClient::RunnerClient(IPlatformProcessService& process_service,
 	                           std::vector<std::string> bridge_argv,
 	                           std::string expected_version,
@@ -138,11 +182,12 @@ namespace uam::remote
 		Disconnect();
 	}
 
-	bool RunnerClient::Connect(std::string* error_out, std::stop_token stop_token)
+	bool RunnerClient::Connect(std::string* error_out, std::stop_token stop_token, const std::function<bool()>& interrupt)
 	try
 	{
 		if (stop_token.stop_requested()) return false;
-		if (!UAM_ENABLE_SSH) { if (error_out) *error_out = "SSH remote execution is disabled in this build."; return false; }
+		if (!UAM_ENABLE_SSH) { if (error_out) *error_out = "Remote execution is not included in this build."; return false; }
+		if (!m_connectionAllowed) { if (error_out) *error_out = "Retry helper setup to reconcile the unfinished or unavailable installation first."; return false; }
 		if (m_connected) return true;
 		if (m_bridgeArgv.empty())
 		{
@@ -170,7 +215,7 @@ namespace uam::remote
 		nlohmann::json response;
 		if (!Request({{"type", "hello"}, {"protocolVersion", m_expectedProtocolVersion},
 		              {"nonce", nonce}},
-		             response, &error, [stop_token] { return stop_token.stop_requested(); }) || response.value("nonce", "") != nonce ||
+		             response, &error, [&] { return stop_token.stop_requested() || (interrupt && interrupt()); }) || response.value("nonce", "") != nonce ||
 		    response.value("protocolVersion", 0) != m_expectedProtocolVersion ||
 		    (!m_expectedVersion.empty() &&
 		     response.value("runnerVersion", "") != m_expectedVersion) ||
@@ -187,13 +232,24 @@ namespace uam::remote
 			return false;
 		}
 		m_directoryBrowsing = response["capabilities"].value("directoryBrowsing", false);
+		m_safePathInspection = m_expectedProtocolVersion >= 3 && response["capabilities"].value("safePathInspection", false);
 		m_contextRead = response["capabilities"].value("contextRead", false);
+		m_providerHistoryRead = response["capabilities"].value("providerHistoryRead", false);
+		m_workspaceFileRead = response["capabilities"].value("workspaceFileRead", false);
+		m_workspaceAttachmentRead = response["capabilities"].value("workspaceAttachmentRead", false);
+		m_openCodeNativeControl = response["capabilities"].value("openCodeNativeControl", false);
+		m_openCodeTerminalObservation = response["capabilities"].value("openCodeTerminalObservation", false);
+		m_usageAccounting = response["capabilities"].value("usageAccounting", false);
+		m_usageAccountingStream = response["capabilities"].value("usageAccountingStream", false);
 		m_projectMemory = response["capabilities"].value("projectMemory", false);
 		m_isolatedTextWorkers = response["capabilities"].value("isolatedTextWorkers", false);
 		m_runnerStartup = response["capabilities"].value("runnerStartup", false);
+		m_runnerStartupObservation = response["capabilities"].value("runnerStartupObservation", false);
 		m_leasedChannelTake = response["capabilities"].value("leasedChannelTake", false);
 		m_providerNativeContext = response["capabilities"].value("providerNativeContext", false);
 		m_centralProviderConfiguration = response["capabilities"].value("centralProviderConfiguration", false);
+		m_geminiThinkingConfiguration = response["capabilities"].value("geminiThinkingConfiguration", false);
+		m_claudeTerminalFastConfiguration = response["capabilities"].value("claudeTerminalFastConfiguration", false);
 		m_processOutputAcknowledgement = m_expectedProtocolVersion >= 3 &&
 		    response["capabilities"].value("processOutputAcknowledgement", false);
 		return true;
@@ -226,6 +282,12 @@ namespace uam::remote
 			if (error_out != nullptr) *error_out = "The remote runner request is too large.";
 			return false;
 		}
+		if (interrupt && interrupt())
+		{
+			if (interrupted_out != nullptr) *interrupted_out = true;
+			if (error_out != nullptr) *error_out = "The remote runner request was canceled.";
+			return false;
+		}
 		std::string error;
 		if (!m_processService.WriteToStdioProcess(m_bridge, frame.data(), frame.size(), &error) ||
 		    !ReadResponse(response, &error, interrupt, interrupted_out))
@@ -247,7 +309,9 @@ namespace uam::remote
 			return false;
 		}
 		if (request.value("type", "") != "hello" &&
-		    (!response.contains("result") || !ValidResultFields(response["result"])))
+		    (!response.contains("result") || !(request.value("type", "") == "opencode.native"
+		        ? ValidOpenCodeNativeResult(request, response["result"])
+		        : ValidResultFields(response["result"]))))
 		{
 			Disconnect();
 			if (error_out != nullptr) *error_out = "The remote runner returned malformed result fields.";
@@ -317,7 +381,8 @@ namespace uam::remote
 					*error_out = read_error.empty() ? "The remote runner bridge closed." : read_error;
 				return false;
 			}
-			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			// Stdout only: unread bridge diagnostics on stderr would otherwise wake this wait constantly.
+			uam::platform::WaitForStdioProcessOutput(m_bridge, std::chrono::milliseconds(5), false);
 		}
 		if (error_out != nullptr) *error_out = "The remote runner did not respond within 15 seconds.";
 		return false;
@@ -336,16 +401,30 @@ namespace uam::remote
 		if (!uam::provider_setup::ReadFile(source / "owner.json", bytes, error)) { if (error_out) *error_out = error; return false; }
 		const nlohmann::json manifest = nlohmann::json::parse(bytes, nullptr, false);
 		if (!uam::provider_setup::ValidateManifest(manifest, error)) { if (error_out) *error_out = error; return false; }
+		if ((manifest.contains("geminiThinking") && !m_geminiThinkingConfiguration) ||
+		    (manifest.contains("claudeTerminalFastMode") && !m_claudeTerminalFastConfiguration))
+		{
+			if (error_out) *error_out = "Update the SSH helper before using the required Gemini thinking or Claude terminal speed override.";
+			return false;
+		}
 		nlohmann::json response;
 		if (!Request({{"type", "configuration.prepare"}, {"directory", uam::paths::Utf8PathString(target)}, {"manifest", manifest}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
-		const nlohmann::json missing = response.value("result", nlohmann::json::object()).value("missing", nlohmann::json::array());
+		const nlohmann::json missing = response.value("result", nlohmann::json::object()).value("missing", nlohmann::json());
 		if (!missing.is_array()) { if (error_out) *error_out = "SSH helper returned an invalid resource list."; return false; }
+		if (missing.empty()) return true;
 		for (const nlohmann::json& entry : missing)
 		{
 			if (!entry.is_string() || !manifest["files"].contains(entry.get<std::string>())) { if (error_out) *error_out = "SSH helper requested an unknown resource."; return false; }
 			const std::string name = entry.get<std::string>();
 			if (!uam::provider_setup::ReadFile(source / uam::paths::PathFromUtf8(name), bytes, error)) { if (error_out) *error_out = error; return false; }
 			if (!UploadFile("configuration-" + Nonce(), target / uam::paths::PathFromUtf8(name), bytes, error_out, stop_token)) return false;
+		}
+		if (!Request({{"type", "configuration.prepare"}, {"directory", uam::paths::Utf8PathString(target)}, {"manifest", manifest}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+		const nlohmann::json verified = response.value("result", nlohmann::json::object()).value("missing", nlohmann::json());
+		if (!verified.is_array() || !verified.empty())
+		{
+			if (error_out) *error_out = "SSH helper could not verify the installed resources.";
+			return false;
 		}
 		return true;
 	}
@@ -355,8 +434,9 @@ namespace uam::remote
 	    const std::vector<std::string>& argv,
 	    const std::vector<std::pair<std::string, std::string>>& environment,
 	    std::string* error_out, bool attach_if_exists, std::string control_token,
-	    bool retry_lost_reply, const std::string& configuration_provider, const std::filesystem::path& configuration_directory, const nlohmann::json& session_mcp_servers)
+	    bool retry_lost_reply, const std::string& configuration_provider, const std::filesystem::path& configuration_directory, const nlohmann::json& session_mcp_servers, bool* configuration_rejected_out)
 	{
+		if (configuration_rejected_out != nullptr) *configuration_rejected_out = false;
 		if (!Connect(error_out)) return false;
 		const bool transient_lease = control_token.empty();
 		if (transient_lease)
@@ -387,6 +467,25 @@ namespace uam::remote
 			request["attachIfExists"] = true;
 			started = Request(std::move(request), response, error_out);
 		}
+		// Configuration rejection alone cannot rule out a provider surviving a lost start reply.
+		if (!started && m_connected && configuration_rejected_out != nullptr &&
+		    !configuration_directory.empty() && response.contains("error") && response["error"].is_object())
+		{
+			const nlohmann::json::const_iterator code = response["error"].find("code");
+			if (code != response["error"].end() && code->is_string() &&
+			    (*code == "invalid_request" || *code == "configuration_failed"))
+			{
+				nlohmann::json existence;
+				std::string probe_error;
+				const bool exists = Request({{"type", "process.poll"}, {"sessionId", session_id},
+				    {"controlToken", control_token}, {"acknowledgedOutput", true}}, existence, &probe_error);
+				if (!exists && m_connected && existence.contains("error") && existence["error"].is_object())
+				{
+					const nlohmann::json::const_iterator missing = existence["error"].find("code");
+					*configuration_rejected_out = missing != existence["error"].end() && missing->is_string() && *missing == "session_not_found";
+				}
+			}
+		}
 		if (started)
 			m_processInputSequences[session_id] = response.value(
 			    "result", nlohmann::json::object()).value("inputSequence", std::uint64_t{0});
@@ -395,9 +494,12 @@ namespace uam::remote
 
 	ProcessExecutionResult RunnerClient::ExecuteCommand(const std::string& session_id,
 	    const std::filesystem::path& working_directory, const std::vector<std::string>& argv,
-	    int timeout_ms, std::stop_token stop_token, std::string_view standard_input)
+	    int timeout_ms, std::stop_token stop_token, std::string_view standard_input,
+	    std::string retained_control_token, bool* start_request_attempted_out)
 	{
+		if (start_request_attempted_out) *start_request_attempted_out = false;
 		ProcessExecutionResult result;
+		const bool retained = !retained_control_token.empty();
 		const std::chrono::steady_clock::time_point deadline = timeout_ms < 0
 		    ? std::chrono::steady_clock::time_point::max()
 		    : std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
@@ -422,8 +524,9 @@ namespace uam::remote
 		if (interrupted()) return result;
 		ProcessPollResult poll;
 		bool have_poll = false;
+		if (start_request_attempted_out) *start_request_attempted_out = true;
 		bool started = StartProcess(session_id, working_directory, argv, {}, &result.error,
-		                            false, {}, false);
+		                            false, std::move(retained_control_token), false);
 		// An uncertain start is recovered only by observing its original ID and token.
 		if (!started && !m_connected && !interrupted() && Connect(&result.error))
 		{
@@ -473,11 +576,15 @@ namespace uam::remote
 		else if (result.timed_out) result.error = "Remote command timed out.";
 		else if (result.output_truncated)
 			result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
-		std::string cleanup_error;
-		if (!exited && !StopProcess(session_id, &cleanup_error))
-			result.error += " Remote process stop failed: " + cleanup_error;
-		if (!RemoveProcess(session_id, &cleanup_error))
-			result.error += " Remote process cleanup failed: " + cleanup_error;
+		// Retained mutation records outlive interruption and are removed only after the caller saves settlement.
+		if (!retained)
+		{
+			std::string cleanup_error;
+			if (!exited && !StopProcess(session_id, &cleanup_error))
+				result.error += " Remote process stop failed: " + cleanup_error;
+			if (!RemoveProcess(session_id, &cleanup_error))
+				result.error += " Remote process cleanup failed: " + cleanup_error;
+		}
 		result.ok = exited && result.exit_code == 0 && result.error.empty() &&
 		    !result.canceled && !result.timed_out && !result.output_truncated;
 		return result;
@@ -737,14 +844,52 @@ namespace uam::remote
 	bool RunnerClient::ConfigureStartup(bool enabled, std::string* error_out, std::stop_token stop_token)
 	{
 		if (!m_connected && !Connect(error_out, stop_token)) return false;
-		if (!m_runnerStartup)
+		if (!m_runnerStartup || !m_runnerStartupObservation)
 		{
-			if (error_out != nullptr) *error_out = "Update this host's UAM runner to configure login startup.";
+			if (error_out != nullptr) *error_out = "Update this host's UAM runner to confirm login startup.";
 			return false;
 		}
 		nlohmann::json response;
-		return Request({{"type", "startup.configure"}, {"enabled", enabled}}, response, error_out,
-		    [stop_token]() { return stop_token.stop_requested(); }) && response.value("result", nlohmann::json::object()).value("enabled", !enabled) == enabled;
+		if (!Request({{"type", "startup.configure"}, {"enabled", enabled}}, response, error_out,
+		    [stop_token]() { return stop_token.stop_requested(); })) return false;
+		const nlohmann::json result = response.value("result", nlohmann::json::object());
+		if (!result.is_object() || !result.contains("status") || !result["status"].is_string() ||
+		    !result.contains("enabled") || !result["enabled"].is_boolean() ||
+		    result["enabled"].get<bool>() != enabled || result["status"].get<std::string>() != (enabled ? "enabled" : "disabled"))
+		{
+			if (error_out != nullptr) *error_out = "The runner startup registration could not be confirmed. Update the host runner and try again.";
+			return false;
+		}
+		return true;
+	}
+
+	bool RunnerClient::ObserveStartup(std::string& status, std::string* error_out, std::stop_token stop_token)
+	{
+		status.clear();
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (!m_runnerStartupObservation)
+		{
+			if (error_out != nullptr) *error_out = "Update this host's runner to observe login startup.";
+			return false;
+		}
+		nlohmann::json response;
+		if (!Request({{"type", "startup.observe"}}, response, error_out,
+		    [stop_token]() { return stop_token.stop_requested(); })) return false;
+		const nlohmann::json result = response.value("result", nlohmann::json::object());
+		if (!result.is_object() || !result.contains("status") || !result["status"].is_string() ||
+		    !result.contains("enabled") || !result["enabled"].is_boolean())
+		{
+			if (error_out != nullptr) *error_out = "The runner returned an invalid startup observation.";
+			return false;
+		}
+		const std::string observed = result["status"].get<std::string>();
+		if ((observed != "enabled" && observed != "disabled") || result["enabled"].get<bool>() != (observed == "enabled"))
+		{
+			if (error_out != nullptr) *error_out = "The runner returned an invalid startup observation.";
+			return false;
+		}
+		status = observed;
+		return true;
 	}
 
 	bool RunnerClient::PrepareTextWorker(std::string_view id, std::string_view provider, std::filesystem::path& directory, std::string* error_out, std::stop_token stop_token)
@@ -781,13 +926,14 @@ namespace uam::remote
 		return true;
 	}
 
-	bool RunnerClient::CreateMemoryEntry(const std::filesystem::path& workspace, const MemoryLibraryStore::Draft& draft, MemoryLibraryStore::Entry& created, std::string* error_out)
+	bool RunnerClient::CreateMemoryEntry(const std::filesystem::path& workspace, const MemoryLibraryStore::Draft& draft, MemoryLibraryStore::Entry& created, std::string* error_out, std::stop_token stop_token)
 	{
-		if (!m_connected && !Connect(error_out)) return false;
+		if (stop_token.stop_requested()) { if (error_out != nullptr) *error_out = "Memory scan canceled."; return false; }
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
 		if (!m_projectMemory) { if (error_out != nullptr) *error_out = "Update this host's runner to manage project memory."; return false; }
 		nlohmann::json response;
 		const nlohmann::json value = {{"category", draft.category}, {"title", draft.title}, {"memory", draft.memory}, {"evidence", draft.evidence}, {"confidence", draft.confidence}, {"sourceChatId", draft.source_chat_id}, {"extractionKey", draft.extraction_key}};
-		if (!Request({{"type", "memory.create"}, {"workspace", paths::Utf8PathString(workspace)}, {"draft", value}}, response, error_out)) return false;
+		if (!Request({{"type", "memory.create"}, {"workspace", paths::Utf8PathString(workspace)}, {"draft", value}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
 		if (!response["result"].contains("entry") || !DecodeMemoryEntry(response["result"]["entry"], created)) { if (error_out != nullptr) *error_out = "The runner returned an invalid created memory entry."; return false; }
 		return true;
 	}
@@ -811,7 +957,7 @@ namespace uam::remote
 			return false;
 		}
 		nlohmann::json response;
-		if (!Request({{"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", budget}},
+		if (!Request({{"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", budget}, {"detailReferences", true}},
 		    response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
 		if (!response.contains("result") || !response["result"].is_object() || !response["result"].contains("text") || !response["result"]["text"].is_string() || response["result"]["text"].get_ref<const std::string&>().size() > 65536)
 		{
@@ -820,6 +966,376 @@ namespace uam::remote
 		}
 		text = response["result"]["text"].get<std::string>();
 		return true;
+	}
+
+	bool RunnerClient::ReadWorkspaceFile(const std::string& workspace, const std::string& path, nlohmann::json& file,
+	    std::string* error_out, std::stop_token stop_token)
+	{
+		file = nullptr;
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (!m_workspaceFileRead)
+		{
+			if (error_out != nullptr) *error_out = "Update this host's UAM runner to inspect workspace files.";
+			return false;
+		}
+		std::string text;
+		std::string relative_path;
+		std::string fingerprint;
+		std::size_t total = 0;
+		do
+		{
+			nlohmann::json request = {{"type", "workspace.file.read"}, {"workspace", workspace}, {"path", path}, {"offset", text.size()}};
+			if (!fingerprint.empty()) request["fingerprint"] = fingerprint;
+			nlohmann::json response;
+			if (!Request(request, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+			const nlohmann::json result = response.value("result", nlohmann::json{});
+			std::string chunk;
+			if (!result.is_object() || !result.contains("totalBytes") || !result["totalBytes"].is_number_integer() ||
+			    result["totalBytes"].get<std::int64_t>() < 0 || result["totalBytes"].get<std::int64_t>() > 1024 * 1024 ||
+			    !result.contains("offset") || !result["offset"].is_number_integer() || result["offset"] != text.size() ||
+			    !result.contains("path") || !result["path"].is_string() || result["path"].get_ref<const std::string&>().empty() ||
+			    result["path"].get_ref<const std::string&>().size() > 16384 ||
+			    !result.contains("fingerprint") || !result["fingerprint"].is_string() || result["fingerprint"].get_ref<const std::string&>().size() != 16 ||
+			    !result.contains("dataBase64") || !result["dataBase64"].is_string() ||
+			    result["dataBase64"].get_ref<const std::string&>().size() > 699052 ||
+			    !uam::base64::Decode(result["dataBase64"].get_ref<const std::string&>(), chunk))
+			{
+				if (error_out != nullptr) *error_out = "The runner returned an invalid file preview.";
+				return false;
+			}
+			const std::size_t next_total = result["totalBytes"].get<std::size_t>();
+			if (text.size() > next_total || chunk.size() != std::min<std::size_t>(512 * 1024, next_total - text.size()) ||
+			    (!fingerprint.empty() && (result["fingerprint"] != fingerprint || result["path"] != relative_path || next_total != total)))
+			{
+				if (error_out != nullptr) *error_out = "The file changed while loading. Try again.";
+				return false;
+			}
+			total = next_total;
+			relative_path = result["path"].get<std::string>();
+			fingerprint = result["fingerprint"].get<std::string>();
+			text += chunk;
+		} while (text.size() < total);
+		if (uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(text)) != fingerprint || text.find('\0') != std::string::npos)
+		{
+			if (error_out != nullptr) *error_out = "The runner returned an invalid file preview.";
+			return false;
+		}
+		file = {{"text", std::move(text)}, {"path", std::move(relative_path)}};
+		return true;
+	}
+
+	bool RunnerClient::ReadWorkspaceAttachment(const std::string& workspace, const std::string& path, std::string& bytes,
+	    std::size_t max_bytes,
+	    std::string* error_out, std::stop_token stop_token)
+	{
+		bytes.clear();
+		max_bytes = std::min<std::size_t>(max_bytes, 25 * 1024 * 1024);
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (!m_workspaceAttachmentRead)
+		{
+			if (error_out != nullptr) *error_out = "Update this host's UAM runner to deliver image attachments.";
+			return false;
+		}
+		std::string text;
+		std::string relative_path;
+		std::string fingerprint;
+		std::size_t total = 0;
+		do
+		{
+			nlohmann::json request = {{"type", "workspace.attachment.read"}, {"workspace", workspace}, {"path", path}, {"offset", text.size()}};
+			if (!fingerprint.empty()) request["fingerprint"] = fingerprint;
+			nlohmann::json response;
+			if (!Request(request, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+			const nlohmann::json result = response.value("result", nlohmann::json{});
+			std::string chunk;
+			if (!result.is_object() || !result.contains("totalBytes") || !result["totalBytes"].is_number_integer() ||
+			    result["totalBytes"].get<std::int64_t>() < 0 || result["totalBytes"].get<std::int64_t>() > static_cast<std::int64_t>(max_bytes) ||
+			    !result.contains("offset") || !result["offset"].is_number_integer() || result["offset"] != text.size() ||
+			    !result.contains("path") || !result["path"].is_string() || result["path"].get_ref<const std::string&>().empty() ||
+			    result["path"].get_ref<const std::string&>().size() > 16384 ||
+			    !result.contains("fingerprint") || !result["fingerprint"].is_string() || result["fingerprint"].get_ref<const std::string&>().size() != 16 ||
+			    !result.contains("dataBase64") || !result["dataBase64"].is_string() ||
+			    result["dataBase64"].get_ref<const std::string&>().size() > 699052 ||
+			    !uam::base64::Decode(result["dataBase64"].get_ref<const std::string&>(), chunk))
+			{
+				if (error_out != nullptr) *error_out = "The runner returned an invalid image attachment.";
+				return false;
+			}
+			const std::size_t next_total = result["totalBytes"].get<std::size_t>();
+			if (text.size() > next_total || chunk.size() != std::min<std::size_t>(512 * 1024, next_total - text.size()) ||
+			    (!fingerprint.empty() && (result["fingerprint"] != fingerprint || result["path"] != relative_path || next_total != total)))
+			{
+				if (error_out != nullptr) *error_out = "The image changed while loading. Try again.";
+				return false;
+			}
+			total = next_total;
+			relative_path = result["path"].get<std::string>();
+			fingerprint = result["fingerprint"].get<std::string>();
+			text += chunk;
+		} while (text.size() < total);
+		if (uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(text)) != fingerprint)
+		{
+			if (error_out != nullptr) *error_out = "The runner returned an invalid image attachment.";
+			return false;
+		}
+		bytes = std::move(text);
+		return true;
+	}
+
+	bool RunnerClient::QueryOpenCodeNative(const std::string& session_id, const nlohmann::json& operation, nlohmann::json& result,
+	    std::string* error_out, std::stop_token stop_token)
+	{
+		result = nullptr;
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (!m_openCodeNativeControl)
+		{ if (error_out != nullptr) *error_out = "Update this host's UAM runner for native OpenCode child permissions."; return false; }
+		nlohmann::json request{{"type", "opencode.native"}, {"sessionId", session_id}, {"operation", operation}};
+		if (!AddProcessControlToken(request, session_id, error_out)) return false;
+		nlohmann::json response;
+		if (!Request(std::move(request), response, error_out, [stop_token] { return stop_token.stop_requested(); })) return false;
+		if (!response.contains("result") || response["result"].dump().size() > 262144)
+		{ if (error_out != nullptr) *error_out = "The native OpenCode response exceeded its bound."; return false; }
+		result = std::move(response["result"]);
+		return true;
+	}
+
+	bool RunnerClient::ObserveOpenCodeTerminal(int port, const std::string& token, const std::string& workspace,
+	    const nlohmann::json& operation, nlohmann::json& result, std::string* error_out, std::stop_token stop_token)
+	{
+		result = nullptr;
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (!m_openCodeTerminalObservation)
+		{ if (error_out) *error_out = "Update this host's UAM runner for native OpenCode terminal activity."; return false; }
+		nlohmann::json response;
+		if (!Request({{"type", "opencode.terminal.observe"}, {"port", port}, {"token", token}, {"workspace", workspace}, {"operation", operation}},
+		    response, error_out, [stop_token] { return stop_token.stop_requested(); })) return false;
+		if (!response.contains("result") || response["result"].dump().size() > 262144)
+		{ if (error_out) *error_out = "The native OpenCode observation exceeded its bound."; return false; }
+		result = std::move(response["result"]);
+		return true;
+	}
+
+	bool RunnerClient::ReadUsageAccountingFile(const std::filesystem::path& path, nlohmann::json& progress, std::string* error_out, std::stop_token stop_token)
+	{
+		progress = nullptr;
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		std::string error;
+		std::filesystem::path temporary = path; temporary += ".download-" + Nonce();
+		struct Cleanup
+		{
+			std::filesystem::path path;
+			~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); }
+		} cleanup{temporary};
+		if (uam::paths::IsLinkOrReparsePointNoThrow(path.parent_path()) || uam::paths::IsLinkOrReparsePointNoThrow(path) || uam::paths::IsLinkOrReparsePointNoThrow(temporary) || !uam::paths::CreateDirectoriesNoThrow(path.parent_path()))
+		{ if (error_out) *error_out = "Could not prepare usage cache."; return false; }
+		uam::io::AtomicWriteResult staged_result;
+		const bool staged = uam::io::WriteAndSyncAtomicTemp(temporary, uam::io::AtomicTempProducer([&](const std::function<bool(std::string_view)>& append)
+		{
+		if (!m_usageAccountingStream)
+		{
+			nlohmann::json document;
+			if (!ReadUsageAccounting(document, error_out, stop_token)) return false;
+			if (document.value("pending", false)) { progress = std::move(document); return true; }
+			if (!append(nlohmann::json({{"version", 3}, {"range", document["version"] == 2 ? "all-recorded" : "rolling-90-days"}, {"asOfMs", document["asOfMs"]}, {"metadata", document["metadata"]}}).dump() + "\n")) return false;
+			for (const nlohmann::json& fact : document["facts"])
+			{
+				if (stop_token.stop_requested()) { if (error_out) *error_out = "Usage accounting loading was cancelled."; return false; }
+				if (!append(fact.dump() + "\n")) return false;
+			}
+		}
+		else
+		{
+			std::uint64_t offset = 0, total = 0, hash = uam::hashing::kFnv1a64OffsetBasis;
+			std::string fingerprint;
+			do
+			{
+				const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+				const std::function<bool()> interrupted = [stop_token, deadline]() { return stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline; };
+				nlohmann::json request{{"type", "usage.accounting"}, {"format", "jsonl-v3"}, {"offset", offset}};
+				if (!fingerprint.empty()) request["fingerprint"] = fingerprint;
+				nlohmann::json response;
+				if (!Request(request, response, error_out, interrupted)) return false;
+				const nlohmann::json result = response.value("result", nlohmann::json{});
+				if (result.is_object() && result.contains("pending"))
+				{
+					if (offset || result["pending"] != true || !result.contains("collectionError") || !result["collectionError"].is_string() || result["collectionError"].get_ref<const std::string&>().size() > 1024)
+					{ if (error_out) *error_out = "The runner returned invalid usage progress."; return false; }
+					progress = result; return true;
+				}
+				std::string chunk;
+				if (!result.is_object() || result.value("format", nlohmann::json{}) != "jsonl-v3" || !result.contains("totalBytes") || !result["totalBytes"].is_number_integer() || result["totalBytes"] <= 0 || result["totalBytes"] > uam::usage::kMaxExactTokenCount ||
+				    !result.contains("offset") || !result["offset"].is_number_integer() || result["offset"] != offset || !result.contains("fingerprint") || !result["fingerprint"].is_string() || result["fingerprint"].get_ref<const std::string&>().size() != 16 ||
+				    !result.contains("dataBase64") || !result["dataBase64"].is_string() || result["dataBase64"].get_ref<const std::string&>().size() > 699052 || !uam::base64::Decode(result["dataBase64"].get_ref<const std::string&>(), chunk))
+				{ if (error_out) *error_out = "The runner returned invalid streamed accounting."; return false; }
+				const std::uint64_t next_total = result["totalBytes"].get<std::uint64_t>();
+				if (offset > next_total || chunk.size() != std::min<std::uint64_t>(512 * 1024, next_total - offset) || (!fingerprint.empty() && (result["fingerprint"] != fingerprint || total != next_total)) || chunk.find('\0') != std::string::npos)
+				{ if (error_out) *error_out = "Usage accounting changed while loading. Try again."; return false; }
+				total = next_total; fingerprint = result["fingerprint"].get<std::string>();
+				if (!append(chunk)) { if (error_out) *error_out = "Could not save usage cache."; return false; }
+				uam::hashing::UpdateFnv1a64(hash, chunk); offset += chunk.size();
+			} while (offset < total);
+			if (uam::hashing::Hex64Padded(hash) != fingerprint) { if (error_out) *error_out = "The runner returned invalid accounting fingerprint."; return false; }
+		}
+		return true;
+		}), {}, staged_result);
+		if (!staged) { if (error_out && error_out->empty()) *error_out = "Could not save usage cache."; return false; }
+		if (progress.is_object()) return true;
+		const std::function<bool()> cancelled = [stop_token]() { return stop_token.stop_requested(); };
+		const std::shared_ptr<const uam::usage::ReceiptSnapshot> snapshot = uam::usage::ReadReceiptSnapshot(temporary, error, cancelled);
+		if (!snapshot || !snapshot->Visit([](const uam::usage::AccountingRecord&) { return true; }, error, cancelled))
+		{ if (error_out) *error_out = error; return false; }
+		if (cancelled()) { if (error_out) *error_out = "Usage accounting loading was cancelled."; return false; }
+		const uam::io::AtomicWriteResult published = uam::io::CommitSyncedAtomicTemp(path, temporary);
+		if (!published.success) { if (error_out) *error_out = "Could not publish usage cache."; return false; }
+		return true;
+	}
+
+	bool RunnerClient::ReadUsageAccounting(nlohmann::json& snapshot,
+	    std::string* error_out, std::stop_token stop_token)
+	{
+		snapshot = nullptr;
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (!m_usageAccounting)
+		{
+			if (error_out != nullptr) *error_out = "Update this host's UAM runner to collect usage accounting.";
+			return false;
+		}
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+		const std::function<bool()> interrupted = [stop_token, deadline]() { return stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline; };
+		std::string text;
+		std::string fingerprint;
+		std::size_t total = 0;
+		do
+		{
+			nlohmann::json request = {{"type", "usage.accounting"}, {"offset", text.size()}};
+			if (!fingerprint.empty()) request["fingerprint"] = fingerprint;
+			nlohmann::json response;
+			if (!Request(request, response, error_out, interrupted)) return false;
+			const nlohmann::json result = response.value("result", nlohmann::json{});
+			if (result.is_object() && result.contains("pending"))
+			{
+				if (!text.empty() || !result["pending"].is_boolean() || result["pending"] != true ||
+				    !result.contains("collectionError") || !result["collectionError"].is_string() || result["collectionError"].get_ref<const std::string&>().size() > 1024)
+				{ if (error_out) *error_out = "The runner returned invalid usage progress."; return false; }
+				snapshot = result; return true;
+			}
+			std::string chunk;
+			if (!result.is_object() || !result.contains("totalBytes") || !result["totalBytes"].is_number_integer() ||
+			    result["totalBytes"].get<std::int64_t>() < 0 || result["totalBytes"].get<std::int64_t>() > 64 * 1024 * 1024 ||
+			    !result.contains("offset") || !result["offset"].is_number_integer() || result["offset"] != text.size() ||
+			    !result.contains("fingerprint") || !result["fingerprint"].is_string() || result["fingerprint"].get_ref<const std::string&>().size() != 16 ||
+			    !result.contains("dataBase64") || !result["dataBase64"].is_string() ||
+			    result["dataBase64"].get_ref<const std::string&>().size() > 699052 ||
+			    !uam::base64::Decode(result["dataBase64"].get_ref<const std::string&>(), chunk))
+			{
+				if (error_out != nullptr) *error_out = "The runner returned an invalid usage accounting.";
+				return false;
+			}
+			const std::size_t next_total = result["totalBytes"].get<std::size_t>();
+			if (text.size() > next_total || chunk.size() != std::min<std::size_t>(512 * 1024, next_total - text.size()) ||
+			    (!fingerprint.empty() && (result["fingerprint"] != fingerprint || next_total != total)))
+			{
+				if (error_out != nullptr) *error_out = "Usage accounting changed while loading. Try again.";
+				return false;
+			}
+			total = next_total;
+			fingerprint = result["fingerprint"].get<std::string>();
+			text += chunk;
+		} while (text.size() < total);
+		if (uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(text)) != fingerprint || text.find('\0') != std::string::npos)
+		{
+			if (error_out != nullptr) *error_out = "The runner returned an invalid usage accounting.";
+			return false;
+		}
+		snapshot = nlohmann::json::parse(text, nullptr, false);
+		if (!snapshot.is_object() || !snapshot.contains("version") || (snapshot["version"] != 1 && snapshot["version"] != 2) || !snapshot.contains("asOfMs") || !snapshot["asOfMs"].is_number_integer() || snapshot["asOfMs"] <= 0 || snapshot["asOfMs"] >= uam::usage::kMaxExactTokenCount ||
+		    !snapshot.contains("metadata") || !snapshot["metadata"].is_object() || !snapshot.contains("facts") || !snapshot["facts"].is_array() || snapshot["facts"].size() > 500000)
+		{ if (error_out) *error_out = "The runner returned incompatible usage accounting."; snapshot = {}; return false; }
+		const bool lifetime = snapshot["version"] == 2;
+		if ((lifetime && (!snapshot.contains("range") || snapshot["range"] != "all-recorded")) || (!lifetime && snapshot.contains("range")))
+		{ if (error_out) *error_out = "The runner returned incompatible usage accounting scope."; snapshot = {}; return false; }
+		const std::int64_t as_of = snapshot["asOfMs"].get<std::int64_t>();
+		const std::int64_t start = lifetime ? 0 : std::max<std::int64_t>(0, as_of / 86400000 * 86400000 - 89LL * 86400000);
+		std::unordered_set<std::string> identities;
+		for (const nlohmann::json& row : snapshot["facts"])
+		{
+			if (interrupted()) { if (error_out) *error_out = "Usage accounting loading was cancelled or timed out."; snapshot = {}; return false; }
+			const std::optional<uam::usage::AccountingRecord> fact = uam::usage::DecodeAccountingRecord(row);
+			if (!fact || ((fact->record.timestamp_ms < start || fact->record.timestamp_ms >= as_of) && !uam::usage::DecodeAntigravityAccountingRecord(fact->record)) || !identities.insert(fact->identity).second)
+			{ if (error_out) *error_out = "The runner returned invalid accounting identities."; snapshot = {}; return false; }
+		}
+		return true;
+	}
+
+	bool RunnerClient::ReadNativeHistory(const std::string& provider, const std::string& session, const std::string& workspace,
+	    nlohmann::json& output, std::string* error_out, std::stop_token stop_token, const std::string& agent_id)
+	{
+		output = nullptr;
+		if (!Connect(error_out, stop_token)) return false;
+		if (!m_providerHistoryRead)
+		{
+			if (error_out) *error_out = "Update this host's UAM runner to refresh native provider history.";
+			return false;
+		}
+		std::string token, fingerprint;
+		native_history::Snapshot snapshot;
+		snapshot.provider = provider; snapshot.session_id = session; snapshot.agent_id = agent_id;
+		std::size_t total = 0;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+		const auto interrupted = [&]() { return stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline; };
+		const auto finish = [&](bool ok)
+		{
+			if (!token.empty() && m_connected && !stop_token.stop_requested())
+			{
+				nlohmann::json released;
+				std::string cleanup_error;
+				const auto cleanup_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+				(void)Request({{"type", "provider.history.release"}, {"providerId", provider}, {"sessionId", session}, {"agentId", agent_id},
+				    {"workspace", workspace}, {"snapshotId", token}}, released, &cleanup_error,
+				    [cleanup_deadline, stop_token]() { return stop_token.stop_requested() || std::chrono::steady_clock::now() >= cleanup_deadline; });
+			}
+			if (!ok) output = nullptr;
+			return ok;
+		};
+		for (;;)
+		{
+			if (interrupted()) { if (error_out) *error_out = "Native history refresh was cancelled or timed out."; return finish(false); }
+			nlohmann::json response;
+			if (!Request({{"type", "provider.history.read"}, {"providerId", provider}, {"sessionId", session}, {"agentId", agent_id}, {"workspace", workspace},
+			    {"snapshotId", token}, {"fingerprint", fingerprint}, {"offset", snapshot.text.size()}}, response, error_out, interrupted)) return finish(false);
+			const auto result = response.find("result");
+			if (result == response.end() || !result->is_object()) { if (error_out) *error_out = "The runner returned an invalid native history snapshot."; return finish(false); }
+			const auto& value = *result;
+			const std::string received_token = native_history::String(value, "snapshotId");
+			const std::string received_fingerprint = native_history::String(value, "fingerprint");
+			const auto count = value.find("totalBytes"), offset = value.find("offset");
+			if (token.empty() && native_history::SafeId(received_token)) token = received_token;
+			if (count == value.end() || offset == value.end() || !count->is_number_integer() || !offset->is_number_integer() || *offset < 0 ||
+			    *count <= 0 || *count > native_history::kMaxSnapshotBytes || *offset != snapshot.text.size() ||
+			    !native_history::SafeId(received_token) || received_token != token || received_fingerprint.size() != 16 ||
+			    native_history::String(value, "providerId") != provider || native_history::String(value, "sessionId") != session || native_history::String(value, "agentId") != agent_id)
+			{ if (error_out) *error_out = "The runner returned mismatched native history ownership or size."; return finish(false); }
+			if (snapshot.text.empty())
+			{
+				total = count->get<std::size_t>(); fingerprint = received_fingerprint;
+				snapshot.workspace = native_history::String(value, "workspace");
+				snapshot.workspace_yaml = native_history::String(value, "workspaceYaml");
+				if (snapshot.workspace.empty() || snapshot.workspace_yaml.size() > 16 * 1024 || total + snapshot.workspace_yaml.size() > native_history::kMaxSnapshotBytes)
+				{ if (error_out) *error_out = "Invalid native history workspace metadata."; return finish(false); }
+			}
+			else if (count->get<std::size_t>() != total || fingerprint != received_fingerprint || snapshot.workspace != native_history::String(value, "workspace"))
+			{ if (error_out) *error_out = "The native history snapshot changed while loading."; return finish(false); }
+			std::string chunk;
+			if (!base64::Decode(native_history::String(value, "data"), chunk) || chunk.empty() || chunk.size() > native_history::kChunkBytes || chunk.size() > total - snapshot.text.size())
+			{ if (error_out) *error_out = "The runner returned an invalid native history chunk."; return finish(false); }
+			snapshot.text += chunk;
+			if (snapshot.text.size() == total) break;
+		}
+		if (native_history::Fingerprint(snapshot) != fingerprint)
+		{ if (error_out) *error_out = "The native history snapshot fingerprint did not match."; return finish(false); }
+		output = {{"providerId", provider}, {"sessionId", session}, {"agentId", agent_id}, {"workspace", std::move(snapshot.workspace)},
+		    {"text", std::move(snapshot.text)}, {"workspaceYaml", std::move(snapshot.workspace_yaml)}};
+		return finish(true);
 	}
 
 	bool RunnerClient::ReadTextFile(const std::filesystem::path& remote_path, std::string& text,
@@ -905,6 +1421,42 @@ namespace uam::remote
 		return true;
 	}
 
+	bool RunnerClient::InspectPath(const std::string& absolute_path, bool allow_missing_leaf,
+	    PathInspection& result, std::string* error_out, std::stop_token stop_token)
+	try
+	{
+		result = {};
+		if (!Connect(error_out, stop_token)) return false;
+		if (!m_safePathInspection)
+		{
+			if (error_out != nullptr) *error_out = "Update this SSH helper before creating remote worktrees; safe path inspection is unavailable.";
+			return false;
+		}
+		nlohmann::json response;
+		if (!Request({{"type", "path.inspect"}, {"path", absolute_path}, {"allowMissingLeaf", allow_missing_leaf}},
+		    response, error_out, [stop_token] { return stop_token.stop_requested(); })) return false;
+		const nlohmann::json& proof = response.at("result");
+		if (!proof.is_object() || !proof.contains("path") || !proof["path"].is_string() ||
+		    !proof.contains("exists") || !proof["exists"].is_boolean() ||
+		    !proof.contains("directory") || !proof["directory"].is_boolean() ||
+		    !proof.contains("regularFile") || !proof["regularFile"].is_boolean())
+			throw nlohmann::json::type_error::create(302, "Invalid path inspection fields.", &proof);
+		PathInspection parsed{proof["path"].get<std::string>(), proof["exists"].get<bool>(),
+		    proof["directory"].get<bool>(), proof["regularFile"].get<bool>()};
+		if (parsed.path.empty() || parsed.path.size() > 4096 ||
+		    std::ranges::any_of(parsed.path, [](unsigned char c) { return c < 32 || c == 127; }) ||
+		    (!execution_hosts::IsAbsoluteRemotePath("windows", parsed.path) && !execution_hosts::IsAbsoluteRemotePath("linux", parsed.path)) ||
+		    (parsed.exists ? parsed.directory == parsed.regular_file : parsed.directory || parsed.regular_file || !allow_missing_leaf))
+			throw nlohmann::json::type_error::create(302, "Invalid path inspection proof.", &proof);
+		result = std::move(parsed);
+		return true;
+	}
+	catch (const nlohmann::json::exception&)
+	{
+		if (error_out != nullptr) *error_out = "The SSH helper returned invalid safe path inspection data.";
+		return false;
+	}
+
 	bool RunnerClient::CloseProcessInput(const std::string& session_id, std::string* error_out)
 	{
 		nlohmann::json request = {{"type", "process.closeInput"}, {"sessionId", session_id}};
@@ -920,8 +1472,9 @@ namespace uam::remote
 	                               std::string* error_out,
 	                               const std::function<bool()>& interrupt,
 	                               bool* interrupted_out,
-	                               const ProcessPollResult* resume_after)
+	                               const ProcessPollResult* resume_after, bool* missing_out)
 	{
+		if (missing_out != nullptr) *missing_out = false;
 		nlohmann::json request = {{"type", "process.poll"}, {"sessionId", session_id},
 		                          {"acknowledgedOutput", m_processOutputAcknowledgement}};
 		if (!AddProcessControlToken(request, session_id, error_out)) return false;
@@ -933,7 +1486,15 @@ namespace uam::remote
 		nlohmann::json response;
 		if (!Request(std::move(request), response,
 		             error_out, interrupt, interrupted_out))
+		{
+			if (missing_out != nullptr && m_expectedProtocolVersion >= 3 && m_connected &&
+			    response.contains("error") && response["error"].is_object())
+			{
+				const nlohmann::json::const_iterator code = response["error"].find("code");
+				*missing_out = code != response["error"].end() && code->is_string() && *code == "session_not_found";
+			}
 			return false;
+		}
 		ProcessPollResult parsed;
 		const nlohmann::json& value = response["result"];
 		parsed.running = value.value("running", false);
@@ -1029,12 +1590,22 @@ namespace uam::remote
 		m_received.clear();
 		m_connected = false;
 		m_directoryBrowsing = false;
+		m_safePathInspection = false;
 		m_contextRead = false;
+		m_providerHistoryRead = false;
+		m_workspaceFileRead = false;
+		m_workspaceAttachmentRead = false;
+		m_openCodeNativeControl = false;
+		m_openCodeTerminalObservation = false;
+		m_usageAccounting = false; m_usageAccountingStream = false;
 		m_projectMemory = false;
 		m_isolatedTextWorkers = false;
 		m_runnerStartup = false;
+		m_runnerStartupObservation = false;
 		m_leasedChannelTake = false;
 		m_providerNativeContext = false;
 		m_centralProviderConfiguration = false;
+		m_geminiThinkingConfiguration = false;
+		m_claudeTerminalFastConfiguration = false;
 	}
 }

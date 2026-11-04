@@ -1,8 +1,13 @@
+#include "app/agent_run_scheduler.h"
+#include "app/provider_configuration_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 
 #include "common/config/approval_modes.h"
+#include "common/config/execution_host_config.h"
+#include "app/chat_domain_service.h"
+#include "common/chat/chat_repository.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_ids.h"
 #include "common/runtime/acp/acp_model_json.h"
@@ -17,8 +22,132 @@
 #include <string>
 #include <vector>
 
+namespace uam
+{
+	/// <summary>Owns the full native binding save without borrowing GUI chat/session references.</summary>
+	struct PendingLocalSessionReceipt
+	{
+		std::filesystem::path data_root;
+		std::shared_ptr<const std::uint8_t> incarnation;
+		std::string ownership;
+		std::string queue_revision;
+		std::string queue_fingerprint;
+		std::string prompt;
+		std::uint64_t turn_serial = 0;
+		std::size_t queue_count = 0;
+		bool callback_complete = false;
+		acp_detail::DurableAdmissionState admission = acp_detail::DurableAdmissionState::Pending;
+	};
+}
+
 namespace uam::acp_detail
 {
+namespace
+{
+	bool CanDeferLocalSessionReceipt(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+	{
+		return (app.settings.central_provider_configuration.enabled || ShouldDeferLocalAcpConfiguration(app, session, chat)) &&
+		    chat.execution_host_id == execution_hosts::kLocalHostId &&
+		    session.process_execution_host_id == execution_hosts::kLocalHostId && !chat.small_model_mode &&
+		    !session.model_discovery_only && !session.goal_internal_session &&
+		    session.goal_turn_kind.empty() && !session.goal_review_turn &&
+		    chat.active_goal_id.empty() && chat.goal_owner_chat_id.empty() &&
+		    chat.goal_iteration_goal_id.empty() && !session.recovering_remote_turn &&
+		    !session.recovering_remote_process && session.running && session.session_ready;
+	}
+
+	bool OwnsLocalSessionScope(const AppState& app, const AcpSessionState& session,
+	    const ChatSession& chat, const PendingLocalSessionReceipt& receipt)
+	{
+		return CanDeferLocalSessionReceipt(app, session, chat) && !session.cancel_requested &&
+		    !session.local_stop_pending && receipt.data_root == app.data_root &&
+		    receipt.incarnation == chat.metadata_incarnation &&
+		    receipt.ownership == LocalSessionReceiptOwnership(app, session, chat);
+	}
+
+	bool OwnsLocalSessionReceipt(const AppState& app, const AcpSessionState& session,
+	    const ChatSession& chat, const PendingLocalSessionReceipt& receipt)
+	{
+		return OwnsLocalSessionScope(app, session, chat, receipt) && receipt.turn_serial == session.turn_serial &&
+		    receipt.queue_revision == chat.acp_queue_storage_revision &&
+		    receipt.queue_fingerprint == ChatRepository::QueueAdmissionFingerprint(chat) &&
+		    receipt.queue_count == session.queued_user_prompts.size() && receipt.prompt == session.queued_prompt;
+	}
+
+	void StageLocalSessionReceipt(AppState& app, AcpSessionState& session, const ChatSession& chat)
+	{
+		const std::shared_ptr<PendingLocalSessionReceipt> receipt = std::make_shared<PendingLocalSessionReceipt>();
+		receipt->data_root = app.data_root;
+		receipt->incarnation = chat.metadata_incarnation;
+		receipt->ownership = LocalSessionReceiptOwnership(app, session, chat);
+		receipt->queue_revision = chat.acp_queue_storage_revision;
+		receipt->queue_fingerprint = ChatRepository::QueueAdmissionFingerprint(chat);
+		receipt->queue_count = session.queued_user_prompts.size();
+		receipt->prompt = session.queued_prompt;
+		receipt->turn_serial = session.turn_serial;
+		session.pending_local_session_receipt = receipt;
+		const std::weak_ptr<PendingLocalSessionReceipt> weak = receipt;
+		const std::string chat_id = chat.id;
+		receipt->admission = BeginDurableAdmission(app, chat, [&app, chat_id, weak]()
+		{
+			const std::shared_ptr<PendingLocalSessionReceipt> saved = weak.lock();
+			const ChatSession* current = ChatDomainService().FindChatById(app, chat_id);
+			const AcpSessionState* owner = FindAcpSessionForChat(app, chat_id);
+			return saved && current && owner && owner->pending_local_session_receipt == saved &&
+			    OwnsLocalSessionReceipt(app, *owner, *current, *saved);
+		}, [weak](DurableAdmissionState result)
+		{
+			if (const std::shared_ptr<PendingLocalSessionReceipt> saved = weak.lock())
+			{
+				saved->admission = result;
+				saved->callback_complete = true;
+			}
+		});
+		if (receipt->admission == DurableAdmissionState::Failed) receipt->callback_complete = true;
+	}
+}
+
+bool PollLocalSessionReceipt(AppState& app, AcpSessionState& session, ChatSession& chat)
+{
+	const std::shared_ptr<PendingLocalSessionReceipt> receipt = session.pending_local_session_receipt;
+	if (!receipt) return false;
+	if (OwnsLocalSessionScope(app, session, chat, *receipt) && session.processing &&
+	    receipt->turn_serial == session.turn_serial && receipt->prompt == session.queued_prompt &&
+	    (receipt->queue_revision != chat.acp_queue_storage_revision ||
+	     receipt->queue_count != session.queued_user_prompts.size() ||
+	     receipt->queue_fingerprint != ChatRepository::QueueAdmissionFingerprint(chat)))
+	{
+		// Let the old callback retire its admission guard before adding the replacement.
+		if (!receipt->callback_complete) return true;
+		// A legitimate queued edit revokes the older snapshot and requires a new full receipt.
+		StageLocalSessionReceipt(app, session, chat);
+		return true;
+	}
+	if (receipt->admission == DurableAdmissionState::Failed && receipt->callback_complete && session.processing &&
+	    !session.queued_prompt.empty() && session.turn_serial != receipt->turn_serial &&
+	    receipt->data_root == app.data_root && receipt->incarnation == chat.metadata_incarnation &&
+	    CanDeferLocalSessionReceipt(app, session, chat))
+	{
+		// A fresh explicit turn obtains its own complete receipt; never revive failed input.
+		StageLocalSessionReceipt(app, session, chat);
+		return true;
+	}
+	if (!OwnsLocalSessionReceipt(app, session, chat, *receipt))
+	{
+		if (receipt->admission != DurableAdmissionState::Failed)
+		{
+			receipt->admission = DurableAdmissionState::Failed;
+			session.last_error = "Session setup ownership changed before its durable receipt committed.";
+		}
+		return true;
+	}
+	if (receipt->admission != DurableAdmissionState::Committed) return true;
+	session.pending_local_session_receipt.reset();
+	(void)ResumeQueuedUserPromptsAfterSessionSetup(app, session, chat);
+	ScheduleCompletedAcpPromptRecoverySaveIfReady(app, chat.id);
+	return false;
+}
+
 
 void HandleAcpRequest(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
 {
@@ -45,10 +174,14 @@ void HandleAcpRequest(AppState& app, AcpSessionState& session, ChatSession& chat
 
 bool ReplayPersistedInteractionResponseIfMatched(
     AppState& app, AcpSessionState& session, ChatSession& chat,
-    const nlohmann::json& request)
+    const nlohmann::json& request, const AcpPendingPermissionState* pending)
 {
 	const std::string request_id =
 	    JsonRpcIdToStableString(JsonRpcIdOrNull(request));
+	const bool captured_read = session.goal_review_turn || session.active_uam_agent_workspace_access == "read";
+	// Early request-ID matching is insufficient authority for a captured read turn.
+	// Questions and unknown/malformed requests continue through their normal decoder.
+	if (captured_read && (pending == nullptr || pending->request_id_json.empty() || pending->request_id_json != request_id)) return false;
 	const auto saved = std::ranges::find(
 	    chat.remote_interaction_responses, request_id,
 	    &uam::AcpRemoteInteractionResponseState::request_id_json);
@@ -56,7 +189,25 @@ bool ReplayPersistedInteractionResponseIfMatched(
 		return false;
 	try
 	{
-		const nlohmann::json response = nlohmann::json::parse(saved->response_json);
+		nlohmann::json response = nlohmann::json::parse(saved->response_json);
+		// Copilot decisions saved before the SDK decision kinds were adopted would now be rejected.
+		if (response.is_object() && response.value("method", "") == "session.permissions.handlePendingPermissionRequest" &&
+		    response.contains("params") && response["params"].is_object() && response["params"].contains("result") &&
+		    response["params"]["result"].is_object() && response["params"]["result"].contains("kind") && response["params"]["result"]["kind"].is_string())
+		{
+			nlohmann::json& kind = response["params"]["result"]["kind"];
+			if (kind == "approved") kind = "approve-once";
+			else if (kind == "denied-interactively-by-user") kind = "reject";
+		}
+		if (captured_read)
+		{
+			if (!CapturedReadCeilingAllowsSavedPermissionResponse(session, *pending, response))
+			{
+				AppendAcpDiagnostic(session, "permission", "saved_response_exceeds_captured_read_ceiling", "",
+				    request_id, false, 0, "Saved response was not replayed under the current captured read-only restriction.");
+				return false;
+			}
+		}
 		std::string error;
 		if (!WriteAcpMessage(session, response, &error))
 		{
@@ -76,6 +227,7 @@ bool ReplayPersistedInteractionResponseIfMatched(
 	{
 		chat.remote_interaction_responses.erase(saved);
 		(void)SaveChatQuietly(app, chat);
+		if (captured_read) return false;
 	}
 	return true;
 }
@@ -125,6 +277,7 @@ void UpdateAcpModesFromJson(AcpSessionState& session, const nlohmann::json& mode
 			}
 			AcpModeState parsed;
 			parsed.id = AppApprovalModeId(provider_mode_id);
+			parsed.provider_id = provider_mode_id;
 			parsed.name = uam::nlohmann_json::TrimmedStringValue(mode, {"name"});
 			if (parsed.name.empty())
 			{
@@ -176,6 +329,7 @@ bool UpdateAcpConfigOptions(AcpSessionState& session, const nlohmann::json& conf
 	if (!config_options.is_array()) return false;
 	std::vector<AcpConfigOptionState> parsed;
 	parsed.reserve(std::min<std::size_t>(config_options.size(), 64));
+	bool model_option_seen = false;
 	for (const nlohmann::json& value : config_options)
 	{
 		if (parsed.size() >= 64) break;
@@ -198,9 +352,13 @@ bool UpdateAcpConfigOptions(AcpSessionState& session, const nlohmann::json& conf
 			choice.description = CapDiagnosticString(uam::nlohmann_json::TrimmedStringValue(raw_choice, {"description"}), 1024);
 			option.choices.push_back(std::move(choice));
 		}
+		if (!model_option_seen && (option.category == "model" || option.id == "model"))
+		{
+			model_option_seen = true;
+			if (!option.current_value.empty()) session.current_model_id = option.current_value;
+		}
 		if (!option.current_value.empty())
 		{
-			if (option.category == "model" || option.id == "model") session.current_model_id = option.current_value;
 			if (option.category == "mode" || option.id == "mode") session.current_mode_id = AppApprovalModeId(option.current_value);
 		}
 		parsed.push_back(std::move(option));
@@ -225,6 +383,8 @@ nlohmann::json ModelsForPersistentCache(const std::vector<AcpModelState>& models
 		    {"defaultReasoningEffort", model.default_reasoning_effort},
 		    {"supportedReasoningEfforts", model.supported_reasoning_efforts},
 		    {"additionalSpeedTiers", model.additional_speed_tiers},
+		    {"contextWindowTokens", model.context_window_tokens ? nlohmann::json(*model.context_window_tokens) : nlohmann::json(nullptr)},
+		    {"maxOutputTokens", model.max_output_tokens ? nlohmann::json(*model.max_output_tokens) : nlohmann::json(nullptr)},
 		});
 	}
 	return result;
@@ -250,14 +410,26 @@ std::string DiscoveryWorkspace(const AppState& app, const ChatSession& chat)
 	return uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string();
 }
 
-void RememberDiscoveredModels(AppState& app, const AcpSessionState& session, const ChatSession& chat)
+void RememberDiscoveredModels(AppState& app, AcpSessionState& session, const ChatSession& chat)
 {
+	const auto& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+	if (runtime.ModelOptionsRequireRestart())
+	{
+		const auto* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
+		const std::string version = host != nullptr ? CheckedProviderConfigurationVersion(app, session.provider_id, *host) : std::string{};
+		for (auto& model : session.available_models)
+		{
+			model.supported_reasoning_efforts = runtime.ModelReasoningEfforts(model.id, version);
+			model.default_reasoning_effort.clear();
+			model.additional_speed_tiers.clear();
+		}
+	}
 	if (app.provider_model_catalog != nullptr && (!session.available_models.empty() || !session.available_config_options.empty()))
 	{
 		(void)app.provider_model_catalog->RememberSuccessfulModels(session.provider_id,
 		    ModelsForPersistentCache(session.available_models), DiscoveryWorkspace(app, chat),
 		    ConfigOptionsForPersistentCache(session.available_config_options),
-		    chat.execution_host_id);
+		    chat.execution_host_id, session.model_catalog_scope_key);
 	}
 }
 
@@ -270,7 +442,7 @@ void FinishModelDiscoveryWithoutResults(AppState& app, const AcpSessionState& se
 	{
 		app.provider_model_catalog->RememberRefreshFailure(session.provider_id,
 		    "Provider model discovery completed without reporting any models.", workspace,
-		    chat.execution_host_id);
+		    chat.execution_host_id, session.model_catalog_scope_key);
 	}
 }
 
@@ -285,6 +457,24 @@ void StopBackgroundModelDiscovery(AppState& app, AcpSessionState& session)
 	session.session_id.clear();
 	session.codex_thread_id.clear();
 	session.last_error.clear();
+}
+
+void FinishAcpSessionLoad(AppState& app, AcpSessionState& session, ChatSession& chat)
+{
+	session.load_replay_quiet_until_s = 0.0;
+	session.session_ready = true;
+	session.ignore_session_updates_until_ready = false;
+	session.lifecycle_state = kAcpLifecycleReady;
+	(void)ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpReconcileModelOptions(app, session, chat);
+	StopBackgroundModelDiscovery(app, session);
+	(void)ResumeQueuedUserPromptsAfterSessionSetup(app, session, chat);
+}
+
+bool SettleAcpLoadReplay(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds)
+{
+	if (session.load_replay_quiet_until_s <= 0.0 || now_seconds < session.load_replay_quiet_until_s) return false;
+	FinishAcpSessionLoad(app, session, chat);
+	return true;
 }
 
 void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
@@ -307,7 +497,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		method = it->second;
 		session.pending_request_methods.erase(it);
 	}
-	if (session.prompt_request_id != 0 && id == session.prompt_request_id)
+	if (method.empty() && session.prompt_request_id != 0 && id == session.prompt_request_id)
 	{
 		method = std::strcmp(ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpProtocolKind(), "codex-app-server") == 0 ? uam::acp_methods::kTurnStart : uam::acp_methods::kSessionPrompt;
 	}
@@ -324,6 +514,12 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 	}
 	if (session.cancel_requested && method == uam::acp_methods::kSessionPrompt)
 	{
+		if (const nlohmann::json* result = uam::nlohmann_json::FindObjectField(message, "result"))
+			ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpObserveCancelledPromptResult(app, session, chat, *result);
+		if (const nlohmann::json* error = uam::nlohmann_json::FindField(message, "error"); error != nullptr &&
+		    ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpHoldUnconfirmedInput(app, session, chat,
+		        JsonDiagnosticStringValueOr(*error, "message", "Cancellation returned an unconfirmed prompt error.")))
+			return;
 		if (session.inactivity_timeout_pending)
 		{
 			FinalizeAcpTurnInactivityTimeout(app, session, chat);
@@ -388,12 +584,17 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		failure.code = code;
 		failure.message = error_message;
 		failure.has_detail = !detail_text.empty();
-		const std::string formatted_error = FormatAcpFailureMessage(session, failure);
+		std::string formatted_error = FormatAcpFailureMessage(session, failure);
+		if (method == uam::acp_methods::kSessionSetModel && has_code && code == -32602 &&
+		    uam::strings::TrimAndLowerAscii(error_message) == "unsupported model")
+		{
+			formatted_error += " Refresh models in Settings or restart UAM, then select an available model before retrying.";
+		}
 		const bool model_discovery_request = method == uam::acp_methods::kSessionNew || method == uam::acp_methods::kSessionLoad || method == uam::acp_methods::kSessionResume;
 		if (app.provider_model_catalog != nullptr && (model_discovery_request || (session.model_discovery_only && method == uam::acp_methods::kInitialize)))
 		{
 			app.provider_model_catalog->RememberRefreshFailure(session.provider_id,
-			    formatted_error, DiscoveryWorkspace(app, chat), chat.execution_host_id);
+			    formatted_error, DiscoveryWorkspace(app, chat), chat.execution_host_id, session.model_catalog_scope_key);
 		}
 		AppendAcpDiagnostic(session, "response", "jsonrpc_error", method, request_id, has_code, code, error_message, detail_text);
 		const AcpResponseFailureDetails details{failure, error_data, detail_text, formatted_error};
@@ -458,7 +659,18 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		if (method == uam::acp_methods::kSessionPrompt || session.processing || session.waiting_for_permission || session.waiting_for_user_input || !session.queued_prompt.empty())
 		{
 			(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
+			const double turn_elapsed_s = session.turn_started_time_s != 0.0 ? GetAppTimeSeconds() - session.turn_started_time_s : 0.0;
 			FailAcpTurnOrSession(session, &chat, formatted_error);
+			// An aborted OpenCode fetch is the request timeout UAM gave it only when the turn lasted that long;
+			// an earlier abort came from another limit, so it is shown without a value or Restart action.
+			// ponytail: compares whole-turn time with OpenCode's per-request limit, so a long multi-request turn whose
+			// abort came from a different, shorter limit is still labelled as this one. Needs per-request timing.
+			if (method == uam::acp_methods::kSessionPrompt && provider_ids::IsCliProviderAliasOf(session.provider_id, provider_ids::kOpenCodeCli) &&
+			    formatted_error.find("The operation timed out") != std::string::npos)
+			{
+				const bool own_limit = session.launch_turn_timeout_seconds > 0 && turn_elapsed_s >= session.launch_turn_timeout_seconds;
+				MarkAcpTimeoutStop(session, own_limit ? "OpenCode request timeout" : "An OpenCode provider timeout", own_limit ? session.launch_turn_timeout_seconds : 0);
+			}
 			SaveChatQuietly(app, chat);
 			MarkAcpChatUnseenIfBackground(app, chat);
 		}
@@ -470,10 +682,25 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		return;
 	}
 
+	struct InitialNativeResultObservation
+	{
+		AcpSessionState& session;
+		const std::string& method;
+		int id;
+		~InitialNativeResultObservation()
+		{
+			AgentRunScheduler::InitialNativeResponse(session, method, id);
+		}
+	} initial_observation{session, method, id};
 	const nlohmann::json result = uam::nlohmann_json::ValueOrNull(uam::nlohmann_json::FindField(message, "result"));
 	if (uam::acp_methods::IsLifecycleResultMethod(method))
 	{
 		AppendAcpDiagnostic(session, "response", "jsonrpc_result", method, request_id, false, 0, "", "result=" + CapDiagnosticString(result.dump(), kMaxAcpDiagnosticDetailBytes));
+	}
+	else if (uam::acp_methods::IsSessionModeOrModelUpdateMethod(method))
+	{
+		// Acknowledgement only: a startup timeline must show which setup write was answered before the prompt.
+		AppendAcpDiagnostic(session, "response", "jsonrpc_result", method, request_id);
 	}
 	if (method == uam::acp_methods::kInitialize)
 	{
@@ -481,6 +708,12 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		session.initialized = true;
 		session.lifecycle_state = kAcpLifecycleStarting;
 		ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpInitializeResult(session, result);
+		if (!session.model_discovery_only && chat.remote_process_exists && !chat.remote_process_control_token.empty() && session.remote_output_delivery_token == chat.remote_process_control_token && !session.process_execution_host_id.empty() && session.process_execution_host_id != execution_hosts::kLocalHostId && session.process_execution_host_id == chat.execution_host_id && session.provider_id == chat.provider_id)
+		{
+			chat.remote_prompt_image_supported = session.prompt_image_supported;
+			if (!SaveChatQuietly(app, chat))
+				ScheduleChatSave(app, chat, 0.0);
+		}
 		if (session.lifecycle_state == kAcpLifecycleError)
 		{
 			RecoverDisconnectedRemoteAcpTransport(app, session, chat, session.last_error);
@@ -527,7 +760,8 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		if (!session.model_discovery_only)
 		{
 			(void)ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpReconcileModelOptions(app, session, chat);
-			SaveChatQuietly(app, chat);
+			if (CanDeferLocalSessionReceipt(app, session, chat)) StageLocalSessionReceipt(app, session, chat);
+			else SaveChatQuietly(app, chat);
 		}
 		StopBackgroundModelDiscovery(app, session);
 		(void)ResumeQueuedUserPromptsAfterSessionSetup(app, session, chat);
@@ -549,21 +783,29 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		}
 		RememberDiscoveredModels(app, session, chat);
 		FinishModelDiscoveryWithoutResults(app, session, chat);
-		session.session_ready = true;
-		session.ignore_session_updates_until_ready = false;
-		session.lifecycle_state = kAcpLifecycleReady;
-		(void)ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpReconcileModelOptions(app, session, chat);
-		StopBackgroundModelDiscovery(app, session);
-		(void)ResumeQueuedUserPromptsAfterSessionSetup(app, session, chat);
+		// Gemini CLI replays its own history (including turns UAM saved differently, such as a
+		// timed-out answer) only after this response. Keep ignoring it until the replay is quiet,
+		// so none of it lands in the next turn.
+		if (method == uam::acp_methods::kSessionLoad && session.ignore_session_updates_until_ready &&
+		    provider_ids::NormalizeCliProviderAlias(session.provider_id) == provider_ids::kGeminiCli)
+		{
+			session.load_replay_quiet_until_s = GetAppTimeSeconds() + kLoadReplayQuietSeconds;
+			return;
+		}
+		FinishAcpSessionLoad(app, session, chat);
 		return;
 	}
 
 	if (method == uam::acp_methods::kSessionPrompt)
 	{
+		const bool defer_completion = CanDeferLocalSessionReceipt(app, session, chat);
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+		if (id == session.prompt_request_id && session.prompt_request_id > 0 && JsonDiagnosticStringValue(result, "stopReason") == "end_turn")
+			RecordCompletedAcpPromptRecoveries(app, session, chat);
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, nullptr);
-		SaveChatQuietly(app, chat);
-		MarkAcpChatUnseenIfBackground(app, chat);
+		if (defer_completion) ScheduleChatSave(app, chat, 0.0);
+		else SaveChatQuietly(app, chat);
+		MarkAcpChatUnseenIfBackground(app, chat, defer_completion);
 		return;
 	}
 

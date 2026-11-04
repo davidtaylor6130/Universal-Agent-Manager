@@ -15,7 +15,15 @@ export interface ThemeColors {
   success: string
   warning: string
   error: string
+  tokenInput: string
+  tokenCacheRead: string
+  tokenCacheWrite: string
+  tokenOutput: string
+  tokenReasoning: string
 }
+
+/** Usage token-type colours; themes saved before they existed fall back to their base's defaults. */
+export const TOKEN_COLOR_KEYS = ['tokenInput', 'tokenCacheRead', 'tokenCacheWrite', 'tokenOutput', 'tokenReasoning'] as const
 
 export interface CustomTheme {
   version: 1
@@ -42,11 +50,13 @@ export const BUILT_IN_THEME_COLORS: Record<ResolvedTheme, ThemeColors> = {
     background: '#0f1117', surface: '#12141b', surfaceUp: '#191c25', text: '#eef1f7', textMuted: '#9aa4b6',
     accent: '#ff6a00', sidebar: '#11131a', userMessage: '#211811', assistantMessage: '#12141b',
     success: '#4ade80', warning: '#facc15', error: '#f87171',
+    tokenInput: '#dc7ba3', tokenCacheRead: '#80b756', tokenCacheWrite: '#a3abf4', tokenOutput: '#e0bd85', tokenReasoning: '#b26dbd',
   },
   light: {
     background: '#f7f8fa', surface: '#ffffff', surfaceUp: '#f2f4f7', text: '#141820', textMuted: '#596273',
     accent: '#ff6a00', sidebar: '#fbfcfe', userMessage: '#fff3eb', assistantMessage: '#ffffff',
     success: '#16a34a', warning: '#eab308', error: '#ef4444',
+    tokenInput: '#b4466e', tokenCacheRead: '#46703a', tokenCacheWrite: '#4d59b2', tokenOutput: '#91652e', tokenReasoning: '#804387',
   },
 }
 
@@ -65,13 +75,56 @@ const CUSTOM_CSS_PROPERTIES: Record<keyof ThemeColors, string> = {
   success: '--green',
   warning: '--yellow',
   error: '--red',
+  tokenInput: '--token-input',
+  tokenCacheRead: '--token-cache-read',
+  tokenCacheWrite: '--token-cache-write',
+  tokenOutput: '--token-output',
+  tokenReasoning: '--token-reasoning',
 }
 
 const DERIVED_CSS_PROPERTIES = [
   '--window-bg', '--surface-high', '--border', '--border-bright', '--text-2', '--text-3', '--accent-dim',
   '--accent-glow', '--sidebar-item-hover', '--sidebar-item-active', '--success-dim', '--warning-dim',
-  '--error-dim', '--term-bg', '--term-fg', '--term-cursor', '--term-selection',
+  '--error-dim', '--term-bg', '--term-fg', '--term-cursor', '--term-selection', '--on-accent', '--meter-warning',
 ]
+
+const relativeLuminance = (hex: string) => {
+  const [r, g, b] = [1, 3, 5].map((index) => {
+    const channel = Number.parseInt(hex.slice(index, index + 2), 16) / 255
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/** WCAG 2 contrast ratio between two #rrggbb colours. */
+export function contrastRatio(first: string, second: string): number {
+  const [light, dark] = [relativeLuminance(first), relativeLuminance(second)].sort((a, b) => b - a)
+  return (light + 0.05) / (dark + 0.05)
+}
+
+// color-mix(in srgb, a share, b): per-channel interpolation of the gamma-encoded values.
+const mixHex = (a: string, b: string, share: number) => `#${[1, 3, 5].map((index) => Math.round(Number.parseInt(a.slice(index, index + 2), 16) * share + Number.parseInt(b.slice(index, index + 2), 16) * (1 - share)).toString(16).padStart(2, '0')).join('')}`
+
+/**
+ * The theme's own colour that reads best on the accent and on the primary hover fill (accent mixed 88% with the
+ * theme text); black or white when none of them reaches 4.5:1 on both.
+ */
+export function onAccentFor(accent: string, themeColors: string[] = [], text?: string): string {
+  const fills = text ? [accent, mixHex(accent, text, 0.88)] : [accent]
+  const worst = (color: string) => Math.min(...fills.map((fill) => contrastRatio(fill, color)))
+  const best = (colors: string[]) => colors.reduce((winner, color) => worst(color) > worst(winner) ? color : winner)
+  const own = themeColors.length ? best(themeColors) : ''
+  return own && worst(own) >= 4.5 ? own : best(['#000000', '#ffffff'])
+}
+
+/** The warning colour as-is when it reaches 3:1 graphic contrast on every surface; otherwise mixed toward the text in 5% steps until it does. */
+export function meterWarningFor(warning: string, surfaces: string[], text: string): string {
+  for (let share = 1; share > 0; share -= 0.05) {
+    const color = mixHex(warning, text, share)
+    if (Math.min(...surfaces.map((surface) => contrastRatio(surface, color))) >= 3) return color
+  }
+  return text
+}
 
 export function normalizeStoredTheme(value: unknown): StoredTheme | null {
   if (value === 'mono') return 'focus'
@@ -90,7 +143,7 @@ export function normalizeCustomTheme(value: unknown): CustomTheme | null {
   const rawColors = raw.colors as Record<string, unknown>
   const colors = {} as ThemeColors
   for (const key of Object.keys(CUSTOM_CSS_PROPERTIES) as Array<keyof ThemeColors>) {
-    const color = rawColors[key]
+    const color = rawColors[key] ?? ((TOKEN_COLOR_KEYS as readonly string[]).includes(key) ? BUILT_IN_THEME_COLORS[raw.base][key] : undefined)
     if (typeof color !== 'string' || !HEX_COLOR.test(color)) return null
     colors[key] = color.toLowerCase()
   }
@@ -132,15 +185,15 @@ export function resolveDocumentTheme(theme: StoredTheme, customThemes: CustomThe
 export function applyDocumentTheme(theme: StoredTheme, customThemes: CustomTheme[] = []): void {
   if (typeof document !== 'undefined' && document.documentElement) {
     const root = document.documentElement
-    for (const property of Object.values(CUSTOM_CSS_PROPERTIES)) root.style.removeProperty(property)
-    for (const property of DERIVED_CSS_PROPERTIES) root.style.removeProperty(property)
+    const desiredProperties: Record<string, string> = {}
     const customTheme = customThemes.find((candidate) => candidate.id === theme)
-    root.setAttribute('data-theme', customTheme?.base ?? (theme === 'system' ? resolveDocumentTheme(theme) : theme))
+    const documentTheme = customTheme?.base ?? (theme === 'system' ? resolveDocumentTheme(theme) : theme)
+    if (root.getAttribute('data-theme') !== documentTheme) root.setAttribute('data-theme', documentTheme)
     if (customTheme) {
       for (const [key, property] of Object.entries(CUSTOM_CSS_PROPERTIES) as Array<[keyof ThemeColors, string]>) {
-        root.style.setProperty(property, customTheme.colors[key])
+        desiredProperties[property] = customTheme.colors[key]
       }
-      const { background, surfaceUp, text, textMuted, accent, success, warning, error } = customTheme.colors
+      const { background, surface, surfaceUp, text, textMuted, accent, success, warning, error } = customTheme.colors
       const derived: Record<string, string> = {
         '--window-bg': background,
         '--surface-high': `color-mix(in srgb, ${surfaceUp} 92%, ${text})`,
@@ -159,8 +212,18 @@ export function applyDocumentTheme(theme: StoredTheme, customThemes: CustomTheme
         '--term-fg': text,
         '--term-cursor': accent,
         '--term-selection': `color-mix(in srgb, ${accent} 28%, transparent)`,
+        '--on-accent': onAccentFor(accent, [background, text], text),
+        '--meter-warning': meterWarningFor(warning, [background, surface], text),
       }
-      for (const [property, value] of Object.entries(derived)) root.style.setProperty(property, value)
+      Object.assign(desiredProperties, derived)
+    }
+    // State pushes reapply themes; unchanged colours must not invalidate the entire document.
+    for (const property of [...Object.values(CUSTOM_CSS_PROPERTIES), ...DERIVED_CSS_PROPERTIES]) {
+      const value = desiredProperties[property]
+      const current = root.style.getPropertyValue(property)
+      if (value === undefined) {
+        if (current) root.style.removeProperty(property)
+      } else if (current !== value) root.style.setProperty(property, value)
     }
   }
 }

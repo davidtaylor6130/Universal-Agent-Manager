@@ -1,0 +1,19 @@
+Port 22
+HostKey /var/lib/uam-host-keys/ssh_host_ed25519_key
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+AuthorizedKeysFile /home/uam/.ssh/authorized_keys
+AllowUsers uam
+AllowAgentForwarding no
+AllowTcpForwarding no
+X11Forwarding no
+PermitTunnel no
+StrictModes yes
+UsePAM yes
+Subsystem sftp internal-sftp
+AcceptEnv LANG LC_*
+SetEnv PATH=/home/uam/.local/bin:/usr/local/bin:/usr/bin:/bin NPM_CONFIG_PREFIX=/home/uam/.local

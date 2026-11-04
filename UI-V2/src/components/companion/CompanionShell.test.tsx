@@ -21,10 +21,13 @@ vi.mock('../sidebar/SessionItem', () => ({
   sidebarStatusIcon: () => <span aria-hidden="true" />,
 }))
 vi.mock('../sidebar/NewChatModal', () => ({ NewChatModal: ({ onCreated }: { onCreated?: () => void }) => <div role="dialog">New chat modal<button onClick={onCreated}>Create</button></div> }))
+vi.mock('../settings/ThemeSelect', () => ({ ThemeSelect: () => <div>Theme choices</div> }))
 vi.mock('../ui', () => ({
   Button: ({ children, variant: _variant, size: _size, leadingIcon: _leadingIcon, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; size?: string; leadingIcon?: React.ReactNode }) => <button {...props}>{children}</button>,
-  IconButton: ({ label, onClick }: { label: string; onClick: () => void }) => <button aria-label={label} onClick={onClick}>{label}</button>,
+  IconButton: ({ label, onClick, icon, disabled, className, 'aria-current': ariaCurrent }: { label: string; onClick: () => void; icon?: React.ReactNode; disabled?: boolean; className?: string; 'aria-current'?: React.AriaAttributes['aria-current'] }) => <button aria-label={label} onClick={onClick} disabled={disabled} className={className} aria-current={ariaCurrent}>{icon}{label}</button>,
   Presence: ({ open, children }: { open: boolean; children: React.ReactNode }) => open ? <>{children}</> : null,
+  RowButton: (props: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button type="button" {...props} />,
+  Switch: ({ label, checked, onChange }: { label: string; checked?: boolean; onChange?: React.ChangeEventHandler<HTMLInputElement> }) => <label><input type="checkbox" aria-label={label} checked={checked} onChange={onChange} />{label}</label>,
 }))
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -550,4 +553,17 @@ it('migrates the old login and reconnects after a fresh app launch', async () =>
     await act(async () => root.unmount())
     host.remove()
   }
+})
+
+
+it('preserves a phone-local theme when desktop state refreshes', async () => {
+  window.localStorage.setItem('uam-companion-token', 'test-token')
+  useAppStore.setState({ theme: 'midnight' })
+  vi.mocked(sendToCEF).mockResolvedValue({ ok: true, data: { folders: [], stateRevision: 1, settings: { theme: 'light' } } })
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  try {
+    await act(async () => root.render(<CompanionShell />))
+    expect(useAppStore.getState().loadFromCef).toHaveBeenCalledWith(expect.objectContaining({ settings: { theme: 'midnight' } }))
+  } finally { await act(async () => root.unmount()) }
 })

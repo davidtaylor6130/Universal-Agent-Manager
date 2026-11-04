@@ -1,9 +1,10 @@
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { MessageFrame, PermissionInlineCard, ToolCallModal, UserInputInlineCard } from './ToolCallViews'
+import { SubAgentRunningPanel, MessageFrame, PermissionInlineCard, ToolCallModal, UserInputInlineCard } from './ToolCallViews'
 import type { AcpPendingPermission, AcpPendingUserInput } from '../../store/useAppStore'
 import { sanitizePendingUserInput } from '../../store/cpp/sanitizers'
+import { createQuestionMemory, type QuestionMemory } from './QuestionInput'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 let root: Root
@@ -56,6 +57,9 @@ describe('production tool details', () => {
             onSuccess('{}')
         }
         await render(<ToolCallModal tool={{ ...tool, content, contentDeferred: false }} chatId="chat-1" onClose={vi.fn()} />)
+        // Intended design change: JSON output is shown readable by default; the Raw chip shows the exact text.
+        expect(document.querySelector('pre')?.textContent).toContain('path: C:\\new\\notes')
+        await click('Raw')
         expect(document.querySelector('pre')?.textContent).toBe(content)
         await click('Copy loaded output')
         expect(copied).toEqual([content])
@@ -198,6 +202,38 @@ describe('production tool details', () => {
         expect(document.activeElement).toBe(trigger)
         trigger.remove()
     })
+
+    it('closes once after the exit animation, including when unmounted mid-exit', async () => {
+        vi.useFakeTimers()
+        vi.stubGlobal('matchMedia', () => ({ matches: false }))
+        const onClose = vi.fn()
+        await render(<ToolCallModal tool={{ ...tool, contentDeferred: false }} onClose={onClose} />)
+        act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
+        await click('Close tool details')
+        act(() => { vi.advanceTimersByTime(1000) })
+        expect(onClose).toHaveBeenCalledOnce()
+
+        const unmounted = vi.fn()
+        await render(<ToolCallModal tool={{ ...tool, id: 'tool-2', contentDeferred: false }} onClose={unmounted} />)
+        await click('Close tool details')
+        await render(null)
+        expect(unmounted).toHaveBeenCalledOnce()
+        act(() => { vi.advanceTimersByTime(1000) })
+        expect(unmounted).toHaveBeenCalledOnce()
+    })
+
+    it('closes immediately with Motion Off instead of waiting for a 0 ms exit animation', async () => {
+        vi.stubGlobal('matchMedia', () => ({ matches: false }))
+        document.documentElement.setAttribute('data-motion', 'off')
+        try {
+            const onClose = vi.fn()
+            await render(<ToolCallModal tool={{ ...tool, contentDeferred: false }} onClose={onClose} />)
+            await click('Close tool details')
+            expect(onClose).toHaveBeenCalledOnce()
+        } finally {
+            document.documentElement.removeAttribute('data-motion')
+        }
+    })
 })
 
 describe('production sequential questions', () => {
@@ -285,6 +321,17 @@ describe('production sequential questions', () => {
         expect(onResolve).toHaveBeenCalledExactlyOnceWith('request-1', { scope: ['Broad'] })
     })
 
+    it('drops the adopted Submitting state when the replaced card\'s submit failed before this card picked it up', async () => {
+        // The replaced card's submit is in flight while this card renders, then fails and clears memory.inflight before pickup.
+        let reads = 0
+        const pendingSubmit = new Promise<boolean>(() => {})
+        const memory: QuestionMemory = { ...createQuestionMemory(), get inflight() { return reads++ < 2 ? pendingSubmit : undefined }, set inflight(_) {} }
+        const onResolve = vi.fn().mockResolvedValue(true)
+        await render(<UserInputInlineCard input={request} onResolve={onResolve} memory={memory} />)
+        expect(document.querySelector('fieldset')?.disabled).toBe(false)
+        expect(Array.from(document.querySelectorAll('button')).some(item => item.textContent === 'Submitting…')).toBe(false)
+    })
+
     it('accepts a no-options free-text answer without inventing a default', async () => {
         const onResolve = vi.fn().mockResolvedValue(true)
         const input = { ...request, questions: [{ ...request.questions[1], id: 'note', header: 'Note', question: 'Any detail?', isSecret: false }] }
@@ -305,6 +352,8 @@ describe('production sequential questions', () => {
         const onResolve = vi.fn(() => new Promise<boolean>(done => { resolve = done }))
         await render(<UserInputInlineCard input={request} onResolve={onResolve} />)
         expect(document.querySelector('legend')?.textContent).toBe('Which scope?')
+        expect(document.querySelector('.qr-option-description')?.textContent).toBe('One fix')
+        expect(document.querySelector('.qr-option-copy .qr-sr-only')).toBeNull()
         expect(button('Next').disabled).toBe(true)
         await enter('  custom scope  ')
         act(() => document.querySelector<HTMLInputElement>('input[type="radio"]')!.click())
@@ -330,7 +379,7 @@ describe('production sequential questions', () => {
         expect(onResolve).toHaveBeenCalledTimes(2)
         await act(async () => resolve(true))
         expect(document.querySelector('.qr-question')).toBeNull()
-        expect(button('Answers submitted').disabled).toBe(true)
+        expect(document.querySelector('.qr-header h2')?.textContent).toBe('Answers submitted')
     })
 
     it('clears drafts for a new request with reused question IDs and ignores an old completion', async () => {
@@ -346,6 +395,75 @@ describe('production sequential questions', () => {
         await act(async () => resolve(true))
         expect(document.querySelector<HTMLInputElement>('.qr-text-answer input')?.value).toBe('new answer')
         expect(button('Submit answers').disabled).toBe(false)
+    })
+
+    it('collapses the floating card to a pill and expands it again with the draft intact', async () => {
+        await render(<UserInputInlineCard input={request} onResolve={vi.fn()} />)
+        const panel = () => document.querySelector<HTMLElement>('.qr-panel')!
+        expect(panel().dataset.variant).toBe('float')
+        act(() => document.querySelector<HTMLInputElement>('input[type="radio"]')!.click())
+        await click('Collapse questions')
+        expect(panel().dataset.open).toBe('false')
+        expect(button('Answer questions').getAttribute('aria-expanded')).toBe('false')
+        await click('Answer questions')
+        expect(panel().dataset.open).toBe('true')
+        expect(document.querySelector<HTMLInputElement>('input[type="radio"]')!.checked).toBe(true)
+    })
+
+    it('composer variant: no own Submit, focuses the first answer, and submits through the composer', async () => {
+        const onResolve = vi.fn().mockResolvedValue(true)
+        const onAnswered = vi.fn()
+        const states: string[] = []
+        const submitRef: { current: (() => void) | null } = { current: null }
+        ;(document.activeElement as HTMLElement | null)?.blur()
+        await render(<UserInputInlineCard variant="composer" input={{ ...request, questions: [request.questions[0]] }} onResolve={onResolve}
+            submitRef={submitRef} onSubmitStateChange={state => states.push(state)} onAnswered={onAnswered} />)
+        const radios = () => Array.from(document.querySelectorAll<HTMLInputElement>('input[type="radio"]'))
+        expect(document.querySelector('.qr-panel')?.getAttribute('data-variant')).toBe('composer')
+        expect(Array.from(document.querySelectorAll('button')).some(item => item.textContent === 'Submit answers')).toBe(false)
+        expect(document.activeElement).toBe(radios()[0])
+        expect(states.at(-1)).toBe('incomplete')
+        const key = async (target: Element, k: string) => { await act(async () => { target.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })) }) }
+        // Up from the first row wraps to Other, which hands focus to its text field.
+        await key(radios()[0], 'ArrowUp')
+        expect(radios()[2].checked).toBe(true)
+        expect(document.activeElement).toBe(document.querySelector('.qr-text-answer input'))
+        await key(document.activeElement!, 'ArrowUp')
+        expect(radios()[1].checked).toBe(true)
+        expect(document.activeElement).toBe(radios()[1])
+        await key(radios()[1], 'ArrowDown')
+        await key(radios()[2], 'ArrowDown')
+        expect(radios()[0].checked).toBe(true)
+        expect(states.at(-1)).toBe('ready')
+        await act(async () => { submitRef.current!() })
+        expect(onResolve).toHaveBeenCalledExactlyOnceWith('request-1', { scope: ['Focused'] })
+        expect(onAnswered).toHaveBeenCalledOnce()
+    })
+
+    it('Enter on a choice advances to the next question, then submits on the last one', async () => {
+        const onResolve = vi.fn().mockResolvedValue(true)
+        const input = { ...request, questions: [request.questions[0], { ...request.questions[0], id: 'size', header: 'Size', question: 'How big?' }] }
+        await render(<UserInputInlineCard variant="composer" input={input} onResolve={onResolve} />)
+        const enterOn = async (target: Element) => { await act(async () => { target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })) }) }
+        expect(document.querySelector('.qr-status')?.textContent).toBe('Question 1 of 2')
+        await enterOn(document.querySelector('input[type="radio"]')!)
+        expect(document.querySelector('legend')?.textContent).toBe('Which scope?')
+        act(() => document.querySelectorAll<HTMLInputElement>('input[type="radio"]')[1].click())
+        await enterOn(document.querySelectorAll('input[type="radio"]')[1])
+        expect(document.querySelector('legend')?.textContent).toBe('How big?')
+        expect(document.querySelector('.qr-status')?.textContent).toBe('Question 2 of 2')
+        act(() => document.querySelector<HTMLInputElement>('input[type="radio"]')!.click())
+        await enterOn(document.querySelector('input[type="radio"]')!)
+        expect(onResolve).toHaveBeenCalledExactlyOnceWith('request-1', { scope: ['Broad'], size: ['Focused'] })
+    })
+
+    it('arrow keys move focus between multiple-choice rows without toggling them', async () => {
+        await render(<UserInputInlineCard input={{ ...request, questions: [{ ...request.questions[0], isMultiple: true }] }} onResolve={vi.fn()} />)
+        const boxes = () => Array.from(document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
+        boxes()[0].focus()
+        await act(async () => { boxes()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })) })
+        expect(document.activeElement).toBe(boxes()[1])
+        expect(boxes().map(item => item.checked)).toEqual([false, false, false])
     })
 
     it('preserves drafts through thrown submission failures and keeps recovery callbacks', async () => {
@@ -369,12 +487,12 @@ describe('production sequential questions', () => {
 it('forwards message props and actions to the approved conversation turn', async () => {
     const onEdit = vi.fn()
     const onNext = vi.fn()
-    await render(<MessageFrame role="assistant" assistantLabel="Claude" copyText="answer" onEdit={onEdit} streaming branchLabel="Branch" branchNavigation={{ current: 1, total: 2, onPrevious: vi.fn(), onNext }}>Answer body</MessageFrame>)
+    await render(<MessageFrame role="assistant" assistantLabel="Claude" onEdit={onEdit} streaming branchLabel="Branch" branchNavigation={{ current: 1, total: 2, onPrevious: vi.fn(), onNext }}>Answer body</MessageFrame>)
     expect(document.querySelector('.conversation-turn')?.getAttribute('aria-label')).toBe('Claude')
     expect(document.querySelector('.conversation-turn')?.getAttribute('data-streaming')).toBe('true')
     expect(document.querySelector('button[aria-label="Copy message"]')).toBeNull()
-    await render(<MessageFrame role="assistant" assistantLabel="Claude" copyText="answer" onEdit={onEdit} branchLabel="Branch" branchNavigation={{ current: 1, total: 2, onPrevious: vi.fn(), onNext }}>Answer body</MessageFrame>)
-    expect(document.querySelector('button[aria-label="Copy message"]')).not.toBeNull()
+    await render(<MessageFrame role="assistant" assistantLabel="Claude" onEdit={onEdit} branchLabel="Branch" branchNavigation={{ current: 1, total: 2, onPrevious: vi.fn(), onNext }}>Answer body</MessageFrame>)
+    expect(document.querySelector('button[aria-label="Copy message"]')).toBeNull()
     await click('Edit message in new branch')
     await click('Next message branch')
     expect(onEdit).toHaveBeenCalledOnce()
@@ -403,4 +521,10 @@ it.each(['failure', 'rejection'])('ignores a stale permission %s while the next 
     await act(async () => { finishNew(false) })
     expect(document.querySelector('[role="alert"]')?.textContent).toContain('Try again')
     expect(button('Allow once').disabled).toBe(false)
+})
+
+it('shows the latest subagent activity while its transcript is deferred', async () => {
+    await render(<SubAgentRunningPanel tool={{ ...tool, status: 'running', isSubAgent: true, currentActivity: 'Reading package.json' }} onSelectTool={vi.fn()} />)
+    expect(host.querySelector('summary')?.textContent).toContain('Reading package.json')
+    expect(host.querySelector('details')?.open).toBe(false)
 })

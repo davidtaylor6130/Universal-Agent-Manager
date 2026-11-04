@@ -22,6 +22,9 @@ namespace uam::cef
 		BridgeRequest request;
 	};
 
+	/// Allows only a real chat baseline read; handlers resolve chat ownership and changed-file membership.
+	bool IsCompanionChatReviewRequest(const BridgeRequest& request);
+
 	BridgeRequestParseResult ParseBridgeRequest(std::string_view raw_request);
 
 } // namespace uam::cef

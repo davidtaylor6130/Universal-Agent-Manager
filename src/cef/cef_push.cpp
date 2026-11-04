@@ -30,28 +30,33 @@ namespace
 	constexpr const char* kPushTypeDictation = "dictation";
 	constexpr long long kStatePatchSlowSerializationMs = 8;
 	constexpr std::size_t kStatePatchLargeMessageBytes = 64 * 1024;
-	// The selected chat's summary carries the live turn timeline (turnEvents),
-	// which grows on nearly every tick during a turn; 10 updates per second is
-	// plenty for streamed text and tool-call progress. Summaries that introduce
-	// a pending permission or user-input request bypass the throttle so
-	// interaction prompts are never delayed.
-	constexpr std::chrono::milliseconds kSelectedChatSummaryMinPushInterval{100};
+	// Streaming chat summaries (selected or background) carry the live turn
+	// timeline (turnEvents), which grows on nearly every tick during a turn;
+	// 10 updates per chat per second is plenty for streamed text and tool-call
+	// progress. Summaries that introduce a pending permission or user-input
+	// request, or a new CLI launch, bypass the throttle so prompts are never delayed.
+	constexpr std::chrono::milliseconds kChatSummaryMinPushInterval{100};
 
 	std::unordered_map<std::string, std::chrono::steady_clock::time_point> g_last_summary_push_time_by_chat_id;
 	bool g_state_push_deferred = false;
+	// Earliest moment a deferred summary leaves its throttle window; quiet ticks skip the fingerprint until then.
+	std::chrono::steady_clock::time_point g_deferred_state_push_due_at{};
+	// Throttle decisions read this clock so unit tests can step time deterministically.
+	std::chrono::steady_clock::time_point (*g_state_push_clock)() = &std::chrono::steady_clock::now;
 	std::unordered_map<std::string, nlohmann::json> g_last_pushed_chat_summaries_by_chat_id;
-	std::string g_last_pushed_folders_fingerprint;
-	std::string g_last_pushed_resource_collections_fingerprint;
-	std::string g_last_pushed_providers_fingerprint;
-	std::string g_last_pushed_provider_model_catalogs_fingerprint;
-	std::string g_last_pushed_settings_fingerprint;
-	std::string g_last_pushed_memory_fingerprint;
-	std::string g_last_pushed_cli_version_manager_fingerprint;
-	std::string g_last_pushed_shell_actions_fingerprint;
+	nlohmann::json g_last_pushed_folders_fingerprint;
+	nlohmann::json g_last_pushed_resource_collections_fingerprint;
+	nlohmann::json g_last_pushed_providers_fingerprint;
+	nlohmann::json g_last_pushed_provider_model_catalogs_fingerprint;
+	nlohmann::json g_last_pushed_startup_native_imports_fingerprint;
+	nlohmann::json g_last_pushed_settings_fingerprint;
+	nlohmann::json g_last_pushed_memory_fingerprint;
+	nlohmann::json g_last_pushed_cli_version_manager_fingerprint;
+	nlohmann::json g_last_pushed_shell_actions_fingerprint;
 	std::string g_last_pushed_shell_action_notification;
 	std::string g_last_pushed_status_line;
 	std::string g_last_pushed_selected_chat_id;
-	std::string g_last_pushed_chat_order_fingerprint;
+	nlohmann::json g_last_pushed_chat_order_fingerprint;
 
 	std::string DumpFrontendJson(const nlohmann::json& value)
 	{
@@ -81,28 +86,30 @@ namespace
 
 	nlohmann::json SerializeSettingsForPatch(const uam::AppState& app)
 	{
-		return uam::settings_frontend_json::SerializeLiveSettingsFields(app.settings, app.memory_last_status);
+		nlohmann::json settings = uam::settings_frontend_json::SerializeLiveSettingsFields(app.settings, app.memory_last_status);
+		settings["computerUseRevocationPending"] = !app.computer_use_revocation_pending_chat_ids.empty();
+		return settings;
 	}
 
 	void StripVolatileAcpWaitTelemetry(nlohmann::json& state);
 	nlohmann::json ChatOrderForPatch(const uam::AppState& app);
 
-	void ResetPatchBaselines(const uam::AppState& app)
+	void ResetPatchBaselines(const uam::AppState& app, nlohmann::json fingerprint_state)
 	{
-		nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app);
 		StripVolatileAcpWaitTelemetry(fingerprint_state);
-		g_last_pushed_folders_fingerprint = DumpFrontendJson(fingerprint_state.at("folders"));
-		g_last_pushed_resource_collections_fingerprint = DumpFrontendJson(fingerprint_state.at("resourceCollections"));
-		g_last_pushed_providers_fingerprint = DumpFrontendJson(fingerprint_state.at("providers"));
-		g_last_pushed_provider_model_catalogs_fingerprint = DumpFrontendJson(fingerprint_state.at("providerModelCatalogs"));
-		g_last_pushed_settings_fingerprint = DumpFrontendJson(SerializeSettingsForPatch(app));
-		g_last_pushed_memory_fingerprint = DumpFrontendJson(fingerprint_state.at("memoryActivity"));
-		g_last_pushed_cli_version_manager_fingerprint = DumpFrontendJson(fingerprint_state.at("cliVersionManager"));
-		g_last_pushed_shell_actions_fingerprint = DumpFrontendJson(fingerprint_state.at("shellActions"));
+		g_last_pushed_folders_fingerprint = fingerprint_state.at("folders");
+		g_last_pushed_resource_collections_fingerprint = fingerprint_state.at("resourceCollections");
+		g_last_pushed_providers_fingerprint = fingerprint_state.at("providers");
+		g_last_pushed_provider_model_catalogs_fingerprint = fingerprint_state.at("providerModelCatalogs");
+		g_last_pushed_startup_native_imports_fingerprint = fingerprint_state.at("startupNativeImports");
+		g_last_pushed_settings_fingerprint = SerializeSettingsForPatch(app);
+		g_last_pushed_memory_fingerprint = fingerprint_state.at("memoryActivity");
+		g_last_pushed_cli_version_manager_fingerprint = fingerprint_state.at("cliVersionManager");
+		g_last_pushed_shell_actions_fingerprint = fingerprint_state.at("shellActions");
 		g_last_pushed_shell_action_notification = uam::nlohmann_json::TrimmedStringValue(fingerprint_state, {"shellActionNotification"});
 		g_last_pushed_status_line = fingerprint_state.value("statusLine", std::string{});
 		g_last_pushed_selected_chat_id = ChatDomainService().SelectedChatId(app);
-		g_last_pushed_chat_order_fingerprint = DumpFrontendJson(ChatOrderForPatch(app));
+		g_last_pushed_chat_order_fingerprint = ChatOrderForPatch(app);
 		g_last_pushed_chat_summaries_by_chat_id.clear();
 		g_last_summary_push_time_by_chat_id.clear();
 		g_state_push_deferred = false;
@@ -126,11 +133,11 @@ namespace
 		}
 	}
 
-	std::string BuildFullStateUpdateMessage(const uam::AppState& app)
+	nlohmann::json BuildFullStateUpdateMessage(const uam::AppState& app)
 	{
 		nlohmann::json msg = PushMessage(kPushTypeStateUpdate);
-		msg["data"] = uam::StateSerializer::Serialize(app);
-		return DumpFrontendJson(msg);
+		msg["data"] = uam::StateSerializer::Serialize(app, true);
+		return msg;
 	}
 
 	void MaybeLogLargePatch(const std::string& message, int changed_chat_count, std::chrono::steady_clock::duration elapsed)
@@ -148,16 +155,17 @@ namespace
 #endif
 	}
 
-	void AddChangedJsonField(nlohmann::json& patch_data, const char* field_name, const nlohmann::json& value, std::string& last_fingerprint)
+	// Structural comparison: dumping these slices (folder icons carry PNG data URLs) cost milliseconds per tick.
+	// Unlike dumped text, 1 and 1.0 compare equal and a NaN never does; these slices carry neither in practice.
+	void AddChangedJsonField(nlohmann::json& patch_data, const char* field_name, const nlohmann::json& value, nlohmann::json& last_value)
 	{
-		const std::string fingerprint = DumpFrontendJson(value);
-		if (fingerprint == last_fingerprint)
+		if (value == last_value)
 		{
 			return;
 		}
 
 		patch_data[field_name] = value;
-		last_fingerprint = fingerprint;
+		last_value = value;
 	}
 
 	struct ChatPatchDiff
@@ -192,6 +200,18 @@ namespace
 		return chat_order;
 	}
 
+	/// <summary>Publish launch ownership before output, independently of transcript throttling.</summary>
+	bool CliLaunchIdentityChanged(const nlohmann::json& previous, const nlohmann::json& current)
+	{
+		const nlohmann::json::const_iterator before = previous.find("cliTerminal");
+		const nlohmann::json::const_iterator after = current.find("cliTerminal");
+		if (before == previous.end() || after == current.end())
+			return before != previous.end() || after != current.end();
+		if (!before->is_object() || !after->is_object()) return *before != *after;
+		return before->value("terminalId", nlohmann::json()) != after->value("terminalId", nlohmann::json()) ||
+		    before->value("startupTime", nlohmann::json()) != after->value("startupTime", nlohmann::json());
+	}
+
 	ChatPatchDiff BuildChatPatchDiff(const uam::AppState& app, const nlohmann::json& fingerprint_state, const std::string& selected_chat_id)
 	{
 		ChatPatchDiff diff;
@@ -217,16 +237,20 @@ namespace
 			const auto previous_chat_it = g_last_pushed_chat_summaries_by_chat_id.find(chat_id);
 			if (previous_chat_it == g_last_pushed_chat_summaries_by_chat_id.end() || previous_chat_it->second != chat)
 			{
-				const auto now = std::chrono::steady_clock::now();
+				const auto now = g_state_push_clock();
 				const auto last_summary_push_it = g_last_summary_push_time_by_chat_id.find(chat_id);
-				const bool summary_throttled = chat_id == selected_chat_id &&
+				const bool launch_changed = previous_chat_it == g_last_pushed_chat_summaries_by_chat_id.end() ||
+				    CliLaunchIdentityChanged(previous_chat_it->second, chat);
+				const bool summary_throttled = !launch_changed &&
 				                               !ChatSummaryHasPendingInteraction(chat) &&
 				                               last_summary_push_it != g_last_summary_push_time_by_chat_id.end() &&
-				                               now - last_summary_push_it->second < kSelectedChatSummaryMinPushInterval;
+				                               now - last_summary_push_it->second < kChatSummaryMinPushInterval;
 				if (summary_throttled)
 				{
 					// Keep the previous summary baseline so the deferred change is
 					// retried on a later tick instead of silently dropped.
+					const auto due = last_summary_push_it->second + kChatSummaryMinPushInterval;
+					if (!g_state_push_deferred || due < g_deferred_state_push_due_at) g_deferred_state_push_due_at = due;
 					g_state_push_deferred = true;
 				}
 				else
@@ -284,6 +308,7 @@ namespace
 		AddChangedJsonField(data, "providers", fingerprint_state.at("providers"), g_last_pushed_providers_fingerprint);
 
 		AddChangedJsonField(data, "providerModelCatalogs", fingerprint_state.at("providerModelCatalogs"), g_last_pushed_provider_model_catalogs_fingerprint);
+		AddChangedJsonField(data, "startupNativeImports", fingerprint_state.at("startupNativeImports"), g_last_pushed_startup_native_imports_fingerprint);
 
 		const nlohmann::json settings = SerializeSettingsForPatch(app);
 		AddChangedJsonField(data, "settings", settings, g_last_pushed_settings_fingerprint);
@@ -315,6 +340,16 @@ namespace
 		}
 
 		ApplyChatPatchDiff(data, BuildChatPatchDiff(app, fingerprint_state, selected_chat_id));
+		if (nlohmann::json::iterator chats = data.find("chats"); chats != data.end())
+		{
+			for (nlohmann::json& chat : *chats)
+			{
+				const nlohmann::json::const_iterator acp = chat.find("acpSession");
+				if (acp == chat.end() || !acp->contains("catalogDigest")) continue;
+				if (const ChatSession* source = ChatDomainService().FindChatById(app, chat.value("id", "")); source != nullptr)
+					chat = uam::StateSerializer::SerializeChatSummary(app, *source);
+			}
+		}
 		AddChangedJsonField(data, "chatOrder", ChatOrderForPatch(app), g_last_pushed_chat_order_fingerprint);
 		if (has_payload != nullptr)
 		{
@@ -365,6 +400,11 @@ namespace
 namespace uam
 {
 
+	std::string StateUpdateForTests(const AppState& app)
+	{
+		return DumpFrontendJson(BuildFullStateUpdateMessage(app));
+	}
+
 	std::string SettingsPatchForTests(const AppState& app)
 	{
 		return DumpFrontendJson(SerializeSettingsForPatch(app));
@@ -372,8 +412,8 @@ namespace uam
 
 	std::string StatePatchForTests(const AppState& before, const AppState& after)
 	{
-		ResetPatchBaselines(before);
-		nlohmann::json fingerprint_state = StateSerializer::SerializeFingerprint(after);
+		ResetPatchBaselines(before, StateSerializer::SerializeFingerprint(before, true));
+		nlohmann::json fingerprint_state = StateSerializer::SerializeFingerprint(after, true);
 		StripVolatileAcpWaitTelemetry(fingerprint_state);
 		return BuildStatePatchMessage(after, fingerprint_state);
 	}
@@ -383,10 +423,26 @@ namespace uam
 		return g_state_push_deferred;
 	}
 
+	int MillisecondsUntilDeferredStatePushDue()
+	{
+		const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(g_deferred_state_push_due_at - g_state_push_clock()).count();
+		return remaining < 1 ? 1 : static_cast<int>(remaining);
+	}
+
+	void SetStatePushClockForTests(std::chrono::steady_clock::time_point (*clock)())
+	{
+		g_state_push_clock = clock != nullptr ? clock : &std::chrono::steady_clock::now;
+	}
+
+	bool DeferredStatePushDue()
+	{
+		return g_state_push_deferred && g_state_push_clock() >= g_deferred_state_push_due_at;
+	}
+
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app)
 	{
 		const auto fingerprint_started = std::chrono::steady_clock::now();
-		nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app);
+		nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app, true);
 		const auto fingerprint_finished = std::chrono::steady_clock::now();
 		static auto last_slow_fingerprint_report = std::chrono::steady_clock::time_point::min();
 		const auto fingerprint_ms = std::chrono::duration_cast<std::chrono::milliseconds>(fingerprint_finished - fingerprint_started);
@@ -413,9 +469,11 @@ namespace uam
 	void PushStateUpdate(CefRefPtr<CefBrowser> browser, AppState& app)
 	{
 		BumpStateRevision(app);
-		const std::string message = BuildFullStateUpdateMessage(app);
-		ResetPatchBaselines(app);
-		PostPush(browser, message);
+		nlohmann::json message = BuildFullStateUpdateMessage(app);
+		const std::string serialized_message = DumpFrontendJson(message);
+		// Reuse this push snapshot; strip baseline telemetry only after serializing its wire payload.
+		ResetPatchBaselines(app, std::move(message["data"]));
+		PostPush(browser, serialized_message);
 	}
 
 	void PushStreamToken(CefRefPtr<CefBrowser> browser, const std::string& chat_id, int message_index, const std::string& token)
@@ -434,12 +492,13 @@ namespace uam
 		PostPush(browser, DumpFrontendJson(msg));
 	}
 
-	void PushCliOutput(CefRefPtr<CefBrowser> browser, const std::string& frontend_chat_id, const std::string& source_chat_id, const std::string& terminal_id, const std::string& raw_bytes)
+	void PushCliOutput(CefRefPtr<CefBrowser> browser, const std::string& frontend_chat_id, const std::string& source_chat_id, const std::string& terminal_id, double startup_time_s, const std::string& raw_bytes)
 	{
 		nlohmann::json msg = PushMessage(kPushTypeCliOutput);
 		msg["sessionId"] = frontend_chat_id;
 		msg["sourceChatId"] = source_chat_id;
 		msg["terminalId"] = terminal_id;
+		msg["startupTime"] = startup_time_s;
 		msg["data"] = uam::base64::Encode(raw_bytes);
 		PostPush(browser, DumpFrontendJson(msg));
 	}

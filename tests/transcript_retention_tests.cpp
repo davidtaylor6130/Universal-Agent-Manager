@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "app/transcript_retention_service.h"
 #include "cef/state_serializer.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
 
 using namespace uam_test;
 
@@ -36,6 +37,156 @@ UAM_TEST(TranscriptRetentionReleasesDurableColdHistoryAndRehydrates)
 	UAM_ASSERT_EQ(app.chats.front().persisted_messages_digest, saved->persisted_messages_digest);
 	UAM_ASSERT(ChatRepository::HydrateChatMessages(app.data_root, app.chats.front()));
 	UAM_ASSERT_EQ(app.chats.front().messages, saved->messages);
+}
+
+UAM_TEST(ManagedAgentTranscriptDetachedReadValidatesColdIdentityAndKeepsLiveStateCold)
+{
+	TempDir temp("uam-managed-transcript-detached-read");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession root;
+	root.id = "managed-read-root";
+	root.provider_id = "codex-cli";
+	root.workspace_directory = temp.root.string();
+	ChatSession transcript;
+	transcript.id = "managed-read-transcript";
+	transcript.agent_run_id = "managed-read-run";
+	transcript.provider_id = "codex-cli";
+	transcript.workspace_directory = temp.root.string();
+	for (int index = 0; index < 1000; ++index)
+		transcript.messages.push_back(Message{MessageRole::Assistant, "transcript message " + std::to_string(index)});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, root));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, transcript));
+	const std::optional<ChatSession> cold_root = ChatRepository::LoadLocalChat(temp.root, root.id, false);
+	const std::optional<ChatSession> cold_transcript = ChatRepository::LoadLocalChat(temp.root, transcript.id, false);
+	UAM_ASSERT(cold_root.has_value() && cold_transcript.has_value());
+	app.chats = {*cold_root, *cold_transcript};
+	AgentRun run;
+	run.id = transcript.agent_run_id;
+	run.root_chat_id = root.id;
+	run.transcript_chat_id = transcript.id;
+	run.agent_id = "worker";
+	run.provider_id = transcript.provider_id;
+	run.execution_capability = "acp";
+	run.status = "completed";
+	run.updated_at = "stable-terminal-run";
+	app.agent_runs.push_back(run);
+
+	const std::optional<uam::ManagedAgentTranscriptReadIdentity> identity =
+	    uam::CaptureManagedAgentTranscriptRead(app, root.id, transcript.id);
+	UAM_ASSERT(identity.has_value());
+	const uam::ManagedAgentTranscriptReadResult read =
+	    uam::LoadManagedAgentTranscriptDetached(temp.root, *identity);
+	UAM_ASSERT_EQ(read.status, uam::ManagedAgentTranscriptReadStatus::Ready);
+	UAM_ASSERT_EQ(read.transcript.messages.size(), std::size_t{1000});
+	UAM_ASSERT(uam::MatchesManagedAgentTranscriptRead(app, *identity, read.transcript));
+	UAM_ASSERT(!app.chats[1].messages_loaded && app.chats[1].messages.empty());
+	UAM_ASSERT_EQ(app.chats[1].persisted_message_count, std::size_t{1000});
+	auto active_session = std::make_unique<uam::AcpSessionState>();
+	active_session->chat_id = transcript.id;
+	active_session->processing = true;
+	app.acp_sessions.push_back(std::move(active_session));
+	UAM_ASSERT(!uam::MatchesManagedAgentTranscriptRead(app, *identity, read.transcript));
+	app.acp_sessions.clear();
+	UAM_ASSERT(uam::MatchesManagedAgentTranscriptRead(app, *identity, read.transcript));
+
+	app.agent_runs.front().updated_at = "run-changed-during-read";
+	UAM_ASSERT(!uam::MatchesManagedAgentTranscriptRead(app, *identity, read.transcript));
+	app.agent_runs.front() = run;
+	app.chats.front().workspace_directory = "changed-workspace";
+	UAM_ASSERT(!uam::MatchesManagedAgentTranscriptRead(app, *identity, read.transcript));
+}
+
+UAM_TEST(ManagedAgentTranscriptDetachedReadRejectsChangedDurableContentAndWarmOrHotState)
+{
+	TempDir temp("uam-managed-transcript-detached-stale");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession root;
+	root.id = "managed-stale-root";
+	ChatSession transcript;
+	transcript.id = "managed-stale-transcript";
+	transcript.agent_run_id = "managed-stale-run";
+	transcript.messages.push_back(Message{MessageRole::Assistant, "before"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, root));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, transcript));
+	app.chats = {*ChatRepository::LoadLocalChat(temp.root, root.id, false),
+	             *ChatRepository::LoadLocalChat(temp.root, transcript.id, false)};
+	AgentRun run;
+	run.id = transcript.agent_run_id;
+	run.root_chat_id = root.id;
+	run.transcript_chat_id = transcript.id;
+	run.provider_id = transcript.provider_id;
+	run.status = "failed";
+	run.updated_at = "terminal";
+	app.agent_runs.push_back(run);
+	const auto identity = uam::CaptureManagedAgentTranscriptRead(app, root.id, transcript.id);
+	UAM_ASSERT(identity.has_value());
+
+	ChatSession changed = transcript;
+	changed.messages.front().content = "after";
+	changed.updated_at = "updated-during-read";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, changed));
+	const uam::ManagedAgentTranscriptReadResult stale =
+	    uam::LoadManagedAgentTranscriptDetached(temp.root, *identity);
+	UAM_ASSERT_EQ(stale.status, uam::ManagedAgentTranscriptReadStatus::Changed);
+
+	app.chats[1].messages_loaded = true;
+	app.chats[1].messages = {Message{MessageRole::Assistant, "unsaved warm answer"}};
+	UAM_ASSERT(!uam::CaptureManagedAgentTranscriptRead(app, root.id, transcript.id).has_value());
+	app.chats[1].messages.clear();
+	app.chats[1].messages_loaded = false;
+	app.agent_runs.front().status = "running";
+	UAM_ASSERT(!uam::CaptureManagedAgentTranscriptRead(app, root.id, transcript.id).has_value());
+}
+
+UAM_TEST(TranscriptPageLoadingLeavesNativeHistoryColdAndPreservesDurableContext)
+{
+	uam_test::TempDir temp("uam-cold-transcript-page");
+	ChatSession original = RetentionChat();
+	for (int index = 0; index < 999; ++index) original.messages.push_back(Message{MessageRole::Assistant, "durable history " + std::to_string(index)});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, original));
+	std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(temp.root, original.id, false);
+	std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+	UAM_ASSERT(summary.has_value() && loaded.has_value());
+	const std::size_t count = summary->persisted_message_count;
+	const std::string digest = summary->persisted_messages_digest;
+	const Message* const loaded_messages = loaded->messages.data();
+	UAM_ASSERT(uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), count, digest, false));
+	UAM_ASSERT(loaded->messages.data() == loaded_messages);
+	UAM_ASSERT_EQ(loaded->messages.size(), original.messages.size());
+	UAM_ASSERT(!summary->messages_loaded && summary->messages.empty());
+	UAM_ASSERT_EQ(summary->persisted_message_count, std::size_t{1000});
+	UAM_ASSERT_EQ(summary->persisted_messages_digest, digest);
+	summary->title = "Renamed cold chat";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, *summary));
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(temp.root, *summary));
+	UAM_ASSERT_EQ(summary->messages, original.messages);
+	UAM_ASSERT_EQ(summary->title, std::string("Renamed cold chat"));
+
+	summary = ChatRepository::LoadLocalChat(temp.root, original.id, false);
+	loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+	UAM_ASSERT(summary.has_value() && loaded.has_value());
+	UAM_ASSERT(uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), summary->persisted_message_count, summary->persisted_messages_digest, true));
+	UAM_ASSERT(summary->messages_loaded && summary->messages == original.messages);
+	for (int guard = 0; guard < 7; ++guard)
+	{
+		summary = ChatRepository::LoadLocalChat(temp.root, original.id, false);
+		loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+		UAM_ASSERT(summary.has_value() && loaded.has_value());
+		const std::size_t expected_count = summary->persisted_message_count;
+		const std::string expected_digest = summary->persisted_messages_digest;
+		if (guard == 0) ++summary->persisted_message_count;
+		if (guard == 1) summary->persisted_messages_digest = "changed";
+		if (guard == 2) loaded->id = "different";
+		if (guard == 3) ++loaded->persisted_message_count;
+		if (guard == 4) loaded->persisted_messages_digest = "changed";
+		if (guard == 5) loaded->messages_loaded = false;
+		if (guard == 6) summary->messages_loaded = true;
+		UAM_ASSERT(!uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), expected_count, expected_digest, false));
+		UAM_ASSERT(summary->messages.empty());
+		UAM_ASSERT_EQ(summary->messages_loaded, guard == 6);
+	}
 }
 
 UAM_TEST(TranscriptRetentionProtectsEveryVisiblePaneAndReopenedHydration)
@@ -120,6 +271,40 @@ UAM_TEST(TranscriptRetentionProtectsPendingSaveSelectionAndRuntimeOwnership)
 	}
 }
 
+UAM_TEST(TranscriptRetentionReleasesPausedOrBlockedGoalHistoryButProtectsActiveGoals)
+{
+	for (const GoalStatus status : {GoalStatus::Paused, GoalStatus::Blocked})
+	{
+		TempDir temp("uam-transcript-retention-settled-goal");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat = RetentionChat();
+		chat.goals.push_back(Goal{});
+		chat.goals.back().status = status;
+		app.chats.push_back(std::move(chat));
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+		const auto saved = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id, true);
+		UAM_ASSERT(saved.has_value());
+
+		uam::TranscriptRetentionService retention;
+		retention.SetVisibleChatIds({});
+		const auto generation = retention.BeginRelease(app, saved->id);
+		UAM_ASSERT(generation.has_value());
+		UAM_ASSERT(retention.CompleteRelease(app, saved->id, *generation, *saved));
+		UAM_ASSERT(app.chats.front().messages.empty() && !app.chats.front().messages_loaded);
+		UAM_ASSERT(ChatRepository::HydrateChatMessages(app.data_root, app.chats.front()));
+		UAM_ASSERT_EQ(app.chats.front().messages, saved->messages);
+	}
+
+	uam::AppState app;
+	app.chats.push_back(RetentionChat());
+	app.chats.front().goals.push_back(Goal{});
+	app.chats.front().goals.back().status = GoalStatus::Active;
+	uam::TranscriptRetentionService retention;
+	retention.SetVisibleChatIds({});
+	UAM_ASSERT(!retention.BeginRelease(app, app.chats.front().id));
+}
+
 UAM_TEST(TranscriptRetentionKeepsMissingOrMismatchedDurableHistory)
 {
 	uam::AppState app;
@@ -161,4 +346,22 @@ UAM_TEST(CopiedLegacyChatUpgradeReopensWithoutChangingOriginalOrRollbackBackup)
 	UAM_ASSERT_EQ(reopened->command_safety_tier, migrated->command_safety_tier);
 	UAM_ASSERT_EQ(ReadFile(original), legacy);
 	UAM_ASSERT_EQ(ReadFile(uam::io::MakeBackupPath(copied)), legacy);
+}
+
+UAM_TEST(TranscriptReleaseTransfersLargeBuffersWithoutDestroyingThemOnCompletion)
+{
+	uam::AppState app;
+	app.chats.push_back(RetentionChat());
+	app.chats.front().messages.front().content.assign(8 * 1024 * 1024, 'x');
+	const ChatSession persisted = app.chats.front();
+	const char* original = app.chats.front().messages.front().content.data();
+	uam::TranscriptRetentionService retention;
+	retention.SetVisibleChatIds({});
+	const auto generation = retention.BeginRelease(app, persisted.id);
+	UAM_ASSERT(generation.has_value());
+	std::vector<Message> released;
+	UAM_ASSERT(retention.CompleteRelease(app, persisted.id, *generation, persisted, &released));
+	UAM_ASSERT(!app.chats.front().messages_loaded);
+	UAM_ASSERT(app.chats.front().messages.empty());
+	UAM_ASSERT_EQ(released.front().content.data(), original);
 }

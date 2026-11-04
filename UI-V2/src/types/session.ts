@@ -20,9 +20,20 @@ export interface ExecutionHost {
   lastSeenAt: string
   runnerDirectory?: string
   runnerProtocolVersion?: number
+  /** SHA-256 of the helper this computer verified and published at installation; absent means unknown. */
+  runnerSha256?: string
+  /** SHA-256 of this app's packaged helper for the host's platform; absent when none is packaged. */
+  bundledRunnerSha256?: string
   instructionFile?: string
+  /** Inline host instructions. Absent or null keeps the legacy instruction file; an explicit empty string suppresses it. */
+  instructionText?: string | null
+  cliUpdatesAsAdmin?: boolean
   startupEnabled?: boolean
   startupStatus?: string
+  /** Applied state of the saved startupEnabled preference on the host; absent when the backend does not report it. */
+  runnerStartupApplied?: 'enabled' | 'disabled' | 'pending' | 'failed'
+  /** Sanitized single-line reason for runnerStartupApplied === 'failed'. */
+  runnerStartupError?: string
 }
 
 export interface RemoteDirectoryEntry {
@@ -60,10 +71,21 @@ export interface ComputerUseState {
 }
 
 export interface Session {
+  gitBaseBranch?: string | null
+  routingMode?: 'explicit' | 'automatic'
+  routingSourceFolderId?: string
+  routingSourceDirectory?: string
+  routingReservationPending?: boolean
+  routingAssignedConnectionIdentity?: string
+  routingAssignedProviderConfigurationIdentity?: string
+  routingWaitReason?: string
+  routingUnresolvedReservation?: boolean
+
   id: string
   executionHostId?: string
   remoteRecoveryEnabled?: boolean
   remoteRecoveryState?: string
+  customIcon?: CustomIcon
   name: string
   viewMode: ViewMode
   folderId: string | null
@@ -80,6 +102,8 @@ export interface Session {
   workspaceSourceDirectory?: string
   workspaceBaseRef?: string
   workspaceBranchName?: string
+  /** New branch chosen before the first message; created when that message is sent. */
+  pendingGitBranch?: string
   workspaceWorktreeDirectory?: string
   importedReadOnly?: boolean
   modelId?: string
@@ -106,6 +130,14 @@ export interface Session {
   memoryLastProcessedMessageCount?: number
   memoryLastProcessedAt?: string
   messageCount?: number
+  /** Ephemeral managed-run discovery metadata; older summaries default to zero. */
+  /** Display-only native lineage; never provider resume or control authority. */
+  subagentParentChatId?: string
+  subagentParentCreatedAt?: string
+  /** Display-only chat_create provenance; never lineage, resume or control authority. */
+  createdByChatId?: string
+  managedSubagentCount?: number
+  managedSubagentRevision?: number
   messagesDigest?: string
   createdAt: Date
   updatedAt: Date
@@ -115,6 +147,8 @@ export interface Session {
   attentionRevision?: string
   /** ISO time the user marked this chat done in Active chats. */
   settledAt?: string
+  snoozedUntilMs?: number
+  userMessageIndices?: number[]
 }
 
 export interface Folder {

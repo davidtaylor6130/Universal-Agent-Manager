@@ -3,9 +3,11 @@
 // Shared helpers for native history imports and chat-list replacement.
 
 #include "app/chat_domain_service.h"
+#include "app/agent_run_scheduler.h"
 #include "app/native_session_link_service.h"
 #include "common/chat/chat_branching.h"
 #include "common/models/app_models.h"
+#include "common/provider/excluded_provider_data.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/state/app_state.h"
 #include "common/utils/string_utils.h"
@@ -19,9 +21,7 @@ namespace uam::runtime_orch_impl
 {
 	inline bool ChatNeedsTranscriptPreserved(const uam::AppState& app, const ChatSession& chat)
 	{
-		return app.pending_chat_save_at_by_chat_id.contains(chat.id) ||
-		       std::ranges::any_of(app.acp_sessions, [&chat](const std::unique_ptr<uam::AcpSessionState>& session)
-		       { return session != nullptr && session->chat_id == chat.id && (uam::AcpSessionHasActiveTurn(*session) || session->turn_checkpoint_commit_pending); });
+		return uam::AgentRunScheduler::HasPendingInitialMention(app, chat.id) || app.worktree_operation_chat_ids.contains(chat.id) || app.pending_chat_save_at_by_chat_id.contains(chat.id) || std::ranges::any_of(app.acp_sessions, [&chat](const std::unique_ptr<uam::AcpSessionState>& session) { return session != nullptr && session->chat_id == chat.id && (uam::AcpSessionHasActiveTurn(*session) || session->turn_checkpoint_commit_pending); });
 	}
 
 	// Rebuild the list without replacing live turns or unsaved chats with disk snapshots.
@@ -44,6 +44,14 @@ namespace uam::runtime_orch_impl
 			chats.push_back(std::move(live.second));
 
 		app.chats = ChatDomainService().DeduplicateChatsById(std::move(chats));
+		// Every chat list read from disk passes here, so an excluded provider's chats are set aside once for the whole app.
+		for (ChatSession& hidden : uam::excluded_provider_data::TakeChats(app.chats))
+		{
+			const auto existing = std::ranges::find(app.excluded_provider_chats, hidden.id, &ChatSession::id);
+			if (existing == app.excluded_provider_chats.end()) app.excluded_provider_chats.push_back(std::move(hidden));
+			else *existing = std::move(hidden);
+		}
+		uam::excluded_provider_data::RemoveRunsOfHiddenChats(app.agent_runs, app.excluded_provider_chats);
 		ChatBranching::Normalize(app.chats);
 		ChatDomainService().NormalizeChatFolderAssignments(app);
 		std::ranges::stable_partition(app.chats, [](const ChatSession& chat) { return chat.agent_run_id.empty(); });

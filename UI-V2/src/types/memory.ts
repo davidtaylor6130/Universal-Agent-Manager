@@ -1,6 +1,6 @@
 export type MemoryScopeType = 'all' | 'global' | 'folder'
 export type MemoryEntryTargetScopeType = 'global' | 'folder'
-export type MemoryLevel = 'off' | 'strict' | 'balanced' | 'open'
+export type MemoryLevel = 'default' | 'off' | 'readOnly' | 'strict' | 'balanced' | 'open'
 export const MEMORY_LEVEL_OPTIONS: Array<{ id: MemoryLevel; label: string; detail: string }> = [
   { id: 'off', label: 'Off', detail: 'Do not create automatic memories.' },
   { id: 'strict', label: 'Strict', detail: 'Save only critical, high-confidence durable memories.' },

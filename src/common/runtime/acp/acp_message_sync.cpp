@@ -43,7 +43,7 @@ bool AppendThoughtChunk(ChatSession& chat, AcpSessionState& session, const std::
 	return true;
 }
 
-std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk)
+std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk, const std::string& identity)
 {
 	if (chunk.empty())
 	{
@@ -51,12 +51,15 @@ std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, co
 	}
 
 	std::string current_assistant_text;
-	if (const Message* current_message = CurrentAssistantMessage(chat, session))
+	if (identity.empty())
 	{
-		current_assistant_text = current_message->content;
+		if (const Message* current_message = CurrentAssistantMessage(chat, session))
+			current_assistant_text = current_message->content;
 	}
 
-	const std::string delta = AssistantDeltaForIncomingText(session, current_assistant_text, chunk);
+	// Identified native chunks are incremental; explicit load replay was consumed by the caller.
+	const std::string delta = identity.empty()
+	    ? AssistantDeltaForIncomingText(session, current_assistant_text, chunk) : chunk;
 	if (delta.empty())
 	{
 		return "";
@@ -76,9 +79,10 @@ std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, co
 	{
 		session.turn_assistant_message_index = session.current_assistant_message_index;
 	}
-	AppendAssistantTextTurnEvent(session, delta);
+	AppendAssistantTextTurnEvent(session, delta, identity);
 	(void)SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
-	return delta;
+	// Quarantined summary chunks are saved above, but must not enter the plain-text fast stream.
+	return !session.turn_events.empty() && session.turn_events.back().type == "context_compaction_summary" ? std::string{} : delta;
 }
 
 ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call)
@@ -101,6 +105,8 @@ ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call)
 	persisted.is_sub_agent = tool_call.is_sub_agent;
 	persisted.sub_agent_id = tool_call.sub_agent_id;
 	persisted.sub_agent_title = tool_call.sub_agent_title;
+	persisted.sub_agent_children = tool_call.sub_agent_children;
+	persisted.sub_agent_children_authoritative = tool_call.sub_agent_children_authoritative;
 	return persisted;
 }
 
@@ -140,9 +146,26 @@ bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& sess
 	}
 
 	bool changed = false;
-	for (const AcpToolCallState& tool_call : session.tool_calls)
+	const double now = GetAppTimeSeconds();
+	for (std::size_t index = 0; index < session.tool_calls.size(); ++index)
 	{
+		AcpToolCallState& tool_call = session.tool_calls[index];
 		if (tool_call.id.empty()) continue;
+		// Every provider's tool calls reach this sink. Feed each finished call to the stream watch once, after a later
+		// call has started, so a result that arrives in a later update is the one hashed.
+		if (!tool_call.stream_watch_observed)
+		{
+			const bool finished = !uam::strings::IsBlank(tool_call.status) && !uam::acp_statuses::IsActiveStatus(tool_call.status);
+			if (tool_call.stream_watch_started_s == 0.0) tool_call.stream_watch_started_s = finished ? -1.0 : now;
+			if (finished && tool_call.stream_watch_finished_s == 0.0) tool_call.stream_watch_finished_s = now;
+			if (finished && index + 1 < session.tool_calls.size())
+			{
+				tool_call.stream_watch_observed = true;
+				const double duration = tool_call.stream_watch_started_s < 0.0 ? -1.0 : tool_call.stream_watch_finished_s - tool_call.stream_watch_started_s;
+				session.stream_watch.ObserveTool(uam::strings::NonEmptyOrFallback(tool_call.title, tool_call.kind), tool_call.args_json, tool_call.content,
+				                                 duration, tool_call.stream_watch_finished_s);
+			}
+		}
 		Message* message = nullptr;
 		const std::unordered_map<std::string, int>::const_iterator owner = session.tool_call_message_indices.find(tool_call.id);
 		if (owner != session.tool_call_message_indices.end())

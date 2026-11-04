@@ -1,0 +1,28 @@
+services:
+  processing-node:
+    profiles: [processing-node]
+    build:
+      context: ../..
+      dockerfile: deploy/processing-node/Dockerfile
+    init: true
+    ports:
+      - "127.0.0.1:${UAM_SSH_PORT:-2222}:22"
+    volumes:
+      - home:/home/uam
+      - host-keys:/var/lib/uam-host-keys
+      - type: bind
+        source: ${UAM_AUTHORIZED_KEYS:?Set UAM_AUTHORIZED_KEYS to a public authorized_keys file}
+        target: /run/uam-authorized-keys
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${UAM_WORKSPACE_DIR:?Set UAM_WORKSPACE_DIR to the project directory}
+        target: /workspace
+        bind:
+          create_host_path: false
+    restart: "no"
+
+volumes:
+  home:
+  host-keys:

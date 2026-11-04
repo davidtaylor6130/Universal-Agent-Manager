@@ -1,0 +1,161 @@
+/* Settings shell: the active item's tint and its straight accent line glide together between items. */
+.uam-settings-nav { position: relative; }
+.uam-settings-nav__indicator {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  border-radius: var(--r-md);
+  background: var(--accent-dim);
+  pointer-events: none;
+  /* Transform only: the height is set once per item size and never animates. */
+  transition: transform var(--dur-enter) var(--ease-out-soft);
+}
+/* Straight 3px line inset 8px from the item's top and bottom, so it sits inside the rounded edges. */
+.uam-settings-nav__indicator::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  background: var(--accent);
+}
+.uam-settings-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.uam-settings-page-header__title { font-size: var(--fs-lg); font-weight: var(--fw-semibold); }
+.uam-settings-page-header__description { margin-top: 2px; font-size: var(--fs-xs); color: var(--text-3); }
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-settings-nav__indicator { transition: none; }
+}
+
+/* Memory library: loading and error states share one calm block. */
+.uam-memory-state {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-up);
+}
+
+/* Page frame: header and content travel together, centred both ways; wide pages grow to the space available and scroll vertically. */
+.uam-settings-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable both-edges; display: flex; flex-direction: column; padding: var(--sp-6) var(--sp-6) var(--sp-8); }
+.uam-settings-frame { width: 100%; max-width: 960px; margin-inline: auto; }
+.uam-settings-frame > .uam-settings-page-header { margin-bottom: var(--sp-5); }
+/* Full-height store pages (Skills, Memory store) fill the content pane: no 960px column, title band spaced like a section head. */
+.uam-settings-frame--full { max-width: none; }
+.uam-settings-frame--full > .uam-settings-page-header { margin-bottom: var(--sp-2); }
+
+/* ── Settings language (SettingsPrimitives) ─────────────────── */
+.uam-set-section { display: grid; gap: var(--sp-2); margin-bottom: var(--sp-6); animation: uam-set-in var(--dur-enter) var(--ease-out-soft) backwards; }
+.uam-set-section:nth-child(2) { animation-delay: 30ms; } .uam-set-section:nth-child(3) { animation-delay: 60ms; } .uam-set-section:nth-child(n+4) { animation-delay: 90ms; }
+.uam-set-section__head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-3); padding-inline: 2px; }
+.uam-set-section__title { font-size: var(--fs-xs); font-weight: var(--fw-semibold); letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); }
+.uam-set-section__desc { margin-top: 2px; font-size: var(--fs-xs); color: var(--text-3); line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.uam-set-section__actions { display: flex; align-items: center; gap: var(--sp-1); flex-shrink: 0; }
+.uam-set-card { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); padding: 2px var(--sp-4); }
+.uam-set-card--flush { padding: 0; overflow: hidden; }
+.uam-set-card > .uam-set-field { padding-block: var(--sp-3); }
+.uam-set-card > .uam-set-field + .uam-set-field, .uam-set-card > .uam-set-row + .uam-set-field, .uam-set-card > .uam-set-field + .uam-set-row { border-top: 1px solid var(--border); }
+.uam-set-row { padding-block: var(--sp-3); }
+.uam-set-row + .uam-set-row { border-top: 1px solid var(--border); }
+.uam-set-row__main { display: flex; align-items: center; gap: var(--sp-3); min-height: 32px; }
+.uam-set-row__main > .min-w-0 { flex: 1; }
+.uam-set-row__icon { display: inline-flex; color: var(--text-2); flex-shrink: 0; }
+.uam-set-row__title { display: block; font-size: var(--fs-base); font-weight: var(--fw-medium); color: var(--text); }
+.uam-set-row__desc { margin-top: 2px; font-size: var(--fs-xs); color: var(--text-3); line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.uam-set-row__status { margin-top: var(--sp-1);font-size: var(--fs-xs); color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+.uam-set-row__control { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; max-width: 55%; }
+.uam-set-row__control > select, .uam-set-row__control > .uam-menu-select, .uam-set-row__control > input:not([type="checkbox"]) { min-width: 220px; }
+.uam-set-row__extra { margin-top: var(--sp-3); }
+.uam-set-row__extra:empty { display: none; }
+.uam-set-field { display: grid; gap: 6px; align-content: start; }
+.uam-set-field__label { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-2); }
+.uam-set-field__hint { font-size: var(--fs-xs); color: var(--text-3); }
+@container (max-width: 560px) { .uam-set-row__main { flex-wrap: wrap; } .uam-set-row__control { max-width: none; width: 100%; } }
+@keyframes uam-set-in { from { opacity: 0; transform: translateY(4px); } }
+.uam-set-skeleton { height: 10px; border-radius: 5px; background: linear-gradient(90deg, var(--surface-up) 0%, var(--surface-high) 50%, var(--surface-up) 100%); background-size: 200% 100%; animation: uam-set-shimmer 1.2s ease-in-out infinite; }
+.uam-set-skeleton--thin { height: 8px; opacity: .7; }
+.uam-set-skeleton--label { width: 120px; height: 8px; margin: 0 2px 2px; }
+.uam-set-skeleton--control { width: 34px; height: 19px; border-radius: 999px; }
+@keyframes uam-set-shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .uam-set-section, .uam-set-skeleton { animation: none; } }
+/* Legacy SectionCard bodies: same card, stacked content on a 14px rhythm. */
+.uam-set-body { display: grid; gap: 14px; padding: 14px var(--sp-4); }
+.uam-set-body--flat { padding: 0; }
+.uam-set-body > .uam-set-row { padding-block: 0; }
+.uam-set-body > .uam-set-row + .uam-set-row { padding-top: 14px; }
+/* Provider pages: one provider shown flat (no disclosure), status bar on top. */
+.uam-provider-flat { display: grid; gap: var(--sp-3); padding: var(--sp-4); }
+.uam-provider-flat__bar { display: flex; align-items: center; gap: var(--sp-2); min-height: 28px; }
+.uam-provider-flat__body { display: grid; gap: var(--sp-3); }
+
+/* Settings page cross-fade (SettingsPageSwap): the outgoing page fades out over 120ms; the layout never moves. */
+.uam-settings-swap { position: relative; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.uam-settings-swap > .uam-settings-page { flex: 1 1 auto; min-height: 0; }
+.uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { position: absolute; inset: 0; pointer-events: none; animation: uam-settings-leave var(--dur-fast) var(--ease) forwards; }
+@keyframes uam-settings-leave { to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { display: none; } }
+:root[data-motion="off"] .uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { display: none; }
+
+/* Appearance: theme swatch grid. Tiles preview each theme's background, surface, text and accent. */
+.uam-theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: var(--sp-2); width: 100%; padding-block: var(--sp-1); }
+.uam-theme-tile { display: grid; gap: 6px; min-width: 0; padding: 6px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-up); color: var(--text-2); text-align: left; cursor: pointer; transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
+.uam-theme-tile:hover { border-color: var(--border-bright); }
+.uam-theme-tile:active { transform: scale(.98); }
+.uam-theme-tile:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
+.uam-theme-tile[data-selected] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--accent); color: var(--text); }
+.uam-theme-tile__preview { display: block; height: 46px; padding: 6px; border-radius: var(--r-sm); border: 1px solid var(--border); overflow: hidden; }
+.uam-theme-tile__surface { display: flex; align-items: center; gap: 5px; height: 100%; padding: 0 6px; border-radius: 3px; }
+.uam-theme-tile__line { display: block; flex: 1; max-width: 56%; height: 4px; border-radius: 2px; }
+.uam-theme-tile__dot { display: block; flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.uam-theme-tile__label { overflow: hidden; font-size: var(--fs-xs); font-weight: var(--fw-medium); text-overflow: ellipsis; white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { .uam-theme-tile { transition: none; } }
+.uam-native-scope { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.uam-native-scope__chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; font-size: var(--fs-xs); color: var(--text-2); }
+.uam-native-scope__chip[data-issues] { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); }
+.uam-native-scope__count { min-width: 16px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, var(--warning) 22%, transparent); color: var(--warning); font-size: var(--fs-xs); font-weight: var(--fw-medium); text-align: center; line-height: 16px; }
+.uam-native-notes { margin: 0; padding: var(--sp-1) 0 var(--sp-3) 18px; font-size: var(--fs-xs); color: var(--text-3); line-height: 1.6; }
+.uam-native-issues { display: grid; gap: var(--sp-2); margin: 0; padding: var(--sp-1) 0 var(--sp-3); list-style: none; font-size: var(--fs-xs); }
+.uam-native-issues > li { display: grid; grid-template-columns: 120px 1fr; column-gap: var(--sp-3); align-items: baseline; }
+.uam-native-issues__provider { display: inline-flex; align-items: center; gap: 6px; color: var(--text); font-weight: var(--fw-medium); }
+.uam-native-issues__reason { color: var(--text-2); }
+.uam-native-issues__ids { grid-column: 2; margin-top: 2px; }
+.uam-native-issues__ids > summary { cursor: pointer; color: var(--text-3); }
+.uam-native-issues__ids ul { margin: 4px 0 0; padding: 0; list-style: none; max-height: 160px; overflow: auto; }
+.uam-native-issues__ids code { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); }
+.uam-native-issues__ids > summary::-webkit-details-marker { display: none; }
+.uam-native-issues__ids > summary { list-style: none; text-decoration: underline; text-underline-offset: 2px; }
+[data-motion="off"] .uam-settings-nav__indicator { transition: none; }
+
+/* Every item stacked in a card is separated by one divider, even when wrapped (Reveal, AnimatedRows, lists).
+   Direct text children (empty states) get row height so cards never collapse into a thin pill. */
+.uam-set-card:not(.uam-set-card--flush) > :where(* + *) { border-top: 1px solid var(--border); }
+.uam-set-card > :where(p, span), .uam-set-card > .uam-presence > :where(p:only-child) { display: block; padding-block: var(--sp-3); margin: 0; }
+.uam-set-section__head { min-height: 32px; align-items: center; }
+/* Rows wrapped in Reveal/AnimatedRows still get the row divider (non-flush cards use the card items rule below). */
+:is(.uam-set-row, .uam-presence) + .uam-presence > .uam-set-row:first-child:not(.uam-set-card:not(.uam-set-card--flush) *),
+.uam-presence + .uam-set-row { border-top: 1px solid var(--border); }
+
+/* Card items (non-flush cards): every item is one row on the card's inset (the same as SettingRow labels), with one divider
+   from the item before it, however Reveal wrappers or plain grids nest it. Disclosures nested in a disclosure or in a row's
+   extra area, and notices or rows in a row's extra area, keep their own layout. */
+/* Anything inside a row (its status Reveal, control Reveals, extra content) or inside a field is not a card item: no divider. */
+.uam-set-card:not(.uam-set-card--flush) :is(.uam-set-row, .uam-set-field, .uam-presence, .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure)):not(:first-child, .uam-set-row *, .uam-set-field *, .uam-set-fields *) { border-top: 1px solid var(--border); }
+/* A multi-column row of fields is one card item: no divider between its columns, sp-3 above and below
+   (nested in a stacked form, the form's gap spaces it instead). */
+.uam-set-card > .uam-set-fields { padding-block: var(--sp-3); }
+/* Footer action row (Preview, Import): right-aligned on the card inset with sp-3 below, so the button never touches the card edge;
+   as its own card item it also gets sp-3 above its divider. */
+.uam-set-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--sp-2); padding-bottom: var(--sp-3); }
+.uam-set-card > .uam-set-actions { padding-top: var(--sp-3); }
+/* Disclosure trigger = full row: SettingRow height (32px + sp-3 each side), chevron on the label edge, label fills the row so a right-hand value sits at the card edge. */
+.uam-set-card:not(.uam-set-card--flush) .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure) > .uam-disclosure__summary { padding-block: var(--sp-3); }
+.uam-set-card:not(.uam-set-card--flush) .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure) > .uam-disclosure__summary > .uam-disclosure__label { flex: 1; min-width: 0; min-height: 32px; }
+.uam-set-card:not(.uam-set-card--flush) .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure) > .uam-disclosure__summary > .uam-disclosure__chevron { margin-left: -5px; }
+/* Open content sits under a divider; its rows bring their own padding, other content adds sp-3 itself. */
+.uam-set-card:not(.uam-set-card--flush) .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure)[data-open] > .uam-disclosure__panel > .uam-disclosure__inner { border-top: 1px solid var(--border); }
+/* A notice in a card is its own padded row: sp-3 above and below, on the card's inset, never touching a divider or the card edge. */
+.uam-set-card:not(.uam-set-card--flush) .uam-notice:not(.uam-set-row__extra *) { margin-block: var(--sp-3); }

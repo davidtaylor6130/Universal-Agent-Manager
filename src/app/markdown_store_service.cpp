@@ -1,4 +1,5 @@
 #include "app/markdown_store_service.h"
+#include "common/provider/provider_ids.h"
 
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
@@ -679,18 +680,31 @@ std::vector<MarkdownStoreService::ImportSource> MarkdownStoreService::DefaultImp
 			if (uam::paths::PathExistsNoThrow(path)) sources.push_back({provider, path});
 		}
 	};
+	// Only providers in this build are offered as import sources; excluded providers' folders are never read.
 	const std::optional<fs::path> home = PlatformServicesFactory::Instance().path_service.ResolveUserHomePath();
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
 	if (const auto configured = uam::env::GetTrimmedPath("CODEX_HOME")) add("codex", *configured, {"skills", "prompts"});
 	else if (home) add("codex", *home / ".codex", {"skills", "prompts"});
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	if (const auto configured = uam::env::GetTrimmedPath("CLAUDE_CONFIG_DIR")) add("claude-code", *configured, {"commands", "skills"});
 	else if (home) add("claude-code", *home / ".claude", {"commands", "skills"});
-	if (const auto configured = uam::env::GetTrimmedPath("GEMINI_CLI_HOME")) add("gemini-cli", *configured, {"commands", "skills"});
-	else if (const auto configured = uam::env::GetTrimmedPath("GEMINI_HOME")) add("gemini-cli", *configured, {"commands", "skills"});
-	else if (home) add("gemini-cli", *home / ".gemini", {"commands", "skills"});
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	if (const auto configured = uam::env::GetTrimmedPath("GEMINI_CLI_HOME")) add(uam::provider_ids::kGeminiCli, *configured, {"commands", "skills"});
+	else if (const auto configured = uam::env::GetTrimmedPath("GEMINI_HOME")) add(uam::provider_ids::kGeminiCli, *configured, {"commands", "skills"});
+	else if (home) add(uam::provider_ids::kGeminiCli, *home / ".gemini", {"commands", "skills"});
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	if (const auto configured = uam::env::GetTrimmedPath("XDG_CONFIG_HOME")) add("opencode", *configured / "opencode", {"commands", "skills"});
 	else if (home) add("opencode", *home / ".config" / "opencode", {"commands", "skills"});
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
 	if (const auto configured = uam::env::GetTrimmedPath("COPILOT_HOME")) add("github-copilot", *configured, {"commands", "prompts", "skills"});
 	else if (home) add("github-copilot", *home / ".copilot", {"commands", "prompts", "skills"});
+#endif
+	(void)add;
+	(void)home;
 	return sources;
 }
 

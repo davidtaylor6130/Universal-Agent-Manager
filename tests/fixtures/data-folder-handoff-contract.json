@@ -1,0 +1,147 @@
+{
+  "version": 1,
+  "task": "task-1629",
+  "kind": "native-disposable-test-contract",
+  "liveProfileAllowed": false,
+  "sourceSentinels": [
+    "chats/synthetic.json",
+    "chats/synthetic.json.bak",
+    "chat-summaries/synthetic.json",
+    "queue-outboxes/synthetic.json",
+    "memory/knowledge.md",
+    "agent-runs/synthetic.json",
+    "usage/synthetic.json",
+    "recovery/synthetic.json",
+    "settings.txt",
+    "settings.txt.bak",
+    "folders.txt",
+    "resource_collections.json"
+  ],
+  "neverCopy": [
+    ".data-folder-control",
+    ".uam-data-root.lock",
+    ".uam-data-writers.lock"
+  ],
+  "scenarios": [
+    {
+      "name": "confirmed-handoff",
+      "fault": "none",
+      "state": "destinationActive",
+      "authority": "destination",
+      "retainSource": true,
+      "holdBothLocks": true,
+      "mayReplayCopiedQueues": false,
+      "test": "DataFolderTransferConfirmedHandoff"
+    },
+    {
+      "name": "destination-locked",
+      "fault": "foreign-destination-owner",
+      "state": "held",
+      "authority": "source",
+      "retainSource": true,
+      "holdBothLocks": false,
+      "mayReplayCopiedQueues": false,
+      "test": "DataFolderTransferDestinationLocked"
+    },
+    {
+      "name": "destination-not-empty",
+      "fault": "foreign-entry",
+      "state": "blocked",
+      "authority": "source",
+      "retainSource": true,
+      "holdBothLocks": false,
+      "mayReplayCopiedQueues": false,
+      "test": "DataFolderTransferDestinationNotEmpty"
+    },
+    {
+      "name": "source-changes-after-freeze",
+      "fault": "changed-inventory",
+      "state": "held",
+      "authority": "source",
+      "retainSource": true,
+      "holdBothLocks": true,
+      "mayReplayCopiedQueues": false,
+      "test": "DataFolderTransferSourceChangesAfterFreeze"
+    },
+    {
+      "name": "link-in-inventory",
+      "fault": "external-link",
+      "state": "blocked",
+      "authority": "source",
+      "retainSource": true,
+      "holdBothLocks": true,
+      "mayReplayCopiedQueues": false,
+      "test": "DataFolderTransferLinkInInventory"
+    },
+    {
+      "name": "crash-after-copy",
+      "fault": "staged-without-commit",
+      "state": "passiveStage",
+      "authority": "source",
+      "retainSource": true,
+      "holdBothLocks": true,
+      "mayReplayCopiedQueues": false,
+      "test": "DataFolderTransferCrashAfterCopyLeavesPassiveStage"
+    },
+    {
+      "name": "unknown-activation-publication",
+      "fault": "directory-confirmation-unknown",
+      "state": "held",
+      "authority": "unconfirmed",
+      "retainSource": true,
+      "holdBothLocks": true,
+      "mayReplayCopiedQueues": false,
+      "test": "DataFolderTransferUnknownActivationPublication"
+    },
+    {
+      "name": "unknown-destination-start",
+      "fault": "lost-start-acknowledgement",
+      "state": "held",
+      "authority": "unconfirmed",
+      "retainSource": true,
+      "holdBothLocks": true,
+      "mayReplayCopiedQueues": false,
+      "test": "DataFolderTransferUnknownDestinationStart"
+    },
+    {
+      "name": "retained-queue-memory-receipts",
+      "fault": "none",
+      "state": "destinationActive",
+      "authority": "destination",
+      "retainSource": true,
+      "holdBothLocks": true,
+      "mayReplayCopiedQueues": false,
+      "test": "DataFolderTransferRetainedQueueMemoryReceipts"
+    },
+    {
+      "name": "rollback-before-activation",
+      "fault": "confirmed-preactivation-cancel",
+      "state": "sourceActive",
+      "authority": "source",
+      "retainSource": true,
+      "holdBothLocks": true,
+      "mayReplayCopiedQueues": false,
+      "test": "DataFolderTransferRollbackBeforeActivation"
+    },
+    {
+      "name": "rollback-after-possible-writes",
+      "fault": "destination-may-have-written",
+      "state": "held",
+      "authority": "unconfirmed",
+      "retainSource": true,
+      "holdBothLocks": true,
+      "mayReplayCopiedQueues": false,
+      "test": "DataFolderTransferRollbackAfterPossibleWrites"
+    },
+    {
+      "name": "unsupported-external-reference",
+      "fault": "unreconciled-managed-worktree-or-resource",
+      "state": "blocked",
+      "authority": "source",
+      "retainSource": true,
+      "holdBothLocks": true,
+      "mayReplayCopiedQueues": false,
+      "test": "DataFolderTransferUnsupportedExternalReference"
+    }
+  ]
+}

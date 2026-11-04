@@ -31,7 +31,13 @@ bool NativeChatMatchesPreferredSyncId(const ChatSession& chat, std::string_view 
 void RemoveMissingChatIds(const AppState& app, std::unordered_set<std::string>& chat_ids);
 /// <summary>Restores selection and loads its transcript; returns false if history cannot be loaded.</summary>
 bool FinalizeChatSyncSelection(AppState& app, std::string_view selected_before, std::string_view preferred_chat_id, bool preserve_selection = false);
-bool SyncChatsFromLoadedNative(AppState& app, std::vector<ChatSession> native_chats, std::string_view preferred_chat_id, bool preserve_selection = false);
+// Borrowed caller snapshots remain untouched if bounded media admission defers.
+// Temporary caller-created snapshots do not acquire worker-retirement authority.
+bool SyncChatsFromLoadedNative(AppState& app, const std::vector<ChatSession>& native_chats, std::string_view preferred_chat_id, bool preserve_selection = false);
+bool SyncChatsFromLoadedNative(AppState& app, std::vector<ChatSession>&& native_chats, std::string_view preferred_chat_id, bool preserve_selection = false,
+    std::shared_ptr<platform::AsyncNativeChatLoadTask::State> owner = {}, std::string_view digest = {}, std::shared_ptr<CliTerminalHistoryGeneration> producer = {});
 bool SyncChatsFromNative(AppState& app, std::string_view preferred_chat_id, bool preserve_selection = false);
+/// Final close/exit reconciliation carries its exact terminal instead of authorizing a target ID alone.
+bool SyncChatsFromFinalCliTerminal(AppState& app, const CliTerminalState& terminal, bool wait_for_stop = false);
 
 } // namespace uam

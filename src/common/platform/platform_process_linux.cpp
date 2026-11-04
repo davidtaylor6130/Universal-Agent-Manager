@@ -7,6 +7,7 @@
 #include <csignal>
 #include <cstring>
 #include <fcntl.h>
+#include <poll.h>
 #include <random>
 #include <sys/wait.h>
 #include <thread>
@@ -76,6 +77,26 @@ namespace uam::platform_linux_impl
 		class LinuxProcessService final : public IPlatformProcessService
 		{
 		  public:
+			uam::platform::StandardInputReadResult ReadStandardInput(char* buffer, std::size_t capacity) const override
+			{
+				using uam::platform::StandardInputReadStatus;
+				if (buffer == nullptr || capacity == 0) return {};
+				pollfd input{STDIN_FILENO, POLLIN, 0};
+				const int ready = poll(&input, 1, 0);
+				if (ready == 0 || (ready < 0 && errno == EINTR))
+					return {StandardInputReadStatus::Pending, 0};
+				if (ready < 0 || (input.revents & (POLLERR | POLLNVAL)) != 0) return {};
+				if ((input.revents & (POLLIN | POLLHUP)) == 0)
+					return {StandardInputReadStatus::Pending, 0};
+				// Sole consumer: a ready redirected pipe cannot be drained by a competing reader.
+				const ssize_t count = read(STDIN_FILENO, buffer, capacity);
+				if (count > 0) return {StandardInputReadStatus::Data, static_cast<std::size_t>(count)};
+				if (count == 0) return {StandardInputReadStatus::EndOfStream, 0};
+				if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+					return {StandardInputReadStatus::Pending, 0};
+				return {};
+			}
+
 			bool SupportsDetachedProcesses() const override { return true; }
 			bool PopulateLocalTime(std::time_t value, std::tm* output) const override
 			{
@@ -104,10 +125,11 @@ namespace uam::platform_linux_impl
 			    const std::vector<std::string>& argv, std::string* error_out,
 			    const std::vector<std::pair<std::string, std::string>>& environment) const override
 			{
-				if (argv.empty() || argv.front().empty() || !working_directory.is_absolute() ||
-				    !std::filesystem::is_directory(working_directory))
+				// An empty working directory inherits the current one, matching macOS and Windows.
+				if (argv.empty() || argv.front().empty() || (!working_directory.empty() &&
+				    (!working_directory.is_absolute() || !std::filesystem::is_directory(working_directory))))
 				{
-					if (error_out != nullptr) *error_out = "A valid command and absolute working directory are required.";
+					if (error_out != nullptr) *error_out = "A valid command and an empty or absolute working directory are required.";
 					return false;
 				}
 				for (const auto& [name, value] : environment)
@@ -118,6 +140,11 @@ namespace uam::platform_linux_impl
 						if (error_out != nullptr) *error_out = "Invalid process environment override.";
 						return false;
 					}
+				}
+				if (process.deferred_reap_complete && !process.deferred_reap_complete->load(std::memory_order_acquire))
+				{
+					if (error_out != nullptr) *error_out = "The previous process exit has not been observed.";
+					return false;
 				}
 				int input[2] = {-1, -1};
 				int output[2] = {-1, -1};
@@ -147,7 +174,7 @@ namespace uam::platform_linux_impl
 				if (child == 0)
 				{
 					(void)setpgid(0, 0);
-					if (chdir(working_directory.c_str()) != 0 ||
+					if ((!working_directory.empty() && chdir(working_directory.c_str()) != 0) ||
 					    dup2(input[0], STDIN_FILENO) < 0 ||
 					    dup2(output[1], STDOUT_FILENO) < 0 ||
 					    dup2(diagnostic[1], STDERR_FILENO) < 0)
@@ -174,6 +201,7 @@ namespace uam::platform_linux_impl
 				process.stdout_read_fd = output[0];
 				process.stderr_read_fd = diagnostic[0];
 				process.child_pid = child;
+				process.deferred_reap_complete.reset();
 				for (const int descriptor : {process.stdout_read_fd, process.stderr_read_fd})
 				{
 					const int flags = fcntl(descriptor, F_GETFL, 0);
@@ -222,6 +250,28 @@ namespace uam::platform_linux_impl
 				return process.stdin_writer != nullptr &&
 				       process.stdin_writer->Enqueue(bytes, size, error_out);
 			}
+			bool WriteToStdioProcessObserved(uam::platform::StdioProcessPlatformFields& process,
+			    const char* bytes, std::size_t len,
+			    std::shared_ptr<const uam::platform::AsyncByteWriter::EnqueueReceipt>& receipt_out,
+			    std::string* error_out = nullptr) const override
+			{
+				receipt_out.reset();
+				if (bytes == nullptr || len == 0)
+				{
+					if (error_out) *error_out = "An observed input write requires nonempty bytes.";
+					return false;
+				}
+				if (process.stdin_write_fd < 0)
+				{
+					if (error_out) *error_out = "stdin pipe handle is closed.";
+					return false;
+				}
+				if (process.stdin_writer == nullptr)
+					process.stdin_writer = CreateWriter(process.stdin_write_fd, error_out);
+				const std::shared_ptr<uam::platform::AsyncByteWriter> writer = process.stdin_writer;
+				return writer != nullptr && writer->EnqueueObserved(bytes, len, receipt_out, error_out);
+			}
+
 			void CloseStdioProcessInput(uam::platform::StdioProcessPlatformFields& process) const override
 			{
 				if (process.stdin_writer != nullptr)
@@ -256,12 +306,21 @@ namespace uam::platform_linux_impl
 					signal_process(SIGKILL);
 					(void)wait_bounded();
 				}
-				if (waitpid(child, &status, WNOHANG) == 0)
-					std::thread([child]
+				const pid_t final_result = waitpid(child, &status, WNOHANG);
+				if (final_result == 0 || (final_result < 0 && errno != ECHILD))
+				{
+					process.deferred_reap_complete = std::make_shared<std::atomic<bool>>(false);
+					const std::shared_ptr<std::atomic<bool>> completion = process.deferred_reap_complete;
+					std::thread([child, completion]
 					{
 						int child_status = 0;
-						while (waitpid(child, &child_status, 0) < 0 && errno == EINTR) {}
+						pid_t result;
+						do { result = waitpid(child, &child_status, 0); } while (result < 0 && errno == EINTR);
+						if (result == child || (result < 0 && errno == ECHILD))
+							completion->store(true, std::memory_order_release);
 					}).detach();
+				}
+
 				process.child_pid = -1;
 			}
 			void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process,
@@ -285,7 +344,8 @@ namespace uam::platform_linux_impl
 			bool PollStdioProcessExited(uam::platform::StdioProcessPlatformFields& process,
 			                            int* exit_code_out) const override
 			{
-				if (process.child_pid <= 0) return true;
+				if (process.child_pid <= 0)
+					return !process.deferred_reap_complete || process.deferred_reap_complete->load(std::memory_order_acquire);
 				int status = 0;
 				const pid_t result = waitpid(process.child_pid, &status, WNOHANG);
 				if (result == 0) return false;

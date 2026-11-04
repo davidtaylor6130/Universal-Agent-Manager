@@ -8,18 +8,22 @@
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_ids.h"
+#include "common/provider/provider_text_worker.h"
 #include "common/runtime/acp/acp_json_rpc.h"
+#include "common/runtime/structured_framing.h"
 #include "common/runtime/acp/acp_permissions.h"
 #include "common/runtime/acp/acp_statuses.h"
 #include "common/runtime/acp/acp_tool_kinds.h"
 #include "common/runtime/acp/acp_tool_items.h"
 #include "common/security/command_safety.h"
+#include "common/security/read_only_command.h"
 #include "common/utils/sensitive_text.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <map>
 #include <optional>
@@ -37,6 +41,36 @@ namespace
 	constexpr std::size_t kPermissionReviewReasonLimit = 512;
 	constexpr int kPermissionReviewTimeoutMs = 20'000;
 	constexpr std::size_t kMaxQueuedPermissions = 64;
+	bool PermissionFitsPlanCeiling(const AcpSessionState& session, const AcpPendingPermissionState& pending);
+
+	std::string AiReviewOneTimeOptionId(const AcpPendingPermissionState& pending)
+	{
+		for (const AcpPermissionOptionState& option : pending.options)
+		{
+			if (IsRejectPermissionOption(option.id, option.name, option.kind)) continue;
+			if (option.kind == "allow_once" ||
+			    ((uam::acp_permissions::IsCodexDecisionPermissionKind(pending.provider_request_kind) ||
+			      pending.provider_request_kind == uam::acp_permissions::kCodexPermissionsRequestKind) &&
+			     option.kind == uam::acp_permissions::kDecisionOptionKind && option.id == uam::acp_permissions::kAcceptDecision))
+			{
+				return option.id;
+			}
+		}
+		return {};
+	}
+
+	/// <summary>Rechecks current review ownership and access before launch or delivery of an asynchronous verdict.</summary>
+	bool ParentPermissionReviewAllowed(const AcpSessionState& session, const ChatSession& chat)
+	{
+		if (uam::command_safety::ParseTier(chat.command_safety_tier) != uam::command_safety::Tier::AiReview ||
+		    session.pending_permission.request_id_json.empty() ||
+		    (session.provider_id == uam::provider_ids::kClaudeCli && session.current_mode_id == uam::approval_modes::kProviderAutoApprovalMode) ||
+		    (session.provider_id == uam::provider_ids::kCodexCli && session.codex_approvals_reviewer == "auto_review") ||
+		    ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpPermissionRequiresUserDecision(session.pending_permission)) return false;
+		return (!(session.goal_review_turn || session.active_uam_agent_workspace_access == "read" ||
+		          uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode) ||
+		        PermissionFitsPlanCeiling(session, session.pending_permission));
+	}
 
 	std::string PermissionReviewReasonForDiagnostic(std::string_view reason)
 	{
@@ -44,21 +78,12 @@ namespace
 		return uam::sensitive::LooksSensitiveText(result) ? "Reviewer reason was hidden because it looked sensitive." : result;
 	}
 
-	std::string BuildPermissionReviewPrompt(const AcpPendingPermissionState& pending)
-	{
-		nlohmann::json request = {
-		    {"title", CapDiagnosticString(uam::strings::Trim(pending.title), 1024)},
-		    {"kind", CapDiagnosticString(uam::strings::Trim(pending.kind), 256)},
-		    {"content", CapDiagnosticString(uam::strings::Trim(pending.content), 12 * 1024)},
-		};
-		std::string prompt = "Review this single provider permission request. Return exactly one JSON object and no prose or markdown: {\"decision\":\"approve|deny|uncertain\",\"reason\":\"short reason\"}. Approve only when the shown operation is clearly safe and intended. Deny clearly unsafe or destructive operations. Use uncertain for missing context. Request:\n" + request.dump();
-		return CapDiagnosticString(prompt, kPermissionReviewInputLimit);
-	}
 
-	bool HasPermissionReviewTask(const AppState& app, std::string_view chat_id, std::string_view request_id_json)
+	bool HasPermissionReviewTask(const AppState& app, std::string_view chat_id, const AcpSessionState& session)
 	{
 		return std::ranges::any_of(app.permission_review_tasks, [&](const AsyncPermissionReviewTask& task) {
-			return task.chat_id == chat_id && task.request_id_json == request_id_json;
+			return task.chat_id == chat_id && task.request_id_json == session.pending_permission.request_id_json &&
+			       task.permission_review_incarnation == session.permission_review_incarnation;
 		});
 	}
 
@@ -71,44 +96,58 @@ namespace
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 	}
 
+	/// <summary>Record review provenance without retaining the permission payload or raw model output.</summary>
+	void AppendPermissionReviewDiagnostic(AcpSessionState& session, std::string_view status, std::string_view request_id, std::string_view reason, std::string_view source, bool model_completed, std::string_view provider_id = {}, std::string_view model_id = {})
+	{
+		const nlohmann::json detail = {
+		    {"source", source}, {"modelReviewCompleted", model_completed},
+		    {"reviewerProviderId", provider_id}, {"requestedModelId", model_id},
+		};
+		AppendAcpDiagnostic(session, "permission_review", std::string(status), "", std::string(request_id), false, 0, std::string(reason), detail.dump());
+	}
+
 	bool TryStartPermissionReview(AppState& app, AcpSessionState& session, const ChatSession& chat)
 	{
-		if (uam::command_safety::ParseTier(chat.command_safety_tier) != uam::command_safety::Tier::AiReview ||
-		    ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpPermissionRequiresUserDecision(session.pending_permission) ||
-		    session.pending_permission.request_id_json.empty() ||
-		    HasPermissionReviewTask(app, chat.id, session.pending_permission.request_id_json))
+		if (!ParentPermissionReviewAllowed(session, chat) ||
+		    HasPermissionReviewTask(app, chat.id, session))
 		{
 			return false;
 		}
 
 		const std::string provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(app.settings.permission_reviewer_provider_id);
+		const std::string prompt = BuildPermissionReviewPrompt(session.pending_permission);
+		if (prompt.empty())
+		{
+			AppendPermissionReviewDiagnostic(session, "input_not_reviewable", session.pending_permission.request_id_json, "AI Review could not read the complete request. Review it manually.", "deterministic_gate", false, provider_id, app.settings.permission_reviewer_model_id);
+			return false;
+		}
+		if (uam::sensitive::LooksSensitiveText(prompt))
+		{
+			AppendPermissionReviewDiagnostic(session, "sensitive_input", session.pending_permission.request_id_json, "AI Review left this request for the user because its content looked sensitive.", "deterministic_gate", false, provider_id, app.settings.permission_reviewer_model_id);
+			return false;
+		}
+
 		const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, provider_id);
 		if (provider == nullptr || !ProviderRuntime::IsRuntimeEnabled(*provider))
 		{
-			AppendAcpDiagnostic(session, "permission_review", "reviewer_unavailable", "", session.pending_permission.request_id_json, false, 0, "AI Review left this request for the user because no available reviewer provider is configured.");
+			AppendPermissionReviewDiagnostic(session, "reviewer_unavailable", session.pending_permission.request_id_json, "AI Review left this request for the user because no available reviewer provider is configured.", "deterministic_gate", false, provider_id, app.settings.permission_reviewer_model_id);
 			return false;
 		}
 
-		const std::string normalized_input = session.pending_permission.title + "\n" + session.pending_permission.kind + "\n" + session.pending_permission.content;
-		if (uam::sensitive::LooksSensitiveText(normalized_input))
-		{
-			AppendAcpDiagnostic(session, "permission_review", "sensitive_input", "", session.pending_permission.request_id_json, false, 0, "AI Review left this request for the user because its content looked sensitive.");
-			return false;
-		}
-
-		const std::string prompt = BuildPermissionReviewPrompt(session.pending_permission);
 		std::string launch_error;
 		ProviderWorkerInvocation invocation = BuildProviderWorkerInvocation(app, *provider, app.settings, prompt, app.settings.permission_reviewer_model_id, ProviderWorkerPathMode::BasePath, &launch_error);
 		if (invocation.Empty())
 		{
-			AppendAcpDiagnostic(session, "permission_review", "reviewer_unavailable", "", session.pending_permission.request_id_json, false, 0, "AI Review left this request for the user because the isolated reviewer could not start.");
+			AppendPermissionReviewDiagnostic(session, "reviewer_unavailable", session.pending_permission.request_id_json, "AI Review left this request for the user because the isolated reviewer could not start.", "deterministic_gate", false, provider_id, app.settings.permission_reviewer_model_id);
 			return false;
 		}
 
 		AsyncPermissionReviewTask task;
 		task.chat_id = chat.id;
 		task.request_id_json = session.pending_permission.request_id_json;
+		task.permission_review_incarnation = session.permission_review_incarnation;
 		task.command_preview = invocation.command_preview;
+		task.requested_model_id = app.settings.permission_reviewer_model_id;
 		task.state = std::make_shared<AsyncProcessTaskState>();
 		task.state->launch_time = std::chrono::steady_clock::now();
 		task.state->provider_id = provider->id;
@@ -118,12 +157,13 @@ namespace
 			state->completed = true;
 		});
 		app.permission_review_tasks.push_back(std::move(task));
-		AppendAcpDiagnostic(session, "permission_review", "started", "", session.pending_permission.request_id_json, false, 0, "AI Review started in an isolated text-only worker.");
+		AppendPermissionReviewDiagnostic(session, "started", session.pending_permission.request_id_json, "AI Review started in an isolated text-only worker.", "provider_worker", false, provider->id, app.settings.permission_reviewer_model_id);
 		return true;
 	}
 
-	bool PermissionFitsPlanCeiling(const AcpPendingPermissionState& pending)
+	bool PermissionFitsPlanCeiling(const AcpSessionState& session, const AcpPendingPermissionState& pending)
 	{
+		if (ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpPermissionIsNonActionQuestion(pending)) return true;
 		const std::string kind = uam::strings::ToLowerAscii(uam::strings::Trim(pending.kind));
 		if (kind == "read" || kind == "search" || kind == "fetch" || kind == "inspect" ||
 		    kind == "list" || kind == "query" || kind == "find")
@@ -132,23 +172,98 @@ namespace
 		}
 		if (kind == "commandexecution" || kind == "execute")
 		{
-			return uam::command_safety::ClassifyCommand(pending.content) ==
-			       uam::command_safety::RiskLevel::Allowed;
+			return uam::command_safety::IsReadOnlyCommand(pending.execution_command);
 		}
 		return false;
 	}
 }
 
-bool WriteAcpMessage(AcpSessionState& session, const nlohmann::json& message, std::string* error_out)
+/// <summary>Checks immutable captured restrictions before any manual or automatic response side effect.</summary>
+bool CapturedReadCeilingAllowsPermissionResponse(const AcpSessionState& session, const AcpPendingPermissionState& pending, const std::string& option_id, bool cancelled, std::string* error_out)
 {
-	std::string line = message.dump();
-	line.push_back('\n');
+	if (!(session.goal_review_turn || session.active_uam_agent_workspace_access == "read") || cancelled) return true;
+	const auto option = std::ranges::find(pending.options, option_id, &AcpPermissionOptionState::id);
+	if (option != pending.options.end())
+	{
+		const ProviderPermissionChoice choice = ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpPermissionChoice(pending, *option);
+		if (choice == ProviderPermissionChoice::Denied) return true;
+		if (choice == ProviderPermissionChoice::AllowedOnce && PermissionFitsPlanCeiling(session, pending)) return true;
+	}
+	if (error_out) *error_out = "This response exceeds the captured read-only access ceiling. Only supported one-time read approvals are available.";
+	return false;
+}
+
+// Exact native encoding proves the offered decision, payload, scope and request identity together.
+bool CapturedReadCeilingAllowsSavedPermissionResponse(const AcpSessionState& session, const AcpPendingPermissionState& pending, const nlohmann::json& response)
+{
+	if (!(session.goal_review_turn || session.active_uam_agent_workspace_access == "read")) return true;
+	if (pending.request_id_json.empty()) return false;
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+	if (response == runtime.OnAcpBuildPermissionResponse(session, pending, "", true)) return true;
+	if (uam::AcpSessionHasPendingCancel(session)) return false;
+	for (const AcpPermissionOptionState& option : pending.options)
+	{
+		if (CapturedReadCeilingAllowsPermissionResponse(session, pending, option.id, false, nullptr) &&
+		    response == runtime.OnAcpBuildPermissionResponse(session, pending, option.id, false)) return true;
+	}
+	return false;
+}
+
+std::string BuildPermissionReviewPrompt(const AcpPendingPermissionState& pending)
+{
+	if (pending.title.size() > 1024 || pending.kind.size() > 256 || pending.content.size() > 12 * 1024 ||
+	    pending.provider_request_method.size() > 256 || pending.provider_request_kind.size() > 256 ||
+	    pending.provider_input_json.size() > 12 * 1024 || pending.provider_request_params_json.size() > 12 * 1024 || pending.codex_approval_payload_json.size() > 12 * 1024) return {};
+	try
+	{
+		nlohmann::json request = {{"title", pending.title}, {"kind", pending.kind}, {"content", pending.content},
+		    {"providerMethod", pending.provider_request_method}, {"providerRequestKind", pending.provider_request_kind}};
+		const std::array<std::pair<const char*, const std::string*>, 3> originals{{
+		    {"providerInput", &pending.provider_input_json}, {"providerRequestParams", &pending.provider_request_params_json}, {"codexApprovalPayload", &pending.codex_approval_payload_json}}};
+		for (const std::pair<const char*, const std::string*>& original : originals)
+		{
+			if (original.second->empty()) continue;
+			nlohmann::json payload = nlohmann::json::parse(*original.second, nullptr, false);
+			if (payload.is_discarded() || (original.second != &pending.provider_input_json && !payload.is_object())) return {};
+			request[original.first] = std::move(payload);
+		}
+		const std::string prompt = "Review this single provider permission request. Return exactly one JSON object and no prose or markdown: {\"decision\":\"approve|deny|uncertain\",\"reason\":\"short reason\"}. Approve only when the shown operation is clearly safe and intended. Deny clearly unsafe or destructive operations. Use uncertain for missing context. Request:\n" + request.dump();
+		return prompt.size() <= kPermissionReviewInputLimit ? prompt : std::string{};
+	}
+	catch (const nlohmann::json::exception&)
+	{
+		return {};
+	}
+}
+
+std::string SerializeStructuredMessage(const AcpSessionState& session, const nlohmann::json& message)
+{
+	nlohmann::json native = message;
+	ProviderRuntimeRegistry::ResolveById(session.provider_id).PrepareStructuredMessage(native);
+	const std::string body = native.dump();
+	return session.protocol_kind == uam::provider_profile_constants::kProtocolCopilotSdk
+	    ? uam::structured_framing::Encode(body) : body + '\n';
+}
+
+bool WriteAcpMessage(AcpSessionState& session, const nlohmann::json& message, std::string* error_out,
+    std::shared_ptr<const platform::AsyncByteWriter::EnqueueReceipt>* sink_receipt,
+    std::string* exact_observed_bytes)
+{
+	if (sink_receipt) sink_receipt->reset();
+	if (exact_observed_bytes) exact_observed_bytes->clear();
+	if (const auto native = ProviderRuntimeRegistry::ResolveById(session.provider_id).TryWriteAcpOutOfBandMessage(session, message, error_out)) return *native;
+	const std::string line = SerializeStructuredMessage(session, message);
 
 	const std::string method = AcpMessageMethodForDiagnostics(message);
 	const std::string request_id = AcpMessageRequestIdForDiagnostics(message);
 	const std::string detail = AcpMessageDetailForDiagnostics(message);
 	std::string write_error;
-	if (!PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(session, line.data(), line.size(), &write_error))
+	// Capture the SAME serialization passed to the observed sink, before enqueue.
+	if (sink_receipt && exact_observed_bytes) *exact_observed_bytes = line;
+	const bool enqueued = sink_receipt
+	    ? PlatformServicesFactory::Instance().process_service.WriteToStdioProcessObserved(session, line.data(), line.size(), *sink_receipt, &write_error)
+	    : PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(session, line.data(), line.size(), &write_error);
+	if (!enqueued)
 	{
 		const std::string runtime_name = RuntimeDisplayName(session);
 		session.last_error = write_error.empty() ? ("Failed to write message to " + runtime_name + ".") : ("Failed to write message to " + runtime_name + ": " + write_error);
@@ -161,6 +276,7 @@ bool WriteAcpMessage(AcpSessionState& session, const nlohmann::json& message, st
 		return false;
 	}
 
+	ProviderRuntimeRegistry::ResolveById(session.provider_id).NoteAcpPermissionResponse(session, message);
 	AppendAcpDiagnostic(session, "write", "sent", method, request_id, false, 0, "", detail);
 	return true;
 }
@@ -211,8 +327,10 @@ bool SendPermissionResponse(AcpSessionState& session, const std::string& request
 		}
 		return false;
 	}
+	if (!CapturedReadCeilingAllowsPermissionResponse(session, session.pending_permission, option_id, cancelled, error_out)) return false;
+
 	nlohmann::json response = ProviderRuntimeRegistry::ResolveById(session.provider_id)
-	    .OnAcpBuildPermissionResponse(session, option_id, cancelled);
+	    .OnAcpBuildPermissionResponse(session, session.pending_permission, option_id, cancelled);
 	if (!WriteAcpMessage(session, response, error_out)) return false;
 	RecordAcpPermissionDecision(session, option_id, cancelled);
 	return true;
@@ -323,6 +441,15 @@ std::optional<PermissionReviewDecision> ParsePermissionReviewOutput(std::string_
 	}
 }
 
+namespace
+{
+	std::optional<PermissionReviewDecision> ParsePermissionReviewWorkerOutput(std::string_view provider_id, std::string_view output)
+	{
+		const std::optional<std::string> text = uam::provider_workers::CompletedTextWorkerOutput(provider_id, output, kPermissionReviewOutputLimit);
+		return text ? ParsePermissionReviewOutput(*text) : std::nullopt;
+	}
+}
+
 bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out)
 {
 	const auto tier = uam::command_safety::ParseTier(chat.command_safety_tier);
@@ -331,13 +458,21 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 	{
 		if (ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpPermissionRequiresUserDecision(session.pending_permission))
 		{
+			if (tier == uam::command_safety::Tier::AiReview)
+			{
+				AppendPermissionReviewDiagnostic(session, "user_decision_required", session.pending_permission.request_id_json, "The provider requires a user decision; no model review ran.", "deterministic_gate", false);
+			}
 			break;
 		}
 		if ((session.goal_review_turn || uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) ==
 		         uam::approval_modes::kPlanApprovalMode ||
 		     session.active_uam_agent_workspace_access == "read") &&
-		    !PermissionFitsPlanCeiling(session.pending_permission))
+		    !PermissionFitsPlanCeiling(session, session.pending_permission))
 		{
+			if (tier == uam::command_safety::Tier::AiReview)
+			{
+				AppendPermissionReviewDiagnostic(session, "rejected_by_access_ceiling", session.pending_permission.request_id_json, "The read-only access ceiling rejected this request; no model review ran.", "deterministic_gate", false);
+			}
 			const std::string option_id = RejectPermissionOptionId(session.pending_permission);
 			if (!SendPermissionResponse(session, session.pending_permission.request_id_json,
 			                            option_id, option_id.empty(), error_out))
@@ -362,7 +497,11 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 			continue;
 		}
 
-		if (tier == uam::command_safety::Tier::Off || tier == uam::command_safety::Tier::AiReview ||
+		// Native prompts that survive classifier/edit handling still require the user's decision.
+		if ((session.provider_id == uam::provider_ids::kClaudeCli &&
+		     (session.current_mode_id == uam::approval_modes::kProviderAutoApprovalMode || session.current_mode_id == uam::approval_modes::kAcceptEditsApprovalMode)) ||
+		    (session.provider_id == uam::provider_ids::kCodexCli && session.codex_approvals_reviewer == "auto_review") ||
+		    tier == uam::command_safety::Tier::Off || tier == uam::command_safety::Tier::AiReview ||
 		    (tier == uam::command_safety::Tier::AcceptEdits && session.pending_permission.safety_tier != "acceptEdits") ||
 		    (tier != uam::command_safety::Tier::Yolo && tier != uam::command_safety::Tier::AcceptEdits &&
 		     (session.pending_permission.safety_risk.empty() || session.pending_permission.safety_requires_approval)))
@@ -370,7 +509,20 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 			break;
 		}
 
-		const std::string option_id = AutoApproveOptionId(session.pending_permission);
+		std::string option_id;
+		if (session.goal_review_turn || session.active_uam_agent_workspace_access == "read")
+		{
+			const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+			for (const AcpPermissionOptionState& option : session.pending_permission.options)
+			{
+				if (runtime.AcpPermissionChoice(session.pending_permission, option) == ProviderPermissionChoice::AllowedOnce)
+				{
+					option_id = option.id;
+					break;
+				}
+			}
+		}
+		else option_id = AutoApproveOptionId(session.pending_permission);
 		if (option_id.empty())
 		{
 			break;
@@ -404,8 +556,15 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 	if (session.waiting_for_permission)
 	{
 		BeginAcpPendingWait(session, kAcpLifecycleWaitingPermission);
-		if (uam::time::LatestInteractionTimestamp(chat.interaction_at, session.interaction_at) != chat.interaction_at && !SaveChatQuietly(app, chat))
-			ScheduleChatSave(app, chat, 0.0);
+		const std::string interaction_at = uam::time::LatestInteractionTimestamp(chat.interaction_at, session.interaction_at);
+		if (interaction_at != chat.interaction_at)
+		{
+			if (ChatSession* owner = ChatDomainService().FindChatById(app, chat.id); owner != nullptr)
+			{
+				owner->interaction_at = interaction_at;
+				ScheduleChatSave(app, *owner, 0.0);
+			}
+		}
 	}
 	else if (session.waiting_for_user_input)
 	{
@@ -441,7 +600,8 @@ void QueueAcpPermission(AppState& app, AcpSessionState& session, ChatSession& ch
 			(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
 			(void)PersistQueuedAcpUserPromptsAsInterrupted(session, chat);
 			FailAcpTurnOrSession(session, &chat, message);
-			SaveChatQuietly(app, chat);
+			SaveChatQuietly(app, chat, session.queue_held && !session.queued_user_prompts.empty()
+			    ? AcpChatSavePurpose::PreserveQueuedIntent : AcpChatSavePurpose::SettleFailedDirect);
 			MarkAcpChatUnseenIfBackground(app, chat);
 			return;
 		}
@@ -480,55 +640,63 @@ void StopPermissionReviewTasks(AppState& app, std::string_view chat_id, std::str
 bool PollPermissionReviewTasks(AppState& app)
 {
 	bool changed = false;
-	for (auto it = app.permission_review_tasks.begin(); it != app.permission_review_tasks.end();)
+	std::size_t index = 0;
+	for (std::size_t remaining = app.permission_review_tasks.size(); remaining > 0; --remaining)
 	{
-		if (it->state == nullptr || !it->state->completed.load())
+		if (index >= app.permission_review_tasks.size()) break;
+		if (app.permission_review_tasks[index].state == nullptr || !app.permission_review_tasks[index].state->completed.load())
 		{
-			++it;
+			++index;
 			continue;
 		}
-		StopAsyncPermissionReviewTask(*it);
-		const ProcessExecutionResult result = it->state->result;
-		AcpSessionState* session = FindAcpSessionForChat(app, it->chat_id);
-		ChatSession* chat = ChatDomainService().FindChatById(app, it->chat_id);
-		if (session != nullptr && chat != nullptr && session->running && session->pending_permission.request_id_json == it->request_id_json && uam::command_safety::ParseTier(chat->command_safety_tier) == uam::command_safety::Tier::AiReview)
+		// Queue advancement can append another worker; retain no vector reference across it.
+		AsyncPermissionReviewTask task = std::move(app.permission_review_tasks[index]);
+		app.permission_review_tasks.erase(app.permission_review_tasks.begin() + static_cast<std::ptrdiff_t>(index));
+		StopAsyncPermissionReviewTask(task);
+		const ProcessExecutionResult result = task.state->result;
+		AcpSessionState* session = FindAcpSessionForChat(app, task.chat_id);
+		ChatSession* chat = ChatDomainService().FindChatById(app, task.chat_id);
+		if (session != nullptr && chat != nullptr && session->running && task.permission_review_incarnation != nullptr &&
+		    session->permission_review_incarnation == task.permission_review_incarnation &&
+		    session->pending_permission.request_id_json == task.request_id_json && ParentPermissionReviewAllowed(*session, *chat))
 		{
-			const auto decision = result.ok && !result.output_truncated ? ParsePermissionReviewOutput(result.output) : std::nullopt;
+			const auto decision = result.ok && !result.output_truncated ? ParsePermissionReviewWorkerOutput(task.state->provider_id, result.output) : std::nullopt;
 			if (!decision)
 			{
 				const std::string reason = "AI Review could not make a valid decision; the request remains for the user.";
 				PersistPermissionReviewDiagnostic(*chat, *session, "error", reason);
-				AppendAcpDiagnostic(*session, "permission_review", result.timed_out ? "timeout" : result.canceled ? "canceled" : "invalid_result", "", it->request_id_json, false, 0, reason);
+				AppendPermissionReviewDiagnostic(*session, result.timed_out ? "timeout" : result.canceled ? "canceled" : "invalid_result", task.request_id_json, reason, "provider_worker", false, task.state->provider_id, task.requested_model_id);
 			}
 			else if (decision->decision == "uncertain")
 			{
 				PersistPermissionReviewDiagnostic(*chat, *session, decision->decision, decision->reason);
-				AppendAcpDiagnostic(*session, "permission_review", "uncertain", "", it->request_id_json, false, 0, decision->reason);
+				AppendPermissionReviewDiagnostic(*session, "uncertain", task.request_id_json, decision->reason, "model_output", true, task.state->provider_id, task.requested_model_id);
 			}
 			else
 			{
 				const bool approve = decision->decision == "approve";
-				const std::string option_id = approve ? AutoApproveOptionId(session->pending_permission) : RejectPermissionOptionId(session->pending_permission);
+				const std::string option_id = approve ? AiReviewOneTimeOptionId(session->pending_permission) : RejectPermissionOptionId(session->pending_permission);
 				std::string response_error;
 				const bool sent = approve && option_id.empty()
 				    ? false
-				    : SendPermissionResponse(*session, it->request_id_json, option_id, !approve && option_id.empty(), &response_error);
+				    : SendPermissionResponse(*session, task.request_id_json, option_id, !approve && option_id.empty(), &response_error);
 				if (sent)
 				{
 					PersistPermissionReviewDiagnostic(*chat, *session, decision->decision, decision->reason);
-					AppendAcpDiagnostic(*session, "permission_review", approve ? "approved_once" : "denied", "", it->request_id_json, false, 0, decision->reason);
+					AppendPermissionReviewDiagnostic(*session, approve ? "approved_once" : "denied", task.request_id_json, decision->reason, "model_output", true, task.state->provider_id, task.requested_model_id);
 					AdvanceAcpPermissionQueue(app, *session, *chat, &response_error);
 				}
 				else
 				{
 					const std::string reason = "AI Review could not safely send its decision; the request remains for the user.";
 					PersistPermissionReviewDiagnostic(*chat, *session, "error", reason);
-					AppendAcpDiagnostic(*session, "permission_review", approve ? "missing_allow_once" : "response_failed", "", it->request_id_json, false, 0, reason);
+					AppendPermissionReviewDiagnostic(*session, approve ? "missing_allow_once" : "response_failed", task.request_id_json, reason, "model_output", true, task.state->provider_id, task.requested_model_id);
 				}
 			}
+			// Persist only the current owner's verdict, including uncertain or invalid review diagnostics.
+			ScheduleChatSave(app, *chat, 0.0);
 			changed = true;
 		}
-		it = app.permission_review_tasks.erase(it);
 	}
 	return changed;
 }
@@ -645,10 +813,17 @@ void HandlePermissionRequest(AppState& app, AcpSessionState& session, ChatSessio
 	AcpPendingPermissionState pending;
 	pending.request_id_json = JsonRpcIdToStableString(JsonRpcIdOrNull(message));
 	pending.tool_call_id = JsonDiagnosticStringValue(tool_call, "toolCallId");
+	pending.provider_request_method = JsonDiagnosticStringValue(message, "method");
+	const nlohmann::json* raw_input = uam::nlohmann_json::FindField(tool_call, "rawInput");
+	pending.provider_input_json = (raw_input != nullptr ? *raw_input : tool_call).dump();
+	pending.provider_request_params_json = params.dump();
 	pending.title = JsonDiagnosticStringValueOr(tool_call, "title", "Permission required");
 	pending.kind = JsonDiagnosticStringValueOr(tool_call, "kind", uam::acp_tool_kinds::kOther);
 	pending.status = JsonDiagnosticStringValueOr(tool_call, "status", std::string(uam::acp_statuses::kPending));
 	pending.content = PermissionContentFromToolCall(tool_call);
+	if (raw_input != nullptr && raw_input->is_object())
+		if (const nlohmann::json* command = uam::nlohmann_json::FindStringField(*raw_input, "command"))
+			pending.execution_command = command->get_ref<const std::string&>();
 
 	const nlohmann::json options = JsonArrayValue(params, "options");
 	if (options.is_array())
@@ -669,6 +844,8 @@ void HandlePermissionRequest(AppState& app, AcpSessionState& session, ChatSessio
 			}
 		}
 	}
+
+	if (ReplayPersistedInteractionResponseIfMatched(app, session, chat, message, &pending)) return;
 
 	if (!pending.tool_call_id.empty())
 	{

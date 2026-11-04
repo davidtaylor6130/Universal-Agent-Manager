@@ -1,3 +1,5 @@
+import type { StartupNativeImportStatus } from '../../types/startupNativeImports'
+import type { ExecutionRoutingSettings } from '../../types/executionRouting'
 import type { CustomIcon } from '../../types/customIcon'
 // C++ state serialisation types (mirrors state_serializer.cpp output) plus the
 // frontend-facing binding/push types. Extracted from useAppStore.ts (MO-1); the
@@ -8,6 +10,9 @@ import type { GoalStatus } from '../../types/goal'
 import type { StoredTheme } from '../../utils/themeStorage'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import type { MemoryLevel } from '../../types/memory'
+
+/** Which PowerShell hosts UAM's Windows terminal windows; auto prefers built-in Windows PowerShell 5.1. */
+export type WindowsPowerShellPreference = 'auto' | 'windows-powershell' | 'pwsh'
 import type { ComputerUseBackend, ComputerUseEffectiveBackend, ComputerUseState, ExecutionHost } from '../../types/session'
 
 export type CliLifecycleState = 'disabled' | 'starting' | 'stopped' | 'idle' | 'busy' | 'shuttingDown' | 'unknown'
@@ -31,6 +36,13 @@ export type AcpAttentionKind =
   | 'generic'
 
 export interface CppMessage {
+  /** Positive historical local OS-sink write fact only; absent/false is unknown, never retry authority. */
+  inputWriteCompleted?: boolean
+  /** Inert per-input provenance; never admission/delivery/control proof. */
+  nativeInputId?: string
+  originRequestId?: string
+  /** Output-only correlation; scoped native list alone supplies child authority. */
+  managedOriginRunId?: string
   role: 'user' | 'assistant' | 'system'
   content: string
   providerId?: string
@@ -46,6 +58,7 @@ export interface CppMessage {
 	interrupted?: boolean
   stopReason?: string
 	acpPromptNotSent?: boolean
+	acpPromptDiscarded?: boolean
 	prioritySteer?: boolean
 	continuesTurn?: boolean
   checkpointSha?: string
@@ -63,11 +76,32 @@ export interface ChatAttachmentInput {
   dataBase64?: string
 }
 
+export interface NewChatWorktreeContext {
+  sourceChatId: string
+  expectedWorkspaceDirectory: string
+  expectedExecutionHostId: string
+}
+
+export interface CreateSessionOptions extends Partial<NewChatWorktreeContext> {
+  gitBaseBranch?: string
+}
+
 export interface CppChat {
+  gitBaseBranch?: string | null
+  routingMode?: 'explicit' | 'automatic'
+  routingSourceFolderId?: string
+  routingSourceDirectory?: string
+  routingReservationPending?: boolean
+  routingAssignedConnectionIdentity?: string
+  routingAssignedProviderConfigurationIdentity?: string
+  routingWaitReason?: string
+  routingUnresolvedReservation?: boolean
+
   id: string
   executionHostId?: string
   remoteRecoveryEnabled?: boolean
   remoteRecoveryState?: string
+  customIcon?: CustomIcon
   title: string
   folderId: string
   pinned?: boolean
@@ -106,6 +140,8 @@ export interface CppChat {
   workspaceSourceDirectory?: string
   workspaceBaseRef?: string
   workspaceBranchName?: string
+  /** New branch chosen before the first message; created when that message is sent. */
+  pendingGitBranch?: string
   workspaceWorktreeDirectory?: string
   importedReadOnly?: boolean
   createdAt: string
@@ -114,11 +150,20 @@ export interface CppChat {
   lastOpenedAt?: string
   attentionRevision?: string
   settledAt?: string
+  snoozedUntilMs?: number
   messageCount?: number
+  /** Display-only native lineage; never provider resume or control authority. */
+  subagentParentChatId?: string
+  subagentParentCreatedAt?: string
+  /** Display-only chat_create provenance; never lineage, resume or control authority. */
+  createdByChatId?: string
+  managedSubagentCount?: number
+  managedSubagentRevision?: number
   messagesDigest?: string
   messages?: CppMessage[]
   cliTerminal?: {
     terminalId?: string
+    startupTime?: number
     frontendChatId?: string
     sourceChatId?: string
     idleCountdownStartsAtMs?: number
@@ -222,6 +267,50 @@ export interface AcpModel {
   defaultReasoningEffort?: string
   supportedReasoningEfforts?: string[]
   additionalSpeedTiers?: string[]
+  contextWindowTokens?: number | null
+  maxOutputTokens?: number | null
+}
+
+/** Native observations preserve omitted versus explicitly nullable staged values. */
+export type NativeOptionPresence<T> = { present: false } | { present: true; value: T }
+export type NativeOptionStatus = 'unknown' | 'ready' | 'invalid' | 'unsupported'
+
+export interface NativeModelOptionOwnership {
+  chatId: string
+  nativeSessionId: string
+  executionHostId: string
+  /** Public process token; never the adapter's private lifetime nonce. */
+  lifetime: string
+}
+
+export interface CopilotAutoTierDescriptor {
+  id: string
+  displayName: string
+  description: string
+  type: string
+  status: { enabled: boolean; reason?: string; message?: string }
+}
+
+export interface CopilotAutoRoutingProjection {
+  ownership?: NativeModelOptionOwnership
+  catalogStatus: NativeOptionStatus
+  stateStatus: NativeOptionStatus
+  eligibleTiers: NativeOptionPresence<CopilotAutoTierDescriptor[]>
+  providerDefault: NativeOptionPresence<string>
+  currentModel: NativeOptionPresence<string>
+  effective: NativeOptionPresence<string>
+  pending: NativeOptionPresence<string | null>
+  activating: NativeOptionPresence<string | null>
+  requestPending: boolean
+  available: boolean
+  disabledCode: string
+  disabledReason: string
+  lastAckStatus: '' | 'pending' | 'unchanged'
+  lastError: string
+}
+
+export interface NativeModelOptions {
+  autoRouting?: CopilotAutoRoutingProjection
 }
 
 export interface AcpConfigOptionChoice {
@@ -241,8 +330,9 @@ export interface AcpConfigOption {
 
 export type AcpTurnEvent =
   | { type: 'assistant_text'; text: string; toolCallId?: string; requestId?: string }
+  | { type: 'context_compaction_summary'; text: string; toolCallId?: string; requestId?: string }
   | { type: 'thought'; text: string; toolCallId?: string; requestId?: string }
-  | { type: 'context_compaction'; text: string; toolCallId?: string; requestId?: string }
+  | { type: 'context_compaction' | 'context_compaction_interrupted'; text: string; toolCallId?: string; requestId?: string; tokensBefore?: number; tokensAfter?: number }
   | { type: 'plan'; text?: string; toolCallId?: string; requestId?: string }
   | { type: 'tool_call'; toolCallId: string; text?: string; requestId?: string }
   | { type: 'permission_request'; requestId: string; toolCallId?: string; text?: string }
@@ -299,8 +389,16 @@ export interface AcpAgentInfo {
 }
 
 export interface AcpQueuedPrompt {
+  /** Inert per-input provenance; never admission/delivery/control proof. */
+  nativeInputId?: string
+  originRequestId?: string
   id?: string
   revision?: number
+  prepared?: boolean
+  existingUserMessageIndex?: number
+  /** Native-validated current raw-row reference; not durable identity or delivery authority. */
+  referencedMessageCreatedAt?: string
+  retryAllowed?: boolean
   text: string
   uamAgentId: string
   markdownStoreFiles: string[]
@@ -335,7 +433,7 @@ export interface AcpTokenUsageBreakdown {
 export interface AcpTokenUsage {
   updatedAt: number
   total: AcpTokenUsageBreakdown
-  last: AcpTokenUsageBreakdown
+  last: AcpTokenUsageBreakdown | null
   modelContextWindow: number | null
 }
 
@@ -371,13 +469,41 @@ export interface AcpRateLimits {
   rateLimitReachedType: string
 }
 
+export interface AcpContextUsage {
+  updatedAt: number
+  usedTokens: number
+  windowTokens: number
+}
+
 export interface AcpProviderUsage {
+  contextUsage?: AcpContextUsage | null
   tokenUsage: AcpTokenUsage | null
   rateLimits: AcpRateLimits | null
 }
 
+/** Advisory native projection; missing or malformed support is unavailable. */
+export interface ManualCompactionAvailability {
+  available: boolean
+  providerId: string
+  modelId: string
+  nativeSessionId: string
+}
+
+/** The current lastError is a timeout stop: which limit expired and its value (0 when unknown). */
+export interface AcpTimeoutStop {
+  label: string
+  seconds: number
+  /** 'loop' when the stream watch stopped repeated output (#636); absent for a timeout. */
+  kind?: 'loop'
+  /** Loop: the repeated stream (text, thought or tool call), its repeat count and a bounded example. */
+  channel?: string
+  count?: number
+  example?: string
+}
+
 export interface CppAcpSession {
   lastStopReason?: string
+  timeoutStop?: AcpTimeoutStop | null
   idleCountdownStartsAtMs?: number
   idleShutdownAtMs?: number
   idleShutdownTimeoutSeconds?: number
@@ -390,6 +516,9 @@ export interface CppAcpSession {
   threadId?: string
   running?: boolean
   processing?: boolean
+  compacting?: boolean
+  manualCompaction?: ManualCompactionAvailability
+  backgroundTaskCount?: number
   readySinceLastSelect?: boolean
   attentionKind?: AcpAttentionKind | null
   lifecycleState?: AcpLifecycleState | string
@@ -406,6 +535,7 @@ export interface CppAcpSession {
   currentModeId?: string
   availableModels?: AcpModel[]
   configOptions?: AcpConfigOption[]
+  nativeModelOptions?: NativeModelOptions
   modelsLoading?: boolean
   modelRefreshError?: string
   currentModelId?: string
@@ -413,7 +543,12 @@ export interface CppAcpSession {
   turnUserMessageIndex?: number
   turnAssistantMessageIndex?: number
   turnSerial?: number
+  queueHeld?: boolean
+  unsentMessageIndices?: number[]
+  recoverableUnsentMessageIndices?: number[]
   queuedPrompts?: AcpQueuedPrompt[]
+  pendingDirectPrompts?: AcpQueuedPrompt[]
+  unsentDirectPrompts?: AcpQueuedPrompt[]
   waitIsStale?: boolean
   waitStaleReason?: string
   waitSeconds?: number
@@ -490,6 +625,12 @@ export interface MemoryWorkerBinding {
   workerModelId: string
 }
 
+export interface HostScopedSettingsValues {
+  defaultNewChatProviderId: string
+  providerChatDefaults: Record<string, ProviderChatDefaults>
+  mcpServers: McpServerConfiguration[]
+}
+
 export interface ProviderChatDefaults {
   hiddenModelIds?: string[]
   hiddenProviderIds?: string[]
@@ -529,6 +670,9 @@ export interface CliVersionOption {
 }
 
 export interface CliVersionProviderState {
+  canInstall?: boolean
+  routingConnectionIdentity?: string
+  routingProviderConfigurationIdentity?: string
   providerId: string
   blockingChatIds?: string[]
   executionHostId?: string
@@ -544,7 +688,7 @@ export interface CliVersionProviderState {
   checkError?: string
   running: boolean
   installMethod?: 'npm' | 'homebrew-formula' | 'homebrew-cask' | 'winget' | 'unknown'
-  lastInstallStatus?: 'none' | 'running' | 'succeeded' | 'failed'
+  lastInstallStatus?: 'none' | 'running' | 'awaiting-verification' | 'succeeded' | 'failed'
   lastCommand: string
   lastOutput: string
 }
@@ -567,17 +711,66 @@ export interface ShellAction {
   openWorkspace: boolean
 }
 
-export interface CppSettings {
+export interface ProviderAvailabilityOverride {
+  providerId: string
+  executionHostId: string
+  enabled: boolean
+}
+
+export type ProviderAvailabilityRequest = ProviderAvailabilityOverride
+export interface VoiceInputSettingsRequest {
+  mode: VoiceInputMode
+  serverBaseUrl?: string
+  serverEndpoint?: string
+  serverModel?: string
+  apiKeyEnv?: string
+}
+
+export type VoiceInputMode = 'system' | 'local' | 'server'
+export type VoiceInputCapabilities = Partial<Record<VoiceInputMode, { supported: boolean; reason: string }>>
+
+export interface VoiceInputSettings {
+  voiceInputMode?: VoiceInputMode
+  voiceInputServerBaseUrl?: string
+  voiceInputServerEndpoint?: string
+  voiceInputServerModel?: string
+  voiceInputApiKeyEnv?: string
+  voiceInputCapabilities?: VoiceInputCapabilities
+}
+
+export interface VcsStorageSettings {
+  gitAutoWorktree: boolean
+  gitSnapshotSvn: boolean
+  gitSnapshotPlainFolders: boolean
+  gitDefaultBaseBranch: string
+  gitPullBeforeChat: boolean
+  svnUpdateBeforeChat: boolean
+  gitPortMethod: 'patch' | 'merge' | 'squash'
+  worktreeCleanupEnabled: boolean
+  worktreeRetentionDays: number
+  backupLogRetentionDays: number
+  httpCacheClearIntervalDays: number
+}
+export type VcsSettingsRequest = { gitEnabled: boolean; svnEnabled: boolean } & Partial<Omit<VcsStorageSettings, 'backupLogRetentionDays' | 'httpCacheClearIntervalDays'>>
+export type StorageSettingsRequest = Pick<VcsStorageSettings, 'backupLogRetentionDays' | 'httpCacheClearIntervalDays'>
+
+export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSettings> {
+  providerAvailability?: ProviderAvailabilityOverride[]
   activeProviderId: string
   theme: StoredTheme
   showProviderIconsInSidebar?: boolean
   showWorktreePathInSidebar?: boolean
+  gitEnabled?: boolean
+  svnEnabled?: boolean
   memoryEnabledDefault: boolean
   memoryLevelDefault?: MemoryLevel
   memoryIdleDelaySeconds: number
   memoryRecallBudgetBytes: number
   goalMaxLoopIterations: number
+  goalTokenBudget: number
   acpSetupInactivityTimeoutSeconds?: number
+  activeTurnInactivityTimeoutSeconds?: number
+  streamLoopRepeatLimit?: number
   acpTurnOutputLimitMiB?: number
   updateChecksEnabled: boolean
   automaticProviderUpdates: boolean
@@ -591,15 +784,29 @@ export interface CppSettings {
   providerChatDefaults?: Record<string, ProviderChatDefaults>
   markdownStoreDirectory?: string
   fileExplorerApplication?: string
+  windowsPowerShell?: WindowsPowerShellPreference
   defaultEditorPresetId?: string
   editorFileAssociations?: EditorFileAssociation[]
   centralProviderConfiguration?: CentralProviderConfiguration
   mcpServers?: McpServerConfiguration[]
+  executionRouting?: ExecutionRoutingSettings
   executionHosts?: ExecutionHost[]
   favoriteUamAgentIds?: string[]
+  nativeImportExcludedTitlePrefixes?: string[]
+  nativeImportExcludedDirectories?: string[]
   uamAgentCycleShortcut?: UamAgentCycleShortcut
+  /** Saved global Computer Use consent. Unknown when absent; does not grant a target. */
+  computerUseGloballyEnabled?: boolean
+  /** Native owned-resource cleanup remains incomplete. Unknown when absent. */
+  computerUseRevocationPending?: boolean
   computerUseAllowlistEnabled?: boolean
   computerUseAllowedApplications?: ComputerUseAllowedApplication[]
+
+  /** Backend supports listing and switching a chat workspace's git branch. Tab stays display-only when absent or false. */
+  branchSwitching?: boolean
+  /** Backend accepts scopeExecutionHostId on settings saves. Hidden/disabled when absent or false. */
+  hostScopedSettings?: boolean
+  hostScopedSettingsValues?: Record<string, HostScopedSettingsValues>
 }
 
 export interface ComputerUseAllowedApplication {
@@ -613,6 +820,19 @@ export interface UamAgentSummary {
   id: string
   description: string
   builtIn: boolean
+}
+
+export interface ProviderAgentCandidate {
+  id: string
+  name: string
+  description?: string
+  sourcePath: string
+  alreadyImported?: boolean
+}
+
+export interface ProviderAgentImportResult {
+  imported: number
+  failed?: Array<{ id: string; error: string }>
 }
 
 export interface ProviderAgentImportPreview {
@@ -695,6 +915,9 @@ export interface OpenWorkspaceEditorResponse {
 }
 
 export interface ChatMessagesResponse {
+  unsentMessageIndices?: number[]
+  recoverableUnsentMessageIndices?: number[]
+  userMessageIndices?: number[] | null
   chatId?: string
   messagesDigest?: string
   unchanged?: boolean
@@ -713,6 +936,7 @@ export interface VcsCommitMessageSuggestion {
 }
 
 export interface CppAppState {
+  startupNativeImports?: StartupNativeImportStatus
   unchanged?: false
   stateRevision?: number
   bootId?: string
@@ -732,6 +956,14 @@ export interface CppAppState {
   shellActions?: ShellAction[]
   shellActionNotification?: string
   statusLine?: string
+  deletionProgress?: CppDeletionProgress
+}
+
+export interface CppDeletionProgress {
+  requestId?: string
+  completed: number
+  total: number
+  currentLabel?: string
 }
 
 export interface CppCompanionUnchangedState {
@@ -741,6 +973,7 @@ export interface CppCompanionUnchangedState {
 }
 
 export interface CppStatePatch {
+  startupNativeImports?: StartupNativeImportStatus
   stateRevision?: number
   folders?: CppFolder[]
   resourceCollections?: ResourceCollection[]
@@ -751,7 +984,7 @@ export interface CppStatePatch {
   selectedChatId?: string | null
   providers?: CppProvider[]
   providerModelCatalogs?: ProviderModelCatalog[]
-  settings?: CppSettings
+  settings?: Partial<CppSettings>
   memoryActivity?: MemoryActivity
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
@@ -760,6 +993,7 @@ export interface CppStatePatch {
 }
 
 export interface CliBinding {
+  startupTime?: number
   idleCountdownStartsAtMs?: number
   idleShutdownAtMs?: number
   idleShutdownTimeoutSeconds?: number
@@ -778,6 +1012,7 @@ export interface CliBinding {
 
 export interface AcpBinding {
   lastStopReason?: string
+  timeoutStop?: AcpTimeoutStop
   idleCountdownStartsAtMs?: number
   idleShutdownAtMs?: number
   idleShutdownTimeoutSeconds?: number
@@ -789,6 +1024,9 @@ export interface AcpBinding {
   running: boolean
   lifecycleState: AcpLifecycleState
   processing: boolean
+  compacting?: boolean
+  manualCompaction?: ManualCompactionAvailability
+  backgroundTaskCount?: number
   readySinceLastSelect: boolean
   attentionKind?: AcpAttentionKind | null
   processingStartedAtMs: number | null
@@ -806,6 +1044,7 @@ export interface AcpBinding {
   currentModeId: string
   availableModels: AcpModel[]
   configOptions?: AcpConfigOption[]
+  nativeModelOptions?: NativeModelOptions
   modelsLoading?: boolean
   modelRefreshError?: string
   currentModelId: string
@@ -813,7 +1052,12 @@ export interface AcpBinding {
   turnUserMessageIndex: number
   turnAssistantMessageIndex: number
   turnSerial: number
+  queueHeld?: boolean
+  unsentMessageIndices?: number[]
+  recoverableUnsentMessageIndices?: number[]
   queuedPrompts?: AcpQueuedPrompt[]
+  pendingDirectPrompts?: AcpQueuedPrompt[]
+  unsentDirectPrompts?: AcpQueuedPrompt[]
   waitIsStale?: boolean
   waitStaleReason?: string
   waitSeconds?: number
@@ -824,6 +1068,7 @@ export interface AcpBinding {
 }
 
 export interface CliTranscript {
+  startupTime?: number
   terminalId: string
   content: string
 }
@@ -844,6 +1089,7 @@ export type ParsedPushMessage =
       sessionId?: string
       sourceChatId?: string
       terminalId?: string
+      startupTime?: number
     }
   | { type: 'streamToken'; chatId: string; token: string; messageIndex?: number }
   | { type: 'streamDone'; chatId: string }
@@ -854,6 +1100,7 @@ export type ParsedPushResult =
   | { ok: false; status: Exclude<PushChannelStatus, 'connected' | 'no-push-yet'>; error: string }
 
 export interface CentralProviderConfiguration {
+  mcpOverrides?: Array<{ providerId: string; executionHostId: string; serverId: string; enabled: boolean; kind?: 'preference' }>
   enabled: boolean
   instructions: string
   instructionFiles: string[]

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveCustomIcon, sanitizeCustomIcon, type CustomIcon } from './customIcon'
+import { lucideIconName, lucideIconValue, resolveCustomIcon, sanitizeCustomIcon, type CustomIcon } from './customIcon'
 
 describe('portable custom icons', () => {
   it('accepts emoji and rejects unsafe or unbounded metadata', () => {
@@ -22,5 +22,12 @@ describe('portable custom icons', () => {
     expect(resolveCustomIcon(workspace, host, new Set(['image.png']))).toBe(host)
     expect(resolveCustomIcon({ type: 'png', value: 'missing.png' }, host)).toBe(host)
     expect(resolveCustomIcon({ type: 'png', value: 'missing.png' })).toBeUndefined()
+  })
+  it('round-trips Lucide library names as portable text and rejects malformed names', () => {
+    expect(lucideIconName(lucideIconValue('arrow-up-right'))).toBe('arrow-up-right')
+    expect(lucideIconName('🧪')).toBeNull()
+    expect(sanitizeCustomIcon({ type: 'text', value: 'lucide:flask-conical' })).toEqual({ type: 'text', value: 'lucide:flask-conical' })
+    expect(sanitizeCustomIcon({ type: 'text', value: 'lucide:../etc' })).toBeUndefined()
+    expect(sanitizeCustomIcon({ type: 'text', value: 'lucide:' + 'a'.repeat(60) })).toBeUndefined()
   })
 })

@@ -7,6 +7,7 @@ class AntigravityCliProviderRuntime final : public IProviderRuntime
 {
   public:
 	const char* RuntimeId() const override;
+	const ProviderCliPolicy* CliVersionPolicy() const override;
 	bool SupportsTextWorkers() const override { return false; }
 	std::vector<std::string> BuildInteractiveArgv(const ProviderProfile&, const ChatSession&, const AppSettings&) const override;
 	bool SupportsInteractivePromptTracking() const override { return false; }
@@ -21,6 +22,20 @@ class AntigravityCliProviderRuntime final : public IProviderRuntime
 	nlohmann::json OnAcpBuildPrompt(uam::AcpSessionState&, int, const std::string&, const ChatSession&, std::string&) const override;
 	nlohmann::json OnAcpBuildCancel(const uam::AcpSessionState&, int, std::string&) const override;
 	bool OnAcpHandleMessage(uam::AppState&, uam::AcpSessionState&, ChatSession&, const nlohmann::json&, const CefRefPtr<CefBrowser>&) const override;
+	std::string OnAcpValidateResumeId(const ChatSession&) const override;
+	bool OnAcpValidateGoalResume(const ChatSession&, const Goal&, const AppSettings&, bool, std::string&) const override;
+	bool AcpGoalWorkersResumeConversation() const override
+	{
+		return true;
+	}
+	bool AcpAccountsGoalUsage() const override
+	{
+		return true;
+	}
+	bool OnAcpPreparePrompt(uam::AppState&, uam::AcpSessionState&, ChatSession&, std::string&) const override;
+	bool OnAcpPersistGoalControl(uam::AppState&, uam::AcpSessionState&, ChatSession&, const std::string&, std::string&) const override;
+	bool OnAcpGoalControlCommitted(uam::AppState&, uam::AcpSessionState&, ChatSession&, const std::string&, std::string&) const override;
+	void OnAcpTurnStopping(uam::AppState&, uam::AcpSessionState&, ChatSession&) const override;
 	bool OnAcpCanSendPromptWithoutSessionId() const override { return true; }
 	ProviderAcpSettingChangeAction AcpModeChangeAction(const uam::AcpSessionState&) const override { return ProviderAcpSettingChangeAction::RestartSession; }
 	ProviderAcpSettingChangeAction AcpModelChangeAction() const override { return ProviderAcpSettingChangeAction::RestartSession; }

@@ -9,12 +9,13 @@ import {
   rememberPendingRequest,
 } from '../cpp/reconcile'
 import type { CppFolder, ShellAction } from '../cpp/types'
-import { DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID } from '../../utils/providerMetadata'
+import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 import type { ZustandSet, ZustandGet } from '../storeTypes'
 import { deleteSessionsFromState } from './sessionsSlice'
 import { discardPendingPushesForChats } from '../push/pushBuffers'
 import { removeChatsFromGrid } from '../../utils/chatGridStorage'
 import { removeComposerDrafts } from '../../utils/composerDraftStorage'
+import { reportDeletionRejections, type DeletionRejection } from '../../utils/appFailure'
 
 let folderCounter = 10
 
@@ -24,31 +25,48 @@ function makeId(prefix: string, counter: number) {
 
 export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
   async function deleteWorkspaceFolders(ids: string[], action: 'deleteFolder' | 'deleteFolders'): Promise<boolean> {
+    set({ workspaceDeletionError: '' })
     const folderIds = new Set(ids.map((id) => id.trim()))
-    if (folderIds.size === 0 || folderIds.has('')) return false
+    if (folderIds.size === 0 || folderIds.has('')) {
+      set({ workspaceDeletionError: 'Choose at least one workspace to delete.' })
+      return false
+    }
     const snapshot = get()
-    if (isCefContext() && [...folderIds].some((id) => !snapshot.folders.some((folder) => folder.id === id))) return false
-    const deletedSessionIds = new Set(snapshot.sessions.filter((session) => session.folderId && folderIds.has(session.folderId)).map((session) => session.id))
+    if (isCefContext() && [...folderIds].some((id) => !snapshot.folders.some((folder) => folder.id === id))) {
+      set({ workspaceDeletionError: 'A selected workspace no longer exists. Select the remaining workspaces again.' })
+      return false
+    }
+    let deletedFolderIds = folderIds
+    let refused = false
     let selectedChatId: string | null | undefined
+    let confirmedChatIds: string[] = []
     if (isCefContext()) {
-      const response = await sendWhenRemoteStopSettles<{ deletedChatIds?: string[]; selectedChatId?: string | null }>({
+      const response = await sendWhenRemoteStopSettles<{ deletedChatIds?: string[]; deletedFolderIds?: string[]; rejected?: DeletionRejection[]; selectedChatId?: string | null }>({
         action,
         payload: action === 'deleteFolder' ? { folderId: [...folderIds][0] } : { folderIds: [...folderIds] },
         requestId: createRequestId(action),
       })
-      if (!response.ok) return false
+      if (!response.ok) {
+        set({ workspaceDeletionError: response.error || 'The workspaces could not be deleted.' })
+        return false
+      }
       selectedChatId = response.data?.selectedChatId
+      // Workspaces refused by their safeguards stay; the rest of the selection is deleted.
+      const confirmedFolderIds = response.data?.deletedFolderIds
+      if (Array.isArray(confirmedFolderIds)) deletedFolderIds = new Set(confirmedFolderIds.filter((id) => typeof id === 'string').map((id) => id.trim()))
+      refused = reportDeletionRejections(response.data?.rejected, (id) => snapshot.folders.find((folder) => folder.id === id)?.name, 'workspaces', folderIds.size)
       // The native transaction also deletes hidden goal iterations and agent transcripts.
-      for (const id of response.data?.deletedChatIds ?? []) deletedSessionIds.add(id)
+      confirmedChatIds = response.data?.deletedChatIds ?? []
     }
+    const deletedSessionIds = new Set([...snapshot.sessions.filter((session) => session.folderId && deletedFolderIds.has(session.folderId)).map((session) => session.id), ...confirmedChatIds])
     discardPendingPushesForChats(deletedSessionIds)
     set((state) => ({
       ...deleteSessionsFromState(state, deletedSessionIds, selectedChatId),
-      folders: state.folders.filter((folder) => !folderIds.has(folder.id)),
+      folders: state.folders.filter((folder) => !deletedFolderIds.has(folder.id)),
     }))
     removeChatsFromGrid(deletedSessionIds)
     removeComposerDrafts(deletedSessionIds)
-    return true
+    return !refused
   }
 
   // Opening and refreshing share ownership: only the latest visible-library request may apply.
@@ -96,6 +114,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     shellActions: [] as ShellAction[],
     shellActionNotification: '',
     workspaceFolderRecoveryError: '',
+    workspaceDeletionError: '',
 
     addFolder: (name: string, _parentId: string | null, directory: string, executionHostId = 'local') => {
       if (isCefContext()) {
@@ -193,18 +212,17 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       ordered.push(...previous.filter((folder) => !seen.has(folder.id)).map((folder) => folder.id))
       const expected = previous.map((folder) => folder.id)
       if (JSON.stringify(expected) === JSON.stringify(ordered)) return true
-      if (!await get().applyOrganizationChange({ kind: 'folderOrder', expected, replacement: ordered })) return false
-      set({ organizationUndo: { label: 'Reorder workspaces', change: { kind: 'folderOrder', expected: ordered, replacement: expected } } })
-      return true
+      return get().applyOrganizationChange({ kind: 'folderOrder', expected, replacement: ordered })
     },
 
     rescanFolderChats: async (id: string): Promise<boolean> => {
       if (!isCefContext()) return true
-      const response = await sendToCEF<{ success?: boolean; partial?: boolean }>({
+      const response = await sendToCEF<{ success?: boolean; partial?: boolean; reviewStartupImports?: boolean }>({
         action: 'rescanFolderChats',
         payload: { folderId: id },
         requestId: createRequestId('rescanFolderChats'),
       })
+      if (response.ok && response.data?.reviewStartupImports) get().openStartupNativeImportReview(id)
       return response.ok && (response.data?.success !== false || response.data?.partial === true)
     },
 
@@ -413,7 +431,8 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           payload: { requestId },
           requestId,
         })
-        if (!isLatestPendingRequest(requestKey, response.requestId)) return false
+        // Superseded is not a failure; the newer refresh owns loading and error state.
+        if (!isLatestPendingRequest(requestKey, response.requestId)) return true
         clearPendingRequest(requestKey, response.requestId)
         if (!response.ok) {
           set({
@@ -873,6 +892,13 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       return true
     },
 
+    // Full text for the detail view; callers keep the list preview when this fails.
+    readMemoryEntry: (request: Pick<MemoryScope, 'scopeType' | 'folderId'> & { entryId: string }) =>
+      sendToCEF<{ content: string }>({
+        action: 'readMemoryEntry',
+        payload: { scopeType: request.scopeType, folderId: request.folderId, entryId: request.entryId },
+      }),
+
     openMemoryScanModal: async () => {
       set({
         isMemoryScanModalOpen: true,
@@ -911,7 +937,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           title: session.name,
           folderId: session.folderId ?? '',
           folderTitle: session.folderId ? (get().folders.find((folder) => folder.id === session.folderId)?.name ?? '') : '',
-          providerId: session.providerId ?? GEMINI_CLI_PROVIDER_ID,
+          providerId: session.providerId ?? DEFAULT_PROVIDER_ID,
           messageCount: get().messages[session.id]?.length ?? 0,
           memoryEnabled: session.memoryEnabled ?? true,
           memoryLevel: session.memoryLevel ?? ((session.memoryEnabled ?? true) ? 'strict' : 'off'),

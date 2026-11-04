@@ -64,26 +64,34 @@ namespace uam::provider_chat_defaults
 		defaults.command_safety_tier = uam::command_safety::NormalizeTier(defaults.command_safety_tier);
 		defaults.reasoning_effort = NormalizeReasoningEffort(provider_id, defaults.reasoning_effort);
 		defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
-		defaults.memory_level = uam::memory_levels::Normalize(defaults.memory_level, defaults.memory_enabled);
+		if (uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kClaudeCli) && defaults.service_tier != "fast") defaults.service_tier.clear();
+		defaults.memory_level = uam::memory_levels::NormalizeSelection(defaults.memory_level, defaults.memory_enabled);
 		defaults.memory_enabled = uam::memory_levels::IsEnabled(defaults.memory_level);
 		return defaults;
 	}
 
-	inline ProviderChatDefaults ForProvider(const AppSettings& settings, std::string_view provider_id)
+	inline ProviderChatDefaults ForProvider(const AppSettings& settings, std::string_view provider_id, std::string_view host_id = "")
 	{
 		const std::string normalized_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
+		const std::map<std::string, HostScopedSettings>::const_iterator scoped = settings.host_scoped_settings.find(std::string(host_id));
+		if (scoped != settings.host_scoped_settings.end())
+		{
+			const std::map<std::string, ProviderChatDefaults>::const_iterator override = scoped->second.provider_chat_defaults.find(normalized_provider_id);
+			if (override != scoped->second.provider_chat_defaults.end()) return Normalize(override->second, normalized_provider_id);
+		}
 		const auto found = settings.provider_chat_defaults.find(normalized_provider_id);
 		if (found != settings.provider_chat_defaults.end())
 		{
 			return Normalize(found->second, normalized_provider_id);
 		}
-		return ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, "off", settings.memory_enabled_default, "", "", settings.memory_level_default};
+		return ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, "off", true, "", "", uam::memory_levels::kDefault};
 	}
 
 	inline void ApplyToChat(ChatSession& chat, ProviderChatDefaults defaults)
 	{
 		defaults = Normalize(defaults, chat.provider_id);
-		if (!uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli))
+		if (!uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli) &&
+		    !uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kClaudeCli))
 		{
 			defaults.service_tier.clear();
 		}
@@ -91,8 +99,8 @@ namespace uam::provider_chat_defaults
 		chat.reviewer_model_id = defaults.reviewer_model_id;
 		chat.approval_mode = defaults.approval_mode;
 		chat.command_safety_tier = defaults.command_safety_tier;
-		chat.memory_level = defaults.memory_level;
-		chat.memory_enabled = defaults.memory_enabled;
+		chat.memory_level = uam::memory_levels::kDefault;
+		chat.memory_enabled = true;
 		chat.reasoning_effort = defaults.reasoning_effort;
 		chat.service_tier = defaults.service_tier;
 		chat.service_tier_explicit = !defaults.service_tier.empty();
@@ -101,6 +109,6 @@ namespace uam::provider_chat_defaults
 
 	inline void ApplyToChat(const AppSettings& settings, ChatSession& chat)
 	{
-		ApplyToChat(chat, ForProvider(settings, chat.provider_id));
+		ApplyToChat(chat, ForProvider(settings, chat.provider_id, chat.execution_host_id));
 	}
 } // namespace uam::provider_chat_defaults

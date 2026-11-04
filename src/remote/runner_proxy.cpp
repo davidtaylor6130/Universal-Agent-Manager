@@ -6,8 +6,12 @@
 #include "common/platform/platform_services.h"
 #include "common/utils/base64.h"
 #include "common/utils/env_utils.h"
+#include "common/utils/io_utils.h"
+#include "common/utils/string_utils.h"
 #include "common/provider/provider_native_context.h"
+#include "common/provider/opencode_native_http.h"
 #include "remote/runner_client.h"
+#include "common/runtime/structured_framing.h"
 
 #include <nlohmann/json.hpp>
 
@@ -92,6 +96,7 @@ namespace uam::remote
 			std::string context_provider_id;
 			std::filesystem::path context_directory;
 			bool attach_only = false;
+			bool transient_process = false;
 			std::string delivery_token;
 			std::uintmax_t delivered_stdout_cursor = 0;
 			std::uintmax_t delivered_stderr_cursor = 0;
@@ -167,6 +172,7 @@ namespace uam::remote
 				result.context_provider_id = spec.value("contextProviderId", "");
 				result.context_directory = uam::paths::PathFromUtf8(spec.value("contextDirectory", ""));
 				result.attach_only = spec.value("attachOnly", false);
+				result.transient_process = spec.value("transientProcess", false);
 				result.delivery_token = spec.value("deliveryToken", "");
 				result.delivered_stdout_cursor = spec.value(
 				    "deliveredStdoutCursor", static_cast<std::uintmax_t>(0));
@@ -327,6 +333,38 @@ namespace uam::remote
 #endif
 	}
 
+	PackagedRunnerChecksums ReadPackagedRunnerChecksums(const std::filesystem::path& root)
+	{
+		PackagedRunnerChecksums values;
+		if (root.empty()) return values;
+		for (const char* target : {"linux-arm64", "linux-x86_64", "windows-x86_64"})
+			if (const auto checksum = uam::io::ReadFirstTextFileLine(root / target / "uam-runner.sha256"))
+				values[target] = uam::strings::Trim(*checksum);
+		return values;
+	}
+
+	namespace
+	{
+		PackagedRunnerChecksums& PackagedRunnerChecksumCache()
+		{
+			// ponytail: packaged resources are immutable while the app runs, so read the checksums once; only tests replace them.
+			static PackagedRunnerChecksums checksums = ReadPackagedRunnerChecksums(PackagedRunnerPath().parent_path());
+			return checksums;
+		}
+	}
+
+	std::string PackagedRunnerSha256(std::string_view platform, std::string_view architecture)
+	{
+		const PackagedRunnerChecksums& checksums = PackagedRunnerChecksumCache();
+		const auto found = checksums.find(std::string(platform) + "-" + std::string(architecture));
+		return found == checksums.end() ? std::string{} : found->second;
+	}
+
+	PackagedRunnerChecksums SetPackagedRunnerChecksumsForTesting(PackagedRunnerChecksums checksums)
+	{
+		return std::exchange(PackagedRunnerChecksumCache(), std::move(checksums));
+	}
+
 	std::string BuildProcessProxySpec(
 	    const std::string& session_id, const std::filesystem::path& working_directory,
 	    const std::vector<std::string>& argv,
@@ -334,13 +372,14 @@ namespace uam::remote
 	    bool attach_only, const std::string& delivery_token,
 	    std::uintmax_t delivered_stdout_cursor,
 	    std::uintmax_t delivered_stderr_cursor, const std::string& context_provider_id,
-	    const std::string& context_directory, const std::string& configuration_provider, const std::string& configuration_directory, const nlohmann::json& session_mcp_servers)
+	    const std::string& context_directory, const std::string& configuration_provider, const std::string& configuration_directory, const nlohmann::json& session_mcp_servers, bool transient_process)
 	{
 		nlohmann::json environment_json = nlohmann::json::object();
 		for (const auto& [name, value] : environment) environment_json[name] = value;
 		return uam::base64::Encode(nlohmann::json{
 		    {"sessionId", session_id}, {"cwd", uam::paths::Utf8PathString(working_directory)}, {"argv", argv},
 		    {"environment", std::move(environment_json)}, {"attachOnly", attach_only},
+		    {"transientProcess", transient_process},
 		    {"deliveryToken", delivery_token},
 		    {"deliveredStdoutCursor", delivered_stdout_cursor},
 		    {"deliveredStderrCursor", delivered_stderr_cursor},
@@ -470,6 +509,16 @@ namespace uam::remote
 				if (!uam::provider_setup::Apply(spec->configuration_provider, directory, spec->working_directory, spec->argv, spec->environment, error, spec->session_mcp_servers))
 				{ std::cerr << error << '\n'; return 70; }
 			}
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+			if (private_launch)
+			{
+#if defined(_WIN32)
+				(void)uam::opencode_native::RemoveConflictingTerminalObserver(spec->argv, spec->environment, "windows");
+#else
+				(void)uam::opencode_native::RemoveConflictingTerminalObserver(spec->argv, spec->environment, "posix");
+#endif
+			}
+#endif
 			for (const std::string& argument : spec->argv)
 				if (argument.find('\0') != std::string::npos) return 2;
 			for (const std::pair<std::string, std::string>& entry : spec->environment)
@@ -519,7 +568,7 @@ namespace uam::remote
 			if (chdir(spec->working_directory.c_str()) != 0) return 2;
 			for (const std::pair<std::string, std::string>& entry : spec->environment)
 				if (setenv(entry.first.c_str(), entry.second.c_str(), 1) != 0) return 70;
-			if (!private_launch) AddInteractiveCliPaths();
+			if (!private_launch || (spec->context_provider_id.empty() && spec->configuration_directory.empty())) AddInteractiveCliPaths();
 			std::vector<char*> native_arguments;
 			native_arguments.reserve(spec->argv.size() + 1);
 			for (std::string& argument : spec->argv) native_arguments.push_back(argument.data());
@@ -621,6 +670,11 @@ namespace uam::remote
 			std::cerr << "Remote process specification is missing or invalid.\n";
 			return 2;
 		}
+		if (spec->transient_process && protocol_version < 3)
+		{
+			std::cerr << "Transient remote processes require runner protocol 3.\n";
+			return 2;
+		}
 
 		auto& process_service = ProxyProcessService();
 		RunnerClient client(process_service,
@@ -640,10 +694,15 @@ namespace uam::remote
 		{
 			configuration_directory = spec->working_directory / ".UAM" / "provider-setup" / spec->configuration_directory.filename();
 			if (!client.InstallProviderConfiguration(spec->configuration_directory, configuration_directory, &error))
-			{ std::cerr << error << '\n'; return 70; }
+			{
+				std::cerr << error << '\n';
+				std::cerr << kRemoteStartupFailurePrefix << spec->delivery_token << " configuration\n";
+				return kRemoteConfigurationStartupFailureExitCode;
+			}
 		}
 		if (protocol_version >= 3)
 			client.SetProcessControlToken(session_id, spec->delivery_token);
+		bool configuration_rejected = false;
 		if (spec->attach_only)
 		{
 			ProcessPollResult persisted;
@@ -664,43 +723,15 @@ namespace uam::remote
 		}
 		else if (!client.StartProcess(session_id, spec->working_directory, spec->argv,
 		                              spec->environment, &error, false,
-		                              spec->delivery_token, true, spec->configuration_provider, configuration_directory, spec->session_mcp_servers))
+		                              // Empty selects a lease while retaining the token seeded above.
+		                              spec->transient_process ? std::string{} : spec->delivery_token, true, spec->configuration_provider, configuration_directory, spec->session_mcp_servers, &configuration_rejected))
 		{
 			std::cerr << (error.empty() ? "Remote process could not start." : error) << '\n';
-			return 70;
-		}
-		RunnerClient poll_client(process_service,
-		                         SshBridgeArgv(ssh_alias, platform, version,
-		                                       runner_directory, protocol_version), version,
-		                         protocol_version);
-		if (protocol_version >= 3)
-			poll_client.SetProcessControlToken(session_id, spec->delivery_token);
-		if (!poll_client.Connect(&error))
-		{
-			std::cerr << (error.empty() ? "Remote process polling could not start." : error) << '\n';
-			return 70;
-		}
-		RunnerClient* poll_channel = &poll_client;
-		ProcessPollResult first_poll;
-		if (prefetched_poll.has_value())
-		{
-			// The attach probe already supplied the first durable batch.
-		}
-		else if (poll_client.PollProcess(session_id, first_poll, &error))
-		{
-			prefetched_poll = std::move(first_poll);
-		}
-		else if (error.find("does not exist") != std::string::npos)
-		{
-			// bridge-direct is an isolated test/development transport. Production
-			// bridges share the resident runner service and use the independent
-			// polling channel so an explicit stop can interrupt a blocked poll.
-			poll_channel = &client;
-			error.clear();
-		}
-		else
-		{
-			std::cerr << (error.empty() ? "Remote process polling could not start." : error) << '\n';
+			if (configuration_rejected)
+			{
+				std::cerr << kRemoteStartupFailurePrefix << spec->delivery_token << " configuration\n";
+				return kRemoteConfigurationStartupFailureExitCode;
+			}
 			return 70;
 		}
 
@@ -715,6 +746,8 @@ namespace uam::remote
 		}
 		#endif
 		bool input_closed = false;
+		const bool native_framing = std::ranges::find(spec->argv, "--headless") != spec->argv.end() &&
+		    std::ranges::find(spec->argv, "--stdio") != spec->argv.end();
 		std::string pending_input;
 		std::optional<std::jthread> mcp_relay;
 		std::array<char, 16 * 1024> input{};
@@ -728,8 +761,13 @@ namespace uam::remote
 		std::optional<ProcessPollResult> awaiting_output_ack;
 		std::size_t awaiting_stdout_bytes = 0;
 		bool source_exited = false;
+		bool input_rejected_after_exit = false;
 		int source_exit_code = -1;
 		bool source_exit_announced = false;
+		bool source_exit_acknowledged = false;
+		bool source_output_drained = false;
+		std::optional<ProcessPollResult> source_status_cursor;
+		std::chrono::steady_clock::time_point next_source_status_poll{};
 		bool legacy_exit_observed = false;
 		int legacy_exit_code = -1;
 		int legacy_quiet_polls = 0;
@@ -770,6 +808,7 @@ namespace uam::remote
 			}
 			awaiting_stdout_bytes = stdout_bytes;
 			awaiting_output_ack = std::move(delivery);
+			source_status_cursor.reset();
 			return true;
 		};
 		const auto write_remote = [&](std::string_view bytes)
@@ -817,11 +856,14 @@ namespace uam::remote
 			std::string outcome;
 			if (!client.StopProcess(session_id, &error, true, &outcome)) return false;
 			bool drained = false;
+			bool unterminated_stdout = false;
 			for (int batch = 0; batch < 256; ++batch)
 			{
 				ProcessPollResult final_output;
 				if (!client.PollProcess(session_id, final_output, &error)) break;
 				std::cout << final_output.standard_output << std::flush;
+				if (!final_output.standard_output.empty())
+					unterminated_stdout = final_output.standard_output.back() != '\n';
 				std::cerr << final_output.standard_error << std::flush;
 				if (!client.AcknowledgeProcessOutput(session_id, final_output, &error)) break;
 				if (!final_output.running && final_output.standard_output.empty() && final_output.standard_error.empty())
@@ -830,6 +872,8 @@ namespace uam::remote
 					break;
 				}
 			}
+			// Native Stop cleanup projects complete lines, including the final EOF fragment.
+			if (drained && unterminated_stdout) std::cout << '\n' << std::flush;
 			if (!client.RemoveProcess(session_id, &error)) return false;
 			if (!drained) outcome = "failed";
 			std::cerr << kRemoteStopOutcomePrefix << spec->delivery_token << ' ' << outcome << '\n';
@@ -850,6 +894,44 @@ namespace uam::remote
 			}
 			return false;
 		};
+		RunnerClient poll_client(process_service,
+		                         SshBridgeArgv(ssh_alias, platform, version,
+		                                       runner_directory, protocol_version), version,
+		                         protocol_version);
+		if (protocol_version >= 3)
+			poll_client.SetProcessControlToken(session_id, spec->delivery_token);
+		// The poll channel's bridge can take long to start; honor a stop that arrives meanwhile.
+		bool poll_interrupted = false;
+		if (!poll_client.Connect(&error, {}, stop_while_polling))
+		{
+			if (stop_completed) return 0;
+			std::cerr << (error.empty() ? "Remote process polling could not start." : error) << '\n';
+			return 70;
+		}
+		RunnerClient* poll_channel = &poll_client;
+		ProcessPollResult first_poll;
+		if (prefetched_poll.has_value())
+		{
+			// The attach probe already supplied the first durable batch.
+		}
+		else if (poll_client.PollProcess(session_id, first_poll, &error, stop_while_polling, &poll_interrupted))
+		{
+			prefetched_poll = std::move(first_poll);
+		}
+		else if (poll_interrupted && stop_completed) return 0;
+		else if (error.find("does not exist") != std::string::npos)
+		{
+			// bridge-direct is an isolated test/development transport. Production
+			// bridges share the resident runner service and use the independent
+			// polling channel so an explicit stop can interrupt a blocked poll.
+			poll_channel = &client;
+			error.clear();
+		}
+		else
+		{
+			std::cerr << (error.empty() ? "Remote process polling could not start." : error) << '\n';
+			return 70;
+		}
 		for (;;)
 		{
 			if (!input_closed)
@@ -860,9 +942,27 @@ namespace uam::remote
 					std::cerr << "Remote process proxy could not read stdin.\n";
 					return 70;
 				}
-				for (std::size_t newline = pending_input.find('\n'); newline != std::string::npos;
-				     newline = pending_input.find('\n'))
+				while (!pending_input.empty())
 				{
+					if (native_framing && pending_input.front() != '\x1e')
+					{
+						const auto frame = uam::structured_framing::Read(pending_input, 4 * 1024 * 1024);
+						if (frame.status == uam::structured_framing::Status::Incomplete) break;
+						if (frame.status == uam::structured_framing::Status::Invalid)
+						{
+							std::cerr << "Remote native protocol input framing is invalid.\n";
+							return 70;
+						}
+						if (!input_rejected_after_exit && !write_remote(std::string_view(pending_input).substr(0, frame.consumed_bytes)))
+						{
+							std::cerr << error << '\n';
+							return 70;
+						}
+						pending_input.erase(0, frame.consumed_bytes);
+						continue;
+					}
+					const std::size_t newline = pending_input.find('\n');
+					if (newline == std::string::npos) break;
 					const std::string line = pending_input.substr(0, newline + 1);
 					pending_input.erase(0, newline + 1);
 					if (line == kRemoteStopControlLine)
@@ -896,13 +996,15 @@ namespace uam::remote
 					                spec->delivery_token + " " +
 					                std::to_string(source_exit_code) + "\n")
 					{
-						if (!client.RemoveProcess(session_id, &error))
-						{
-							std::cerr << error << '\n';
-							return 70;
-						}
-						return source_exit_code < 0 ? 70 : source_exit_code;
+						// Completion can be acknowledged before the final output batch. Keep
+						// its helper-owned spool until every delivered byte is acknowledged.
+						source_exit_acknowledged = true;
+						continue;
 					}
+					if (line.starts_with(kRemoteSourceExitAckPrefix)) continue;
+					// Rejected input is never acknowledged or replayed. Keep reading only
+					// to drain provider output and complete its authenticated exit handshake.
+					if (input_rejected_after_exit) continue;
 					if (line.starts_with(kRemoteInputDeliveryPrefix))
 					{
 						if (protocol_version < 3)
@@ -927,11 +1029,20 @@ namespace uam::remote
 						std::string payload;
 						if (!IsControlField(delivery_id, 96) ||
 						    !uam::base64::Decode(fields.substr(id_end + 1), payload) ||
-						    payload.empty() || payload.size() > 2 * 1024 * 1024 ||
-						    !write_remote_delivery(payload, delivery_id))
+						    payload.empty() || payload.size() > 2 * 1024 * 1024)
 						{
 							std::cerr << (error.empty()
 							    ? "Remote input delivery is invalid.\n" : error + "\n");
+							return 70;
+						}
+						if (!write_remote_delivery(payload, delivery_id))
+						{
+							if (error == "The remote process has exited.")
+							{
+								input_rejected_after_exit = true;
+								continue;
+							}
+							std::cerr << error << '\n';
 							return 70;
 						}
 						std::cout << kRemoteInputReceiptPrefix << spec->delivery_token << ' '
@@ -958,16 +1069,26 @@ namespace uam::remote
 					}
 					if (!write_remote(line))
 					{
+						if (error == "The remote process has exited.")
+						{
+							input_rejected_after_exit = true;
+							continue;
+						}
 						std::cerr << error << '\n';
 						return 70;
 					}
 				}
-				if (!pending_input.starts_with('\x1e') &&
+				if (!native_framing && !input_rejected_after_exit && !pending_input.starts_with('\x1e') &&
 				    pending_input.size() > kRemoteStopControlLine.size() &&
 				    !write_remote(std::exchange(pending_input, {})))
 				{
-					std::cerr << error << '\n';
-					return 70;
+					if (error == "The remote process has exited.")
+						input_rejected_after_exit = true;
+					else
+					{
+						std::cerr << error << '\n';
+						return 70;
+					}
 				}
 				if (input_state == 0)
 				{
@@ -977,6 +1098,37 @@ namespace uam::remote
 					return 0;
 				}
 			}
+			if (awaiting_output_ack.has_value() && !source_exited &&
+			    std::chrono::steady_clock::now() >= next_source_status_poll)
+			{
+				ProcessPollResult observed;
+				bool interrupted = false;
+				if (!poll_channel->PollProcess(session_id, observed, &error,
+				        poll_channel == &poll_client ? stop_while_polling : std::function<bool()>{},
+				        &interrupted, source_status_cursor ? &*source_status_cursor : &latest_cursor))
+				{
+					if (interrupted && stop_completed) return 0;
+					std::cerr << (error.empty() ? "Remote process status polling failed." : error) << '\n';
+					return 70;
+				}
+				// This probe cursor only scans for source death. Polling never ACKs
+				// bytes; normal delivery retains its original cursor and reads them later.
+				source_status_cursor = std::move(observed);
+				if (!source_status_cursor->running)
+				{
+					source_exited = true;
+					source_exit_code = source_status_cursor->exit_code;
+				}
+				next_source_status_poll = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+			}
+			if (source_exited && !source_exit_announced && !spec->delivery_token.empty() &&
+			    (awaiting_output_ack.has_value() || (pending_stdout.empty() && pending_stderr.empty())))
+			{
+				std::cout << kRemoteSourceExitPrefix << spec->delivery_token << ' ' << source_exit_code << '\n';
+				std::cout.flush();
+				if (!std::cout) return 70;
+				source_exit_announced = true;
+			}
 			if (awaiting_output_ack.has_value())
 			{
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -984,30 +1136,43 @@ namespace uam::remote
 			}
 			if (source_exited)
 			{
-				if (!pending_stdout.empty() || !pending_stderr.empty())
+				if (source_output_drained && (!pending_stdout.empty() || !pending_stderr.empty()))
 				{
-					if (!queue_output_delivery(pending_stdout.size(), !pending_stdout.empty()))
+					if (native_framing && !pending_stdout.empty())
+					{
+						std::size_t verified = 0;
+						while (verified < pending_stdout.size())
+						{
+							const auto frame = uam::structured_framing::Read(std::string_view(pending_stdout).substr(verified));
+							if (frame.status != uam::structured_framing::Status::Complete)
+							{
+								std::cerr << "Remote native protocol exited with an incomplete frame.\n";
+								return 70;
+							}
+							verified += frame.consumed_bytes;
+						}
+					}
+					if (!queue_output_delivery(pending_stdout.size(), !native_framing && !pending_stdout.empty()))
 					{
 						std::cerr << error << '\n';
 						return 70;
 					}
 					continue;
 				}
-				if (!spec->delivery_token.empty())
+				if (source_output_drained)
 				{
-					if (!source_exit_announced)
+					if (!spec->delivery_token.empty() && !source_exit_acknowledged)
 					{
-						std::cout << kRemoteSourceExitPrefix << spec->delivery_token << ' '
-						          << source_exit_code << '\n';
-						std::cout.flush();
-						if (!std::cout) return 70;
-						source_exit_announced = true;
+						std::this_thread::sleep_for(std::chrono::milliseconds(10));
+						continue;
 					}
-					std::this_thread::sleep_for(std::chrono::milliseconds(10));
-					continue;
+					if (!client.RemoveProcess(session_id, &error))
+					{
+						std::cerr << error << '\n';
+						return 70;
+					}
+					return source_exit_code < 0 ? 70 : source_exit_code;
 				}
-				(void)client.RemoveProcess(session_id);
-				return source_exit_code < 0 ? 70 : source_exit_code;
 			}
 
 			ProcessPollResult polled;
@@ -1035,6 +1200,7 @@ namespace uam::remote
 					        protocol_version, spec->delivery_token) && !polled.running)
 				{
 					source_exited = true;
+					source_output_drained = true;
 					source_exit_code = polled.exit_code;
 					continue;
 				}
@@ -1081,13 +1247,32 @@ namespace uam::remote
 			pending_stderr += polled.standard_error;
 			latest_cursor = polled;
 			has_latest_cursor = true;
-			source_exited = !polled.running;
-			source_exit_code = polled.exit_code;
-			const std::size_t newline = pending_stdout.rfind('\n');
-			if (newline != std::string::npos || !pending_stderr.empty())
+			if (!polled.running)
 			{
-				const std::size_t stdout_bytes = newline == std::string::npos ? 0 : newline + 1;
-				if (!queue_output_delivery(stdout_bytes, false))
+				source_exited = true;
+				source_output_drained = true;
+				source_exit_code = polled.exit_code;
+			}
+			std::size_t complete_stdout_bytes = 0;
+			if (native_framing)
+			{
+				while (complete_stdout_bytes < pending_stdout.size())
+				{
+					const auto frame = uam::structured_framing::Read(std::string_view(pending_stdout).substr(complete_stdout_bytes));
+					if (frame.status == uam::structured_framing::Status::Incomplete) break;
+					if (frame.status == uam::structured_framing::Status::Invalid)
+					{
+						std::cerr << "Remote native protocol output framing is invalid.\n";
+						return 70;
+					}
+					complete_stdout_bytes += frame.consumed_bytes;
+				}
+			}
+			else if (const std::size_t newline = pending_stdout.rfind('\n'); newline != std::string::npos)
+				complete_stdout_bytes = newline + 1;
+			if (complete_stdout_bytes != 0 || !pending_stderr.empty())
+			{
+				if (!queue_output_delivery(complete_stdout_bytes, false))
 				{
 					std::cerr << error << '\n';
 					return 70;

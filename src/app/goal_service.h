@@ -54,7 +54,7 @@ class GoalService
 	/// Transition a goal to a new status (complete, blocked).
 	/// Returns true on success.
 	/// </summary>
-	static bool UpdateGoalStatus(AppState& app, const std::string& chat_id, const std::string& goal_id, GoalStatus status);
+	static bool UpdateGoalStatus(AppState& app, const std::string& chat_id, const std::string& goal_id, GoalStatus status, bool user_action = false, bool defer_native_stop = false);
 	static bool UpdateGoalObjective(AppState& app, const std::string& chat_id,
 	                                const std::string& goal_id, const std::string& objective,
 	                                std::string* error_out = nullptr);
@@ -64,12 +64,12 @@ class GoalService
 	/// </summary>
 	static bool SetActiveGoal(AppState& app, const std::string& chat_id, const std::string& goal_id,
 	                          std::string* error_out = nullptr,
-	                          bool* work_changed_out = nullptr);
+	                          bool* work_changed_out = nullptr, bool defer_native_stop = false);
 
 	/// <summary>
 	/// Clear the active goal for a chat session.
 	/// </summary>
-	static bool ClearActiveGoal(AppState& app, const std::string& chat_id);
+	static bool ClearActiveGoal(AppState& app, const std::string& chat_id, bool user_action = false, bool defer_native_stop = false);
 
 	/// <summary>
 	/// Find the active goal for a chat, or nullptr if none.
@@ -88,15 +88,30 @@ class GoalService
 	/// </summary>
 	static std::vector<Goal> GetGoalsForChat(const AppState& app, const std::string& chat_id);
 
+	enum class GoalRemovalStage { Normal, PrepareOnly, AfterReceipt };
+	/// Metadata captured before removal; an absent goal alone never authorizes cancellation.
+	struct GoalRemovalPreparation
+	{
+		struct RunOwner { std::string id, created_at, definition_hash; };
+		std::string chat_id;
+		Goal goal;
+		std::shared_ptr<const std::uint8_t> parent_incarnation;
+		std::string prepared_revision;
+		std::vector<RunOwner> managed_roots;
+		std::optional<AcpSessionState::CodexGoalOwner> native_owner;
+		std::string native_process_label;
+		std::int64_t native_created_at = 0;
+	};
 	/// <summary>
 	/// Remove a goal from a chat session. Returns true on success.
 	/// </summary>
 	static bool RemoveGoal(AppState& app, const std::string& chat_id, const std::string& goal_id,
-	                       std::string* error_out = nullptr, bool* work_changed_out = nullptr);
+	                       std::string* error_out = nullptr, bool* work_changed_out = nullptr, GoalRemovalStage stage = GoalRemovalStage::Normal,
+	                       GoalRemovalPreparation* preparation = nullptr, std::function<bool()> admitted_owner = {});
 
 	/// <summary>
 	/// Record that the provider completed a turn while working on this goal.
-	/// Updates token usage and checks if goal should be auto-completed.
+	/// Adds nonnegative usage without overflow and holds the goal at its token budget.
 	/// </summary>
 	static void RecordTurnCompletion(AppState& app, const std::string& chat_id,
 	                                 const std::string& goal_id, int64_t tokens_used);
@@ -111,10 +126,10 @@ class GoalService
 
 	/// <summary>
 	/// Build the continuation prompt text to inject before the next provider turn.
-	/// Returns empty string if no active goal or no objective.
+	/// Returns empty string if no objective; omit its text when the user message already supplies it.
 	/// </summary>
 	static std::string BuildContinuationPrompt(const Goal& goal, int64_t tokens_used, int64_t token_budget,
-	                                           bool small_model_mode = false, const std::string& next_step = "");
+	                                           bool small_model_mode = false, const std::string& next_step = "", bool include_objective = true);
 	static std::string BuildReadOnlyTerminalPrompt(const Goal& goal);
 	static std::string BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt,
 	                                     const std::string& recent_assistant_text, int repeated_output_count = 0,

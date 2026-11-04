@@ -1,17 +1,20 @@
+import { MONO_FONTS, useTypographyStore } from '../../store/typographyStore'
 import { act, Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CLIView } from './CLIView'
 import { useAppStore } from '../../store/useAppStore'
+import { focusActiveInput, FOCUS_ACTIVE_INPUT_EVENT } from '../../utils/activeInputFocus'
 
 const xtermState = vi.hoisted(() => ({
   resizeByInstance: [] as Array<(size: { rows: number; cols: number }) => void>,
   resizeObservers: [] as Array<() => void>,
   constructCount: 0,
+  focusedInstances: [] as number[],
   disposeCount: 0,
   inputByInstance: [] as Array<(data: string) => void>,
   writesByInstance: [] as Array<Array<string | Uint8Array>>,
-  optionsByInstance: [] as Array<{ theme?: { background?: string } }>,
+  optionsByInstance: [] as Array<{ theme?: { background?: string }; fontSize?: number; fontFamily?: string }>,
 }))
 
 vi.mock('@xterm/xterm', () => ({
@@ -19,8 +22,8 @@ vi.mock('@xterm/xterm', () => ({
     rows = 24
     cols = 80
     index: number
-    options: { theme?: { background?: string } }
-    constructor(options: { theme?: { background?: string } }) {
+    options: { theme?: { background?: string }; fontSize?: number; fontFamily?: string }
+    constructor(options: { theme?: { background?: string }; fontSize?: number; fontFamily?: string }) {
       this.index = xtermState.constructCount++
       xtermState.writesByInstance[this.index] = []
       this.options = options
@@ -33,7 +36,7 @@ vi.mock('@xterm/xterm', () => ({
     }
     reset() {}
     resize(cols: number, rows: number) { this.cols = cols; this.rows = rows }
-    focus() {}
+    focus() { xtermState.focusedInstances.push(this.index) }
     input(data: string) { xtermState.inputByInstance[this.index]?.(data) }
     writeln() {}
     dispose() {
@@ -94,6 +97,7 @@ describe('CLIView', () => {
     xtermState.resizeByInstance = []
     xtermState.resizeObservers = []
     xtermState.constructCount = 0
+    xtermState.focusedInstances = []
     xtermState.disposeCount = 0
     xtermState.inputByInstance = []
     xtermState.writesByInstance = []
@@ -230,7 +234,7 @@ describe('CLIView', () => {
       root.render(<CLIView session={session} />)
     })
 
-    expect(host.textContent).toContain("Provider 'codex-cli' is not supported in this build.")
+    expect(host.textContent).toContain("Terminal mode isn't available for")
     expect(useAppStore.getState().cliBindingBySessionId['chat-1']).toBeUndefined()
     expect(host.querySelector('.xterm')).toBeNull()
 
@@ -316,6 +320,57 @@ describe('CLIView', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('rejects stale launch output in xterm when a terminal ID is reused', async () => {
+    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
+      onSuccess(JSON.stringify(JSON.parse(request).action === 'startCliTerminal'
+        ? { terminalId: 'term-reused', sourceChatId: 'chat-1', startupTime: 2, running: true, lifecycleState: 'idle' }
+        : {}))
+    }
+    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
+    const session = { id: 'chat-1', name: 'Gemini Session', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<CLIView session={session} />); await Promise.resolve() })
+      for (const startupTime of [1, undefined, 2]) {
+        window.dispatchEvent(new CustomEvent('uam-cli-output', { detail: {
+          sessionId: 'chat-1', terminalId: 'term-reused', startupTime, data: 'output',
+        } }))
+      }
+      expect(xtermState.writesByInstance[0]).toHaveLength(1)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('preserves a newer same-ID launch when an earlier start reply arrives late', async () => {
+    let finishStart: ((data: string) => void) | undefined
+    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).action === 'startCliTerminal') finishStart = onSuccess
+      else onSuccess('{}')
+    }
+    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
+    const session = { id: 'chat-1', name: 'Gemini Session', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<CLIView session={session} />); await Promise.resolve() })
+      await act(async () => {
+        useAppStore.getState().setCliBinding('chat-1', { terminalId: 'term-reused', startupTime: 2, running: true })
+        finishStart?.(JSON.stringify({ terminalId: 'term-reused', startupTime: 1, running: true, replayData: btoa('old replay') }))
+        await Promise.resolve()
+      })
+      expect(useAppStore.getState().cliBindingBySessionId['chat-1']?.startupTime).toBe(2)
+      expect(xtermState.writesByInstance[0]).toHaveLength(0)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
   it('retries a transient terminal startup failure without remounting', async () => {
@@ -411,6 +466,10 @@ describe('CLIView', () => {
       { chatId: 'chat-1', terminalId: 'term-1', rows: 30, cols: 100 },
     ])
     onRender.mockClear()
+    act(() => window.dispatchEvent(new CustomEvent('uam-cli-output', {
+      detail: { sessionId: session.id, terminalId: 'replaced-terminal', data: 'stale' },
+    })))
+    expect(xtermState.writesByInstance[0]).toHaveLength(0)
     await act(async () => {
       window.dispatchEvent(new CustomEvent('uam-cli-output', { detail: { sessionId: session.id, terminalId: 'term-1', data: '\x1b[32moutput\r\n' } }))
       useAppStore.setState({ cliTranscriptBySessionId: { 'chat-1': { terminalId: 'term-1', content: 'output' } } })
@@ -438,6 +497,29 @@ describe('CLIView', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('changes live terminal typography without restarting or discarding output', async () => {
+    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      onSuccess(parsed.action === 'startCliTerminal' ? JSON.stringify({ terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'idle' }) : '{}')
+    }
+    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
+    const session = { id: 'chat-1', name: 'Gemini', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<CLIView session={session} />); await Promise.resolve() })
+      const count = xtermState.constructCount
+      const index = count - 1
+      act(() => window.dispatchEvent(new CustomEvent('uam-cli-output', { detail: { sessionId: 'chat-1', terminalId: 'term-1', data: 'kept output' } })))
+      const writes = [...xtermState.writesByInstance[index]]
+      act(() => useTypographyStore.getState().update({ terminalFont: 'consolas', terminalSize: 18 }))
+      expect(xtermState.constructCount).toBe(count)
+      expect(xtermState.optionsByInstance[index]).toMatchObject({ fontFamily: MONO_FONTS.consolas.family, fontSize: 18 })
+      expect(xtermState.writesByInstance[index]).toEqual(writes)
+    } finally {
+      act(() => root.unmount()); host.remove(); useTypographyStore.getState().reset()
+    }
   })
 
   it.each(['light', 'paper'] as const)('updates the live terminal palette for %s', async (theme) => {
@@ -583,6 +665,33 @@ describe('CLIView', () => {
       window.history.replaceState({}, '', '/')
       window.localStorage.removeItem('uam-companion-token')
     }
+  })
+
+  it('focuses an existing active terminal without launching or disturbing the other pane', async () => {
+    const starts: string[] = []
+    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
+      const payload = JSON.parse(request)
+      if (payload.action === 'startCliTerminal') starts.push(payload.payload.chatId)
+      onSuccess(JSON.stringify({ terminalId: payload.payload?.chatId, running: true }))
+    }
+    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
+    const session = (id: string) => ({ id, name: id, providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<><div className="uam-chat-pane" data-focused="false"><CLIView session={session('other')} /></div><div className="uam-chat-pane" data-focused="true"><CLIView session={session('active')} /></div></>))
+      const started = starts.length
+      const constructed = xtermState.constructCount
+      expect(focusActiveInput()).toBe(true)
+      expect(xtermState.focusedInstances).toEqual([1])
+      expect(starts).toHaveLength(started)
+      expect(xtermState.constructCount).toBe(constructed)
+      const terminal = host.querySelectorAll('[data-uam-terminal]')[1]
+      act(() => root.unmount())
+      expect(terminal.dispatchEvent(new Event(FOCUS_ACTIVE_INPUT_EVENT, { cancelable: true }))).toBe(true)
+      expect(xtermState.focusedInstances).toEqual([1])
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
 })

@@ -1,9 +1,18 @@
 #pragma once
+#include "common/config/host_scoped_settings.h"
+
 
 #include "app/agent_definition_service.h"
 #include "app/markdown_store_service.h"
+#include "app/memory_service.h"
 #include "common/provider/provider_setup.h"
+#include "common/provider/gemini_options.h"
+#include "common/config/central_provider_configuration.h"
+#include "common/config/execution_host_config.h"
 #include "common/models/app_models.h"
+#include "common/state/app_state.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
+#include "common/utils/diagnostic_log.h"
 
 namespace uam
 {
@@ -14,13 +23,31 @@ namespace uam
 		std::filesystem::path local_directory;
 	};
 
+	inline std::string CheckedProviderConfigurationVersion(const AppState& app, std::string_view provider, const ExecutionHost& host)
+	{
+		const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider, host.id));
+		return version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked && version->second.supported &&
+		       execution_hosts::SameConnection(version->second.execution_host, host) ? version->second.installed_version : std::string{};
+	}
+
+	inline bool ShouldEnableOpenCodeV1ProgressiveMcp(const CentralProviderConfiguration& configuration, std::string_view provider, std::string_view host, std::string_view checked_version)
+	{
+		// Only fixture-verified versions; extend after discovery and permission checks pass.
+		return provider_ids::IsCliProviderAliasOf(provider, provider_ids::kOpenCodeCli) &&
+		    central_configuration::OpenCodeProgressiveMcpEnabled(configuration, host) &&
+		    (checked_version == "1.17.20" || checked_version == "1.18.35");
+	}
+
 	/// <summary>Compile native launch resources; preserve the queued agent instructions when supplied. SSH receives bytes and unresolved secret references.</summary>
 	inline bool PrepareProviderConfiguration(const std::filesystem::path& data_root, const AppSettings& settings,
 	    const ChatSession& chat, const ExecutionHost& host, const std::filesystem::path& workspace,
-	    ProviderConfigurationBundle& bundle, std::string& error, const std::string* selected_agent_instructions = nullptr)
+	    ProviderConfigurationBundle& bundle, std::string& error, const std::string* selected_agent_instructions = nullptr,
+	    std::string_view checked_provider_version = {}, bool require_session_mcp_configuration = false)
 	{
+		bundle = {};
 		// Source workspace settings follow isolated worktrees; the active workspace can override them.
-		std::vector<McpServerConfiguration> candidates = settings.mcp_servers;
+		std::vector<McpServerConfiguration> candidates = host_scoped_settings::McpServers(settings, host.id);
+		for (McpServerConfiguration& server : candidates) server.enabled = central_configuration::McpEnabled(settings.central_provider_configuration, chat.provider_id, host.id, server.id, server.enabled);
 		if (!chat.workspace_source_directory.empty() && chat.workspace_source_directory != uam::paths::Utf8PathString(workspace))
 		{
 			std::stable_partition(candidates.begin(), candidates.end(), [&](const McpServerConfiguration& server)
@@ -33,9 +60,29 @@ namespace uam
 		}
 		const std::vector<McpServerConfiguration> selected_servers = mcp_server_config::SelectForWorkspace(
 		    candidates, uam::paths::Utf8PathString(workspace), host.id);
-		if (!settings.central_provider_configuration.enabled && selected_servers.empty()) return true;
-		const CentralProviderConfiguration& configuration = settings.central_provider_configuration;
+		CentralProviderConfiguration configuration = settings.central_provider_configuration;
+		configuration.enabled = central_configuration::McpEnabled(configuration, chat.provider_id, host.id, "shared-setup", configuration.enabled);
+		const bool open_code_discovery = ShouldEnableOpenCodeV1ProgressiveMcp(configuration, chat.provider_id, host.id, checked_provider_version);
+		// The disabled per-server deadline metadata shape is source-checked only for this native version.
+		const bool open_code_uam_control_deadline = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kOpenCodeCli) &&
+		    checked_provider_version == "1.19.3" && !chat.uam_control_explicitly_disabled &&
+		    central_configuration::McpEnabled(configuration, chat.provider_id, host.id, "uam-mcp", chat.uam_control_enabled);
+		const bool claude_fast_override = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kClaudeCli) &&
+		    (chat.service_tier == "fast" || chat.service_tier_explicit);
+		const bool gemini_thinking_override = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kGeminiCli) && !chat.reasoning_effort.empty();
+		if (gemini_thinking_override && !gemini::SupportsReasoningEffort(chat.model_id, chat.reasoning_effort, checked_provider_version))
+		{ error = "The selected Gemini model and checked executing-host CLI version do not support that thinking level; select Default or refresh the host CLI version."; return false; }
+		// OpenCode's own provider request timeout follows UAM's turn timeout so it cannot end the turn first.
+		// ponytail: only the launch model's provider; a mid-session switch to another provider keeps its own limit until relaunch.
+		const std::string open_code_model_provider = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kOpenCodeCli)
+		    ? provider_setup::OpenCodeModelProviderId(chat.model_id) : std::string{};
+		// Only a value that raises OpenCode's built-in default is sent, so the launch records exactly what OpenCode received.
+		const bool open_code_request_timeout = !open_code_model_provider.empty() &&
+		    static_cast<std::int64_t>(settings.active_turn_inactivity_timeout_seconds) * 1000 > provider_setup::kOpenCodeDefaultRequestTimeoutMilliseconds;
+		if (!configuration.enabled && selected_servers.empty() && !open_code_discovery && !open_code_uam_control_deadline && !open_code_request_timeout && !claude_fast_override && !gemini_thinking_override && !require_session_mcp_configuration) return true;
 		std::set<std::string> executable_files;
+		bool memory_resources_added = false;
+		std::size_t memory_instruction_size = 0;
 		if (configuration.enabled)
 		{
 			std::size_t resource_bytes = configuration.instructions.size();
@@ -48,8 +95,17 @@ namespace uam
 				if (resource_bytes > provider_setup::kMaxFileBytes) { error = "Central instructions exceed 2 MiB."; return false; }
 				instructions += "\n\n" + bytes;
 			}
-			const AgentDefinitionCatalog catalog = AgentDefinitionService::Load(data_root, host.transport == "ssh" ? std::filesystem::path{} : workspace);
-			const std::vector<AgentDefinition>::const_iterator selected = std::find_if(catalog.definitions.begin(), catalog.definitions.end(), [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
+			AgentDefinitionCatalog catalog = AgentDefinitionService::Load(data_root, host.transport == "ssh" ? std::filesystem::path{} : workspace);
+			std::vector<AgentDefinition>::const_iterator selected = std::find_if(catalog.definitions.begin(), catalog.definitions.end(), [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
+			// Worktrees may not carry workspace agent files from their source workspace.
+			// Reload from that source only when needed, so its normal definition validation still applies.
+			if (selected == catalog.definitions.end() && host.transport != "ssh" &&
+			    !chat.workspace_source_directory.empty() &&
+			    mcp_server_config::WorkspaceKey(chat.workspace_source_directory) != mcp_server_config::WorkspaceKey(uam::paths::Utf8PathString(workspace)))
+			{
+				catalog = AgentDefinitionService::Load(data_root, uam::paths::PathFromUtf8(chat.workspace_source_directory));
+				selected = std::find_if(catalog.definitions.begin(), catalog.definitions.end(), [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
+			}
 			if (selected == catalog.definitions.end()) { error = "The selected UAM agent is unavailable: " + chat.uam_agent_id; return false; }
 			instructions += "\n\n" + (selected_agent_instructions ? *selected_agent_instructions : selected->instructions);
 			instructions += "\n\nUAM agent definitions are available below. Delegate through UAM tools only when permitted by the selected agent.\n";
@@ -137,7 +193,33 @@ namespace uam
 					if (ec) { error = "Could not read imported skill assets."; return false; }
 				}
 			}
+			if (host.instruction_text)
+			{
+				if (host.instruction_text->size() > execution_hosts::kMaxInstructionTextBytes)
+				{ error = "Host instruction text exceeds 256 KiB."; return false; }
+				if (!host.instruction_text->empty()) instructions += "\n\n" + *host.instruction_text;
+			}
+			if (instructions.size() > provider_setup::kMaxFileBytes)
+			{ error = "Combined provider instructions exceed 2 MiB."; return false; }
 			bundle.files["AGENTS.md"] = std::move(instructions);
+			if (host.id == execution_hosts::kLocalHostId)
+			{
+				std::string& agent_instructions = bundle.files["AGENTS.md"];
+				const std::string memory_reference = "\nMemory details: __UAM_RESOURCE_ROOT__/memory/index.md (paths are relative to the index).\n";
+				if (agent_instructions.size() <= provider_setup::kMaxFileBytes - memory_reference.size())
+				{
+					agent_instructions += memory_reference;
+					std::string memory_error;
+					if (!MemoryService::BuildRecallResources(data_root, settings, chat, workspace, bundle.files, memory_error) || !bundle.files.contains("memory/index.md"))
+						agent_instructions.resize(agent_instructions.size() - memory_reference.size());
+					else
+					{
+						memory_resources_added = true;
+						memory_instruction_size = agent_instructions.size() - memory_reference.size();
+					}
+					if (!memory_error.empty()) diagnostics::Write("[Memory] Detail resources unavailable; retaining bounded recall: " + memory_error);
+				}
+			}
 		}
 		std::vector<McpServerConfiguration> servers;
 		for (McpServerConfiguration server : selected_servers)
@@ -149,18 +231,52 @@ namespace uam
 			servers.push_back(std::move(server));
 		}
 		bundle.manifest = {{"format", 1}, {"mcpOnly", !configuration.enabled}, {"files", nlohmann::json::object()},
-		    {"hostInstructionFile", configuration.enabled ? host.instruction_file : ""}, {"mcpServers", mcp_server_config::Serialize(servers)}};
+		    {"hostInstructionFile", configuration.enabled && !host.instruction_text ? host.instruction_file : ""}, {"mcpServers", mcp_server_config::Serialize(servers)}};
+		// Format 1 helpers predating this optional hint retain their ordinary eager MCP discovery.
+		if (open_code_discovery) bundle.manifest["openCodeCodeMode"] = true;
+		if (open_code_uam_control_deadline) bundle.manifest["openCodeUamControlDeadline"] = true;
+		if (open_code_request_timeout)
+			bundle.manifest["openCodeRequestTimeout"] = {{"provider", open_code_model_provider}, {"milliseconds", static_cast<std::int64_t>(settings.active_turn_inactivity_timeout_seconds) * 1000}};
+		// The host resolves expert --settings paths; only the requested override crosses SSH.
+		if (claude_fast_override) bundle.manifest["claudeTerminalFastMode"] = chat.service_tier == "fast";
+		if (gemini_thinking_override) bundle.manifest["geminiThinking"] = {{"model", chat.model_id}, {"effort", chat.reasoning_effort}, {"cliVersion", checked_provider_version}};
 		for (const auto& [name, bytes] : bundle.files)
 			bundle.manifest["files"][name] = {{"size", bytes.size()}, {"digest", provider_setup::Digest(bytes)}, {"executable", executable_files.contains(name)}};
+		std::string memory_manifest_error;
+		if (memory_resources_added && !provider_setup::ValidateManifest(bundle.manifest, memory_manifest_error))
+		{
+			// Optional memory must not turn an otherwise valid launch into a manifest-limit failure.
+			for (std::map<std::string, std::string>::iterator file = bundle.files.begin(); file != bundle.files.end();)
+			{
+				if (!file->first.starts_with("memory/")) { ++file; continue; }
+				bundle.manifest["files"].erase(file->first);
+				file = bundle.files.erase(file);
+			}
+			std::string& agent_instructions = bundle.files["AGENTS.md"];
+			agent_instructions.resize(memory_instruction_size);
+			bundle.manifest["files"]["AGENTS.md"] = {{"size", agent_instructions.size()}, {"digest", provider_setup::Digest(agent_instructions)}, {"executable", false}};
+			diagnostics::Write("[Memory] Detail resources unavailable; retaining bounded recall: " + memory_manifest_error);
+		}
+		if (provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kOpenCodeCli))
+		{
+			// Compaction-headroom reports need UAM's own fixed setup overhead per launch; no URLs, headers or file bodies.
+			std::string names;
+			for (const McpServerConfiguration& server : servers) names += (names.empty() ? "" : ",") + server.id;
+			const auto instructions = bundle.files.find("AGENTS.md");
+			diagnostics::Write("[OpenCode setup] host=" + host.id + " version=" + (checked_provider_version.empty() ? std::string("unchecked") : std::string(checked_provider_version)) +
+			    " progressiveMcp=" + (open_code_discovery ? "applied" : "not-applied") + " mcpServers=" + std::to_string(servers.size()) + " [" + names + "]" +
+			    " instructionsBytes=" + std::to_string(instructions == bundle.files.end() ? 0 : instructions->second.size()));
+		}
 		bundle.local_directory = data_root / "runtime" / "provider-setup" / provider_setup::Digest(bundle.manifest.dump());
 		std::vector<std::string> missing;
 		if (!provider_setup::Prepare(bundle.local_directory, bundle.manifest, missing, error)) return false;
+		// Prepare fully verified the existing bundle directory; each install still checks every component below it.
 		for (const std::string& name : missing)
 		{
 			const std::filesystem::path target = bundle.local_directory / uam::paths::PathFromUtf8(name);
 			std::error_code ec;
 			std::filesystem::create_directories(target.parent_path(), ec);
-			if (ec || !provider_setup::WriteRuntimeFile(target, bundle.files.at(name), error, false)) { error = "Could not install central resource: " + name; return false; }
+			if (ec || !provider_setup::WriteRuntimeFile(target, bundle.files.at(name), error, false, bundle.local_directory)) { error = "Could not install central resource: " + name; return false; }
 		}
 		return true;
 	}

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowUp, ChevronRight, Folder, Server, X } from 'lucide-react'
+import { AlertTriangle, ArrowUp, ChevronRight, Folder, Server, X } from 'lucide-react'
 import type { ExecutionHost, RemoteDirectoryListing } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
 import { defaultRemoteBrowsePath, isAbsoluteRemoteWorkspace } from '../../utils/remoteWorkspace'
-import { Button, IconButton } from '../ui'
+import { Button, Card, IconButton, Notice, RowButton } from '../ui'
 import { StatusIndicator } from '../shared/StatusIndicator'
 
 interface RemoteDirectoryBrowserProps {
@@ -83,12 +83,13 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
       style={{ background: 'rgba(0,0,0,0.56)' }}
       onClick={(event) => { if (event.target === event.currentTarget) onCancel() }}
     >
-      <div
+      <Card
+        elevation={2}
+        flush
         role="dialog"
         aria-modal="true"
         aria-label={`Choose directory on ${host.label}`}
         className="flex max-h-[min(680px,calc(100vh-32px))] w-full max-w-xl flex-col overflow-hidden rounded-xl"
-        style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}
       >
         <header className="flex items-center justify-between gap-3 px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div className="min-w-0">
@@ -100,7 +101,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
               <span>{host.platform}</span>
             </div>
           </div>
-          <IconButton icon={<X size={16} />} variant="danger" label="Close remote directory browser" onClick={onCancel} />
+          <IconButton icon={<X size={16} />} variant="ghost" label="Close remote directory browser" onClick={onCancel} />
         </header>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 p-5">
@@ -136,9 +137,8 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
           </div>
 
           {error && (
-            <div id="remote-directory-error" role="alert" className="flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs" style={{ color: 'var(--red)', background: 'color-mix(in srgb, var(--red) 10%, var(--surface))', border: '1px solid color-mix(in srgb, var(--red) 35%, var(--border))' }}>
-              <span className="min-w-0 break-words">{error}</span>
-              <IconButton icon={<X size={14} />} label="Dismiss directory error" variant="danger" onClick={() => setError('')} />
+            <div id="remote-directory-error">
+              <Notice tone="error" dismissLabel="Dismiss directory error" onDismiss={() => setError('')}>{error}</Notice>
             </div>
           )}
 
@@ -149,28 +149,28 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
               <>
                 {validatedDirectory !== directoryKey && <p className="px-3 py-2 text-xs" style={{ color: 'var(--text-2)' }}>Last loaded: {listing.directory}</p>}
                 {listing.parentDirectory && (
-                  <button
+                  <RowButton
                     type="button"
-                    className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors duration-150 hover:bg-[var(--surface-up)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+                    className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors duration-150 hover:bg-[var(--surface-up)] focus-visible:[outline-offset:var(--focus-inset)]"
                     style={{ color: 'var(--text)' }}
                     onClick={() => void load(listing.parentDirectory)}
                   >
                     <ArrowUp size={15} aria-hidden style={{ color: 'var(--text-3)' }} />
                     <span>Parent directory</span>
-                  </button>
+                  </RowButton>
                 )}
                 {listing.directories.map((directory) => (
-                  <button
+                  <RowButton
                     key={directory.path}
                     type="button"
-                    className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors duration-150 hover:bg-[var(--surface-up)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+                    className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors duration-150 hover:bg-[var(--surface-up)] focus-visible:[outline-offset:var(--focus-inset)]"
                     style={{ color: 'var(--text)' }}
                     onClick={() => void load(directory.path)}
                   >
                     <Folder size={15} aria-hidden style={{ color: 'var(--accent)' }} />
                     <span className="min-w-0 flex-1 truncate">{directory.name}</span>
                     <ChevronRight size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
-                  </button>
+                  </RowButton>
                 ))}
                 {listing.directories.length === 0 && (
                   <div className="flex min-h-[180px] items-center justify-center px-4 text-center text-sm" style={{ color: 'var(--text-3)' }}>No child directories are visible here.</div>
@@ -178,8 +178,8 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
               </>
             ) : null}
           </div>
-          {listing?.truncated && <p className="text-xs" style={{ color: 'var(--yellow)' }}>Showing the first 200 directories. Enter a more specific path to continue.</p>}
-          <p className="text-xs" style={{ color: 'var(--text-3)' }}>Read-only: UAM lists directories but does not create, rename, or modify anything on this computer.</p>
+          {listing?.truncated && <p className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--warning)' }}><AlertTriangle size={12} aria-hidden />Showing the first 200 directories. Enter a more specific path to continue.</p>}
+          <p className="text-xs" style={{ color: 'var(--text-3)' }}>Read-only: UAM lists directories but does not create, rename, or modify anything on {host.label}.</p>
         </div>
 
         <footer className="flex items-center justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
@@ -193,7 +193,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
             Use this directory
           </Button>
         </footer>
-      </div>
+      </Card>
     </div>
   )
 }

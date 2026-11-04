@@ -40,6 +40,12 @@ namespace uam::paths
 		return IsGitWorktreeIsolated(chat) && !uam::strings::IsBlank(chat.workspace_worktree_directory);
 	}
 
+	inline std::string RemoteWorkspaceDirectory(const ChatSession& chat)
+	{
+		return uam::strings::Trim(IsGitWorktreeIsolated(chat)
+		    ? chat.workspace_worktree_directory : chat.workspace_directory);
+	}
+
 	inline bool IsControllerLocalWorkspace(const ChatSession& chat)
 	{
 		return uam::strings::NonEmptyOrFallback(
@@ -89,8 +95,10 @@ namespace uam::paths
 		}
 		if (!IsControllerLocalWorkspace(chat))
 		{
+			if (IsGitWorktreeIsolated(chat))
+				return PathFromUtf8(RemoteWorkspaceDirectory(chat));
 			if (!uam::strings::IsBlank(chat.workspace_directory))
-				return PathFromUtf8(uam::strings::Trim(chat.workspace_directory));
+				return PathFromUtf8(RemoteWorkspaceDirectory(chat));
 			if (const ChatFolder* folder = FindWorkspaceFolderById(app, chat.folder_id); folder != nullptr &&
 			    folder->execution_host_id == chat.execution_host_id)
 				return PathFromUtf8(uam::strings::Trim(folder->directory));

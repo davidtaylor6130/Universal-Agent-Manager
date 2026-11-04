@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { act, Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
@@ -7,6 +9,9 @@ import { ConversationWork } from './ConversationWork'
 import { useAppStore } from '../../store/useAppStore'
 import { buildMessageFromCpp } from '../../store/cpp/reconcile'
 import type { CppMessage } from '../../store/cpp/types'
+import type { MessageBlock } from '../../types/message'
+import { FileInspectionContext } from '../shared/fileInspectionContext'
+import { InlineSubagentProvider } from './InlineSubagentGroup'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -22,16 +27,62 @@ describe('AttachmentList', () => {
 
     const markdownContext = host.querySelector('[aria-label="Skills context"]')
     const files = host.querySelector('[aria-label="File attachments"]')
-    expect(markdownContext?.textContent).toContain('Skillsreview.uam')
+    expect(markdownContext?.textContent).toContain('review.uamskill')
     expect(markdownContext?.textContent).not.toContain('/tmp/review.uam')
-    expect(files?.textContent).toContain('/tmp/diagram.pngimage')
+    expect(files?.textContent).toContain('diagram.pngimage')
+    expect(files?.querySelector('[data-detail="/tmp/diagram.png"]')).not.toBeNull()
 
     act(() => root.unmount())
     host.remove()
   })
 })
 
+it.each(['plain', 'blocks', 'legacy'] as const)('keeps images above text and ordinary files below in %s messages', (kind) => {
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  try {
+    act(() => root.render(<PersistedMessageContent message={{ id: 'order', sessionId: 'chat', role: 'assistant', content: 'Message text', createdAt: new Date(0),
+      ...(kind === 'blocks' ? { blocks: [{ type: 'assistant_text' as const, text: 'Message text' }] } : {}),
+      ...(kind === 'legacy' ? { thoughts: 'Reasoning' } : {}),
+      attachments: [{ id: 'image', name: 'photo.webp', type: 'file', mimeType: 'image/webp', size: 4 }, { id: 'doc', name: 'notes.txt', type: 'file', size: 4 }],
+    }} onSelectTool={() => undefined} />))
+    const order = host.textContent!
+    expect(order.indexOf('photo.webp')).toBeLessThan(order.indexOf('Message text'))
+    expect(order.indexOf('notes.txt')).toBeGreaterThan(order.indexOf('Message text'))
+    expect(host.querySelectorAll('[data-detail="photo.webp"]')).toHaveLength(1)
+  } finally { act(() => root.unmount()); host.remove() }
+})
+
 describe('working transcript', () => {
+  it('keeps two provider sub-agent transcripts independently expanded', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ConversationWork
+      events={[]} active={false} duration="1s" expanded
+      tools={[
+        { id: 'child-a', title: 'Review A', kind: 'sub-agent', status: 'completed', content: '', isSubAgent: true, subAgentId: 'provider-a' },
+        { id: 'child-b', title: 'Review B', kind: 'sub-agent', status: 'completed', content: '', isSubAgent: true, subAgentId: 'provider-b' },
+      ]}
+      onSelectTool={vi.fn()}
+      renderSubAgentHistory={(tool) => <article>{tool.subAgentId} tool response</article>}
+    />))
+    const panels = Array.from(host.querySelectorAll<HTMLDetailsElement>('details.conversation-work__subagent'))
+    expect(panels).toHaveLength(2)
+    act(() => panels[0].querySelector('summary')!.click())
+    act(() => panels[1].querySelector('summary')!.click())
+    expect(panels.every((panel) => panel.open)).toBe(true)
+    expect(host.textContent).toContain('provider-a tool response')
+    expect(host.textContent).toContain('provider-b tool response')
+    act(() => panels[0].querySelector('summary')!.click())
+    expect(panels[0].open).toBe(false)
+    expect(panels[1].open).toBe(true)
+    expect(host.textContent).not.toContain('provider-a tool response')
+    expect(host.textContent).toContain('provider-b tool response')
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('distinguishes a timeout stop from an interrupted response', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -124,7 +175,7 @@ describe('working transcript', () => {
 
   it('keeps completed compact work visible in chronological order', () => {
     const { host, root } = renderTimeline('compact')
-    expect(host.textContent).toContain('Worked for 1m 23s')
+    expect(host.textContent).toContain('Worked 1m 23s')
     const text = host.textContent!
     expect(text.indexOf('I will inspect')).toBeLessThan(text.indexOf('Thoughts'))
     expect(text.indexOf('Thoughts')).toBeLessThan(text.indexOf('/bin/zsh'))
@@ -199,8 +250,8 @@ describe('working transcript', () => {
       blocks: [
         { type: 'assistant_text', text: 'Earlier answer.' },
         { type: 'thought', text: 'Saved thought.' },
-        { type: 'tool_call', toolCallId: 'tool-1' },
         { type: 'assistant_text', text: 'Intermediate answer.' },
+        { type: 'tool_call', toolCallId: 'tool-1' },
         { type: 'assistant_text', text: 'Final answer.' },
         { type: 'assistant_text', text: '   ' },
       ], toolCalls: tools,
@@ -236,7 +287,7 @@ describe('working transcript', () => {
     ))
 
     const text = host.textContent ?? ''
-    expect(text.indexOf('Worked for 12s')).toBeLessThan(text.indexOf('Final answer.'))
+    expect(text.indexOf('Worked 12s')).toBeLessThan(text.indexOf('Final answer.'))
     expect(host.querySelector('[data-testid="working-summary"] .conversation-work__reasoning')).toBeNull()
     expect(host.querySelector('[data-testid="working-summary"] .conversation-work__tool')).toBeTruthy()
 
@@ -336,7 +387,7 @@ describe('working transcript', () => {
   it('preserves chronological thinking and tool rows in verbose mode', () => {
     const { host, root } = renderTimeline('verbose')
 
-    expect(host.querySelector('[data-testid="working-summary"]')?.textContent).toContain('Worked for')
+    expect(host.querySelector('[data-testid="working-summary"]')?.textContent).toContain('Worked')
     expect(host.querySelector('[data-testid="thinking-block"]')).toBeTruthy()
     expect(host.querySelector('.uam-tool-row')).toBeTruthy()
 
@@ -439,6 +490,34 @@ describe('working transcript', () => {
     act(() => root.unmount())
     host.remove()
     window.cefQuery = previousCefQuery
+  })
+
+  it('pins recovered tool requests to the displayed history and resets an older modal', async () => {
+    const previousCefQuery = window.cefQuery
+    const digests: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const payload = JSON.parse(request).payload
+      digests.push(payload.historyDigest)
+      onSuccess(JSON.stringify({ content: payload.historyDigest, offset: 0, nextOffset: 16,
+        previousOffset: 0, lastOffset: 0, totalBytes: 16, hasPrevious: false, hasMore: false }))
+    }
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      for (const historyDigest of ['0123456789abcdef', 'fedcba9876543210']) {
+        const message = buildMessageFromCpp('chat-1', { role: 'assistant', content: '', toolCalls: [
+          { ...tools[0], content: '', contentDeferred: true, historyDigest },
+        ] }, 0)
+        expect(message.toolCalls?.[0].historyDigest).toBe(historyDigest)
+        await act(async () => root.render(<ToolCallModal chatId="chat-1" messageIndex={0}
+          tool={message.toolCalls![0]} onClose={vi.fn()} />))
+        expect(document.body.querySelector('.uam-tool-modal__output')?.textContent).toContain(historyDigest)
+      }
+      expect(digests).toEqual(['0123456789abcdef', 'fedcba9876543210'])
+    } finally {
+      act(() => root.unmount()); host.remove(); window.cefQuery = previousCefQuery
+    }
   })
 
   it('keeps loaded deferred chunks in one continuous output', async () => {
@@ -640,6 +719,7 @@ describe('working transcript', () => {
         panel.open = true
         panel.dispatchEvent(new Event('toggle', { bubbles: true }))
       })
+      await act(async () => { for (const button of host.querySelectorAll<HTMLButtonElement>('button')) if (button.textContent === 'Preview' && button.getAttribute('aria-expanded') !== 'true') button.click() })
       await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
       expect(openSubAgentSession).toHaveBeenCalledTimes(1)
       await renderChild(status)
@@ -689,6 +769,7 @@ describe('working transcript', () => {
         panel.dispatchEvent(new Event('toggle', { bubbles: true }))
         await Promise.resolve()
       })
+      await act(async () => { for (const button of host.querySelectorAll<HTMLButtonElement>('button')) if (button.textContent === 'Preview' && button.getAttribute('aria-expanded') !== 'true') button.click() })
       await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
       expect(loadSessionMessages).toHaveBeenCalledWith('child-chat', false, true)
       expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not refresh the sub-agent transcript.')
@@ -726,6 +807,7 @@ describe('working transcript', () => {
         panel.dispatchEvent(new Event('toggle', { bubbles: true }))
         await Promise.resolve()
       })
+      await act(async () => { for (const button of host.querySelectorAll<HTMLButtonElement>('button')) if (button.textContent === 'Preview' && button.getAttribute('aria-expanded') !== 'true') button.click() })
       await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
       expect(loadSessionMessages).not.toHaveBeenCalled()
       Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
@@ -759,6 +841,7 @@ describe('working transcript', () => {
         panel.open = true
         panel.dispatchEvent(new Event('toggle', { bubbles: true }))
       })
+      await act(async () => { for (const button of host.querySelectorAll<HTMLButtonElement>('button')) if (button.textContent === 'Preview' && button.getAttribute('aria-expanded') !== 'true') button.click() })
       await act(async () => { resolveFirst('child-chat') })
       expect(openSubAgentSession).toHaveBeenCalledTimes(1)
       expect(loadSessionMessages).not.toHaveBeenCalled()
@@ -816,6 +899,7 @@ describe('working transcript', () => {
       panel.dispatchEvent(new Event('toggle', { bubbles: true }))
       await Promise.resolve()
     })
+    await act(async () => { for (const button of host.querySelectorAll<HTMLButtonElement>('button')) if (button.textContent === 'Preview' && button.getAttribute('aria-expanded') !== 'true') button.click() })
     expect(openSubAgentSession).toHaveBeenCalledTimes(1)
     onRender.mockClear()
     for (let index = 0; index < 20; index++) {
@@ -872,6 +956,71 @@ describe('working transcript', () => {
 
 
 describe('persisted context compaction', () => {
+  it.each(['saved', 'retained'] as const)('hides streaming compaction text in %s messages through completion without hiding ordinary output', async (source) => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const partial = 'Private native summary'
+    const ordinary = 'Continuing the requested work.'
+    const render = async (blocks: MessageBlock[], active = true) => {
+      const message = buildMessageFromCpp('chat', {
+        role: 'assistant', content: partial, createdAt: '2026-10-15T22:55:48Z', blocks,
+      } as CppMessage, 0)
+      expect(message.blocks).toEqual(blocks)
+      await act(async () => root.render(source === 'saved'
+        ? <PersistedMessageContent message={message} onSelectTool={vi.fn()} />
+        : <TurnTimelineContent events={message.blocks!} active={active} tools={[]} pendingPermission={null} pendingUserInput={null}
+            onSelectTool={vi.fn()} onResolvePermission={async () => true} onCancelTurn={vi.fn()} onStopRuntime={vi.fn()} />))
+    }
+    try {
+      for (const text of [partial, `${partial} continues`, `${partial} complete`]) {
+        await render([{ type: 'context_compaction_summary', text, requestId: 'opencode-message:summary' }])
+        expect(host.textContent).not.toContain(partial)
+        expect(host.querySelector('.context-compaction')).toBeNull()
+      }
+      const hidden = { type: 'context_compaction_summary' as const, text: `${partial} complete`, requestId: 'opencode-message:summary' }
+      await render([hidden, { type: 'assistant_text', text: ordinary, requestId: 'opencode-message:ordinary' }], false)
+      expect(host.textContent).not.toContain(partial)
+      expect(host.textContent).toContain(ordinary)
+      await render([{ ...hidden, type: 'context_compaction', requestId: 'acp-compaction:summary' },
+        { type: 'assistant_text', text: ordinary, requestId: 'opencode-message:ordinary' }], false)
+      const details = host.querySelector<HTMLDetailsElement>('details.context-compaction')
+      expect(details?.open).toBe(false)
+      expect(details?.querySelector('summary')?.textContent).toBe('Context compacted')
+      expect(details?.textContent).toContain(partial)
+      expect(host.querySelector('.conversation-trace__text')?.textContent).toBe(ordinary)
+    } finally { await act(async () => root.unmount()); host.remove() }
+  })
+
+  it.each(['saved', 'retained'] as const)('collapses a proven interrupted compaction in %s history without claiming success', async (source) => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const partial = 'The provider received only this part of its compaction summary.'
+    const block = { type: 'context_compaction_interrupted' as const, text: partial, requestId: 'acp-compaction:interrupted-native', tokensBefore: 5000, tokensAfter: 1000 }
+    try {
+      if (source === 'saved') {
+        const message = buildMessageFromCpp('chat', {
+          role: 'assistant', content: partial, createdAt: '2026-10-15T18:08:28Z',
+          blocks: [block], interrupted: true,
+        } as CppMessage, 0)
+        expect(message.blocks?.[0]).toMatchObject(block)
+        await act(async () => root.render(<PersistedMessageContent message={message} workingMode="compact" onSelectTool={vi.fn()} />))
+      } else {
+        await act(async () => root.render(<TurnTimelineContent events={[block]} tools={[]} pendingPermission={null} pendingUserInput={null} onSelectTool={vi.fn()} onResolvePermission={async () => true} onCancelTurn={vi.fn()} onStopRuntime={vi.fn()} workingMode="compact" />))
+      }
+      const details = host.querySelector<HTMLDetailsElement>('details.context-compaction')
+      expect(details).not.toBeNull()
+      expect(details!.open).toBe(false)
+      expect(details!.querySelector('summary')?.textContent).toBe('Context compaction interrupted')
+      expect(details!.textContent).toContain(partial)
+      expect(details!.textContent).not.toContain('reduced')
+      expect(host.querySelector('.conversation-trace__text')).toBeNull()
+    } finally {
+      await act(async () => root.unmount())
+      host.remove()
+    }
+  })
+
   it('hydrates and renders a native compaction marker without summary text', async () => {
     // Native history omits the text field when a compaction has no summary.
     const message = buildMessageFromCpp('chat', {
@@ -897,15 +1046,250 @@ describe('persisted context compaction', () => {
     const root = createRoot(host)
     await act(async () => root.render(<PersistedMessageContent message={{
       id: 'compaction', sessionId: 'chat', role: 'assistant', content: '', createdAt: new Date(),
-      blocks: [{ type: 'context_compaction', text: 'Keep the selected workspace.', requestId: 'compact-1' }],
+      blocks: [{ type: 'context_compaction', text: 'Keep the selected workspace.', requestId: 'compact-1', tokensBefore: 27445, tokensAfter: 1192 }],
     }} workingMode="compact" onSelectTool={vi.fn()} />))
     const details = host.querySelector('details.context-compaction') as HTMLDetailsElement
     expect(details).not.toBeNull()
     expect(details.open).toBe(false)
     expect(details.querySelector('summary')?.textContent).toBe('Context compacted')
+    expect(details.textContent).toContain('27,445 → 1,192 tokens (96% reduced)')
     details.open = true
     expect(details.textContent).toContain('Keep the selected workspace.')
     await act(async () => root.unmount())
     host.remove()
   })
+})
+
+it('renders adjacent streamed and saved text as one markdown run without empty rows or crossing tool boundaries', () => {
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  const root = createRoot(host)
+  const events = [
+    { type: 'assistant_text' as const, text: '' },
+    { type: 'assistant_text' as const, text: '**Complete' },
+    { type: 'assistant_text' as const, text: ' sentence**\n\n```ts\nconst value = ' },
+    { type: 'assistant_text' as const, text: '1\n```' },
+    { type: 'tool_call' as const, toolCallId: 'tool-boundary' },
+    { type: 'assistant_text' as const, text: ' \n ' },
+    { type: 'thought' as const, text: 'Boundary thought' },
+    { type: 'assistant_text' as const, text: 'Final paragraph.' },
+  ]
+  const tools = [{ id: 'tool-boundary', title: 'Inspect', kind: 'read', status: 'completed', content: 'OK' }]
+  const inspect = () => {
+    expect(Array.from(host.querySelectorAll('.conversation-trace__text'), node => node.textContent?.replace('Copy code block', ''))).toEqual(['Complete sentencetsconst value = 1', 'Final paragraph.'])
+    expect(host.querySelectorAll('strong')).toHaveLength(1)
+    expect(host.querySelector('pre code')?.textContent).toBe('const value = 1')
+    expect(host.querySelectorAll('.conversation-trace__text p')).toHaveLength(2)
+  }
+  try {
+    act(() => root.render(<TurnTimelineContent events={events} tools={tools} active disclosureState={{ expanded: true }} pendingPermission={null} pendingUserInput={null} onSelectTool={() => {}} onResolvePermission={async () => true} onCancelTurn={() => {}} onStopRuntime={() => {}} />))
+    inspect()
+    act(() => root.render(<PersistedMessageContent message={{ id: 'saved', sessionId: 'chat', role: 'assistant', content: '**Complete sentence**\n\n```ts\nconst value = 1\n```Final paragraph.', blocks: events, toolCalls: tools, createdAt: new Date(0) }} disclosureState={{ expanded: true }} onSelectTool={() => {}} />))
+    inspect()
+    // Rendering must not rewrite persisted/provider-owned fragments.
+    expect(events[1].text).toBe('**Complete')
+    expect(events).toHaveLength(8)
+  } finally { act(() => root.unmount()); host.remove() }
+})
+
+it('does not rescan a live timeline for a composer-only render and still accepts streamed updates', () => {
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  let reads = 0
+  const events = [{ type: 'assistant_text' as const, get text() { reads++; return 'Before stream' } }]
+  const props = { events, tools: [], active: true, pendingPermission: null, pendingUserInput: null,
+    onSelectTool: vi.fn(), onResolvePermission: vi.fn(), onCancelTurn: vi.fn(), onStopRuntime: vi.fn() }
+  try {
+    act(() => root.render(<TurnTimelineContent {...props} />))
+    expect(reads).toBeGreaterThan(0)
+    reads = 0
+    act(() => root.render(<TurnTimelineContent {...props} />))
+    expect(reads).toBe(0)
+    act(() => root.render(<TurnTimelineContent {...props} events={[{ type: 'assistant_text', text: 'After stream' }]} />))
+    expect(host.textContent).toContain('After stream')
+  } finally { act(() => root.unmount()); host.remove() }
+})
+
+it.each([
+  { toolStatus: 'completed', childStatus: 'running', shouldPoll: true },
+  { toolStatus: 'running', childStatus: 'completed', shouldPoll: false },
+  { toolStatus: 'completed', childStatus: 'pendingInit', shouldPoll: true },
+])('refreshes the actual $childStatus child independently of its $toolStatus parent tool', async ({ toolStatus, childStatus, shouldPoll }) => {
+  vi.useFakeTimers()
+  const original = useAppStore.getState()
+  const openSubAgentSession = vi.fn().mockResolvedValue('status-child-chat')
+  const loadSessionMessages = vi.fn().mockResolvedValue(true)
+  const child = { id: 'status-child-chat', name: 'Status child', folderId: null, viewMode: 'chat' as const, providerId: 'codex-cli', createdAt: new Date(), updatedAt: new Date() }
+  useAppStore.setState({ sessions: [child], messages: { [child.id]: [] }, openSubAgentSession, loadSessionMessages })
+  const host = document.createElement('div'); const root = createRoot(host)
+  const render = (status: string) => act(async () => root.render(<PersistedMessageContent sourceChatId="status-parent" onSelectTool={vi.fn()} message={{
+    id: 'status-message', sessionId: 'status-parent', role: 'assistant', content: '', createdAt: new Date(), blocks: [{ type: 'tool_call', toolCallId: 'status-tool' }],
+    toolCalls: [{ id: 'status-tool', title: 'Worker', kind: 'sub-agent', status: toolStatus, content: '', isSubAgent: true, subAgentId: 'status-native-child', subAgentChildren: [{ id: 'status-native-child', title: 'Worker', status }] }],
+  }} />))
+  try {
+    await render(childStatus)
+    await act(async () => { const panel = host.querySelector('details')!; panel.open = true; panel.dispatchEvent(new Event('toggle', { bubbles: true })) })
+    await act(async () => (host.querySelector('[aria-label="Preview Worker"]') as HTMLButtonElement).click())
+    expect(openSubAgentSession).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    if (shouldPoll) {
+      expect(loadSessionMessages).toHaveBeenCalledExactlyOnceWith(child.id, false, true)
+      await render('completed')
+      expect(openSubAgentSession).toHaveBeenCalledTimes(2)
+    } else expect(loadSessionMessages).not.toHaveBeenCalled()
+  } finally { act(() => root.unmount()); host.remove(); useAppStore.setState(original, true); vi.useRealTimers() }
+})
+
+it.each([undefined, 'legacy_path'] as const)('NM-R2-03 makes a mixed URI attachment unavailable instead of inspecting its path (source=%s)', async source => {
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  const inspect = vi.fn()
+  const sourceUri = 'file:///opaque/reference%20image.png'
+  const fetch = vi.fn()
+  vi.stubGlobal('fetch', fetch)
+  try {
+    await act(async () => root.render(<FileInspectionContext.Provider value={inspect}>
+      <AttachmentList chatId="stored-chat" nativeMessageIndex={11} attachments={[
+        { id: 'mixed-reference', name: 'Recorded image', type: 'file', mimeType: 'image/png', size: 0,
+          source, sourceUri, path: '/must-not-inspect/image.png', previewKey: 'a'.repeat(64) },
+      ]} />
+    </FileInspectionContext.Provider>))
+    const chip = host.querySelector<HTMLElement>('.uam-context-chip__body')!
+    expect(chip).not.toBeNull()
+    act(() => chip.click())
+    expect(inspect).not.toHaveBeenCalled()
+    expect(host.querySelector('button.uam-context-chip__body, a, img')).toBeNull()
+    expect(host.textContent).toContain('External reference')
+    expect(host.textContent).toContain('Bytes unavailable')
+    expect(host.querySelector('[data-detail]')?.getAttribute('data-detail')).toBe(sourceUri)
+    expect(fetch).not.toHaveBeenCalled()
+  } finally { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals() }
+})
+
+
+describe('shared stored history content preservation', () => {
+  it.each([false, true])('keeps partial-inventory content, recorded requests and missing-tool evidence without authority (passive=%s)', (passive) => {
+    const oldExpanded = useAppStore.getState().expandWorkTraces
+    useAppStore.setState({ expandWorkTraces: true })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    const onSelectTool = vi.fn()
+    try {
+      const message = buildMessageFromCpp('fixture', { role: 'assistant', content: 'Retained final answer', thoughts: 'Retained reasoning',
+        toolCalls: [{ id: 'orphan', title: 'Retained unreferenced tool', kind: 'read', status: 'completed', content: 'Stored output' }],
+        blocks: [{ type: 'permission_request', requestId: 'permission', text: 'Recorded permission text' },
+          { type: 'user_input_request', requestId: 'question', text: 'Recorded question text' },
+          { type: 'tool_call', toolCallId: 'missing' }], createdAt: '2026-01-01T00:00:00Z' }, 0)
+      act(() => root.render(<PersistedMessageContent message={message} onSelectTool={onSelectTool} passive={passive} workingMode="verbose" />))
+      expect(host.textContent).toContain('Retained final answer')
+      expect(host.textContent).toContain('Retained reasoning')
+      expect(host.textContent).toContain('Retained unreferenced tool')
+      expect(host.querySelectorAll('[role="note"]')).toHaveLength(2)
+      expect(host.textContent).toContain('Recorded permission text')
+      expect(host.textContent).toContain('Recorded question text')
+      expect(host.textContent).toContain('Tool activity is unavailable in this stored transcript.')
+      expect(host.textContent).not.toContain('pending')
+      expect([...host.querySelectorAll('button')].some(button => /approve|allow|answer|resume|send/i.test(button.textContent ?? ''))).toBe(false)
+      expect(onSelectTool).not.toHaveBeenCalled()
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ expandWorkTraces: oldExpanded }) }
+  })
+
+  it('hides recorded permission and question requests with the collapsed work trace', () => {
+    const oldExpanded = useAppStore.getState().expandWorkTraces
+    useAppStore.setState({ expandWorkTraces: false })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      const message = buildMessageFromCpp('fixture', { role: 'assistant', content: 'Final answer',
+        blocks: [{ type: 'permission_request', requestId: 'permission', text: 'Recorded permission text' },
+          { type: 'user_input_request', requestId: 'question', text: 'Recorded question text' },
+          { type: 'assistant_text', text: 'Final answer' }], createdAt: '2026-01-01T00:00:00Z' }, 0)
+      act(() => root.render(<PersistedMessageContent message={message} onSelectTool={vi.fn()} workingMode="verbose" />))
+      expect(host.textContent).toContain('Final answer')
+      expect(host.querySelectorAll('[role="note"]')).toHaveLength(0)
+      expect(host.textContent).not.toContain('Recorded permission text')
+      expect(host.textContent).not.toContain('Recorded question text')
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ expandWorkTraces: oldExpanded }) }
+  })
+
+  it('keeps separately retained final content when only reasoning is in the block inventory', () => {
+    const host = document.createElement('div'); const root = createRoot(host)
+    try {
+      act(() => root.render(<PersistedMessageContent message={{ id: 'partial', sessionId: 'fixture', role: 'assistant',
+        content: 'Final answer survives.', createdAt: new Date(0), blocks: [{ type: 'thought', text: 'Reasoning only.' }] }} onSelectTool={() => undefined} />))
+      expect(host.textContent?.split('Final answer survives.')).toHaveLength(2)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('explains unavailable stored deferred output without borrowing any chat read or resume capability', () => {
+    const requests: unknown[] = []; const previous = window.cefQuery
+    window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') }
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ToolCallModal tool={{ id: 'deferred', title: 'Stored deferred tool', kind: 'read', status: 'completed', content: '', contentDeferred: true }} onClose={() => undefined} />))
+      expect(document.body.textContent).toContain('Tool output was not included in this stored transcript.')
+      expect(document.body.textContent).not.toContain('No tool output yet.')
+      expect(requests).toEqual([])
+      expect([...document.body.querySelectorAll('button')].some(button => /load latest|resume|open chat/i.test(button.textContent ?? ''))).toBe(false)
+    } finally { act(() => root.unmount()); host.remove(); window.cefQuery = previous }
+  })
+})
+
+
+it('retains passive collapsed recorded launches without borrowing an enclosing parent feed or native child identity', async () => {
+  const previous = useAppStore.getState()
+  const oldCef = window.cefQuery
+  const requests: Array<{ action: string; payload?: unknown }> = []
+  const open = vi.fn().mockResolvedValue(null)
+  const select = vi.fn()
+  const inspect = vi.fn()
+  const fetch = vi.fn()
+  vi.stubGlobal('fetch', fetch)
+  window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') }
+  useAppStore.setState({ expandWorkTraces: false, openSubAgentSession: open,
+    sessions: [{ id: 'borrowed-parent', providerId: 'codex-cli' } as never, { id: 'recorded-native', providerId: 'copilot-cli' } as never] })
+  const message = buildMessageFromCpp('stored-child', { role: 'assistant', content: 'Final recorded text', createdAt: '2026-01-01T00:00:00Z',
+    blocks: [{ type: 'tool_call', toolCallId: 'native-launch' }, { type: 'assistant_text', text: '   ' }, { type: 'tool_call', toolCallId: 'managed-launch' }],
+    toolCalls: [{ id: 'native-launch', title: 'spawn_agent', kind: 'sub-agent', status: 'completed', content: 'Stored native result', isSubAgent: true,
+      subAgentChildren: [{ id: 'recorded-native', title: 'Recorded native task', status: 'completed', durationMs: 2000 }] },
+      { id: 'managed-launch', title: 'agent_delegate', kind: 'mcpToolCall', status: 'completed', content: '{"runId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","status":"queued"}' }],
+  }, 1)
+  const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+  try {
+    await act(async () => root.render(<FileInspectionContext.Provider value={inspect}><InlineSubagentProvider sourceChatId="borrowed-parent">
+      <PersistedMessageContent passive sourceChatId="borrowed-parent" message={message} launchesOnly workingMode="verbose" onSelectTool={select} />
+    </InlineSubagentProvider></FileInspectionContext.Provider>))
+    expect(host.querySelectorAll('.uam-inline-subagents')).toHaveLength(2)
+    expect(host.querySelector('[data-source-chat]')).toBeNull()
+    expect(host.querySelector('.uam-subagent-group')?.getAttribute('open')).toBeNull()
+    await act(async () => { const details = host.querySelector<HTMLDetailsElement>('.uam-subagent-group')!; details.open = true; details.dispatchEvent(new Event('toggle', { bubbles: true })) })
+    expect(host.querySelector('[data-subagent-row="recorded-native"] .uam-subagent-card__title')?.textContent).toBe('Recorded native task')
+    expect(host.querySelector('[data-subagent-row="recorded-native"] .uam-subagent-card__provider')?.getAttribute('data-provider-id')).toBe('unknown')
+    const native = host.querySelector<HTMLButtonElement>('[data-subagent-row="recorded-native"]')!
+    expect(native.disabled).toBe(true)
+    const managed = host.querySelector<HTMLButtonElement>('[data-managed-open]')!
+    expect(managed.disabled).toBe(true)
+    await act(async () => { native.click(); managed.click() })
+    expect(host.querySelector('[aria-label^="Preview "]')).toBeNull()
+    expect(host.querySelector('[aria-label^="Stop "]')).toBeNull()
+    expect(requests).toEqual([]); expect(open).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled(); expect(inspect).not.toHaveBeenCalled()
+    expect(select).not.toHaveBeenCalled()
+    expect(host.textContent).not.toContain('Final recorded text')
+  } finally { act(() => root.unmount()); host.remove(); window.cefQuery = oldCef; useAppStore.setState(previous, true); vi.unstubAllGlobals() }
+})
+
+it('animates the running step side to side by transform only, with no idle, Motion Off or reduced-motion sweep', () => {
+  const css = readFileSync(resolve(process.cwd(), 'src/components/chat/conversation.css'), 'utf8')
+  const sweep = '[data-processing-step="true"] .conversation-work__tool-title::after'
+  const rule = css.slice(css.indexOf(sweep), css.indexOf('}', css.indexOf(sweep)))
+  expect(rule).toContain('animation: conversation-processing-sweep')
+  // The title shrinks to its text while running so the band crosses the label rather than the empty row.
+  expect(css).toContain('[data-processing-step="true"] .conversation-work__tool-title { flex: 0 1 auto; margin-right: auto; }')
+  const keyframes = css.slice(css.indexOf('@keyframes conversation-processing-sweep'))
+  expect(keyframes.slice(0, keyframes.indexOf('\n'))).toMatch(/transform: translateX\(-100%\).*transform: translateX\(250%\)/)
+  // Only the active step selector animates; a background-position text sweep repaints every frame.
+  expect(css.match(/animation: conversation-processing-sweep/g)).toHaveLength(1)
+  expect(css).not.toMatch(/conversation-processing-sweep[^}]*background-position/)
+  expect(css).toContain(`[data-motion="off"] ${sweep}`)
+  expect(css).toContain('[data-motion="off"] .conversation-work__live { animation: none; }')
+  const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)', css.indexOf(sweep)))
+  expect(reduced.slice(0, reduced.indexOf('}\n}'))).toContain(sweep)
 })

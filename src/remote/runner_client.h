@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <initializer_list>
 #include <string>
 #include <stop_token>
 #include <unordered_map>
@@ -17,6 +18,7 @@
 
 class IPlatformProcessService;
 struct ProcessExecutionResult;
+struct ExecutionHost;
 
 namespace uam::remote
 {
@@ -40,24 +42,45 @@ namespace uam::remote
 		bool truncated = false;
 	};
 
+	struct PathInspection
+	{
+		std::string path;
+		bool exists = false;
+		bool directory = false;
+		bool regular_file = false;
+	};
+
 	std::vector<std::string> SshBridgeArgv(const std::string& ssh_alias,
 	                                       const std::string& platform,
 	                                       const std::string& version,
 	                                       const std::string& runner_directory = {},
 	                                       int protocol_version = kRunnerProtocolVersion);
 
+	/// Cached health may be stale; the connection handshake still validates the installed helper.
+	bool CanAttemptRunnerConnection(const ExecutionHost& host);
+
+	bool ValidateRemoteWorkspaceDirectory(IPlatformProcessService& service, const ExecutionHost& host,
+	    const std::filesystem::path& directory, std::string* error_out = nullptr);
+
 	class RunnerClient
 	{
 	  public:
+		/// Ordinary saved-host clients enforce installation admission before starting a bridge.
+		RunnerClient(IPlatformProcessService& process_service, const ExecutionHost& host);
+		/// Explicit transport access for bootstrap/recovery and runner-side owned proxy channels.
 		RunnerClient(IPlatformProcessService& process_service,
 		             std::vector<std::string> bridge_argv,
 		             std::string expected_version = {},
 		             int expected_protocol_version = kRunnerProtocolVersion);
+		RunnerClient(IPlatformProcessService& process_service, std::initializer_list<std::string> bridge_argv,
+		    std::string expected_version = {}, int expected_protocol_version = kRunnerProtocolVersion)
+		    : RunnerClient(process_service, std::vector<std::string>(bridge_argv), std::move(expected_version), expected_protocol_version) {}
 		~RunnerClient();
 		RunnerClient(const RunnerClient&) = delete;
 		RunnerClient& operator=(const RunnerClient&) = delete;
 
-		bool Connect(std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// interrupt is polled while the handshake waits, like PollProcess interrupts.
+		bool Connect(std::string* error_out = nullptr, std::stop_token stop_token = {}, const std::function<bool()>& interrupt = {});
 		bool IsConnected() const { return m_connected; }
 		bool InstallProviderConfiguration(const std::filesystem::path& source, const std::filesystem::path& target, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool SupportsProviderNativeContext() const { return m_providerNativeContext; }
@@ -70,11 +93,13 @@ namespace uam::remote
 		                  std::string* error_out = nullptr,
 		                  bool attach_if_exists = false,
 		                  std::string control_token = {},
-		                  bool retry_lost_reply = true, const std::string& configuration_provider = {}, const std::filesystem::path& configuration_directory = {}, const nlohmann::json& session_mcp_servers = nlohmann::json::array());
+		                  bool retry_lost_reply = true, const std::string& configuration_provider = {}, const std::filesystem::path& configuration_directory = {}, const nlohmann::json& session_mcp_servers = nlohmann::json::array(), bool* configuration_rejected_out = nullptr);
+		/// A nonempty retained token requires saved intent; caller owns stop/removal after durable settlement.
 		ProcessExecutionResult ExecuteCommand(const std::string& session_id,
 		    const std::filesystem::path& working_directory,
 		    const std::vector<std::string>& argv, int timeout_ms,
-		    std::stop_token stop_token = {}, std::string_view standard_input = {});
+		    std::stop_token stop_token = {}, std::string_view standard_input = {},
+		    std::string retained_control_token = {}, bool* start_request_attempted_out = nullptr);
 		void SetProcessControlToken(const std::string& session_id,
 		                            std::string control_token);
 		bool WriteProcess(const std::string& session_id, std::string_view bytes,
@@ -85,7 +110,8 @@ namespace uam::remote
 		                 std::string* error_out = nullptr,
 		                 const std::function<bool()>& interrupt = {},
 		                 bool* interrupted_out = nullptr,
-		                 const ProcessPollResult* resume_after = nullptr);
+		                 const ProcessPollResult* resume_after = nullptr,
+		                 bool* missing_out = nullptr);
 		bool AcknowledgeProcessOutput(const std::string& session_id,
 		                              const ProcessPollResult& result,
 		                              std::string* error_out = nullptr);
@@ -115,18 +141,40 @@ namespace uam::remote
 		              const std::filesystem::path& target_path, bool overwrite,
 		              std::string* error_out = nullptr);
 		bool ConfigureStartup(bool enabled, std::string* error_out = nullptr, std::stop_token stop_token = {});
+		bool ObserveStartup(std::string& status, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool PrepareTextWorker(std::string_view id, std::string_view provider, std::filesystem::path& directory, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool RemoveTextWorker(std::string_view id, std::string* error_out = nullptr);
 		bool ListMemoryEntries(const std::filesystem::path& workspace, std::vector<MemoryLibraryStore::Entry>& entries, std::string* error_out = nullptr);
-		bool CreateMemoryEntry(const std::filesystem::path& workspace, const MemoryLibraryStore::Draft& draft, MemoryLibraryStore::Entry& created, std::string* error_out = nullptr);
+		bool CreateMemoryEntry(const std::filesystem::path& workspace, const MemoryLibraryStore::Draft& draft, MemoryLibraryStore::Entry& created, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool DeleteMemoryEntry(const std::filesystem::path& workspace, std::string_view id, std::string* error_out = nullptr);
 		bool ReadProjectMemory(const std::filesystem::path& workspace, int budget, std::string& text,
 		                       std::string* error_out = nullptr, std::stop_token stop_token = {});
+		bool ReadWorkspaceFile(const std::string& workspace, const std::string& path, nlohmann::json& file,
+		                       std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// Bounded binary workspace snapshot; chunks must retain a single path, size and content fingerprint.
+		bool ReadWorkspaceAttachment(const std::string& workspace, const std::string& path, std::string& bytes,
+		    std::size_t max_bytes, std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// Typed HTTP control reaches only the authenticated server belonging to this owned native process.
+		bool QueryOpenCodeNative(const std::string& session_id, const nlohmann::json& operation, nlohmann::json& result,
+		    std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// Read-only native TUI observation uses its own private launch-channel password, never an ACP endpoint.
+		bool ObserveOpenCodeTerminal(int port, const std::string& token, const std::string& workspace,
+		    const nlohmann::json& operation, nlohmann::json& result, std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// <summary>Fetches one immutable accounting snapshot; pending collection returns a pending object.</summary>
+		bool ReadUsageAccountingFile(const std::filesystem::path& path, nlohmann::json& progress, std::string* error_out = nullptr, std::stop_token stop_token = {});
+		bool ReadUsageAccounting(nlohmann::json& snapshot, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool ReadTextFile(const std::filesystem::path& remote_path, std::string& text,
 		                  std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// Reads one exact immutable native transcript, releasing its bounded runner snapshot on success or cancellation.
+		bool ReadNativeHistory(const std::string& provider, const std::string& session, const std::string& workspace,
+		    nlohmann::json& snapshot, std::string* error_out = nullptr, std::stop_token stop_token = {}, const std::string& agent_id = {});
 		bool ListDirectories(const std::filesystem::path& remote_path,
 		                     DirectoryListing& result,
 		                     std::string* error_out = nullptr);
+		/// Read-only native path snapshot without links; recheck before mutation, and allow only a missing final leaf.
+		bool InspectPath(const std::string& absolute_path, bool allow_missing_leaf,
+		                 PathInspection& result, std::string* error_out = nullptr,
+		                 std::stop_token stop_token = {});
 		void Disconnect();
 
 	  private:
@@ -149,14 +197,26 @@ namespace uam::remote
 		int m_expectedProtocolVersion = kRunnerProtocolVersion;
 		std::uint64_t m_nextRequestId = 1;
 		bool m_connected = false;
+		bool m_connectionAllowed = true;
 		bool m_directoryBrowsing = false;
+		bool m_safePathInspection = false;
 		bool m_contextRead = false;
+		bool m_providerHistoryRead = false;
+		bool m_workspaceFileRead = false;
+		bool m_workspaceAttachmentRead = false;
+		bool m_openCodeNativeControl = false;
+		bool m_openCodeTerminalObservation = false;
+		bool m_usageAccounting = false;
+		bool m_usageAccountingStream = false;
 		bool m_projectMemory = false;
 		bool m_isolatedTextWorkers = false;
 		bool m_runnerStartup = false;
+		bool m_runnerStartupObservation = false;
 		bool m_leasedChannelTake = false;
 		bool m_providerNativeContext = false;
 		bool m_centralProviderConfiguration = false;
+		bool m_geminiThinkingConfiguration = false;
+		bool m_claudeTerminalFastConfiguration = false;
 		bool m_processOutputAcknowledgement = false;
 		std::unordered_map<std::string, std::string> m_processControlTokens;
 		std::unordered_map<std::string, std::uint64_t> m_processInputSequences;

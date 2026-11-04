@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/config/voice_input_settings.h"
+
 #include "common/config/central_provider_configuration.h"
 
 #include "common/memory/memory_levels.h"
@@ -9,9 +11,13 @@
 #include "common/config/execution_host_config.h"
 #include "common/config/mcp_server_config.h"
 #include "common/config/provider_chat_defaults.h"
+#include "common/config/host_scoped_settings.h"
+#include "common/config/provider_availability.h"
 #include "common/config/settings_normalization.h"
+#include "common/config/settings_store.h"
 #include "common/models/app_models.h"
 #include "common/provider/codex/codex_options.h"
+#include "common/provider/excluded_provider_data.h"
 #include "common/provider/provider_ids.h"
 #include "common/utils/string_utils.h"
 
@@ -31,7 +37,8 @@ namespace uam::settings_frontend_json
 		{
 			const std::string chat_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(entry.first);
 			const std::string worker_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(entry.second.worker_provider_id);
-			if (chat_provider_id.empty() || worker_provider_id.empty())
+			// A binding that names an excluded provider is saved data only; the interface shows the default (the chat's own provider).
+			if (chat_provider_id.empty() || worker_provider_id.empty() || excluded_provider_data::IsExcluded(chat_provider_id) || excluded_provider_data::IsExcluded(worker_provider_id))
 			{
 				continue;
 			}
@@ -60,7 +67,7 @@ namespace uam::settings_frontend_json
 			    {"approvalMode", uam::approval_modes::NormalizePersistedProviderDefaultApprovalMode(entry.second.approval_mode)},
 			    {"commandSafetyTier", uam::command_safety::NormalizeTier(entry.second.command_safety_tier)},
 			    {"memoryEnabled", entry.second.memory_enabled},
-			    {"memoryLevel", uam::memory_levels::Normalize(entry.second.memory_level, entry.second.memory_enabled)},
+			    {"memoryLevel", uam::memory_levels::NormalizeSelection(entry.second.memory_level, entry.second.memory_enabled)},
 			    {"reasoningEffort", uam::provider_chat_defaults::NormalizeReasoningEffort(provider_id, entry.second.reasoning_effort)},
 			    {"serviceTier", uam::codex::NormalizeServiceTier(entry.second.service_tier)},
 			    {"smallModelMode", entry.second.small_model_mode},
@@ -103,6 +110,33 @@ namespace uam::settings_frontend_json
 		settings_json["theme"] = uam::settings::NormalizeThemeId(settings.ui_theme);
 		settings_json["showProviderIconsInSidebar"] = settings.show_provider_icons_in_sidebar;
 		settings_json["showWorktreePathInSidebar"] = settings.show_worktree_path_in_sidebar;
+		settings_json["gitEnabled"] = settings.git_enabled;
+		settings_json["gitAutoWorktree"] = settings.git_auto_worktree;
+		settings_json["gitSnapshotSvn"] = settings.git_snapshot_svn;
+		settings_json["gitSnapshotPlainFolders"] = settings.git_snapshot_plain_folders;
+		settings_json["gitPullBeforeChat"] = settings.git_pull_before_chat;
+		settings_json["gitPortMethod"] = settings.git_port_method == GitPortMethod::Merge ? "merge" : settings.git_port_method == GitPortMethod::Squash ? "squash" : "patch";
+		settings_json["gitDefaultBaseBranch"] = settings.git_default_base_branch;
+		settings_json["worktreeCleanupEnabled"] = settings.worktree_cleanup_enabled;
+		settings_json["worktreeRetentionDays"] = settings.worktree_retention_days;
+		settings_json["backupLogRetentionDays"] = settings.backup_log_retention_days;
+		settings_json["httpCacheClearIntervalDays"] = settings.http_cache_clear_interval_days;
+		settings_json["svnEnabled"] = settings.svn_enabled;
+		settings_json["svnUpdateBeforeChat"] = settings.svn_update_before_chat;
+		settings_json["voiceInputMode"] = uam::voice_input::NormalizeMode(settings.voice_input_mode);
+		settings_json["voiceInputServerBaseUrl"] = uam::strings::Trim(settings.voice_input_server_base_url);
+		settings_json["voiceInputServerEndpoint"] = uam::strings::Trim(settings.voice_input_server_endpoint);
+		settings_json["voiceInputServerModel"] = uam::strings::Trim(settings.voice_input_server_model);
+		settings_json["voiceInputApiKeyEnv"] = uam::strings::Trim(settings.voice_input_api_key_env);
+		settings_json["voiceInputCapabilities"] = {
+		    {"system", {{"supported", true}, {"reason", ""}}},
+		    {"local", {{"supported", false}, {"reason", "Local AI transcription is coming soon."}}},
+#if defined(__APPLE__)
+		    {"server", {{"supported", true}, {"reason", ""}}},
+#else
+		    {"server", {{"supported", false}, {"reason", "Server transcription audio capture is not available on this platform yet."}}},
+#endif
+		};
 		settings_json["memoryEnabledDefault"] = settings.memory_enabled_default;
 		settings_json["memoryLevelDefault"] = uam::memory_levels::Normalize(settings.memory_level_default, settings.memory_enabled_default);
 		settings_json["memoryIdleDelaySeconds"] = std::clamp(settings.memory_idle_delay_seconds, uam::settings::kMinMemoryIdleDelaySeconds, uam::settings::kMaxMemoryIdleDelaySeconds);
@@ -110,9 +144,11 @@ namespace uam::settings_frontend_json
 		AppSettings normalized_goal_settings = settings;
 		uam::settings::ClampGoalSettings(normalized_goal_settings);
 		settings_json["goalMaxLoopIterations"] = normalized_goal_settings.goal_max_loop_iterations;
+		settings_json["goalTokenBudget"] = normalized_goal_settings.goal_token_budget;
 		AppSettings normalized_output_settings = settings;
 		uam::settings::ClampAcpOutputSettings(normalized_output_settings);
 		settings_json["acpTurnOutputLimitMiB"] = normalized_output_settings.acp_turn_output_limit_mib;
+		settings_json["streamLoopRepeatLimit"] = uam::stream_watch::NormalizeLoopRepeatLimit(settings.stream_loop_repeat_limit);
 		settings_json["activeTurnInactivityTimeoutSeconds"] = std::clamp(settings.active_turn_inactivity_timeout_seconds, uam::settings::kMinActiveTurnInactivityTimeoutSeconds, uam::settings::kMaxActiveTurnInactivityTimeoutSeconds);
 		settings_json["acpSetupInactivityTimeoutSeconds"] = std::clamp(settings.acp_setup_inactivity_timeout_seconds, uam::settings::kMinAcpSetupInactivityTimeoutSeconds, uam::settings::kMaxAcpSetupInactivityTimeoutSeconds);
 		settings_json["updateChecksEnabled"] = settings.update_checks_enabled;
@@ -121,14 +157,30 @@ namespace uam::settings_frontend_json
 		settings_json["dismissedUpdateVersions"] = settings.dismissed_update_versions;
 		settings_json["defaultNewChatProviderId"] = uam::provider_ids::NormalizeCliProviderAliasOrSelf(settings.default_new_chat_provider_id);
 		settings_json["providerChatDefaults"] = SerializeProviderChatDefaults(settings.provider_chat_defaults);
+		settings_json["hostScopedSettings"] = true;
+		settings_json["hostScopedSettingsValues"] = nlohmann::json::object();
+		for (const ExecutionHost& host : settings.execution_hosts)
+		{
+			if (host.transport != "ssh") continue;
+			std::map<std::string, ProviderChatDefaults> defaults = settings.provider_chat_defaults;
+			const std::map<std::string, HostScopedSettings>::const_iterator scoped = settings.host_scoped_settings.find(host.id);
+			if (scoped != settings.host_scoped_settings.end()) for (const std::pair<const std::string, ProviderChatDefaults>& entry : scoped->second.provider_chat_defaults) defaults[entry.first] = entry.second;
+			settings_json["hostScopedSettingsValues"][host.id] = {{"defaultNewChatProviderId", uam::host_scoped_settings::DefaultProvider(settings, host.id)}, {"providerChatDefaults", SerializeProviderChatDefaults(defaults)}, {"mcpServers", uam::mcp_server_config::Serialize(uam::host_scoped_settings::VisibleMcpServers(settings, host.id))}};
+		}
+		settings_json["providerAvailability"] = provider_availability::Serialize(settings.provider_availability);
 		settings_json["fileExplorerApplication"] = settings.file_explorer_application;
+		settings_json["windowsPowerShell"] = settings.windows_powershell;
 		settings_json["defaultEditorPresetId"] = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 		settings_json["editorFileAssociations"] = SerializeEditorFileAssociations(settings.editor_file_associations);
 		settings_json["centralProviderConfiguration"] = uam::central_configuration::Serialize(settings.central_provider_configuration);
 		settings_json["mcpServers"] = uam::mcp_server_config::Serialize(settings.mcp_servers);
 		settings_json["executionHosts"] = uam::execution_hosts::Serialize(settings.execution_hosts);
+		settings_json["executionRouting"] = SettingsStore::SerializeExecutionRoutingSettings(settings.execution_routing);
 		settings_json["favoriteUamAgentIds"] = settings.favorite_uam_agent_ids;
+		settings_json["nativeImportExcludedTitlePrefixes"] = settings.native_import_excluded_title_prefixes;
+		settings_json["nativeImportExcludedDirectories"] = settings.native_import_excluded_directories;
 		settings_json["uamAgentCycleShortcut"] = settings.uam_agent_cycle_shortcut;
+		settings_json["computerUseGloballyEnabled"] = settings.computer_use_globally_enabled;
 		settings_json["computerUseAllowlistEnabled"] = settings.computer_use_allowlist_enabled;
 		settings_json["computerUseAllowedApplications"] = nlohmann::json::array();
 		for (const auto& rule : settings.computer_use_allowed_applications)

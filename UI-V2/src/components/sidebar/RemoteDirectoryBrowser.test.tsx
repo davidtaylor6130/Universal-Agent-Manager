@@ -47,7 +47,6 @@ describe('RemoteDirectoryBrowser', () => {
     await click('Go')
     const error = element.querySelector<HTMLElement>('[role="alert"]')!
     expect(error.textContent).toContain(failedPath === 'relative' ? 'Enter an absolute Unix path.' : failedPath === '/missing' ? 'Directory not found.' : 'SSH connection lost.')
-    expect(error.getAttribute('style')).toContain('var(--red)')
     if (failedPath === 'relative') expect(listRemoteDirectories).not.toHaveBeenCalledWith('lab', 'relative')
     await click('Dismiss directory error')
     expect(element.querySelector('[role="alert"]')).toBeNull()

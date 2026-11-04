@@ -1,6 +1,7 @@
 #include "common/runtime/acp/acp_session_internal.h"
 
 #include "common/runtime/acp/acp_stream_types.h"
+#include "common/provider/provider_ids.h"
 
 #include <algorithm>
 #include <vector>
@@ -8,13 +9,16 @@
 namespace uam::acp_detail
 {
 
-void AppendContextCompactionEvent(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& summary, const std::string& identity)
+void AppendContextCompactionEvent(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& summary, const std::string& identity, int64_t tokens_before, int64_t tokens_after)
 {
+	session.context_compaction_in_progress = false;
 	for (AcpTurnEventState& event : session.turn_events)
 	{
 		if (event.type == "context_compaction" && !identity.empty() && event.request_id_json == identity)
 		{
 			if (!summary.empty()) event.text = summary;
+			if (tokens_before >= 0) event.compaction_tokens_before = tokens_before;
+			if (tokens_after >= 0) event.compaction_tokens_after = tokens_after;
 			SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
 			ScheduleChatSave(app, chat, 0.0);
 			return;
@@ -24,6 +28,8 @@ void AppendContextCompactionEvent(AppState& app, AcpSessionState& session, ChatS
 	event.type = "context_compaction";
 	event.text = summary;
 	event.request_id_json = identity;
+	event.compaction_tokens_before = tokens_before;
+	event.compaction_tokens_after = tokens_after;
 	session.turn_events.push_back(std::move(event));
 	EnsureAssistantMessage(chat, session);
 	SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
@@ -38,7 +44,7 @@ bool MessageBlocksEqual(const std::vector<MessageBlock>& lhs, const std::vector<
 	}
 	for (std::size_t i = 0; i < lhs.size(); ++i)
 	{
-		if (lhs[i].type != rhs[i].type || lhs[i].text != rhs[i].text || lhs[i].tool_call_id != rhs[i].tool_call_id || lhs[i].request_id_json != rhs[i].request_id_json)
+		if (lhs[i].type != rhs[i].type || lhs[i].text != rhs[i].text || lhs[i].tool_call_id != rhs[i].tool_call_id || lhs[i].request_id_json != rhs[i].request_id_json || lhs[i].compaction_tokens_before != rhs[i].compaction_tokens_before || lhs[i].compaction_tokens_after != rhs[i].compaction_tokens_after)
 		{
 			return false;
 		}
@@ -48,7 +54,8 @@ bool MessageBlocksEqual(const std::vector<MessageBlock>& lhs, const std::vector<
 
 bool PersistableTurnEvent(const AcpTurnEventState& event)
 {
-	if (event.type == "context_compaction") return true;
+	if (event.type == "context_compaction" || event.type == "context_compaction_interrupted") return true;
+	if (event.type == "context_compaction_summary") return !event.text.empty() && event.request_id_json.starts_with("opencode-message:");
 	if (uam::acp_stream_types::IsTextTurnEventType(event.type))
 	{
 		return !event.text.empty();
@@ -70,7 +77,8 @@ bool PersistableTurnEvent(const AcpTurnEventState& event)
 
 bool CanMergeTurnEventWithLastBlock(const AcpTurnEventState& event, const std::vector<MessageBlock>& blocks)
 {
-	return uam::acp_stream_types::IsTextTurnEventType(event.type) && !blocks.empty() && blocks.back().type == event.type;
+	return (uam::acp_stream_types::IsTextTurnEventType(event.type) || event.type == "context_compaction_summary") && !blocks.empty() &&
+	    blocks.back().type == event.type && blocks.back().request_id_json == event.request_id_json;
 }
 
 bool HasMatchingTurnBlock(const std::vector<MessageBlock>& blocks, const AcpTurnEventState& event)
@@ -120,6 +128,8 @@ std::vector<MessageBlock> MessageBlocksFromTurnEvents(const AcpSessionState& ses
 		block.text = event.text;
 		block.tool_call_id = event.tool_call_id;
 		block.request_id_json = event.request_id_json;
+		block.compaction_tokens_before = event.compaction_tokens_before;
+		block.compaction_tokens_after = event.compaction_tokens_after;
 		blocks.push_back(std::move(block));
 	}
 	return blocks;
@@ -153,6 +163,9 @@ namespace
 			    .approval_status = tool_call.approval_status,
 			    .task_id = tool_call.task_id,
 			    .child_activity = tool_call.child_activity,
+			    .sub_agent_children = tool_call.sub_agent_children,
+			    .sub_agent_children_authoritative = tool_call.sub_agent_children_authoritative,
+			    .stream_watch_observed = true, // Restored history is never new loop evidence after a reattach.
 			});
 		}
 	}
@@ -197,6 +210,8 @@ void RestoreTurnEventsFromMessageBlocks(AcpSessionState& session, const Message&
 		event.text = block.text;
 		event.tool_call_id = block.tool_call_id;
 		event.request_id_json = block.request_id_json;
+		event.compaction_tokens_before = block.compaction_tokens_before;
+		event.compaction_tokens_after = block.compaction_tokens_after;
 		session.turn_events.push_back(std::move(event));
 	}
 }
@@ -301,17 +316,24 @@ bool SyncCurrentAssistantMessageBlocksFromTurnEvents(ChatSession& chat, AcpSessi
 	return false;
 }
 
-void AppendAssistantTextTurnEvent(AcpSessionState& session, const std::string& chunk)
+void AppendAssistantTextTurnEvent(AcpSessionState& session, const std::string& chunk, const std::string& identity)
 {
-	if (!session.turn_events.empty() && session.turn_events.back().type == uam::acp_stream_types::kTurnEventAssistantText)
+	const bool summary = provider_ids::NormalizeCliProviderAlias(session.provider_id) == provider_ids::kOpenCodeCli && identity.starts_with("opencode-message:") &&
+	    std::ranges::any_of(session.turn_events, [&](const AcpTurnEventState& event)
+	    { return event.type == "context_compaction_summary" && event.request_id_json == identity; });
+	const std::string type = summary ? "context_compaction_summary" : uam::acp_stream_types::kTurnEventAssistantText;
+	if (!summary) session.stream_watch.ObserveText(stream_watch::Channel::Text, chunk);
+	if (!session.turn_events.empty() && session.turn_events.back().type == type &&
+	    session.turn_events.back().request_id_json == identity)
 	{
 		session.turn_events.back().text += chunk;
 		return;
 	}
 
 	AcpTurnEventState event;
-	event.type = uam::acp_stream_types::kTurnEventAssistantText;
+	event.type = type;
 	event.text = chunk;
+	event.request_id_json = identity;
 	session.turn_events.push_back(std::move(event));
 }
 
@@ -321,6 +343,7 @@ bool AppendThoughtTurnEvent(AcpSessionState& session, const std::string& chunk)
 	{
 		return false;
 	}
+	session.stream_watch.ObserveText(stream_watch::Channel::Thought, chunk);
 
 	if (!session.turn_events.empty() && session.turn_events.back().type == uam::acp_stream_types::kTurnEventThought)
 	{

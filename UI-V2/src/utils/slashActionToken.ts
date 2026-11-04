@@ -50,3 +50,28 @@ export function replaceSlashAction(value: string, token: SlashActionToken, repla
   const start = wholeAction ? token.commandStart : token.queryStart - (token.commandStart === token.queryStart - 1 ? 1 : 0)
   return `${value.slice(0, start)}${replacement}${value.slice(token.end)}`
 }
+
+export interface MentionActionToken {
+  query: string
+  start: number
+  end: number
+  quoted: boolean
+}
+
+/** The `@` token at the caret, if any, including a quoted `@"path with spaces"` span. */
+export function mentionActionToken(value: string, selectionStart: number, selectionEnd = selectionStart): MentionActionToken | null {
+  if (selectionStart !== selectionEnd) return null
+  const caret = Math.min(Math.max(0, selectionStart), value.length)
+  // The caret must sit after the opening quote; lastIndexOf clamps a negative start to 0.
+  const quoteStart = caret >= 2 ? value.lastIndexOf('@"', caret - 2) : -1
+  if (quoteStart >= 0 && (quoteStart === 0 || /\s/.test(value[quoteStart - 1])) && !value.slice(quoteStart + 2, caret).includes('"') && !value.slice(quoteStart, caret).includes('\n')) {
+    const close = value.indexOf('"', caret)
+    const lineEnd = value.indexOf('\n', caret)
+    const end = close >= 0 && (lineEnd < 0 || close < lineEnd) ? close + 1 : lineEnd >= 0 ? lineEnd : value.length
+    return { query: value.slice(quoteStart + 2, close >= 0 && end === close + 1 ? close : end), start: quoteStart, end, quoted: true }
+  }
+  const [start, end] = tokenBounds(value, caret, caret)
+  const token = value.slice(start, end)
+  if (!token.startsWith('@') || token.startsWith('@"')) return null
+  return { query: token.slice(1), start, end, quoted: false }
+}

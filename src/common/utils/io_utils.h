@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/paths/path_utils.h"
+#include "common/platform/published_file_change_witness.h"
 #include "common/utils/time_utils.h"
 
 #include <algorithm>
@@ -17,6 +18,8 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
+#include <vector>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -40,11 +43,90 @@ namespace uam::io
 	inline constexpr const char* kTempWritePathSuffix = ".tmp.";
 	inline constexpr const char* kBackupPathSuffix = ".bak";
 
+	// Test-only delay before each durable temporary-file write on the calling thread only, so a case can
+	// prove its own thread (for example the UI poll) performs no synchronous durable write.
+	inline thread_local int t_durable_write_delay_ms_for_tests = 0;
+	inline void DelayDurableWriteForTests()
+	{
+		if (t_durable_write_delay_ms_for_tests > 0)
+			std::this_thread::sleep_for(std::chrono::milliseconds(t_durable_write_delay_ms_for_tests));
+	}
+
+#if defined(_WIN32)
+	inline std::string AtomicWriteSystemError(unsigned long code)
+	{
+		return std::error_code(static_cast<int>(code), std::system_category()).message();
+	}
+
+	/// <summary>Resolve Win32 paths before adding an extended prefix; optionally protect short directory roots whose descendants can be long.</summary>
+	inline bool NativeFilePath(const std::filesystem::path& path, std::filesystem::path& native_path, std::string& error, bool force_extended = false)
+	{
+		const std::wstring& input = path.native();
+		if (input.empty() || input.find(L'\0') != std::wstring::npos)
+		{
+			error = "Invalid file path.";
+			return false;
+		}
+		if (input.starts_with(L"\\\\?\\") || input.starts_with(L"\\\\.\\"))
+		{
+			native_path = path;
+			return true;
+		}
+		const DWORD required = GetFullPathNameW(input.c_str(), 0, nullptr, nullptr);
+		if (required == 0)
+		{
+			error = "Failed to resolve file path: " + AtomicWriteSystemError(GetLastError());
+			return false;
+		}
+		std::wstring absolute(required, L'\0');
+		const DWORD length = GetFullPathNameW(input.c_str(), required, absolute.data(), nullptr);
+		if (length == 0 || length >= required)
+		{
+			const DWORD code = length == 0 ? GetLastError() : ERROR_INSUFFICIENT_BUFFER;
+			error = "Failed to resolve file path: " + AtomicWriteSystemError(code);
+			return false;
+		}
+		absolute.resize(length);
+		if (!force_extended && length < MAX_PATH)
+		{
+			native_path = path;
+			return true;
+		}
+		// GetFullPathNameW resolves relative components and separators before extended paths disable Win32 normalization.
+		if (absolute.starts_with(L"\\\\"))
+		{
+			native_path = std::filesystem::path(L"\\\\?\\UNC\\" + absolute.substr(2));
+		}
+		else
+		{
+			native_path = std::filesystem::path(L"\\\\?\\" + absolute);
+		}
+		return true;
+	}
+
+#else
+	inline bool NativeFilePath(const std::filesystem::path& path, std::filesystem::path& native_path, std::string&, bool = false)
+	{
+		native_path = path;
+		return true;
+	}
+#endif
+
+	/// <summary>Open all file readers through the same platform path conversion.</summary>
+	inline bool OpenReadFile(const std::filesystem::path& path, std::ifstream& file)
+	{
+		std::filesystem::path native_path;
+		std::string error;
+		if (!NativeFilePath(path, native_path, error)) return false;
+		file.open(native_path, std::ios::in | std::ios::binary);
+		return static_cast<bool>(file);
+	}
+
 	inline bool TryReadFile(const std::filesystem::path& path, std::string& out)
 	{
 		out.clear();
-		std::ifstream file(path, std::ios::in | std::ios::binary);
-		if (!file)
+		std::ifstream file;
+		if (!OpenReadFile(path, file))
 		{
 			return false;
 		}
@@ -69,8 +151,8 @@ namespace uam::io
 	    const std::filesystem::path& path, std::string& out, std::size_t max_bytes)
 	{
 		out.clear();
-		std::ifstream file(path, std::ios::in | std::ios::binary);
-		if (!file) return false;
+		std::ifstream file;
+		if (!OpenReadFile(path, file)) return false;
 
 		std::array<char, 8192> buffer{};
 		while (file)
@@ -101,8 +183,8 @@ namespace uam::io
 
 	template <typename LineVisitor> inline bool ForEachTextFileLine(const std::filesystem::path& path, LineVisitor visitor)
 	{
-		std::ifstream file(path, std::ios::in | std::ios::binary);
-		if (!file)
+		std::ifstream file;
+		if (!OpenReadFile(path, file))
 		{
 			return false;
 		}
@@ -132,8 +214,8 @@ namespace uam::io
 
 	template <typename ByteVisitor> inline bool ForEachBinaryFileByte(const std::filesystem::path& path, ByteVisitor visitor)
 	{
-		std::ifstream file(path, std::ios::in | std::ios::binary);
-		if (!file)
+		std::ifstream file;
+		if (!OpenReadFile(path, file))
 		{
 			return false;
 		}
@@ -211,58 +293,66 @@ namespace uam::io
 
 	inline void RemoveAtomicTempNoThrow(const std::filesystem::path& path)
 	{
+		std::filesystem::path native_path;
+		std::string normalization_error;
+		if (!NativeFilePath(path, native_path, normalization_error)) return;
 		std::error_code error;
-		const std::filesystem::file_status status = std::filesystem::symlink_status(path, error);
+		const std::filesystem::file_status status = std::filesystem::symlink_status(native_path, error);
 		if (!error && status.type() != std::filesystem::file_type::not_found && !std::filesystem::is_symlink(status))
 		{
-			std::filesystem::remove(path, error);
+			std::filesystem::remove(native_path, error);
 		}
 	}
 
 	inline void CleanupAbandonedAtomicTemps(const std::filesystem::path& path)
 	{
-		if (!uam::paths::PathExistsNoThrow(path) || path.parent_path().empty())
+		std::filesystem::path native_path;
+		std::filesystem::path native_parent;
+		std::string normalization_error;
+		if (path.parent_path().empty() || !NativeFilePath(path, native_path, normalization_error) ||
+		    !NativeFilePath(path.parent_path(), native_parent, normalization_error, true) || !uam::paths::PathExistsNoThrow(native_path))
 		{
 			return;
 		}
 
 		const std::string prefix = uam::paths::Utf8PathString(path.filename()) + kTempWritePathSuffix;
 		std::error_code error;
-		for (std::filesystem::directory_iterator it(path.parent_path(), std::filesystem::directory_options::skip_permission_denied, error), end;
+		for (std::filesystem::directory_iterator it(native_parent, std::filesystem::directory_options::skip_permission_denied, error), end;
 		     !error && it != end;
 		     it.increment(error))
 		{
 			const std::filesystem::directory_entry& entry = *it;
 			const std::string name = uam::paths::Utf8PathString(entry.path().filename());
+			std::filesystem::path native_entry;
+			if (!NativeFilePath(entry.path(), native_entry, normalization_error)) continue;
 			std::error_code status_error;
-			const std::filesystem::file_status status = entry.symlink_status(status_error);
+			const std::filesystem::file_status status = std::filesystem::symlink_status(native_entry, status_error);
 			if (status_error || std::filesystem::is_symlink(status) || !std::filesystem::is_regular_file(status) || !name.starts_with(prefix))
 			{
 				continue;
 			}
 
 			std::error_code time_error;
-			const auto modified = entry.last_write_time(time_error);
+			const std::filesystem::file_time_type modified = std::filesystem::last_write_time(native_entry, time_error);
 			if (!time_error && std::filesystem::file_time_type::clock::now() - modified >= std::chrono::hours(24))
 			{
-				std::filesystem::remove(entry.path(), status_error);
+				std::filesystem::remove(native_entry, status_error);
 			}
 		}
 	}
 
 #if defined(_WIN32)
-	inline std::string AtomicWriteSystemError(unsigned long code)
-	{
-		return std::error_code(static_cast<int>(code), std::system_category()).message();
-	}
 
 	inline bool WriteAndSyncAtomicTemp(
 	    const std::filesystem::path& temp_path,
 	    std::string_view content,
 	    const AtomicWriteStageHook& hook,
-	    AtomicWriteResult& result)
+	    AtomicWriteResult& result, bool sync_to_disk = true)
 	{
-		HANDLE file = CreateFileW(temp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+		if (sync_to_disk) DelayDurableWriteForTests();
+		std::filesystem::path native_temp_path;
+		if (!NativeFilePath(temp_path, native_temp_path, result.error)) return false;
+		HANDLE file = CreateFileW(native_temp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | (sync_to_disk ? FILE_FLAG_WRITE_THROUGH : 0), nullptr);
 		if (file == INVALID_HANDLE_VALUE)
 		{
 			result.error = "Failed to create temporary file: " + AtomicWriteSystemError(GetLastError());
@@ -309,14 +399,14 @@ namespace uam::io
 			CloseHandle(file);
 			return false;
 		}
-		if (!FlushFileBuffers(file))
+		if (sync_to_disk && !FlushFileBuffers(file))
 		{
 			result.error = "Failed to sync temporary file: " + AtomicWriteSystemError(GetLastError());
 			CloseHandle(file);
 			return false;
 		}
 		CloseHandle(file);
-		return ContinueAtomicWrite(hook, AtomicWriteStage::AfterFileSync, result);
+		return !sync_to_disk || ContinueAtomicWrite(hook, AtomicWriteStage::AfterFileSync, result);
 	}
 
 	inline bool ReplaceAtomicTemp(
@@ -325,17 +415,46 @@ namespace uam::io
 	    const std::filesystem::path& backup_temp_path,
 	    bool destination_exists,
 	    bool preserve_backup,
-	    AtomicWriteResult& result)
+	    AtomicWriteResult& result, bool sync_to_disk = true)
 	{
+		std::filesystem::path native_path;
+		std::filesystem::path native_temp_path;
+		std::filesystem::path native_backup_temp_path;
+		if (!NativeFilePath(path, native_path, result.error) ||
+		    !NativeFilePath(temp_path, native_temp_path, result.error) ||
+		    (preserve_backup && !NativeFilePath(backup_temp_path, native_backup_temp_path, result.error))) return false;
 		const bool replaced = destination_exists
-		    ? ReplaceFileW(path.c_str(), temp_path.c_str(), preserve_backup ? backup_temp_path.c_str() : nullptr, REPLACEFILE_WRITE_THROUGH, nullptr, nullptr)
-		    : MoveFileExW(temp_path.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH);
+		    ? ReplaceFileW(native_path.c_str(), native_temp_path.c_str(), preserve_backup ? native_backup_temp_path.c_str() : nullptr, sync_to_disk ? REPLACEFILE_WRITE_THROUGH : 0, nullptr, nullptr)
+		    : MoveFileExW(native_temp_path.c_str(), native_path.c_str(), sync_to_disk ? MOVEFILE_WRITE_THROUGH : 0);
 		if (!replaced)
 		{
 			result.error = "Failed to atomically replace destination: " + AtomicWriteSystemError(GetLastError());
 			return false;
 		}
 		return true;
+	}
+
+	/// Installs a recovery backup over its predecessor. A retained attribute-only witness may still
+	/// hold that predecessor open (FILE_SHARE_DELETE); legacy rename-replace refuses an open target
+	/// with ERROR_ACCESS_DENIED, so retry with POSIX semantics, which unlinks it while handles stay valid.
+	inline bool InstallBackupReplacing(const std::filesystem::path& native_source, const std::filesystem::path& native_target)
+	{
+		if (MoveFileExW(native_source.c_str(), native_target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+		const DWORD legacy_error = GetLastError();
+		if (legacy_error != ERROR_ACCESS_DENIED) return false;
+		const HANDLE source = CreateFileW(native_source.c_str(), DELETE | SYNCHRONIZE,
+		    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH, nullptr);
+		if (source == INVALID_HANDLE_VALUE) { SetLastError(legacy_error); return false; }
+		const std::wstring& target = native_target.native();
+		std::vector<unsigned char> buffer(sizeof(FILE_RENAME_INFO) + target.size() * sizeof(wchar_t));
+		auto* rename = reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
+		rename->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+		rename->FileNameLength = static_cast<DWORD>(target.size() * sizeof(wchar_t));
+		std::copy(target.begin(), target.end(), rename->FileName);
+		const bool renamed = SetFileInformationByHandle(source, FileRenameInfoEx, rename, static_cast<DWORD>(buffer.size())) != FALSE;
+		CloseHandle(source);
+		if (!renamed) SetLastError(legacy_error);
+		return renamed;
 	}
 #else
 	inline std::string AtomicWriteSystemError(int code)
@@ -347,8 +466,9 @@ namespace uam::io
 	    const std::filesystem::path& temp_path,
 	    std::string_view content,
 	    const AtomicWriteStageHook& hook,
-	    AtomicWriteResult& result)
+	    AtomicWriteResult& result, bool sync_to_disk = true)
 	{
+		if (sync_to_disk) DelayDurableWriteForTests();
 		const int fd = open(temp_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
 		if (fd < 0)
 		{
@@ -401,9 +521,9 @@ namespace uam::io
 			return false;
 		}
 #if defined(__APPLE__)
-		const bool synced = fcntl(fd, F_FULLFSYNC) == 0 || fsync(fd) == 0;
+		const bool synced = !sync_to_disk || fcntl(fd, F_FULLFSYNC) == 0 || fsync(fd) == 0;
 #else
-		const bool synced = fsync(fd) == 0;
+		const bool synced = !sync_to_disk || fsync(fd) == 0;
 #endif
 		if (!synced)
 		{
@@ -416,7 +536,7 @@ namespace uam::io
 			result.error = "Failed to close temporary file: " + AtomicWriteSystemError(errno);
 			return false;
 		}
-		return ContinueAtomicWrite(hook, AtomicWriteStage::AfterFileSync, result);
+		return !sync_to_disk || ContinueAtomicWrite(hook, AtomicWriteStage::AfterFileSync, result);
 	}
 
 	inline bool SyncAtomicWriteDirectory(const std::filesystem::path& parent, AtomicWriteResult& result)
@@ -439,14 +559,188 @@ namespace uam::io
 #endif
 
 	/// <summary>Publishes an already synced temporary file with the normal atomic backup contract.</summary>
+	using AtomicTempProducer = std::function<bool(const std::function<bool(std::string_view)>&)>;
+
+	/// <summary>Produces a complete private temporary file in bounded chunks and syncs it before publication.</summary>
+	inline bool WriteAndSyncAtomicTemp(const std::filesystem::path& temp_path,
+	    const AtomicTempProducer& produce, const AtomicWriteStageHook& hook, AtomicWriteResult& result)
+	{
+		DelayDurableWriteForTests();
+		bool file_closed = false;
+#if defined(_WIN32)
+		std::filesystem::path native_path;
+		if (!NativeFilePath(temp_path, native_path, result.error)) return false;
+		// Producers append small chunks; write-through would make each one a synchronous disk write.
+		// FlushFileBuffers below is the durability point, matching the POSIX fsync contract.
+		HANDLE file = CreateFileW(native_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (file == INVALID_HANDLE_VALUE) { result.error = "Failed to create temporary file: " + AtomicWriteSystemError(GetLastError()); return false; }
+		const auto close_file = [&]()
+		{
+			if (file_closed) return true;
+			file_closed = true;
+			const bool closed = CloseHandle(file) != 0;
+			if (!closed && result.error.empty()) result.error = "Failed to close temporary file: " + AtomicWriteSystemError(GetLastError());
+			return closed;
+		};
+#else
+		const int file = open(temp_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+		if (file < 0) { result.error = "Failed to create temporary file: " + AtomicWriteSystemError(errno); return false; }
+		const auto close_file = [&]()
+		{
+			if (file_closed) return true;
+			file_closed = true;
+			const bool closed = close(file) == 0;
+			if (!closed && result.error.empty()) result.error = "Failed to close temporary file: " + AtomicWriteSystemError(errno);
+			return closed;
+		};
+#endif
+		try
+		{
+			if (!ContinueAtomicWrite(hook, AtomicWriteStage::AfterCreate, result)) { close_file(); return false; }
+			bool writing_started = false;
+			const std::function<bool(std::string_view)> append = [&](std::string_view chunk)
+			{
+				if (!writing_started)
+				{
+					writing_started = true;
+					if (!ContinueAtomicWrite(hook, AtomicWriteStage::DuringWrite, result)) return false;
+				}
+				std::size_t offset = 0;
+				while (offset < chunk.size())
+				{
+					const std::size_t count = std::min<std::size_t>(chunk.size() - offset, 1024U * 1024U);
+#if defined(_WIN32)
+					DWORD written = 0;
+					if (!WriteFile(file, chunk.data() + offset, static_cast<DWORD>(count), &written, nullptr) || written == 0)
+					{
+						result.error = "Failed to write temporary file: " + AtomicWriteSystemError(GetLastError()); return false;
+					}
+#else
+					const ssize_t written = write(file, chunk.data() + offset, count);
+					if (written < 0 && errno == EINTR) continue;
+					if (written <= 0) { result.error = "Failed to write temporary file: " + AtomicWriteSystemError(errno); return false; }
+#endif
+					offset += static_cast<std::size_t>(written);
+				}
+				return true;
+			};
+			if (!produce(append) || (!writing_started && !ContinueAtomicWrite(hook, AtomicWriteStage::DuringWrite, result)) ||
+			    !ContinueAtomicWrite(hook, AtomicWriteStage::AfterFlush, result)) { close_file(); return false; }
+#if defined(_WIN32)
+			const bool synced = FlushFileBuffers(file) != 0;
+			if (!synced) result.error = "Failed to sync temporary file: " + AtomicWriteSystemError(GetLastError());
+#else
+#if defined(__APPLE__)
+			const bool synced = fcntl(file, F_FULLFSYNC) == 0 || fsync(file) == 0;
+#else
+			const bool synced = fsync(file) == 0;
+#endif
+			if (!synced) result.error = "Failed to sync temporary file: " + AtomicWriteSystemError(errno);
+#endif
+			const bool closed = close_file();
+			return synced && closed && ContinueAtomicWrite(hook, AtomicWriteStage::AfterFileSync, result);
+		}
+		catch (...) { close_file(); throw; }
+	}
+
+	/// Opt-in actual-writer origin only; default writer body/sharing contract above is unchanged.
+	inline bool WriteAndSyncAtomicTempWithOrigin(const std::filesystem::path& temp_path,
+	    const AtomicTempProducer& produce, const AtomicWriteStageHook& hook, AtomicWriteResult& result,
+	    std::shared_ptr<const uam::platform::AtomicTempWriterOrigin>& origin_out)
+	{
+		DelayDurableWriteForTests();
+		origin_out.reset();
+		bool file_closed = false;
+#if defined(_WIN32)
+		std::filesystem::path native_path;
+		if (!NativeFilePath(temp_path, native_path, result.error)) return false;
+		HANDLE file = CreateFileW(native_path.c_str(), GENERIC_WRITE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr); // Synced by FlushFileBuffers, as above.
+		if (file == INVALID_HANDLE_VALUE) { result.error = "Failed to create temporary file: " + AtomicWriteSystemError(GetLastError()); return false; }
+		const auto close_file = [&]()
+		{
+			if (file_closed) return true;
+			file_closed = true;
+			const bool closed = CloseHandle(file) != 0;
+			if (!closed && result.error.empty()) result.error = "Failed to close temporary file: " + AtomicWriteSystemError(GetLastError());
+			return closed;
+		};
+#else
+		const int file = open(temp_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+		if (file < 0) { result.error = "Failed to create temporary file: " + AtomicWriteSystemError(errno); return false; }
+		const auto close_file = [&]()
+		{
+			if (file_closed) return true;
+			file_closed = true;
+			const bool closed = close(file) == 0;
+			if (!closed && result.error.empty()) result.error = "Failed to close temporary file: " + AtomicWriteSystemError(errno);
+			return closed;
+		};
+#endif
+		try
+		{
+			if (!ContinueAtomicWrite(hook, AtomicWriteStage::AfterCreate, result)) { close_file(); return false; }
+			bool writing_started = false;
+			const std::function<bool(std::string_view)> append = [&](std::string_view chunk)
+			{
+				if (!writing_started)
+				{
+					writing_started = true;
+					if (!ContinueAtomicWrite(hook, AtomicWriteStage::DuringWrite, result)) return false;
+				}
+				std::size_t offset = 0;
+				while (offset < chunk.size())
+				{
+					const std::size_t count = std::min<std::size_t>(chunk.size() - offset, 1024U * 1024U);
+#if defined(_WIN32)
+					DWORD written = 0;
+					if (!WriteFile(file, chunk.data() + offset, static_cast<DWORD>(count), &written, nullptr) || written == 0)
+					{
+						result.error = "Failed to write temporary file: " + AtomicWriteSystemError(GetLastError()); return false;
+					}
+#else
+					const ssize_t written = write(file, chunk.data() + offset, count);
+					if (written < 0 && errno == EINTR) continue;
+					if (written <= 0) { result.error = "Failed to write temporary file: " + AtomicWriteSystemError(errno); return false; }
+#endif
+					offset += static_cast<std::size_t>(written);
+				}
+				return true;
+			};
+			if (!produce(append) || (!writing_started && !ContinueAtomicWrite(hook, AtomicWriteStage::DuringWrite, result)) ||
+			    !ContinueAtomicWrite(hook, AtomicWriteStage::AfterFlush, result)) { close_file(); return false; }
+#if defined(_WIN32)
+			const bool synced = FlushFileBuffers(file) != 0;
+			if (!synced) result.error = "Failed to sync temporary file: " + AtomicWriteSystemError(GetLastError());
+#else
+#if defined(__APPLE__)
+			const bool synced = fcntl(file, F_FULLFSYNC) == 0 || fsync(file) == 0;
+#else
+			const bool synced = fsync(file) == 0;
+#endif
+			if (!synced) result.error = "Failed to sync temporary file: " + AtomicWriteSystemError(errno);
+#endif
+			// Mint from the ACTUAL exclusive writer while it remains alive, never from a path reopen.
+			auto origin = synced ? uam::platform::AtomicTempWriterOrigin::Retain(file) : nullptr;
+			if (synced && !origin && result.error.empty()) result.error = "Could not retain actual atomic writer identity.";
+			const bool closed = close_file();
+			if (!synced || !origin || !closed) return false;
+			if (!ContinueAtomicWrite(hook, AtomicWriteStage::AfterFileSync, result)) return false;
+			origin_out = std::move(origin);
+			return true;
+		}
+		catch (...) { close_file(); throw; }
+	}
+
 	inline AtomicWriteResult CommitSyncedAtomicTemp(const std::filesystem::path& path,
 	    const std::filesystem::path& temp_path, bool preserve_backup = false,
-	    const AtomicWriteStageHook& hook = {}, bool sync_directory = true)
+	    const AtomicWriteStageHook& hook = {}, bool sync_directory = true, bool sync_replace = true)
 	{
 		AtomicWriteResult result;
 		const std::filesystem::path parent = path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
 		std::error_code ec;
-		const std::filesystem::file_status status = std::filesystem::symlink_status(path, ec);
+		std::filesystem::path native_path;
+		if (!NativeFilePath(path, native_path, result.error)) return result;
+		const std::filesystem::file_status status = std::filesystem::symlink_status(native_path, ec);
 		if (ec && ec != std::errc::no_such_file_or_directory) { result.error = "Could not inspect destination: " + ec.message(); return result; }
 		const bool destination_exists = !ec && status.type() != std::filesystem::file_type::not_found;
 		if (destination_exists && !std::filesystem::is_regular_file(status)) { result.error = "Destination must be a regular file."; return result; }
@@ -458,7 +752,7 @@ namespace uam::io
 		}
 
 #if defined(_WIN32)
-		if (!ReplaceAtomicTemp(path, temp_path, backup_temp_path, destination_exists, preserve_backup, result))
+		if (!ReplaceAtomicTemp(path, temp_path, backup_temp_path, destination_exists, preserve_backup, result, sync_replace))
 		{
 			RemoveAtomicTempNoThrow(temp_path);
 			return result;
@@ -520,7 +814,16 @@ namespace uam::io
 				return result;
 			}
 #if defined(_WIN32)
-			if (!MoveFileExW(backup_temp_path.c_str(), backup_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+			std::filesystem::path native_backup_temp_path;
+			std::filesystem::path native_backup_path;
+			if (!NativeFilePath(backup_temp_path, native_backup_temp_path, result.error) ||
+			    !NativeFilePath(backup_path, native_backup_path, result.error))
+			{
+				result.success = true;
+				result.backup_degraded = true;
+				return result;
+			}
+			if (!InstallBackupReplacing(native_backup_temp_path, native_backup_path))
 			{
 				result.error = "Destination was saved, but its recovery backup could not be installed: " + AtomicWriteSystemError(GetLastError());
 				result.success = true;
@@ -549,11 +852,178 @@ namespace uam::io
 		result.stage = AtomicWriteStage::Complete;
 		return result;
 	}
+	// Opt-in private evidence handoff; the six-argument legacy path above is unchanged.
+	inline AtomicWriteResult CommitSyncedAtomicTemp(
+	    const std::filesystem::path& path, const std::filesystem::path& temp_path, bool preserve_backup,
+	    const AtomicWriteStageHook& hook, bool sync_directory, bool sync_replace,
+	    const std::filesystem::path& private_backup_temp_path)
+	{
+		AtomicWriteResult result;
+		namespace fs = std::filesystem;
+		std::error_code ec;
+		const auto normalized = [&](const fs::path& value)
+		{
+			if (value.empty()) return fs::path{};
+			const auto absolute = fs::absolute(value, ec);
+			return ec ? fs::path{} : absolute.lexically_normal();
+		};
+		const fs::path destination = normalized(path);
+		if (destination.empty()) { result.error = "Invalid conditional destination."; return result; }
+		const fs::path candidate = normalized(temp_path);
+		if (candidate.empty()) { result.error = "Invalid conditional candidate."; return result; }
+		const fs::path evidence = normalized(private_backup_temp_path);
+		if (evidence.empty()) { result.error = "Invalid private predecessor path."; return result; }
+		const fs::path backup = MakeBackupPath(destination);
+		const auto same = [](const fs::path& left, const fs::path& right)
+		{
+#if defined(_WIN32)
+			return CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE) == CSTR_EQUAL;
+#else
+			return left == right;
+#endif
+		};
+		if (!same(destination.parent_path(), candidate.parent_path()) || !same(destination.parent_path(), evidence.parent_path()) ||
+		    same(destination, candidate) || same(destination, evidence) || same(candidate, evidence) || same(backup, evidence) || same(backup, candidate))
+		{
+			result.error = "Conditional candidate and private evidence must be distinct siblings.";
+			return result;
+		}
+		fs::path native_path, native_candidate, native_evidence, native_parent;
+		if (!NativeFilePath(destination, native_path, result.error) || !NativeFilePath(candidate, native_candidate, result.error) ||
+		    !NativeFilePath(evidence, native_evidence, result.error) || !NativeFilePath(destination.parent_path(), native_parent, result.error, true))
+			return result;
+		const auto parent_status = fs::symlink_status(native_parent, ec);
+		if (ec || !fs::is_directory(parent_status) || paths::IsLinkOrReparsePointNoThrow(native_parent))
+		{
+			result.error = "Conditional publication parent is not an available directory.";
+			return result;
+		}
+		const auto absent = [&](const fs::path& value)
+		{
+			std::error_code error;
+			const auto status = fs::symlink_status(value, error);
+			return status.type() == fs::file_type::not_found &&
+			    (!error || error == std::errc::no_such_file_or_directory);
+		};
+		if (!absent(native_evidence))
+		{
+			result.error = "Private predecessor path already has storage evidence.";
+			return result;
+		}
+		const auto candidate_status = fs::symlink_status(native_candidate, ec);
+		if (ec || !fs::is_regular_file(candidate_status) || paths::IsLinkOrReparsePointNoThrow(native_candidate))
+		{
+			result.error = "Conditional candidate must be a regular non-link file.";
+			return result;
+		}
+		const auto status = fs::symlink_status(native_path, ec);
+		if (ec && ec != std::errc::no_such_file_or_directory)
+		{
+			result.error = "Could not inspect conditional destination: " + ec.message();
+			return result;
+		}
+		const bool destination_exists = !ec && status.type() != fs::file_type::not_found;
+		if (destination_exists && (!fs::is_regular_file(status) || paths::IsLinkOrReparsePointNoThrow(native_path)))
+		{
+			result.error = "Conditional destination must be a regular non-link file.";
+			return result;
+		}
+		if (!ContinueAtomicWrite(hook, AtomicWriteStage::BeforeReplace, result)) return result;
+		// The final callback is read-only; still recheck this reserved absence before native replacement.
+		if (!absent(native_evidence))
+		{
+			result.error = "Private predecessor path changed before replacement.";
+			return result;
+		}
+#if defined(_WIN32)
+		// Capture predecessors for secondary files too. Failed ReplaceFileW can be partial:
+		// do not delete either possible evidence location after replacement permission.
+		if (!ReplaceAtomicTemp(destination, candidate, evidence, destination_exists, destination_exists, result, sync_replace)) return result;
+		result.primary_committed = true;
+#else
+		if (destination_exists)
+		{
+#if defined(__APPLE__)
+			const int swapped = renameatx_np(AT_FDCWD, candidate.c_str(), AT_FDCWD, destination.c_str(), RENAME_SWAP);
+#else
+			const long swapped = syscall(SYS_renameat2, AT_FDCWD, candidate.c_str(), AT_FDCWD, destination.c_str(), RENAME_EXCHANGE);
+#endif
+			if (swapped != 0) { result.error = "Failed to atomically swap destination: " + AtomicWriteSystemError(errno); return result; }
+		}
+		else if (rename(candidate.c_str(), destination.c_str()) != 0)
+		{
+			result.error = "Failed to atomically install destination: " + AtomicWriteSystemError(errno);
+			return result;
+		}
+#endif
+		if (!ContinueAtomicWrite(hook, AtomicWriteStage::AfterReplaceBeforeDirectorySync, result)) return result;
+#if !defined(_WIN32)
+		if (sync_directory && !SyncAtomicWriteDirectory(destination.parent_path(), result)) return result;
+		result.primary_committed = true;
+#endif
+		if (!ContinueAtomicWrite(hook, AtomicWriteStage::BeforeBackupCleanup, result))
+		{
+			result.success = result.primary_committed;
+			result.backup_degraded = preserve_backup && destination_exists;
+			return result;
+		}
+		if (destination_exists)
+		{
+			if (!preserve_backup)
+			{
+#if defined(_WIN32)
+				const fs::path& predecessor = native_evidence;
+#else
+				const fs::path& predecessor = native_candidate;
+#endif
+				std::error_code error;
+				fs::remove(predecessor, error);
+				result.success = true;
+				if (error)
+				{
+					result.error = "Destination committed; private predecessor cleanup degraded: " + error.message();
+					return result;
+				}
+			}
+			else
+			{
+#if defined(_WIN32)
+				fs::path native_backup;
+				if (!NativeFilePath(backup, native_backup, result.error) ||
+				    !InstallBackupReplacing(native_evidence, native_backup))
+				{
+					if (result.error.empty()) result.error = "Destination committed; recovery backup installation failed: " + AtomicWriteSystemError(GetLastError());
+					result.success = true;
+					result.backup_degraded = true;
+					return result;
+				}
+#else
+				if (rename(candidate.c_str(), backup.c_str()) != 0)
+				{
+					result.error = "Destination committed; recovery backup installation failed: " + AtomicWriteSystemError(errno);
+					result.success = true;
+					result.backup_degraded = true;
+					return result;
+				}
+				if (sync_directory && !SyncAtomicWriteDirectory(destination.parent_path(), result))
+				{
+					result.success = true;
+					result.backup_degraded = true;
+					return result;
+				}
+#endif
+			}
+		}
+		result.success = true;
+		result.primary_committed = true;
+		result.stage = AtomicWriteStage::Complete;
+		return result;
+	}
 	inline AtomicWriteResult AtomicWriteFileDetailed(
 	    const std::filesystem::path& path,
 	    std::string_view content,
 	    const AtomicWriteStageHook& hook = {},
-	    bool preserve_backup = false)
+	    bool preserve_backup = false, bool sync_to_disk = true)
 	{
 		static std::mutex write_mutex;
 		std::lock_guard<std::mutex> lock(write_mutex);
@@ -566,12 +1036,16 @@ namespace uam::io
 
 		const std::filesystem::path parent = path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
 		std::error_code ec;
-		if (!uam::paths::CreateDirectoriesNoThrow(parent, &ec))
+		std::filesystem::path native_parent;
+		std::filesystem::path native_path;
+		// Directory creation reaches its legacy limit before a child file requires an extended path.
+		if (!NativeFilePath(parent, native_parent, result.error, true) || !NativeFilePath(path, native_path, result.error)) return result;
+		if (!uam::paths::CreateDirectoriesNoThrow(native_parent, &ec))
 		{
 			result.error = "Failed to create destination directory: " + ec.message();
 			return result;
 		}
-		const std::filesystem::file_status destination_status = std::filesystem::symlink_status(path, ec);
+		const std::filesystem::file_status destination_status = std::filesystem::symlink_status(native_path, ec);
 		if (ec && ec != std::errc::no_such_file_or_directory)
 		{
 			result.error = "Failed to inspect destination: " + ec.message();
@@ -590,7 +1064,7 @@ namespace uam::io
 		const std::filesystem::path temp_path = MakeTempWritePath(path);
 		const std::filesystem::path backup_path = MakeBackupPath(path);
 		const std::filesystem::path backup_temp_path = MakeTempWritePath(backup_path);
-		if (!WriteAndSyncAtomicTemp(temp_path, content, hook, result))
+		if (!WriteAndSyncAtomicTemp(temp_path, content, hook, result, sync_to_disk))
 		{
 			if (!result.interrupted)
 			{
@@ -598,13 +1072,42 @@ namespace uam::io
 			}
 			return result;
 		}
-		return CommitSyncedAtomicTemp(path, temp_path, preserve_backup, hook);
+		return CommitSyncedAtomicTemp(path, temp_path, preserve_backup, hook, sync_to_disk, sync_to_disk);
 	}
 
 
 	inline bool AtomicWriteFile(const std::filesystem::path& path, std::string_view content)
 	{
 		return AtomicWriteFileDetailed(path, content).success;
+	}
+
+	/// <summary>Atomically publishes reconstructible cache data without durable disk sync.</summary>
+	inline bool WriteCacheFile(const std::filesystem::path& path, std::string_view content)
+	{
+#if defined(_WIN32)
+		// Still temp+rename, minus the durable writer's global lock, directory probe, second
+		// destination probe and abandoned-temp sweeps: each is a filter-driver round trip on
+		// Windows, and together they doubled cold 1000-chat summary regeneration.
+		const std::filesystem::path temp_path = MakeTempWritePath(path);
+		std::filesystem::path native_parent, native_path, native_temp;
+		AtomicWriteResult result;
+		std::error_code ec;
+		if (path.filename().empty() || !NativeFilePath(path, native_path, result.error) || !NativeFilePath(temp_path, native_temp, result.error)) return false;
+		const std::filesystem::file_status status = std::filesystem::symlink_status(native_path, ec);
+		if (status.type() != std::filesystem::file_type::not_found && !std::filesystem::is_regular_file(status)) return false;
+		bool written = WriteAndSyncAtomicTemp(temp_path, content, {}, result, false);
+		if (!written)
+		{
+			RemoveAtomicTempNoThrow(temp_path);
+			written = NativeFilePath(path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path(), native_parent, result.error, true) &&
+			    uam::paths::CreateDirectoriesNoThrow(native_parent) && WriteAndSyncAtomicTemp(temp_path, content, {}, result, false);
+		}
+		if (written && MoveFileExW(native_temp.c_str(), native_path.c_str(), MOVEFILE_REPLACE_EXISTING)) return true;
+		RemoveAtomicTempNoThrow(temp_path);
+		return false;
+#else
+		return AtomicWriteFileDetailed(path, content, {}, false, false).success;
+#endif
 	}
 
 	inline bool AtomicWriteFileWithBackup(const std::filesystem::path& path, std::string_view content)

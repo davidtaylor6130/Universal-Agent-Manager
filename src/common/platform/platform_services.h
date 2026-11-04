@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/models/app_models.h"
+#include "common/platform/async_byte_writer.h"
 
 #include <filesystem>
 #include <ctime>
@@ -36,12 +37,21 @@ namespace uam
 			return !result.output_truncated;
 		}
 
+		enum class StandardInputReadStatus { Data, Pending, EndOfStream, Error };
+		struct StandardInputReadResult
+		{
+			StandardInputReadStatus status = StandardInputReadStatus::Error;
+			std::size_t size = 0;
+		};
+
 		struct StdioProcessPlatformFields;
 
 		class DataRootLock
 		{
 		  public:
 			virtual ~DataRootLock() = default;
+			// Legacy implementations cannot establish current transition ownership.
+			virtual bool Current() const { return false; }
 		};
 	} // namespace platform
 } // namespace uam
@@ -85,12 +95,38 @@ class IPlatformProcessService
 	virtual bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const = 0;
 	virtual int NormalizeCapturedCommandExitCode(int raw_status) const = 0;
 	virtual ProcessExecutionResult ExecuteCommand(const std::string& command, int timeout_ms = -1, std::stop_token stop_token = {}) const = 0;
+	/// Nonblocking redirected-stdin read for the process's sole input consumer. Never owns/closes stdin.
+	/// Unsupported services return Error; there is no hidden reader thread or console read.
+	virtual uam::platform::StandardInputReadResult ReadStandardInput(char*, std::size_t) const
+	{
+		return {};
+	}
+	/// Opt-in finite worker input: the sole consumer may read bounded preloaded regular-file stdin.
+	/// Pipes retain ReadStandardInput's nonblocking behavior; never owns/closes stdin or reads a console.
+	/// Callers also enforce their aggregate byte/deadline limits across reads.
+	virtual uam::platform::StandardInputReadResult ReadFiniteStandardInput(char* buffer,
+	    std::size_t capacity, std::size_t maximum_input_bytes) const
+	{
+		(void)maximum_input_bytes;
+		return ReadStandardInput(buffer, capacity);
+	}
 	virtual bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr, const std::vector<std::pair<std::string, std::string>>& environment_overrides = {}) const = 0;
 	// Starts with immutable, preloaded stdin and merged stdout/stderr. This avoids
 	// blocking the caller while a child delays or refuses to consume stdin.
 	virtual bool StartStdioProcessWithInput(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string_view standard_input, std::string* error_out = nullptr, const std::vector<std::pair<std::string, std::string>>& environment_overrides = {}) const = 0;
 	virtual void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields& process) const = 0;
 	virtual bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, std::size_t len, std::string* error_out = nullptr) const = 0;
+	/// Opt-in exact sink-write observation. True means accepted by the legacy write, not completed or provider-processed.
+	/// A null receipt is a supported unobserved legacy write; never retry merely because no receipt was produced.
+	/// The opaque receipt binds the actual writer only; callers retain and validate process/row ownership separately.
+	virtual bool WriteToStdioProcessObserved(uam::platform::StdioProcessPlatformFields& process,
+	    const char* bytes, std::size_t len,
+	    std::shared_ptr<const uam::platform::AsyncByteWriter::EnqueueReceipt>& receipt_out,
+	    std::string* error_out = nullptr) const
+	{
+		receipt_out.reset();
+		return WriteToStdioProcess(process, bytes, len, error_out);
+	}
 	virtual void CloseStdioProcessInput(uam::platform::StdioProcessPlatformFields& process) const = 0;
 	// Stops and reaps the process tree while leaving output handles open for a final drain.
 	virtual void TerminateStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const = 0;
@@ -105,7 +141,8 @@ class IPlatformProcessService
 	virtual std::string GenerateUuid() const = 0;
 	virtual bool LaunchShellAt(const std::filesystem::path& working_directory, std::string* error_out = nullptr) const = 0;
 	/// <summary>Open a real terminal with typed argv; never interpolate credentials or remote paths into a controller shell.</summary>
-	virtual bool LaunchTerminalCommand(const std::vector<std::string>&, std::string* error_out = nullptr) const
+	/// <remarks>Windows hosts the terminal in the PowerShell chosen by <paramref name="powershell_preference"/> (see powershell_selection.h).</remarks>
+	virtual bool LaunchTerminalCommand(const std::vector<std::string>&, std::string* error_out = nullptr, std::string_view /*powershell_preference*/ = "auto") const
 	{
 		if (error_out != nullptr) *error_out = "Opening a command terminal is unavailable on this platform.";
 		return false;
@@ -163,6 +200,10 @@ struct DictationEvent
 
 struct DictationOptions
 {
+	std::string mode = "system";
+	std::string server_url;
+	std::string server_model;
+	std::string server_api_key;
 	std::string locale;
 	std::string dictation_id;
 };

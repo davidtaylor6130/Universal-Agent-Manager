@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stop_token>
@@ -43,6 +44,8 @@ namespace uam
 	struct ProviderWorkerInvocation
 	{
 		bool direct_process = false;
+		bool structured_stdout = false;
+		std::function<bool(std::string_view)> output_sink;
 		std::vector<std::string> argv;
 		std::string standard_input;
 		std::string shell_command;
@@ -150,6 +153,8 @@ namespace uam
 		return WithProviderWorkerPathEnvironment(uam::shell::JoinEscapedArgs(argv), path_mode);
 	}
 
-	ProviderWorkerInvocation BuildProviderWorkerInvocation(const AppState& app, const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id, ProviderWorkerPathMode path_mode, std::string* error_out = nullptr, bool remote_target = false);
+	ProviderWorkerInvocation BuildProviderWorkerInvocation(const AppState& app, const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id, ProviderWorkerPathMode path_mode, std::string* error_out = nullptr, std::string_view remote_host_id = {});
 	ProcessExecutionResult ExecuteProviderWorkerInvocation(const ProviderWorkerInvocation& invocation, const std::filesystem::path& working_directory, int timeout_ms = -1, std::stop_token stop_token = {});
+	/// <summary>Runs a text worker in its isolated local or selected-runner directory and cleans up remote isolation.</summary>
+	ProcessExecutionResult ExecuteIsolatedProviderTextWorker(const ProviderWorkerInvocation& invocation, std::string_view provider_id, const ExecutionHost* remote_host = nullptr, int timeout_ms = 60000, std::stop_token stop_token = {});
 } // namespace uam

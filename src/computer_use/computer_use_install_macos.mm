@@ -1,6 +1,9 @@
 #include "computer_use/computer_use_install_macos.h"
 
 #include "common/paths/app_paths.h"
+#include "common/utils/env_utils.h"
+#include "common/platform/data_folder_writer_lease.h"
+#include "app/data_folder_transition.h"
 
 #import <Foundation/Foundation.h>
 
@@ -137,7 +140,22 @@ namespace uam::computer_use
 		const std::string plist_hash = Sha256(source_plist, error);
 		if (plist_hash.empty()) return {};
 
-		const std::filesystem::path root = AppPaths::DefaultDataRootPath() / "Computer Use";
+		std::filesystem::path profile;
+		std::string ownership_error;
+		if (const auto effective = env::GetTrimmedPath("UAM_DATA_DIR"))
+			profile = *effective;
+		else if (!DataFolderTransition::ProbeStartupRoot(AppPaths::DefaultDataRootPath(), {}, profile, ownership_error))
+		{
+			SetError(error, ownership_error);
+			return {};
+		}
+		const auto writer = platform::DataFolderWriterLease::TryAcquire(profile, platform::DataFolderWriterLease::Access::Shared, ownership_error);
+		if (!writer || !DataFolderTransition::CheckExternalSourceFence(profile, ownership_error, true))
+		{
+			SetError(error, ownership_error);
+			return {};
+		}
+		const std::filesystem::path root = profile / "Computer Use";
 		std::error_code fs_error;
 		std::filesystem::create_directories(root, fs_error);
 		if (fs_error) { SetError(error, "Could not create Computer Use storage: " + fs_error.message() + "."); return {}; }

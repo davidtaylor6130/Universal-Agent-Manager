@@ -8,9 +8,11 @@ import { FolderTree } from '../sidebar/FolderTree'
 import { sidebarStatusIcon } from '../sidebar/SessionItem'
 import { displayedChatStatus } from '../sidebar/chatSearch'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, IconButton, Presence } from '../ui'
+import { Button, IconButton, Presence, RowButton } from '../ui'
 import { RuntimeTimeout } from '../shared/RuntimeTimeout'
 import { useRuntimeActivity } from '../../hooks/useRuntimeActivity'
+import { CompanionPreferences } from './CompanionPreferences'
+import { useCompanionAlerts } from './useCompanionAlerts'
 import './companion.css'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
@@ -66,6 +68,8 @@ export function CompanionShell() {
   const acpBindings = useAppStore((s) => s.acpBindingBySessionId)
   const cliBindings = useAppStore((s) => s.cliBindingBySessionId)
   const session = sessions.find((candidate) => candidate.id === activeSessionId)
+  const alerts = useCompanionAlerts(Boolean(token) && ready)
+  const openConversation = () => { setConversationOpen(true); setPinError('') }
   const currentStatus = session ? displayedChatStatus(
     cliBindings[session.id] ? [cliBindings[session.id]] : [],
     acpBindings[session.id] ? [acpBindings[session.id]] : [],
@@ -130,12 +134,12 @@ export function CompanionShell() {
       : status?.type === 'attention'
         ? attentionIcon
         : <Check size={14} aria-hidden="true" />
-    return <button key={candidate.id} type="button" className="uam-companion-activity-row" data-session-id={candidate.id} aria-label={`Open ${candidate.name}`} onClick={() => { useAppStore.getState().setActiveSession?.(candidate.id); setConversationOpen(true) }}>
+    return <RowButton key={candidate.id} type="button" className="uam-companion-activity-row" data-session-id={candidate.id} aria-label={`Open ${candidate.name}`} onClick={() => { useAppStore.getState().setActiveSession?.(candidate.id); setConversationOpen(true) }}>
       <ProviderLogo providerId={candidate.providerId} size={24} className="uam-companion-provider" />
       <span className="uam-companion-row-copy"><strong>{candidate.name}</strong><small>{projectLabel(candidate)} · {workspaceLabel(candidate)}</small></span>
       <span className="uam-companion-row-state"><em className={`session-status session-status--${status?.type === 'processing' ? 'processing' : status?.type === 'attention' ? 'attention' : 'idle'}`} aria-label={statusLabel}>{statusIcon}</em><small className="uam-companion-review-status">{status?.type === 'done' ? 'Ready to review' : statusLabel}</small><small>{timestamp}</small></span>
       <ChevronRight size={18} aria-hidden />
-    </button>
+    </RowButton>
   }
 
 
@@ -206,6 +210,7 @@ export function CompanionShell() {
         }
         phoneState.loadFromCef({
           ...state,
+          ...(state.settings && phoneState.theme ? { settings: { ...state.settings, theme: phoneState.theme } } : {}),
           selectedChatId: selectedId,
           selectedChatIndex: -1,
           folders: state.folders.map((folder) => {
@@ -273,6 +278,24 @@ export function CompanionShell() {
     }
   }, [token])
 
+  useEffect(() => {
+    if (!ready) return
+    const openChat = (id: unknown) => {
+      if (typeof id !== 'string' || !useAppStore.getState().sessions.some((chat) => chat.id === id)) return
+      useAppStore.getState().setActiveSession(id)
+      setTab('activity')
+      setConversationOpen(true)
+    }
+    const requested = new URLSearchParams(window.location.search).get('chat')
+    if (requested) {
+      openChat(requested)
+      window.history.replaceState(null, '', window.location.pathname)
+    }
+    const receive = (event: MessageEvent) => { if (event.data?.type === 'openChat') openChat(event.data.chatId) }
+    navigator.serviceWorker?.addEventListener('message', receive)
+    return () => navigator.serviceWorker?.removeEventListener('message', receive)
+  }, [ready])
+
   const disconnect = () => {
     window.localStorage.removeItem(TOKEN_KEY)
     sessionStorage.removeItem(TOKEN_KEY)
@@ -323,6 +346,7 @@ export function CompanionShell() {
       <h1>Settings</h1>
       <p role="status">{error ? 'Disconnected' : ready ? 'Connected' : 'Connecting…'}</p>
       <Button variant="secondary" disabled={refreshing} aria-busy={refreshing || undefined} onClick={() => void refreshManually()} leadingIcon={<RefreshCw size={16} />}>{refreshing ? 'Refreshing…' : 'Refresh chats and activity'}</Button>
+      <CompanionPreferences alerts={alerts} />
       <Button variant="ghost" onClick={disconnect}>Logout</Button>
     </main> : ready ? <>
       <main className="uam-companion-main">
@@ -348,7 +372,7 @@ export function CompanionShell() {
                   {sessions.some((candidate) => !candidate.folderId || !folders.some((folder) => folder.id === candidate.folderId)) && <option value="unsorted">Unsorted</option>}
                 </select>
                 <span className="uam-companion-refresh-stack">
-                  <button type="button" className="uam-companion-refresh" aria-label="Refresh activity" disabled={refreshing} onClick={() => void refreshManually()}><RefreshCw size={16} aria-hidden="true" /></button>
+                  <IconButton className="uam-companion-refresh" label="Refresh activity" icon={<RefreshCw size={16} aria-hidden="true" />} disabled={refreshing} onClick={() => void refreshManually()} />
                   <small role="status">{lastRefreshedAt ? `Updated ${lastRefreshedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Not refreshed yet'}</small>
                 </span>
               </div>
@@ -360,7 +384,7 @@ export function CompanionShell() {
                 <h1 className="!p-0">Chats</h1>
               </div>
               <input className="uam-companion-search" type="search" aria-label="Search chats" placeholder="Search chats" value={search} onChange={(event) => setSearch(event.target.value)} />
-              {tab === 'chats' && <FolderTree searchQuery={search} />}
+              {tab === 'chats' && <FolderTree searchQuery={search} onSessionOpen={openConversation} />}
             </section>
           </div>
         </div>}
@@ -368,9 +392,9 @@ export function CompanionShell() {
       <Presence open={storeNewChatModalOpen}><Suspense fallback={null}><NewChatModal companion onCreated={() => { setConversationOpen(true); void refreshNow.current?.(true, true) }} /></Suspense></Presence>
     </> : <p className="p-4" role="status">{error ? 'Retrying connection…' : 'Loading chats…'}</p>}
     {token && <nav className="uam-companion-nav" aria-label="Companion navigation">
-      <button type="button" aria-label="Activity" aria-current={tab === 'activity' && !conversationOpen ? 'page' : undefined} onClick={() => { manualTabChoice.current = true; setTab('activity'); setConversationOpen(false); setPinError('') }}><Activity size={21} /></button>
-      <button type="button" className="uam-companion-new-chat" aria-label="New chat" onClick={() => setStoreNewChatModalOpen(true)}><Plus size={30} strokeWidth={2.5} /></button>
-      <button type="button" aria-label="Chats" aria-current={tab === 'chats' && !conversationOpen ? 'page' : undefined} onClick={() => { manualTabChoice.current = true; setTab('chats'); setConversationOpen(false); setPinError('') }}><MessageSquare size={21} /></button>
+      <IconButton label="Activity" aria-current={tab === 'activity' && !conversationOpen ? 'page' : undefined} icon={<Activity size={21} />} onClick={() => { manualTabChoice.current = true; setTab('activity'); setConversationOpen(false); setPinError('') }} />
+      <IconButton className="uam-companion-new-chat" label="New chat" icon={<Plus size={30} strokeWidth={2.5} />} onClick={() => setStoreNewChatModalOpen(true)} />
+      <IconButton label="Chats" aria-current={tab === 'chats' && !conversationOpen ? 'page' : undefined} icon={<MessageSquare size={21} />} onClick={() => { manualTabChoice.current = true; setTab('chats'); setConversationOpen(false); setPinError('') }} />
       {tab !== 'settings' && <span className={`uam-companion-nav-indicator uam-companion-nav-indicator--${tab === 'chats' ? 'chats' : 'activity'}`} aria-hidden="true" />}
     </nav>}
   </div>

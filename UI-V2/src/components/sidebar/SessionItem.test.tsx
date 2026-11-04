@@ -1,9 +1,10 @@
-import { act } from 'react'
+import { act, Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore, type AcpAttentionKind, type AcpBinding } from '../../store/useAppStore'
 import type { Session } from '../../types/session'
-import { formatSidebarWorktreePath, SessionItem } from './SessionItem'
+import { SessionItem } from './SessionItem'
+import { setPreferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { chatGridLeaves, defaultChatGridLayout, readChatGridLayout, setChatInLeaf, splitChatLeaf, writeChatGridLayout } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -58,6 +59,13 @@ function makeAcpBinding(overrides: Partial<AcpBinding> = {}): AcpBinding {
   }
 }
 
+/** Opens the Copy submenu from the open context menu and returns its element. */
+function openCopySubmenu(menu: Element) {
+  const copy = Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === 'Copy')!
+  act(() => copy.click())
+  return document.body.querySelector<HTMLElement>('[role="menu"][aria-label="Copy"]')!
+}
+
 function renderSessionItem(activityLayout = false) {
   const host = document.createElement('div')
   document.body.appendChild(host)
@@ -98,6 +106,101 @@ describe('SessionItem status icons', () => {
     })
   })
 
+  it('refreshes activity branches when workspace scope changes and ignores late replies', async () => {
+    const original = useAppStore.getState().getVcsCommitStatus
+    type Status = Awaited<ReturnType<typeof original>>
+    const finish: Array<(status: Status) => void> = []
+    const getVcsCommitStatus = vi.fn(() => new Promise<Status>(resolve => finish.push(resolve)))
+    const status = (branchOrRevision: string): Status => ({ available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/tmp', branchOrRevision, changedFiles: [], lineStatsReady: false, warning: '', error: '' })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    let session = { ...makeSession(), id: 'branch-scope-test', workspaceDirectory: '/tmp/first', executionHostId: 'local' }
+    useAppStore.setState({ sessions: [session], getVcsCommitStatus })
+    const render = () => act(() => root.render(<SessionItem sessionId={session.id} session={session} activityLayout />))
+    try {
+      render()
+      await act(async () => finish[0](status('old-branch')))
+      expect(host.textContent).toContain('old-branch')
+      session = { ...session, workspaceDirectory: '/tmp/second' }
+      render()
+      expect(getVcsCommitStatus).toHaveBeenCalledTimes(2)
+      expect(host.textContent).not.toContain('old-branch')
+      session = { ...session, executionHostId: 'remote' }
+      render()
+      expect(getVcsCommitStatus).toHaveBeenCalledTimes(3)
+      await act(async () => finish[2](status('remote-branch')))
+      await act(async () => finish[1](status('late-local-branch')))
+      expect(host.textContent).toContain('remote-branch')
+      expect(host.textContent).not.toContain('late-local-branch')
+      act(() => root.unmount())
+      const remounted = createRoot(host)
+      await act(async () => remounted.render(<SessionItem sessionId={session.id} session={session} activityLayout />))
+      expect(host.textContent).toContain('remote-branch')
+      act(() => remounted.unmount())
+    } finally {
+      useAppStore.setState({ getVcsCommitStatus: original })
+      host.remove()
+    }
+  })
+
+  it('requests activity branches only while their row intersects the viewport', async () => {
+    const original = useAppStore.getState().getVcsCommitStatus
+    type Status = Awaited<ReturnType<typeof original>>
+    let intersect!: (entries: Pick<IntersectionObserverEntry, 'isIntersecting'>[]) => void
+    const disconnect = vi.fn()
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: typeof intersect) { intersect = callback }
+      observe() {}
+      disconnect = disconnect
+    })
+    const finish: Array<(status: Status) => void> = []
+    const getVcsCommitStatus = vi.fn(() => new Promise<Status>(resolve => finish.push(resolve)))
+    let session = { ...makeSession(), id: 'branch-visible-test', workspaceDirectory: '/tmp/visible' }
+    useAppStore.setState({ sessions: [session], getVcsCommitStatus })
+    const host = document.createElement('div'), root = createRoot(host)
+    document.body.appendChild(host)
+    const render = () => act(() => root.render(<SessionItem sessionId={session.id} session={session} activityLayout />))
+    try {
+      render()
+      expect(getVcsCommitStatus).not.toHaveBeenCalled()
+      act(() => intersect([{ isIntersecting: true }]))
+      expect(getVcsCommitStatus).toHaveBeenCalledTimes(1)
+      act(() => intersect([{ isIntersecting: false }]))
+      await act(async () => finish[0]({ available: true, activeVcsType: 'git', branchOrRevision: 'late-hidden-branch' } as Status))
+      expect(host.textContent).not.toContain('late-hidden-branch')
+      session = { ...session, updatedAt: new Date(now.getTime() + 1000) }
+      render()
+      expect(getVcsCommitStatus).toHaveBeenCalledTimes(1)
+      act(() => intersect([{ isIntersecting: true }]))
+      expect(getVcsCommitStatus).toHaveBeenCalledTimes(2)
+      await act(async () => finish[1]({ available: true, activeVcsType: 'git', branchOrRevision: 'visible-branch' } as Status))
+      expect(host.textContent).toContain('visible-branch')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.unstubAllGlobals()
+      useAppStore.setState({ getVcsCommitStatus: original })
+    }
+    expect(disconnect).toHaveBeenCalled()
+  })
+
+  it('does not request an activity branch for imported read-only chats', async () => {
+    const original = useAppStore.getState().getVcsCommitStatus
+    const getVcsCommitStatus = vi.fn(async () => null)
+    useAppStore.setState({ sessions: [{ ...makeSession(), importedReadOnly: true, workspaceBranchName: 'saved-branch' }], getVcsCommitStatus })
+    const { host, root } = renderSessionItem(true)
+    try {
+      await act(async () => {})
+      expect(getVcsCommitStatus).not.toHaveBeenCalled()
+      expect(host.textContent).not.toContain('saved-branch')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState({ getVcsCommitStatus: original })
+    }
+  })
+
   it('uses a precomputed branch family without rescanning the full session list', () => {
     const sessions = new Proxy([makeSession()], {
       get(target, property, receiver) {
@@ -117,21 +220,175 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it.each([false, true])('updates provider icons through a switch and rollback despite an old runtime (activity=%s)', async (activityLayout) => {
+    useAppStore.setState({
+      providers: [
+        { id: 'opencode-cli', name: 'OpenCode CLI', shortName: 'OpenCode', color: '#fff', description: '' },
+        { id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', color: '#fff', description: '' },
+      ],
+      sessions: [{ ...makeSession(), providerId: 'opencode-cli' }],
+      acpBindingBySessionId: { 'chat-1': makeAcpBinding({ providerId: 'opencode-cli' }) },
+    })
+    const host = document.createElement('div'), root = createRoot(host)
+    function Row() {
+      const session = useAppStore(state => state.sessions.find(item => item.id === 'chat-1'))
+      return <SessionItem sessionId="chat-1" session={session} familySessionIds={['chat-1']} activityLayout={activityLayout} />
+    }
+    let reject!: () => void
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      if (JSON.parse(request).action === 'setChatProvider') reject = () => onFailure(500, 'Provider switch failed')
+      else onSuccess('{}')
+    }
+    try {
+      await act(async () => root.render(<Row />))
+      expect(host.querySelector('[aria-label="Provider: OpenCode"]')).toBeTruthy()
+      let switching!: Promise<boolean>
+      act(() => { switching = useAppStore.getState().setSessionProvider('chat-1', 'codex-cli') })
+      expect(host.querySelector('[aria-label="Provider: Codex"]')).toBeTruthy()
+      expect(host.querySelector('[aria-label="Provider: OpenCode"]')).toBeNull()
+      act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': makeAcpBinding({ providerId: 'opencode-cli', lastError: 'Old runner exited' }) } }))
+      expect(host.querySelector('[aria-label="Provider: Codex"]')).toBeTruthy()
+      await act(async () => { reject(); expect(await switching).toBe(false) })
+      expect(host.querySelector('[aria-label="Provider: OpenCode"]')).toBeTruthy()
+      expect(host.querySelector('[aria-label="Provider: Codex"]')).toBeNull()
+      delete window.cefQuery
+      await act(async () => { expect(await useAppStore.getState().setSessionProvider('chat-1', 'codex-cli')).toBe(true) })
+      expect(host.querySelector('[aria-label="Provider: Codex"]')).toBeTruthy()
+    } finally { delete window.cefQuery; act(() => root.unmount()) }
+  })
+
+  it.each([false, true])('regenerates titles without duplicate requests or an optimistic rename (activity=%s)', async (activityLayout) => {
+    let finish: ((response: string) => void) | undefined
+    const requests: unknown[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const message = JSON.parse(request)
+      if (message.action === 'regenerateChatTitle') { requests.push(message.payload); finish = onSuccess }
+      else onSuccess('{}')
+    }
+    const { host, root } = renderSessionItem(activityLayout)
+    try {
+      act(() => host.querySelector('.cursor-pointer')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
+      const menu = document.body.querySelector('[data-viewport-menu]')!
+      const button = Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === 'Regenerate title')!
+      await act(async () => button.click())
+      expect(button.disabled).toBe(true)
+      expect(button.textContent).toBe('Generating title…')
+      await act(async () => button.click())
+      expect(requests).toEqual([{ chatId: 'chat-1' }])
+      expect(useAppStore.getState().sessions[0].name).toBe('Chat 1')
+      // Simulate the authoritative state push before the request completion.
+      await act(async () => {
+        useAppStore.setState({ sessions: [{ ...makeSession(), name: 'Generated title' }] })
+        finish!(JSON.stringify({ chatId: 'chat-1', title: 'Generated title' }))
+      })
+      expect(menu.querySelector('[role="status"]')?.textContent).toBe('Chat title updated.')
+      expect(useAppStore.getState().sessions[0].name).toBe('Generated title')
+    } finally { delete window.cefQuery; act(() => root.unmount()); host.remove() }
+  })
+
+  it('cancels a pending title request and keeps the existing name on failure', async () => {
+    let fail: ((code: number, message: string) => void) | undefined
+    const requests: string[] = []
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const message = JSON.parse(request)
+      requests.push(message.action)
+      if (message.action === 'regenerateChatTitle') fail = onFailure
+      else onSuccess('{}')
+    }
+    const { host, root } = renderSessionItem()
+    try {
+      act(() => host.querySelector('.cursor-pointer')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
+      const menu = document.body.querySelector('[data-viewport-menu]')!
+      const button = (name: string) => Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === name)!
+      await act(async () => button('Regenerate title').click())
+      await act(async () => button('Cancel title generation').click())
+      expect(button('Cancelling…').disabled).toBe(true)
+      expect(requests.filter(action => action === 'cancelChatTitle')).toHaveLength(1)
+      await act(async () => fail!(409, 'Title generation was cancelled.'))
+      expect(menu.querySelector('[role="alert"]')?.textContent).toBe('Title generation was cancelled.')
+      expect(button('Regenerate title').disabled).toBe(false)
+      expect(useAppStore.getState().sessions[0].name).toBe('Chat 1')
+      await act(async () => button('Regenerate title').click())
+      await act(async () => fail!(409, 'The chat changed. Its current name was kept.'))
+      expect(menu.querySelector('[role="alert"]')?.textContent).toContain('current name was kept')
+    } finally { delete window.cefQuery; act(() => root.unmount()); host.remove() }
+  })
+
+  it('rejects invalid title responses and explains preview availability', async () => {
+    const { host, root } = renderSessionItem()
+    try {
+      act(() => host.querySelector('.cursor-pointer')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
+      const menu = document.body.querySelector('[data-viewport-menu]')!
+      const button = Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === 'Regenerate title')!
+      await act(async () => button.click())
+      expect(menu.querySelector('[role="alert"]')?.textContent).toContain('desktop app')
+      window.cefQuery = ({ request, onSuccess }) => onSuccess(JSON.parse(request).action === 'regenerateChatTitle' ? JSON.stringify({ chatId: 'another-chat', title: 'Wrong title' }) : '{}')
+      await act(async () => button.click())
+      expect(menu.querySelector('[role="alert"]')?.textContent).toContain('invalid response')
+      expect(useAppStore.getState().sessions[0].name).toBe('Chat 1')
+    } finally { delete window.cefQuery; act(() => root.unmount()); host.remove() }
+  })
+
+  it.each([false, true])('copies the exact chat name and ID from the context menu (activity=%s)', async (activityLayout) => {
+    const copied: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const message = JSON.parse(request)
+      if (message.action === 'writeClipboardText') copied.push(message.payload.text)
+      onSuccess('{}')
+    }
+    const { host, root } = renderSessionItem(activityLayout)
+    try {
+      act(() => host.querySelector('.cursor-pointer')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
+      const submenu = openCopySubmenu(document.body.querySelector('[data-viewport-menu]')!)
+      const button = (name: string) => Array.from(submenu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === name)!
+      await act(async () => button('Chat name').click())
+      expect(copied).toEqual(['Chat 1'])
+      expect(submenu.querySelector('[role="status"]')?.textContent).toBe('Chat name copied.')
+      await act(async () => button('Chat ID').click())
+      expect(copied).toEqual(['Chat 1', 'chat-1'])
+      expect(submenu.querySelector('[role="status"]')?.textContent).toBe('Chat ID copied.')
+    } finally { delete window.cefQuery; act(() => root.unmount()); host.remove() }
+  })
+
+  it('keeps copy failures visible and allows retry without modifying the chat', async () => {
+    const writeText = vi.fn().mockRejectedValueOnce(new Error('Clipboard unavailable')).mockResolvedValueOnce(undefined)
+    const previous = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const { host, root } = renderSessionItem()
+    try {
+      act(() => host.querySelector('.cursor-pointer')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+      const submenu = openCopySubmenu(document.body.querySelector('[data-viewport-menu]')!)
+      const button = Array.from(submenu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === 'Chat ID')!
+      await act(async () => button.click())
+      expect(submenu.querySelector('[role="alert"]')?.textContent).toBe('Could not copy. Try again.')
+      expect(button.disabled).toBe(false)
+      await act(async () => button.click())
+      expect(submenu.querySelector('[role="status"]')?.textContent).toBe('Chat ID copied.')
+      expect(useAppStore.getState().sessions[0].name).toBe('Chat 1')
+    } finally {
+      act(() => root.unmount()); host.remove()
+      if (previous) Object.defineProperty(navigator, 'clipboard', previous)
+      else Reflect.deleteProperty(navigator, 'clipboard')
+    }
+  })
+
   it('shows provider and shortened worktree context when enabled', () => {
     useAppStore.setState({
       sessions: [{
         ...makeSession(),
         providerId: 'codex-cli',
-        workspaceWorktreeDirectory: '/Users/david/project/.uam-worktrees/chat-abc123',
+        workspaceWorktreeDirectory: '/Users/example/project/.uam-worktrees/chat-abc123',
+        workspaceSourceDirectory: '/Users/example/project',
+        workspaceBranchName: 'fix-sidebar',
       }],
     })
     const { host, root } = renderSessionItem()
 
-    expect(formatSidebarWorktreePath('C:\\Users\\david\\project\\chat-abc123')).toBe('.../project/chat-abc123')
     expect(host.querySelector('img.uam-provider-logo--codex')?.parentElement?.style.width).toBe('16px')
     expect(host.querySelector('[role="img"][aria-label="Provider: Codex"]')).toBeTruthy()
-    expect(host.textContent).toContain('.../.uam-worktrees/chat-abc123')
-    expect(host.querySelector('[title="/Users/david/project/.uam-worktrees/chat-abc123"]')).toBeTruthy()
+    expect(host.textContent).toContain('projectfix-sidebar')
+    expect(host.textContent).not.toContain('.uam-worktrees')
+    expect(host.querySelector('[title="/Users/example/project/.uam-worktrees/chat-abc123"]')).toBeTruthy()
 
     act(() => useAppStore.setState({ showProviderIconsInSidebar: false, showWorktreePathInSidebar: false }))
     expect(host.querySelector('img.uam-provider-logo--codex')).toBeNull()
@@ -139,6 +396,26 @@ describe('SessionItem status icons', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('uses the original workspace label and logical worktree name in both sidebar layouts', () => {
+    const worktree = { ...makeSession(), executionHostId: 'windows', workspaceSourceDirectory: 'C:\\Projects\\UAM\\', workspaceWorktreeDirectory: 'C:\\Temp\\chat-random', workspaceBranchName: 'fix-folders' }
+    useAppStore.setState({
+      sessions: [worktree],
+      folders: [
+        { id: 'other', name: 'Wrong machine', directory: 'C:/Projects/UAM', executionHostId: 'local', parentId: null, isExpanded: true, createdAt: now },
+        { id: 'project', name: 'Original UAM', directory: 'c:/projects/uam', executionHostId: 'windows', parentId: null, isExpanded: true, createdAt: now },
+      ],
+    })
+    for (const activityLayout of [false, true]) {
+      const { host, root } = renderSessionItem(activityLayout)
+      expect(host.textContent).toContain('Original UAMfix-folders')
+      expect(host.textContent).not.toContain('chat-random')
+      const context = Array.from(host.querySelectorAll<HTMLElement>('[title]')).find((element) => element.title === worktree.workspaceWorktreeDirectory)
+      expect(context?.querySelector('svg')).toBeTruthy()
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
   it('acknowledges the rendered completion only on deliberate mouse or keyboard selection', () => {
@@ -203,7 +480,7 @@ describe('SessionItem status icons', () => {
     expect(row.getAttribute('role')).toBe('button')
     expect(row.tabIndex).toBe(0)
     act(() => row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
-    expect(setActiveSession).toHaveBeenCalledWith('chat-1')
+    expect(setActiveSession).toHaveBeenCalledWith('chat-branch')
 
     row.focus()
     act(() => row.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true })))
@@ -260,6 +537,80 @@ describe('SessionItem status icons', () => {
     expect(setActiveSession).toHaveBeenLastCalledWith('chat-branch')
 
     act(() => root.unmount())
+    host.remove()
+  })
+
+  it.each([
+    { name: 'opens the working branch instead of its remembered stopped root', activity: true, selected: 'chat-root', remembered: 'chat-root', first: { processing: true }, second: {}, clicked: 'chat-root', expected: 'chat-a' },
+    { name: 'opens attention before a working branch', activity: true, selected: 'chat-a', remembered: 'chat-a', first: { processing: true }, second: { processing: true, attentionKind: 'question' as AcpAttentionKind }, clicked: 'chat-root', expected: 'chat-b' },
+    { name: 'keeps the selected working branch among multiple workers', activity: true, selected: 'chat-b', remembered: 'chat-a', first: { processing: true }, second: { processing: true }, clicked: 'chat-root', expected: 'chat-b' },
+    { name: 'keeps a remembered working branch when selection is outside the family', activity: true, selected: 'unrelated', remembered: 'chat-b', first: { processing: true }, second: { processing: true }, clicked: 'chat-root', expected: 'chat-b' },
+    { name: 'uses stable family order when neither remembered nor selected branch is working', activity: true, selected: 'chat-root', remembered: 'chat-root', first: { processing: true }, second: { processing: true }, clicked: 'chat-root', expected: 'chat-a' },
+    { name: 'keeps remembered idle selection when the family has no work', activity: true, selected: 'unrelated', remembered: 'chat-root', first: {}, second: {}, clicked: 'chat-root', expected: 'chat-root' },
+    { name: 'preserves ordinary folder family navigation', activity: false, selected: 'unrelated', remembered: 'chat-root', first: { processing: true }, second: {}, clicked: 'chat-root', expected: 'chat-root' },
+    { name: 'preserves explicit branch selection while its sibling works', activity: true, selected: 'unrelated', remembered: 'chat-a', first: { processing: true }, second: {}, clicked: 'chat-b', expected: 'chat-b' },
+  ])('$name', ({ activity, selected, remembered, first, second, clicked, expected }) => {
+    const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root' }
+    const branchA = { ...makeSession(), id: 'chat-a', parentChatId: 'chat-root', branchRootChatId: 'chat-root' }
+    const branchB = { ...makeSession(), id: 'chat-b', parentChatId: 'chat-root', branchRootChatId: 'chat-root' }
+    const familySessionIds = ['chat-root', 'chat-a', 'chat-b']
+    const setActiveSession = vi.fn()
+    setPreferredFamilyChat('chat-root', remembered)
+    useAppStore.setState({
+      sessions: [branchB, rootSession, branchA], activeSessionId: selected, setActiveSession,
+      acpBindingBySessionId: {
+        'chat-root': makeAcpBinding({ running: false, lifecycleState: 'stopped' }),
+        'chat-a': makeAcpBinding(first), 'chat-b': makeAcpBinding(second),
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      const session = clicked === 'chat-b' ? branchB : rootSession
+      act(() => root.render(<SessionItem sessionId={clicked} session={session} familySessionIds={familySessionIds} activityLayout={activity} />))
+      expect(setActiveSession).not.toHaveBeenCalled()
+      act(() => host.querySelector<HTMLElement>(`[data-testid="session-row-${clicked}"]`)!.click())
+      // An explicit click publishes selection intent even when the resolved chat is already selected.
+      expect(setActiveSession).toHaveBeenCalledExactlyOnceWith(expected)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('restores the last selected family chat after reorder and falls back when it is deleted', () => {
+    const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root', messageCount: 3 }
+    const branchA = { ...makeSession(), id: 'chat-branch-a', parentChatId: 'chat-root', branchRootChatId: 'chat-root', messageCount: 5 }
+    const branchB = { ...makeSession(), id: 'chat-branch-b', parentChatId: 'chat-root', branchRootChatId: 'chat-root', messageCount: 20 }
+    const familySessionIds = ['chat-root', 'chat-branch-a', 'chat-branch-b']
+    useAppStore.setState({ sessions: [rootSession, branchA, branchB], activeSessionId: 'chat-root', setActiveSession: originalActions.setActiveSession })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<>
+      <SessionItem sessionId="chat-root" session={rootSession} familySessionIds={familySessionIds} />
+      <SessionItem sessionId="chat-branch-a" session={branchA} familySessionIds={familySessionIds} />
+      <SessionItem sessionId="chat-branch-b" session={branchB} familySessionIds={familySessionIds} />
+    </>))
+
+    act(() => host.querySelector<HTMLElement>('[data-testid="session-row-chat-branch-a"]')!.click())
+    expect(useAppStore.getState().activeSessionId).toBe('chat-branch-a')
+    act(() => root.unmount())
+    useAppStore.setState({ sessions: [rootSession, branchB, branchA] })
+    const restored = createRoot(host)
+    act(() => restored.render(<SessionItem sessionId="chat-root" session={rootSession} familySessionIds={familySessionIds} />))
+    act(() => host.querySelector<HTMLElement>('[data-testid="session-row-chat-root"]')!.click())
+    expect(useAppStore.getState().activeSessionId).toBe('chat-branch-a')
+
+    act(() => {
+      useAppStore.setState({ sessions: [rootSession, branchB] })
+      restored.render(<SessionItem sessionId="chat-root" session={rootSession} familySessionIds={['chat-root', 'chat-branch-b']} />)
+    })
+    act(() => host.querySelector<HTMLElement>('[data-testid="session-row-chat-root"]')!.click())
+    expect(useAppStore.getState().activeSessionId).toBe('chat-branch-b')
+
+    act(() => restored.unmount())
     host.remove()
   })
 
@@ -545,6 +896,33 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it('ignores unrelated pane changes and updates its own pane assignment', () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const rendered = vi.fn()
+    writeChatGridLayout(setChatInLeaf(defaultChatGridLayout, 'chat-2', 'leaf-1'))
+    try {
+      act(() => root.render(<Profiler id="row" onRender={rendered}><SessionItem sessionId="chat-1" /></Profiler>))
+      rendered.mockClear()
+      act(() => writeChatGridLayout(setChatInLeaf(defaultChatGridLayout, 'chat-3', 'leaf-1')))
+      expect(rendered).not.toHaveBeenCalled()
+      let layout = splitChatLeaf(defaultChatGridLayout, 'leaf-1', 'horizontal')
+      layout = setChatInLeaf(layout, 'chat-1', chatGridLeaves(layout.root)[1].id)
+      act(() => writeChatGridLayout(layout))
+      expect(host.querySelector('[aria-label="Shown in pane 2"]')).not.toBeNull()
+      act(() => writeChatGridLayout(setChatInLeaf(layout, 'chat-3', chatGridLeaves(layout.root)[1].id)))
+      expect(host.querySelector('[aria-label="Shown in pane 2"]')).toBeNull()
+      act(() => writeChatGridLayout(setChatInLeaf(layout, 'child', chatGridLeaves(layout.root)[1].id)))
+      act(() => useAppStore.setState(state => ({ sessions: [...state.sessions,
+        { ...makeSession(), id: 'child', branchRootChatId: 'chat-1' }] })))
+      expect(host.querySelector('[aria-label="Shown in pane 2"]')).not.toBeNull()
+      act(() => useAppStore.setState({ sessions: [makeSession()] }))
+      expect(host.querySelector('[aria-label="Shown in pane 2"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+    }
+  })
+
   it('shows its pane colour without legacy context-menu pane buttons', () => {
     let layout = splitChatLeaf(defaultChatGridLayout, 'leaf-1', 'horizontal')
     const leaves = chatGridLeaves(layout.root)
@@ -603,8 +981,29 @@ describe('SessionItem status icons', () => {
     act(() => sessionRow.dispatchEvent(new MouseEvent('click', { bubbles: true })))
 
     expect(readChatGridLayout().activeLeafId).toBe(leaves[1].id)
-    expect(setActiveSession).not.toHaveBeenCalled()
+    expect(setActiveSession).toHaveBeenCalledExactlyOnceWith('chat-branch')
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it.each(['fallback', 'active parent', 'preferred sibling', 'missing parent', 'cycle', 'parent cycle', 'foreign parent', 'preferred over active'] as const)('selects the deepest descendant with safe %s handling', (scenario) => {
+    const setActiveSession = vi.fn()
+    const rootSession = { ...makeSession(), id: 'depth-root', branchRootChatId: 'depth-root', messageCount: 100 }
+    const parent = { ...makeSession(), id: 'depth-parent', parentChatId: rootSession.id, branchRootChatId: rootSession.id, messageCount: 80 }
+    const sibling = { ...parent, id: 'depth-sibling', messageCount: 90 }
+    const deepest = { ...parent, id: 'depth-child', parentChatId: parent.id, messageCount: 2 }
+    const malformed = { ...deepest, id: 'depth-malformed', messageCount: 1000, parentChatId: scenario === 'cycle' ? 'depth-malformed' : scenario === 'parent cycle' ? 'cycle-parent' : scenario === 'foreign parent' ? 'foreign-parent' : 'absent-parent' }
+    const foreign = { ...parent, id: 'foreign-parent', parentChatId: deepest.id, branchRootChatId: 'another-root' }
+    const cycleParent = { ...malformed, id: 'cycle-parent', parentChatId: malformed.id }
+    if (scenario === 'preferred sibling' || scenario === 'preferred over active') setPreferredFamilyChat(rootSession.id, sibling.id)
+    useAppStore.setState({ sessions: [rootSession, parent, sibling, deepest, malformed, foreign, cycleParent], activeSessionId: scenario === 'active parent' || scenario === 'preferred over active' ? parent.id : 'unrelated', setActiveSession })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<SessionItem sessionId={rootSession.id} session={rootSession} familySessionIds={[rootSession.id, parent.id, sibling.id, deepest.id, malformed.id, cycleParent.id]} />))
+    act(() => host.querySelector<HTMLElement>('[data-testid="session-row-depth-root"]')!.click())
+    expect(setActiveSession).toHaveBeenCalledExactlyOnceWith(scenario === 'active parent' ? parent.id : scenario === 'preferred sibling' || scenario === 'preferred over active' ? sibling.id : deepest.id)
     act(() => root.unmount())
     host.remove()
   })
@@ -624,6 +1023,97 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it.each([undefined, { type: 'png' as const, value: 'missing.png' }])('starts the activity title at the row edge without an available custom icon (%s)', (customIcon) => {
+    useAppStore.setState({ sessions: [{ ...makeSession(), providerId: 'gemini-cli', customIcon }], showProviderIconsInSidebar: true })
+    const { host, root } = renderSessionItem(true)
+    try {
+      const activity = host.querySelector('.uam-sb-activity')!
+      const titleLine = activity.firstElementChild!
+      expect(titleLine.firstElementChild?.textContent).toBe('Chat 1')
+      expect(titleLine.querySelector('[aria-label^="Provider:"]')).toBeNull()
+      expect(activity.lastElementChild?.querySelector('[aria-label="Provider: Gemini"]')).toBeTruthy()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('does not leave an activity icon gutter after its custom PNG fails to load', () => {
+    useAppStore.setState({ sessions: [{ ...makeSession(), providerId: 'gemini-cli', customIcon: {
+      type: 'png', value: 'broken.png', dataUrl: 'data:image/png;base64,AAAA',
+    } }], showProviderIconsInSidebar: true })
+    const { host, root } = renderSessionItem(true)
+    try {
+      const titleLine = host.querySelector('.uam-sb-activity')!.firstElementChild!
+      act(() => titleLine.querySelector('img')!.dispatchEvent(new Event('error')))
+      expect(titleLine.firstElementChild?.textContent).toBe('Chat 1')
+      expect(host.querySelector('[aria-label="Provider: Gemini"]')).toBeTruthy()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each([
+    { activity: true, pinned: false, working: true, snoozed: false },
+    { activity: true, pinned: false, working: false, snoozed: true },
+    { activity: false, pinned: true, working: true, snoozed: false },
+    { activity: false, pinned: true, working: false, snoozed: true },
+  ])('preserves provider and status affordances around the title ($activity/$pinned/$working/$snoozed)', ({ activity, pinned, working, snoozed }) => {
+    useAppStore.setState({ sessions: [{ ...makeSession(), providerId: 'gemini-cli', isPinned: pinned,
+      snoozedUntilMs: snoozed ? Date.now() + 3_600_000 : undefined }],
+      acpBindingBySessionId: { 'chat-1': makeAcpBinding({ processing: working, lifecycleState: working ? 'processing' : 'ready' }) } })
+    const { host, root } = renderSessionItem(activity)
+    try {
+      expect(host.querySelectorAll('[aria-label="Provider: Gemini"]')).toHaveLength(1)
+      if (activity) {
+        const titleLine = host.querySelector('.uam-sb-activity')!.firstElementChild!
+        expect(titleLine.firstElementChild?.textContent).toBe('Chat 1')
+        if (working) expect(titleLine.querySelector('[role="status"]')?.textContent).toBe('Working')
+        else expect(host.querySelector('[aria-label="Snooze Chat 1"]')).toBeTruthy()
+      } else {
+        expect(host.querySelector('[aria-label="Unpin Chat 1"]')).toBeTruthy()
+        if (working) expect(host.querySelector('[aria-label="Agent running"]')).toBeTruthy()
+        if (snoozed) expect(host.querySelector('[aria-label="Unsnooze Chat 1"]')).toBeTruthy()
+      }
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('shows the chat custom icon in place of the provider glyph and before the activity title', () => {
+    const icon = { type: 'text' as const, value: '🧪' }
+    useAppStore.setState({ sessions: [{ ...makeSession(), providerId: 'gemini-cli', customIcon: icon }], showProviderIconsInSidebar: true })
+    const compact = renderSessionItem()
+    try {
+      expect(compact.host.querySelector('[aria-label="Chat icon"]')?.textContent).toContain('🧪')
+      expect(compact.host.querySelector('[aria-label^="Provider:"]')).toBeNull()
+    } finally { act(() => compact.root.unmount()); compact.host.remove() }
+
+    const activity = renderSessionItem(true)
+    try {
+      const text = activity.host.textContent ?? ''
+      expect(text.indexOf('🧪')).toBeGreaterThanOrEqual(0)
+      expect(text.indexOf('🧪')).toBeLessThan(text.indexOf('Chat 1'))
+    } finally { act(() => activity.root.unmount()); activity.host.remove() }
+  })
+
+  it('groups the chat menu into sections with dividers and submenus for copy, snooze and collections', () => {
+    useAppStore.setState({ resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [] }] })
+    const { host, root } = renderSessionItem()
+    try {
+      act(() => host.querySelector('.cursor-pointer')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
+      const menu = document.body.querySelector('[data-viewport-menu]')!
+      const items = Array.from(menu.children).map((child) => child.getAttribute('role') === 'separator' ? '---' : child.textContent?.trim())
+      expect(items).toEqual([
+        'New chat in this worktree',
+        '---',
+        'RenameF2',
+        'Regenerate title',
+        'Pin chat',
+        'Icon…',
+        '---',
+        'Copy',
+        'Snooze',
+        'Move to collection',
+        '---',
+        'Delete…Del',
+      ])
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('moves a chat to a collection from its right-click menu', async () => {
     const moveResourceToCollection = vi.fn().mockResolvedValue(true)
     useAppStore.setState({
@@ -640,5 +1130,97 @@ describe('SessionItem status icons', () => {
     expect(moveResourceToCollection).toHaveBeenCalledWith('work', 'chat', 'chat-1', 'Chat 1')
     act(() => root.unmount())
     host.remove()
+  })
+  it('opens new chat from the right-clicked worktree even while another chat is active or processing', () => {
+    const source = { ...makeSession(), workspaceIsolationKind: 'gitWorktree', workspaceWorktreeDirectory: '/tmp/selected-worktree', executionHostId: 'local' }
+    useAppStore.setState({ sessions: [source], activeSessionId: 'other-chat', acpBindingBySessionId: { 'chat-1': makeAcpBinding({ processing: true }) }, newChatWorktreeContext: null })
+    const { host, root } = renderSessionItem()
+    try {
+      act(() => host.querySelector('[data-testid="session-row-chat-1"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })))
+      const menu = document.body.querySelector<HTMLElement>('[role="menu"][aria-label="Actions for Chat 1"]')!
+      const create = Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('New chat in this worktree'))!
+      expect(create.disabled).toBe(false)
+      act(() => create.click())
+      expect(useAppStore.getState()).toMatchObject({ isNewChatModalOpen: true, newChatFolderId: 'project', newChatWorktreeContext: { sourceChatId: 'chat-1', expectedWorkspaceDirectory: '/tmp/selected-worktree', expectedExecutionHostId: 'local' } })
+      act(() => useAppStore.getState().setNewChatModalOpen(false))
+      expect(useAppStore.getState().newChatWorktreeContext).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+})
+
+describe('SessionItem snooze actions', () => {
+  const originalSnooze = useAppStore.getState().setChatSnoozedUntil
+  afterEach(() => { useAppStore.setState({ setChatSnoozedUntil: originalSnooze }) })
+
+  it('opens the snooze options from the Active row hover action beside Done', () => {
+    useAppStore.setState({ acpBindingBySessionId: { 'chat-1': makeAcpBinding({ readySinceLastSelect: true }) } })
+    const { host, root } = renderSessionItem(true)
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Snooze Chat 1"]')!.click())
+      const menu = document.body.querySelector('[role="menu"][aria-label="Snooze Chat 1"]')
+      expect(menu?.querySelector('[role="menuitem"]')?.textContent?.startsWith('5 minutes')).toBe(true)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('shows the wake time on a snoozed row and wakes it from the Unsnooze action', () => {
+    const setChatSnoozedUntil = vi.fn(async () => ({ ok: true }))
+    useAppStore.setState({ setChatSnoozedUntil } as never)
+    const session = { ...makeSession(), snoozedUntilMs: Date.now() + 3_600_000 }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<SessionItem sessionId="chat-1" session={session} />))
+    try {
+      expect(host.textContent).toContain('until ')
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Unsnooze Chat 1"]')!.click())
+      expect(setChatSnoozedUntil).toHaveBeenCalledWith('chat-1', 0)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('keeps the wake time readable in the Unsnooze tooltip while the row text is hidden', async () => {
+    const wakeAt = new Date(); wakeAt.setHours(23, 45, 0, 0)
+    const session = { ...makeSession(), snoozedUntilMs: Math.max(wakeAt.getTime(), Date.now() + 60_000) }
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<SessionItem sessionId="chat-1" session={session} />))
+    try {
+      const shown = host.querySelector<HTMLElement>('[title^="Wakes "]')!.textContent!.replace('until ', '').trim()
+      await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Unsnooze Chat 1"]')!.focus())
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toContain(`snoozed until ${shown}`)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('hides the wake time whenever the hover actions show so the two never overlap', () => {
+    const session = { ...makeSession(), snoozedUntilMs: Date.now() + 3_600_000 }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<SessionItem sessionId="chat-1" session={session} />))
+    try {
+      const wake = host.querySelector<HTMLElement>('[title^="Wakes "]')!
+      // The hover actions are absolutely positioned over the row's right edge on hover and focus.
+      expect(wake.className).toContain('group-hover:opacity-0')
+      expect(wake.className).toContain('group-focus-within:opacity-0')
+      // An open row menu keeps the actions visible without hover, so the wake time stays hidden too.
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="More actions"]')!.click())
+      expect(host.querySelector<HTMLElement>('[data-testid="session-actions-chat-1"]')!.className).toContain('opacity-100')
+      expect(wake.className.split(' ')).toContain('opacity-0')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 })

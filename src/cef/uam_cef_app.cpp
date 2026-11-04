@@ -2,6 +2,7 @@
 #include "cef/uam_cef_client.h"
 #include "cef/uam_cef_command_line_config.h"
 #include "cef/uam_cef_security.h"
+#include "cef/uam_window_chrome.h"
 #include "cef/ui_asset_snapshot.h"
 #include "include/views/cef_label_button.h"
 #include "include/views/cef_panel.h"
@@ -23,6 +24,7 @@
 #include "include/views/cef_window.h"
 #include "include/wrapper/cef_stream_resource_handler.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <vector>
 
@@ -75,7 +77,7 @@ namespace
 		IMPLEMENT_REFCOUNTING(UamUiSchemeHandlerFactory);
 	};
 
-	CefRefPtr<CefImage> LoadUamWindowIcon()
+	CefRefPtr<CefImage> LoadUamWindowIcon(std::size_t target_dip_size = 0)
 	{
 		CefString exe_dir_string;
 		if (!CefGetPath(PK_DIR_EXE, exe_dir_string))
@@ -109,7 +111,14 @@ namespace
 			CefRefPtr<CefImage> image = CefImage::CreateImage();
 			if (image != nullptr && image->AddPNG(1.0f, bytes.data(), bytes.size()))
 			{
-				return image;
+				if (target_dip_size == 0) return image;
+				const std::size_t source_size = std::max(image->GetWidth(), image->GetHeight());
+				if (source_size == 0) continue;
+				CefRefPtr<CefImage> window_icon = CefImage::CreateImage();
+				const float scale = static_cast<float>(source_size) / static_cast<float>(target_dip_size);
+				if (window_icon != nullptr && window_icon->AddPNG(scale, bytes.data(), bytes.size()) &&
+				    std::max(window_icon->GetWidth(), window_icon->GetHeight()) == target_dip_size)
+					return window_icon;
 			}
 		}
 
@@ -134,6 +143,7 @@ namespace
 		void ShowRecovery(bool visible)
 		{
 			if (!m_recoveryPanel || !m_browserView) return;
+			if (m_client) m_client->SetWindowRecoveryMode(visible);
 			m_recoveryPanel->SetBackgroundColor(0xFF000000);
 			m_browserView->SetVisible(!visible);
 			m_recoveryPanel->SetVisible(visible);
@@ -148,7 +158,13 @@ namespace
 
 		void OnButtonPressed(CefRefPtr<CefButton> button) override
 		{
-			(void)button;
+			// Windows has no system frame, so recovery keeps a native way to close the window.
+			if (m_closeButton && button->IsSame(m_closeButton))
+			{
+				if (m_browserView)
+					if (CefRefPtr<CefWindow> window = m_browserView->GetWindow()) window->Close();
+				return;
+			}
 			if (m_client) m_client->ReloadInterface();
 		}
 
@@ -167,8 +183,18 @@ namespace
 			window->SetTitle("Universal Agent Manager");
 			if (CefRefPtr<CefImage> icon = LoadUamWindowIcon())
 			{
-				window->SetWindowIcon(icon);
 				window->SetWindowAppIcon(icon);
+			}
+			// CEF rejects title-bar images whose largest dimension is not 16 DIP.
+			if (CefRefPtr<CefImage> icon = LoadUamWindowIcon(16))
+			{
+				window->SetWindowIcon(icon);
+				const CefRefPtr<CefImage> applied = window->GetWindowIcon();
+				if (applied != nullptr)
+					uam::diagnostics::Write("[UI startup] Title icon applied at " + std::to_string(applied->GetWidth()) + "x" +
+					                        std::to_string(applied->GetHeight()) + " DIP.");
+				else
+					uam::diagnostics::Write("[UI startup] CEF rejected the title icon.");
 			}
 
 			window->SetToFillLayout();
@@ -182,7 +208,9 @@ namespace
 			m_recoveryPanel->SetBackgroundColor(0xFF000000);
 			CefBoxLayoutSettings layout;
 			layout.horizontal = false;
-			layout.inside_border_insets = CefInsets(24, 24, 24, 24);
+			// Recovery content clears the 44 px strip where macOS draws the traffic lights.
+			const int top_inset = uam::cef::kCustomWindowChrome ? 24 + static_cast<int>(uam::cef::kWindowStripHeight) : 24;
+			layout.inside_border_insets = CefInsets(top_inset, 24, 24, 24);
 			layout.between_child_spacing = 12;
 			layout.main_axis_alignment = CEF_AXIS_ALIGNMENT_START;
 			layout.cross_axis_alignment = CEF_AXIS_ALIGNMENT_START;
@@ -200,6 +228,13 @@ namespace
 			m_recoveryButton->SetTextColor(CEF_BUTTON_STATE_HOVERED, 0xFFFFFFFF);
 			m_recoveryButton->SetTextColor(CEF_BUTTON_STATE_PRESSED, 0xFFFFFFFF);
 			m_recoveryPanel->AddChildView(m_recoveryButton);
+#if defined(_WIN32)
+			m_closeButton = CefLabelButton::CreateLabelButton(this, "Close UAM");
+			m_closeButton->SetTextColor(CEF_BUTTON_STATE_NORMAL, 0xFFFFFFFF);
+			m_closeButton->SetTextColor(CEF_BUTTON_STATE_HOVERED, 0xFFFFFFFF);
+			m_closeButton->SetTextColor(CEF_BUTTON_STATE_PRESSED, 0xFFFFFFFF);
+			m_recoveryPanel->AddChildView(m_closeButton);
+#endif
 			m_recoveryPanel->SetVisible(false);
 			window->AddChildView(m_recoveryPanel);
 			window->SetAccelerator(MENU_ID_USER_FIRST, 'R', true, true, false, true);
@@ -211,6 +246,7 @@ namespace
 			CEF_REQUIRE_UI_THREAD();
 			m_browserView = nullptr;
 			m_recoveryButton = nullptr;
+			m_closeButton = nullptr;
 			m_recoveryPanel = nullptr;
 			m_client = nullptr;
 		}
@@ -238,6 +274,33 @@ namespace
 			return browser->GetHost()->TryCloseBrowser();
 		}
 
+		bool IsFrameless(CefRefPtr<CefWindow> /*window*/) override { return uam::cef::kCustomWindowChrome; }
+
+		void OnWindowFullscreenTransition(CefRefPtr<CefWindow> /*window*/, bool is_completed) override
+		{
+			if (!is_completed || !m_browserView) return;
+			if (const CefRefPtr<CefBrowser> browser = m_browserView->GetBrowser())
+				if (const CefRefPtr<CefFrame> frame = browser->GetMainFrame())
+					frame->ExecuteJavaScript("window.dispatchEvent(new Event('uam-window-changed'));", frame->GetURL(), 0);
+		}
+
+		// Native macOS traffic lights stay on and centre at half this height, inside React's strip.
+		bool WithStandardWindowButtons(CefRefPtr<CefWindow> /*window*/) override
+		{
+#if defined(__APPLE__)
+			return true;
+#else
+			return false;
+#endif
+		}
+
+		bool GetTitlebarHeight(CefRefPtr<CefWindow> /*window*/, float* titlebar_height) override
+		{
+			if (!uam::cef::kCustomWindowChrome) return false;
+			*titlebar_height = uam::cef::kWindowStripHeight;
+			return true;
+		}
+
 		cef_runtime_style_t GetWindowRuntimeStyle() override
 		{
 			return CEF_RUNTIME_STYLE_ALLOY;
@@ -252,6 +315,7 @@ namespace
 		CefRect m_initialBounds;
 		CefRefPtr<CefBrowserView> m_browserView;
 		CefRefPtr<CefLabelButton> m_recoveryButton;
+		CefRefPtr<CefLabelButton> m_closeButton;
 		CefRefPtr<CefPanel> m_recoveryPanel;
 		CefRefPtr<UamCefClient> m_client;
 
@@ -334,6 +398,11 @@ void UamCefApp::OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar)
 void UamCefApp::OnContextInitialized()
 {
 	CEF_REQUIRE_UI_THREAD();
+	if (m_onManagementReady)
+	{
+		m_onManagementReady();
+		return;
+	}
 	m_trustedUiIndexUrl = uam::cef::ResolveTrustedUiIndexUrl();
 	CefString exe_dir_string;
 	const std::filesystem::path exe_dir = CefGetPath(PK_DIR_EXE, exe_dir_string)

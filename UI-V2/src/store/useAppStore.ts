@@ -1,3 +1,5 @@
+import { EMPTY_STARTUP_NATIVE_IMPORT_STATUS } from '../types/startupNativeImports'
+import { createExecutionRoutingSlice } from './slices/executionRoutingSlice'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './cpp/types'
 import { create } from 'zustand'
 import { Session, Folder } from '../types/session'
@@ -17,8 +19,10 @@ import {
   CLAUDE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
   COPILOT_CLI_PROVIDER_ID,
-  DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
+  DEFAULT_PROVIDER_ID,
+  GEMINI_CLI_PROVIDER_ID,
   OPENCODE_CLI_PROVIDER_ID,
+  SUPPORTED_CLI_PROVIDER_IDS,
   fallbackProviderForId,
 } from '../utils/providerMetadata'
 import {
@@ -41,8 +45,8 @@ export {
 // Moved to ./cpp/types.ts (MO-1). Re-exported so existing imports keep working.
 
 export * from './cpp/types'
-import type { AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
-import { acpBindingFromCppChat, applyPendingCodexOptions, appendCliTranscriptChunk, cliBindingFromCppChat, cppPatchRevision, cppStateRevision, decodeCliChunk, folderFromCppFolder, normalizeCliTranscript, providerFromCppProvider, reconcileCppMessages, sameArrayEntries, sameRecordEntries, sessionFromCppChat } from './cpp/reconcile'
+import type { WindowsPowerShellPreference, VoiceInputSettings, VcsStorageSettings, ProviderAvailabilityOverride, AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
+import { acpBindingFromCppChat, applyPendingCodexOptions, appendCliTranscriptChunk, cliBindingFromCppChat, cppPatchRevision, cppStateRevision, decodeCliChunk, folderFromCppFolder, normalizeCliTranscript, cliOutputMatchesBinding, providerFromCppProvider, reconcileCppMessages, reconcileHeldOutboxHistory, queuedPromptsEquivalent, sameArrayEntries, sameRecordEntries, sessionFromCppChat } from './cpp/reconcile'
 import { pendingProviderChatDefaults, withoutDeletedKeys } from './slices/sessionsSlice'
 import { parseUamPushPayload, cliDebugSignature, isNewerStateRevision } from './push/uamPush'
 import { persistTheme } from './slices/uiSlice'
@@ -65,7 +69,7 @@ const initialProviders: Provider[] = [
   { ...fallbackProviderForId(CLAUDE_CLI_PROVIDER_ID), color: '#7c3aed' },
   { ...fallbackProviderForId(OPENCODE_CLI_PROVIDER_ID), color: '#14b8a6' },
   { ...fallbackProviderForId(COPILOT_CLI_PROVIDER_ID), color: '#22c55e' },
-]
+].filter((provider) => SUPPORTED_CLI_PROVIDER_IDS.includes(provider.id))
 
 let lastPushStatusUpdateAtMs = 0
 
@@ -83,11 +87,14 @@ function mergeAssistantText(durable: string, streamed: string): string {
 
 function deserializeState(
   cpp: CppAppState,
-  existing: {
+  existing: VoiceInputSettings & VcsStorageSettings & {
+    providerAvailability?: ProviderAvailabilityOverride[]
     sessions: Session[]
     folders: Folder[]
     resourceCollections: ResourceCollection[]
     messages: Record<string, Message[]>
+    historyStartIndexBySessionId: AppState['historyStartIndexBySessionId']
+    chatSearchNavigation: AppState['chatSearchNavigation']
     providers: Provider[]
     activeSessionId: string | null
     cliTranscriptBySessionId: Record<string, CliTranscript>
@@ -100,12 +107,17 @@ function deserializeState(
     memoryIdleDelaySeconds: number
     memoryRecallBudgetBytes: number
     goalMaxLoopIterations: number
+    goalTokenBudget: number
     acpSetupInactivityTimeoutSeconds: number
+    activeTurnInactivityTimeoutSeconds: number
+    streamLoopRepeatLimit: number
     acpTurnOutputLimitMiB: number
     appVersion: string
     runnerProtocolVersion: number
     showProviderIconsInSidebar: boolean
     showWorktreePathInSidebar: boolean
+    gitEnabled?: boolean
+    svnEnabled?: boolean
     updateChecksEnabled: boolean
   automaticProviderUpdates: boolean
     updateLastCheckedAt: string
@@ -120,15 +132,23 @@ function deserializeState(
     defaultNewChatProviderId: string
     providerChatDefaults: Record<string, ProviderChatDefaults>
     fileExplorerApplication: string
+    windowsPowerShell: WindowsPowerShellPreference
     defaultEditorPresetId: string
     editorFileAssociations: EditorFileAssociation[]
     centralProviderConfiguration: CentralProviderConfiguration
     mcpServers: McpServerConfiguration[]
+    executionRouting: AppState['executionRouting']
     executionHosts: AppState['executionHosts']
     favoriteUamAgentIds: string[]
+    nativeImportExcludedTitlePrefixes: string[]
+    nativeImportExcludedDirectories: string[]
     uamAgentCycleShortcut: AppState['uamAgentCycleShortcut']
+    computerUseEnabled?: boolean
     computerUseAllowlistEnabled: boolean
     computerUseAllowedApplications: AppState['computerUseAllowedApplications']
+    branchSwitching?: boolean
+    hostScopedSettings?: boolean
+    hostScopedSettingsValues: AppState['hostScopedSettingsValues']
     uamAgentsBySessionId: AppState['uamAgentsBySessionId']
     shellActions: ShellAction[]
     shellActionNotification: string
@@ -159,16 +179,22 @@ function deserializeState(
     : newSessions
 
   const nextMessages: Record<string, Message[]> = {}
-	for (const chat of cpp.chats) {
-		const existingMessages = existing.messages[chat.id]
-		if (!Array.isArray(chat.messages)) {
-      if (existingMessages?.length) {
-        nextMessages[chat.id] = existingMessages
-      }
+  const historyStartIndexBySessionId = { ...existing.historyStartIndexBySessionId }
+  for (const chat of cpp.chats) {
+    const existingMessages = existing.messages[chat.id]
+    if (!Array.isArray(chat.messages)) {
+      const retained = reconcileHeldOutboxHistory(chat, existingMessages, historyStartIndexBySessionId[chat.id] ?? 0, existing.acpBindingBySessionId[chat.id], existingSessionsById[chat.id])
+      if (retained !== undefined) nextMessages[chat.id] = retained
+      else if (retained !== existingMessages) delete historyStartIndexBySessionId[chat.id]
       continue
     }
 
-		nextMessages[chat.id] = reconcileCppMessages(chat.id, existingMessages, chat.messages, true)
+    if (existing.chatSearchNavigation?.chatId === chat.id && existingMessages) {
+      nextMessages[chat.id] = existingMessages
+      continue
+    }
+    historyStartIndexBySessionId[chat.id] = 0
+    nextMessages[chat.id] = reconcileCppMessages(chat.id, existingMessages, chat.messages, true)
   }
   const messages = sameRecordEntries(existing.messages, nextMessages) ? existing.messages : nextMessages
 
@@ -214,7 +240,8 @@ function deserializeState(
     sessions.flatMap((session) => {
       const transcript = normalizeCliTranscript(
         existing.cliTranscriptBySessionId[session.id],
-        cliBindingBySessionId[session.id]?.terminalId ?? ''
+        cliBindingBySessionId[session.id]?.terminalId ?? '',
+        cliBindingBySessionId[session.id]?.startupTime
       )
 
       return transcript ? [[session.id, transcript]] : []
@@ -251,7 +278,7 @@ function deserializeState(
         tokensUsed: cppGoal.tokensUsed,
         blockedTurnCount: cppGoal.blockedTurnCount,
         lastBlocker: cppGoal.lastBlocker,
-				lastBlockerKind: cppGoal.lastBlockerKind,
+        lastBlockerKind: cppGoal.lastBlockerKind,
         lastDiagnostic: cppGoal.lastDiagnostic,
         completedItems: cppGoal.completedItems,
         remainingItems: cppGoal.remainingItems,
@@ -263,10 +290,10 @@ function deserializeState(
         loopCount: cppGoal.loopCount,
         createdAt: new Date(cppGoal.createdAt || Date.now()),
         updatedAt: new Date(cppGoal.updatedAt || Date.now()),
-		executionOwner: cppGoal.executionOwner ?? 'uam',
-		providerCommand: cppGoal.providerCommand ?? '',
-		workerModelId: cppGoal.workerModelId ?? '',
-		reviewerModelId: cppGoal.reviewerModelId ?? '',
+        executionOwner: cppGoal.executionOwner ?? 'uam',
+        providerCommand: cppGoal.providerCommand ?? '',
+        workerModelId: cppGoal.workerModelId ?? '',
+        reviewerModelId: cppGoal.reviewerModelId ?? '',
       }))
       goalsByChatId[chat.id] = goalObjects
     }
@@ -277,6 +304,7 @@ function deserializeState(
     resourceCollections: cpp.resourceCollections ?? existing.resourceCollections,
     sessions: sessionsWithPendingCodexOptions,
     messages,
+    historyStartIndexBySessionId,
     goalsByChatId,
     activeGoalIdByChatId,
     providers,
@@ -286,6 +314,7 @@ function deserializeState(
     cliBindingBySessionId,
     acpBindingBySessionId,
     providerModelCatalogs: cpp.providerModelCatalogs ?? existing.providerModelCatalogs,
+    startupNativeImports: cpp.startupNativeImports ?? EMPTY_STARTUP_NATIVE_IMPORT_STATUS,
     cliTranscriptBySessionId,
     cliDebugState,
     memoryEnabledDefault: cpp.settings.memoryEnabledDefault,
@@ -293,12 +322,17 @@ function deserializeState(
     memoryIdleDelaySeconds: cpp.settings.memoryIdleDelaySeconds,
     memoryRecallBudgetBytes: cpp.settings.memoryRecallBudgetBytes,
     goalMaxLoopIterations: cpp.settings.goalMaxLoopIterations,
+    goalTokenBudget: cpp.settings.goalTokenBudget ?? 0,
     acpSetupInactivityTimeoutSeconds: cpp.settings.acpSetupInactivityTimeoutSeconds ?? 600,
+    activeTurnInactivityTimeoutSeconds: cpp.settings.activeTurnInactivityTimeoutSeconds ?? 1800,
+    streamLoopRepeatLimit: cpp.settings.streamLoopRepeatLimit ?? 20,
     acpTurnOutputLimitMiB: cpp.settings.acpTurnOutputLimitMiB ?? 1024,
     appVersion: cpp.appVersion || existing.appVersion,
     runnerProtocolVersion: cpp.runnerProtocolVersion || existing.runnerProtocolVersion,
     showProviderIconsInSidebar: cpp.settings.showProviderIconsInSidebar ?? true,
     showWorktreePathInSidebar: cpp.settings.showWorktreePathInSidebar ?? true,
+    gitEnabled: typeof cpp.settings.gitEnabled === 'boolean' ? cpp.settings.gitEnabled : true,
+    svnEnabled: typeof cpp.settings.svnEnabled === 'boolean' ? cpp.settings.svnEnabled : true,
     updateChecksEnabled: cpp.settings.updateChecksEnabled,
     automaticProviderUpdates: cpp.settings.automaticProviderUpdates,
     updateLastCheckedAt: cpp.settings.updateLastCheckedAt,
@@ -310,22 +344,52 @@ function deserializeState(
     memoryActivity: cpp.memoryActivity ?? sanitizeMemoryActivity(undefined, cpp.settings.memoryLastStatus),
     cliVersionManager: cpp.cliVersionManager ?? existing.cliVersionManager,
     markdownStoreDirectory: cpp.settings.markdownStoreDirectory ?? '',
-    defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? cpp.settings.defaultNewChatProviderId ?? cpp.settings.activeProviderId ?? GEMINI_CLI_PROVIDER_ID,
+    defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? cpp.settings.defaultNewChatProviderId ?? cpp.settings.activeProviderId ?? DEFAULT_PROVIDER_ID,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? cpp.settings.providerChatDefaults ?? {},
     fileExplorerApplication: cpp.settings.fileExplorerApplication ?? '',
+    windowsPowerShell: cpp.settings.windowsPowerShell ?? 'auto',
     defaultEditorPresetId: cpp.settings.defaultEditorPresetId ?? 'vscode',
     editorFileAssociations: cpp.settings.editorFileAssociations ?? defaultEditorFileAssociations(),
+    voiceInputMode: cpp.settings.voiceInputMode ?? existing.voiceInputMode,
+    voiceInputServerBaseUrl: cpp.settings.voiceInputServerBaseUrl ?? existing.voiceInputServerBaseUrl,
+    voiceInputServerEndpoint: cpp.settings.voiceInputServerEndpoint ?? existing.voiceInputServerEndpoint,
+    voiceInputServerModel: cpp.settings.voiceInputServerModel ?? existing.voiceInputServerModel,
+    voiceInputApiKeyEnv: cpp.settings.voiceInputApiKeyEnv ?? existing.voiceInputApiKeyEnv,
+    voiceInputCapabilities: cpp.settings.voiceInputCapabilities ?? existing.voiceInputCapabilities,
+    providerAvailability: cpp.settings.providerAvailability ?? existing.providerAvailability ?? [],
+    gitAutoWorktree: cpp.settings.gitAutoWorktree ?? existing.gitAutoWorktree,
+    gitSnapshotSvn: cpp.settings.gitSnapshotSvn ?? existing.gitSnapshotSvn,
+    gitSnapshotPlainFolders: cpp.settings.gitSnapshotPlainFolders ?? existing.gitSnapshotPlainFolders,
+    gitDefaultBaseBranch: cpp.settings.gitDefaultBaseBranch ?? existing.gitDefaultBaseBranch,
+    gitPullBeforeChat: cpp.settings.gitPullBeforeChat ?? existing.gitPullBeforeChat,
+    svnUpdateBeforeChat: cpp.settings.svnUpdateBeforeChat ?? existing.svnUpdateBeforeChat,
+    gitPortMethod: cpp.settings.gitPortMethod ?? existing.gitPortMethod,
+    worktreeCleanupEnabled: cpp.settings.worktreeCleanupEnabled ?? existing.worktreeCleanupEnabled,
+    worktreeRetentionDays: cpp.settings.worktreeRetentionDays ?? existing.worktreeRetentionDays,
+    backupLogRetentionDays: cpp.settings.backupLogRetentionDays ?? existing.backupLogRetentionDays,
+    httpCacheClearIntervalDays: cpp.settings.httpCacheClearIntervalDays ?? existing.httpCacheClearIntervalDays,
     centralProviderConfiguration: cpp.settings.centralProviderConfiguration ?? DEFAULT_CENTRAL_PROVIDER_CONFIGURATION,
     mcpServers: cpp.settings.mcpServers ?? [],
+    executionRouting: cpp.settings.executionRouting ?? existing.executionRouting,
     executionHosts: cpp.settings.executionHosts ?? existing.executionHosts,
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
+    nativeImportExcludedTitlePrefixes: cpp.settings.nativeImportExcludedTitlePrefixes ?? [],
+    nativeImportExcludedDirectories: cpp.settings.nativeImportExcludedDirectories ?? [],
     uamAgentCycleShortcut: cpp.settings.uamAgentCycleShortcut ?? 'shift+tab',
+    computerUseEnabled: cpp.settings.computerUseGloballyEnabled,
+    computerUseRevocationPending: cpp.settings.computerUseRevocationPending,
+    computerUseSettingsStateRevision: cppStateRevision(cpp),
     computerUseAllowlistEnabled: cpp.settings.computerUseAllowlistEnabled ?? false,
     computerUseAllowedApplications: cpp.settings.computerUseAllowedApplications ?? [],
+    branchSwitching: cpp.settings.branchSwitching === true,
+    hostScopedSettings: cpp.settings.hostScopedSettings,
+    hostScopedSettingsValues: cpp.settings.hostScopedSettingsValues ?? {},
     uamAgentsBySessionId: existing.uamAgentsBySessionId,
     shellActions: cpp.shellActions ?? existing.shellActions,
     shellActionNotification: cpp.shellActionNotification ?? existing.shellActionNotification,
     statusLine: cpp.statusLine ?? existing.statusLine,
+    // Full-state only: absent means no deletion is running, so do not keep the previous value.
+    deletionProgress: cpp.deletionProgress,
   }
 }
 
@@ -348,7 +412,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     : current.providers
   const visibleProviders = providers.length > 0
     ? providers
-    : [{ id: GEMINI_CLI_PROVIDER_ID }]
+    : [{ id: DEFAULT_PROVIDER_ID }]
 
   const patchedSessionsById = new Map(current.sessions.filter((session) => !removedChatIds.has(session.id)).map((session) => [session.id, session]))
   for (const chat of patch.chats ?? []) {
@@ -370,10 +434,22 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
   }
 
   const messages = { ...current.messages }
+  const historyStartIndexBySessionId = { ...current.historyStartIndexBySessionId }
   for (const chatId of removedChatIds) {
     delete messages[chatId]
+    delete historyStartIndexBySessionId[chatId]
+  }
+  for (const chat of patch.chats ?? []) {
+    const retained = reconcileHeldOutboxHistory(chat, messages[chat.id], historyStartIndexBySessionId[chat.id] ?? 0, current.acpBindingBySessionId[chat.id], existingSessionsById[chat.id])
+    if (retained !== undefined) messages[chat.id] = retained
+    else if (messages[chat.id] !== undefined) {
+      delete messages[chat.id]
+      delete historyStartIndexBySessionId[chat.id]
+    }
   }
   for (const [chatId, cppMessages] of Object.entries(patch.messagesByChatId ?? {})) {
+    if (current.chatSearchNavigation?.chatId === chatId) continue
+    historyStartIndexBySessionId[chatId] = 0
     messages[chatId] = reconcileCppMessages(chatId, current.messages[chatId], cppMessages, true)
   }
 
@@ -392,7 +468,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
       cliBindingBySessionId[chat.id] = nextCli
       const nextTranscript = normalizeCliTranscript(
         cliTranscriptBySessionId[chat.id],
-        nextCli.terminalId
+        nextCli.terminalId,
+        nextCli.startupTime
       )
       if (nextTranscript) cliTranscriptBySessionId[chat.id] = nextTranscript
       else delete cliTranscriptBySessionId[chat.id]
@@ -423,7 +500,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
         tokensUsed: cppGoal.tokensUsed,
         blockedTurnCount: cppGoal.blockedTurnCount,
         lastBlocker: cppGoal.lastBlocker,
-				lastBlockerKind: cppGoal.lastBlockerKind,
+        lastBlockerKind: cppGoal.lastBlockerKind,
         lastDiagnostic: cppGoal.lastDiagnostic,
         completedItems: cppGoal.completedItems,
         remainingItems: cppGoal.remainingItems,
@@ -455,7 +532,6 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
 
   const sessionsWithPendingCodexOptions = applyPendingCodexOptions(sessions)
   const goalModeByChatId = withoutDeletedKeys(current.goalModeByChatId, removedChatIds)
-  const defaultGoalTokenBudgetByChatId = withoutDeletedKeys(current.defaultGoalTokenBudgetByChatId, removedChatIds)
   const markdownStoreAttachedBySessionId = withoutDeletedKeys(current.markdownStoreAttachedBySessionId, removedChatIds)
   const repositoryReviewBySessionId = withoutDeletedKeys(current.repositoryReviewBySessionId, removedChatIds)
   const uamAgentsBySessionId = withoutDeletedKeys(current.uamAgentsBySessionId, removedChatIds)
@@ -465,14 +541,16 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     resourceCollections,
     sessions: sameArrayEntries(current.sessions, sessionsWithPendingCodexOptions) ? current.sessions : sessionsWithPendingCodexOptions,
     messages: sameRecordEntries(current.messages, messages) ? current.messages : messages,
+    historyStartIndexBySessionId,
+    chatSearchNavigation: current.chatSearchNavigation && removedChatIds.has(current.chatSearchNavigation.chatId) ? null : current.chatSearchNavigation,
     goalsByChatId: sameRecordEntries(current.goalsByChatId, goalsByChatId) ? current.goalsByChatId : goalsByChatId,
     activeGoalIdByChatId: sameRecordEntries(current.activeGoalIdByChatId, activeGoalIdByChatId) ? current.activeGoalIdByChatId : activeGoalIdByChatId,
     goalModeByChatId: sameRecordEntries(current.goalModeByChatId, goalModeByChatId) ? current.goalModeByChatId : goalModeByChatId,
-    defaultGoalTokenBudgetByChatId: sameRecordEntries(current.defaultGoalTokenBudgetByChatId, defaultGoalTokenBudgetByChatId) ? current.defaultGoalTokenBudgetByChatId : defaultGoalTokenBudgetByChatId,
     markdownStoreAttachedBySessionId: sameRecordEntries(current.markdownStoreAttachedBySessionId, markdownStoreAttachedBySessionId) ? current.markdownStoreAttachedBySessionId : markdownStoreAttachedBySessionId,
     repositoryReviewBySessionId: sameRecordEntries(current.repositoryReviewBySessionId, repositoryReviewBySessionId) ? current.repositoryReviewBySessionId : repositoryReviewBySessionId,
     providers,
     providerModelCatalogs: patch.providerModelCatalogs ?? current.providerModelCatalogs,
+    startupNativeImports: patch.startupNativeImports ?? current.startupNativeImports,
     activeSessionId,
     lastAppliedStateRevision: nextRevision,
     theme: patch.settings?.theme ?? current.theme,
@@ -484,10 +562,15 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     memoryIdleDelaySeconds: patch.settings?.memoryIdleDelaySeconds ?? current.memoryIdleDelaySeconds,
     memoryRecallBudgetBytes: patch.settings?.memoryRecallBudgetBytes ?? current.memoryRecallBudgetBytes,
     goalMaxLoopIterations: patch.settings?.goalMaxLoopIterations ?? current.goalMaxLoopIterations,
+    goalTokenBudget: patch.settings?.goalTokenBudget ?? current.goalTokenBudget,
     acpSetupInactivityTimeoutSeconds: patch.settings?.acpSetupInactivityTimeoutSeconds ?? current.acpSetupInactivityTimeoutSeconds,
+    activeTurnInactivityTimeoutSeconds: patch.settings?.activeTurnInactivityTimeoutSeconds ?? current.activeTurnInactivityTimeoutSeconds,
+    streamLoopRepeatLimit: patch.settings?.streamLoopRepeatLimit ?? current.streamLoopRepeatLimit,
     acpTurnOutputLimitMiB: patch.settings?.acpTurnOutputLimitMiB ?? current.acpTurnOutputLimitMiB,
     showProviderIconsInSidebar: patch.settings?.showProviderIconsInSidebar ?? current.showProviderIconsInSidebar,
     showWorktreePathInSidebar: patch.settings?.showWorktreePathInSidebar ?? current.showWorktreePathInSidebar,
+    gitEnabled: typeof patch.settings?.gitEnabled === 'boolean' ? patch.settings.gitEnabled : current.gitEnabled,
+    svnEnabled: typeof patch.settings?.svnEnabled === 'boolean' ? patch.settings.svnEnabled : current.svnEnabled,
     updateChecksEnabled: patch.settings?.updateChecksEnabled ?? current.updateChecksEnabled,
     automaticProviderUpdates: patch.settings?.automaticProviderUpdates ?? current.automaticProviderUpdates,
     updateLastCheckedAt: patch.settings?.updateLastCheckedAt ?? current.updateLastCheckedAt,
@@ -502,15 +585,44 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? patch.settings?.defaultNewChatProviderId ?? current.defaultNewChatProviderId,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? patch.settings?.providerChatDefaults ?? current.providerChatDefaults,
     fileExplorerApplication: patch.settings?.fileExplorerApplication ?? current.fileExplorerApplication,
+    windowsPowerShell: patch.settings?.windowsPowerShell ?? current.windowsPowerShell,
     defaultEditorPresetId: patch.settings?.defaultEditorPresetId ?? current.defaultEditorPresetId,
     editorFileAssociations: patch.settings?.editorFileAssociations ?? current.editorFileAssociations,
+    voiceInputMode: patch.settings?.voiceInputMode ?? current.voiceInputMode,
+    voiceInputServerBaseUrl: patch.settings?.voiceInputServerBaseUrl ?? current.voiceInputServerBaseUrl,
+    voiceInputServerEndpoint: patch.settings?.voiceInputServerEndpoint ?? current.voiceInputServerEndpoint,
+    voiceInputServerModel: patch.settings?.voiceInputServerModel ?? current.voiceInputServerModel,
+    voiceInputApiKeyEnv: patch.settings?.voiceInputApiKeyEnv ?? current.voiceInputApiKeyEnv,
+    voiceInputCapabilities: patch.settings?.voiceInputCapabilities ? { ...current.voiceInputCapabilities, ...patch.settings.voiceInputCapabilities } : current.voiceInputCapabilities,
+    providerAvailability: patch.settings?.providerAvailability ?? current.providerAvailability,
+    gitAutoWorktree: patch.settings?.gitAutoWorktree ?? current.gitAutoWorktree,
+    gitSnapshotSvn: patch.settings?.gitSnapshotSvn ?? current.gitSnapshotSvn,
+    gitSnapshotPlainFolders: patch.settings?.gitSnapshotPlainFolders ?? current.gitSnapshotPlainFolders,
+    gitDefaultBaseBranch: patch.settings?.gitDefaultBaseBranch ?? current.gitDefaultBaseBranch,
+    gitPullBeforeChat: patch.settings?.gitPullBeforeChat ?? current.gitPullBeforeChat,
+    svnUpdateBeforeChat: patch.settings?.svnUpdateBeforeChat ?? current.svnUpdateBeforeChat,
+    gitPortMethod: patch.settings?.gitPortMethod ?? current.gitPortMethod,
+    worktreeCleanupEnabled: patch.settings?.worktreeCleanupEnabled ?? current.worktreeCleanupEnabled,
+    worktreeRetentionDays: patch.settings?.worktreeRetentionDays ?? current.worktreeRetentionDays,
+    backupLogRetentionDays: patch.settings?.backupLogRetentionDays ?? current.backupLogRetentionDays,
+    httpCacheClearIntervalDays: patch.settings?.httpCacheClearIntervalDays ?? current.httpCacheClearIntervalDays,
     centralProviderConfiguration: patch.settings?.centralProviderConfiguration ?? current.centralProviderConfiguration,
     mcpServers: patch.settings?.mcpServers ?? current.mcpServers,
+    executionRouting: patch.settings?.executionRouting ?? current.executionRouting,
     executionHosts: patch.settings?.executionHosts ?? current.executionHosts,
     favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
+    nativeImportExcludedTitlePrefixes: patch.settings?.nativeImportExcludedTitlePrefixes ?? current.nativeImportExcludedTitlePrefixes,
+    nativeImportExcludedDirectories: patch.settings?.nativeImportExcludedDirectories ?? current.nativeImportExcludedDirectories,
     uamAgentCycleShortcut: patch.settings?.uamAgentCycleShortcut ?? current.uamAgentCycleShortcut,
+    computerUseEnabled: patch.settings?.computerUseGloballyEnabled ?? current.computerUseEnabled,
+    computerUseRevocationPending: patch.settings?.computerUseRevocationPending ?? current.computerUseRevocationPending,
+    computerUseSettingsStateRevision: typeof patch.settings?.computerUseGloballyEnabled === 'boolean' || typeof patch.settings?.computerUseRevocationPending === 'boolean'
+      ? nextRevision : current.computerUseSettingsStateRevision,
     computerUseAllowlistEnabled: patch.settings?.computerUseAllowlistEnabled ?? current.computerUseAllowlistEnabled,
     computerUseAllowedApplications: patch.settings?.computerUseAllowedApplications ?? current.computerUseAllowedApplications,
+    branchSwitching: patch.settings?.branchSwitching ?? current.branchSwitching,
+    hostScopedSettings: patch.settings?.hostScopedSettings ?? current.hostScopedSettings,
+    hostScopedSettingsValues: patch.settings?.hostScopedSettingsValues ?? current.hostScopedSettingsValues,
     uamAgentsBySessionId: sameRecordEntries(current.uamAgentsBySessionId, uamAgentsBySessionId) ? current.uamAgentsBySessionId : uamAgentsBySessionId,
     shellActions: patch.shellActions ?? current.shellActions,
     shellActionNotification: patch.shellActionNotification ?? current.shellActionNotification,
@@ -538,8 +650,7 @@ export const useAppStore = create<AppState>((set, get) => {
         if (!liveSessionIds.has(sessionId)) continue
         const chunk = pending.chunks.join('')
         if (!chunk) continue
-        const activeTerminalId = state.cliBindingBySessionId[sessionId]?.terminalId ?? ''
-        if (pending.terminalId && activeTerminalId && pending.terminalId !== activeTerminalId) {
+        if (!cliOutputMatchesBinding(state.cliBindingBySessionId[sessionId], pending.terminalId, pending.startupTime)) {
           continue
         }
 
@@ -550,7 +661,8 @@ export const useAppStore = create<AppState>((set, get) => {
         nextTranscripts[sessionId] = appendCliTranscriptChunk(
           nextTranscripts[sessionId],
           pending.terminalId,
-          chunk
+          chunk,
+          pending.startupTime
         )
       }
 
@@ -578,12 +690,18 @@ export const useAppStore = create<AppState>((set, get) => {
 
       for (const [chatId, pending] of entries) {
         if (!liveSessionIds.has(chatId)) continue
+        if (state.chatSearchNavigation?.chatId === chatId) continue
         const existingMessages = nextMessages[chatId] ?? []
         let lastMessage = existingMessages[existingMessages.length - 1]
         const token = pending.token
         const currentAssistantIndex = pending.messageIndex ?? state.acpBindingBySessionId[chatId]?.turnAssistantMessageIndex ?? -1
+        const historyStartIndex = state.historyStartIndexBySessionId[chatId] ?? 0
+        const lastAbsoluteIndex = historyStartIndex + existingMessages.length - 1
+        // A bounded historical page cannot absorb tokens from another part of the transcript.
+        if (historyStartIndex > 0 && (currentAssistantIndex < lastAbsoluteIndex || currentAssistantIndex > lastAbsoluteIndex + 1 ||
+            (currentAssistantIndex === lastAbsoluteIndex + 1 && lastAbsoluteIndex + 1 < (state.sessions.find((session) => session.id === chatId)?.messageCount ?? 0)))) continue
         const lastMessageIsCurrentAssistant = lastMessage?.streamMessageIndex === undefined
-          ? currentAssistantIndex === existingMessages.length - 1
+          ? currentAssistantIndex === lastAbsoluteIndex
           : lastMessage.streamMessageIndex === currentAssistantIndex
         const lastMessageIsPlaceholder = lastMessage?.isStreaming && lastMessage.id.startsWith(`stream-${chatId}-`) &&
           (pending.messageIndex === undefined || lastMessage.streamMessageIndex === pending.messageIndex)
@@ -639,7 +757,7 @@ export const useAppStore = create<AppState>((set, get) => {
   // CompanionShell bootstraps after authentication and preserves phone-local selection.
   // Desktop state arrives via uamPush later too.
   if (isCefContext() && !isCompanionContext()) {
-    sendToCEF<CppAppState>({ action: 'getInitialState' }).then((resp) => {
+    sendToCEF<CppAppState>({ action: 'getInitialState', payload: { summaryOnly: true } }).then((resp) => {
       // resp.data is the raw CppAppState object. Sanitize before deserializing.
       const sanitized = resp.ok ? sanitizeCppAppState(resp.data) : null
       if (sanitized) {
@@ -651,6 +769,8 @@ export const useAppStore = create<AppState>((set, get) => {
             folders: current.folders,
             resourceCollections: current.resourceCollections,
             messages: current.messages,
+            historyStartIndexBySessionId: current.historyStartIndexBySessionId,
+            chatSearchNavigation: current.chatSearchNavigation,
             providers: current.providers,
             activeSessionId: current.activeSessionId,
             cliTranscriptBySessionId: current.cliTranscriptBySessionId,
@@ -663,12 +783,17 @@ export const useAppStore = create<AppState>((set, get) => {
             memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
             memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
             goalMaxLoopIterations: current.goalMaxLoopIterations,
+            goalTokenBudget: current.goalTokenBudget,
             acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
+            activeTurnInactivityTimeoutSeconds: current.activeTurnInactivityTimeoutSeconds,
+            streamLoopRepeatLimit: current.streamLoopRepeatLimit,
             acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
             appVersion: current.appVersion,
             runnerProtocolVersion: current.runnerProtocolVersion,
             showProviderIconsInSidebar: current.showProviderIconsInSidebar,
             showWorktreePathInSidebar: current.showWorktreePathInSidebar,
+        gitEnabled: current.gitEnabled,
+        svnEnabled: current.svnEnabled,
             updateChecksEnabled: current.updateChecksEnabled,
             automaticProviderUpdates: current.automaticProviderUpdates,
             updateLastCheckedAt: current.updateLastCheckedAt,
@@ -682,22 +807,48 @@ export const useAppStore = create<AppState>((set, get) => {
             markdownStoreDirectory: current.markdownStoreDirectory,
             defaultNewChatProviderId: current.defaultNewChatProviderId,
             providerChatDefaults: current.providerChatDefaults,
+            voiceInputMode: current.voiceInputMode,
+            voiceInputServerBaseUrl: current.voiceInputServerBaseUrl,
+            voiceInputServerEndpoint: current.voiceInputServerEndpoint,
+            voiceInputServerModel: current.voiceInputServerModel,
+            voiceInputApiKeyEnv: current.voiceInputApiKeyEnv,
+            voiceInputCapabilities: current.voiceInputCapabilities,
+            providerAvailability: current.providerAvailability,
+            gitAutoWorktree: current.gitAutoWorktree,
+            gitSnapshotSvn: current.gitSnapshotSvn,
+            gitSnapshotPlainFolders: current.gitSnapshotPlainFolders,
+            gitDefaultBaseBranch: current.gitDefaultBaseBranch,
+            gitPullBeforeChat: current.gitPullBeforeChat,
+            svnUpdateBeforeChat: current.svnUpdateBeforeChat,
+            gitPortMethod: current.gitPortMethod,
+            worktreeCleanupEnabled: current.worktreeCleanupEnabled,
+            worktreeRetentionDays: current.worktreeRetentionDays,
+            backupLogRetentionDays: current.backupLogRetentionDays,
+            httpCacheClearIntervalDays: current.httpCacheClearIntervalDays,
             fileExplorerApplication: current.fileExplorerApplication,
+            windowsPowerShell: current.windowsPowerShell,
         defaultEditorPresetId: current.defaultEditorPresetId,
             editorFileAssociations: current.editorFileAssociations,
             centralProviderConfiguration: current.centralProviderConfiguration,
             mcpServers: current.mcpServers,
+            executionRouting: current.executionRouting,
             executionHosts: current.executionHosts,
             favoriteUamAgentIds: current.favoriteUamAgentIds,
+            nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
+            nativeImportExcludedDirectories: current.nativeImportExcludedDirectories,
             uamAgentCycleShortcut: current.uamAgentCycleShortcut,
+            computerUseEnabled: current.computerUseEnabled,
             computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
             computerUseAllowedApplications: current.computerUseAllowedApplications,
+            branchSwitching: current.branchSwitching,
+            hostScopedSettings: current.hostScopedSettings,
+            hostScopedSettingsValues: current.hostScopedSettingsValues,
             uamAgentsBySessionId: current.uamAgentsBySessionId,
             shellActions: current.shellActions,
             shellActionNotification: current.shellActionNotification,
             statusLine: current.statusLine,
           })
-          set(deserialized)
+          set(current.reconcileMemorySettingsProjection(deserialized, sanitized.settings))
           // Sync theme to DOM
           if (deserialized.theme) {
             persistTheme(deserialized.theme, get().customThemes)
@@ -719,7 +870,7 @@ export const useAppStore = create<AppState>((set, get) => {
   // Register window.uamPush SYNCHRONOUSLY at module load time (before React mounts)
   // so that C++'s OnLoadEnd push is never missed.  Using getState() avoids stale closures.
   if (isCefContext() && typeof window !== 'undefined') {
-    window.uamPush = (payload: unknown) => {
+    const handlePush = (payload: unknown) => {
       const parsed = parseUamPushPayload(payload)
       if (!parsed.ok) {
         set((state) => ({
@@ -757,7 +908,7 @@ export const useAppStore = create<AppState>((set, get) => {
           // background deltas unless this update contains that chat's messages.
           for (const chatId of pendingStreamTokensByChatId.keys()) {
             const chat = msg.data.chats.find((candidate) => candidate.id === chatId)
-			if (!chat || Array.isArray(chat.messages)) {
+            if (!chat || Array.isArray(chat.messages)) {
               pendingStreamTokensByChatId.delete(chatId)
             }
           }
@@ -780,7 +931,7 @@ export const useAppStore = create<AppState>((set, get) => {
             const activeBindingBefore = activeChatId ? current.acpBindingBySessionId[activeChatId] : undefined
             const next = applyStatePatch(msg.data, current)
             if (next) {
-              set(next)
+              set(current.reconcileMemorySettingsProjection(next, msg.data.settings))
               if (next.theme) {
                 persistTheme(next.theme, get().customThemes)
               }
@@ -811,10 +962,15 @@ export const useAppStore = create<AppState>((set, get) => {
                 ((activeSessionBefore.messageCount ?? 0) !== (activeSessionAfter.messageCount ?? 0) ||
                   (activeSessionBefore.messagesDigest ?? '') !== (activeSessionAfter.messagesDigest ?? ''))
               )
+              const newlyHeldOutboxMismatch = Boolean(activeChatId && activeBindingAfter?.queueHeld &&
+                activeBindingAfter.queuedPrompts?.length &&
+                (!activeBindingBefore?.queueHeld || !queuedPromptsEquivalent(activeBindingBefore.queuedPrompts, activeBindingAfter.queuedPrompts)) &&
+                Number.isSafeInteger(activeSessionAfter?.messageCount) && activeSessionAfter?.messagesDigest &&
+                (get().historyStartIndexBySessionId[activeChatId] ?? 0) + (get().messages[activeChatId]?.length ?? 0) > activeSessionAfter!.messageCount!)
               if (
                 activeChatId &&
                 activeChatId === get().activeSessionId &&
-                (completedActiveTurn || advancedContinuousTurn || appendedTurnMessages || refreshedIdleHistory)
+                (completedActiveTurn || advancedContinuousTurn || appendedTurnMessages || refreshedIdleHistory || newlyHeldOutboxMismatch)
               ) {
                 get().loadSessionMessages(activeChatId, true)
               }
@@ -829,34 +985,19 @@ export const useAppStore = create<AppState>((set, get) => {
             if (sessionId) {
               const currentBinding = get().cliBindingBySessionId[sessionId]
               const terminalId = msg.terminalId ?? currentBinding?.terminalId ?? ''
+              if (!cliOutputMatchesBinding(currentBinding, terminalId, msg.startupTime)) break
               const boundChatId = msg.sourceChatId ?? currentBinding?.boundChatId ?? sessionId
               const existingPending = pendingCliTranscriptChunksBySessionId.get(sessionId)
-              if (existingPending && existingPending.terminalId === terminalId) {
+              if (existingPending && existingPending.terminalId === terminalId && existingPending.startupTime === msg.startupTime) {
                 existingPending.chunks.push(decodedData)
               } else {
                 pendingCliTranscriptChunksBySessionId.set(sessionId, {
                   terminalId,
+                  startupTime: msg.startupTime,
                   chunks: [decodedData],
                 })
               }
               scheduleCliTranscriptFlush()
-
-              if (
-                currentBinding &&
-                (currentBinding.terminalId !== terminalId ||
-                  currentBinding.boundChatId !== boundChatId)
-              ) {
-                set((state) => ({
-                  cliBindingBySessionId: {
-                    ...state.cliBindingBySessionId,
-                    [sessionId]: {
-                      ...currentBinding,
-                      terminalId,
-                      boundChatId,
-                    },
-                  },
-                }))
-              }
             }
 
             window.dispatchEvent(
@@ -865,6 +1006,7 @@ export const useAppStore = create<AppState>((set, get) => {
                   sessionId: msg.sessionId ?? '',
                   sourceChatId: msg.sourceChatId ?? '',
                   terminalId: msg.terminalId ?? '',
+                  startupTime: msg.startupTime,
                   data: decodedData,
                 },
               })
@@ -937,16 +1079,30 @@ export const useAppStore = create<AppState>((set, get) => {
         case 'dictation':
           window.dispatchEvent(new CustomEvent('uam-dictation', { detail: msg }))
           break
-        }
       }
     }
+    // A failing handler must not throw into native code; report it and let the next push recover the status.
+    window.uamPush = (payload: unknown) => {
+      try {
+        handlePush(payload)
+      } catch (error) {
+        set({ pushChannelStatus: 'invalid-message', pushChannelError: `Push handling failed: ${error instanceof Error ? error.message : String(error)}` })
+        console.error('[uamPush] Handler failed:', error)
+      }
+    }
+  }
 
   const inCef = isCefContext()
 
   return {
+    startupNativeImports: EMPTY_STARTUP_NATIVE_IMPORT_STATUS,
+    startupNativeImportReviewSequence: 0,
+    startupNativeImportFolderId: null,
+    openStartupNativeImportReview: (folderId) => set((state) => ({ startupNativeImportReviewSequence: state.startupNativeImportReviewSequence + 1, startupNativeImportFolderId: folderId ?? null })),
     computerUseAllowlistEnabled: false,
     computerUseAllowedApplications: [],
     ...createSessionsSlice(set, get, inCef),
+    ...createExecutionRoutingSlice(get),
     ...createFoldersSlice(set, get),
     ...createResourceCollectionsSlice(set, get),
     ...createGoalsSlice(set, get),
@@ -965,6 +1121,8 @@ export const useAppStore = create<AppState>((set, get) => {
         folders: current.folders,
         resourceCollections: current.resourceCollections,
         messages: current.messages,
+        historyStartIndexBySessionId: current.historyStartIndexBySessionId,
+        chatSearchNavigation: current.chatSearchNavigation,
         providers: current.providers,
         activeSessionId: current.activeSessionId,
         cliTranscriptBySessionId: current.cliTranscriptBySessionId,
@@ -977,12 +1135,17 @@ export const useAppStore = create<AppState>((set, get) => {
         memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
         memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
         goalMaxLoopIterations: current.goalMaxLoopIterations,
+        goalTokenBudget: current.goalTokenBudget,
         acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
+        activeTurnInactivityTimeoutSeconds: current.activeTurnInactivityTimeoutSeconds,
+        streamLoopRepeatLimit: current.streamLoopRepeatLimit,
         acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
         appVersion: current.appVersion,
         runnerProtocolVersion: current.runnerProtocolVersion,
         showProviderIconsInSidebar: current.showProviderIconsInSidebar,
         showWorktreePathInSidebar: current.showWorktreePathInSidebar,
+        gitEnabled: current.gitEnabled,
+        svnEnabled: current.svnEnabled,
         updateChecksEnabled: current.updateChecksEnabled,
             automaticProviderUpdates: current.automaticProviderUpdates,
         updateLastCheckedAt: current.updateLastCheckedAt,
@@ -996,22 +1159,48 @@ export const useAppStore = create<AppState>((set, get) => {
         markdownStoreDirectory: current.markdownStoreDirectory,
         defaultNewChatProviderId: current.defaultNewChatProviderId,
         providerChatDefaults: current.providerChatDefaults,
+        voiceInputMode: current.voiceInputMode,
+        voiceInputServerBaseUrl: current.voiceInputServerBaseUrl,
+        voiceInputServerEndpoint: current.voiceInputServerEndpoint,
+        voiceInputServerModel: current.voiceInputServerModel,
+        voiceInputApiKeyEnv: current.voiceInputApiKeyEnv,
+        voiceInputCapabilities: current.voiceInputCapabilities,
+        providerAvailability: current.providerAvailability,
+        gitAutoWorktree: current.gitAutoWorktree,
+        gitSnapshotSvn: current.gitSnapshotSvn,
+        gitSnapshotPlainFolders: current.gitSnapshotPlainFolders,
+        gitDefaultBaseBranch: current.gitDefaultBaseBranch,
+        gitPullBeforeChat: current.gitPullBeforeChat,
+        svnUpdateBeforeChat: current.svnUpdateBeforeChat,
+        gitPortMethod: current.gitPortMethod,
+        worktreeCleanupEnabled: current.worktreeCleanupEnabled,
+        worktreeRetentionDays: current.worktreeRetentionDays,
+        backupLogRetentionDays: current.backupLogRetentionDays,
+        httpCacheClearIntervalDays: current.httpCacheClearIntervalDays,
         fileExplorerApplication: current.fileExplorerApplication,
+        windowsPowerShell: current.windowsPowerShell,
         defaultEditorPresetId: current.defaultEditorPresetId,
         editorFileAssociations: current.editorFileAssociations,
         centralProviderConfiguration: current.centralProviderConfiguration,
             mcpServers: current.mcpServers,
+        executionRouting: current.executionRouting,
         executionHosts: current.executionHosts,
         favoriteUamAgentIds: current.favoriteUamAgentIds,
+        nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
+        nativeImportExcludedDirectories: current.nativeImportExcludedDirectories,
         uamAgentCycleShortcut: current.uamAgentCycleShortcut,
+        computerUseEnabled: current.computerUseEnabled,
         computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
         computerUseAllowedApplications: current.computerUseAllowedApplications,
+        branchSwitching: current.branchSwitching,
+        hostScopedSettings: current.hostScopedSettings,
+        hostScopedSettingsValues: current.hostScopedSettingsValues,
         uamAgentsBySessionId: current.uamAgentsBySessionId,
         shellActions: current.shellActions,
         shellActionNotification: current.shellActionNotification,
         statusLine: current.statusLine,
       })
-      set(deserialized)
+      set(current.reconcileMemorySettingsProjection(deserialized, sanitized.settings))
       if (deserialized.theme) {
         persistTheme(deserialized.theme, get().customThemes)
       }

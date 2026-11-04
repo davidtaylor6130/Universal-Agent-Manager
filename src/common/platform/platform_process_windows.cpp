@@ -1,6 +1,8 @@
+#include "common/platform/data_root_lock.h"
 #include "platform_services_windows_impl_internal.h"
 
 #include <atomic>
+#include "common/platform/powershell_selection.h"
 #include "remote/remote_workspace_terminal.h"
 
 using namespace uam::platform_windows_impl;
@@ -186,6 +188,60 @@ class WindowsProcessService final : public IPlatformProcessService
 		return false;
 	}
 
+	uam::platform::StandardInputReadResult ReadStandardInput(char* buffer, std::size_t capacity) const override
+	{
+		using uam::platform::StandardInputReadStatus;
+		const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+		if (buffer == nullptr || capacity == 0 || input == nullptr || input == INVALID_HANDLE_VALUE ||
+		    GetFileType(input) != FILE_TYPE_PIPE) return {}; // Console/other handles unsupported.
+		DWORD available = 0;
+		if (!PeekNamedPipe(input, nullptr, 0, nullptr, &available, nullptr))
+		{
+			const DWORD error = GetLastError();
+			if (error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED || error == ERROR_NO_DATA)
+				return {StandardInputReadStatus::EndOfStream, 0};
+			return {};
+		}
+		if (available == 0) return {StandardInputReadStatus::Pending, 0};
+		const DWORD wanted = static_cast<DWORD>(std::min<std::size_t>(capacity, available));
+		DWORD count = 0;
+		if (!ReadFile(input, buffer, wanted, &count, nullptr))
+		{
+			const DWORD error = GetLastError();
+			if (error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED || error == ERROR_NO_DATA)
+				return {StandardInputReadStatus::EndOfStream, 0};
+			return {};
+		}
+		return {count == 0 ? StandardInputReadStatus::EndOfStream : StandardInputReadStatus::Data,
+		        static_cast<std::size_t>(count)};
+	}
+
+	uam::platform::StandardInputReadResult ReadFiniteStandardInput(char* buffer,
+	    std::size_t capacity, std::size_t maximum_input_bytes) const override
+	{
+		using uam::platform::StandardInputReadStatus;
+		const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+		if (buffer == nullptr || capacity == 0 || input == nullptr || input == INVALID_HANDLE_VALUE) return {};
+		const DWORD type = GetFileType(input);
+		if (type == FILE_TYPE_PIPE) return ReadStandardInput(buffer, capacity);
+		if (type != FILE_TYPE_DISK) return {}; // Never block on console/character/unknown handles.
+		BY_HANDLE_FILE_INFORMATION info{};
+		LARGE_INTEGER size{};
+		if (!GetFileInformationByHandle(input, &info) || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+		    !GetFileSizeEx(input, &size) || size.QuadPart < 0 ||
+		    static_cast<unsigned long long>(size.QuadPart) > maximum_input_bytes) return {};
+		// StartStdioProcessWithInput supplies a private synchronous regular file.
+		// Bound every read; neither this operation nor its pipe fallback takes ownership.
+		const DWORD wanted = static_cast<DWORD>(std::min<std::size_t>(capacity, MAXDWORD));
+		DWORD count = 0;
+		if (!ReadFile(input, buffer, wanted, &count, nullptr))
+			return GetLastError() == ERROR_HANDLE_EOF ?
+			    uam::platform::StandardInputReadResult{StandardInputReadStatus::EndOfStream, 0} :
+			    uam::platform::StandardInputReadResult{};
+		return {count == 0 ? StandardInputReadStatus::EndOfStream : StandardInputReadStatus::Data,
+		        static_cast<std::size_t>(count)};
+	}
+
 	bool SupportsDetachedProcesses() const override
 	{
 		return true;
@@ -240,6 +296,12 @@ class WindowsProcessService final : public IPlatformProcessService
 	ProcessExecutionResult ExecuteCommand(const std::string& command, int timeout_ms = -1, std::stop_token stop_token = {}) const override
 	{
 		ProcessExecutionResult result;
+		RefreshProcessPathFromRegistry();
+		std::vector<wchar_t> environment_block;
+		if (!BuildEnvironmentBlock({}, environment_block, &result.error, true))
+		{
+			return result;
+		}
 		SECURITY_ATTRIBUTES sa{};
 		sa.nLength = sizeof(sa);
 		sa.bInheritHandle = TRUE;
@@ -254,7 +316,7 @@ class WindowsProcessService final : public IPlatformProcessService
 		}
 
 		SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
-		const std::wstring command_w = WideFromUtf8("cmd.exe /D /S /C \"" + command + "\"");
+		const std::wstring command_w = WideFromUtf8("cmd.exe /D /V:OFF /S /C \"" + command + "\"");
 
 		if (command_w.empty())
 		{
@@ -284,8 +346,8 @@ class WindowsProcessService final : public IPlatformProcessService
 		startup_info.lpAttributeList = attribute_list.Get();
 
 		PROCESS_INFORMATION process_info{};
-		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
-		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, nullptr, nullptr, &startup_info.StartupInfo, &process_info);
+		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
+		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, environment_block.data(), nullptr, &startup_info.StartupInfo, &process_info);
 		CloseInvalidHandleIfOpen(stdout_write);
 
 		if (!created)
@@ -477,7 +539,11 @@ class WindowsProcessService final : public IPlatformProcessService
 			return false;
 		}
 
-		if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0) || (!merge_output && !CreatePipe(&stderr_read, &stderr_write, &sa, 0)))
+		// The default anonymous pipe holds about 4 KiB, so a child writing a large burst blocks once per 4 KiB until the
+		// parent's next poll; bounded stop and exit drains then expire before its final output. Match the 64 KiB macOS/Linux pipe.
+		constexpr DWORD kOutputPipeBytes = 64 * 1024;
+		if (!CreatePipe(&stdout_read, &stdout_write, &sa, kOutputPipeBytes) ||
+		    (!merge_output && !CreatePipe(&stderr_read, &stderr_write, &sa, kOutputPipeBytes)))
 		{
 			if (error_out != nullptr)
 			{
@@ -513,7 +579,7 @@ class WindowsProcessService final : public IPlatformProcessService
 		command_line.push_back(L'\0');
 		const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
 		std::vector<wchar_t> environment_block;
-		if (!BuildEnvironmentBlock(environment_overrides, environment_block, error_out))
+		if (!BuildEnvironmentBlock(environment_overrides, environment_block, error_out, true))
 		{
 			CloseStdioPipeHandles(stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write);
 			return false;
@@ -637,6 +703,28 @@ class WindowsProcessService final : public IPlatformProcessService
 		return process.stdin_writer != nullptr && process.stdin_writer->Enqueue(bytes, len, error_out);
 	}
 
+	bool WriteToStdioProcessObserved(uam::platform::StdioProcessPlatformFields& process,
+	    const char* bytes, std::size_t len,
+	    std::shared_ptr<const uam::platform::AsyncByteWriter::EnqueueReceipt>& receipt_out,
+	    std::string* error_out = nullptr) const override
+	{
+		receipt_out.reset();
+		if (bytes == nullptr || len == 0)
+		{
+			if (error_out) *error_out = "An observed input write requires nonempty bytes.";
+			return false;
+		}
+		if (process.stdin_write == INVALID_HANDLE_VALUE)
+		{
+			if (error_out) *error_out = "stdin pipe handle is closed.";
+			return false;
+		}
+		if (process.stdin_writer == nullptr)
+			process.stdin_writer = CreateAsyncHandleWriter(process.stdin_write, error_out);
+		const std::shared_ptr<uam::platform::AsyncByteWriter> writer = process.stdin_writer;
+		return writer != nullptr && writer->EnqueueObserved(bytes, len, receipt_out, error_out);
+	}
+
 	void CloseStdioProcessInput(uam::platform::StdioProcessPlatformFields& process) const override
 	{
 		if (process.stdin_writer != nullptr && !process.stdin_writer->Flush(uam::platform::kAsyncInputCloseDrainTimeout))
@@ -725,34 +813,7 @@ class WindowsProcessService final : public IPlatformProcessService
 
 	std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const std::filesystem::path& data_root, std::string* error_out = nullptr) const override
 	{
-		std::error_code ec;
-		if (!uam::paths::CreateDirectoriesNoThrow(data_root, &ec))
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Failed to create data root lock directory: " + ec.message();
-			}
-			return nullptr;
-		}
-
-		const std::filesystem::path lock_path = data_root / ".uam-data-root.lock";
-		const HANDLE handle = CreateFileW(lock_path.wstring().c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN, nullptr);
-		if (handle == INVALID_HANDLE_VALUE)
-		{
-			if (error_out != nullptr)
-			{
-				const DWORD error = GetLastError();
-				*error_out = (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION) ? "Another Universal Agent Manager instance is already using this data root." : "Failed to open data root lock file.";
-			}
-			return nullptr;
-		}
-
-		const std::string pid_text = std::to_string(static_cast<unsigned long>(GetCurrentProcessId())) + "\n";
-		DWORD written = 0;
-		SetFilePointer(handle, 0, nullptr, FILE_BEGIN);
-		SetEndOfFile(handle);
-		WriteFile(handle, pid_text.data(), static_cast<DWORD>(pid_text.size()), &written, nullptr);
-		return std::make_unique<WindowsDataRootLock>(handle);
+		return uam::platform::AnchoredDataRootLock::TryAcquire(data_root, error_out);
 	}
 
 	uintmax_t NativeGeminiSessionMaxFileBytes() const override
@@ -791,20 +852,25 @@ class WindowsProcessService final : public IPlatformProcessService
 		SetThreadExecutionState(keep_awake ? (ES_CONTINUOUS | ES_SYSTEM_REQUIRED) : ES_CONTINUOUS);
 	}
 
-	bool LaunchTerminalCommand(const std::vector<std::string>& argv, std::string* error_out) const override
+	bool LaunchTerminalCommand(const std::vector<std::string>& argv, std::string* error_out, std::string_view powershell_preference) const override
 	{
 		if (argv.empty())
 		{
 			if (error_out != nullptr) *error_out = "The terminal command is empty.";
 			return false;
 		}
+		const std::optional<std::string> windows_powershell = ResolveInstalledPowerShellPath(false);
+		const std::optional<std::string> pwsh = ResolveInstalledPowerShellPath(true);
+		const std::string selected = uam::powershell::Select(powershell_preference, windows_powershell.has_value(), pwsh.has_value(), error_out);
+		if (selected.empty()) return false;
+		const std::wstring executable = WideFromUtf8(selected == "pwsh.exe" ? *pwsh : *windows_powershell);
 		const std::string encoded_arguments = "-NoLogo -NoProfile -NoExit -EncodedCommand " + uam::remote::WindowsTerminalEncodedCommand(argv);
 		const std::wstring arguments(encoded_arguments.begin(), encoded_arguments.end());
 		SHELLEXECUTEINFOW launch{};
 		launch.cbSize = sizeof(launch);
 		launch.fMask = SEE_MASK_NOCLOSEPROCESS;
 		launch.lpVerb = L"open";
-		launch.lpFile = L"powershell.exe";
+		launch.lpFile = executable.c_str();
 		launch.lpParameters = arguments.c_str();
 		launch.nShow = SW_SHOWNORMAL;
 		if (!ShellExecuteExW(&launch))

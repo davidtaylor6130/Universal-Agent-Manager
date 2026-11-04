@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CppChat, CppMessage } from './types'
-import { sessionFromCppChat, acpBindingFromCppChat, cliBindingFromCppChat, reconcileCppMessages, normalizeCliLifecycleState, cliLifecycleIsProcessing } from './reconcile'
-import { sanitizeCppChat, sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
+import { reconcileHeldOutboxHistory, messageBlocksEquivalent, sessionFromCppChat, acpBindingFromCppChat, cliBindingFromCppChat, reconcileCppMessages, normalizeCliLifecycleState, cliLifecycleIsProcessing } from './reconcile'
+import { sanitizeCppAppState, sanitizeCppChat, sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
 
 describe('Computer Use settings sanitization', () => {
   it('canonicalizes backend identity kinds during persisted settings roundtrip', () => {
@@ -18,6 +18,28 @@ describe('Computer Use settings sanitization', () => {
   })
 })
 
+describe('computerUseGloballyEnabled sanitization', () => {
+  it('keeps only a real boolean and otherwise leaves the global consent absent', () => {
+    expect(sanitizeCppSettings({ computerUseGloballyEnabled: true }).computerUseGloballyEnabled).toBe(true)
+    expect(sanitizeCppSettings({ computerUseGloballyEnabled: 'yes' }).computerUseGloballyEnabled).toBeUndefined()
+    expect(sanitizeCppSettings({}).computerUseGloballyEnabled).toBeUndefined()
+  })
+  it('keeps unknown cleanup distinct from an explicit cleared state', () => {
+    expect(sanitizeCppSettings({ computerUseRevocationPending: true }).computerUseRevocationPending).toBe(true)
+    expect(sanitizeCppSettings({ computerUseRevocationPending: false }).computerUseRevocationPending).toBe(false)
+    expect(sanitizeCppSettings({ computerUseRevocationPending: 'false' }).computerUseRevocationPending).toBeUndefined()
+    expect(sanitizeCppSettings({}).computerUseRevocationPending).toBeUndefined()
+  })
+})
+
+describe('hostScopedSettings capability sanitization', () => {
+  it('keeps only a real boolean and otherwise leaves the capability absent', () => {
+    expect(sanitizeCppSettings({ hostScopedSettings: true }).hostScopedSettings).toBe(true)
+    expect(sanitizeCppSettings({ hostScopedSettings: 'yes' }).hostScopedSettings).toBeUndefined()
+    expect(sanitizeCppSettings({}).hostScopedSettings).toBeUndefined()
+  })
+})
+
 const message: CppMessage = {
   role: 'user',
   content: 'Use the attached file.',
@@ -25,6 +47,15 @@ const message: CppMessage = {
 }
 
 describe('reconcileCppMessages attachments', () => {
+  it('adopts a persisted unsent discard without changing its native position or delivery flag', () => {
+    const original = sanitizeCppMessage({ ...message, acpPromptNotSent: true })!
+    const before = reconcileCppMessages('chat', undefined, [original], true, 7)
+    const discarded = sanitizeCppMessage({ ...original, acpPromptDiscarded: true })!
+    const after = reconcileCppMessages('chat', before, [discarded], true, 7)
+    expect(after[0]).not.toBe(before[0])
+    expect(after[0]).toMatchObject({ acpPromptDiscarded: true, acpPromptNotSent: true, nativeMessageIndex: 7, content: message.content })
+    expect(sanitizeCppMessage({ ...message, acpPromptDiscarded: 'true' })?.acpPromptDiscarded).toBe(false)
+  })
 	it('preserves persisted interruption and steering provenance', () => {
 		const sanitized = sanitizeCppMessage({ ...message, interrupted: true, prioritySteer: true, continuesTurn: true })
 		const reconciled = reconcileCppMessages('chat-1', undefined, [sanitized!])
@@ -53,7 +84,7 @@ describe('reconcileCppMessages attachments', () => {
     }])
 
     expect(reconciled).not.toBe(existing)
-    expect(reconciled[0].attachments).toEqual([attachment])
+    expect(reconciled[0].attachments).toEqual([{ ...attachment, mimeType: 'image/png' }])
   })
 
   it('keeps a markdown-store attachment-only update', () => {
@@ -135,6 +166,41 @@ describe('reconcileCppMessages deferred tool content', () => {
   })
 })
 
+describe('unsent prompt native authority', () => {
+  it('keeps valid real queue references and invalidates binding reuse when their raw index changes', () => {
+    const queued = { id: 'held', revision: 1, text: 'Original', existingUserMessageIndex: 23 }
+    const session = sanitizeCppAcpSession({ queuedPrompts: [queued] })!
+    expect(session.queuedPrompts?.[0].existingUserMessageIndex).toBe(23)
+    for (const invalid of [-1, 1.5, '23', null, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(sanitizeCppAcpSession({ queuedPrompts: [{ ...queued, existingUserMessageIndex: invalid }] })?.queuedPrompts?.[0].existingUserMessageIndex).toBeUndefined()
+    }
+    expect(sanitizeCppAcpSession({ queuedPrompts: [{ ...queued, existingUserMessageIndex: 0 }] })?.queuedPrompts?.[0].existingUserMessageIndex).toBe(0)
+    const chat = { id: 'chat', providerId: 'codex-cli', acpSession: session } as CppChat
+    const first = acpBindingFromCppChat(chat, undefined)
+    expect(acpBindingFromCppChat(chat, first)).toBe(first)
+    const changed = acpBindingFromCppChat({ ...chat, acpSession: { ...session,
+      queuedPrompts: session.queuedPrompts?.map((prompt) => ({ ...prompt, existingUserMessageIndex: 24 })) } }, first)
+    expect(changed).not.toBe(first)
+    expect(changed.queuedPrompts?.[0].existingUserMessageIndex).toBe(24)
+  })
+
+  it('sanitizes absolute native indices and invalidates binding reuse when retry authority changes', () => {
+    const acp = sanitizeCppAcpSession({ unsentMessageIndices: [0, 7, -1, 1.5, '8', null], recoverableUnsentMessageIndices: [7, '7', -1] })!
+    expect(acp.unsentMessageIndices).toEqual([0, 7])
+    expect(acp.recoverableUnsentMessageIndices).toEqual([7])
+    const chat = { id: 'chat', providerId: 'opencode-cli', acpSession: acp } as CppChat
+    const first = acpBindingFromCppChat(chat, undefined)
+    expect(acpBindingFromCppChat(chat, first)).toBe(first)
+    const blocked = acpBindingFromCppChat({ ...chat, acpSession: { ...acp, recoverableUnsentMessageIndices: [] } }, first)
+    expect(blocked).not.toBe(first)
+    expect(blocked.unsentMessageIndices).toEqual([0, 7])
+    expect(blocked.recoverableUnsentMessageIndices).toEqual([])
+    const delivered = acpBindingFromCppChat({ ...chat, acpSession: { ...acp, unsentMessageIndices: [0] } }, first)
+    expect(delivered).not.toBe(first)
+    expect(delivered.unsentMessageIndices).toEqual([0])
+  })
+})
+
 describe('backend state reconciliation', () => {
 	it('preserves the blocker category used by the goal banner', () => {
 		expect(sanitizeCppGoal({
@@ -208,6 +274,23 @@ describe('backend state reconciliation', () => {
     }) }, previous)
     expect(next).not.toBe(previous)
     expect(next.idleShutdownAtMs).toBeUndefined()
+  })
+
+  it('keeps current context separate from consumed tokens and rejects malformed snapshots', () => {
+    const contextUsage = { updatedAt: 1000, usedTokens: 1234, windowTokens: 200000 }
+    expect(sanitizeCppAcpSession({ providerUsage: { contextUsage } })?.providerUsage).toMatchObject({ contextUsage, tokenUsage: null, rateLimits: null })
+    expect(sanitizeCppAcpSession({ providerUsage: { contextUsage: { ...contextUsage, usedTokens: 0 } } })?.providerUsage?.contextUsage?.usedTokens).toBe(0)
+    for (const invalid of [{ usedTokens: -1 }, { usedTokens: null }, { usedTokens: 1.5 }, { usedTokens: 200001 }, { windowTokens: 0 }, { windowTokens: Number.MAX_SAFE_INTEGER + 1 }]) expect(sanitizeCppAcpSession({ providerUsage: { contextUsage: { ...contextUsage, ...invalid } } })?.providerUsage).toBeNull()
+  })
+
+  it('keeps cumulative usage when the last-turn breakdown is unknown', () => {
+    const tokenUsage = { updatedAt: 1000, total: { totalTokens: 123 }, last: null }
+    const parsed = sanitizeCppAcpSession({ providerUsage: { tokenUsage } })?.providerUsage?.tokenUsage
+    expect(parsed?.total.totalTokens).toBe(123)
+    expect(parsed?.last).toBeNull()
+    for (const last of [undefined, { totalTokens: -1 }, { totalTokens: Number.MAX_SAFE_INTEGER + 1 }]) {
+      expect(sanitizeCppAcpSession({ providerUsage: { tokenUsage: { ...tokenUsage, last } } })?.providerUsage).toBeNull()
+    }
   })
 
   it('sanitizes and reconciles provider usage updates', () => {
@@ -386,5 +469,134 @@ describe('remote recovery snapshot reconciliation', () => {
     expect(next.remoteRecoveryState).toBe(remoteRecoveryState)
     expect(next).not.toBe(previous)
     expect(sessionFromCppChat({ ...previousChat, remoteRecoveryState }, next, [])).toBe(next)
+  })
+})
+
+describe('native compaction lifecycle', () => {
+  it('propagates start and completion without changing turn identity and rejects stale stopped state', () => {
+    const chat = { id: 'compacting', acpSession: sanitizeCppAcpSession({ running: true, processing: true, lifecycleState: 'processing', compacting: true }) } as CppChat
+    const active = acpBindingFromCppChat(chat, undefined)
+    expect(active.compacting).toBe(true)
+    const completed = acpBindingFromCppChat({ ...chat, acpSession: { ...chat.acpSession, compacting: false } }, active)
+    expect(completed).not.toBe(active)
+    expect(completed.compacting).toBe(false)
+    expect(acpBindingFromCppChat({ ...chat, acpSession: { ...chat.acpSession, running: false, processing: false, lifecycleState: 'stopped' } }, active).compacting).toBe(false)
+    expect(sanitizeCppAcpSession({ compacting: 'true' })?.compacting).toBe(false)
+  })
+})
+
+ it('propagates native child activity through sanitization and immutable binding reconciliation', () => {
+  const chat = { id: 'child-parent', acpSession: sanitizeCppAcpSession({ lifecycleState: 'ready', running: true, processing: false, backgroundTaskCount: 1 }) } as CppChat
+  const working = acpBindingFromCppChat(chat, undefined)
+  expect(working.processing).toBe(false)
+  expect(working.backgroundTaskCount).toBe(1)
+  const settled = acpBindingFromCppChat({ ...chat, acpSession: sanitizeCppAcpSession({ lifecycleState: 'ready', running: true, processing: false, backgroundTaskCount: 0 }) }, working)
+  expect(settled).not.toBe(working)
+  expect(settled.backgroundTaskCount).toBe(0)
+  for (const value of [-1, 1.5, '1', Infinity]) expect(sanitizeCppAcpSession({ backgroundTaskCount: value })?.backgroundTaskCount).toBe(0)
+ })
+
+describe('reported compaction counts', () => {
+  it('preserves zero and rejects malformed counts without inventing a reduction', () => {
+    const valid = sanitizeCppMessage({ role: 'assistant', content: '', blocks: [{ type: 'context_compaction', tokensBefore: 1234, tokensAfter: 0 }] })
+    expect(valid?.blocks?.[0]).toMatchObject({ tokensBefore: 1234, tokensAfter: 0 })
+    for (const invalid of [-1, 1.5, '1200', Number.MAX_SAFE_INTEGER + 1, Infinity]) {
+      const result = sanitizeCppMessage({ role: 'assistant', content: '', blocks: [{ type: 'context_compaction', tokensBefore: invalid, tokensAfter: invalid }] })
+      expect(result?.blocks?.[0]).toMatchObject({ tokensBefore: undefined, tokensAfter: undefined })
+    }
+    expect(messageBlocksEquivalent([{ type: 'context_compaction', text: '', tokensBefore: 1234 }],
+      [{ type: 'context_compaction', text: '', tokensBefore: 1235 }])).toBe(false)
+  })
+})
+
+describe('remote host startup applied state sanitization', () => {
+  const host = { id: 'h1', sshAlias: 'h1', label: 'H1', runnerStatus: 'ready' }
+
+  it('keeps applied state absent when the backend does not report it', () => {
+    const [entry] = sanitizeCppSettings({ executionHosts: [host] }).executionHosts!.slice(1)
+    expect(entry).not.toHaveProperty('runnerStartupApplied')
+    expect(entry).not.toHaveProperty('runnerStartupError')
+  })
+
+  it('accepts known applied states and sanitizes the error to one bounded line', () => {
+    const [entry] = sanitizeCppSettings({
+      executionHosts: [{ ...host, runnerStartupApplied: 'failed', runnerStartupError: `bad\nline\u0007${'x'.repeat(400)}` }],
+    }).executionHosts!.slice(1)
+    expect(entry.runnerStartupApplied).toBe('failed')
+    expect(entry.runnerStartupError).not.toMatch(/[\u0000-\u001f\u007f]/)
+    expect(entry.runnerStartupError!.length).toBe(300)
+  })
+
+  it('keeps only well-formed installed and bundled helper checksums', () => {
+    const [entry] = sanitizeCppSettings({ executionHosts: [{ ...host, runnerSha256: 'a'.repeat(64), bundledRunnerSha256: 'not-a-checksum' }] }).executionHosts!.slice(1)
+    expect(entry.runnerSha256).toBe('a'.repeat(64))
+    expect(entry).not.toHaveProperty('bundledRunnerSha256')
+  })
+
+  it('drops unknown applied states', () => {
+    const [entry] = sanitizeCppSettings({ executionHosts: [{ ...host, runnerStartupApplied: 'exploded' }] }).executionHosts!.slice(1)
+    expect(entry).not.toHaveProperty('runnerStartupApplied')
+  })
+})
+
+describe('chat custom icon data', () => {
+  it('reconciles icon-only changes, removal and owned image changes without discarding unchanged sessions', () => {
+    const chat = sanitizeCppChat({ id: 'icon-chat', title: 'Icon chat', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' })!
+    const first = sessionFromCppChat({ ...chat, customIcon: { type: 'text', value: '📌' } }, undefined, [])
+    expect(first.customIcon).toEqual({ type: 'text', value: '📌' })
+    expect(sessionFromCppChat({ ...chat, customIcon: { type: 'text', value: '📌' } }, first, [])).toBe(first)
+    const changed = sessionFromCppChat({ ...chat, customIcon: { type: 'text', value: '🚀' } }, first, [])
+    expect(changed).not.toBe(first); expect(changed.customIcon?.value).toBe('🚀')
+    const removed = sessionFromCppChat(chat, changed, [])
+    expect(removed).not.toBe(changed); expect(removed.customIcon).toBeUndefined()
+    const png = { type: 'png' as const, value: '12345678-1234-1234-1234-123456789abc.png', dataUrl: 'data:image/png;base64,YQ==' }
+    const image = sessionFromCppChat({ ...chat, customIcon: png }, removed, [])
+    expect(sessionFromCppChat({ ...chat, customIcon: { ...png, dataUrl: undefined } }, image, [])).not.toBe(image)
+  })
+})
+
+
+describe('held outbox history admission', () => {
+  const chat: CppChat = { id: 'held', title: 'Held', createdAt: '', updatedAt: '', messageCount: 0, messagesDigest: 'native-empty',
+    acpSession: { queueHeld: true, queuedPrompts: [{ id: 'actual-queue-id', revision: 1, text: 'Unsent' }] } }
+  const existing = reconcileCppMessages('held', undefined, [{ role: 'user', content: 'Unsent', createdAt: '', acpPromptNotSent: true }], true)
+  it('requires an explicit native count, digest and stable held identity before retiring history', () => {
+    expect(reconcileHeldOutboxHistory(chat, existing)).toEqual([])
+    for (const incomplete of [
+      { ...chat, messageCount: undefined }, { ...chat, messagesDigest: '' },
+      { ...chat, acpSession: { ...chat.acpSession, queueHeld: false } },
+      { ...chat, acpSession: { ...chat.acpSession, queuedPrompts: [{ id: 'actual-queue-id', revision: 0, text: 'Unsent' }] } },
+    ]) expect(reconcileHeldOutboxHistory(incomplete, existing)).toBe(existing)
+    expect(sanitizeCppChat({ id: 'no-count' })?.messageCount).toBeUndefined()
+    const skillChanged = { ...chat, acpSession: { ...chat.acpSession, queuedPrompts: [{ id: 'actual-queue-id', revision: 1, text: 'Unsent', markdownStoreFiles: ['/skills/different.md'] }] } }
+    expect(reconcileHeldOutboxHistory(skillChanged, existing)).toBe(existing)
+  })
+  it('requires prior native-known exact held references before retiring a disappeared queue tail', () => {
+    const prior = acpBindingFromCppChat({ ...chat, acpSession: { ...chat.acpSession, unsentMessageIndices: [0],
+      queuedPrompts: [{ ...chat.acpSession!.queuedPrompts![0], existingUserMessageIndex: 0 }] } }, undefined)
+    const oldSummary = { messageCount: 1, messagesDigest: 'before-remove' }
+    const removed = { ...chat, acpSession: { queueHeld: true, queuedPrompts: [] } }
+    expect(reconcileHeldOutboxHistory(removed, existing, 0, prior, oldSummary)).toEqual([])
+    for (const changed of [
+      { ...prior, unsentMessageIndices: [] }, { ...prior, queueHeld: false },
+      { ...prior, queuedPrompts: prior.queuedPrompts?.map((prompt) => ({ ...prompt, existingUserMessageIndex: 1 })) },
+      { ...prior, queuedPrompts: prior.queuedPrompts?.map((prompt) => ({ ...prompt, markdownStoreFiles: ['/different-skill.md'] })) },
+    ]) expect(reconcileHeldOutboxHistory(removed, existing, 0, changed, oldSummary)).toBe(existing)
+    const later = [...existing, { ...existing[0], nativeMessageIndex: undefined, content: 'Newer optimistic input' }]
+    expect(reconcileHeldOutboxHistory(removed, later, 0, prior, oldSummary)).toEqual([later[1]])
+    expect(reconcileHeldOutboxHistory(removed, later, 0, prior, oldSummary)?.[0]).toBe(later[1])
+    const actualLater = [...existing, { ...existing[0], nativeMessageIndex: 1, content: 'Later native input' }]
+    expect(reconcileHeldOutboxHistory(removed, actualLater, 0, prior, oldSummary)).toBe(actualLater)
+    expect(reconcileHeldOutboxHistory(removed, existing, 0, prior, { ...oldSummary, messagesDigest: removed.messagesDigest })).toBe(existing)
+    const delivered = existing.map((message) => ({ ...message, acpPromptNotSent: false }))
+    expect(reconcileHeldOutboxHistory(removed, delivered, 0, prior, oldSummary)).toBe(delivered)
+  })
+  it('preserves partial output, opaque optimistic attempts and changed attachment intent', () => {
+    for (const suffix of [
+      [{ ...existing[0], nativeMessageIndex: undefined }],
+      [{ ...existing[0], attachments: [{ id: 'different', name: 'x', path: '/x', size: 1, type: 'text/plain' }] }],
+      [...existing, { ...existing[0], role: 'assistant' as const, content: 'Actual output', nativeMessageIndex: 1 }],
+      [...existing, { ...existing[0], content: 'Newer attempt', nativeMessageIndex: 1 }],
+    ]) expect(reconcileHeldOutboxHistory(chat, suffix)).toBe(suffix)
   })
 })

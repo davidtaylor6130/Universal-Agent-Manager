@@ -3,11 +3,14 @@ import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 import { NewChatModal } from './NewChatModal'
+import * as modelOptions from '../chat/modelOptions'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const originalDiscoverProviderModels = useAppStore.getState().discoverProviderModels
 const originalListRemoteDirectories = useAppStore.getState().listRemoteDirectories
+const originalSetNewChatModalOpen = useAppStore.getState().setNewChatModalOpen
+const originalAddSession = useAppStore.getState().addSession
 
 describe('NewChatModal', () => {
   beforeEach(() => {
@@ -20,17 +23,310 @@ describe('NewChatModal', () => {
       ],
       defaultNewChatProviderId: 'gemini-cli',
       providerChatDefaults: {},
+      hostScopedSettingsValues: {},
       newChatFolderId: 'project',
+      newChatWorktreeContext: null,
+      gitEnabled: false,
+      gitAutoWorktree: false,
+      gitDefaultBaseBranch: '',
+      resourceCollections: [],
 	  sessions: [],
 	  acpBindingBySessionId: {},
       providerModelCatalogs: [],
       cliVersionManager: { providers: [] },
+      providerAvailability: [],
       discoverProviderModels: originalDiscoverProviderModels,
       listRemoteDirectories: originalListRemoteDirectories,
+      executionRouting: { enabled: false, hosts: [] },
       executionHosts: [
         { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
       ],
     })
+  })
+
+  it.each(['removed', 'detached', 'read-failure', 'unchanged', 'pending-create'].flatMap((result) =>
+    ['feature/base', 'Current branch (dev)'].map((choice) => ({ result, choice }))))(
+    'reconciles a refreshed starting branch with the real creation payload: $choice / $result', async ({ result, choice }) => {
+      const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+      const context = { vcs: 'git', currentBranch: 'dev', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'main', commit: 'a'.repeat(40) }, { name: 'feature/base', commit: 'b'.repeat(40) }, { name: 'dev', commit: 'a'.repeat(40) }] }
+      let finishRefresh!: () => void
+      let reads = 0
+      window.cefQuery = ({ request, onSuccess, onFailure }) => {
+        const query = JSON.parse(request)
+        requests.push(query)
+        if (query.action !== 'getWorkspaceVcsContext') { onSuccess(JSON.stringify({ chatId: 'created-fixture' })); return }
+        reads += 1
+        if (reads === 1) { onFailure(409, 'Could not read local branches.'); return }
+        if (reads === 2) { onSuccess(JSON.stringify(context)); return }
+        finishRefresh = () => {
+          if (result === 'read-failure') onFailure(409, 'Branches are unavailable.')
+          else onSuccess(JSON.stringify(result === 'detached'
+            ? { vcs: 'git', currentBranch: '', detached: true }
+            : { ...context, localBranches: result === 'removed' ? context.localBranches.filter((branch) => branch.name !== 'feature/base') : context.localBranches }))
+        }
+      }
+      useAppStore.setState({ addSession: originalAddSession, gitEnabled: true, gitAutoWorktree: true, gitDefaultBaseBranch: 'main', isNewChatModalOpen: true })
+      const foldersBefore = useAppStore.getState().folders
+      const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+      const button = (label: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((entry) => entry.textContent === label)!
+      const trigger = () => host.querySelector<HTMLButtonElement>('[aria-label="Starting branch"]')!
+      try {
+        await act(async () => root.render(<NewChatModal />))
+        await act(async () => button('Retry branches').click())
+        act(() => trigger().click())
+        act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((entry) => entry.textContent?.startsWith(choice))!.click())
+        const refresh = button('Refresh branches')
+        refresh.focus()
+        act(() => refresh.click())
+        expect(trigger().disabled).toBe(true)
+        expect(trigger().textContent).toContain(choice)
+        expect(document.activeElement).toBe(refresh)
+        if (result !== 'pending-create') await act(async () => finishRefresh())
+        const keepsChoice = result === 'unchanged' || result === 'pending-create' || (result === 'removed' && choice !== 'feature/base')
+        expect(trigger().textContent).toContain(keepsChoice ? choice : 'Use default (main)')
+        expect(document.activeElement).toBe(refresh)
+        expect(requests.map((query) => query.action)).toEqual(Array(3).fill('getWorkspaceVcsContext'))
+        await act(async () => button('Create chat').click())
+        const payload = requests.at(-1)!.payload
+        expect(requests.map((query) => query.action)).toEqual([...Array(3).fill('getWorkspaceVcsContext'), 'createSession'])
+        expect(payload).toMatchObject({ folderId: 'project', providerId: 'gemini-cli' })
+        if (keepsChoice) expect(payload).toMatchObject({ gitBaseBranch: choice === 'feature/base' ? choice : '', workspaceDirectory: '/tmp/project' })
+        else expect(payload).not.toHaveProperty('gitBaseBranch')
+        expect(payload).not.toHaveProperty('sourceChatId')
+        expect(useAppStore.getState().folders).toBe(foldersBefore)
+        expect(useAppStore.getState().gitDefaultBaseBranch).toBe('main')
+      } finally { act(() => root.unmount()); host.remove(); delete window.cefQuery }
+    },
+  )
+
+  it.each(['feature/base', 'Current branch (dev)', 'Use default (main)'])(
+    'passes %s through the real creation store while deferring provider and worktree work', async (choice) => {
+      const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+      window.cefQuery = ({ request, onSuccess }) => {
+        const query = JSON.parse(request)
+        requests.push(query)
+        onSuccess(JSON.stringify(query.action === 'getWorkspaceVcsContext'
+          ? { vcs: 'git', currentBranch: 'dev', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'main', commit: 'a'.repeat(40) }, { name: 'feature/base', commit: 'b'.repeat(40) }, { name: 'dev', commit: 'a'.repeat(40) }] }
+          : { chatId: 'created-fixture' }))
+      }
+      useAppStore.setState({ addSession: originalAddSession, gitEnabled: true, gitAutoWorktree: true, gitDefaultBaseBranch: 'main', isNewChatModalOpen: true })
+      const foldersBefore = useAppStore.getState().folders
+      const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+      try {
+        await act(async () => root.render(<NewChatModal />))
+        act(() => host.querySelector<HTMLButtonElement>('[aria-label="Starting branch"]')!.click())
+        act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith(choice))!.click())
+        expect(requests.map((request) => request.action)).toEqual(['getWorkspaceVcsContext'])
+        // A provider change retains the workspace-scoped base choice.
+        act(() => useAppStore.setState((state) => ({ providers: state.providers.filter((provider) => provider.id === 'codex-cli') })))
+        await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!.click())
+        expect(requests.map((request) => request.action)).toEqual(['getWorkspaceVcsContext', 'createSession'])
+        const payload = requests[1].payload
+        expect(payload).toMatchObject({ title: 'New chat', folderId: 'project', providerId: 'codex-cli' })
+        if (choice === 'Use default (main)') expect(payload).not.toHaveProperty('gitBaseBranch')
+        else {
+          expect(payload.gitBaseBranch).toBe(choice === 'feature/base' ? 'feature/base' : '')
+          expect(payload.workspaceDirectory).toBe('/tmp/project')
+        }
+        expect(payload).not.toHaveProperty('sourceChatId')
+        expect(useAppStore.getState().folders).toBe(foldersBefore)
+        expect(useAppStore.getState().gitDefaultBaseBranch).toBe('main')
+        expect(useAppStore.getState().isNewChatModalOpen).toBe(false)
+      } finally { act(() => root.unmount()); host.remove(); delete window.cefQuery }
+    },
+  )
+
+  it.each(['feature/base', 'Current branch (dev)', 'Use default (main)'])(
+    'creates in the chosen workspace with starting branch choice %s and no repository mutation', async (choice) => {
+      const addSession = vi.fn().mockResolvedValue(false)
+      const requests: Array<{ action: string; payload: unknown }> = []
+      window.cefQuery = ({ request, onSuccess }) => {
+        requests.push(JSON.parse(request))
+        onSuccess(JSON.stringify({ vcs: 'git', currentBranch: 'dev', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'main', commit: 'a'.repeat(40) }, { name: 'feature/base', commit: 'b'.repeat(40) }, { name: 'dev', commit: 'a'.repeat(40) }] }))
+      }
+      useAppStore.setState({ addSession, gitEnabled: true, gitAutoWorktree: true, gitDefaultBaseBranch: 'main' })
+      const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+      try {
+        await act(async () => root.render(<NewChatModal />))
+        act(() => host.querySelector<HTMLButtonElement>('[aria-label="Starting branch"]')!.click())
+        act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith(choice))!.click())
+        expect(addSession).not.toHaveBeenCalled()
+        expect(requests).toEqual([expect.objectContaining({ action: 'getWorkspaceVcsContext', payload: { folderId: 'project' } })])
+        await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!.click())
+        const expected = ['New chat', 'project', 'gemini-cli', '', '', 'chat']
+        if (choice !== 'Use default (main)') expected.push('local', '', 'explicit')
+        expect(addSession.mock.calls[0].slice(0, expected.length)).toEqual(expected)
+        if (choice === 'Use default (main)') expect(addSession.mock.calls[0]).toHaveLength(6)
+        else expect(addSession.mock.calls[0][9]).toEqual({ gitBaseBranch: choice === 'feature/base' ? 'feature/base' : '' })
+        expect(useAppStore.getState().folders[0].directory).toBe('/tmp/project')
+        expect(useAppStore.getState().gitDefaultBaseBranch).toBe('main')
+      } finally { act(() => root.unmount()); host.remove(); delete window.cefQuery }
+    },
+  )
+
+  it.each(['directory', 'folder', 'git-disabled', 'isolation-disabled'])(
+    'drops a prior starting branch when the workspace or eligibility changes: %s', async (change) => {
+      const addSession = vi.fn().mockResolvedValue(false)
+      const requests: Array<{ action: string; payload: unknown }> = []
+      window.cefQuery = ({ request, onSuccess }) => {
+        requests.push(JSON.parse(request))
+        onSuccess(JSON.stringify({ vcs: 'git', currentBranch: 'main', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'main', commit: 'a'.repeat(40) }, { name: 'feature/base', commit: 'b'.repeat(40) }] }))
+      }
+      useAppStore.setState({ addSession, gitEnabled: true, gitAutoWorktree: true })
+      const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+      try {
+        await act(async () => root.render(<NewChatModal />))
+        act(() => host.querySelector<HTMLButtonElement>('[aria-label="Starting branch"]')!.click())
+        act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent === 'feature/base')!.click())
+        await act(async () => {
+          if (change === 'git-disabled') useAppStore.setState({ gitEnabled: false })
+          else if (change === 'isolation-disabled') useAppStore.setState({ gitAutoWorktree: false })
+          else useAppStore.setState((state) => ({ folders: state.folders.map((folder) => ({ ...folder, id: change === 'folder' ? 'other' : folder.id, directory: '/tmp/other' })) }))
+        })
+        await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!.click())
+        expect(addSession.mock.calls[0]).toHaveLength(6)
+        expect(addSession.mock.calls[0][1]).toBe(change === 'folder' ? 'other' : 'project')
+        expect(requests.every((request) => request.action === 'getWorkspaceVcsContext')).toBe(true)
+      } finally { act(() => root.unmount()); host.remove(); delete window.cefQuery }
+    },
+  )
+
+  it.each(['detached', 'unborn', 'plain', 'svn'])(
+    'keeps inherited creation available without an override for %s workspaces', async (vcs) => {
+      const addSession = vi.fn().mockResolvedValue(false)
+      window.cefQuery = ({ onSuccess, onFailure }) => {
+        if (vcs === 'unborn') { onFailure(409, 'Could not read local Git branches.'); return }
+        onSuccess(JSON.stringify(vcs === 'detached' ? { vcs: 'git', currentBranch: '', detached: true } : { vcs: vcs === 'plain' ? '' : 'svn' }))
+      }
+      useAppStore.setState({ addSession, gitEnabled: true, gitAutoWorktree: true })
+      const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+      try {
+        await act(async () => root.render(<NewChatModal />))
+        expect(host.querySelector<HTMLButtonElement>('[aria-label="Starting branch"]')!.disabled).toBe(true)
+        const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
+        expect(create.disabled).toBe(false)
+        await act(async () => create.click())
+        expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'gemini-cli', '', '', 'chat')
+      } finally { act(() => root.unmount()); host.remove(); delete window.cefQuery }
+    },
+  )
+
+  it('ignores the old folder discovery after the selected workspace changes', async () => {
+    let oldReply!: (value: string) => void
+    const addSession = vi.fn().mockResolvedValue(false)
+    window.cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).payload.folderId === 'project') { oldReply = onSuccess; return }
+      onSuccess(JSON.stringify({ vcs: 'git', currentBranch: 'other-main', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'other-main', commit: 'a'.repeat(40) }] }))
+    }
+    useAppStore.setState({ addSession, gitEnabled: true, gitAutoWorktree: true })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      await act(async () => useAppStore.setState((state) => ({ folders: state.folders.map((folder) => ({ ...folder, id: 'other', directory: '/tmp/other' })) })))
+      await act(async () => oldReply(JSON.stringify({ vcs: 'git', currentBranch: 'obsolete', currentCommit: 'b'.repeat(40), detached: false, localBranches: [{ name: 'obsolete', commit: 'b'.repeat(40) }] })))
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Starting branch"]')!.click())
+      expect(document.body.querySelector('[role="listbox"]')?.textContent).toContain('other-main')
+      expect(document.body.querySelector('[role="listbox"]')?.textContent).not.toContain('obsolete')
+      act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent === 'other-main')!.click())
+      await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!.click())
+      expect(addSession.mock.calls[0][1]).toBe('other')
+      expect(addSession.mock.calls[0][9]).toEqual({ gitBaseBranch: 'other-main' })
+    } finally { act(() => root.unmount()); host.remove(); delete window.cefQuery }
+  })
+
+  it('does not discover models on opening or reopening the new chat picker', async () => {
+    const discoverProviderModels = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ discoverProviderModels })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    let root = createRoot(host)
+    try {
+      await act(async () => { root.render(<NewChatModal />) })
+      act(() => root.unmount())
+      root = createRoot(host)
+      await act(async () => { root.render(<NewChatModal />) })
+      expect(discoverProviderModels).not.toHaveBeenCalled()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('keeps cached models and live config without live selection, tolerates legacy bindings, and refreshes independently', async () => {
+    const optionsSpy = vi.spyOn(modelOptions, 'buildModelOptions')
+    const discoverProviderModels = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ discoverProviderModels })
+    useAppStore.setState({
+      sessions: [{ id: 'active', name: 'Active', providerId: 'gemini-cli', folderId: 'project', workspaceDirectory: '/tmp/project', viewMode: 'chat', createdAt: new Date(), updatedAt: new Date() }],
+      acpBindingBySessionId: { active: {
+        sessionId: 'active-native', threadId: '', providerId: 'gemini-cli', protocolKind: 'gemini-acp',
+        running: true, lifecycleState: 'ready', processing: true, processingStartedAtMs: null,
+        readySinceLastSelect: false, lastError: '', recentStderr: '', lastExitCode: null,
+        diagnostics: [], toolCalls: [], planEntries: [], availableModes: [], currentModeId: 'default',
+        availableModels: [], currentModelId: 'cached-model', configOptions: [{ id: 'model', name: 'Model', description: '', category: 'model', currentValue: 'live-config', options: [{ value: 'live-config', name: 'Live Config', description: '' }] }], turnEvents: [], turnUserMessageIndex: -1,
+        turnAssistantMessageIndex: -1, turnSerial: 0, pendingPermission: null, pendingUserInput: null,
+        agentInfo: null, modelsLoading: false, modelRefreshError: '',
+      } },
+      providerModelCatalogs: [{ providerId: 'gemini-cli', workspaceDirectory: '/tmp/project', executionHostId: 'local',
+        availableModels: [{ id: 'cached-model', name: 'Cached Model', description: '' }], currentModelId: '', modelsLoading: true, modelRefreshError: '' }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<NewChatModal />) })
+      expect(host.querySelector('[data-testid="model-options"]')?.textContent).toContain('Cached Model')
+      expect(host.textContent).toContain('Discovering models')
+      expect(optionsSpy.mock.calls.filter(([, , , id]) => id === 'gemini-cli').at(-1)?.[0]).toMatchObject({ currentModelId: undefined, availableModels: [{ id: 'cached-model' }], configOptions: [{ currentValue: 'live-config' }] })
+      act(() => {
+        const binding = { ...useAppStore.getState().acpBindingBySessionId.active }
+        Reflect.deleteProperty(binding, 'availableModels')
+        useAppStore.setState((state) => ({ acpBindingBySessionId: { active: binding }, providerModelCatalogs: state.providerModelCatalogs.map((catalog) => ({ ...catalog, modelsLoading: false })) }))
+      })
+      expect(optionsSpy.mock.calls.filter(([, , , id]) => id === 'gemini-cli').at(-1)?.[0]?.availableModels?.[0].id).toBe('cached-model')
+      await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.getAttribute('aria-label') === 'Refresh models')?.click() })
+      expect(discoverProviderModels).toHaveBeenCalledWith('', 'gemini-cli', '/tmp/project', 'local')
+    } finally {
+      optionsSpy.mockRestore()
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('owns independent refresh state and fresh models in the scoped catalog while a chat stays running', async () => {
+    const discoverProviderModels = vi.fn().mockResolvedValue(true)
+    const live = {
+      sessionId: 'native', threadId: '', providerId: 'gemini-cli', protocolKind: 'gemini-acp',
+      running: true, lifecycleState: 'ready' as const, processing: true, processingStartedAtMs: null,
+      readySinceLastSelect: false, lastError: '', recentStderr: '', lastExitCode: null,
+      diagnostics: [], toolCalls: [], planEntries: [], availableModes: [], currentModeId: 'default',
+      availableModels: [{ id: 'old-model', name: 'Old Model', description: '' }], currentModelId: 'old-model',
+      turnEvents: [], turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, turnSerial: 0,
+      pendingPermission: null, pendingUserInput: null, agentInfo: null, modelsLoading: false, modelRefreshError: '',
+    }
+    useAppStore.setState({
+      discoverProviderModels,
+      sessions: [{ id: 'active', name: 'Active', providerId: 'gemini-cli', folderId: 'project', workspaceDirectory: '/tmp/project', viewMode: 'chat', createdAt: new Date(), updatedAt: new Date() }],
+      acpBindingBySessionId: { active: live },
+      providerModelCatalogs: [{ providerId: 'gemini-cli', workspaceDirectory: '/tmp/project', executionHostId: 'local', currentModelId: '', availableModels: [], modelsLoading: true, modelRefreshError: '' }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<NewChatModal />) })
+      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.getAttribute('aria-label') === 'Discovering models…')?.disabled).toBe(true)
+      act(() => useAppStore.setState((state) => ({ providerModelCatalogs: state.providerModelCatalogs.map((catalog) => ({ ...catalog, modelsLoading: false, availableModels: [{ id: 'fresh-model', name: 'Fresh Model', description: '' }] })) })))
+      expect(host.querySelector('[data-testid="model-options"]')?.textContent).toContain('Fresh Model')
+      act(() => useAppStore.setState((state) => ({ providerModelCatalogs: state.providerModelCatalogs.map((catalog) => ({ ...catalog, modelRefreshError: 'Independent discovery failed.' })) })))
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Independent discovery failed.')
+      await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Retry')?.click() })
+      expect(discoverProviderModels).toHaveBeenCalledWith('', 'gemini-cli', '/tmp/project', 'local')
+      expect(useAppStore.getState().acpBindingBySessionId.active).toEqual(live)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
   it('creates terminal-only Antigravity without requesting structured model discovery', async () => {
@@ -51,7 +347,7 @@ describe('NewChatModal', () => {
       expect(host.textContent).toContain('Creates a terminal chat.')
       expect(host.textContent).not.toContain('Settings > CLI Version')
       expect(discoverProviderModels).not.toHaveBeenCalled()
-      const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')
+      const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')
       expect(create?.disabled).toBe(false)
       await act(async () => { create?.click(); await Promise.resolve() })
       expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'antigravity-cli', '', '', 'cli')
@@ -59,6 +355,21 @@ describe('NewChatModal', () => {
       act(() => root.unmount())
       host.remove()
       useAppStore.setState({ addSession: originalAddSession, discoverProviderModels: originalDiscoverProviderModels })
+    }
+  })
+
+  it('keeps an actual compatibility probe failure visible for a newer unverified version', () => {
+    useAppStore.setState({ cliVersionManager: { providers: [{ providerId: 'gemini-cli', installedVersion: '1.0.0', selectedVersion: '1.0.0', availableVersions: [], preferredVersion: '1.0.0', status: 'untested-newer', message: 'Newer than the verified range.', checkError: 'The executable failed its compatibility probe.', running: false, lastCommand: '', lastOutput: '' }] } })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      expect(host.textContent).toContain('The executable failed its compatibility probe.')
+      expect(host.textContent).not.toContain('Newer than the verified range.')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
     }
   })
 
@@ -70,7 +381,8 @@ describe('NewChatModal', () => {
       document.body.appendChild(host)
       const root = createRoot(host)
       act(() => root.render(<NewChatModal />))
-      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')?.disabled).toBe(false)
+      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')?.disabled).toBe(false)
+      expect(host.textContent).not.toContain('Check Settings > CLI Version.')
       act(() => root.unmount())
       host.remove()
     },
@@ -87,9 +399,9 @@ describe('NewChatModal', () => {
       const root = createRoot(host)
       act(() => root.render(<NewChatModal />))
       expect(host.textContent).toContain('Creates a terminal chat.')
-      await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')!.click() })
+      await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!.click() })
       expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'gemini-cli', '', '', 'cli')
-      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')?.disabled).toBe(false)
+      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')?.disabled).toBe(false)
       act(() => root.unmount())
       host.remove()
     },
@@ -108,6 +420,30 @@ describe('NewChatModal', () => {
 
     expect(discoverProviderModels).not.toHaveBeenCalled()
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not offer a provider disabled on the selected computer, like a build-excluded provider', async () => {
+    const addSession = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ addSession })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
+    const tab = (label: string) => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
+    expect(tab('Gemini')?.getAttribute('aria-pressed')).toBe('true')
+
+    // Switching the open provider off moves New chat and its picker to the next provider in the same render.
+    await act(async () => { useAppStore.setState({ providerAvailability: [{ providerId: 'gemini-cli', executionHostId: 'local', enabled: false }] }) })
+    expect(tab('Gemini')).toBeNull()
+    expect(tab('Codex')?.getAttribute('aria-pressed')).toBe('true')
+    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!.click())
+    expect(addSession.mock.calls[0]?.[2]).toBe('codex-cli')
+
+    // The same provider disabled only on another computer is still offered here.
+    await act(async () => { useAppStore.setState({ providerAvailability: [{ providerId: 'gemini-cli', executionHostId: 'lab', enabled: false }] }) })
+    expect(tab('Gemini')).not.toBeNull()
     act(() => root.unmount())
     host.remove()
   })
@@ -144,8 +480,8 @@ describe('NewChatModal', () => {
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
 
-    const structured = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')
-    const terminal = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')
+    const structured = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')
+    const terminal = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')
     act(() => structured?.click())
     expect(addSession).not.toHaveBeenCalled()
     expect(terminal?.disabled).toBe(true)
@@ -165,31 +501,10 @@ describe('NewChatModal', () => {
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
 
-    const codex = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Codex'))
-    act(() => codex?.click())
-
-    expect(host.querySelector('select[aria-label="Model"]')).toBeNull()
-    const model = host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')!
-    act(() => {
-      model.click()
-    })
-    expect(model.getAttribute('aria-expanded')).toBe('true')
-    const modelList = document.body.querySelector<HTMLElement>('[role="listbox"][aria-label="Model"]')!
-    expect(modelList).toBeTruthy()
-
-    act(() => {
-      modelList.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-    })
-    expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')).toBeNull()
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Codex"]')?.click())
     expect(setNewChatModalOpen).not.toHaveBeenCalled()
 
-    act(() => model.click())
-    expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')).toBeTruthy()
-    act(() => document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
-    expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')).toBeNull()
-
-    act(() => model.click())
-    const gpt = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) =>
+    const gpt = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')).find((option) =>
       option.textContent?.includes('GPT-5.4')
     )
     act(() => gpt?.click())
@@ -201,13 +516,41 @@ describe('NewChatModal', () => {
     )
     act(() => high?.click())
 
-    const create = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Create')
+    const create = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Create chat')
     act(() => create?.click())
 
 	expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', 'gpt-5.4', 'high', 'chat')
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('shows one inline provider and model picker at a fixed height with no popup trigger', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+    expect(host.querySelector('button[aria-label="Model"]')).toBeNull()
+    expect(host.querySelector('button[aria-label="Codex"]')).not.toBeNull()
+    expect(host.querySelector<HTMLElement>('[data-testid="model-options"]')?.style.maxHeight).toBe('400px')
+    expect(host.querySelector('[role="menuitemradio"]')).not.toBeNull()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('filters the new chat model picker with the composer search', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      const search = host.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'no-such-model-xyz')
+        search.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      expect(host.querySelector('[data-testid="model-options"] [role="status"]')?.textContent).toContain('No matching models')
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
   it('defaults to the available workspace when opened globally', () => {
@@ -218,13 +561,58 @@ describe('NewChatModal', () => {
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
 
-    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')
+    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')
     expect(create?.disabled).toBe(false)
     act(() => create?.click())
     expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'gemini-cli', '', '', 'chat')
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('searches sidebar groups and creates in the selected durable workspace', async () => {
+    const addSession = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ addSession, folders: [
+      ...useAppStore.getState().folders,
+      { id: 'backend', name: 'Project', parentId: null, directory: '/tmp/backend', isExpanded: false, createdAt: new Date() },
+    ], resourceCollections: [{ id: 'services', name: 'Services', collapsed: true, references: [
+      { id: 'ref', type: 'workspace-folder', target: 'backend', label: 'Backend' },
+    ] }] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      act(() => host.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Folder"]')!.click())
+      const search = document.querySelector<HTMLInputElement>('[aria-label="Search workspaces"]')!
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'services backend')
+        search.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      expect(document.querySelectorAll('[role="option"]')).toHaveLength(1)
+      act(() => search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })))
+      const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
+      await act(async () => { create.click(); await Promise.resolve() })
+      expect(addSession).toHaveBeenCalledWith('New chat', 'backend', 'gemini-cli', '', '', 'chat')
+      expect(useAppStore.getState().resourceCollections[0].collapsed).toBe(true)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('keeps case-sensitive local workspace model catalogues isolated', () => {
+    useAppStore.setState({ folders: [{ id: 'project', name: 'Project', parentId: null, directory: '/tmp/Project', isExpanded: true, createdAt: new Date() }],
+      providerModelCatalogs: ['/tmp/project', '/tmp/Project'].map((workspaceDirectory, index) => ({
+        providerId: 'gemini-cli', executionHostId: 'local', workspaceDirectory, currentModelId: '', modelsLoading: false, modelRefreshError: '',
+        availableModels: [{ id: `scoped-${index}`, name: index ? 'Correct workspace' : 'Different workspace', description: '' }],
+      })),
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      expect(document.body.textContent).toContain('Correct workspace')
+      expect(document.body.textContent).not.toContain('Different workspace')
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
   it('uses explicit ephemeral discovery on the selected remote host even when a matching chat exists', async () => {
@@ -236,6 +624,7 @@ describe('NewChatModal', () => {
 	  providers: [{ id: 'opencode-cli', name: 'OpenCode CLI', shortName: 'OpenCode', color: '#22c55e', description: '' }],
 	  defaultNewChatProviderId: 'opencode-cli',
 	  providerChatDefaults: { 'opencode-cli': { modelId: 'controller-default', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, reasoningEffort: 'high', serviceTier: '' } },
+      hostScopedSettingsValues: { lab: { defaultNewChatProviderId: 'opencode-cli', providerChatDefaults: { 'opencode-cli': { modelId: '', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, reasoningEffort: '', serviceTier: '' } }, mcpServers: [] } },
 	  sessions: [{
 		id: 'existing-remote-chat',
 		name: 'Existing remote chat',
@@ -287,41 +676,42 @@ describe('NewChatModal', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
-    await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
+    try {
+      await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
 
-    const remoteHost = host.querySelector<HTMLButtonElement>('button[aria-label="Home lab"]')
-    act(() => remoteHost?.click())
-    discoverProviderModels.mockClear()
-    const remoteWorkspace = host.querySelector<HTMLInputElement>('input[placeholder="/absolute/path/on/selected/host"]')!
-	act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(remoteWorkspace, '/srv/project')
-	  remoteWorkspace.dispatchEvent(new Event('input', { bubbles: true }))
-	})
-	expect(discoverProviderModels).not.toHaveBeenCalled()
-	await act(async () => {
-	  Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-		.find((button) => button.textContent === 'Discover remote models')?.click()
-	  await Promise.resolve()
-	})
-	act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
-	const modelMenu = document.body.querySelector('[role="listbox"][aria-label="Model"]')
-	expect(modelMenu?.textContent).toContain('Remote Only')
-	expect(modelMenu?.textContent).not.toContain('Local Only')
-	expect(modelMenu?.textContent).not.toContain('Wrong Case')
-	expect(modelMenu?.textContent).not.toContain('Controller Default')
-	act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
-	  .find((option) => option.textContent?.includes('Remote Only'))?.click())
-    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Create')
-    await act(async () => { create?.click(); await Promise.resolve() })
+      const remoteHost = host.querySelector<HTMLButtonElement>('button[aria-label="Home lab"]')
+      act(() => remoteHost?.click())
+      discoverProviderModels.mockClear()
+      const remoteWorkspace = host.querySelector<HTMLInputElement>('input[placeholder="/absolute/path/on/selected/host"]')!
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(remoteWorkspace, '/srv/project')
+        remoteWorkspace.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      expect(discoverProviderModels).not.toHaveBeenCalled()
+      await act(async () => {
+        Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.getAttribute('aria-label') === 'Discover remote models')?.click()
+        await Promise.resolve()
+      })
+      const modelMenu = host.querySelector('[data-testid="model-options"]')
+      expect(modelMenu?.textContent).toContain('Remote Only')
+      expect(modelMenu?.textContent).not.toContain('Local Only')
+      expect(modelMenu?.textContent).not.toContain('Wrong Case')
+      expect(modelMenu?.textContent).not.toContain('Controller Default')
+      act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
+        .find((option) => option.textContent?.includes('Remote Only'))?.click())
+      const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Create chat')
+      await act(async () => { create?.click(); await Promise.resolve() })
 
-	expect(discoverProviderModels).toHaveBeenCalledWith('', 'opencode-cli', '/srv/project', 'lab')
-    expect(host.textContent).toContain('Computer Use is disabled for remote chats.')
-	expect(host.textContent).not.toContain('A workspace is required')
-    expect(addSession).toHaveBeenCalledWith('New chat', null, 'opencode-cli', 'remote-only', '', 'chat', 'lab', '/srv/project')
-
-    act(() => root.unmount())
-    host.remove()
+      expect(discoverProviderModels).toHaveBeenCalledWith('', 'opencode-cli', '/srv/project', 'lab')
+      expect(host.textContent).toContain('Computer Use is off for remote chats.')
+      expect(host.textContent).not.toContain('A workspace is required')
+      expect(addSession).toHaveBeenCalledWith('New chat', null, 'opencode-cli', 'remote-only', '', 'chat', 'lab', '/srv/project')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
 	it('accepts Windows drive and UNC workspace paths for a ready remote host', async () => {
@@ -343,7 +733,7 @@ describe('NewChatModal', () => {
 	  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Windows PC"]')?.click())
 	  const input = host.querySelector<HTMLInputElement>('input[placeholder="/absolute/path/on/selected/host"]')!
 	  const create = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-		.find((button) => button.textContent === 'Create')!
+		.find((button) => button.textContent === 'Create chat')!
 	  for (const path of ['C:\\work\\project', '\\\\server\\share']) {
 		act(() => {
 		  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, path)
@@ -404,6 +794,69 @@ describe('NewChatModal', () => {
     host.remove()
   })
 
+  it.each(['default', 'explicit'] as const)('keeps new-chat %s reasoning independent of another live chat model', async (selection) => {
+    const previous = useAppStore.getState()
+    const addSession = vi.fn().mockResolvedValue(false)
+    const discoverProviderModels = vi.fn().mockResolvedValue(true)
+    const models = [
+      { id: 'model-a', name: 'Catalog default A', description: 'Provider catalog default.', supportedReasoningEfforts: ['low'], defaultReasoningEffort: 'low' },
+      { id: 'model-b', name: 'Live chat B', description: 'Another chat selected this model.', supportedReasoningEfforts: ['high'], defaultReasoningEffort: 'high' },
+    ]
+    useAppStore.setState({
+      addSession,
+      discoverProviderModels,
+      defaultNewChatProviderId: 'codex-cli',
+      providerChatDefaults: { 'codex-cli': { modelId: '', reasoningEffort: '', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, serviceTier: '' } },
+      sessions: [{ id: 'other-chat', name: 'Other chat', providerId: 'codex-cli', folderId: 'project', workspaceDirectory: '/tmp/project', viewMode: 'chat', createdAt: new Date(), updatedAt: new Date() }],
+      acpBindingBySessionId: { 'other-chat': {
+        sessionId: 'other-native', threadId: '', providerId: 'codex-cli', protocolKind: 'codex-app-server',
+        running: true, lifecycleState: 'ready', processing: true, processingStartedAtMs: null,
+        readySinceLastSelect: false, lastError: '', recentStderr: '', lastExitCode: null,
+        diagnostics: [], toolCalls: [], planEntries: [], availableModes: [], currentModeId: 'default',
+        availableModels: models, currentModelId: 'model-b', turnEvents: [], turnUserMessageIndex: -1,
+        turnAssistantMessageIndex: -1, turnSerial: 1, pendingPermission: null, pendingUserInput: null,
+        agentInfo: null, modelsLoading: false, modelRefreshError: '',
+      } },
+      providerModelCatalogs: [{ providerId: 'codex-cli', workspaceDirectory: '/tmp/project', executionHostId: 'local', availableModels: models, currentModelId: 'model-a', modelsLoading: false, modelRefreshError: '' }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<NewChatModal />) })
+      const selectedLabel = selection === 'default' ? 'Default' : 'Live chat B'
+      const model = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
+        .find((option) => option.querySelector('.uam-np-model__name > span')?.textContent === selectedLabel)
+      expect(model).toBeDefined()
+      act(() => model!.click())
+      expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain(selectedLabel)
+      expect(addSession).not.toHaveBeenCalled()
+      expect(discoverProviderModels).not.toHaveBeenCalled()
+
+      const expectedEffort = selection === 'default' ? 'low' : 'high'
+      const expectedLabel = selection === 'default' ? 'Low' : 'High'
+      const reasoning = host.querySelector<HTMLButtonElement>('button[aria-label="Reasoning effort"]')!
+      expect(reasoning).not.toBeNull()
+      expect.soft(reasoning.textContent).toContain(expectedLabel)
+      act(() => reasoning.click())
+      const list = document.querySelector('[role="listbox"][aria-label="Reasoning effort"]')!
+      expect(list).not.toBeNull()
+      expect.soft(Array.from(list.querySelectorAll('[role="option"]')).map((option) => option.querySelector('span.block')?.textContent)).toEqual([expectedLabel])
+      act(() => list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+
+      const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
+      await act(async () => { create.click() })
+      expect(addSession).toHaveBeenCalledTimes(1)
+      expect.soft(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', selection === 'default' ? '' : 'model-b', expectedEffort, 'chat')
+      expect(useAppStore.getState().acpBindingBySessionId['other-chat'].currentModelId).toBe('model-b')
+      expect(discoverProviderModels).not.toHaveBeenCalled()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState(previous, true)
+    }
+  })
+
   it('creates with the provider-default model and runtime-default effort shown when saved defaults are empty', () => {
     const addSession = vi.fn()
     useAppStore.setState({
@@ -462,12 +915,13 @@ describe('NewChatModal', () => {
 
     const codex = host.querySelector<HTMLButtonElement>('button[aria-label="Codex"]')
     act(() => codex?.click())
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')).find((option) => option.textContent?.includes('Default'))?.click())
 
-    expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.textContent).toContain('Default')
+    expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Default')
     const reasoning = host.querySelector<HTMLButtonElement>('button[aria-label="Reasoning effort"]')!
     expect(reasoning.textContent).toContain('Low')
     const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Create')
+      .find((button) => button.textContent === 'Create chat')
     act(() => create?.click())
 
     expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', '', 'low', 'chat')
@@ -488,7 +942,7 @@ describe('NewChatModal', () => {
     act(() => root.render(<NewChatModal />))
 
     const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Create')!
+      .find((button) => button.textContent === 'Create chat')!
     act(() => {
       create.click()
       create.click()
@@ -526,12 +980,12 @@ describe('NewChatModal', () => {
     act(() => root.render(<NewChatModal />))
 
     const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Create')!
+      .find((button) => button.textContent === 'Create chat')!
     act(() => create.click())
     act(() => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
       ;(host.querySelector('button[aria-label="Close new chat"]') as HTMLButtonElement).click()
-      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).some((button) => button.textContent === 'Cancel')).toBe(false)
+      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Cancel')?.disabled).toBe(true)
       host.firstElementChild?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
@@ -550,14 +1004,14 @@ describe('NewChatModal', () => {
 
   it('dismisses model discovery errors without hiding a new failure or losing retry', async () => {
     let discoveryCalls = 0
-    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+    window.cefQuery = ({ request, onSuccess }) => {
       if (JSON.parse(request).action !== 'discoverProviderModels') {
         onSuccess('{}')
         return
       }
       discoveryCalls += 1
-      if (discoveryCalls === 1) onFailure(500, 'Model discovery failed.')
-      else onSuccess(JSON.stringify({ started: true, pending: true }))
+      expect(JSON.parse(request).payload.chatId).toBe('')
+      onSuccess(JSON.stringify({ started: true, pending: true }))
     }
     useAppStore.setState({
       sessions: [{
@@ -599,7 +1053,7 @@ describe('NewChatModal', () => {
           pendingUserInput: null,
           agentInfo: null,
           modelsLoading: false,
-          modelRefreshError: '',
+          modelRefreshError: 'Model discovery failed.',
         },
       },
     })
@@ -627,14 +1081,14 @@ describe('NewChatModal', () => {
       retry?.click()
       await Promise.resolve()
     })
-    expect(discoveryCalls).toBe(2)
+    expect(discoveryCalls).toBe(1)
 
     act(() => root.unmount())
     host.remove()
     delete window.cefQuery
   })
 
-	it('discovers and displays workspace-scoped models before the first chat exists', async () => {
+	it('displays workspace-scoped models before the first chat and refreshes only explicitly', async () => {
 	  const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
 	  window.cefQuery = ({ request, onSuccess }) => {
 		requests.push(JSON.parse(request))
@@ -658,9 +1112,12 @@ describe('NewChatModal', () => {
 	  const root = createRoot(host)
 	  await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
 
-	  expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.textContent).toContain('Default')
-	  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
-	  expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')?.textContent).toContain('GPT First Chat')
+	  expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Default')
+	  expect(host.querySelector('[data-testid="model-options"]')?.textContent).toContain('GPT First Chat')
+	  expect(requests).toEqual([])
+	  await act(async () => {
+	    Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.getAttribute('aria-label') === 'Refresh models')?.click()
+	  })
 	  expect(requests).toContainEqual(expect.objectContaining({
 		action: 'discoverProviderModels',
 		payload: { chatId: '', providerId: 'codex-cli', workspaceDirectory: '/tmp/project', executionHostId: 'local' },
@@ -673,28 +1130,48 @@ describe('NewChatModal', () => {
 
   it('blocks chat creation and offers to create a workspace when none exists', async () => {
     const browseFolderDirectory = vi.fn().mockResolvedValue('/tmp/New Workspace')
-    const addFolder = vi.fn().mockResolvedValue(true)
+    const addFolder = vi.fn().mockResolvedValue(false)
     useAppStore.setState({ folders: [], newChatFolderId: null, browseFolderDirectory, addFolder })
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
-    expect(host.textContent).toContain('Choose a workspace.')
-    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')?.disabled).toBe(true)
+    expect(host.textContent).not.toContain('Choose a workspace.')
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')?.disabled).toBe(true)
     const createWorkspace = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Choose workspace')
     await act(async () => { createWorkspace?.click(); await Promise.resolve(); await Promise.resolve() })
     expect(addFolder).toHaveBeenCalledWith('New Workspace', null, '/tmp/New Workspace')
+    expect(host.querySelectorAll('[role="alert"]')).toHaveLength(1)
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe('The workspace could not be created. Choose another folder.')
     act(() => root.unmount())
     host.remove()
   })
 
-  it('remembers host workspaces and provider choices without applying local model defaults remotely', async () => {
+  it('uses consistent field labels and a neutral close control', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+    const label = (text: string) => Array.from(host.querySelectorAll<HTMLElement>('div')).find((element) => element.textContent?.trim() === text)
+    expect(label('Runs on')?.style.color).toBe('var(--text-2)')
+    expect(label('Folder')?.tagName).toBe('DIV')
+    expect(host.querySelector<HTMLButtonElement>('[aria-label="Close new chat"]')?.className).toContain('uam-iconbtn--ghost')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('remembers host workspaces and provider choices with explicit remote default overrides', async () => {
     const addSession = vi.fn().mockResolvedValue(false)
     const defaults = { modelId: 'reasoning-model', approvalMode: 'default' as const, commandSafetyTier: 'off' as const, memoryEnabled: true, reasoningEffort: 'high', serviceTier: '' }
     useAppStore.setState({
       addSession,
       defaultNewChatProviderId: 'codex-cli',
       providerChatDefaults: { 'codex-cli': defaults },
+      hostScopedSettingsValues: {
+        lab: { defaultNewChatProviderId: 'codex-cli', providerChatDefaults: { 'codex-cli': { ...defaults, modelId: '', reasoningEffort: '' } }, mcpServers: [] },
+        pc: { defaultNewChatProviderId: 'codex-cli', providerChatDefaults: { 'codex-cli': { ...defaults, modelId: '', reasoningEffort: '' } }, mcpServers: [] },
+      },
       executionHosts: [...useAppStore.getState().executionHosts,
         { id: 'lab', label: 'Home lab', transport: 'ssh', sshAlias: 'lab', runnerStatus: 'ready', runnerVersion: '1', platform: 'linux', architecture: 'x64', lastSeenAt: '' },
         { id: 'pc', label: 'Desktop PC', transport: 'ssh', sshAlias: 'pc', runnerStatus: 'ready', runnerVersion: '1', platform: 'windows', architecture: 'x64', lastSeenAt: '' }],
@@ -707,44 +1184,46 @@ describe('NewChatModal', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
-    await act(async () => { root.render(<NewChatModal />) })
-    const click = (label: string) => act(() => {
-      const button = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.getAttribute('aria-label') === label || (item.getAttribute('role') === 'option' && item.querySelector('span.block')?.textContent === label))!
-      button.click()
-    })
-    const setInput = (label: string, value: string) => act(() => {
-      const input = host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    expect(host.querySelector('[aria-label="Codex"]')?.getAttribute('aria-pressed')).toBe('true')
-    expect(host.querySelector('[aria-label="This computer"]')?.getAttribute('aria-pressed')).toBe('true')
-    setInput('Chat name', 'Keep my draft')
-    click('Home lab')
-    expect(host.querySelector('[aria-label="Model"]')?.textContent).toContain('Default')
-    click('Folder')
-    click('New remote workspace…')
-    setInput('Remote workspace path', '/srv/custom')
-    click('Desktop PC')
-    click('Home lab')
-    expect(host.querySelector<HTMLInputElement>('[aria-label="Remote workspace path"]')?.value).toBe('/srv/custom')
-    expect(host.querySelector<HTMLInputElement>('[aria-label="Remote workspace path"]')?.readOnly).toBe(false)
-    act(() => useAppStore.setState({ folders: [...useAppStore.getState().folders] }))
-    expect(host.querySelector('[aria-label="Home lab"]')?.getAttribute('aria-pressed')).toBe('true')
-    click('This computer')
-    expect(host.querySelector('[aria-label="Model"]')?.textContent).toContain('Reasoning model')
-    expect(host.querySelector('[aria-label="Reasoning effort"]')?.textContent).toContain('High')
-    click('Model')
-    click('Plain model')
-    expect(host.querySelector('[aria-label="Reasoning effort"]')).toBeNull()
-    click('Gemini')
-    click('Codex')
-    expect(host.querySelector('[aria-label="Model"]')?.textContent).toContain('Plain model')
-    await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')!.click() })
-    expect(addSession).toHaveBeenCalledWith('Keep my draft', 'project', 'codex-cli', 'plain-model', '', 'chat')
-    expect(host.querySelector<HTMLInputElement>('[aria-label="Chat name"]')?.value).toBe('Keep my draft')
-    act(() => root.unmount())
-    host.remove()
+    try {
+      await act(async () => { root.render(<NewChatModal />) })
+      const click = (label: string) => act(() => {
+        const button = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.getAttribute('aria-label') === label || (item.getAttribute('role') === 'option' && item.querySelector('span.block')?.textContent === label) || (item.getAttribute('role') === 'menuitemradio' && item.querySelector('.uam-np-model__name > span')?.textContent === label))!
+        button.click()
+      })
+      const setInput = (label: string, value: string) => act(() => {
+        const input = host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      expect(host.querySelector('[aria-label="Codex"]')?.getAttribute('aria-pressed')).toBe('true')
+      expect(host.querySelector('[aria-label="This computer"]')?.getAttribute('aria-pressed')).toBe('true')
+      setInput('Chat name', 'Keep my draft')
+      click('Home lab')
+      expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Default')
+      click('Folder')
+      click('New remote workspace…')
+      setInput('Remote workspace path', '/srv/custom')
+      click('Desktop PC')
+      click('Home lab')
+      expect(host.querySelector<HTMLInputElement>('[aria-label="Remote workspace path"]')?.value).toBe('/srv/custom')
+      expect(host.querySelector<HTMLInputElement>('[aria-label="Remote workspace path"]')?.readOnly).toBe(false)
+      act(() => useAppStore.setState({ folders: [...useAppStore.getState().folders] }))
+      expect(host.querySelector('[aria-label="Home lab"]')?.getAttribute('aria-pressed')).toBe('true')
+      click('This computer')
+      expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Reasoning model')
+      expect(host.querySelector('[aria-label="Reasoning effort"]')?.textContent).toContain('High')
+      click('Plain model')
+      expect(host.querySelector('[aria-label="Reasoning effort"]')).toBeNull()
+      click('Gemini')
+      click('Codex')
+      expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Plain model')
+      await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!.click() })
+      expect(addSession).toHaveBeenCalledWith('Keep my draft', 'project', 'codex-cli', 'plain-model', '', 'chat')
+      expect(host.querySelector<HTMLInputElement>('[aria-label="Chat name"]')?.value).toBe('Keep my draft')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
   it('keeps all five providers selectable and honors the saved provider default', () => {
@@ -775,7 +1254,7 @@ describe('NewChatModal', () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(name, 'Unsent draft')
       name.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')!
+    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
     await act(async () => { create.click() })
     expect(host.textContent).toContain('Connection lost while creating chat.')
     expect(name.value).toBe('Unsent draft')
@@ -799,9 +1278,11 @@ describe('NewChatModal', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
-    const create = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')!
+    const create = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
     expect(create().disabled).toBe(true)
     expect(host.textContent).toContain('Terminal fallback is also unavailable.')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Terminal fallback is also unavailable.')
+    expect((host.querySelector('[role="alert"]') as HTMLElement).style.color).toBe('var(--error)')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Home lab"]')!.click())
     const path = host.querySelector<HTMLInputElement>('[aria-label="Remote workspace path"]')!
     act(() => {
@@ -814,4 +1295,80 @@ describe('NewChatModal', () => {
     act(() => root.unmount())
     host.remove()
   })
+  it('offers automatic routing only for a configured source and preserves explicit creation by default', async () => {
+    const addSession = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ addSession, providerChatDefaults: { 'gemini-cli': { modelId: 'local-account-model', reasoningEffort: 'high', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, serviceTier: '' } }, providerModelCatalogs: [{ providerId: 'gemini-cli', executionHostId: 'local', workspaceDirectory: '/tmp/project', currentModelId: 'local-account-model', modelsLoading: false, modelRefreshError: '', availableModels: [{ id: 'local-account-model', name: 'Local account model', description: '' }] }] })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      const automatic = () => host.querySelector<HTMLButtonElement>('button[aria-label="Automatic"]')!
+      expect(automatic().disabled).toBe(true)
+      const create = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
+      await act(async () => create().click())
+      expect(addSession.mock.calls[0]).toHaveLength(6)
+      act(() => root.render(<NewChatModal key="new-automatic-chat" />))
+      act(() => useAppStore.setState({ executionRouting: { enabled: true, hosts: [{ hostId: 'ssh-a', enabled: true, maxActiveTurns: 2, providers: [{ providerId: 'gemini-cli', connectionIdentity: 'host-v1', providerConfigurationIdentity: 'provider-v1' }], workspaceMappings: [{ sourceFolderId: 'project', sourceDirectory: '/tmp/project', destinationFolderId: 'remote-project' }] }] } }))
+      expect(automatic().disabled).toBe(false)
+      act(() => automatic().click())
+      expect(host.querySelector<HTMLButtonElement>('[role="menuitemradio"]')?.disabled).toBe(true)
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="This computer"]')!.click())
+      expect(host.querySelector<HTMLButtonElement>('[role="menuitemradio"]')?.disabled).toBe(false)
+      expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Local account model')
+      act(() => automatic().click())
+      await act(async () => create().click())
+      expect(addSession).toHaveBeenLastCalledWith('New chat', 'project', 'gemini-cli', undefined, undefined, 'chat', 'local', '/tmp/project', 'automatic')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('passes the captured worktree context and refuses stale context instead of default isolation', async () => {
+    const source = { id: 'source-chat', name: 'Source', viewMode: 'chat' as const, folderId: 'project', createdAt: new Date(), updatedAt: new Date(), executionHostId: 'local', workspaceIsolationKind: 'gitWorktree', workspaceWorktreeDirectory: '/tmp/selected-worktree', workspaceBranchName: 'selected-branch' }
+    const context = { sourceChatId: source.id, expectedWorkspaceDirectory: source.workspaceWorktreeDirectory, expectedExecutionHostId: 'local' }
+    const addSession = vi.fn().mockResolvedValue(false)
+    const query = vi.fn()
+    window.cefQuery = query
+    useAppStore.setState({ sessions: [source], activeSessionId: 'unrelated-chat', newChatFolderId: 'project', newChatWorktreeContext: context, addSession, setNewChatModalOpen: originalSetNewChatModalOpen, gitEnabled: true, gitAutoWorktree: true })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      expect(host.textContent).toContain('Using the selected worktree: selected-branch')
+      expect(host.querySelector('[aria-label="Starting branch"]')).toBeNull()
+      expect(query).not.toHaveBeenCalled()
+      const create = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
+      await act(async () => create().click())
+      expect(addSession).toHaveBeenCalledOnce()
+      expect(addSession.mock.calls[0].slice(6)).toEqual(['local', '', 'explicit', context])
+      act(() => useAppStore.setState({ sessions: [{ ...source, workspaceWorktreeDirectory: '/tmp/replaced-worktree' }] }))
+      expect(useAppStore.getState().newChatWorktreeContext).toBeNull()
+      expect(host.textContent).toContain('The selected worktree changed')
+      expect(create().disabled).toBe(true)
+      await act(async () => create().click())
+      expect(addSession).toHaveBeenCalledOnce()
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Close new chat"]')!.click())
+      expect(useAppStore.getState().newChatWorktreeContext).toBeNull()
+      act(() => useAppStore.getState().setNewChatModalOpen(true, 'project'))
+      expect(useAppStore.getState().newChatWorktreeContext).toBeNull()
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ newChatWorktreeContext: null }); delete window.cefQuery }
+  })
+
+  it('projects a configured SSH host provider and model defaults when opening', async () => {
+    const optionsSpy = vi.spyOn(modelOptions, 'buildModelOptions')
+    useAppStore.setState({
+      folders: [{ id: 'remote-fixture', name: 'Remote', parentId: null, directory: '/private-fixture', executionHostId: 'lab', isExpanded: true, createdAt: new Date() }],
+      newChatFolderId: 'remote-fixture',
+      executionHosts: [{ id: 'lab', label: 'Lab', transport: 'ssh', sshAlias: 'private-fixture', runnerStatus: 'ready', runnerVersion: 'test', platform: 'linux', architecture: 'x64', lastSeenAt: '' }],
+      hostScopedSettingsValues: { lab: { defaultNewChatProviderId: 'codex-cli', providerChatDefaults: { 'codex-cli': { modelId: 'host-model', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, memoryLevel: 'strict', reasoningEffort: 'high', serviceTier: '', smallModelMode: false } }, mcpServers: [] } },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<NewChatModal />))
+      expect(optionsSpy.mock.calls.some(call => call[1] === 'host-model' && call[3] === 'codex-cli')).toBe(true)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      optionsSpy.mockRestore()
+    }
+  })
+
 })

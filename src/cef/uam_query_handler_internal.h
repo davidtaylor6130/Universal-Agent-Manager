@@ -3,6 +3,7 @@
 #include "app/chat_domain_service.h"
 #include "common/models/app_models.h"
 #include "common/config/approval_modes.h"
+#include "common/config/central_provider_configuration.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/memory/memory_levels.h"
 #include "common/provider/provider_ids.h"
@@ -115,7 +116,7 @@ inline ProviderChatDefaults DefaultsFromPayload(const nlohmann::json& value, con
 	{
 		defaults.small_model_mode = *small_model_mode;
 	}
-	defaults.memory_level = uam::memory_levels::Normalize(uam::nlohmann_json::TrimmedStringValueOr(value, "memoryLevel", defaults.memory_level), defaults.memory_enabled);
+	defaults.memory_level = uam::memory_levels::NormalizeSelection(uam::nlohmann_json::TrimmedStringValueOr(value, "memoryLevel", defaults.memory_level), defaults.memory_enabled);
 	defaults.reasoning_effort = uam::nlohmann_json::TrimmedStringValueOr(value, "reasoningEffort", defaults.reasoning_effort);
 	defaults.service_tier = uam::nlohmann_json::TrimmedStringValueOr(value, "serviceTier", defaults.service_tier);
 	return uam::provider_chat_defaults::Normalize(defaults, provider_id);
@@ -141,14 +142,28 @@ inline void ApplyProviderDefaultsToChat(const AppSettings& settings, ChatSession
 	if (settings.central_provider_configuration.enabled)
 	{
 		chat.uam_agent_id = settings.central_provider_configuration.default_agent_id;
-		chat.uam_control_enabled = settings.central_provider_configuration.uam_control_enabled;
 	}
-	ProviderChatDefaults defaults = DefaultsForProvider(settings, chat.provider_id);
+	chat.uam_control_enabled = uam::central_configuration::McpEnabled(settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "uam-mcp", settings.central_provider_configuration.uam_control_enabled);
+	if (chat.routing_mode == "automatic")
+	{
+		chat.routing_inherited_default_fields.clear();
+		for (const char* field : {"modelId", "reviewerModelId", "reasoningEffort", "serviceTier"})
+			if (payload_defaults == nullptr || !payload_defaults->contains(field)) chat.routing_inherited_default_fields.push_back(field);
+	}
+	ProviderChatDefaults defaults = uam::provider_chat_defaults::ForProvider(settings, chat.provider_id, chat.routing_mode == "automatic" ? "" : chat.execution_host_id);
 	if (payload_defaults != nullptr)
 	{
 		defaults = DefaultsFromPayload(*payload_defaults, defaults, chat.provider_id);
 	}
 	uam::provider_chat_defaults::ApplyToChat(chat, std::move(defaults));
+	if (chat.routing_mode == "automatic")
+	{
+		// The assigned computer owns model and account defaults.
+		if (std::ranges::find(chat.routing_inherited_default_fields, "modelId") != chat.routing_inherited_default_fields.end()) chat.model_id.clear();
+		if (std::ranges::find(chat.routing_inherited_default_fields, "reviewerModelId") != chat.routing_inherited_default_fields.end()) chat.reviewer_model_id.clear();
+		if (std::ranges::find(chat.routing_inherited_default_fields, "reasoningEffort") != chat.routing_inherited_default_fields.end()) chat.reasoning_effort.clear();
+		if (std::ranges::find(chat.routing_inherited_default_fields, "serviceTier") != chat.routing_inherited_default_fields.end()) { chat.service_tier.clear(); chat.service_tier_explicit = false; }
+	}
 }
 
 // ---- Chat domain helpers (use ChatDomainService) ----------
@@ -267,7 +282,7 @@ inline void RollbackCreatedChat(uam::AppState& app, const std::string& chat_id, 
 
 	if (delete_storage)
 	{
-		ChatRepository::DeleteChatStorageFiles(app.data_root, chat_id);
+		ChatRepository::DeleteChatStorageFiles(app.data_root, chat_id, "create_rollback");
 	}
 
 	ChatDomainService().SelectChatById(app, previous_selected_chat_id);

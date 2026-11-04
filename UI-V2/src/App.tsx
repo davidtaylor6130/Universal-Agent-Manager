@@ -1,6 +1,8 @@
+import { applyTypography, useTypographyStore } from './store/typographyStore'
 import { MOBILE_COMPANION_ENABLED } from './config/buildFeatures'
 import { lazy, Suspense, useEffect } from 'react'
-import { isCompanionContext } from './ipc/cefBridge'
+import { isCompanionContext, isCefContext } from './ipc/cefBridge'
+import { preloadProviderAllowances } from './services/providerAllowances'
 import { useAppStore } from './store/useAppStore'
 import { installCopySelectionFallback } from './utils/copySelection'
 import { trapModalTab } from './utils/modalFocus'
@@ -11,6 +13,8 @@ const CompanionShell = MOBILE_COMPANION_ENABLED ? lazy(() => import('./component
 const AppShell = lazy(() => import('./components/layout/AppShell').then(({ AppShell }) => ({ default: AppShell })))
 
 export default function App() {
+  const typography = useTypographyStore((state) => state.preferences)
+  useEffect(() => applyTypography(typography), [typography])
   const theme = useAppStore((s) => s.theme)
   const customThemes = useAppStore((s) => s.customThemes)
 
@@ -22,6 +26,9 @@ export default function App() {
   }, [customThemes, theme, resolvedTheme])
 
   useEffect(() => installCopySelectionFallback(), [])
+
+  // Warm the independent account cache while the shell loads, without starting any chat.
+  useEffect(() => { if (isCefContext()) void preloadProviderAllowances('local') }, [])
 
   useEffect(() => {
     document.addEventListener('keydown', trapModalTab, true)

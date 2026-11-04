@@ -17,6 +17,7 @@
 namespace uam::execution_hosts
 {
 	inline constexpr std::string_view kLocalHostId = "local";
+	inline constexpr std::size_t kMaxInstructionTextBytes = 256 * 1024;
 	inline constexpr std::size_t kLinuxRunnerSocketPathCapacity = 108;
 
 	inline ExecutionHost LocalHost()
@@ -24,11 +25,36 @@ namespace uam::execution_hosts
 		return {};
 	}
 
+	/// <summary>Determines whether saving host options must also configure remote startup.</summary>
+	inline bool NeedsStartupConfiguration(const ExecutionHost& current, const ExecutionHost& previous)
+	{
+		return current.startup_enabled != previous.startup_enabled || current.startup_enabled ||
+		       previous.startup_status == "pending";
+	}
+
+	/// <summary>Applies startup confirmation after the host's local options were saved.</summary>
+	inline void ApplyStartupConfigurationResult(ExecutionHost& current, const ExecutionHost& previous, bool succeeded, std::string_view error = {})
+	{
+		current.runner_startup_applied = succeeded ? (current.startup_enabled ? "enabled" : "disabled") : "failed";
+		current.runner_startup_error = succeeded ? "" : std::string(uam::strings::Utf8Prefix(error, 300));
+		if (succeeded) current.startup_status = current.startup_enabled ? "enabled" : "disabled";
+		else
+		{
+			current.startup_enabled = previous.startup_enabled;
+			current.startup_status = "error";
+		}
+	}
+
+	inline bool HasInstallFence(const ExecutionHost& host)
+	{
+		return host.runner_install_unresolved || !host.runner_install_nonce.empty() || !host.runner_install_identity.empty();
+	}
+
 	/// Records a completed probe only while its host configuration and health snapshot remain current.
 	inline bool ApplyHealthObservation(ExecutionHost& current, const ExecutionHost& observed,
 	                                   bool connected, std::string_view timestamp)
 	{
-		if (current != observed) return false;
+		if (current != observed || HasInstallFence(current) || current.runner_status == "installing") return false;
 		current.runner_status = connected ? "ready" : "error";
 		if (connected) current.last_seen_at = timestamp;
 		return true;
@@ -37,9 +63,48 @@ namespace uam::execution_hosts
 	/// Allows read-only directory browsing to retry an installed helper after a transient health failure.
 	inline bool CanBrowseRemoteDirectories(const ExecutionHost& host)
 	{
-		return !host.runner_version.empty() &&
+		return !HasInstallFence(host) && !host.runner_version.empty() &&
 		       (host.runner_status == "ready" || host.runner_status == "offline" ||
 		        host.runner_status == "error");
+	}
+
+	inline bool CanConnectRunner(const ExecutionHost& host)
+	{
+		return host.transport == "ssh" && !HasInstallFence(host) &&
+		       (host.runner_status == "ready" || host.runner_status == "offline" || host.runner_status == "error");
+	}
+
+	inline void BeginInstallFence(ExecutionHost& host, std::string nonce, std::string identity)
+	{
+		host.runner_status = "installing";
+		host.runner_install_unresolved = true;
+		host.runner_install_nonce = std::move(nonce);
+		host.runner_install_identity = std::move(identity);
+	}
+
+	inline void RequireInstallReconciliation(ExecutionHost& host)
+	{
+		host.runner_status = "error";
+		host.runner_install_unresolved = true;
+	}
+
+	inline void ApplyInstallCommit(ExecutionHost& host, bool committed)
+	{
+		if (!committed) RequireInstallReconciliation(host);
+		else { host.runner_status = "ready"; host.runner_install_unresolved = false; host.runner_install_nonce.clear(); host.runner_install_identity.clear(); }
+	}
+
+	/// A confirmed rollback restores the prior host, including its recorded helper checksum, without a settled fence.
+	inline ExecutionHost RestoredPreviousInstallation(ExecutionHost previous)
+	{
+		if (HasInstallFence(previous))
+		{
+			previous.runner_install_unresolved = false;
+			previous.runner_install_nonce.clear();
+			previous.runner_install_identity.clear();
+			if (previous.runner_status == "installing") previous.runner_status = "error";
+		}
+		return previous;
 	}
 
 	/// <summary>Compares connection identity without incidental labels or health timestamps.</summary>
@@ -48,8 +113,10 @@ namespace uam::execution_hosts
 		return left.id == right.id && left.transport == right.transport &&
 		       left.ssh_alias == right.ssh_alias && left.platform == right.platform &&
 		       left.architecture == right.architecture && left.runner_version == right.runner_version &&
-		       left.runner_protocol_version == right.runner_protocol_version &&
-		       left.runner_directory == right.runner_directory && left.instruction_file == right.instruction_file;
+		       left.runner_protocol_version == right.runner_protocol_version && left.runner_sha256 == right.runner_sha256 &&
+		       left.runner_directory == right.runner_directory && left.runner_install_unresolved == right.runner_install_unresolved &&
+		       left.runner_install_nonce == right.runner_install_nonce && left.runner_install_identity == right.runner_install_identity &&
+		       left.instruction_file == right.instruction_file && left.instruction_text == right.instruction_text;
 	}
 
 	inline bool IsPortableId(std::string_view value)
@@ -158,7 +225,7 @@ namespace uam::execution_hosts
 	inline std::string Bounded(std::string_view value, std::size_t maximum)
 	{
 		std::string result = uam::strings::Trim(value);
-		if (result.size() > maximum) result.resize(maximum);
+		result.resize(uam::strings::Utf8Prefix(result, maximum).size());
 		std::erase_if(result, [](unsigned char c) { return c < 0x20 || c == 0x7f; });
 		return result;
 	}
@@ -184,11 +251,15 @@ namespace uam::execution_hosts
 		    host.runner_status != "ready" && host.runner_status != "offline" &&
 		    host.runner_status != "error")
 			host.runner_status = "uninstalled";
+		if (HasInstallFence(host) && host.runner_status != "installing") host.runner_status = "error";
 		host.runner_version = Bounded(host.runner_version, 64);
 		host.platform = Bounded(host.platform, 64);
 		host.architecture = Bounded(host.architecture, 64);
 		host.last_seen_at = Bounded(host.last_seen_at, 64);
 		host.runner_directory = Bounded(host.runner_directory, 240);
+		if (host.runner_sha256.size() != 64 || !std::ranges::all_of(host.runner_sha256, [](unsigned char character)
+		    { return std::isxdigit(character) != 0 && !std::isupper(character); }))
+			host.runner_sha256.clear(); // Unknown, so a packaged helper is offered as a reinstall.
 		if (!IsSafeRunnerDirectory(host.runner_directory))
 		{
 			if (error != nullptr)
@@ -199,6 +270,11 @@ namespace uam::execution_hosts
 		    !IsAbsoluteRemotePath(host.platform, host.instruction_file)))
 		{
 			if (error != nullptr) *error = "Use an absolute instruction file path on this host.";
+			return false;
+		}
+		if (host.instruction_text && host.instruction_text->size() > kMaxInstructionTextBytes)
+		{
+			if (error != nullptr) *error = "Host instruction text exceeds 256 KiB.";
 			return false;
 		}
 		std::ranges::replace(host.runner_directory, '\\', '/');
@@ -250,10 +326,17 @@ namespace uam::execution_hosts
 			    {"architecture", host.architecture}, {"lastSeenAt", host.last_seen_at},
 			    {"runnerDirectory", host.runner_directory},
 			    {"runnerProtocolVersion", host.runner_protocol_version},
+			    {"runnerSha256", host.runner_sha256},
+			    {"runnerInstallUnresolved", host.runner_install_unresolved},
+			    {"runnerInstallNonce", host.runner_install_nonce}, {"runnerInstallIdentity", host.runner_install_identity},
 			    {"instructionFile", host.instruction_file},
+		    {"instructionText", host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr)},
 			    {"startupEnabled", host.startup_enabled}, {"startupStatus", host.startup_status},
+			    {"cliUpdatesAsAdmin", host.cli_updates_as_admin},
 			    {"customIcon", uam::icons::Serialize(host.custom_icon)},
 			});
+			if (host.runner_startup_applied) result.back()["runnerStartupApplied"] = *host.runner_startup_applied;
+			if (!host.runner_startup_error.empty()) result.back()["runnerStartupError"] = host.runner_startup_error;
 		}
 		return result;
 	}
@@ -266,6 +349,8 @@ namespace uam::execution_hosts
 			for (const nlohmann::json& entry : value)
 			{
 				if (!entry.is_object()) continue;
+				if (entry.contains("instructionText") && !entry["instructionText"].is_null() &&
+				    (!entry["instructionText"].is_string() || entry["instructionText"].get_ref<const std::string&>().size() > kMaxInstructionTextBytes)) continue;
 				hosts.push_back({
 				    entry.value("id", ""), entry.value("label", ""), entry.value("transport", "ssh"),
 				    entry.value("sshAlias", ""), entry.value("runnerStatus", "uninstalled"),
@@ -276,7 +361,20 @@ namespace uam::execution_hosts
 				    entry.value("instructionFile", ""), entry.value("startupEnabled", false),
 				    entry.value("startupStatus", "disabled"),
 				    uam::icons::Parse(entry.value("customIcon", nlohmann::json(nullptr))),
+				    entry.value("cliUpdatesAsAdmin", false),
+				    entry.contains("instructionText") && entry["instructionText"].is_string()
+				        ? std::optional<std::string>(entry["instructionText"].get<std::string>()) : std::nullopt,
 				});
+				hosts.back().runner_install_unresolved = entry.contains("runnerInstallUnresolved")
+				    ? (!entry["runnerInstallUnresolved"].is_boolean() || entry["runnerInstallUnresolved"].get<bool>())
+				    : hosts.back().runner_status == "installing";
+				for (const auto& [key, field] : {std::pair{"runnerInstallNonce", &hosts.back().runner_install_nonce}, std::pair{"runnerInstallIdentity", &hosts.back().runner_install_identity}})
+				{
+					if (entry.contains(key) && entry[key].is_string()) *field = entry[key].get<std::string>();
+					else if (entry.contains(key)) hosts.back().runner_install_unresolved = true;
+				}
+				if (!hosts.back().runner_install_nonce.empty() || !hosts.back().runner_install_identity.empty()) hosts.back().runner_install_unresolved = true;
+				if (entry.contains("runnerSha256") && entry["runnerSha256"].is_string()) hosts.back().runner_sha256 = entry["runnerSha256"].get<std::string>();
 			}
 		}
 		Normalize(hosts);

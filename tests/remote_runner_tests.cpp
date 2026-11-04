@@ -1,16 +1,74 @@
+#include "common/usage/antigravity_accounting.h"
 #include "remote/remote_workspace_terminal.h"
 #include "remote/runner_startup.h"
 #include "test_harness.h"
+#include "bootstrap_metadata/windows_command_assertions.h"
+#include "runner_bootstrap_probe_cases.h"
+#include "common/utils/base64.h"
+#include "common/utils/hash_utils.h"
+#include "common/platform/platform_incremental_sha256.h"
+#include "common/usage/usage_collector.h"
 #include "app/uam_control_service.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/provider_setup.h"
 #include "common/provider/provider_native_context.h"
+#include "common/runtime/acp/acp_session_internal.h"
+#include "app/agent_run_ledger.h"
+#include "app/agent_run_scheduler.h"
+#include "common/runtime/acp/claude_quota_continuation.h"
+#include "common/runtime/acp/acp_control_capability_retention.h"
+#include "common/utils/time_utils.h"
+#include "common/runtime/acp/acp_model_json.h"
+#include "common/runtime/structured_framing.h"
+#include "common/chat/acp_prompt_recovery.h"
 #include "remote/runner_service_posix.h"
+#include "injected_acp_input.h"
+
+#include <set>
+
+#if defined(__APPLE__)
+#include <sys/wait.h>
+#endif
 
 using namespace uam_test;
 
 namespace
 {
 	constexpr std::string_view kProcessControlToken = "test-process-control-token";
+	const std::string kBootstrapSourceFingerprint(64, 'b');
+
+	// A deterministic test settings owner acknowledges the acquired nonce/identity.
+	uam::remote::BootstrapResult ExecuteTestBootstrapPlan(const uam::remote::BootstrapPlan& plan, std::stop_token stop = {})
+	{
+		auto acquired = uam::remote::AcquireBootstrapPlan(plan, stop);
+		if (!acquired.ok) return acquired;
+		const auto identity = uam::remote::BootstrapInstallIdentity(plan, acquired);
+		return uam::remote::ExecuteBootstrapPlan(plan, std::move(acquired), plan.nonce, identity, stop);
+	}
+
+	bool WriteBootstrapManifest(const fs::path& runner)
+	{
+		return uam::io::WriteTextFile(runner.parent_path() / "uam-runner.manifest.json",
+		    nlohmann::json{{"sourceFingerprint", kBootstrapSourceFingerprint},
+		        {"protocolVersion", uam::remote::kRunnerProtocolVersion}}.dump());
+	}
+}
+
+std::optional<int> RunRemoteCodexSetupFixture(int argc, char** argv)
+{
+	if (argc < 2 || std::string_view(argv[1]) != "--uam-test-codex-setup") return std::nullopt;
+	std::string line;
+	while (std::getline(std::cin, line)) std::cout << line << std::endl;
+	return 0;
+}
+
+std::optional<int> RunRemoteEmptyArgumentsFixture(int argc, char** argv)
+{
+	if (argc < 2 || std::string_view(argv[1]) != "--uam-test-empty-arguments") return std::nullopt;
+	nlohmann::json arguments = nlohmann::json::array();
+	for (int index = 2; index < argc; ++index) arguments.push_back(argv[index]);
+	std::cout << arguments.dump();
+	return 0;
 }
 
 std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
@@ -31,10 +89,21 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 			log << request.dump() << '\n';
 		}
 		const std::string type = request.value("type", "");
+		if (mode == "handshake-offline" && type == "hello") return 0;
 		nlohmann::json result = nlohmann::json::object();
 		if (mode == "command-lost-start" && type == "process.start") return 0;
 		if (mode == "teardown-lost-reply" && type == "process.closeInput") return 0;
-		if (mode == "command-lost-start" && type == "process.poll")
+		if (mode == "startup-write-exited" && type == "process.poll")
+		{
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			while (!fs::exists(log_path + ".input-sent") && std::chrono::steady_clock::now() < deadline)
+				std::this_thread::yield();
+			const std::string startup_error = "fixture Codex startup: invalid provider configuration\n";
+			result = {{"running", false}, {"exitCode", 23}, {"stdoutBase64", ""},
+			          {"stderrBase64", uam::base64::Encode(startup_error)},
+			          {"stdoutCursor", std::uint64_t{0}}, {"stderrCursor", startup_error.size()}};
+		}
+		else if (mode == "command-lost-start" && type == "process.poll")
 		{
 			++command_poll_count;
 			result = {{"running", command_poll_count == 1}, {"exitCode", 7},
@@ -42,6 +111,22 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 			          {"stderrBase64", uam::base64::Encode(command_poll_count == 1 ? "warning\n" : "")},
 			          {"stdoutCursor", std::uint64_t(command_poll_count == 1 ? 6 : 11)},
 			          {"stderrCursor", std::uint64_t{8}}};
+		}
+		else if (mode == "usage-snapshot" && type == "usage.accounting")
+		{
+			const std::string wire = uam::env::GetNonEmptyString("UAM_TEST_USAGE_SNAPSHOT").value_or("{}");
+			const std::size_t offset = request.value("offset", std::size_t{0});
+			const std::string_view chunk = std::string_view(wire).substr(std::min(offset, wire.size()), 512 * 1024);
+			result = {{"dataBase64", uam::base64::Encode(chunk)}, {"offset", offset}, {"totalBytes", wire.size()},
+			    {"fingerprint", uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(wire))}};
+		}
+		else if ((mode == "native-result-shape" && type == "opencode.native") ||
+		         (mode == "generic-result-shape" && type == "process.poll"))
+		{
+			if (request.value("sessionId", "") != "typed-native-session" || request.value("controlToken", "") != "typed-native-control") return 8;
+			const auto path = uam::env::GetNonEmptyString("UAM_TEST_NATIVE_RESULT_PATH");
+			if (!path) return 7;
+			result = nlohmann::json::parse(ReadFile(uam::paths::PathFromUtf8(*path)));
 		}
 		else if (type == "process.write")
 		{
@@ -79,11 +164,121 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 		    : type == "hello"
 		    ? uam::remote::HandleRunnerRequest(request, "development", &state)
 		    : nlohmann::json{{"id", request["id"]}, {"ok", true}, {"result", result}};
+		if (mode == "native-result-missing" && type == "opencode.native") response.erase("result");
+		if (type == "configuration.prepare") response["result"]["missing"] = nlohmann::json::array();
+		if (mode == "old-gemini-options" && type == "hello") response["capabilities"].erase("geminiThinkingConfiguration");
+		if (mode == "old-claude-options" && type == "hello") response["capabilities"].erase("claudeTerminalFastConfiguration");
 		if (mode == "old-context-capability" && type == "hello") response["capabilities"].erase("providerNativeContext");
+		if (mode == "handshake-version" && type == "hello") response["runnerVersion"] = "incompatible";
+		if (mode == "handshake-protocol" && type == "hello") response["protocolVersion"] = 99;
+		if (mode == "startup-write-exited" && type == "process.write")
+			response = {{"id", request["id"]}, {"ok", false},
+			            {"error", {{"code", "process_exited"}, {"message", "The remote process has exited."}}}};
 		if (!uam::remote::WriteFrame(std::cout, response)) return 5;
 		std::cout.flush();
 	}
 	return 0;
+}
+
+UAM_TEST(RemoteRunnerConnectionAttemptsIgnoreCachedHealthButRejectInvalidConfiguration)
+{
+	ExecutionHost host{"lab", "Lab", "ssh", "lab", "error", "development", "linux", "x86_64", "", "runner", uam::remote::kRunnerProtocolVersion};
+	for (const std::string status : {"ready", "error", "offline"})
+	{
+		host.runner_status = status;
+		UAM_ASSERT(uam::remote::CanAttemptRunnerConnection(host));
+	}
+	const ExecutionHost installed = host;
+	for (int change = 0; change < 10; ++change)
+	{
+		host = installed;
+		switch (change)
+		{
+		case 0: host.runner_status = "uninstalled"; break;
+		case 1: host.runner_status = "installing"; break;
+		case 2: host.runner_status = "disabled"; break;
+		case 3: host.runner_version.clear(); break;
+		case 4: host.runner_protocol_version = 0; break;
+		case 5: host.runner_protocol_version = uam::remote::kRunnerProtocolVersion + 1; break;
+		case 6: host.ssh_alias = "-foreign"; break;
+		case 7: host.runner_directory = "../foreign"; break;
+		case 8: host.transport = "foreign"; break;
+		case 9: host.platform = "foreign"; break;
+		}
+		UAM_ASSERT(!uam::remote::CanAttemptRunnerConnection(host));
+	}
+}
+
+UAM_TEST(RemoteRunnerCachedErrorsStillRequireACompatibleLiveHandshake)
+{
+	TempDir temp("uam-cached-health-handshake");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	for (const std::string status : {"ready", "error", "offline"})
+	for (const std::string mode : {"healthy", "handshake-offline", "handshake-version", "handshake-protocol"})
+	{
+		ExecutionHost host{"lab", "Lab", "ssh", "lab", status, "development", "linux", "x86_64", "", "runner", uam::remote::kRunnerProtocolVersion};
+		UAM_ASSERT(uam::remote::CanAttemptRunnerConnection(host));
+		const fs::path log = temp.root / (status + "-" + mode + ".jsonl");
+		ScopedEnvVar log_env("UAM_TEST_CREATE_LOG", log.string());
+		ScopedEnvVar mode_env("UAM_TEST_CREATE_MODE", mode);
+		uam::remote::RunnerClient client(service,
+		    {service.ResolveCurrentExecutablePath().string(), "--uam-test-remote-opencode-create"}, host.runner_version, host.runner_protocol_version);
+		std::string error;
+		UAM_ASSERT_EQ(client.Connect(&error), mode == "healthy");
+		UAM_ASSERT_EQ(client.IsConnected(), mode == "healthy");
+		client.Disconnect();
+		std::istringstream requests(ReadFile(log));
+		std::string line;
+		int hellos = 0;
+		while (std::getline(requests, line))
+		{
+			UAM_ASSERT_EQ(nlohmann::json::parse(line).at("type").get<std::string>(), "hello");
+			++hellos;
+		}
+		UAM_ASSERT_EQ(hellos, 1);
+	}
+}
+
+UAM_TEST(RemoteCliVersionRecheckCanRecoverAnInstalledHelperWithCachedErrors)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-cached-health-cli-check");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "ssh", "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
+	// Keep this private fixture's executable path independent of the machine's login profile.
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "sh", "#!/bin/sh\nexec /bin/sh -c \"$2\"\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "codex", "#!/bin/sh\nprintf 'checked\\n' >> \"$UAM_TEST_CLI_CHECK_LOG\"\nprintf 'codex-cli 0.162.1\\n'\n"));
+	for (const char* executable : {"ssh", "sh", "codex"})
+		fs::permissions(temp.root / executable, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	ScopedEnvVar path("PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin"));
+	ScopedEnvVar test_runner("UAM_TEST_RUNNER", runner.string());
+	ScopedEnvVar check_log("UAM_TEST_CLI_CHECK_LOG", (temp.root / "checks.txt").string());
+	for (const std::string status : {"error", "offline"})
+	{
+		uam::AppState app;
+		app.data_root = temp.root / status;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ExecutionHost host{"lab", "Lab", "ssh", "lab", status,
+		    std::string(uam::constants::kAppVersion).substr(1), "macos", "arm64", "", "runner", uam::remote::kRunnerProtocolVersion};
+		app.settings.execution_hosts = {host};
+		std::string error;
+		ProviderCliCompatibilityService compatibility;
+		UAM_ASSERT(compatibility.StartProviderVersionCheck(app, uam::provider_ids::kCodexCli, true, host.id, &error));
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (app.runtime_cli_version_check_task.running && std::chrono::steady_clock::now() < deadline)
+		{
+			compatibility.Poll(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(!app.runtime_cli_version_check_task.running);
+		const auto& version = app.runtime_cli_versions_by_provider_id.at(CliProviderVersionStateKey(uam::provider_ids::kCodexCli, host.id));
+		UAM_ASSERT_EQ(version.installed_version, "0.162.1");
+		UAM_ASSERT(version.check_error.empty());
+		UAM_ASSERT_EQ(app.settings.execution_hosts.front().runner_status, "ready");
+	}
+	UAM_ASSERT_EQ(ReadFile(temp.root / "checks.txt"), "checked\nchecked\n");
+#endif
 }
 
 UAM_TEST(RemoteCommandRecoversLostStartWithoutReplayingAndPreservesOutputAndExit)
@@ -408,6 +603,7 @@ UAM_TEST(RemoteNativeHistoryCancellationInterruptsStalledPollAndCleansUp)
 	ExecutionHost host;
 	host.id = "history-lab";
 	host.ssh_alias = "history-lab";
+	host.transport = "ssh";
 	host.platform = "windows";
 	host.runner_status = "ready";
 	host.runner_version = "test";
@@ -714,80 +910,134 @@ UAM_TEST(RemoteRunnerReplaysPolledOutputUntilItIsAcknowledged)
 
 UAM_TEST(RemoteRunnerReclaimsAcknowledgedSpoolPrefixesWithoutChangingCursors)
 {
-#if defined(__APPLE__) || defined(__linux__)
-	uam::remote::RunnerState state(8);
+#if defined(__APPLE__) || defined(__linux__) || defined(_WIN32)
+#if defined(_WIN32)
+	const fs::path spool_parent = PlatformServicesFactory::Instance().process_service
+	    .ResolveCurrentExecutablePath().parent_path();
+	std::set<fs::path> previous_spools;
+	for (const fs::directory_entry& entry : fs::directory_iterator(spool_parent))
+		if (entry.is_directory() && entry.path().filename().string().starts_with("uam-runner-spool-"))
+			previous_spools.insert(entry.path());
+	const std::string session_id(128, 's');
+	const std::vector<std::string> arguments = {"cmd.exe", "/d", "/s", "/c",
+	    "(<nul set /p =12345678)&(<nul set /p =87654321)1>&2&set /p reply=&"
+	    "(<nul set /p =abcdefgh)&(<nul set /p =hgfedcba)1>&2&set /p reply=&"
+	    "(<nul set /p =ABCDEFGH)&(<nul set /p =HGFEDCBA)1>&2"};
+#else
+	const std::string session_id = "rollover";
+	const std::vector<std::string> arguments = {"/bin/sh", "-c",
+	    "printf 12345678; printf 87654321 >&2; read reply; "
+	    "printf abcdefgh; printf hgfedcba >&2; read reply; "
+	    "printf ABCDEFGH; printf HGFEDCBA >&2"};
+#endif
+	std::unique_ptr<uam::remote::RunnerState> state = std::make_unique<uam::remote::RunnerState>(8);
+#if defined(_WIN32)
+	fs::path spool_directory;
+	for (const fs::directory_entry& entry : fs::directory_iterator(spool_parent))
+		if (entry.is_directory() && entry.path().filename().string().starts_with("uam-runner-spool-") &&
+		    !previous_spools.contains(entry.path()))
+		{
+			UAM_ASSERT(spool_directory.empty());
+			spool_directory = entry.path();
+		}
+	UAM_ASSERT(!spool_directory.empty());
+	const fs::path stdout_path = spool_directory / (session_id + ".stdout");
+	const fs::path stderr_path = spool_directory / (session_id + ".stderr");
+	const auto native_path = [](const fs::path& path)
+	{
+		fs::path converted;
+		std::string error;
+		UAM_ASSERT(uam::io::NativeFilePath(path, converted, error));
+		return converted;
+	};
+	if (uam::env::GetNonEmptyString("UAM_TEST_REQUIRE_LONG_SPOOL").value_or("") == "1")
+	{
+		UAM_ASSERT(stdout_path.native().size() > 260);
+		UAM_ASSERT(stderr_path.native().size() > 260);
+	}
+#endif
 	const nlohmann::json started = uam::remote::HandleRunnerRequest(
-	    {{"id", "rollover-start"}, {"type", "process.start"}, {"sessionId", "rollover"},
+	    {{"id", "rollover-start"}, {"type", "process.start"}, {"sessionId", session_id},
 	     {"controlToken", kProcessControlToken}, {"cwd", fs::temp_directory_path().string()},
-	     {"argv", nlohmann::json::array({"/bin/sh", "-c",
-	         "printf 12345678; read reply; printf abcdefgh; read reply; printf ABCDEFGH"})}},
-	    "test-version", &state);
+	     {"argv", arguments}},
+	    "test-version", state.get());
 	UAM_ASSERT(started.value("ok", false));
 	const auto poll = [&](const char* id, std::uint64_t cursor)
 	{
 		return uam::remote::HandleRunnerRequest(
-		    {{"id", id}, {"type", "process.poll"}, {"sessionId", "rollover"},
+		    {{"id", id}, {"type", "process.poll"}, {"sessionId", session_id},
 		     {"controlToken", kProcessControlToken}, {"acknowledgedOutput", true},
-		     {"stdoutCursor", cursor}, {"stderrCursor", std::uint64_t{0}}},
-		    "test-version", &state);
+		     {"stdoutCursor", cursor}, {"stderrCursor", cursor}},
+		    "test-version", state.get());
 	};
 	nlohmann::json first;
 	std::string first_output;
-	for (int attempt = 0; attempt < 100 && first_output.empty(); ++attempt)
+	std::string first_error;
+	for (int attempt = 0; attempt < 100 && (first_output.empty() || first_error.empty()); ++attempt)
 	{
 		first = poll("rollover-poll-1", 0);
 		UAM_ASSERT(first.value("ok", false));
 		UAM_ASSERT(uam::base64::Decode(first["result"].value("stdoutBase64", ""), first_output));
-		if (first_output.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		UAM_ASSERT(uam::base64::Decode(first["result"].value("stderrBase64", ""), first_error));
+		if (first_output.empty() || first_error.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	UAM_ASSERT_EQ(first_output, std::string("12345678"));
+	UAM_ASSERT_EQ(first_error, std::string("87654321"));
 	const std::uint64_t first_cursor = first["result"]["stdoutCursor"].get<std::uint64_t>();
 	UAM_ASSERT_EQ(first_cursor, std::uint64_t{8});
+	UAM_ASSERT_EQ(first["result"]["stderrCursor"].get<std::uint64_t>(), std::uint64_t{8});
 	const nlohmann::json ack = uam::remote::HandleRunnerRequest(
-	    {{"id", "rollover-ack-1"}, {"type", "process.ack"}, {"sessionId", "rollover"},
+	    {{"id", "rollover-ack-1"}, {"type", "process.ack"}, {"sessionId", session_id},
 	     {"controlToken", kProcessControlToken}, {"stdoutCursor", first_cursor},
-	     {"stderrCursor", std::uint64_t{0}}}, "test-version", &state);
+	     {"stderrCursor", first_cursor}}, "test-version", state.get());
 	UAM_ASSERT(ack.value("ok", false));
 	const auto advance = [&](const char* id, std::uint64_t input_sequence)
 	{
 		return uam::remote::HandleRunnerRequest(
-		    {{"id", id}, {"type", "process.write"}, {"sessionId", "rollover"},
-		     {"controlToken", kProcessControlToken}, {"dataBase64", uam::base64::Encode("\n")},
-		     {"inputSequence", input_sequence}}, "test-version", &state);
+		    {{"id", id}, {"type", "process.write"}, {"sessionId", session_id},
+		     {"controlToken", kProcessControlToken}, {"dataBase64", uam::base64::Encode("next\n")},
+		     {"inputSequence", input_sequence}}, "test-version", state.get());
 	};
 	UAM_ASSERT(advance("rollover-write-1", 1).value("ok", false));
 	nlohmann::json second;
 	std::string second_output;
-	for (int attempt = 0; attempt < 100 && second_output.empty(); ++attempt)
+	std::string second_error;
+	for (int attempt = 0; attempt < 100 && (second_output.empty() || second_error.empty()); ++attempt)
 	{
 		second = poll("rollover-poll-2", first_cursor);
 		UAM_ASSERT(second.value("ok", false));
 		UAM_ASSERT(uam::base64::Decode(second["result"].value("stdoutBase64", ""), second_output));
-		if (second_output.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		UAM_ASSERT(uam::base64::Decode(second["result"].value("stderrBase64", ""), second_error));
+		if (second_output.empty() || second_error.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	UAM_ASSERT_EQ(second_output, std::string("abcdefgh"));
+	UAM_ASSERT_EQ(second_error, std::string("hgfedcba"));
 	UAM_ASSERT_EQ(second["result"]["stdoutCursor"].get<std::uint64_t>(), std::uint64_t{16});
+	UAM_ASSERT_EQ(second["result"]["stderrCursor"].get<std::uint64_t>(), std::uint64_t{16});
 	const nlohmann::json duplicate_ack = uam::remote::HandleRunnerRequest(
-	    {{"id", "rollover-ack-replay"}, {"type", "process.ack"}, {"sessionId", "rollover"},
+	    {{"id", "rollover-ack-replay"}, {"type", "process.ack"}, {"sessionId", session_id},
 	     {"controlToken", kProcessControlToken}, {"stdoutCursor", first_cursor},
-	     {"stderrCursor", std::uint64_t{0}}}, "test-version", &state);
+	     {"stderrCursor", first_cursor}}, "test-version", state.get());
 	UAM_ASSERT(duplicate_ack.value("ok", false));
 	const nlohmann::json ack_second = uam::remote::HandleRunnerRequest(
-	    {{"id", "rollover-ack-2"}, {"type", "process.ack"}, {"sessionId", "rollover"},
+	    {{"id", "rollover-ack-2"}, {"type", "process.ack"}, {"sessionId", session_id},
 	     {"controlToken", kProcessControlToken}, {"stdoutCursor", std::uint64_t{16}},
-	     {"stderrCursor", std::uint64_t{0}}}, "test-version", &state);
+	     {"stderrCursor", std::uint64_t{16}}}, "test-version", state.get());
 	UAM_ASSERT(ack_second.value("ok", false));
 	UAM_ASSERT(advance("rollover-write-2", 2).value("ok", false));
 	nlohmann::json third;
 	std::string third_output;
-	for (int attempt = 0; attempt < 100 && third_output.empty(); ++attempt)
+	std::string third_error;
+	for (int attempt = 0; attempt < 100 && (third_output.empty() || third_error.empty()); ++attempt)
 	{
 		third = poll("rollover-poll-3", 16);
 		UAM_ASSERT(third.value("ok", false));
 		UAM_ASSERT(uam::base64::Decode(third["result"].value("stdoutBase64", ""), third_output));
-		if (third_output.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		UAM_ASSERT(uam::base64::Decode(third["result"].value("stderrBase64", ""), third_error));
+		if (third_output.empty() || third_error.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	UAM_ASSERT_EQ(third_output, std::string("ABCDEFGH"));
+	UAM_ASSERT_EQ(third_error, std::string("HGFEDCBA"));
 	for (int attempt = 0; attempt < 100 && third["result"].value("running", true); ++attempt)
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -796,9 +1046,53 @@ UAM_TEST(RemoteRunnerReclaimsAcknowledgedSpoolPrefixesWithoutChangingCursors)
 	}
 	UAM_ASSERT(!third["result"].value("running", true));
 	const nlohmann::json removed = uam::remote::HandleRunnerRequest(
-	    {{"id", "rollover-remove"}, {"type", "process.remove"}, {"sessionId", "rollover"},
-	     {"controlToken", kProcessControlToken}}, "test-version", &state);
+	    {{"id", "rollover-remove"}, {"type", "process.remove"}, {"sessionId", session_id},
+	     {"controlToken", kProcessControlToken}}, "test-version", state.get());
 	UAM_ASSERT(removed.value("ok", false));
+#if defined(_WIN32)
+	UAM_ASSERT(!fs::exists(native_path(stdout_path)));
+	UAM_ASSERT(!fs::exists(native_path(stderr_path)));
+#endif
+	// Leave a restarted process registered so destruction must clean its spools too.
+	const nlohmann::json restarted = uam::remote::HandleRunnerRequest(
+	    {{"id", "rollover-restart"}, {"type", "process.start"}, {"sessionId", session_id},
+	     {"controlToken", kProcessControlToken}, {"cwd", fs::temp_directory_path().string()},
+	     {"argv", arguments}}, "test-version", state.get());
+	UAM_ASSERT(restarted.value("ok", false));
+#if defined(_WIN32)
+	UAM_ASSERT(fs::exists(native_path(stdout_path)));
+	UAM_ASSERT(fs::exists(native_path(stderr_path)));
+#endif
+	state.reset();
+#if defined(_WIN32)
+	UAM_ASSERT(!fs::exists(native_path(stdout_path)));
+	UAM_ASSERT(!fs::exists(native_path(stderr_path)));
+	UAM_ASSERT(!fs::exists(native_path(spool_directory)));
+#endif
+#endif
+}
+
+UAM_TEST(StdioProcessWithInputAcceptsAnEmptyWorkingDirectory)
+{
+#if defined(__APPLE__) || defined(__linux__)
+	// The runner's native OpenCode curl probe passes no working directory; Linux rejected it.
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields process;
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcessWithInput(process, {}, {"/bin/sh", "-c", "cat"}, "empty-cwd-ok", &error));
+	std::string output;
+	std::array<char, 64> buffer{};
+	int exit_code = -1;
+	for (int attempt = 0; attempt < 300; ++attempt)
+	{
+		const std::ptrdiff_t read = service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &error);
+		if (read > 0) { output.append(buffer.data(), static_cast<std::size_t>(read)); continue; }
+		if (service.PollStdioProcessExited(process, &exit_code) && read == 0) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	service.CloseStdioProcessHandles(process);
+	UAM_ASSERT_EQ(exit_code, 0);
+	UAM_ASSERT_EQ(output, std::string("empty-cwd-ok"));
 #endif
 }
 
@@ -965,6 +1259,156 @@ UAM_TEST(RemoteRunnerTransientLeaseReclaimsAnAbandonedLiveProcess)
 	UAM_ASSERT(!state.HasManagedProcesses());
 }
 
+UAM_TEST(RemoteEphemeralDiscoveryLeasePreservesOwnedAuthorityAndDurableChats)
+{
+#if defined(__APPLE__)
+	for (const int kind : {0, 1, 2, 3, 4})
+	{
+		TempDir temp("uam-discovery-lease");
+		const fs::path log = temp.root / "requests.jsonl";
+		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "ssh", "#!/bin/sh\nexec \"$UAM_TEST_CREATE_EXECUTABLE\" --uam-test-remote-opencode-create\n"));
+		fs::permissions(temp.root / "ssh", fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		ScopedEnvVar path("PATH", temp.root.string() + ":/usr/bin:/bin");
+		ScopedEnvVar executable("UAM_TEST_CREATE_EXECUTABLE", PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string());
+		ScopedEnvVar log_env("UAM_TEST_CREATE_LOG", log.string());
+		ScopedEnvVar mode_env("UAM_TEST_CREATE_MODE", "success");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = {ProviderProfileStore::DefaultOpenCodeProfile()};
+		ExecutionHost host{"private-lease", "Private", "ssh", "private-fixture", "ready", "development", "linux", "x86_64", "", "runner", kind == 4 ? 2 : 3};
+		app.settings.execution_hosts.push_back(host);
+		// Version admission and code-mode setup are covered separately from process lease ownership.
+		uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", host.id)];
+		version.execution_host = host;
+		version.checked = true;
+		version.supported = true;
+		version.installed_version = "1.15.13";
+		ChatSession chat;
+		chat.id = "private-lease-chat";
+		chat.provider_id = "opencode-cli";
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = temp.root.string();
+		chat.memory_enabled = false;
+		chat.remote_process_control_token = "private-owned-discovery-token";
+		const bool ephemeral = kind >= 3;
+		if (ephemeral) app.model_discovery_chats.push_back(chat);
+		else app.chats.push_back(chat);
+		ChatSession& launched = ephemeral ? app.model_discovery_chats.front() : app.chats.front();
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.model_discovery_only = kind == 1 || ephemeral;
+		session.ephemeral_model_discovery = ephemeral;
+		session.goal_internal_session = kind == 2;
+		std::string error;
+		// A new chat's pre-launch repository baseline makes this direct Start return false while Pending
+		// (product callers queue and retry); settle it, then drop its runner probe so only the provider launch is inspected.
+		if (!session.model_discovery_only && uam::PrepareChatRepositoryBaseline(app, launched, &error) == uam::ChatBaselineReadiness::Pending)
+			UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Unavailable);
+		error.clear();
+		(void)fs::remove(log);
+		const bool started = uam::acp_detail::StartAcpProcessForChat(app, session, launched, &error);
+		struct Guard
+		{
+			uam::AcpSessionState& session;
+			~Guard()
+			{
+				PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+				PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
+			}
+		} guard{session};
+		if (kind == 4)
+		{
+			UAM_ASSERT(!started && error.find("Update the helper") != std::string::npos);
+			UAM_ASSERT(!session.running && !fs::exists(log));
+			continue;
+		}
+		UAM_ASSERT(started);
+		nlohmann::json start;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		while (start.is_null() && std::chrono::steady_clock::now() < deadline)
+		{
+			std::ifstream requests(log);
+			std::string line;
+			while (std::getline(requests, line))
+			{
+				const nlohmann::json request = nlohmann::json::parse(line, nullptr, false);
+				if (request.is_object() && request.value("type", "") == "process.start") start = request;
+			}
+			if (start.is_null()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT(!start.is_null());
+		UAM_ASSERT_EQ(start.value("controlToken", ""), chat.remote_process_control_token);
+		UAM_ASSERT_EQ(start.value("transientLeaseMs", 0), ephemeral ? 60000 : 0);
+		UAM_ASSERT_EQ(session.remote_output_delivery_token, chat.remote_process_control_token);
+		if (ephemeral) UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, chat.id));
+	}
+#endif
+}
+
+UAM_TEST(RemoteDiscoveryLeaseRenewalIsolationAndExpiredBusyCleanup)
+{
+#if defined(__APPLE__)
+	uam::remote::RunnerState state;
+	const auto request = [&](std::string type, std::string id, std::string token)
+	{
+		return uam::remote::HandleRunnerRequest({{"id", "lease-check"}, {"type", type},
+		    {"sessionId", id}, {"controlToken", token}}, "test-version", &state);
+	};
+	// Pace the lease from observed renewal times, not from sleeps that oversleep on a loaded host.
+	using Clock = std::chrono::steady_clock;
+	constexpr auto kLease = std::chrono::milliseconds(250);
+	Clock::time_point renewed = Clock::now(); // No later than the transient start's own renewal.
+	Clock::time_point renewed_by = renewed;
+	for (const bool transient : {false, true})
+	{
+		nlohmann::json start = {{"id", "lease-start"}, {"type", "process.start"},
+		    {"sessionId", transient ? "discovery" : "user-chat"}, {"controlToken", "owned-token"},
+		    {"cwd", fs::temp_directory_path().string()}, {"argv", {"/bin/sh", "-c", "sleep 10"}}};
+		if (transient) start["transientLeaseMs"] = 250;
+		UAM_ASSERT(uam::remote::HandleRunnerRequest(start, "test-version", &state).value("ok", false));
+		renewed_by = Clock::now();
+	}
+	const auto require_unexpired = [&]()
+	{
+		if (Clock::now() - renewed >= kLease) throw TestFailure("The host stalled this test past the discovery lease; renewal cannot be proven.");
+	};
+	// Owned heartbeats keep the transient process alive for two whole leases.
+	for (const auto begun = renewed; Clock::now() - begun < 2 * kLease;)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		const Clock::time_point before = Clock::now();
+		const nlohmann::json polled = request("process.poll", "discovery", "owned-token");
+		require_unexpired();
+		UAM_ASSERT(polled.value("ok", false) && polled["result"].value("running", false));
+		renewed = before;
+		renewed_by = Clock::now();
+	}
+	// A wrong token is refused while the lease is live and does not renew it.
+	const nlohmann::json denied = request("process.poll", "discovery", "wrong-token");
+	require_unexpired();
+	UAM_ASSERT(!denied.value("ok", true) && denied["error"].value("code", "") == "unauthorized");
+	std::this_thread::sleep_until(renewed_by + kLease + std::chrono::milliseconds(50));
+	UAM_ASSERT(state.HasManagedProcesses());
+	nlohmann::json expired = request("process.poll", "discovery", "owned-token");
+	// Expiry rejects access immediately; owned nonblocking retirement can still need confirmation.
+	const auto cleanup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (!expired.value("ok", true) && expired["error"].value("code", "") == "process_retiring" &&
+	       std::chrono::steady_clock::now() < cleanup_deadline)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		expired = request("process.poll", "discovery", "owned-token");
+	}
+	if (expired.value("ok", true) || expired.value("error", nlohmann::json::object()).value("code", "") != "session_not_found")
+		throw TestFailure("Expired discovery lease poll response: " + expired.dump().substr(0, 2048));
+	UAM_ASSERT(!expired.value("ok", true) && expired["error"].value("code", "") == "session_not_found");
+	const nlohmann::json durable = request("process.poll", "user-chat", "owned-token");
+	UAM_ASSERT(durable.value("ok", false) && durable["result"].value("running", false));
+	UAM_ASSERT(request("process.stop", "user-chat", "owned-token").value("ok", false));
+	UAM_ASSERT(request("process.remove", "user-chat", "owned-token").value("ok", false));
+	UAM_ASSERT(!state.HasManagedProcesses());
+#endif
+}
+
 UAM_TEST(RemoteTerminalUsesAForcedSshPtyAndExecutesOnlyTheEncodedArgv)
 {
 	TempDir temp("uam-terminal-unicode");
@@ -1047,6 +1491,7 @@ UAM_TEST(RemoteRunnerBootstrapUsesOnlyAValidatedSshAliasAndVerifiedUserInstall)
 	TempDir temp("uam-runner-bootstrap-artifact");
 	const fs::path runner = temp.root / "uam-runner";
 	UAM_ASSERT(uam::io::WriteTextFile(runner, "runner"));
+	UAM_ASSERT(WriteBootstrapManifest(runner));
 	uam::remote::BootstrapPlan plan;
 	std::string error;
 	const std::string checksum(64, 'a');
@@ -1060,6 +1505,7 @@ UAM_TEST(RemoteRunnerBootstrapUsesOnlyAValidatedSshAliasAndVerifiedUserInstall)
 	UAM_ASSERT(plan.runner_directory.empty());
 	UAM_ASSERT_EQ(plan.artifacts.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(plan.artifacts.front().sha256, checksum);
+	UAM_ASSERT_EQ(plan.artifacts.front().source_fingerprint, kBootstrapSourceFingerprint);
 	const std::string preview = uam::remote::BootstrapPlanPreview(plan);
 	UAM_ASSERT(preview.find("password") == std::string::npos);
 	UAM_ASSERT(preview.find("identity_file") == std::string::npos);
@@ -1090,6 +1536,34 @@ UAM_TEST(RemoteRunnerBootstrapUsesOnlyAValidatedSshAliasAndVerifiedUserInstall)
 	    "tools/uam/uam-4.5.7-p" +
 	    std::to_string(uam::remote::kRunnerProtocolVersion) + ".sock") !=
 	    std::string::npos);
+}
+
+UAM_TEST(RemoteRunnerBootstrapRejectsMissingMalformedAndIncompatibleSourceManifests)
+{
+	TempDir temp("uam-runner-manifest-validation");
+	const fs::path runner = temp.root / "uam-runner";
+	const fs::path manifest = temp.root / "uam-runner.manifest.json";
+	UAM_ASSERT(uam::io::WriteTextFile(runner, "runner"));
+	uam::remote::BootstrapPlan plan;
+	std::string error;
+	const auto build = [&]()
+	{
+		return uam::remote::BuildBootstrapPlan("fixture", "4.5.7", "manifest",
+		    {{"linux", "x86_64", runner, std::string(64, 'a'), kBootstrapSourceFingerprint}}, plan, &error);
+	};
+	UAM_ASSERT(!build());
+	for (const std::string& bytes : std::vector<std::string>{"{", "[]",
+	    nlohmann::json{{"sourceFingerprint", std::string(64, 'B')}, {"protocolVersion", uam::remote::kRunnerProtocolVersion}}.dump(),
+	    nlohmann::json{{"sourceFingerprint", kBootstrapSourceFingerprint}, {"protocolVersion", 0}}.dump(),
+	    nlohmann::json{{"sourceFingerprint", kBootstrapSourceFingerprint}, {"protocolVersion", "3"}}.dump(),
+	    std::string(4097, ' ')})
+	{
+		UAM_ASSERT(uam::io::WriteTextFile(manifest, bytes));
+		UAM_ASSERT(!build());
+	}
+	UAM_ASSERT(WriteBootstrapManifest(runner));
+	UAM_ASSERT(build());
+	UAM_ASSERT_EQ(plan.artifacts.front().source_fingerprint, kBootstrapSourceFingerprint);
 }
 
 #if defined(__APPLE__)
@@ -1128,7 +1602,7 @@ UAM_TEST(RemoteRunnerPathsFailRecoverablyWhenProcessWorkingDirectoryDisappears)
 	artifact.architecture = "x86_64";
 	artifact.sha256 = std::string(64, 'a');
 	plan.artifacts.push_back(std::move(artifact));
-	const uam::remote::BootstrapResult bootstrap = uam::remote::ExecuteBootstrapPlan(plan);
+	const uam::remote::BootstrapResult bootstrap = ExecuteTestBootstrapPlan(plan);
 	UAM_ASSERT(!bootstrap.ok);
 	UAM_ASSERT_EQ(bootstrap.error,
 	              std::string("The remote setup working directory is unavailable."));
@@ -1141,6 +1615,7 @@ UAM_TEST(RemoteRunnerBootstrapCancellationPreventsSshLaunch)
 	const fs::path ssh = temp.root / "ssh";
 	const fs::path log = temp.root / "ssh.log";
 	UAM_ASSERT(uam::io::WriteTextFile(runner, "unused-runner"));
+	UAM_ASSERT(WriteBootstrapManifest(runner));
 	UAM_ASSERT(uam::io::WriteTextFile(ssh,
 	    "#!/bin/sh\nprintf launched >> \"$UAM_TEST_BOOTSTRAP_LOG\"\nexit 1\n"));
 	fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write |
@@ -1155,7 +1630,7 @@ UAM_TEST(RemoteRunnerBootstrapCancellationPreventsSshLaunch)
 	std::stop_source canceled;
 	canceled.request_stop();
 	const uam::remote::BootstrapResult result =
-	    uam::remote::ExecuteBootstrapPlan(plan, canceled.get_token());
+	    ExecuteTestBootstrapPlan(plan, canceled.get_token());
 	UAM_ASSERT(!result.ok);
 	UAM_ASSERT_EQ(result.error, std::string("Remote setup was canceled."));
 	uam::remote::BootstrapResult installed;
@@ -1174,6 +1649,7 @@ UAM_TEST(RemoteRunnerBootstrapRollbackNeverStopsThePreviousLinuxService)
 	const fs::path ssh = temp.root / "ssh";
 	const fs::path scp = temp.root / "scp";
 	UAM_ASSERT(uam::io::WriteTextFile(runner, "linux-runner"));
+	UAM_ASSERT(WriteBootstrapManifest(runner));
 	UAM_ASSERT(uam::io::WriteTextFile(ssh, R"(#!/bin/sh
 last=
 for arg in "$@"; do last=$arg; done
@@ -1189,21 +1665,24 @@ match=re.search(r"UAM_INSTALL_LOCK_READY:[A-Za-z0-9_.-]+",value)
 print(match.group(0).split(":")[1] if match else "")' "$last")
 if [ -n "$lock_token" ]; then
   printf 'UAM_INSTALL_LOCK_READY:%s\n' "$lock_token"
+  IFS= read -r authorization
+  test "$authorization" = "UAM_INSTALL_AUTHORIZE:$lock_token" || exit 2
   while IFS= read -r request; do
+    request_id=${request%%:*}; request=${request#*:}
     command=$(python3 -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode())' "$request")
     case "$last" in *-EncodedCommand*|*FromBase64String*) command="powershell.exe -EncodedCommand $(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode("utf-16-le")).decode())' "$command") ";; esac
     output=$("$0" "$command" 2>&1); status=$?
     encoded=$(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$output")
-    printf 'UAM_INSTALL_RESULT:%s:%s\n' "$status" "$encoded"
+    printf 'UAM_INSTALL_RESULT:%s:%s:%s\n' "$request_id" "$status" "$encoded"
   done
   exit 0
 fi
 printf '%s\n' "$last" >> "$UAM_TEST_BOOTSTRAP_LOG"
 lines=$(wc -l < "$UAM_TEST_BOOTSTRAP_LOG")
 if [ "$lines" -eq 1 ]; then printf 'Linux\nx86_64\n'; fi
-if [ "$lines" -eq 5 ]; then printf '4.5.7\n'; fi
-if [ "$lines" -eq 6 ]; then printf '%s\n' ")" +
-	    std::to_string(uam::remote::kRunnerProtocolVersion) + R"("; fi
+case "$last" in *" --version") printf '4.5.7\n';; esac
+case "$last" in *" --protocol-version") printf '%s\n' ")" +
+	    std::to_string(uam::remote::kRunnerProtocolVersion) + R"(";; esac
 )"));
 	UAM_ASSERT(uam::io::WriteTextFile(scp, "#!/bin/sh\nexit 0\n"));
 	fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write |
@@ -1224,7 +1703,7 @@ if [ "$lines" -eq 6 ]; then printf '%s\n' ")" +
 	plan.previous_version = "4.4.0";
 	plan.previous_runner_directory = "old-tools/uam";
 	plan.previous_protocol_version = uam::remote::kRunnerProtocolVersion;
-	const uam::remote::BootstrapResult result = uam::remote::ExecuteBootstrapPlan(plan);
+	const uam::remote::BootstrapResult result = ExecuteTestBootstrapPlan(plan);
 	UAM_ASSERT(result.ok);
 	UAM_ASSERT(uam::remote::FinalizeBootstrapPlan(plan, result, false, &error));
 
@@ -1259,12 +1738,17 @@ UAM_TEST(RemoteRunnerBootstrapRollsBackWhenSshLosesActivationAcknowledgement)
 	const fs::path ssh = temp.root / "ssh";
 	const fs::path scp = temp.root / "scp";
 	const fs::path sha256sum = temp.root / "sha256sum";
-	const std::string new_runner = "#!/bin/sh\ncase \"$1\" in stop|start) exit 0;; --version) echo 4.5.7;; --protocol-version) echo " +
+	const std::string new_runner = "#!/bin/sh\ncase \"$1\" in stop|start) exit 0;; --source-fingerprint) echo " + kBootstrapSourceFingerprint + ";; --version) echo 4.5.7;; --protocol-version) echo " +
 	    std::to_string(uam::remote::kRunnerProtocolVersion) + ";; esac\n";
 	const std::string old_runner = "#!/bin/sh\ncase \"$1\" in stop|start) exit 0;; --version) echo 4.4.0;; --protocol-version) echo " +
 	    std::to_string(uam::remote::kRunnerProtocolVersion) + ";; esac\n";
 	UAM_ASSERT(uam::io::WriteTextFile(runner, new_runner));
+	UAM_ASSERT(WriteBootstrapManifest(runner));
 	UAM_ASSERT(uam::io::WriteTextFile(installed, old_runner));
+	const fs::path manifest = installed.parent_path() / "uam-runner.manifest.json";
+	const fs::path checksum = installed.parent_path() / "uam-runner.sha256";
+	UAM_ASSERT(uam::io::WriteTextFile(manifest, "historical manifest bytes\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(checksum, "historical checksum bytes\n"));
 	fs::permissions(installed, fs::perms::owner_read | fs::perms::owner_write |
 	                            fs::perms::owner_exec);
 	UAM_ASSERT(uam::io::WriteTextFile(ssh, R"(#!/bin/sh
@@ -1282,12 +1766,15 @@ match=re.search(r"UAM_INSTALL_LOCK_READY:[A-Za-z0-9_.-]+",value)
 print(match.group(0).split(":")[1] if match else "")' "$last")
 if [ -n "$lock_token" ]; then
   printf 'UAM_INSTALL_LOCK_READY:%s\n' "$lock_token"
+  IFS= read -r authorization
+  test "$authorization" = "UAM_INSTALL_AUTHORIZE:$lock_token" || exit 2
   while IFS= read -r request; do
+    request_id=${request%%:*}; request=${request#*:}
     command=$(python3 -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode())' "$request")
     case "$last" in *-EncodedCommand*|*FromBase64String*) command="powershell.exe -EncodedCommand $(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode("utf-16-le")).decode())' "$command") ";; esac
     output=$("$0" "$command" 2>&1); status=$?
     encoded=$(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$output")
-    printf 'UAM_INSTALL_RESULT:%s:%s\n' "$status" "$encoded"
+    printf 'UAM_INSTALL_RESULT:%s:%s:%s\n' "$request_id" "$status" "$encoded"
   done
   exit 0
 fi
@@ -1323,10 +1810,12 @@ cp "$previous" "$HOME/$destination"
 	    "linux-lab", "4.5.7", "nonce-transport",
 	    {{"linux", "x86_64", runner, std::string(64, 'a')}}, plan, &error,
 	    "tools/uam"));
-	const uam::remote::BootstrapResult result = uam::remote::ExecuteBootstrapPlan(plan);
+	const uam::remote::BootstrapResult result = ExecuteTestBootstrapPlan(plan);
 	UAM_ASSERT(!result.ok);
 	UAM_ASSERT(result.error.find("Verify and activate runner") != std::string::npos);
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(installed), old_runner);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(manifest), std::string("historical manifest bytes\n"));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(checksum), std::string("historical checksum bytes\n"));
 	UAM_ASSERT(!fs::exists(remote_home / "tools/uam/4.5.7/uam-runner.rollback-nonce-transport"));
 	UAM_ASSERT(!fs::exists(remote_home / "tools/uam/4.5.7/uam-runner.activation-nonce-transport"));
 	const std::string commands = uam::io::ReadTextFile(log);
@@ -1344,6 +1833,7 @@ UAM_TEST(RemoteRunnerBootstrapRejectsAnOversizedLinuxSocketBeforeCopy)
 	const fs::path ssh = temp.root / "ssh";
 	const fs::path scp = temp.root / "scp";
 	UAM_ASSERT(uam::io::WriteTextFile(runner, "linux-runner"));
+	UAM_ASSERT(WriteBootstrapManifest(runner));
 	UAM_ASSERT(uam::io::WriteTextFile(ssh, R"(#!/bin/sh
 last=
 for arg in "$@"; do last=$arg; done
@@ -1359,18 +1849,22 @@ match=re.search(r"UAM_INSTALL_LOCK_READY:[A-Za-z0-9_.-]+",value)
 print(match.group(0).split(":")[1] if match else "")' "$last")
 if [ -n "$lock_token" ]; then
   printf 'UAM_INSTALL_LOCK_READY:%s\n' "$lock_token"
+  IFS= read -r authorization
+  test "$authorization" = "UAM_INSTALL_AUTHORIZE:$lock_token" || exit 2
   while IFS= read -r request; do
+    request_id=${request%%:*}; request=${request#*:}
     command=$(python3 -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode())' "$request")
     case "$last" in *-EncodedCommand*|*FromBase64String*) command="powershell.exe -EncodedCommand $(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode("utf-16-le")).decode())' "$command") ";; esac
     output=$("$0" "$command" 2>&1); status=$?
     encoded=$(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$output")
-    printf 'UAM_INSTALL_RESULT:%s:%s\n' "$status" "$encoded"
+    printf 'UAM_INSTALL_RESULT:%s:%s:%s\n' "$request_id" "$status" "$encoded"
   done
   exit 0
 fi
 printf '%s\n' "$last" >> "$UAM_TEST_BOOTSTRAP_LOG"
 case "$last" in
   "uname -s && uname -m") printf 'Linux\nx86_64\n' ;;
+  *'root="$HOME/'*) HOME="$UAM_TEST_RECOVERY_HOME" /bin/sh -c "$last" ;;
   *'socket="$HOME/'*) HOME="$UAM_TEST_LONG_HOME" /bin/sh -c "$last" ;;
   *) exit 9 ;;
 esac
@@ -1387,13 +1881,16 @@ esac
 	ScopedEnvVar scoped_command_log("UAM_TEST_BOOTSTRAP_LOG", command_log.string());
 	ScopedEnvVar scoped_copy_log("UAM_TEST_COPY_LOG", copy_log.string());
 	ScopedEnvVar scoped_long_home("UAM_TEST_LONG_HOME", "/" + std::string(128, 'a'));
+	const fs::path recovery_home = temp.root / "recovery-home";
+	fs::create_directories(recovery_home);
+	ScopedEnvVar scoped_recovery_home("UAM_TEST_RECOVERY_HOME", recovery_home.string());
 	uam::remote::BootstrapPlan plan;
 	std::string error;
 	UAM_ASSERT(uam::remote::BuildBootstrapPlan(
 	    "linux-lab", "4.9.0-alpha-8", "nonce-1",
 	    {{"linux", "x86_64", runner, std::string(64, 'a')}}, plan, &error,
 	    "tools/uam"));
-	const uam::remote::BootstrapResult result = uam::remote::ExecuteBootstrapPlan(plan);
+	const uam::remote::BootstrapResult result = ExecuteTestBootstrapPlan(plan);
 	UAM_ASSERT(!result.ok);
 	UAM_ASSERT(result.error.find("runner socket path too long") != std::string::npos);
 	UAM_ASSERT(!uam::paths::PathExistsNoThrow(copy_log));
@@ -1410,18 +1907,7 @@ UAM_TEST(WindowsBootstrapLockFitsOpenSshCommandLimit)
 	plan.nonce = std::string(64, 'n');
 	plan.runner_directory = std::string(240, 'd');
 	const std::vector<std::string> argv = uam::remote::BuildBootstrapLockArgv(plan, "windows");
-	UAM_ASSERT(!argv.empty());
-	UAM_ASSERT(argv.back().size() < 8000);
-	const std::string marker = "FromBase64String('";
-	const std::size_t start = argv.back().find(marker) + marker.size();
-	const std::size_t end = argv.back().find("'", start);
-	std::string script;
-	UAM_ASSERT(uam::base64::Decode(argv.back().substr(start, end - start), script));
-	UAM_ASSERT(script.find("UAM_INSTALL_LOCK_READY:" + plan.nonce) != std::string::npos);
-	UAM_ASSERT(script.find("install.release-" + plan.nonce) != std::string::npos);
-	UAM_ASSERT(script.find("[Console]::WriteLine('UAM_INSTALL_LOCK_READY:") != std::string::npos);
-	UAM_ASSERT(script.find("finally { try { $installed=Join-Path") != std::string::npos);
-	UAM_ASSERT(script.find("powershell.exe") == std::string::npos);
+	uam_test::bootstrap_command_checks::WindowsLock(plan, argv);
 }
 
 UAM_TEST(RemoteRunnerBootstrapSelectsAndHardensTheWindowsArtifact)
@@ -1432,6 +1918,7 @@ UAM_TEST(RemoteRunnerBootstrapSelectsAndHardensTheWindowsArtifact)
 	const fs::path ssh = temp.root / "ssh";
 	const fs::path scp = temp.root / "scp";
 	UAM_ASSERT(uam::io::WriteTextFile(runner, "windows-runner"));
+	UAM_ASSERT(WriteBootstrapManifest(runner));
 	UAM_ASSERT(uam::io::WriteTextFile(ssh, R"(#!/bin/sh
 last=
 for arg in "$@"; do last=$arg; done
@@ -1452,14 +1939,18 @@ if [ -n "$lock_token" ]; then
   exit 0
 fi
 printf '%s\n' "$last" >> "$UAM_TEST_BOOTSTRAP_LOG"
+python3 -c 'import base64,re,sys
+match=re.search(r"FromBase64String\(\x27([A-Za-z0-9+/=]+)\x27[)]",sys.argv[1])
+if match:
+ value=base64.b64decode(match.group(1)).decode()
+ receipt=re.search(r"UAM_INSTALL_COMMITTED:[A-Za-z0-9_.-]+",value)
+ if receipt: print(receipt.group(0))' "$last"
 case "$last" in
   "uname -s && uname -m") exit 1 ;;
   *-EncodedCommand*)
-    lines=$(wc -l < "$UAM_TEST_BOOTSTRAP_LOG")
-    if [ "$lines" -eq 2 ]; then printf 'Windows\nAMD64\n'; fi
-    if [ "$lines" -eq 5 ]; then printf '4.5.7\n'; fi
-    if [ "$lines" -eq 6 ]; then printf '%s\n' ")" +
-	    std::to_string(uam::remote::kRunnerProtocolVersion) + R"("; fi
+    decoded=$(python3 -c 'import base64,sys;print(base64.b64decode(sys.argv[1]).decode("utf-16-le"))' "${last##* }")
+    case "$decoded" in *PROCESSOR_ARCHITECTURE*) printf 'Windows\nAMD64\n';; *--version*) printf '4.5.7\n';; *--protocol-version*) printf '%s\n' ")" +
+	    std::to_string(uam::remote::kRunnerProtocolVersion) + R"(";; esac
     ;;
 esac
 )"));
@@ -1483,48 +1974,50 @@ esac
 	plan.previous_runner_directory = "old-tools/uam";
 	plan.previous_protocol_version = uam::remote::kRunnerProtocolVersion;
 	const uam::remote::BootstrapResult result =
-	    uam::remote::ExecuteBootstrapPlan(plan);
+	    ExecuteTestBootstrapPlan(plan);
 	UAM_ASSERT(result.ok);
 	UAM_ASSERT_EQ(result.platform, std::string("windows"));
 	UAM_ASSERT_EQ(result.architecture, std::string("x86_64"));
+	UAM_ASSERT(uam::remote::FinalizeBootstrapPlan(plan, result, true, &error));
 	const std::string commands = uam::io::ReadTextFile(log);
 	UAM_ASSERT(commands.find("-EncodedCommand") != std::string::npos);
-	UAM_ASSERT(commands.find("-Command \"") == std::string::npos);
+	UAM_ASSERT(commands.find("-Command \"& ([scriptblock]::Create") != std::string::npos);
 	std::string decoded_commands;
 	std::istringstream command_lines(commands);
 	for (std::string command; std::getline(command_lines, command);)
 	{
+		// Windows OpenSSH runs each command through cmd.exe, which stops at 8191 characters.
+		UAM_ASSERT(command.size() < 8000);
 		const std::string marker = "-EncodedCommand ";
 		const std::size_t offset = command.find(marker);
-		if (offset == std::string::npos) continue;
-		std::string utf16_le;
-		UAM_ASSERT(uam::base64::Decode(command.substr(offset + marker.size()), utf16_le));
-		for (std::size_t index = 0; index + 1 < utf16_le.size(); index += 2)
-			decoded_commands.push_back(utf16_le[index]);
+		if (offset != std::string::npos)
+		{
+			std::string utf16_le;
+			UAM_ASSERT(uam::base64::Decode(command.substr(offset + marker.size()), utf16_le));
+			for (std::size_t index = 0; index + 1 < utf16_le.size(); index += 2)
+				decoded_commands.push_back(utf16_le[index]);
+		}
+		else
+		{
+			const std::string utf8_marker = "FromBase64String('";
+			const std::size_t begin = command.find(utf8_marker);
+			if (begin == std::string::npos) continue;
+			const std::size_t start = begin + utf8_marker.size();
+			const std::size_t end = command.find("'", start);
+			std::string utf8;
+			UAM_ASSERT(uam::base64::Decode(command.substr(start, end - start), utf8));
+			decoded_commands += utf8;
+		}
 		decoded_commands.push_back('\n');
 	}
-	UAM_ASSERT(decoded_commands.find("Get-FileHash") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Copy-Item -LiteralPath $installed -Destination $backup") !=
-	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("New-Item -ItemType File -Path $marker") !=
-	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("if (Test-Path -LiteralPath $marker)") !=
-	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Remove-Item -LiteralPath $marker -Force -ErrorAction Stop") !=
-	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Copy-Item -LiteralPath $backup -Destination $installed -Force -ErrorAction Stop") !=
-	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Runner protocol verification failed") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("old-tools/uam/4.4.0/uam-runner.exe") ==
-	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("& $installed stop") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Previous runner") == std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Start-Sleep -Milliseconds 100") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("if (Test-Path -LiteralPath $file)") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("tools/uam/4.5.7/uam-runner.exe") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Join-Path $HOME 'tools/uam/4.5.7/uam-runner.exe'") !=
-	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("'$HOME") == std::string::npos);
+	uam_test::bootstrap_command_checks::WindowsArtifact(plan, decoded_commands);
+	// Activation retires the host's other idle helpers in its own command after the commit, keeping both under cmd.exe's limit.
+	const std::size_t commit = decoded_commands.rfind("UAM_INSTALL_COMMITTED:nonce-1");
+	const std::size_t retire = decoded_commands.find("$uamCurrent=(Join-Path $HOME 'tools/uam/4.5.7')+'/uam-runner.exe';");
+	UAM_ASSERT(commit != std::string::npos && retire != std::string::npos && commit < retire);
+	UAM_ASSERT(decoded_commands.find('\n', commit) < retire);
+	UAM_ASSERT(decoded_commands.find("UAM_HELPER_RETIRED:", commit) > decoded_commands.find('\n', commit));
+	UAM_ASSERT(decoded_commands.find("UAM_HELPER_RETIRED:", retire) != std::string::npos);
 	UAM_ASSERT(commands.find(runner.string()) == std::string::npos);
 }
 #endif
@@ -1940,6 +2433,8 @@ UAM_TEST(RemoteRunnerProcessInputSequenceIsIdempotent)
 #if defined(_WIN32)
 UAM_TEST(WindowsRemoteRunnerServiceSupportsReconnectConcurrentChatsAndCleanShutdown)
 {
+	TempDir isolated("uam-win-service");
+	ScopedEnvVar service_namespace("UAM_RUNNER_SERVICE_NAMESPACE", isolated.root.string());
 	const fs::path runner =
 	    PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()
 	        .parent_path() / "uam-runner.exe";
@@ -2039,6 +2534,110 @@ UAM_TEST(WindowsRemoteRunnerServiceSupportsReconnectConcurrentChatsAndCleanShutd
 	UAM_ASSERT_EQ(runner_service_exit, 0);
 	second.Disconnect();
 }
+
+UAM_TEST(WindowsHelperActivationRetiresOnlyOtherIdleHelpersAndTheirLoginEntries)
+{
+	TempDir temp("uam-helper-retire");
+	// Process paths are long paths; an 8.3 TEMP spelling would make the script skip every helper unseen.
+	const fs::path root = fs::canonical(temp.root);
+	ScopedEnvVar no_namespace("UAM_RUNNER_SERVICE_NAMESPACE", "");
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path built = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner.exe";
+	UAM_ASSERT(fs::exists(built));
+	const auto install = [&](const std::string& name)
+	{
+		const fs::path executable = root / name / "4.11.0" / "uam-runner.exe";
+		fs::create_directories(executable.parent_path());
+		fs::copy_file(built, executable);
+		return executable;
+	};
+	const fs::path current = install("current"), idle = install("idle"), busy = install("busy"), unregistered = install("unregistered");
+	// The current root's earlier version shares its Run value name, so the value is repointed, not removed.
+	const fs::path previous = root / "current" / "4.10.0" / "uam-runner.exe";
+	const fs::path gone = root / "gone" / "4.10.0" / "uam-runner.exe";
+	// The script exceeds cmd.exe's command-line limit as -EncodedCommand, so run it from a file.
+	int script_index = 0;
+	const auto powershell = [&](const std::string& script)
+	{
+		const fs::path file = temp.root / ("script-" + std::to_string(script_index++) + ".ps1");
+		// No assertion here: cleanup also calls this from a destructor.
+		if (!uam::io::WriteTextFile(file, script)) return ProcessExecutionResult{};
+		return service.ExecuteCommand("powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + file.string() + "\"", 180000);
+	};
+	const auto runner = [&](const fs::path& executable, const std::string& command)
+	{ return service.ExecuteCommand("\"" + executable.string() + "\" " + command, 30000).exit_code; };
+	const std::string run_key = "HKCU:\\Software\\UAM-Tests\\" + service.GenerateUuid() + "\\Run";
+	struct Cleanup
+	{
+		std::function<void()> run;
+		~Cleanup() { run(); }
+	};
+	std::optional<uam::remote::RunnerClient> busy_client;
+	std::vector<uam::platform::StdioProcessPlatformFields> services(4);
+	Cleanup cleanup{[&]
+	{
+		// Runs during unwinding after a failed assertion, so nothing here may throw.
+		try {
+		// The busy helper refuses stop while it owns the waiting command, so release that first.
+		std::string ignored;
+		if (busy_client) { (void)busy_client->CloseProcessInput("retire-busy", &ignored); std::this_thread::sleep_for(std::chrono::milliseconds(500)); (void)busy_client->RemoveProcess("retire-busy", &ignored); busy_client->Disconnect(); }
+		for (const fs::path& executable : {current, idle, busy, unregistered}) (void)runner(executable, "stop");
+		for (auto& fields : services) { service.TerminateStdioProcess(fields, true); service.CloseStdioProcessHandles(fields); }
+		(void)powershell("Remove-Item -LiteralPath '" + fs::path(run_key).parent_path().string() + "' -Recurse -Force -ErrorAction SilentlyContinue");
+		} catch (...) {}
+	}};
+	UAM_ASSERT_EQ(powershell("$key='" + run_key + "'; New-Item -Path $key -Force | Out-Null; "
+	    "foreach ($entry in @(@('uam-runner-current','" + previous.string() + "'),@('uam-runner-idle','" + idle.string() + "'),"
+	    "@('uam-runner-busy','" + busy.string() + "'),@('uam-runner-gone','" + gone.string() + "'),@('Other','" + idle.string() + "'))) "
+	    "{ New-ItemProperty -LiteralPath $key -Name $entry[0] -Value ('\"'+$entry[1]+'\" start') | Out-Null }").exit_code, 0);
+	// ExecuteCommand's kill-on-close job forbids the breakaway `start` uses, so launch each service directly.
+	const std::array<fs::path, 4> executables{current, idle, busy, unregistered};
+	for (std::size_t index = 0; index < executables.size(); ++index)
+	{
+		std::string start_error;
+		UAM_ASSERT(service.StartStdioProcess(services[index], fs::temp_directory_path(), {executables[index].string(), "serve"}, &start_error));
+		service.CloseStdioProcessInput(services[index]);
+		bool ready = false;
+		for (int attempt = 0; attempt < 100 && !ready; ++attempt)
+		{
+			uam::remote::RunnerClient probe(service, {executables[index].string(), "bridge"});
+			ready = probe.Connect(&start_error);
+			if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		}
+		UAM_ASSERT(ready);
+	}
+
+	// A helper that still owns a provider process refuses its own stop and must survive.
+	busy_client.emplace(service, std::vector<std::string>{busy.string(), "bridge"});
+	std::string error;
+	UAM_ASSERT(busy_client->Connect(&error));
+	UAM_ASSERT(busy_client->StartProcess("retire-busy", fs::temp_directory_path(),
+	    {"cmd.exe", "/d", "/v:on", "/s", "/c", "set /p value=& <nul set /p =!value!"}, {}, &error));
+
+	const ProcessExecutionResult retired = powershell("$uamHelperRoot='" + root.string() + "'; $uamRunKey='" + run_key +
+	    "'; $uamCurrent='" + current.string() + "'; " + uam::remote::WindowsHelperRetirementScript() +
+	    "; 'REMAINING:'+(((Get-Item -LiteralPath $uamRunKey).GetValueNames() | Sort-Object) -join ','); "
+	    "'CURRENT:'+(Get-Item -LiteralPath $uamRunKey).GetValue('uam-runner-current')");
+	UAM_ASSERT(retired.output.find("UAM_HELPER_RETIRED:" + idle.string()) != std::string::npos);
+	UAM_ASSERT(retired.output.find("UAM_HELPER_RETIRED:" + gone.string()) != std::string::npos);
+	UAM_ASSERT(retired.output.find("UAM_HELPER_RETIRED:" + previous.string()) != std::string::npos);
+	UAM_ASSERT(retired.output.find("CURRENT:\"" + current.string() + "\" start") != std::string::npos);
+	UAM_ASSERT(retired.output.find("UAM_HELPER_KEPT_CHILDREN:" + busy.string()) != std::string::npos);
+	// A resident helper without a login entry is found from its serve process.
+	UAM_ASSERT(retired.output.find("UAM_HELPER_RETIRED:" + unregistered.string()) != std::string::npos);
+	UAM_ASSERT(retired.output.find("UAM_HELPER_RETIRED:" + current.string()) == std::string::npos);
+	UAM_ASSERT(retired.output.find("UAM_HELPER_KEPT_BUSY:" + current.string()) == std::string::npos);
+	UAM_ASSERT(retired.output.find("UAM_HELPER_RETIREMENT_FAILED") == std::string::npos);
+	UAM_ASSERT(retired.output.find("REMAINING:Other,uam-runner-busy,uam-runner-current") != std::string::npos);
+	for (const fs::path& executable : {idle, unregistered})
+	{
+		uam::remote::RunnerClient stopped_client(service, {executable.string(), "bridge"});
+		UAM_ASSERT(!stopped_client.Connect(&error));
+	}
+	uam::remote::RunnerClient current_client(service, {current.string(), "bridge"});
+	UAM_ASSERT(current_client.Connect(&error));
+	current_client.Disconnect();
+}
 #endif
 
 #if defined(__APPLE__)
@@ -2093,6 +2692,7 @@ UAM_TEST(RemoteGitInitialCommitDoesNotRequireAnExistingIndexFile)
 	ExecutionHost host;
 	host.id = "remote-initial-git";
 	host.label = "Remote initial Git";
+	host.transport = "ssh";
 	host.ssh_alias = "test-host";
 	host.platform = "linux";
 	host.architecture = "arm64";
@@ -2104,11 +2704,31 @@ UAM_TEST(RemoteGitInitialCommitDoesNotRequireAnExistingIndexFile)
 	chat.id = "remote-initial-git-chat";
 	chat.execution_host_id = host.id;
 	chat.workspace_directory = repository.string();
+	app.data_root = temp.root / "data";
+	const uam::VcsCommitService vcs;
+	UAM_ASSERT(vcs.CaptureChatBaseline(app, chat, &error));
+	UAM_ASSERT(!fs::exists(repository / ".git" / "index"));
+	UAM_ASSERT(vcs.Status(app, chat, uam::VcsType::Git, true, "chat").changed_files.empty());
+	UAM_ASSERT(uam::io::WriteTextFile(repository / "first.txt", "changed by chat\n"));
+	const uam::VcsCommitStatus changed = vcs.Status(app, chat, uam::VcsType::Git, true, "chat");
+	UAM_ASSERT(changed.error.empty());
+	UAM_ASSERT_EQ(changed.changed_files.size(), static_cast<std::size_t>(1));
+	const std::string patch = vcs.Diff(app, chat, "first.txt", uam::VcsType::Git, &error, "chat");
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(patch.find("-first") != std::string::npos);
+	UAM_ASSERT(patch.find("+changed by chat") != std::string::npos);
+	UAM_ASSERT(!fs::exists(repository / ".git" / "index"));
 	const uam::VcsCommitResult committed = uam::VcsCommitService().Commit(
 	    app, chat, uam::VcsType::Git, "Initial remote commit", {"first.txt"});
 	if (!committed.ok) throw TestFailure(committed.error);
 	UAM_ASSERT(fs::exists(repository / ".git" / "index"));
 	UAM_ASSERT(RunGitForTest(repository, "log --oneline --grep 'Initial remote commit'"));
+	app.settings.execution_hosts.back().ssh_alias = "changed-host";
+	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, chat, &error) == uam::ChatBaselineReadiness::Pending);
+	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Unavailable);
+	UAM_ASSERT(!vcs.Status(app, chat, uam::VcsType::Git, true, "chat").error.empty());
+	app.settings.execution_hosts.back().ssh_alias = host.ssh_alias;
+	UAM_ASSERT(vcs.Status(app, chat, uam::VcsType::Git, true, "chat").error.empty());
 }
 
 UAM_TEST(RemoteRunnerProxyUsesTheConfiguredVersionAndAttachOnlyNeverStartsOrDuplicates)
@@ -2440,6 +3060,87 @@ UAM_TEST(RemoteRunnerProxyRelaysRealProviderStdioWithoutBlockingTheAppTransport)
 	UAM_ASSERT(reattached.RemoveProcess("acp-proxy-test", &error));
 }
 
+UAM_TEST(RemoteRunnerProxyPreservesFragmentedNativeFramesAndControlReceipts)
+{
+	TempDir temp("uam-runner-framed-proxy");
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+	const fs::path socket = temp.root / "runner.sock";
+	uam::platform::StdioProcessPlatformFields daemon;
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcess(daemon, temp.root, {runner.string(), "serve", "--socket", socket.string()}, &error));
+	struct ProcessGuard
+	{
+		uam::platform::StdioProcessPlatformFields& process;
+		~ProcessGuard()
+		{
+			auto& service = PlatformServicesFactory::Instance().process_service;
+			service.StopStdioProcess(process, true);
+			service.CloseStdioProcessHandles(process);
+		}
+	} daemon_guard{daemon};
+	for (int attempt = 0; attempt < 100 && !fs::exists(socket); ++attempt)
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	UAM_ASSERT(fs::exists(socket));
+	const fs::path ssh = temp.root / "ssh";
+	UAM_ASSERT(uam::io::WriteTextFile(ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge --socket \"$UAM_TEST_SOCKET\"\n"));
+	fs::permissions(ssh, fs::perms::owner_all);
+	const std::string token = "framed-proxy-private-token";
+	const std::string spec = uam::remote::BuildProcessProxySpec("framed-proxy", temp.root,
+	    {"/bin/sh", "-c", "exec cat", "--headless", "--stdio"}, {}, false, token);
+	uam::platform::StdioProcessPlatformFields proxy;
+	UAM_ASSERT(service.StartStdioProcess(proxy, temp.root,
+	    {runner.string(), "proxy", "--alias", "test-host", "--platform", "linux", "--version", std::string(uam::constants::kAppVersion).substr(1), "--protocol", "3"},
+	    &error, {{uam::remote::kRemoteProcessSpecEnvironment, spec},
+	        {"PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin")},
+	        {"UAM_TEST_RUNNER", runner.string()}, {"UAM_TEST_SOCKET", socket.string()}}));
+	ProcessGuard proxy_guard{proxy};
+	const std::string body = nlohmann::json{{"id", 1}, {"method", "test"}, {"params", {{"text", std::string(18000, 'x') + "\nlast"}}}}.dump();
+	const std::string frame = "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+	// A small final read used to trigger the legacy line protocol flush after an
+	// incomplete native frame, losing the retained prefix on the next read.
+	const std::size_t prefix = frame.size() - 7;
+	UAM_ASSERT(service.WriteToStdioProcess(proxy, frame.data(), prefix, &error));
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	UAM_ASSERT(service.WriteToStdioProcess(proxy, frame.data() + prefix, 7, &error));
+	const std::string second = "Content-Length: 8\r\n\r\n{\"id\":2}";
+	const std::string delivery = uam::remote::BuildRemoteInputDeliveryLine(token, "second-frame", second);
+	UAM_ASSERT(service.WriteToStdioProcess(proxy, delivery.data(), delivery.size(), &error));
+	std::string output;
+	std::array<char, 32768> bytes{};
+	const std::string expected = frame + second;
+	const std::string marker = std::string(uam::remote::kRemoteOutputMarkerPrefix) + token + " ";
+	const std::string receipt = std::string(uam::remote::kRemoteInputReceiptPrefix) + token + " second-frame\n";
+	bool received = false;
+	for (int attempt = 0; attempt < 500; ++attempt)
+	{
+		const auto count = service.ReadStdioProcessStdout(proxy, bytes.data(), bytes.size(), &error);
+		if (count > 0) output.append(bytes.data(), static_cast<std::size_t>(count));
+		for (auto start = output.find(marker); start != std::string::npos; start = output.find(marker))
+		{
+			const auto end = output.find('\n', start);
+			if (end == std::string::npos) break;
+			const std::string ack = std::string(uam::remote::kRemoteOutputAckPrefix) + token + " " + output.substr(start + marker.size(), end - start - marker.size()) + "\n";
+			UAM_ASSERT(service.WriteToStdioProcess(proxy, ack.data(), ack.size(), &error));
+			output.erase(start, end - start + 1);
+		}
+		if (auto start = output.find(receipt); start != std::string::npos)
+		{
+			received = true;
+			output.erase(start, receipt.size());
+		}
+		if (received && output == expected) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(received);
+	UAM_ASSERT_EQ(output, expected);
+	uam::remote::RunnerClient client(service, {runner.string(), "bridge", "--socket", socket.string()}, std::string(uam::constants::kAppVersion).substr(1));
+	client.SetProcessControlToken("framed-proxy", token);
+	UAM_ASSERT(client.Connect(&error));
+	UAM_ASSERT(client.StopProcess("framed-proxy", &error));
+	UAM_ASSERT(client.RemoveProcess("framed-proxy", &error));
+}
+
 UAM_TEST(RemoteRunnerProxyStopsAndRemovesTheProviderOnlyOnTheExplicitControlLine)
 {
 	TempDir temp("uam-runner-proxy-stop");
@@ -2554,6 +3255,7 @@ UAM_TEST(RemoteRunnerMcpShimRelaysTheActualUamControlProtocolOverTheSharedServic
 	    "mcp-provider", temp.root, {"/bin/sh", "-c", "sleep 30"}, {}, false,
 	    "mcp-provider-token");
 	uam::platform::StdioProcessPlatformFields proxy;
+	ServiceGuard proxy_guard{proxy};
 	UAM_ASSERT(service.StartStdioProcess(
 	    proxy, temp.root, {runner.string(), "proxy", "--alias", "test-host",
 	                       "--platform", "linux", "--version", runner_version}, &error,
@@ -2566,6 +3268,7 @@ UAM_TEST(RemoteRunnerMcpShimRelaysTheActualUamControlProtocolOverTheSharedServic
 	UAM_ASSERT(service.WriteToStdioProcess(proxy, control_line.data(), control_line.size(), &error));
 
 	uam::platform::StdioProcessPlatformFields shim;
+	ServiceGuard shim_guard{shim};
 	UAM_ASSERT(service.StartStdioProcess(
 	    shim, temp.root,
 	    {runner.string(), "mcp", "--channel", channel_id, "--socket", socket.string()},
@@ -2604,6 +3307,53 @@ UAM_TEST(RemoteRunnerMcpShimRelaysTheActualUamControlProtocolOverTheSharedServic
 		if (!has_goal_response()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	UAM_ASSERT(has_goal_response());
+	output.clear();
+	const std::string initialized = R"({"jsonrpc":"2.0","method":"notifications/initialized"})" "\n";
+	UAM_ASSERT(service.WriteToStdioProcess(shim, initialized.data(), initialized.size(), &error));
+	const std::string list = R"({"jsonrpc":"2.0","id":20,"method":"tools/list"})" "\n";
+	UAM_ASSERT(service.WriteToStdioProcess(shim, list.data(), list.size(), &error));
+	const auto read_response = [&](int id) -> nlohmann::json
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::UamControlService::ProcessPendingRequests(app);
+			const std::ptrdiff_t read = service.ReadStdioProcessStdout(shim, buffer.data(), buffer.size(), &error);
+			if (read > 0) output.append(buffer.data(), static_cast<std::size_t>(read));
+			std::size_t newline = output.find('\n');
+			while (newline != std::string::npos)
+			{
+				const nlohmann::json response = nlohmann::json::parse(output.substr(0, newline), nullptr, false);
+				output.erase(0, newline + 1);
+				if (response.is_object() && response.value("id", -1) == id) return response;
+				newline = output.find('\n');
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		return nullptr;
+	};
+	const nlohmann::json definitions = read_response(20);
+	UAM_ASSERT(definitions.is_object() && definitions.contains("result"));
+	UAM_ASSERT(std::ranges::any_of(definitions["result"]["tools"], [](const nlohmann::json& tool) { return tool.value("name", "") == "user_question"; }));
+	UAM_ASSERT(!app.uam_control_capabilities.front().mcp_connection_id.empty());
+	const std::string question = R"({"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"user_question","arguments":{"question":"Which file should I inspect?","options":["Source","Tests"]}}})" "\n";
+	UAM_ASSERT(service.WriteToStdioProcess(shim, question.data(), question.size(), &error));
+	const std::chrono::steady_clock::time_point question_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	std::optional<uam::AcpPendingUserInputState> pending;
+	while (!pending && std::chrono::steady_clock::now() < question_deadline)
+	{
+		(void)uam::UamControlService::ProcessPendingRequests(app);
+		pending = uam::UamControlService::PendingApprovalForChat(app, app.chats.front().id);
+		if (!pending) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(pending && pending->questions.front().question == "Which file should I inspect?");
+	UAM_ASSERT(pending->questions.front().options.size() == 2 && pending->questions.front().is_other);
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(app, app.chats.front().id, pending->request_id_json,
+	    {{"userQuestion", {"Review the README first"}}}, &error));
+	const nlohmann::json answer = read_response(21);
+	UAM_ASSERT(answer.is_object() && answer.contains("result") && !answer["result"].value("isError", true));
+	UAM_ASSERT_EQ(nlohmann::json::parse(answer["result"]["content"][0]["text"].get<std::string>())["answer"], "Review the README first");
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, app.chats.front().id));
 	// A relay must drain the child's final response after observing its exit.
 	const std::string final_response =
 	    "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":\"" + std::string(128 * 1024 + 7, 'x') + "\"}\n";
@@ -2881,6 +3631,57 @@ UAM_TEST(RemoteTerminalPrivateContextConsumesOnceAndPreservesExecutingHostConfig
 #endif
 }
 
+UAM_TEST(RemoteTerminalPrivateEnvironmentRetainsExecutingHostCliDiscovery)
+{
+#if defined(__APPLE__)
+	TempDir temp("uam-private-cli-path");
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+	const fs::path socket = temp.root / "runner.sock";
+	const fs::path home = temp.root / "home";
+	const fs::path executable = home / ".local/bin/uam-private-cli-fixture";
+	UAM_ASSERT(uam::io::WriteTextFile(executable, "#!/bin/sh\nprintf 'native:%s' \"$UAM_FIXTURE_AUTH\"\n"));
+	fs::permissions(executable, fs::perms::owner_all);
+	uam::platform::StdioProcessPlatformFields server;
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcess(server, temp.root, {runner.string(), "serve", "--socket", socket.string()}, &error));
+	struct Guard
+	{
+		uam::platform::StdioProcessPlatformFields& process;
+		~Guard()
+		{
+			auto& service = PlatformServicesFactory::Instance().process_service;
+			service.StopStdioProcess(process, true);
+			service.CloseStdioProcessHandles(process);
+		}
+	} server_guard{server};
+	for (int attempt = 0; attempt < 100 && !fs::exists(socket); ++attempt) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	UAM_ASSERT(fs::exists(socket));
+	uam::remote::RunnerClient client(service, {runner.string(), "bridge", "--socket", socket.string()});
+	UAM_ASSERT(client.Connect(&error));
+	const std::string channel = "private-cli-environment";
+	UAM_ASSERT(client.OpenChannel(channel, &error, false, 60000));
+	const std::string spec = uam::remote::BuildProcessProxySpec("terminal", temp.root,
+	    {"uam-private-cli-fixture"}, {{"HOME", home.string()}, {"PATH", "/usr/bin:/bin"}, {"UAM_FIXTURE_AUTH", "leased"}});
+	UAM_ASSERT(client.WriteChannel(channel, "desktopToRemote", spec, &error));
+	uam::platform::StdioProcessPlatformFields terminal;
+	UAM_ASSERT(service.StartStdioProcess(terminal, temp.root, {runner.string(), "terminal", "--channel", channel, "--socket", socket.string()}, &error));
+	Guard terminal_guard{terminal};
+	std::string output;
+	std::array<char, 4096> buffer{};
+	int exit_code = -1;
+	for (int attempt = 0; attempt < 300; ++attempt)
+	{
+		const auto count = service.ReadStdioProcessStdout(terminal, buffer.data(), buffer.size(), &error);
+		if (count > 0) output.append(buffer.data(), static_cast<std::size_t>(count));
+		if (service.PollStdioProcessExited(terminal, &exit_code)) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT_EQ(exit_code, 0);
+	UAM_ASSERT_EQ(output, std::string("native:leased"));
+#endif
+}
+
 UAM_TEST(RemoteRunnerHandshakeCancellationBoundsCleanupShutdown)
 {
 #if !defined(_WIN32)
@@ -2985,12 +3786,25 @@ UAM_TEST(RemoteWorkspaceWindowsTerminalEncodesUnicodeDriveAndUncPaths)
 #if defined(__APPLE__)
 namespace
 {
+	std::shared_ptr<uam::remote::BootstrapInstallLease> AcquireAcknowledgedTestLease(uam::remote::BootstrapPlan plan, std::string& error)
+	{
+		plan.steps = {{"probe", {"ssh", plan.ssh_alias, "uname -s && uname -m"}, ""}, {"fallback", {"ssh", plan.ssh_alias, "unused"}, ""}};
+		plan.artifacts = {{"linux", "x86_64", {}, std::string(64,'a'), kBootstrapSourceFingerprint}};
+		auto acquired = uam::remote::AcquireBootstrapPlan(plan);
+		if (!acquired.ok) { error = acquired.error; return {}; }
+		const auto identity = uam::remote::BootstrapInstallIdentity(plan, acquired);
+		if (!uam::remote::RecoverBootstrapInstallation(plan, acquired, plan.nonce, identity)) { error = acquired.error; return {}; }
+		return acquired.install_lease;
+	}
+
 	void WriteBootstrapLockTransport(const fs::path& root)
 	{
 		const std::string python = "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3";
 		const std::string interpreter = fs::exists(python) ? python : "/usr/bin/python3";
 		UAM_ASSERT(uam::io::WriteTextFile(root / "ssh", "#!" + interpreter + R"(
 import os,sys
+if sys.argv[-1]=='uname -s && uname -m':
+ print('Linux\nx86_64'); sys.exit(0)
 with open(os.environ['UAM_TEST_LOCK_PID'],'w') as output: output.write(str(os.getpid()))
 os.execv('/bin/sh',['sh','-c',sys.argv[-1]])
 )"));
@@ -3017,6 +3831,159 @@ sys.stdout.buffer.write(base64.b64decode(value) if '-d' in sys.argv else base64.
 		}
 		return false;
 	}
+
+	void CheckBootstrapMetadataTransaction(std::string_view mode)
+	{
+		TempDir temp("uam-bootstrap-metadata");
+		const fs::path home = fs::path("/tmp") / ("uam-md-" + uam::time::SteadyEpochNanosecondsTokenNow());
+		struct HomeCleanup
+		{
+			fs::path path;
+			~HomeCleanup() { std::error_code error; fs::remove_all(path, error); }
+		} cleanup{home};
+		WriteBootstrapLockTransport(temp.root);
+		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "scp", R"(#!/bin/sh
+previous=
+last=
+for arg in "$@"; do previous=$last; last=$arg; done
+cp "$previous" "$HOME/${last#*:}"
+)"));
+		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "sha256sum", "#!/bin/sh\nexec /usr/bin/shasum -a 256 \"$@\"\n"));
+		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "mv", R"(#!/bin/sh
+if [ "$UAM_TEST_METADATA_MODE" = publication-failure ]; then
+  for arg in "$@"; do case "$arg" in */uam-runner.sha256.new) exit 27;; esac; done
+fi
+exec /bin/mv "$@"
+)"));
+		for (const std::string& name : {"scp", "sha256sum", "mv"}) fs::permissions(temp.root / name, fs::perms::owner_all);
+		ScopedEnvVar path("PATH", temp.root.string() + ":/usr/bin:/bin");
+		ScopedEnvVar scoped_home("HOME", home.string());
+		ScopedEnvVar pid("UAM_TEST_LOCK_PID", (temp.root / "pid").string());
+		ScopedEnvVar scoped_mode("UAM_TEST_METADATA_MODE", std::string(mode));
+		const fs::path runner = temp.root / "uam-runner";
+		const std::string bytes = "#!/bin/sh\ncase \"$1\" in\n"
+		    "stop) echo stop >> \"$HOME/stops\"; test \"$UAM_TEST_METADATA_MODE\" != busy;;\n"
+		    "start) exit 0;;\n--version) echo 4.5.7;;\n--protocol-version) echo " +
+		    std::to_string(uam::remote::kRunnerProtocolVersion) + ";;\n--source-fingerprint) "
+		    "if test \"$UAM_TEST_METADATA_MODE\" = source-mismatch; then echo wrong; else echo " +
+		    kBootstrapSourceFingerprint + "; fi;;\nesac\n";
+		UAM_ASSERT(uam::io::WriteTextFile(runner, bytes));
+		UAM_ASSERT(WriteBootstrapManifest(runner));
+		uam::platform::IncrementalSha256 hash;
+		UAM_ASSERT(hash.Add(bytes));
+		const std::string digest = hash.Finish();
+		UAM_ASSERT_EQ(digest.size(), static_cast<std::size_t>(64));
+		const fs::path directory = home / "r/4.5.7";
+		fs::create_directories(directory);
+		const fs::path installed = directory / "uam-runner";
+		const fs::path manifest = directory / "uam-runner.manifest.json";
+		const fs::path checksum = directory / "uam-runner.sha256";
+		const bool first_install = mode == "rollback-first";
+		const std::string old_runner = "#!/bin/sh\n# prior installed bytes\nexit 0\n";
+		const std::string old_manifest = "historical manifest bytes retained verbatim\n";
+		if (!first_install)
+		{
+			UAM_ASSERT(uam::io::WriteTextFile(installed, old_runner));
+			fs::permissions(installed, fs::perms::owner_all);
+			UAM_ASSERT(uam::io::WriteTextFile(manifest, old_manifest));
+			// A missing prior checksum must stay absent on rollback, not be inferred.
+		}
+		uam::remote::BootstrapPlan plan;
+		std::string error;
+		UAM_ASSERT(uam::remote::BuildBootstrapPlan("fixture", "4.5.7", "metadata",
+		    {{"linux", "x86_64", runner, digest}}, plan, &error, "r"));
+		uam::remote::BootstrapResult result = ExecuteTestBootstrapPlan(plan);
+		const bool rejected = mode == "source-mismatch" || mode == "busy" || mode == "publication-failure";
+		UAM_ASSERT_EQ(result.ok, !rejected);
+		if (result.ok)
+		{
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(installed), bytes);
+			const nlohmann::json published = nlohmann::json::parse(uam::io::ReadTextFile(manifest));
+			UAM_ASSERT_EQ(published["sourceFingerprint"].get<std::string>(), kBootstrapSourceFingerprint);
+			UAM_ASSERT_EQ(published["protocolVersion"].get<int>(), uam::remote::kRunnerProtocolVersion);
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(checksum), digest + "\n");
+			UAM_ASSERT(fs::exists(directory / "uam-runner.activation-metadata"));
+			if (mode == "abandoned")
+			{
+				result.install_lease.reset();
+				UAM_ASSERT(WaitForLockFixture([&]() { return !fs::exists(directory / "uam-runner.activation-metadata") && !fs::exists(directory / "uam-runner.metadata-metadata"); }));
+			}
+			else UAM_ASSERT(uam::remote::FinalizeBootstrapPlan(plan, result, mode == "commit", &error));
+		}
+		if (mode != "commit")
+		{
+			if (first_install) { UAM_ASSERT(!fs::exists(installed)); UAM_ASSERT(!fs::exists(manifest)); }
+			else
+			{
+				UAM_ASSERT_EQ(uam::io::ReadTextFile(installed), old_runner);
+				UAM_ASSERT_EQ(uam::io::ReadTextFile(manifest), old_manifest);
+			}
+			UAM_ASSERT(!fs::exists(checksum));
+		}
+		UAM_ASSERT(!fs::exists(directory / "uam-runner.activation-metadata"));
+		UAM_ASSERT(!fs::exists(directory / "uam-runner.metadata-metadata"));
+		if (mode == "source-mismatch") UAM_ASSERT(!fs::exists(home / "stops"));
+	}
+}
+
+UAM_TEST(RemoteBootstrapPublishesVerifiedLinuxMetadataUnderInstallLease)
+{
+	CheckBootstrapMetadataTransaction("commit");
+}
+
+UAM_TEST(RemoteBootstrapRollsBackLinuxMetadataIncludingPriorAbsence)
+{
+	CheckBootstrapMetadataTransaction("rollback");
+	CheckBootstrapMetadataTransaction("rollback-first");
+}
+
+UAM_TEST(RemoteBootstrapRestoresLinuxMetadataAfterPartialPublication)
+{
+	CheckBootstrapMetadataTransaction("publication-failure");
+}
+
+UAM_TEST(RemoteBootstrapRefusesSourceMismatchAndBusyHelperBeforePublication)
+{
+	CheckBootstrapMetadataTransaction("source-mismatch");
+	CheckBootstrapMetadataTransaction("busy");
+}
+
+UAM_TEST(RemoteBootstrapAbandonedLeaseRestoresLinuxMetadata)
+{
+	CheckBootstrapMetadataTransaction("abandoned");
+}
+
+UAM_TEST(RemoteBootstrapGuardDoesNotLeakInstallLockIntoChildCommands)
+{
+	TempDir temp("uam-bootstrap-no-inherited-lock");
+	WriteBootstrapLockTransport(temp.root);
+	ScopedEnvVar path("PATH", temp.root.string() + ":/usr/bin:/bin");
+	ScopedEnvVar home("HOME", (temp.root / "home").string());
+	ScopedEnvVar pid("UAM_TEST_LOCK_PID", (temp.root / "pid").string());
+	uam::remote::BootstrapPlan plan;
+	plan.ssh_alias = "fixture"; plan.version = "4.11.0"; plan.nonce = "noinherit"; plan.runner_directory = "tools/uam";
+	const std::vector<std::string> argv = uam::remote::BuildBootstrapLockArgv(plan, "linux");
+	std::string error;
+	uam::platform::StdioProcessPlatformFields process;
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const std::unique_ptr<uam::platform::StdioProcessPlatformFields, std::function<void(uam::platform::StdioProcessPlatformFields*)>> cleanup(&process, [&](uam::platform::StdioProcessPlatformFields* fields) { service.StopStdioProcess(*fields, true); service.CloseStdioProcessHandles(*fields); });
+	UAM_ASSERT(service.StartStdioProcess(process, temp.root, argv, &error));
+	std::string output;
+	const auto read_until = [&](std::string_view marker)
+	{
+		return WaitForLockFixture([&]()
+		{
+			std::array<char, 4096> bytes{};
+			const std::ptrdiff_t count = service.ReadStdioProcessStdout(process, bytes.data(), bytes.size(), &error);
+			if (count > 0) output.append(bytes.data(), static_cast<std::size_t>(count));
+			return output.find(marker) != std::string::npos;
+		});
+	};
+	UAM_ASSERT(read_until("UAM_INSTALL_LOCK_READY:noinherit"));
+	const std::string command = "UAM_INSTALL_AUTHORIZE:noinherit\n1:" + uam::base64::Encode("test ! -e /dev/fd/9") + "\n";
+	UAM_ASSERT(service.WriteToStdioProcess(process, command.data(), command.size(), &error));
+	UAM_ASSERT(read_until("UAM_INSTALL_RESULT:"));
+	UAM_ASSERT(output.find("UAM_INSTALL_RESULT:1:0:") != std::string::npos);
 }
 
 UAM_TEST(RemoteBootstrapLockCompetingAliasesShareTargetRootAndRecoverAfterRelease)
@@ -3060,18 +4027,32 @@ UAM_TEST(RemoteBootstrapLockRecoversKilledGuardReceiptWithoutTouchingCommittedVe
 	const fs::path installed = root / "4.9.0/uam-runner";
 	const fs::path backup = root / "4.9.0/uam-runner.rollback-crashed";
 	const fs::path marker = root / "4.9.0/uam-runner.activation-crashed";
+	const fs::path metadata = root / "4.9.0/uam-runner.metadata-crashed";
+	const fs::path manifest = installed.parent_path() / "uam-runner.manifest.json";
+	const fs::path checksum = installed.parent_path() / "uam-runner.sha256";
 	const std::string old = "#!/bin/sh\n# old runner\nexit 0\n";
 	UAM_ASSERT(uam::io::WriteTextFile(installed, "#!/bin/sh\n# new runner\nexit 0\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(backup, old));
 	fs::permissions(installed, fs::perms::owner_all); fs::permissions(backup, fs::perms::owner_all);
 	UAM_ASSERT(uam::io::WriteTextFile(marker, ""));
+	fs::create_directory(metadata);
+	UAM_ASSERT(uam::io::WriteTextFile(metadata / "uam-runner.manifest.json", "previous manifest\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(metadata / "ready", ""));
+	UAM_ASSERT(uam::io::WriteTextFile(manifest, "candidate manifest\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(checksum, "candidate checksum\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(root / "install.transaction", "4.9.0\ncrashed\n3\n"));
 	const pid_t guard_pid = static_cast<pid_t>(std::stoi(uam::io::ReadTextFile(temp.root / "pid")));
 	UAM_ASSERT_EQ(kill(guard_pid, SIGKILL), 0);
 	owner.reset();
 	plan.nonce = "next";
 	UAM_ASSERT(WaitForLockFixture([&]() { owner = uam::remote::AcquireBootstrapInstallLease(plan, "linux", error); return owner != nullptr; }));
+	UAM_ASSERT(fs::exists(marker) && fs::exists(metadata));
+	owner.reset();
+	UAM_ASSERT(WaitForLockFixture([&]() { owner = AcquireAcknowledgedTestLease(plan, error); return owner != nullptr; }));
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(installed), old);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(manifest), std::string("previous manifest\n"));
+	UAM_ASSERT(!fs::exists(checksum));
+	UAM_ASSERT(!fs::exists(metadata));
 	UAM_ASSERT(!fs::exists(marker)); UAM_ASSERT(!fs::exists(backup));
 	owner.reset();
 	UAM_ASSERT(uam::io::WriteTextFile(root / "install.transaction", "4.9.0\ncommitted\n3\n"));
@@ -3089,7 +4070,7 @@ UAM_TEST(RemoteBootstrapAbandonedUiResultRollsBackWithoutWaitingOnTheOwnerThread
 	uam::remote::BootstrapPlan plan;
 	plan.ssh_alias = "host-first"; plan.version = "4.9.0"; plan.nonce = "abandoned"; plan.runner_directory = "tools/uam";
 	std::string error;
-	std::shared_ptr<uam::remote::BootstrapInstallLease> owner = uam::remote::AcquireBootstrapInstallLease(plan, "linux", error);
+	std::shared_ptr<uam::remote::BootstrapInstallLease> owner = AcquireAcknowledgedTestLease(plan, error);
 	if (owner == nullptr) throw std::runtime_error(error);
 	const fs::path root = temp.root / "home/tools/uam/4.9.0";
 	const fs::path installed = root / "uam-runner";
@@ -3108,27 +4089,36 @@ UAM_TEST(RemoteBootstrapAbandonedUiResultRollsBackWithoutWaitingOnTheOwnerThread
 UAM_TEST(RemoteContextReadUsesTargetFilesAndRejectsUnsafeOrUnboundedInputs)
 {
 	TempDir temp("uam-remote-context");
-	uam::remote::RunnerState state;
-	const fs::path file = fs::canonical(temp.root) / "host instructions.md";
-	UAM_ASSERT(uam::io::WriteTextFile(file, "Host instructions\n"));
-	const auto read = [&state](const fs::path& path)
+	for (const std::pair<std::string, std::string>& names :
+	     std::vector<std::pair<std::string, std::string>>{{"ASCII workspace", "host instructions.md"}, {"Unicode café workspace", "host café instructions.md"}})
 	{
-		return uam::remote::HandleRunnerRequest({{"id", "context"}, {"type", "context.read"},
-		    {"path", uam::paths::Utf8PathString(path)}}, "4.9.0", &state);
-	};
-	UAM_ASSERT_EQ(read(file)["result"].value("text", ""), "Host instructions\n");
-	UAM_ASSERT(!read("relative.md").value("ok", true));
-	UAM_ASSERT(!read(temp.root / "missing.md").value("ok", true));
-	UAM_ASSERT(!read(temp.root).value("ok", true));
-	UAM_ASSERT(uam::io::WriteTextFile(file, std::string(256 * 1024 + 1, 'x')));
-	UAM_ASSERT_EQ(read(file)["error"].value("code", ""), "too_large");
-	UAM_ASSERT(uam::io::WriteTextFile(file, std::string("bad\0text", 8)));
-	UAM_ASSERT(!read(file).value("ok", true));
+		uam::remote::RunnerState state;
+		const fs::path workspace = fs::canonical(temp.root) / uam::paths::PathFromUtf8(names.first);
+		UAM_ASSERT(fs::create_directory(workspace));
+		const fs::path file = workspace / uam::paths::PathFromUtf8(names.second);
+		UAM_ASSERT(uam::io::WriteTextFile(file, "Host instructions\n"));
+		const auto read = [&state](const fs::path& path)
+		{
+			return uam::remote::HandleRunnerRequest({{"id", "context"}, {"type", "context.read"},
+			    {"path", uam::paths::Utf8PathString(path)}}, "4.9.0", &state);
+		};
+		UAM_ASSERT_EQ(read(file)["result"].value("text", ""), "Host instructions\n");
+		UAM_ASSERT(!read("relative.md").value("ok", true));
+		UAM_ASSERT(!read(temp.root / "missing.md").value("ok", true));
+		UAM_ASSERT(!read(temp.root).value("ok", true));
+		UAM_ASSERT(uam::io::WriteTextFile(file, std::string(256 * 1024 + 1, 'x')));
+		UAM_ASSERT_EQ(read(file)["error"].value("code", ""), "too_large");
+		UAM_ASSERT(uam::io::WriteTextFile(file, std::string("bad\0text", 8)));
+		UAM_ASSERT(!read(file).value("ok", true));
 #if !defined(_WIN32)
-	const fs::path link = temp.root / "linked.md";
-	fs::create_symlink(file, link);
-	UAM_ASSERT_EQ(read(link)["error"].value("code", ""), "unsafe_path");
+		const fs::path link = workspace / "linked.md";
+		fs::create_symlink(file, link);
+		UAM_ASSERT_EQ(read(link)["error"].value("code", ""), "unsafe_path");
+		const fs::path linked_directory = workspace / "linked directory";
+		fs::create_directory_symlink(workspace, linked_directory);
+		UAM_ASSERT_EQ(read(linked_directory / file.filename())["error"].value("code", ""), "unsafe_path");
 #endif
+	}
 }
 
 UAM_TEST(RemoteProjectMemoryReadsOnlyTheSelectedTargetAndUsesTheRecallBudget)
@@ -3156,10 +4146,14 @@ UAM_TEST(RemoteLinuxStartupIsReversibleIdempotentAndRollsBackFailedRegistration)
 	TempDir temp("uam-startup-registration");
 	const fs::path home = fs::canonical(temp.root);
 	const fs::path manager = home / "systemctl";
-	UAM_ASSERT(uam::io::WriteTextFile(manager, "#!/bin/sh\nif test \"$UAM_STARTUP_FAIL\" = yes; then echo 'Fixture user session unavailable' >&2; exit 1; fi\nexit 0\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(manager,
+	    "#!/bin/sh\nif test \"$UAM_STARTUP_FAIL\" = yes; then echo 'Fixture user session unavailable' >&2; exit 1; fi\n"
+	    "case \"$2\" in\nis-enabled) if test -f \"$UAM_STARTUP_MARKER\"; then echo enabled; else echo disabled; exit 1; fi;;\n"
+	    "enable) touch \"$UAM_STARTUP_MARKER\";;\ndisable) rm -f \"$UAM_STARTUP_MARKER\";;\nesac\n"));
 	fs::permissions(manager, fs::perms::owner_all);
 	ScopedEnvVar path("PATH", home.string() + ":/usr/bin:/bin");
 	ScopedEnvVar fail("UAM_STARTUP_FAIL", "no");
+	ScopedEnvVar marker("UAM_STARTUP_MARKER", (home / "enabled").string());
 	const fs::path executable = home / "runner/4.9.0/uam-runner";
 	const fs::path socket = home / "runner/uam-4.9.0-p3.sock";
 	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
@@ -3189,31 +4183,39 @@ UAM_TEST(RemoteLinuxStartupIsReversibleIdempotentAndRollsBackFailedRegistration)
 UAM_TEST(RemoteProjectMemoryLibraryUsesTargetStorageAndRejectsEscapes)
 {
 	TempDir temp("uam-target-memory-library");
-	const fs::path workspace = fs::canonical(temp.root);
-	uam::remote::RunnerState state;
-	const std::string path = uam::paths::Utf8PathString(workspace);
-	const nlohmann::json draft = {{"category", "Lessons/User_Lessons"}, {"title", "Target lesson"},
-	    {"memory", "Only this host"}, {"evidence", "Fixture"}, {"confidence", "high"}, {"sourceChatId", "chat"}};
-	const nlohmann::json created = uam::remote::HandleRunnerRequest({{"id", "create"}, {"type", "memory.create"}, {"workspace", path}, {"draft", draft}}, "4.9.0", &state);
-	UAM_ASSERT(created.value("ok", false));
-	const std::string id = created["result"]["entry"].value("id", "");
-	UAM_ASSERT(!id.empty());
-	UAM_ASSERT(fs::exists(workspace / ".UAM" / uam::paths::PathFromUtf8(id)));
-	const nlohmann::json listed = uam::remote::HandleRunnerRequest({{"id", "list"}, {"type", "memory.list"}, {"workspace", path}}, "4.9.0", &state);
-	UAM_ASSERT(listed.value("ok", false));
-	UAM_ASSERT_EQ(listed["result"]["entries"].size(), 1U);
-	UAM_ASSERT_EQ(listed["result"]["entries"][0].value("preview", ""), "Only this host");
-	UAM_ASSERT(!uam::remote::HandleRunnerRequest({{"id", "escape"}, {"type", "memory.delete"}, {"workspace", path}, {"entryId", "../outside.md"}}, "4.9.0", &state).value("ok", true));
-	UAM_ASSERT(uam::remote::HandleRunnerRequest({{"id", "delete"}, {"type", "memory.delete"}, {"workspace", path}, {"entryId", id}}, "4.9.0", &state).value("ok", false));
-	UAM_ASSERT(!fs::exists(workspace / ".UAM" / uam::paths::PathFromUtf8(id)));
+	for (const std::string& workspace_name : {std::string("ASCII workspace"), std::string("Unicode café workspace")})
+	{
+		const fs::path workspace = fs::canonical(temp.root) / uam::paths::PathFromUtf8(workspace_name);
+		UAM_ASSERT(fs::create_directory(workspace));
+		uam::remote::RunnerState state;
+		const std::string path = uam::paths::Utf8PathString(workspace);
+		const nlohmann::json draft = {{"category", "Lessons/User_Lessons"}, {"title", "Target lesson"},
+		    {"memory", "Only this host"}, {"evidence", "Fixture"}, {"confidence", "high"}, {"sourceChatId", "chat"}};
+		const nlohmann::json created = uam::remote::HandleRunnerRequest({{"id", "create"}, {"type", "memory.create"}, {"workspace", path}, {"draft", draft}}, "4.9.0", &state);
+		UAM_ASSERT(created.value("ok", false));
+		const std::string id = created["result"]["entry"].value("id", "");
+		UAM_ASSERT(!id.empty());
+		UAM_ASSERT(fs::exists(workspace / ".UAM" / uam::paths::PathFromUtf8(id)));
+		const nlohmann::json listed = uam::remote::HandleRunnerRequest({{"id", "list"}, {"type", "memory.list"}, {"workspace", path}}, "4.9.0", &state);
+		UAM_ASSERT(listed.value("ok", false));
+		UAM_ASSERT_EQ(listed["result"]["entries"].size(), 1U);
+		UAM_ASSERT_EQ(listed["result"]["entries"][0].value("preview", ""), "Only this host");
+		UAM_ASSERT(!uam::remote::HandleRunnerRequest({{"id", "escape"}, {"type", "memory.delete"}, {"workspace", path}, {"entryId", "../outside.md"}}, "4.9.0", &state).value("ok", true));
+		UAM_ASSERT(uam::remote::HandleRunnerRequest({{"id", "delete"}, {"type", "memory.delete"}, {"workspace", path}, {"entryId", id}}, "4.9.0", &state).value("ok", false));
+		UAM_ASSERT(!fs::exists(workspace / ".UAM" / uam::paths::PathFromUtf8(id)));
 #if !defined(_WIN32)
-	const fs::path other = workspace / "other";
-	fs::create_directories(other);
-	fs::remove_all(workspace / ".UAM");
-	fs::create_directory_symlink(other, workspace / ".UAM");
-	UAM_ASSERT_EQ(uam::remote::HandleRunnerRequest({{"id", "linked"}, {"type", "memory.create"}, {"workspace", path}, {"draft", draft}}, "4.9.0", &state)["error"].value("code", ""), "unsafe_path");
-	UAM_ASSERT(fs::is_empty(other));
+		const fs::path linked_workspace = fs::canonical(temp.root) / uam::paths::PathFromUtf8("linked " + workspace_name);
+		fs::create_directory_symlink(workspace, linked_workspace);
+		UAM_ASSERT_EQ(uam::remote::HandleRunnerRequest({{"id", "linked-workspace"}, {"type", "memory.list"},
+		    {"workspace", uam::paths::Utf8PathString(linked_workspace)}}, "4.9.0", &state)["error"].value("code", ""), "unsafe_path");
+		const fs::path other = workspace / "other";
+		fs::create_directories(other);
+		fs::remove_all(workspace / ".UAM");
+		fs::create_directory_symlink(other, workspace / ".UAM");
+		UAM_ASSERT_EQ(uam::remote::HandleRunnerRequest({{"id", "linked"}, {"type", "memory.create"}, {"workspace", path}, {"draft", draft}}, "4.9.0", &state)["error"].value("code", ""), "unsafe_path");
+		UAM_ASSERT(fs::is_empty(other));
 #endif
+	}
 }
 
 UAM_TEST(RemoteTextWorkersUseOwnedPrivatePoliciesAndRejectUnknownProviders)
@@ -3239,6 +4241,37 @@ UAM_TEST(RemoteTextWorkersUseOwnedPrivatePoliciesAndRejectUnknownProviders)
 }
 
 #if !defined(_WIN32)
+UAM_TEST(RemoteRunnerCancellationRefusesWritesWithoutDisconnecting)
+{
+	TempDir temp("uam-remote-cancel-write");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+	uam::remote::RunnerClient client(service, {runner.string(), "bridge-direct"});
+	const fs::path workspace = fs::canonical(temp.root);
+	std::string error;
+	UAM_ASSERT(client.Connect(&error));
+	uam::remote::ProcessPollResult poll;
+	bool interrupted = false;
+	client.SetProcessControlToken("not-created", "owned-cancel-control");
+	UAM_ASSERT(!client.PollProcess("not-created", poll, &error, []() { return true; }, &interrupted));
+	UAM_ASSERT(interrupted);
+	UAM_ASSERT_EQ(error, "The remote runner request was canceled.");
+	UAM_ASSERT(client.IsConnected());
+	// A refused write must leave no unmatched reply in the stream.
+	std::vector<MemoryLibraryStore::Entry> entries;
+	UAM_ASSERT(client.ListMemoryEntries(workspace, entries, &error));
+	UAM_ASSERT(entries.empty());
+	std::stop_source stop;
+	stop.request_stop();
+	MemoryLibraryStore::Draft draft;
+	draft.title = "Refused fixture";
+	draft.memory = "Never persisted.";
+	MemoryLibraryStore::Entry created;
+	UAM_ASSERT(!client.CreateMemoryEntry(workspace, draft, created, &error, stop.get_token()));
+	UAM_ASSERT(client.ListMemoryEntries(workspace, entries, &error));
+	UAM_ASSERT(entries.empty());
+}
+
 UAM_TEST(RemoteCommandDeliversBoundedStdinAndCleansItsOwnedWorker)
 {
 	TempDir temp("uam-remote-worker-stdin");
@@ -3303,3 +4336,4108 @@ UAM_TEST(RemoteWindowsStartupOwnsOnlyItsPrivateRegistryEntryAndAllowsVersionRepl
 	UAM_ASSERT(error.find("Another entry owns") != std::string::npos);
 }
 #endif
+
+
+UAM_TEST(RemoteFreshStartupWriteRejectionDrainsOriginalProviderErrorWithoutInputReceipt)
+{
+#if !defined(_WIN32)
+	for (int input_kind = 0; input_kind < 3; ++input_kind)
+	{
+		TempDir temp("uam-proxy-startup-error");
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		const fs::path executable = service.ResolveCurrentExecutablePath();
+		const fs::path runner = executable.parent_path() / "uam-runner";
+		const fs::path log = temp.root / "requests.jsonl";
+		const fs::path fake_ssh = temp.root / "ssh";
+		UAM_ASSERT(uam::io::WriteTextFile(fake_ssh,
+		    "#!/bin/sh\nexec \"$UAM_TEST_FIXTURE\" --uam-test-remote-opencode-create\n"));
+		fs::permissions(fake_ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		const std::string version = "development";
+		const std::string token = "startup-fixture-token";
+		const std::string spec = uam::remote::BuildProcessProxySpec(
+		    "fresh-startup-fixture", temp.root, {"fixture-codex"}, {}, false, token);
+		uam::platform::StdioProcessPlatformFields proxy;
+		std::string error;
+		UAM_ASSERT(service.StartStdioProcess(proxy, temp.root,
+		    {runner.string(), "proxy", "--alias", "fixture-host", "--platform", "linux", "--version", version},
+		    &error, {{uam::remote::kRemoteProcessSpecEnvironment, spec},
+		             {"PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin")},
+		             {"UAM_TEST_FIXTURE", executable.string()}, {"UAM_TEST_CREATE_LOG", log.string()},
+		             {"UAM_TEST_CREATE_MODE", "startup-write-exited"}}));
+		struct ProcessGuard
+		{
+			uam::platform::StdioProcessPlatformFields& process;
+			~ProcessGuard()
+			{
+				PlatformServicesFactory::Instance().process_service.StopStdioProcess(process, true);
+				PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(process);
+			}
+		} guard{proxy};
+		const std::string initialize = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n";
+		const std::string input = input_kind == 0
+		    ? std::string(uam::remote::kRemoteInputDeliveryPrefix) + token + " startup-init " + uam::base64::Encode(initialize) + "\n"
+		    : input_kind == 1 ? initialize : initialize.substr(0, initialize.size() - 1);
+		UAM_ASSERT(service.WriteToStdioProcess(proxy, input.data(), input.size(), &error));
+		UAM_ASSERT(uam::io::WriteTextFile(log.string() + ".input-sent", "ready"));
+		std::string output, stderr_output;
+		std::array<char, 4096> buffer{};
+		int exit_code = -1;
+		bool exit_acknowledged = false;
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			const std::ptrdiff_t stdout_bytes = service.ReadStdioProcessStdout(proxy, buffer.data(), buffer.size(), &error);
+			if (stdout_bytes > 0) output.append(buffer.data(), static_cast<std::size_t>(stdout_bytes));
+			const std::ptrdiff_t stderr_bytes = service.ReadStdioProcessStderr(proxy, buffer.data(), buffer.size(), &error);
+			if (stderr_bytes > 0) stderr_output.append(buffer.data(), static_cast<std::size_t>(stderr_bytes));
+			for (std::size_t marker = output.find(uam::remote::kRemoteOutputMarkerPrefix); marker != std::string::npos; marker = output.find(uam::remote::kRemoteOutputMarkerPrefix))
+			{
+				const std::size_t end = output.find('\n', marker);
+				if (end == std::string::npos) break;
+				const std::string ack = std::string(uam::remote::kRemoteOutputAckPrefix) + output.substr(marker + uam::remote::kRemoteOutputMarkerPrefix.size(), end - marker - uam::remote::kRemoteOutputMarkerPrefix.size()) + "\n";
+				UAM_ASSERT(service.WriteToStdioProcess(proxy, ack.data(), ack.size(), &error));
+				output.erase(marker, end - marker + 1);
+			}
+			const std::size_t exit_marker = output.find(uam::remote::kRemoteSourceExitPrefix);
+			if (!exit_acknowledged && exit_marker != std::string::npos)
+			{
+				const std::size_t end = output.find('\n', exit_marker);
+				if (end != std::string::npos)
+				{
+					const std::string ack = std::string(uam::remote::kRemoteSourceExitAckPrefix) + output.substr(exit_marker + uam::remote::kRemoteSourceExitPrefix.size(), end - exit_marker - uam::remote::kRemoteSourceExitPrefix.size()) + "\n";
+					UAM_ASSERT(service.WriteToStdioProcess(proxy, ack.data(), ack.size(), &error));
+					exit_acknowledged = true;
+				}
+			}
+			if (service.PollStdioProcessExited(proxy, &exit_code)) break;
+			std::this_thread::yield();
+		}
+		int starts = 0, writes = 0;
+		std::ifstream requests(log);
+		std::string line;
+		while (std::getline(requests, line))
+		{
+			const nlohmann::json request = nlohmann::json::parse(line);
+			if (request.value("type", "") == "process.start") ++starts;
+			if (request.value("type", "") == "process.write") ++writes;
+		}
+		UAM_ASSERT_EQ(starts, 1);
+		UAM_ASSERT_EQ(writes, 1);
+		UAM_ASSERT(stderr_output.find("fixture Codex startup: invalid provider configuration") != std::string::npos);
+		UAM_ASSERT_EQ(exit_code, 23);
+		UAM_ASSERT(output.find(uam::remote::kRemoteInputReceiptPrefix) == std::string::npos);
+	}
+#endif
+}
+
+namespace
+{
+	/// <summary>Exercises unanswered request delivery through the real proxy and a local helper, without any external provider or SSH host.</summary>
+	void VerifyRemoteExitNoticeBeforeUnansweredOutputAcknowledgement(bool exit_before_attach)
+	{
+#if !defined(_WIN32)
+		for (const std::string& request_method : {std::string("session/request_permission"), std::string("item/tool/requestUserInput")})
+		{
+			TempDir temp("uam-r10");
+			IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+			const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+			const fs::path socket = temp.root / "runner.sock";
+			const std::string version = std::string(uam::constants::kAppVersion).substr(1);
+			uam::platform::StdioProcessPlatformFields helper;
+			std::string error;
+			UAM_ASSERT(service.StartStdioProcess(helper, temp.root, {runner.string(), "serve", "--socket", socket.string()}, &error));
+			struct ProcessGuard
+			{
+				uam::platform::StdioProcessPlatformFields& process;
+				~ProcessGuard()
+				{
+					PlatformServicesFactory::Instance().process_service.StopStdioProcess(process, true);
+					PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(process);
+				}
+			} helper_guard{helper};
+			const std::chrono::steady_clock::time_point startup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (!fs::exists(socket) && std::chrono::steady_clock::now() < startup_deadline) std::this_thread::yield();
+			UAM_ASSERT(fs::exists(socket));
+			const fs::path fake_ssh = temp.root / "ssh";
+			UAM_ASSERT(uam::io::WriteTextFile(fake_ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge --socket \"$UAM_TEST_SOCKET\"\n"));
+			fs::permissions(fake_ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+			const std::string token = "unanswered-source-exit-authority";
+			const std::string session_id = "unanswered-source-exit";
+			const std::string request = nlohmann::json({{"jsonrpc", "2.0"}, {"id", 17}, {"method", request_method}, {"params", {{"question", "Fixture unanswered request"}}}}).dump() + "\n";
+			const std::string tail = request_method == "session/request_permission"
+			    ? std::string("{\"long\":\"") + std::string(300 * 1024, 'x') + "\"}" : "retained-tail";
+			const fs::path tail_file = temp.root / "tail";
+			UAM_ASSERT(uam::io::WriteTextFile(tail_file, tail));
+			const fs::path request_file = temp.root / "request.jsonl";
+			UAM_ASSERT(uam::io::WriteTextFile(request_file, request));
+			const std::vector<std::string> arguments = {"/bin/sh", "-c", "cat \"$1\"; IFS= read -r line; cat \"$2\"; exit 23", "fixture", request_file.string(), tail_file.string()};
+			uam::remote::RunnerClient client(service, {runner.string(), "bridge", "--socket", socket.string()}, version);
+			UAM_ASSERT(client.StartProcess(session_id, temp.root, arguments, {}, &error, false, token));
+			struct OwnedProviderGuard
+			{
+				uam::remote::RunnerClient& client;
+				const std::string& session_id;
+				~OwnedProviderGuard()
+				{
+					(void)client.StopProcess(session_id);
+					(void)client.RemoveProcess(session_id);
+				}
+			} provider_guard{client, session_id};
+			const auto wait_for_helper = [&](bool running)
+			{
+				uam::remote::ProcessPollResult polled;
+				uam::remote::ProcessPollResult cursor;
+				std::string retained_output;
+				bool have_cursor = false;
+				const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+				do
+				{
+					UAM_ASSERT(client.PollProcess(session_id, polled, &error, {}, nullptr, have_cursor ? &cursor : nullptr));
+					retained_output += polled.standard_output;
+					cursor = polled;
+					have_cursor = true;
+					if (polled.running == running && retained_output == request + (running ? "" : tail))
+					{
+						polled.standard_output = retained_output;
+						return polled;
+					}
+					std::this_thread::yield();
+				} while (std::chrono::steady_clock::now() < deadline);
+				UAM_ASSERT(polled.running == running && retained_output == request + (running ? "" : tail));
+				return polled;
+			};
+			(void)wait_for_helper(true);
+			if (exit_before_attach)
+			{
+				UAM_ASSERT(client.CloseProcessInput(session_id, &error));
+				UAM_ASSERT_EQ(wait_for_helper(false).exit_code, 23);
+			}
+			uam::platform::StdioProcessPlatformFields proxy;
+			const std::string spec = uam::remote::BuildProcessProxySpec(session_id, temp.root, arguments, {}, true, token);
+			UAM_ASSERT(service.StartStdioProcess(proxy, temp.root, {runner.string(), "proxy", "--alias", "fixture-host", "--platform", "linux", "--version", version}, &error,
+			    {{uam::remote::kRemoteProcessSpecEnvironment, spec}, {"PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin")}, {"UAM_TEST_RUNNER", runner.string()}, {"UAM_TEST_SOCKET", socket.string()}}));
+			ProcessGuard proxy_guard{proxy};
+			std::string output;
+			std::array<char, 4096> buffer{};
+			const std::string output_marker = std::string(uam::remote::kRemoteOutputMarkerPrefix) + token + " ";
+			const std::string source_marker = std::string(uam::remote::kRemoteSourceExitPrefix) + token + " 23\n";
+			const auto read_until = [&](const std::string& marker)
+			{
+				const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+				while (output.find(marker) == std::string::npos && std::chrono::steady_clock::now() < deadline)
+				{
+					const std::ptrdiff_t count = service.ReadStdioProcessStdout(proxy, buffer.data(), buffer.size(), &error);
+					if (count > 0) output.append(buffer.data(), static_cast<std::size_t>(count));
+					else std::this_thread::yield();
+				}
+			};
+			read_until(output_marker);
+			UAM_ASSERT(output.find(request) != std::string::npos);
+			UAM_ASSERT(output.find(output_marker) != std::string::npos);
+			if (!exit_before_attach)
+			{
+				// The same unanswered delivery is healthy until this owned control causes actual source death.
+				UAM_ASSERT(output.find(uam::remote::kRemoteSourceExitPrefix) == std::string::npos);
+				UAM_ASSERT(wait_for_helper(true).running);
+				UAM_ASSERT(client.CloseProcessInput(session_id, &error));
+				UAM_ASSERT_EQ(wait_for_helper(false).exit_code, 23);
+			}
+			read_until(source_marker);
+			uam::remote::ProcessPollResult retained;
+			retained = wait_for_helper(false);
+			UAM_ASSERT(!retained.running && retained.exit_code == 23);
+			UAM_ASSERT_EQ(retained.standard_output, request + tail);
+			UAM_ASSERT(retained.acknowledgement_required);
+			int proxy_exit = -1;
+			UAM_ASSERT(!service.PollStdioProcessExited(proxy, &proxy_exit));
+			// No output ACK was sent: authenticated death must still be visible, without consuming or removing the unanswered bytes.
+			UAM_ASSERT(output.find(source_marker) != std::string::npos);
+			const std::string forged_exit_ack = std::string(uam::remote::kRemoteSourceExitAckPrefix) + "wrong-authority 23\n";
+			UAM_ASSERT(service.WriteToStdioProcess(proxy, forged_exit_ack.data(), forged_exit_ack.size(), &error));
+			const std::string premature_exit_ack = std::string(uam::remote::kRemoteSourceExitAckPrefix) + token + " 23\n";
+			UAM_ASSERT(service.WriteToStdioProcess(proxy, premature_exit_ack.data(), premature_exit_ack.size(), &error));
+			const std::chrono::steady_clock::time_point early_ack_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
+			while (std::chrono::steady_clock::now() < early_ack_deadline)
+			{
+				retained = wait_for_helper(false);
+				UAM_ASSERT_EQ(retained.standard_output, request + tail);
+				UAM_ASSERT(!service.PollStdioProcessExited(proxy, &proxy_exit));
+			}
+			const auto acknowledge_marker = [&](std::size_t marker)
+			{
+				const std::size_t end = output.find('\n', marker);
+				UAM_ASSERT(end != std::string::npos);
+				const std::string ack = std::string(uam::remote::kRemoteOutputAckPrefix) + output.substr(marker + uam::remote::kRemoteOutputMarkerPrefix.size(), end - marker - uam::remote::kRemoteOutputMarkerPrefix.size()) + "\n";
+				UAM_ASSERT(service.WriteToStdioProcess(proxy, ack.data(), ack.size(), &error));
+			};
+			const std::size_t first_marker = output.find(output_marker);
+			acknowledge_marker(first_marker);
+			read_until(tail);
+			UAM_ASSERT(output.find(tail) != std::string::npos);
+			const std::chrono::steady_clock::time_point tail_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			std::size_t final_marker = output.find(output_marker, first_marker + output_marker.size());
+			while (final_marker == std::string::npos && std::chrono::steady_clock::now() < tail_deadline)
+			{
+				const std::ptrdiff_t count = service.ReadStdioProcessStdout(proxy, buffer.data(), buffer.size(), &error);
+				if (count > 0) output.append(buffer.data(), static_cast<std::size_t>(count));
+				else std::this_thread::yield();
+				final_marker = output.find(output_marker, first_marker + output_marker.size());
+			}
+			UAM_ASSERT(final_marker != std::string::npos);
+			uam::remote::ProcessPollResult tail_cursor;
+			std::string retained_tail;
+			bool first_tail_chunk = true;
+			do
+			{
+				UAM_ASSERT(client.PollProcess(session_id, retained, &error, {}, nullptr, first_tail_chunk ? nullptr : &tail_cursor));
+				retained_tail += retained.standard_output;
+				tail_cursor = retained;
+				first_tail_chunk = false;
+			} while (retained.running);
+			UAM_ASSERT_EQ(retained_tail, tail);
+			acknowledge_marker(final_marker);
+			const std::chrono::steady_clock::time_point exit_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			while (!service.PollStdioProcessExited(proxy, &proxy_exit) && std::chrono::steady_clock::now() < exit_deadline) std::this_thread::yield();
+			UAM_ASSERT_EQ(proxy_exit, 23);
+		}
+#else
+		(void)exit_before_attach;
+#endif
+	}
+}
+
+UAM_TEST(RemoteDeadSourceBeforeAttachNotifiesWhileUnansweredOutputRemainsDurable)
+{
+	VerifyRemoteExitNoticeBeforeUnansweredOutputAcknowledgement(true);
+}
+
+UAM_TEST(RemoteDeadSourceAfterUnansweredBatchNotifiesWithoutAcknowledgingOrRemovingIt)
+{
+	VerifyRemoteExitNoticeBeforeUnansweredOutputAcknowledgement(false);
+}
+
+UAM_TEST(RemoteStopProjectsAndPersistsTheFinalUnterminatedProviderMessage)
+{
+#if !defined(_WIN32) && UAM_ENABLE_RUNTIME_CODEX_CLI
+	std::vector<std::string> providers = {uam::provider_ids::kCodexCli};
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	providers.push_back(uam::provider_ids::kClaudeCli);
+#endif
+	for (const std::string& provider : providers)
+	for (const bool shutdown : {false, true})
+	for (const bool pressure : {false, true})
+	for (const bool terminated : {false, true})
+	{
+		TempDir temp("uam-stop-final-line");
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+		const fs::path fake_ssh = temp.root / "ssh";
+		UAM_ASSERT(uam::io::WriteTextFile(fake_ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
+		fs::permissions(fake_ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		const fs::path tail = temp.root / "final.json";
+		const std::string expected = (pressure ? std::string(128 * 1024, 'x') : "") + "Final shutdown text.";
+		const std::string final_message = (provider == uam::provider_ids::kCodexCli
+		    ? nlohmann::json{{"method", "item/agentMessage/delta"}, {"params", {{"itemId", "stop-tail"}, {"delta", expected}}}}
+		    : nlohmann::json{{"type", "assistant"}, {"message", {{"content", nlohmann::json::array({{{"type", "text"}, {"text", expected}}})}}}}).dump();
+		const fs::path noise = temp.root / "stderr.txt";
+		const fs::path ready = temp.root / "ready";
+		UAM_ASSERT(uam::io::WriteTextFile(noise, pressure ? std::string(128 * 1024, 'e') + "\n" : ""));
+		UAM_ASSERT(uam::io::WriteTextFile(tail, final_message + (terminated ? "\n" : "")));
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat = ChatDomainService().CreateNewChat("", provider);
+		chat.execution_host_id = "ssh-fixture";
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->protocol_kind = provider == uam::provider_ids::kCodexCli ? "codex-app-server" : "claude-stream-json";
+		session->processing = !shutdown;
+		session->running = shutdown;
+		session->remote_stop_pending = !shutdown;
+		session->remote_output_delivery_token = "final-line-authority";
+		uam::AcpSessionState* raw_session = session.get();
+		app.acp_sessions.push_back(std::move(session));
+		std::unique_ptr<uam::PendingAcpRemoteStop> pending = std::make_unique<uam::PendingAcpRemoteStop>();
+		pending->chat_id = chat.id;
+		pending->deadline_time_s = uam::GetAppTimeSeconds() + 5.0;
+		const std::string spec = uam::remote::BuildProcessProxySpec(chat.id, temp.root,
+		    {"/bin/sh", "-c", "printf ready > \"$3\"; cat >/dev/null; cat \"$2\" >&2; cat \"$1\"", "fixture", tail.string(), noise.string(), ready.string()}, {}, false, "final-line-authority");
+		std::string error;
+		UAM_ASSERT(service.StartStdioProcess(shutdown ? static_cast<uam::platform::StdioProcessPlatformFields&>(*raw_session) : *pending, temp.root,
+		    {runner.string(), "proxy", "--alias", "fixture-host", "--platform", "linux", "--version", std::string(uam::constants::kAppVersion).substr(1)}, &error,
+		    {{uam::remote::kRemoteProcessSpecEnvironment, spec}, {"PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin")}, {"UAM_TEST_RUNNER", runner.string()}}));
+		const std::chrono::steady_clock::time_point ready_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		while (!fs::exists(ready) && std::chrono::steady_clock::now() < ready_deadline)
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		UAM_ASSERT(fs::exists(ready));
+		if (shutdown) uam::FastStopAcpSessionsForExit(app);
+		else
+		{
+			UAM_ASSERT(service.WriteToStdioProcess(*pending, uam::remote::kRemoteStopControlLine.data(), uam::remote::kRemoteStopControlLine.size(), &error));
+			app.pending_acp_remote_stops.push_back(std::move(pending));
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+			while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				(void)uam::PollAllAcpSessions(app);
+				std::this_thread::yield();
+			}
+			UAM_ASSERT(app.pending_acp_remote_stops.empty());
+			UAM_ASSERT(!app.acp_sessions.front()->remote_stop_unconfirmed);
+		}
+		std::cout << "proxy provider=" << provider << " shutdown=" << shutdown << " pressure=" << pressure << " terminated=" << terminated << " messages=" << app.chats.front().messages.size() << " cleanup=" << app.chats.front().remote_stop_cleanup_pending << std::endl;
+		// Codex deliberately rejects item deltas without an active turn; keep that control.
+		const std::size_t expected_messages = shutdown && provider == uam::provider_ids::kCodexCli ? 0 : 1;
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), expected_messages);
+		if (expected_messages != 0) UAM_ASSERT_EQ(app.chats.front().messages.front().content, expected);
+		UAM_ASSERT(!app.chats.front().remote_stop_cleanup_pending);
+		UAM_ASSERT(!app.chats.front().remote_process_exists);
+		const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(loaded.has_value());
+		UAM_ASSERT(!loaded->remote_stop_cleanup_pending);
+		UAM_ASSERT(!loaded->remote_process_exists);
+		UAM_ASSERT_EQ(loaded->messages.size(), expected_messages);
+		if (expected_messages != 0) UAM_ASSERT_EQ(loaded->messages.front().content, expected);
+	}
+#endif
+}
+
+UAM_TEST(RemoteStopOutputCannotChangeTheReplacementSessionDuringPollOrShutdown)
+{
+#if !defined(_WIN32) && UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (const bool shutdown : {false, true})
+	{
+		TempDir temp("uam-stop-replacement-output");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+		chat.execution_host_id = "ssh-fixture";
+		Message assistant;
+		assistant.role = MessageRole::Assistant;
+		assistant.content = "Replacement answer.";
+		chat.messages.push_back(assistant);
+		app.chats.push_back(chat);
+		const fs::path tail = temp.root / "old-proxy.jsonl";
+		const fs::path finished = temp.root / "old-proxy-finished";
+		UAM_ASSERT(uam::io::WriteTextFile(tail, R"({"method":"item/agentMessage/delta","params":{"itemId":"old-stop","delta":"Old provider tail."}})" "\n"));
+		std::unique_ptr<uam::AcpSessionState> original = std::make_unique<uam::AcpSessionState>();
+		original->chat_id = chat.id;
+		original->running = true;
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		std::string error;
+		UAM_ASSERT(service.StartStdioProcess(*original, temp.root, {"/bin/sh", "-c", "IFS= read -r line; cat \"$1\"; printf done > \"$2\"", "fixture", tail.string(), finished.string()}, &error));
+		app.acp_sessions.push_back(std::move(original));
+		UAM_ASSERT(!uam::StopAcpSession(app, chat.id));
+		UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), std::size_t{1});
+		app.acp_sessions.clear();
+		std::unique_ptr<uam::AcpSessionState> replacement = std::make_unique<uam::AcpSessionState>();
+		replacement->chat_id = chat.id;
+		replacement->provider_id = chat.provider_id;
+		replacement->protocol_kind = "codex-app-server";
+		replacement->session_ready = true;
+		replacement->processing = true;
+		replacement->current_assistant_message_index = 0;
+		app.acp_sessions.push_back(std::move(replacement));
+		app.chats.front().remote_turn_reconnect_pending = true;
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		while (!fs::exists(finished) && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+		UAM_ASSERT(fs::exists(finished));
+		if (shutdown) uam::FinalizePendingAcpRemoteStopsForExit(app);
+		else
+		{
+			while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+				(void)uam::PollAllAcpSessions(app);
+		}
+		UAM_ASSERT(app.pending_acp_remote_stops.empty());
+		UAM_ASSERT(app.acp_sessions.front()->session_ready);
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), chat.messages.size());
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, assistant.content);
+		UAM_ASSERT(app.acp_sessions.front()->stdout_buffer.empty());
+		UAM_ASSERT(app.chats.front().remote_turn_reconnect_pending);
+		UAM_ASSERT_EQ(app.acp_sessions.front()->stop_outcome, uam::platform::ProcessStopOutcome::Unknown);
+	}
+#endif
+}
+
+namespace
+{
+	void VerifyMacRemoteStopExitAfterMultipleDrainPolls(bool shutdown, int helper_exit_code)
+	{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_CODEX_CLI
+		TempDir temp("uam-stop-exit-retention");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+		chat.execution_host_id = "disposable-helper";
+		chat.remote_turn_reconnect_pending = true;
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->protocol_kind = "codex-app-server";
+		session->processing = true;
+		session->running = true;
+		uam::AcpSessionState* raw_session = session.get();
+		const fs::path tail = temp.root / "shutdown.jsonl";
+		const std::string line = R"({"method":"item/agentMessage/delta","params":{"itemId":"stop-tail","delta":"x"}})" "\n";
+		std::string output;
+		for (int index = 0; index < 1024; ++index) output += line;
+		UAM_ASSERT(uam::io::WriteTextFile(tail, output));
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		struct PendingStopCleanup
+		{
+			uam::AppState& app;
+			IPlatformProcessService& service;
+			~PendingStopCleanup()
+			{
+				for (const std::unique_ptr<uam::PendingAcpRemoteStop>& stop : app.pending_acp_remote_stops)
+					if (stop != nullptr) service.StopStdioProcess(*stop, true);
+			}
+		} cleanup{app, service};
+		std::string error;
+		UAM_ASSERT(service.StartStdioProcess(*session, temp.root,
+		    {"/bin/sh", "-c", "IFS= read -r stop; cat \"$1\"; exit \"$2\"", "fixture", tail.string(), std::to_string(helper_exit_code)}, &error));
+		app.acp_sessions.push_back(std::move(session));
+		UAM_ASSERT(!uam::StopAcpSession(app, chat.id));
+		UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), std::size_t{1});
+		uam::PendingAcpRemoteStop& pending = *app.pending_acp_remote_stops.front();
+		// Stage the large tail without reaping, so the runtime observes exit before its bounded line drain finishes.
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		siginfo_t exit_info{};
+		std::array<char, 16384> buffer{};
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			const std::ptrdiff_t read = service.ReadStdioProcessStdout(pending, buffer.data(), buffer.size());
+			if (read > 0) raw_session->stdout_buffer.append(buffer.data(), static_cast<std::size_t>(read));
+			UAM_ASSERT_EQ(waitid(P_PID, static_cast<id_t>(pending.child_pid), &exit_info, WEXITED | WNOHANG | WNOWAIT), 0);
+			if (exit_info.si_pid == pending.child_pid && read <= 0) break;
+			std::this_thread::yield();
+		}
+		UAM_ASSERT_EQ(exit_info.si_pid, pending.child_pid);
+		UAM_ASSERT_EQ(exit_info.si_status, helper_exit_code);
+		UAM_ASSERT_EQ(raw_session->stdout_buffer, output);
+		(void)uam::PollAllAcpSessions(app);
+		UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), std::size_t{1});
+		UAM_ASSERT_EQ(pending.child_pid, pid_t{-1});
+		UAM_ASSERT(raw_session->remote_stop_pending);
+		UAM_ASSERT(raw_session->stdout_buffer.find('\n') != std::string::npos);
+		if (shutdown) uam::FinalizePendingAcpRemoteStopsForExit(app);
+		else
+		{
+			while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+				(void)uam::PollAllAcpSessions(app);
+		}
+		UAM_ASSERT(app.pending_acp_remote_stops.empty());
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string(1024, 'x'));
+		UAM_ASSERT(!raw_session->remote_stop_pending);
+		UAM_ASSERT_EQ(raw_session->remote_stop_unconfirmed, helper_exit_code != 0);
+		UAM_ASSERT_EQ(app.chats.front().remote_stop_cleanup_pending, helper_exit_code != 0);
+		UAM_ASSERT_EQ(app.chats.front().remote_process_exists, helper_exit_code != 0);
+		UAM_ASSERT_EQ(app.chats.front().remote_turn_reconnect_pending, helper_exit_code != 0);
+		if (helper_exit_code == 0) UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("stopped"));
+		const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(loaded.has_value());
+		UAM_ASSERT_EQ(loaded->messages.front().content, std::string(1024, 'x'));
+		UAM_ASSERT_EQ(loaded->remote_stop_cleanup_pending, helper_exit_code != 0);
+#endif
+	}
+}
+
+UAM_TEST(MacRemoteStopRetainsSuccessfulExitAcrossMultipleDrainPolls)
+{
+	VerifyMacRemoteStopExitAfterMultipleDrainPolls(false, 0);
+}
+
+namespace
+{
+	void VerifyPendingRemoteStopConfirmation(bool shutdown, int helper_exit_code, const std::string& diagnostic, bool confirmed, bool restart = false)
+	{
+		TempDir temp("uam-stop-confirmation");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat;
+		chat.id = "stop-confirmation";
+		chat.execution_host_id = "disposable-helper";
+		chat.remote_turn_reconnect_pending = true;
+		chat.messages.push_back({.role = MessageRole::User, .content = "Retry safely."});
+		chat.messages.push_back({.role = MessageRole::Assistant, .content = ""});
+		chat.provider_id = "gemini-cli";
+		// Captured inert proxy ownership; no SSH alias or usable runner is configured.
+		ExecutionHost fixture_host;
+		fixture_host.id = chat.execution_host_id;
+		fixture_host.transport = "ssh";
+		fixture_host.platform = "linux";
+		fixture_host.runner_status = "missing";
+		fixture_host.runner_protocol_version = 3;
+		app.settings.execution_hosts.push_back(fixture_host);
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = "private-r19-inert-proxy";
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = app.chats.front().provider_id;
+		session->process_execution_host_id = app.chats.front().execution_host_id;
+		session->session_id = app.chats.front().native_session_id;
+		session->remote_output_delivery_token = app.chats.front().remote_process_control_token;
+		session->remote_runner_protocol_version = 3;
+		session->running = true;
+		session->processing = true;
+		session->queued_prompt = "Retry safely.";
+		session->current_assistant_message_index = 1;
+		session->turn_assistant_message_index = 1;
+		uam::AcpSessionState* raw_session = session.get();
+		const fs::path stderr_file = temp.root / "diagnostic.txt";
+		UAM_ASSERT(uam::io::WriteTextFile(stderr_file, diagnostic));
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", "set /p line= & type diagnostic.txt 1>&2 & exit /b " + std::to_string(helper_exit_code)};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line; cat \"$1\" >&2; exit \"$2\"", "fixture", stderr_file.string(), std::to_string(helper_exit_code)};
+#endif
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		struct StopCleanup
+		{
+			uam::AppState& app;
+			IPlatformProcessService& service;
+			~StopCleanup()
+			{
+				for (const std::unique_ptr<uam::PendingAcpRemoteStop>& pending : app.pending_acp_remote_stops)
+					if (pending != nullptr) service.StopStdioProcess(*pending, true);
+			}
+		} cleanup{app, service};
+		std::string error;
+		UAM_ASSERT(service.StartStdioProcess(*session, temp.root, argv, &error));
+		raw_session->last_process_id = uam::acp_detail::AcpProcessHandleLabel(*raw_session);
+		app.acp_sessions.push_back(std::move(session));
+		UAM_ASSERT(!(restart ? uam::acp_detail::StopAcpProcessForRestart(app, *raw_session, app.chats.front()) : uam::StopAcpSession(app, chat.id)));
+		UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), std::size_t{1});
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		int exit_code = -1;
+		bool exited = false;
+		while (!(exited = service.PollStdioProcessExited(*app.pending_acp_remote_stops.front(), &exit_code)) && std::chrono::steady_clock::now() < deadline)
+			std::this_thread::yield();
+		UAM_ASSERT(exited);
+		UAM_ASSERT_EQ(exit_code, helper_exit_code);
+		if (shutdown) uam::FinalizePendingAcpRemoteStopsForExit(app);
+		else
+		{
+			while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+				(void)uam::PollAllAcpSessions(app);
+		}
+		UAM_ASSERT(app.pending_acp_remote_stops.empty());
+		UAM_ASSERT(!raw_session->remote_stop_pending);
+		UAM_ASSERT_EQ(raw_session->remote_stop_unconfirmed, !confirmed);
+		UAM_ASSERT_EQ(app.chats.front().remote_stop_cleanup_pending, !confirmed);
+		UAM_ASSERT_EQ(app.chats.front().remote_process_exists, !confirmed);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->remote_stop_cleanup_pending, !confirmed);
+		if (shutdown && confirmed && restart) UAM_ASSERT(saved->messages.back().interrupted);
+	}
+}
+
+UAM_TEST(PendingRemoteStopConfirmsExactMissingDiagnosticsDuringPollAndShutdown)
+{
+	for (const bool shutdown : {false, true})
+	{
+		VerifyPendingRemoteStopConfirmation(shutdown, 0, "", true);
+		for (const std::string& diagnostic : {"The remote process does not exist.\n", "The remote process is no longer available.\r\n", "The remote process has exited."})
+			VerifyPendingRemoteStopConfirmation(shutdown, 70, diagnostic, true);
+	}
+}
+
+UAM_TEST(PendingRemoteStopRejectsUncertainDiagnosticsDuringPollAndShutdown)
+{
+	for (const bool shutdown : {false, true})
+	{
+		for (const std::string& diagnostic : {"", "The remote process does not exist. Maybe.\n", "warning: The remote process does not exist.\n", "The remote process does not exist.\nRemote bridge connection failed.\n"})
+			VerifyPendingRemoteStopConfirmation(shutdown, 70, diagnostic, false);
+		VerifyPendingRemoteStopConfirmation(shutdown, 23, "The remote process does not exist.\n", false);
+	}
+}
+
+UAM_TEST(ShutdownMissingRemoteProcessSettlesRestartAsInterrupted)
+{
+	VerifyPendingRemoteStopConfirmation(true, 70, "The remote process does not exist.\n", true, true);
+}
+
+UAM_TEST(MacPendingRemoteStopReadsMissingDiagnosticBeyondFirstStderrDrain)
+{
+#if defined(__APPLE__)
+	for (const bool shutdown : {false, true})
+		VerifyPendingRemoteStopConfirmation(shutdown, 70, std::string(20000, 'x') + "\nThe remote process does not exist.\n", true);
+#endif
+}
+
+UAM_TEST(MacPendingRemoteStopRejectsFailureBeyondFirstStderrDrain)
+{
+#if defined(__APPLE__)
+	const std::string missing = "The remote process does not exist.\n";
+	// Put a misleading diagnostic exactly at the bounded drain boundary.
+	const std::string diagnostic = std::string(16384 - missing.size() - 1, 'x') + "\n" + missing + std::string(10000, 'y') + "\nRemote bridge connection failed.\n";
+	for (const bool shutdown : {false, true})
+		VerifyPendingRemoteStopConfirmation(shutdown, 70, diagnostic, false);
+#endif
+}
+
+UAM_TEST(MacShutdownRetainsSuccessfulExitAfterAPendingStopDrainPoll)
+{
+	VerifyMacRemoteStopExitAfterMultipleDrainPolls(true, 0);
+}
+
+UAM_TEST(MacRemoteStopPreservesFailureAcrossDrainPollsAndShutdown)
+{
+	VerifyMacRemoteStopExitAfterMultipleDrainPolls(false, 23);
+	VerifyMacRemoteStopExitAfterMultipleDrainPolls(true, 23);
+}
+
+UAM_TEST(MacStdioExitStatusFollowsOwnershipUntilHandlesCloseOrProcessRestarts)
+{
+#if defined(__APPLE__)
+	TempDir temp("uam-stdio-exit-retention");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields process;
+	struct ProcessCleanup
+	{
+		IPlatformProcessService& service;
+		uam::platform::StdioProcessPlatformFields& process;
+		~ProcessCleanup() { service.StopStdioProcess(process, true); }
+	} cleanup{service, process};
+	std::string error;
+	for (const int expected : {23, 0, 128 + SIGTERM})
+	{
+		const std::string command = expected == 128 + SIGTERM ? "kill -TERM $$" : "exit " + std::to_string(expected);
+		UAM_ASSERT(service.StartStdioProcess(process, temp.root, {"/bin/sh", "-c", command}, &error));
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		bool exited = false;
+		while (!(exited = service.PollStdioProcessExited(process)) && std::chrono::steady_clock::now() < deadline)
+			std::this_thread::yield();
+		UAM_ASSERT(exited);
+		int exit_code = -1;
+		UAM_ASSERT(service.PollStdioProcessExited(process, &exit_code));
+		UAM_ASSERT_EQ(exit_code, expected);
+		uam::platform::StdioProcessPlatformFields transferred;
+		ProcessCleanup transferred_cleanup{service, transferred};
+		uam::TransferStdioProcessFields(process, transferred);
+		UAM_ASSERT(service.PollStdioProcessExited(transferred, &exit_code));
+		UAM_ASSERT_EQ(exit_code, expected);
+		UAM_ASSERT(service.PollStdioProcessExited(process, &exit_code));
+		UAM_ASSERT_EQ(exit_code, -1);
+		service.CloseStdioProcessHandles(transferred);
+		UAM_ASSERT(service.PollStdioProcessExited(transferred, &exit_code));
+		UAM_ASSERT_EQ(exit_code, -1);
+	}
+	UAM_ASSERT(service.StartStdioProcess(process, temp.root, {"/bin/sh", "-c", "cat >/dev/null; exit 0"}, &error));
+	service.TerminateStdioProcess(process, true);
+	int exit_code = -1;
+	UAM_ASSERT(service.PollStdioProcessExited(process, &exit_code));
+	UAM_ASSERT_EQ(exit_code, 128 + SIGKILL);
+	// Reusing a reaped owner must not retain the preceding forced exit.
+	service.CloseStdioProcessHandles(process);
+	UAM_ASSERT(service.StartStdioProcess(process, temp.root, {"/bin/sh", "-c", "exit 0"}, &error));
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	bool exited = false;
+	while (!(exited = service.PollStdioProcessExited(process, &exit_code)) && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::yield();
+	UAM_ASSERT(exited);
+	UAM_ASSERT_EQ(exit_code, 0);
+#endif
+}
+
+
+UAM_TEST(RemoteWorkspaceFilePreviewRequiresScopedPathsAndAdvertisesItsCapability)
+{
+	TempDir temp("uam-remote-file-preview");
+	uam::remote::RunnerState state;
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directory(workspace);
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / "file.txt", "remote source"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "outside.txt", "outside"));
+	const nlohmann::json hello = uam::remote::HandleRunnerRequest({{"id", "hello"}, {"type", "hello"},
+	    {"protocolVersion", uam::remote::kRunnerProtocolVersion}, {"nonce", "file-preview"}}, "4.11.0", &state);
+	UAM_ASSERT(hello["capabilities"].value("workspaceFileRead", false));
+	const std::function<nlohmann::json(const std::string&)> read = [&state, &workspace](const std::string& path)
+	{
+		return uam::remote::HandleRunnerRequest({{"id", "preview"}, {"type", "workspace.file.read"},
+		    {"workspace", uam::paths::Utf8PathString(workspace)}, {"path", path}}, "4.11.0", &state);
+	};
+	const nlohmann::json source = read("file.txt")["result"];
+	std::string decoded;
+	UAM_ASSERT(uam::base64::Decode(source.value("dataBase64", ""), decoded));
+	UAM_ASSERT_EQ(decoded, "remote source");
+	UAM_ASSERT(!read("../outside.txt").value("ok", true));
+	UAM_ASSERT(!read("missing.txt").value("ok", true));
+	UAM_ASSERT(!uam::remote::HandleRunnerRequest({{"id", "bad"}, {"type", "workspace.file.read"},
+	    {"workspace", 5}, {"path", "file.txt"}}, "4.11.0", &state).value("ok", true));
+}
+
+UAM_TEST(RemoteWorkspaceFilePreviewChunksFitFramesAndRejectChangedSnapshots)
+{
+	TempDir temp("uam-remote-file-preview-chunks");
+	uam::remote::RunnerState state;
+	const std::string content(1024 * 1024, '\t');
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "large.txt", content));
+	const nlohmann::json request = {{"id", "chunk"}, {"type", "workspace.file.read"},
+	    {"workspace", uam::paths::Utf8PathString(temp.root)}, {"path", "large.txt"}};
+	const nlohmann::json first = state.HandleProcessRequest(request);
+	UAM_ASSERT(first.value("ok", false));
+	UAM_ASSERT(first.dump().size() < uam::remote::kMaxRunnerFrameBytes);
+	std::string decoded;
+	UAM_ASSERT(uam::base64::Decode(first["result"].value("dataBase64", ""), decoded));
+	UAM_ASSERT_EQ(decoded.size(), std::size_t{512 * 1024});
+	nlohmann::json next = request;
+	next["offset"] = decoded.size();
+	next["fingerprint"] = first["result"]["fingerprint"];
+	const nlohmann::json second = state.HandleProcessRequest(next);
+	UAM_ASSERT(second.value("ok", false));
+	UAM_ASSERT(second.dump().size() < uam::remote::kMaxRunnerFrameBytes);
+	UAM_ASSERT(uam::base64::Decode(second["result"].value("dataBase64", ""), decoded));
+	UAM_ASSERT_EQ(decoded, content.substr(512 * 1024));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "large.txt", std::string(1024 * 1024, 'x')));
+	UAM_ASSERT(!state.HandleProcessRequest(next).value("ok", true));
+	next.erase("fingerprint");
+	next["offset"] = -1;
+	UAM_ASSERT(!state.HandleProcessRequest(next).value("ok", true));
+}
+
+UAM_TEST(RemoteWorkspaceFilePreviewClientReassemblesLargeUnicodeSources)
+{
+	TempDir temp("uam-file-preview-client");
+	ScopedEnvVar data_root("UAM_DATA_DIR", (temp.root / "data").string());
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() /
+#if defined(_WIN32)
+	    "uam-runner.exe";
+#else
+	    "uam-runner";
+#endif
+	uam::remote::RunnerClient client(service, {uam::paths::Utf8PathString(runner), "bridge-direct"});
+	std::string content(1024 * 1024, '\t');
+	content.replace(512 * 1024 - 1, 3, "\xe2\x82\xac");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "source.txt", content));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "empty.txt", ""));
+	std::string error;
+	nlohmann::json file;
+	UAM_ASSERT(client.ReadWorkspaceFile(uam::paths::Utf8PathString(temp.root), "source.txt", file, &error));
+	UAM_ASSERT_EQ(file.value("text", ""), content);
+	UAM_ASSERT_EQ(file.value("path", ""), "source.txt");
+	UAM_ASSERT(client.ReadWorkspaceFile(uam::paths::Utf8PathString(temp.root), "empty.txt", file, &error));
+	UAM_ASSERT_EQ(file.value("text", "nonempty"), "");
+	UAM_ASSERT(!client.ReadWorkspaceFile(uam::paths::Utf8PathString(temp.root), "missing.txt", file, &error));
+	UAM_ASSERT(file.is_null());
+	UAM_ASSERT(!error.empty());
+}
+
+UAM_TEST(RemoteRunnerCentralConfigurationAcceptsTrailingWorkspaceSeparatorsAndRejectsOtherWorkspaces)
+{
+	TempDir temp("uam-runner-central-workspace");
+	const fs::path workspace = temp.root / "workspace";
+	const nlohmann::json manifest = {{"format", 1}, {"mcpOnly", true}, {"files", nlohmann::json::object()}};
+	const fs::path configuration = workspace / ".UAM" / "provider-setup" / uam::provider_setup::Digest(manifest.dump());
+	fs::create_directories(configuration);
+	UAM_ASSERT(uam::io::WriteTextFile(configuration / "owner.json", manifest.dump()));
+	const std::string executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string();
+	const std::string cwd = uam::paths::Utf8PathString(workspace);
+	for (const std::string& spelling : {cwd, cwd + std::string(1, fs::path::preferred_separator), cwd + "/./"})
+	{
+		uam::remote::RunnerState state;
+		nlohmann::json start = {{"id", "start"}, {"type", "process.start"}, {"sessionId", "central-path"},
+		    {"controlToken", kProcessControlToken}, {"cwd", spelling},
+		    {"argv", nlohmann::json::array({executable, "--uam-test-empty-arguments"})},
+		    {"configurationDirectory", uam::paths::Utf8PathString(configuration)}, {"configurationProvider", "opencode-cli"}};
+		const nlohmann::json started = state.HandleProcessRequest(start);
+		UAM_ASSERT(started.value("ok", false));
+	}
+	for (const fs::path& outside : {temp.root / ".UAM" / "provider-setup" / "fixture",
+	    workspace / ".UAM" / "wrong-directory" / "fixture", workspace / "other" / ".UAM" / "provider-setup" / "fixture"})
+	{
+		uam::remote::RunnerState state;
+		const nlohmann::json rejected = state.HandleProcessRequest({{"id", "outside"}, {"type", "process.start"},
+		    {"sessionId", "central-path"}, {"controlToken", kProcessControlToken}, {"cwd", cwd + "/"},
+		    {"argv", nlohmann::json::array({executable, "--uam-test-empty-arguments"})},
+		    {"configurationDirectory", uam::paths::Utf8PathString(outside)}, {"configurationProvider", "opencode-cli"}});
+		UAM_ASSERT(!rejected.value("ok", true));
+		UAM_ASSERT_EQ(rejected["error"].value("message", ""), "Central resource folder does not belong to this workspace.");
+	}
+}
+
+UAM_TEST(RemoteRunnerPreservesEmptyOptionValuesButRejectsAnEmptyExecutable)
+{
+	TempDir temp("uam-runner-empty-argv");
+	uam::remote::RunnerState state;
+	const std::string executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string();
+	nlohmann::json start = {{"id", "start-empty"}, {"type", "process.start"}, {"sessionId", "empty-option-values"},
+	                        {"controlToken", kProcessControlToken}, {"cwd", temp.root.string()},
+	                        {"argv", nlohmann::json::array({executable, "--uam-test-empty-arguments", "--tools", "", "--setting-sources", "", "after"})}};
+	for (const std::string invalid : {std::string{}, std::string("bad\0executable", 14), std::string(32769, 'x')})
+	{
+		nlohmann::json malformed = start;
+		malformed["argv"][0] = invalid;
+		UAM_ASSERT(!uam::remote::HandleRunnerRequest(malformed, "test-version", &state).value("ok", true));
+	}
+	nlohmann::json nul_argument = start;
+	nul_argument["argv"][3] = std::string("bad\0argument", 12);
+	UAM_ASSERT(!uam::remote::HandleRunnerRequest(nul_argument, "test-version", &state).value("ok", true));
+	const nlohmann::json started = uam::remote::HandleRunnerRequest(start, "test-version", &state);
+	UAM_ASSERT(started.value("ok", false));
+	std::string output;
+	bool exited = false;
+	for (int attempt = 0; attempt < 300 && !exited; ++attempt)
+	{
+		const nlohmann::json polled = uam::remote::HandleRunnerRequest(
+		    {{"id", "poll-empty"}, {"type", "process.poll"}, {"sessionId", "empty-option-values"}, {"controlToken", kProcessControlToken}}, "test-version", &state);
+		UAM_ASSERT(polled.value("ok", false));
+		std::string chunk;
+		UAM_ASSERT(uam::base64::Decode(polled["result"].value("stdoutBase64", ""), chunk));
+		output += chunk;
+		exited = !polled["result"].value("running", true);
+		if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		else UAM_ASSERT_EQ(polled["result"].value("exitCode", -1), 0);
+	}
+	UAM_ASSERT(exited);
+	UAM_ASSERT_EQ(nlohmann::json::parse(output), nlohmann::json::array({"--tools", "", "--setting-sources", "", "after"}));
+	UAM_ASSERT(uam::remote::HandleRunnerRequest(
+	    {{"id", "remove-empty"}, {"type", "process.remove"}, {"sessionId", "empty-option-values"}, {"controlToken", kProcessControlToken}}, "test-version", &state).value("ok", false));
+}
+
+UAM_TEST(RemoteUsageAccountingRunnerClientReassemblesDurableFactsInsideBoundedFrames)
+{
+	TempDir temp("uam-remote-usage-accounting");
+	ScopedEnvVar home("HOME", temp.root.string());
+	ScopedEnvVar user_profile("USERPROFILE", temp.root.string());
+	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string());
+	ScopedEnvVar claude_home("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", temp.root.string());
+	ScopedEnvVar copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
+	ScopedEnvVar xdg_data("XDG_DATA_HOME", (temp.root / "xdg").string());
+	ScopedEnvVar antigravity_home("ANTIGRAVITY_DATA_DIR", (temp.root / "antigravity").string());
+	ScopedEnvVar opencode_db("OPENCODE_DB", (temp.root / "missing.db").string());
+	uam::usage::Store store(temp.root / ".uam" / "runner-usage");
+	std::vector<uam::usage::Record> records;
+	for (int index = 0; index < 100; ++index)
+	{
+		uam::usage::Record record;
+		record.provider_id = uam::provider_ids::kClaudeCli; record.model_id = "claude-sonnet";
+		record.session_id = std::string(8000, 's'); record.dedupe_key = std::string(8000, 'r') + std::to_string(index);
+		record.timestamp_ms = uam::time::SystemEpochMillisecondsNow() - 3000;
+		record.tokens.input = 12; record.tokens.output = 3;
+		records.push_back(std::move(record));
+	}
+	uam::usage::Record old_native;
+	old_native.provider_id = uam::provider_ids::kCodexCli; old_native.model_id = "test-model";
+	old_native.session_id = "old-session"; old_native.dedupe_key = "old-native-receipt";
+	old_native.timestamp_ms = uam::time::SystemEpochMillisecondsNow() - 180LL * 86400000;
+	old_native.tokens.input = 8;
+	records.push_back(old_native);
+	for (int index = 0; index < 4; ++index)
+	{
+		uam::usage::AntigravityUsageCandidate candidate;
+		candidate.record.provider_id = uam::provider_ids::kAntigravityCli; candidate.record.model_id = "gemini-3-pro"; candidate.record.session_id = "session"; candidate.record.tokens.input = 4;
+		candidate.location_id = nlohmann::json::array({"antigravity","session","step",index/2,0}).dump();
+		candidate.aliases = {nlohmann::json::array({12,index<2 ? "old-request" : "future-request"}).dump()};
+		candidate.timestamp_quality = index%2 ? 0 : 2;
+		const std::int64_t now = uam::time::SystemEpochMillisecondsNow();
+		candidate.record.timestamp_ms = index%2 ? now-3000 : index==0 ? now-100*86400000LL : now+86400000;
+		const std::optional<uam::usage::Record> record = uam::usage::EncodeAntigravityAccountingRecord(candidate); UAM_ASSERT(record); records.push_back(*record);
+	}
+	std::vector<uam::usage::SourceRecord> references;
+	for (std::size_t index = 0; index < records.size(); ++index) references.push_back({&records[index], "fixture", index});
+	std::string error;
+	UAM_ASSERT(store.Import(references, error));
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() /
+#if defined(_WIN32)
+	    "uam-runner.exe";
+#else
+	    "uam-runner";
+#endif
+	uam::remote::RunnerClient client(service, {uam::paths::Utf8PathString(runner), "bridge-direct"});
+	nlohmann::json snapshot;
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	do
+	{
+		UAM_ASSERT(client.ReadUsageAccounting(snapshot, &error));
+		if (snapshot.contains("facts")) break;
+		UAM_ASSERT(snapshot.value("pending", false));
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	} while (std::chrono::steady_clock::now() < deadline);
+	UAM_ASSERT(snapshot.contains("facts"));
+	UAM_ASSERT_EQ(snapshot["facts"].size(), std::size_t{105});
+	UAM_ASSERT_EQ(snapshot["version"], nlohmann::json(2));
+	UAM_ASSERT_EQ(snapshot["range"], nlohmann::json("all-recorded"));
+	UAM_ASSERT(snapshot.dump().size() > 1024 * 1024);
+	std::vector<uam::usage::AccountingRecord> transferred;
+	for (const nlohmann::json& row : snapshot["facts"]) { const std::optional<uam::usage::AccountingRecord> record = uam::usage::DecodeAccountingRecord(row); UAM_ASSERT(record); transferred.push_back(*record); }
+	std::vector<const uam::usage::Record*> accounting;
+	for (const uam::usage::AccountingRecord& record : transferred) accounting.push_back(&record.record);
+	const std::int64_t as_of = snapshot["asOfMs"].get<std::int64_t>();
+	const std::optional<uam::usage::Ledger> ledger = uam::usage::Ledger::Create(accounting,as_of); UAM_ASSERT(ledger);
+	UAM_ASSERT_EQ(ledger->Query(ledger->WindowStart(7),as_of)->total.tokens.Total(),1500LL);
+	const std::optional<uam::usage::Ledger> lifetime = uam::usage::Ledger::Create(accounting, as_of, uam::usage::LedgerRange::AllRecorded);
+	UAM_ASSERT(lifetime);
+	UAM_ASSERT_EQ(lifetime->Query(0, as_of)->total.tokens.Total(), 1512LL);
+	UAM_ASSERT(uam::usage::DecodeAccountingRecord(snapshot["facts"][0]));
+	const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+	std::stop_source cancellation; cancellation.request_stop();
+	UAM_ASSERT(!client.ReadUsageAccounting(snapshot, &error, cancellation.get_token()));
+	UAM_ASSERT(std::chrono::steady_clock::now() - start < std::chrono::seconds(1));
+}
+
+UAM_TEST(RemoteUsageAccountingRequestRejectsInvalidOffsetsAndSnapshotFingerprints)
+{
+	TempDir temp("uam-usage-runner-validation");
+	const std::shared_ptr<uam::usage::Collector> collector = std::make_shared<uam::usage::Collector>(temp.root, std::vector<uam::usage::HistorySource>{}, uam::usage::RateFetcher{}, true);
+	uam::remote::RunnerState state(1024 * 1024, collector);
+	const nlohmann::json hello = uam::remote::HandleRunnerRequest({{"id", "hello"}, {"type", "hello"}, {"protocolVersion", uam::remote::kRunnerProtocolVersion}, {"nonce", "usage"}}, "test", &state);
+	UAM_ASSERT(hello["capabilities"].value("usageAccounting", false));
+	for (const nlohmann::json& value : {nlohmann::json(-1), nlohmann::json("0"), nlohmann::json(64 * 1024 * 1024 + 1)})
+		UAM_ASSERT(!state.HandleProcessRequest({{"id", "offset"}, {"type", "usage.accounting"}, {"offset", value}}).value("ok", true));
+	UAM_ASSERT(!state.HandleProcessRequest({{"id", "snapshot"}, {"type", "usage.accounting"}, {"fingerprint", 42}}).value("ok", true));
+}
+
+UAM_TEST(RemoteUsageClientValidatesLifetimeScopeAndKeepsLegacyRollingReceipts)
+{
+	TempDir temp("uam-usage-client-scopes");
+	ScopedEnvVar log_env("UAM_TEST_CREATE_LOG", (temp.root / "requests.jsonl").string());
+	ScopedEnvVar mode_env("UAM_TEST_CREATE_MODE", "usage-snapshot");
+	uam::usage::Record record;
+	record.provider_id = uam::provider_ids::kCodexCli; record.model_id = "test-model";
+	record.dedupe_key = "old-native"; record.timestamp_ms = uam::time::SystemEpochMillisecondsNow() - 180LL * 86400000; record.tokens.input = 8;
+	const std::string identity = nlohmann::json::array({"native", record.provider_id, record.dedupe_key}).dump();
+	const nlohmann::json valid{{"version", 2}, {"range", "all-recorded"}, {"asOfMs", uam::time::SystemEpochMillisecondsNow()}, {"metadata", uam::usage::EmptyHistoryMetadata()},
+	    {"facts", nlohmann::json::array({uam::usage::EncodeAccountingRecord({identity, record})})}};
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	for (const int scenario : {0, 1, 2, 3, 4, 5, 6})
+	{
+		nlohmann::json wire = valid;
+		if (scenario == 1) wire.erase("range");
+		if (scenario == 2) wire["range"] = "rolling";
+		if (scenario == 3) wire["version"] = 1;
+		if (scenario == 4) { wire["version"] = 1; wire.erase("range"); }
+		if (scenario == 5)
+		{
+			wire["version"] = 1; wire.erase("range");
+			wire["facts"][0][1] = uam::time::SystemEpochMillisecondsNow() - 3000;
+		}
+		if (scenario == 6) wire["facts"].push_back(wire["facts"][0]);
+		ScopedEnvVar snapshot_env("UAM_TEST_USAGE_SNAPSHOT", wire.dump());
+		uam::remote::RunnerClient client(service, {service.ResolveCurrentExecutablePath().string(), "--uam-test-remote-opencode-create"});
+		nlohmann::json result;
+		std::string error;
+		const bool accepted = client.ReadUsageAccounting(result, &error);
+		UAM_ASSERT_EQ(accepted, scenario == 0 || scenario == 5);
+		if (accepted) { UAM_ASSERT_EQ(result, wire); UAM_ASSERT(error.empty()); }
+		else { UAM_ASSERT(!error.empty()); UAM_ASSERT(!result.contains("facts")); }
+	}
+}
+
+UAM_TEST(RemoteUsageAccountingStreamsBeyondDocumentLimitAndCancellationPreservesCache)
+{
+	TempDir temp("uam-remote-usage-streamed");
+	ScopedEnvVar home("HOME", temp.root.string()), user_profile("USERPROFILE", temp.root.string());
+	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string()), claude_home("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", temp.root.string()), copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
+	ScopedEnvVar xdg_data("XDG_DATA_HOME", (temp.root / "xdg").string()), antigravity_home("ANTIGRAVITY_DATA_DIR", (temp.root / "antigravity").string()), opencode_db("OPENCODE_DB", (temp.root / "missing.db").string());
+	uam::usage::Store store(temp.root / ".uam" / "runner-usage"); std::string error;
+	for (int batch_index = 0; batch_index < 3; ++batch_index)
+	{
+		std::vector<uam::usage::Record> records;
+		for (int index = 0; index < 1500; ++index)
+		{
+			uam::usage::Record record; record.provider_id = "codex-cli"; record.model_id = "old-model"; record.session_id = std::string(8000, 's'); record.dedupe_key = std::string(8000, 'r') + std::to_string(batch_index * 1500 + index);
+			record.timestamp_ms = uam::time::SystemEpochMillisecondsNow() - 180LL * 86400000; record.tokens.input = 2; records.push_back(std::move(record));
+		}
+		std::vector<uam::usage::SourceRecord> references; for (const uam::usage::Record& record : records) references.push_back({&record, "fixture", 0}); UAM_ASSERT(store.Import(references, error));
+	}
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() /
+#if defined(_WIN32)
+	    "uam-runner.exe";
+#else
+	    "uam-runner";
+#endif
+	uam::remote::RunnerClient client(service, {uam::paths::Utf8PathString(runner), "bridge-direct"});
+	const fs::path destination = temp.root / "download" / "receipts.jsonl"; nlohmann::json progress;
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+	do
+	{
+		UAM_ASSERT(client.ReadUsageAccountingFile(destination, progress, &error));
+		if (!progress.is_object()) break;
+		UAM_ASSERT(progress.value("pending", false)); UAM_ASSERT(progress.value("collectionError", "").empty()); std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	} while (std::chrono::steady_clock::now() < deadline);
+	UAM_ASSERT(!progress.is_object()); UAM_ASSERT(fs::file_size(destination) > 64 * 1024 * 1024);
+	const std::shared_ptr<const uam::usage::ReceiptSnapshot> snapshot = uam::usage::ReadReceiptSnapshot(destination, error); UAM_ASSERT(snapshot); UAM_ASSERT(snapshot->lifetime);
+	std::size_t count = 0; std::int64_t tokens = 0;
+	UAM_ASSERT(snapshot->Visit([&](const uam::usage::AccountingRecord& entry) { ++count; tokens += entry.record.tokens.input; UAM_ASSERT(entry.record.timestamp_ms < snapshot->as_of - 90LL * 86400000); return true; }, error));
+	UAM_ASSERT_EQ(count, std::size_t{4500}); UAM_ASSERT_EQ(tokens, 9000LL);
+	std::stop_source cancellation; cancellation.request_stop(); UAM_ASSERT(!client.ReadUsageAccountingFile(destination, progress, &error, cancellation.get_token()));
+	UAM_ASSERT_EQ(uam::usage::ReadReceiptSnapshot(destination, error)->fingerprint, snapshot->fingerprint);
+	for (const fs::directory_entry& entry : fs::directory_iterator(destination.parent_path())) UAM_ASSERT(entry.path().filename().string().find(".download-") == std::string::npos);
+}
+
+#if defined(__APPLE__) || defined(__linux__)
+namespace
+{
+	struct RemoteAdmissionFixture
+	{
+		struct RunnerOwner
+		{
+			uam::platform::StdioProcessPlatformFields process;
+			~RunnerOwner()
+			{
+				IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+				service.StopStdioProcess(process, true);
+				service.CloseStdioProcessHandles(process);
+			}
+		};
+		TempDir temp{"uam-remote-admission"};
+		RunnerOwner runner_service;
+		uam::AppState app;
+		uam::AcpSessionState* session = nullptr;
+		fs::path runner;
+		fs::path socket;
+		fs::path input_log;
+		std::string version;
+		const std::string token = "private-admission-authority";
+
+		RemoteAdmissionFixture()
+		{
+			IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+			runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+			socket = temp.root / "runner.sock";
+			input_log = temp.root / "provider-input.jsonl";
+			version = std::string(uam::constants::kAppVersion).substr(1);
+			std::string error;
+			UAM_ASSERT(service.StartStdioProcess(runner_service.process, temp.root,
+			    {runner.string(), "serve", "--socket", socket.string()}, &error));
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			while (!fs::exists(socket) && std::chrono::steady_clock::now() < deadline)
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			if (!fs::exists(socket))
+			{
+				std::array<char, 8192> bytes{};
+				const std::ptrdiff_t error_bytes = service.ReadStdioProcessStderr(runner_service.process, bytes.data(), bytes.size(), &error);
+				const std::string child_error = error_bytes > 0 ? std::string(bytes.data(), static_cast<std::size_t>(error_bytes)) : "";
+				const std::ptrdiff_t output_bytes = service.ReadStdioProcessStdout(runner_service.process, bytes.data(), bytes.size(), &error);
+				const std::string child_output = output_bytes > 0 ? std::string(bytes.data(), static_cast<std::size_t>(output_bytes)) : "";
+				int exit_code = -1;
+				const bool exited = service.PollStdioProcessExited(runner_service.process, &exit_code);
+				std::cerr << "[private-runner-setup] runner=" << runner.string() << " socket=" << socket.string()
+				          << " socket_bytes=" << socket.string().size() << " exited=" << exited << " exit=" << exit_code
+				          << " stderr=" << child_error << " stdout=" << child_output << '\n';
+			}
+			UAM_ASSERT(fs::exists(socket));
+			const fs::path fake_ssh = temp.root / "ssh";
+			UAM_ASSERT(uam::io::WriteTextFile(fake_ssh,
+			    "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge --socket \"$UAM_TEST_SOCKET\"\n"));
+			fs::permissions(fake_ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+
+			app.data_root = temp.root / "data";
+			app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+			ChatSession chat;
+			chat.id = "private-remote-admission";
+			chat.provider_id = "gemini-cli";
+			chat.execution_host_id = "private-host";
+			chat.workspace_directory = temp.root.string();
+			chat.native_session_id = "private-native-session";
+			chat.memory_enabled = false;
+			chat.messages.push_back({.role = MessageRole::User, .content = "Previously saved remote history"});
+			ExecutionHost host;
+			host.id = chat.execution_host_id;
+			host.transport = "ssh";
+			host.ssh_alias = "private-test-host";
+			host.platform = "linux";
+			host.runner_status = "ready";
+			host.runner_version = version;
+			host.runner_protocol_version = 3;
+			UAM_ASSERT(uam::remote::CanAttemptRunnerConnection(host));
+			app.settings.execution_hosts.push_back(host);
+			app.chats.push_back(std::move(chat));
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+			std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+			owned->chat_id = app.chats.front().id;
+			owned->provider_id = app.chats.front().provider_id;
+			owned->session_id = app.chats.front().native_session_id;
+			owned->process_execution_host_id = host.id;
+			owned->current_mode_id = "default";
+			owned->remote_runner_protocol_version = 3;
+			owned->remote_output_delivery_token = token;
+			session = owned.get();
+			app.acp_sessions.push_back(std::move(owned));
+			const std::string inherited_path = uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
+			const std::string spec = uam::remote::BuildProcessProxySpec("acp-" + app.chats.front().id,
+			    temp.root, {"/bin/sh", "-c", "while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$UAM_TEST_INPUT_LOG\"; done"},
+			    {{"UAM_TEST_INPUT_LOG", input_log.string()}}, false, token);
+			UAM_ASSERT(service.StartStdioProcess(*session, temp.root,
+			    {runner.string(), "proxy", "--alias", host.ssh_alias, "--platform", "linux", "--version", version}, &error,
+			    {{uam::remote::kRemoteProcessSpecEnvironment, spec}, {"PATH", temp.root.string() + ":" + inherited_path},
+			     {"UAM_TEST_RUNNER", runner.string()}, {"UAM_TEST_SOCKET", socket.string()}}));
+			session->running = true;
+			session->session_ready = true;
+		}
+		~RemoteAdmissionFixture()
+		{
+			if (session == nullptr) return;
+			IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+			std::string error;
+			(void)service.WriteToStdioProcess(*session, uam::remote::kRemoteStopControlLine.data(),
+			    uam::remote::kRemoteStopControlLine.size(), &error);
+			int code = -1;
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			while (!service.PollStdioProcessExited(*session, &code) && std::chrono::steady_clock::now() < deadline)
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			service.StopStdioProcess(*session, true);
+			service.CloseStdioProcessHandles(*session);
+		}
+		void RestartProxyAttached()
+		{
+			IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+			service.CloseStdioProcessInput(*session);
+			int code = -1;
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			while (!service.PollStdioProcessExited(*session, &code) && std::chrono::steady_clock::now() < deadline)
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			service.StopStdioProcess(*session, true);
+			service.CloseStdioProcessHandles(*session);
+			const std::string inherited_path = uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
+			const std::string spec = uam::remote::BuildProcessProxySpec("acp-" + app.chats.front().id, temp.root, {"/bin/sh"}, {}, true, token);
+			std::string error;
+			UAM_ASSERT(service.StartStdioProcess(*session, temp.root,
+			    {runner.string(), "proxy", "--alias", "private-test-host", "--platform", "linux", "--version", version}, &error,
+			    {{uam::remote::kRemoteProcessSpecEnvironment, spec}, {"PATH", temp.root.string() + ":" + inherited_path},
+			     {"UAM_TEST_RUNNER", runner.string()}, {"UAM_TEST_SOCKET", socket.string()}}));
+			session->running = session->session_ready = true;
+		}
+		void AwaitDeliveryReceipt(const std::string& id)
+		{
+			std::string output, error;
+			std::array<char, 4096> bytes{};
+			const std::string expected = std::string(uam::remote::kRemoteInputReceiptPrefix) + token + " " + id;
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (output.find(expected) == std::string::npos && std::chrono::steady_clock::now() < deadline)
+			{
+				const std::ptrdiff_t count = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(*session, bytes.data(), bytes.size(), &error);
+				if (count > 0) output.append(bytes.data(), static_cast<std::size_t>(count));
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			}
+			UAM_ASSERT(output.find(expected) != std::string::npos);
+		}
+		void AwaitSave()
+		{
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (!app.pending_chat_save_at_by_chat_id.empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(app);
+				std::this_thread::yield();
+			}
+			UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+		}
+		void AwaitInput()
+		{
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while ((!fs::exists(input_log) || ReadFile(input_log).empty()) && std::chrono::steady_clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(app);
+				(void)uam::acp_detail::SendQueuedPromptIfReady(app, *session, app.chats.front());
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			}
+			UAM_ASSERT(fs::exists(input_log) && !ReadFile(input_log).empty());
+		}
+	};
+}
+
+namespace
+{
+	struct InjectedRemoteAdmissionFixture
+	{
+		TempDir temp{"uam-injected-remote-admission"};
+		uam::AppState app;
+		uam::AcpSessionState* session = nullptr;
+		InjectedAcpInput input;
+		const std::string token = "private-injected-authority";
+		InjectedRemoteAdmissionFixture()
+		{
+			app.data_root = temp.root / "data";
+			app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+			ChatSession chat;
+			chat.id = "injected-remote-admission";
+			chat.provider_id = "gemini-cli";
+			chat.execution_host_id = "injected-host";
+			chat.workspace_directory = temp.root.string();
+			chat.native_session_id = "private-native-session";
+			chat.remote_process_exists = true;
+			chat.remote_process_control_token = token;
+			chat.memory_enabled = false;
+			chat.messages.push_back({.role = MessageRole::User, .content = "Previously saved remote history"});
+			ExecutionHost host;
+			host.id = chat.execution_host_id;
+			host.transport = "ssh";
+			host.ssh_alias = "never-connected.invalid";
+			host.platform = "linux";
+			host.runner_status = "ready";
+			host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+			host.runner_protocol_version = 3;
+			app.settings.execution_hosts.push_back(host);
+			app.chats.push_back(std::move(chat));
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+			auto owned = std::make_unique<uam::AcpSessionState>();
+			owned->chat_id = app.chats.front().id;
+			owned->provider_id = app.chats.front().provider_id;
+			owned->session_id = app.chats.front().native_session_id;
+			owned->process_execution_host_id = host.id;
+			owned->current_mode_id = "default";
+			// This represents an owned launch with known Default options, not an unknown reattachment.
+			owned->launch_model_options_captured = true;
+			owned->remote_runner_protocol_version = 3;
+			owned->remote_output_delivery_token = token;
+			session = owned.get();
+			app.acp_sessions.push_back(std::move(owned));
+			input.Attach(*session);
+		}
+		~InjectedRemoteAdmissionFixture()
+		{
+			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
+		}
+		void AwaitSave()
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (!app.pending_chat_save_at_by_chat_id.empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(app);
+				std::this_thread::yield();
+			}
+			UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+		}
+		void AwaitInput()
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (input.Bytes().empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(app);
+				(void)uam::acp_detail::SendQueuedPromptIfReady(app, *session, app.chats.front());
+				std::this_thread::yield();
+			}
+			UAM_ASSERT(!input.Bytes().empty());
+		}
+		std::string InputPayload()
+		{
+			UAM_ASSERT(input.writer->Flush(std::chrono::seconds(5)));
+			const auto wire = input.Bytes();
+			UAM_ASSERT(wire.starts_with(uam::remote::kRemoteInputDeliveryPrefix));
+			UAM_ASSERT_EQ(std::count(wire.begin(), wire.end(), '\n'), 1);
+			std::string decoded;
+			UAM_ASSERT(uam::base64::Decode(wire.substr(wire.rfind(' ') + 1), decoded));
+			return decoded; // Inspection of attempted bytes only; no runner ACK is synthesized.
+		}
+		void AssertInputRemainsUnconfirmed()
+		{
+			const auto& chat = app.chats.front();
+			const int row = static_cast<int>(chat.messages.size()) - 1;
+			UAM_ASSERT(chat.messages.back().role == MessageRole::User);
+			UAM_ASSERT(!chat.messages.back().input_write_completed);
+			const auto known = uam::KnownUnsentAcpMessageIndices(app, chat);
+			const auto recoverable = uam::RecoverableUnsentAcpMessageIndices(app, chat);
+			UAM_ASSERT(std::ranges::find(known, row) == known.end());
+			UAM_ASSERT(std::ranges::find(recoverable, row) == recoverable.end());
+		}
+	};
+
+	void PrepareRemoteQuotaManual(InjectedRemoteAdmissionFixture& fixture, bool small_model = false)
+	{
+		auto& chat = fixture.app.chats.front();
+		fixture.app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		if (small_model)
+		{
+			chat.small_model_mode = true;
+			Goal goal;
+			goal.id = chat.active_goal_id = "manual-quota-goal";
+			goal.objective = "Manual input replaces the waiting quota attempt";
+			chat.goals.push_back(goal);
+		}
+		chat.provider_id = fixture.session->provider_id = "claude-cli";
+		chat.native_session_id = fixture.session->session_id = "55555555-5555-4555-8555-555555555555";
+		fixture.session->protocol_kind = "claude-code-stream-json";
+		chat.claude_quota_continuation.id = "remote-manual-quota-owner";
+		chat.claude_quota_continuation.state = "waiting";
+		auto& quota = chat.claude_quota_continuation;
+		quota.chat_id = chat.id;
+		quota.native_session_id = chat.native_session_id;
+		quota.context = uam::acp_detail::ClaudeQuotaContext(fixture.app, chat);
+		quota.observed_at_epoch_s = uam::time::TimestampNowSec();
+		quota.resets_at_epoch_s = quota.observed_at_epoch_s + 60;
+		quota.user_message_index = 0;
+		quota.message_count = chat.messages.size();
+		std::uint64_t digest = uam::hashing::kFnv1a64OffsetBasis;
+		uam::hashing::UpdateFnv1a64WithSeparator(digest, chat.messages.front().content);
+		uam::hashing::UpdateFnv1a64WithSeparator(digest, chat.messages.front().created_at);
+		quota.accepted_message_digest = uam::hashing::Hex64Padded(digest);
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = fixture.token;
+		chat.remote_structured_protocol = fixture.session->protocol_kind;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+	}
+
+	void PrepareRemoteDirectSteer(InjectedRemoteAdmissionFixture& fixture, bool copilot = false)
+	{
+		auto& chat = fixture.app.chats.front();
+		auto& session = *fixture.session;
+		fixture.app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		chat.provider_id = session.provider_id = copilot ? "copilot-cli" : "codex-cli";
+		chat.native_session_id = session.session_id = "66666666-6666-4666-8666-666666666666";
+		session.protocol_kind = copilot ? "copilot-sdk" : "codex-app-server";
+		session.codex_thread_id = session.session_id;
+		session.codex_turn_id = "remote-parent-turn";
+		session.processing = true;
+		session.prompt_request_id = 17;
+		session.turn_serial = 7;
+		session.turn_first_user_message_index = session.turn_user_message_index = 0;
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = fixture.token;
+		chat.remote_structured_protocol = session.protocol_kind;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+	}
+}
+
+UAM_TEST(AcpRemoteManualQuotaCancellationWaitsForFullAdmissionBeforeMarker)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (bool small_model : {false, true})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRemoteQuotaManual(fixture, small_model);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto before = ReadFile(primary);
+		const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+		UAM_ASSERT(prepared);
+		std::promise<void> entered;
+		auto locked = entered.get_future();
+		std::jthread publication([&entered, prepared]()
+		{
+			(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+			{
+				entered.set_value();
+				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				return false;
+			});
+		});
+		UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+		std::string error;
+		const auto started = std::chrono::steady_clock::now();
+		const bool accepted = uam::SendAcpPrompt(app, chat.id, "Manual SSH input replaces quota wait", &error);
+		const auto elapsed = std::chrono::steady_clock::now() - started;
+		publication.join();
+		UAM_ASSERT(accepted && elapsed <= std::chrono::milliseconds(100));
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		fixture.AwaitSave();
+		const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved && saved->claude_quota_continuation.state == "cancelled");
+		UAM_ASSERT_EQ(saved->messages.back().content, std::string("Manual SSH input replaces quota wait"));
+		UAM_ASSERT(saved->messages.back().acp_prompt_not_sent && saved->remote_prompt_delivery_id.empty());
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		fixture.AwaitInput();
+		const auto input = fixture.InputPayload();
+		UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+		UAM_ASSERT(input.find("Manual SSH input replaces quota wait") != std::string::npos);
+		UAM_ASSERT(input.find("Previously saved remote history") == std::string::npos);
+		fixture.AssertInputRemainsUnconfirmed();
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteManualQuotaFailureRetainsWaitingPrimaryAndUnsentInput)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (bool small_model : {false, true})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRemoteQuotaManual(fixture, small_model);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto before = ReadFile(primary);
+		app.data_root = fixture.temp.root / "blocked-remote-manual-quota";
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked"));
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Retain failed remote manual input", &error));
+		const auto results = std::make_shared<std::vector<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (results->empty() && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT_EQ(results->size(), std::size_t{1});
+		UAM_ASSERT(!results->front());
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteManualQuotaMarkerRejectsChangedSavedProcessAuthority)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (bool small_model : {false, true})
+	for (bool after_receipt : {false, true})
+	for (const std::string mutation : {"token", "exists", "writer", "transport", "shutdown", "cleanup"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRemoteQuotaManual(fixture, small_model);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Retain manual quota input under changed saved authority", &error));
+		fixture.AwaitSave();
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+		UAM_ASSERT(fixture.session->pending_prompt_delivery && fixture.input.Bytes().empty());
+		if (after_receipt) fixture.AwaitSave();
+		if (mutation == "token") chat.remote_process_control_token = "replacement-saved-token";
+		if (mutation == "exists") chat.remote_process_exists = false;
+		if (mutation == "cleanup") chat.side_cleanup_requested = true;
+		if (mutation == "writer") fixture.session->stdin_writer.reset();
+		if (mutation == "transport") fixture.session->transport_ownership_error = "Retained native refusal";
+		if (mutation == "shutdown") (void)uam::AgentRunScheduler::QuiesceInitialForShutdown(app);
+		fixture.AwaitSave();
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		UAM_ASSERT(!fixture.session->pending_prompt_delivery && fixture.session->queued_prompt.empty());
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.acp_queue_held);
+		UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("cancelled"));
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteManualQuotaClosedOrRejectedTransportRetainsImmediateRefusal)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (bool small_model : {false, true})
+	for (bool closed : {false, true})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRemoteQuotaManual(fixture, small_model);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto before = ReadFile(primary);
+		const auto messages = chat.messages;
+		if (closed) PlatformServicesFactory::Instance().process_service.CloseStdioProcessInput(*fixture.session);
+		else fixture.session->transport_ownership_error = "Retained native refusal";
+		app.data_root = fixture.temp.root / "blocked-refused-quota-input";
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "not a directory"));
+		std::string error;
+		UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "Refused remote manual input", &error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT_EQ(chat.messages, messages);
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		UAM_ASSERT(fixture.input.Bytes().empty() && fixture.session->queued_user_prompts.empty());
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteDirectSteerPublishesExactEnvelopeBeforeOneControl)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	InjectedRemoteAdmissionFixture fixture;
+	PrepareRemoteDirectSteer(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const auto before = ReadFile(primary);
+	const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+	UAM_ASSERT(prepared);
+	std::promise<void> entered;
+	auto locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	std::string error;
+	const auto started = std::chrono::steady_clock::now();
+	const bool accepted = uam::SteerAcpPrompt(app, chat.id, "One owned remote steer", {}, {}, false, &error);
+	const auto elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(accepted && elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT_EQ(ReadFile(primary), before);
+	UAM_ASSERT_EQ(chat.remote_pending_requests.size(), std::size_t{1});
+	const auto envelope = chat.remote_pending_requests.front();
+	UAM_ASSERT(!envelope.delivery_id.empty() && !envelope.payload.empty());
+	UAM_ASSERT(fixture.input.Bytes().empty());
+	fixture.AwaitSave();
+	const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved && saved->remote_pending_requests.size() == 1);
+	UAM_ASSERT(saved->remote_pending_requests.front() == envelope);
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 17);
+	fixture.AwaitInput();
+	const auto input = fixture.InputPayload();
+	UAM_ASSERT(input.find("One owned remote steer") != std::string::npos);
+	UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+	UAM_ASSERT(fixture.session->pending_local_steer_abandon.empty());
+	fixture.AssertInputRemainsUnconfirmed();
+#endif
+}
+
+UAM_TEST(AcpRemoteDirectSteerStaleOrFailedReceiptPreservesParentAndUnsentIntent)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (const std::string mutation : {"storage", "token", "authority-token", "authority-exists", "turn", "cancel", "host", "root", "transport", "shutdown", "cleanup", "question", "compaction", "hold"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRemoteDirectSteer(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		std::string error;
+		UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "Retain revoked remote steer", {}, {}, false, &error));
+		const auto request = chat.remote_pending_requests.front();
+		uam::AcpRemotePendingRequestState unrelated;
+		unrelated.request_id = 99;
+		unrelated.method = "unrelated/request";
+		unrelated.delivery_id = "unrelated-delivery-id";
+		unrelated.payload = "unrelated captured envelope";
+		chat.remote_pending_requests.push_back(unrelated);
+		if (mutation == "storage")
+		{
+			fs::rename(app.data_root, fixture.temp.root / "saved-before-remote-steer");
+			UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked"));
+		}
+		if (mutation == "root") app.data_root = fixture.temp.root / "new-steer-root";
+		if (mutation == "token") fixture.session->remote_output_delivery_token = "replacement-proxy-token";
+		if (mutation == "cleanup") chat.side_cleanup_requested = true;
+		if (mutation == "question") fixture.session->waiting_for_user_input = true;
+		if (mutation == "compaction") fixture.session->manual_compaction_pending = true;
+		if (mutation == "hold") fixture.session->queue_held = true;
+		if (mutation == "authority-token") chat.remote_process_control_token = "replacement-saved-token";
+		if (mutation == "authority-exists") chat.remote_process_exists = false;
+		if (mutation == "turn") fixture.session->codex_turn_id = "replacement-parent-turn";
+		if (mutation == "cancel") fixture.session->cancel_requested = true;
+		if (mutation == "host") app.settings.execution_hosts.back().ssh_alias = "replacement-host";
+		if (mutation == "transport") fixture.session->transport_ownership_error = "Retained rejected transport";
+		if (mutation == "shutdown") (void)uam::AgentRunScheduler::QuiesceInitialForShutdown(app);
+		const auto results = std::make_shared<std::vector<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (results->empty() && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT_EQ(results->size(), std::size_t{1}); // Generic storage ACK does not authorize this control.
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+		UAM_ASSERT(std::ranges::none_of(chat.remote_pending_requests, [&request](const auto& item) { return item == request; }));
+		UAM_ASSERT(std::ranges::find(chat.remote_pending_requests, unrelated) != chat.remote_pending_requests.end());
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 17);
+		UAM_ASSERT(fixture.session->processing);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteDirectSteerUncertainWriteKeepsCommittedEnvelopeWithoutKnownUnsent)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	InjectedRemoteAdmissionFixture fixture;
+	PrepareRemoteDirectSteer(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	std::string error;
+	UAM_ASSERT(fixture.session->stdin_writer == fixture.input.writer);
+	UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "Remote write outcome remains unknown", {}, {}, false, &error));
+	const auto envelope = chat.remote_pending_requests.front();
+	fixture.input.writer->Stop(); // Same captured writer now refuses enqueue; no process or reconnect is launched.
+	const auto results = std::make_shared<std::vector<bool>>();
+	UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (results->empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT_EQ(results->size(), std::size_t{1});
+	UAM_ASSERT(results->front());
+	UAM_ASSERT(std::ranges::find(chat.remote_pending_requests, envelope) != chat.remote_pending_requests.end());
+	UAM_ASSERT(!chat.messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(fixture.session->pending_local_steer_abandon.empty());
+	fixture.AssertInputRemainsUnconfirmed();
+	UAM_ASSERT(fixture.input.Bytes().empty());
+#endif
+}
+
+namespace
+{
+	void PrepareColdAuthority(InjectedRemoteAdmissionFixture& fixture)
+	{
+		auto& chat = fixture.app.chats.front();
+		auto& session = *fixture.session;
+		session.running = session.initialized = session.session_ready = false;
+		session.processing = false;
+		session.lifecycle_state = "starting";
+		chat.remote_uam_control_channel_id = "private-staged-channel";
+		chat.remote_structured_protocol = session.protocol_kind;
+	}
+
+	void BindColdInput(InjectedRemoteAdmissionFixture& fixture, bool include_parent_output = false)
+	{
+		auto& session = *fixture.session;
+		auto& chat = fixture.app.chats.front();
+		session.processing = true;
+		++session.turn_serial;
+		session.queued_prompt = "Retained cold launch input";
+		chat.messages.push_back({.role = MessageRole::User, .content = session.queued_prompt});
+		chat.messages.back().acp_prompt_not_sent = true;
+		session.turn_first_user_message_index = static_cast<int>(chat.messages.size()) - 1;
+		if (include_parent_output)
+		{
+			chat.messages.push_back({.role = MessageRole::Assistant, .content = "Preserve parent output inside the captured span"});
+			chat.messages.push_back({.role = MessageRole::User, .content = session.queued_prompt});
+		}
+		session.turn_user_message_index = static_cast<int>(chat.messages.size()) - 1;
+		uam::acp_detail::BindPendingAcpColdLaunch(fixture.app, session, chat);
+	}
+}
+
+UAM_TEST(AcpColdLaunchPublishesFullAuthorityAndBoundInputBeforeOneAttempt)
+{
+	for (bool failed_start : {false, true})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareColdAuthority(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto before = ReadFile(primary);
+		const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+		UAM_ASSERT(prepared);
+		std::promise<void> entered;
+		auto locked = entered.get_future();
+		std::jthread publication([&entered, prepared]()
+		{
+			(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+			{
+				entered.set_value();
+				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				return false;
+			});
+		});
+		UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+		int attempts = 0;
+		const auto started = std::chrono::steady_clock::now();
+		UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+		    [&attempts, failed_start](uam::AppState& owner, uam::AcpSessionState& native, ChatSession& stored)
+		{
+			++attempts;
+			const auto saved = ChatRepository::LoadLocalChat(owner.data_root, stored.id);
+			UAM_ASSERT(saved && saved->remote_process_exists);
+			UAM_ASSERT_EQ(saved->remote_process_control_token, stored.remote_process_control_token);
+			UAM_ASSERT_EQ(saved->remote_uam_control_channel_id, stored.remote_uam_control_channel_id);
+			UAM_ASSERT(saved->messages == stored.messages);
+			// Inject only process creation, never initialize/readiness/native input acknowledgement.
+			native.running = !failed_start;
+			return !failed_start;
+		}));
+		BindColdInput(fixture);
+		const auto elapsed = std::chrono::steady_clock::now() - started;
+		UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+		UAM_ASSERT_EQ(attempts, 0);
+		UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, 0);
+		publication.join();
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		fixture.AwaitSave();
+		UAM_ASSERT_EQ(attempts, 0); // Storage completion itself never starts a transport.
+		UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat) == !failed_start);
+		UAM_ASSERT_EQ(attempts, 1);
+		UAM_ASSERT(!uam::acp_detail::HasPendingAcpColdLaunch(*fixture.session));
+		uam::acp_detail::BindPendingAcpColdLaunch(app, *fixture.session, chat);
+		uam::FlushPendingChatSaves(app);
+		UAM_ASSERT_EQ(attempts, 1);
+		UAM_ASSERT(!fixture.session->initialized && !fixture.session->session_ready);
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && !chat.messages.back().input_write_completed);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+	}
+}
+
+UAM_TEST(AcpColdLaunchRevokesChangedAuthorityBeforeAndAfterFullReceipt)
+{
+	for (bool after_receipt : {false, true})
+	for (const std::string mutation : {"native", "agent", "host", "token", "channel", "cancel", "stop", "row", "queue", "root"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareColdAuthority(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		int attempts = 0;
+		UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+		    [&attempts](uam::AppState&, uam::AcpSessionState&, ChatSession&) { ++attempts; return true; }));
+		BindColdInput(fixture);
+		if (after_receipt) fixture.AwaitSave();
+		if (mutation == "native") chat.native_session_id = "replacement-native";
+		if (mutation == "agent") fixture.session->active_uam_agent_definition_hash = "replacement-agent";
+		if (mutation == "host") app.settings.execution_hosts.back().ssh_alias = "replacement.invalid";
+		if (mutation == "token") chat.remote_process_control_token = "replacement-token";
+		if (mutation == "channel") chat.remote_uam_control_channel_id = "replacement-channel";
+		if (mutation == "cancel") fixture.session->cancel_requested = true;
+		if (mutation == "stop") fixture.session->remote_stop_pending = true;
+		if (mutation == "row") chat.messages.back().content = "replacement input";
+		if (mutation == "queue") fixture.session->queued_user_prompts.push_back({.text = "Later input", .id = "replacement-raw"});
+		if (mutation == "root") app.data_root = fixture.temp.root / "replacement-root";
+		UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, 0);
+		UAM_ASSERT(!uam::acp_detail::HasPendingAcpColdLaunch(*fixture.session));
+		UAM_ASSERT(fixture.session->queue_held && fixture.input.Bytes().empty());
+		UAM_ASSERT(!chat.messages.front().acp_prompt_not_sent && !chat.messages.front().interrupted);
+		fixture.AwaitSave();
+		UAM_ASSERT_EQ(attempts, 0);
+		if (mutation == "root") UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, chat.id)));
+	}
+}
+
+
+namespace
+{
+	// Binds the fixture session to a running managed run so the scheduler owns its outcome.
+	std::string BindManagedRunForLaunchFailure(uam::AppState& app, uam::AcpSessionState& session, const std::string& transcript_id)
+	{
+		AgentRun run;
+		run.id = uam::AgentRunLedger::NewRunId();
+		run.root_chat_id = "managed-launch-root";
+		run.transcript_chat_id = transcript_id;
+		run.agent_id = "reviewer";
+		run.provider_id = session.provider_id;
+		run.definition_snapshot = "Review safely.";
+		run.task = "Review.";
+		run.effective_workspace_access = "read";
+		run.status = "running";
+		run.depth = 1;
+		run.created_at = run.updated_at = uam::time::TimestampNow();
+		UAM_ASSERT(uam::AgentRunLedger::Save(app.data_root, run));
+		app.agent_runs.push_back(run);
+		session.managed_agent_run_id = run.id;
+		return run.id;
+	}
+
+	void AssertManagedLaunchFailed(uam::AppState& app)
+	{
+		(void)uam::AgentRunScheduler::PollAtForTests(app, 1000);
+		UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("failed"));
+		UAM_ASSERT_EQ(app.agent_runs.front().diagnostic_code, std::string("managed_launch_failed"));
+		UAM_ASSERT(!uam::strings::Contains(app.agent_runs.front().diagnostic, "Retry"));
+	}
+}
+
+UAM_TEST(AcpColdLaunchOwnershipLossFailsManagedRun)
+{
+	InjectedRemoteAdmissionFixture fixture;
+	PrepareColdAuthority(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	(void)BindManagedRunForLaunchFailure(app, *fixture.session, chat.id);
+	int attempts = 0;
+	UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+	    [&attempts](uam::AppState&, uam::AcpSessionState&, ChatSession&) { ++attempts; return true; }));
+	BindColdInput(fixture);
+	chat.native_session_id = "replacement-native"; // Revokes the staged launch's ownership.
+	UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+	UAM_ASSERT(fixture.session->queue_held && !fixture.session->managed_launch_attempted);
+	fixture.AwaitSave();
+	UAM_ASSERT_EQ(attempts, 0);
+	AssertManagedLaunchFailed(app);
+}
+
+namespace
+{
+	void PrepareColdReattachment(InjectedRemoteAdmissionFixture& fixture)
+	{
+		PrepareColdAuthority(fixture);
+		auto& chat = fixture.app.chats.front();
+		auto& session = *fixture.session;
+		session.protocol_kind = chat.remote_structured_protocol = "acp";
+		session.recovering_remote_turn = session.processing = true;
+		session.turn_serial = chat.remote_turn_serial = 9;
+		session.turn_first_user_message_index = session.turn_user_message_index = chat.remote_turn_user_message_index = 0;
+		session.prompt_request_id = 17;
+		session.pending_request_methods[17] = "session/prompt";
+		chat.remote_turn_reconnect_pending = true;
+		chat.remote_active_turn_id = "existing-native-turn";
+		chat.remote_prompt_delivery_session_id = "acp-" + chat.id;
+		chat.remote_prompt_delivery_id = "existing-delivery";
+		chat.remote_prompt_delivery_payload = uam::acp_detail::BuildPromptRequest(17, chat.native_session_id,
+		    "Previously attempted input remains unknown").dump() + "\n";
+		uam::AcpRemotePendingRequestState request;
+		request.request_id = 17;
+		request.method = "session/prompt";
+		request.delivery_id = chat.remote_prompt_delivery_id;
+		request.payload = chat.remote_prompt_delivery_payload;
+		request.user_message_index = 0;
+		request.turn_serial = 9;
+		request.provider_turn_id = chat.remote_active_turn_id;
+		chat.remote_pending_requests.push_back(request);
+	}
+}
+
+UAM_TEST(AcpColdReattachmentOwnsSavedEnvelopesWithoutReclassifyingUnknownInput)
+{
+	for (bool after_receipt : {false, true})
+	for (const std::string mutation : {"none", "request", "cursor", "response", "token", "cancel"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareColdReattachment(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto input = chat.messages.front();
+		int attempts = 0;
+		UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+		    [&attempts](uam::AppState& owner, uam::AcpSessionState&, ChatSession& stored)
+		{
+			++attempts;
+			const auto saved = ChatRepository::LoadLocalChat(owner.data_root, stored.id);
+			UAM_ASSERT(saved && saved->remote_pending_requests == stored.remote_pending_requests);
+			UAM_ASSERT_EQ(saved->remote_prompt_delivery_id, stored.remote_prompt_delivery_id);
+			return true; // Inject attachment only; no provider readiness or delivery is fabricated.
+		}));
+		if (after_receipt) fixture.AwaitSave();
+		if (mutation == "request") chat.remote_pending_requests.front().payload += "replacement";
+		if (mutation == "cursor") ++chat.remote_delivered_stdout_cursor;
+		if (mutation == "response") chat.remote_interaction_responses.push_back({"18", "{\"result\":true}"});
+		if (mutation == "token") chat.remote_process_control_token = "replacement-token";
+		if (mutation == "cancel") fixture.session->cancel_requested = true;
+		if (mutation != "none")
+		{
+			UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+			UAM_ASSERT_EQ(attempts, 0);
+			UAM_ASSERT(chat.remote_process_exists && chat.remote_turn_reconnect_pending);
+			UAM_ASSERT_EQ(chat.remote_pending_requests.size(), std::size_t{1});
+			UAM_ASSERT(chat.messages.front() == input); // An unattempted attachment says nothing about prior input delivery.
+		}
+		else
+		{
+			UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+			UAM_ASSERT_EQ(attempts, after_receipt ? 1 : 0);
+		}
+		fixture.AwaitSave();
+		if (mutation == "none" && !after_receipt)
+			UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, mutation == "none" ? 1 : 0);
+		UAM_ASSERT(chat.messages.front() == input && fixture.input.Bytes().empty());
+		UAM_ASSERT(!fixture.session->initialized && !fixture.session->session_ready);
+	}
+}
+
+UAM_TEST(AcpColdReattachmentFailedSavePreservesProcessAuthorityAndUnknownDelivery)
+{
+	InjectedRemoteAdmissionFixture fixture;
+	PrepareColdReattachment(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const auto before = ReadFile(primary);
+	const auto input = chat.messages.front();
+	const auto requests = chat.remote_pending_requests;
+	int attempts = 0;
+	UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+	    [&attempts](uam::AppState&, uam::AcpSessionState&, ChatSession&) { ++attempts; return true; }));
+	fs::rename(app.data_root, fixture.temp.root / "retained-attachment-primary");
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked attachment publication"));
+	const auto results = std::make_shared<std::vector<bool>>();
+	UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (results->empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT_EQ(results->size(), std::size_t{1});
+	UAM_ASSERT(!results->front());
+	UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+	UAM_ASSERT_EQ(attempts, 0);
+	UAM_ASSERT(chat.remote_process_exists && chat.remote_turn_reconnect_pending);
+	UAM_ASSERT(chat.remote_pending_requests == requests && chat.messages.front() == input);
+	UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(fixture.temp.root / "retained-attachment-primary", chat.id)), before);
+	UAM_ASSERT(fixture.input.Bytes().empty());
+}
+
+UAM_TEST(AcpColdControlReservationStaysNonCallableThroughReceiptAndExpiresOwned)
+{
+	for (const std::string mutation : {"cancel", "host", "native", "expiry", "directory"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareColdAuthority(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		chat.uam_control_enabled = true;
+		app.settings.acp_setup_inactivity_timeout_seconds = 60;
+		std::string error;
+		UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+		nlohmann::json request = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
+		UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, *fixture.session, chat, "session/new", request, &error));
+		UAM_ASSERT_EQ(app.uam_control_capabilities.size(), std::size_t{1});
+		const auto capability = app.uam_control_capabilities.front();
+		int attempts = 0;
+		UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+		    [&attempts](uam::AppState&, uam::AcpSessionState&, ChatSession&) { ++attempts; return true; }));
+		BindColdInput(fixture);
+		const auto now_ms = uam::time::SystemEpochMillisecondsNow();
+		const auto now_s = uam::GetAppTimeSeconds();
+		UAM_ASSERT(uam::acp_detail::ShouldRetainPendingLocalAcpControlCapability(app, capability, now_ms, now_s));
+		UAM_ASSERT(!uam::acp_detail::ShouldRetainPendingLocalAcpControlCapability(app, capability, now_ms, -1.0));
+		UAM_ASSERT(!uam::acp_detail::ShouldRetainPendingLocalAcpControlCapability(app, capability, now_ms, now_s + 60.0));
+		const auto probe = capability.directory / "requests" / "cold-reservation-probe.json";
+		const auto response = capability.directory / "responses" / "cold-reservation-probe.json";
+		UAM_ASSERT(uam::io::WriteTextFile(probe, nlohmann::json({{"requestId", "cold-reservation-probe"},
+		    {"method", "_mcp_connected"}, {"arguments", {{"connectionId", "private-injected-control"}}}}).dump()));
+		(void)uam::UamControlService::ProcessPendingRequests(app);
+		UAM_ASSERT(fs::exists(probe) && !fs::exists(response));
+		UAM_ASSERT_EQ(app.uam_control_capabilities.size(), std::size_t{1});
+		fixture.AwaitSave();
+		(void)uam::UamControlService::ProcessPendingRequests(app);
+		UAM_ASSERT(fs::exists(probe) && !fs::exists(response)); // A save ACK still grants no callable authority.
+		UAM_ASSERT_EQ(attempts, 0);
+		if (mutation == "cancel") fixture.session->cancel_requested = true;
+		if (mutation == "host") app.settings.execution_hosts.back().ssh_alias = "replacement.invalid";
+		if (mutation == "native") chat.native_session_id = "replacement-native";
+		if (mutation == "expiry") app.uam_control_capabilities.front().expires_at_epoch_ms = 0;
+		if (mutation == "directory") fs::remove_all(capability.directory);
+		// Runtime polling precedes control-request polling; final launch must revoke stale authority itself.
+		UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, 0);
+		(void)uam::UamControlService::ProcessPendingRequests(app);
+		UAM_ASSERT(app.uam_control_capabilities.empty() && fixture.session->uam_control_capability_id.empty());
+		UAM_ASSERT(!fs::exists(response) && fixture.input.Bytes().empty());
+		UAM_ASSERT_EQ(attempts, 0);
+	}
+}
+
+UAM_TEST(AcpColdLaunchSmallModelScopeRechecksExactGoalBeforeAttempt)
+{
+	for (bool after_receipt : {false, true})
+	for (const std::string mutation : {"objective", "budget", "incarnation"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareColdAuthority(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		chat.small_model_mode = true;
+		Goal goal;
+		goal.id = chat.active_goal_id = "cold-owned-goal";
+		goal.objective = "Retain the exact cold launch goal";
+		chat.goals.push_back(goal);
+		int attempts = 0;
+		UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+		    [&attempts](uam::AppState&, uam::AcpSessionState&, ChatSession&) { ++attempts; return true; }));
+		BindColdInput(fixture);
+		if (after_receipt) fixture.AwaitSave();
+		if (mutation == "objective") chat.goals.front().objective = "Replacement objective without a revision bump";
+		if (mutation == "budget") ++chat.goals.front().token_budget;
+		if (mutation == "incarnation") chat.metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+		UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, 0);
+		UAM_ASSERT(fixture.session->queue_held && !fixture.session->running && fixture.input.Bytes().empty());
+		fixture.AwaitSave();
+	}
+}
+
+UAM_TEST(AcpColdLaunchStorageFailureRetainsInputAndNeverCreatesTransport)
+{
+	for (bool include_parent_output : {false, true})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareColdAuthority(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		int attempts = 0;
+		UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+		    [&attempts](uam::AppState&, uam::AcpSessionState&, ChatSession&) { ++attempts; return true; }));
+		BindColdInput(fixture, include_parent_output);
+		const std::optional<Message> parent_output = include_parent_output
+		    ? std::optional<Message>(chat.messages[chat.messages.size() - 2]) : std::nullopt;
+		fs::rename(app.data_root, fixture.temp.root / "retained-cold-primary");
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked cold publication"));
+		const auto results = std::make_shared<std::vector<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (results->empty() && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT_EQ(results->size(), std::size_t{1});
+		UAM_ASSERT(!results->front());
+		UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, 0);
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+		UAM_ASSERT(!chat.messages.front().acp_prompt_not_sent && !chat.messages.front().interrupted);
+		if (parent_output)
+		{
+			UAM_ASSERT(chat.messages[chat.messages.size() - 2] == *parent_output);
+			UAM_ASSERT(chat.messages[chat.messages.size() - 3].acp_prompt_not_sent &&
+			    chat.messages[chat.messages.size() - 3].interrupted);
+		}
+		UAM_ASSERT_EQ(chat.messages.back().content, std::string("Retained cold launch input"));
+		UAM_ASSERT(chat.acp_queue_held && fixture.input.Bytes().empty());
+		const auto saved = ChatRepository::LoadLocalChat(fixture.temp.root / "retained-cold-primary", chat.id);
+		UAM_ASSERT(saved && saved->messages.size() == 1);
+	}
+}
+
+UAM_TEST(AcpColdQuotaSettlementBindsClaimedInputBeforeLaunchAuthority)
+{
+	for (bool after_receipt : {false, true})
+	for (const std::string mutation : {"none", "memory", "quota"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareColdAuthority(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		app.provider_profiles = {ProviderProfileStore::DefaultClaudeProfile()};
+		chat.provider_id = fixture.session->provider_id = "claude-cli";
+		chat.native_session_id = fixture.session->session_id = "77777777-7777-4777-8777-777777777777";
+		fixture.session->protocol_kind = "claude-code-stream-json";
+		chat.remote_structured_protocol = fixture.session->protocol_kind;
+		chat.claude_quota_continuation.chat_id = chat.id;
+		chat.claude_quota_continuation.native_session_id = chat.native_session_id;
+		chat.claude_quota_continuation.observed_at_epoch_s = uam::time::TimestampNowSec();
+		chat.claude_quota_continuation.resets_at_epoch_s = chat.claude_quota_continuation.observed_at_epoch_s + 60;
+		chat.claude_quota_continuation.user_message_index = 0;
+		chat.claude_quota_continuation.message_count = chat.messages.size();
+		std::uint64_t digest = uam::hashing::kFnv1a64OffsetBasis;
+		uam::hashing::UpdateFnv1a64WithSeparator(digest, chat.messages.front().content);
+		uam::hashing::UpdateFnv1a64WithSeparator(digest, chat.messages.front().created_at);
+		chat.claude_quota_continuation.accepted_message_digest = uam::hashing::Hex64Padded(digest);
+		chat.claude_quota_continuation.context = uam::acp_detail::ClaudeQuotaContext(app, chat);
+		chat.claude_quota_continuation.id = app.claude_quota_dispatch_id = "private-cold-quota-claim";
+		chat.claude_quota_continuation.state = "claimed";
+		int attempts = 0;
+		UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+		    [&attempts](uam::AppState&, uam::AcpSessionState&, ChatSession&) { ++attempts; return true; }));
+		fixture.session->claude_quota_delivery_id = app.claude_quota_dispatch_id;
+		BindColdInput(fixture);
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+		UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, 0);
+		chat.claude_quota_continuation.state = "continued";
+		chat.claude_quota_continuation.context = uam::acp_detail::ClaudeQuotaContext(app, chat);
+		uam::acp_detail::BindPendingAcpColdLaunch(app, *fixture.session, chat, true);
+		app.claude_quota_dispatch_id.clear();
+		if (after_receipt) fixture.AwaitSave();
+		if (mutation == "memory") chat.memory_level = "normal";
+		if (mutation == "quota") chat.claude_quota_continuation.accepted_message_digest += "-replacement";
+		if (mutation != "none")
+		{
+			UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+			UAM_ASSERT_EQ(attempts, 0);
+			UAM_ASSERT(fixture.session->queue_held && !fixture.session->running && fixture.input.Bytes().empty());
+			fixture.AwaitSave();
+			continue;
+		}
+		fixture.AwaitSave();
+		const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT_EQ(nlohmann::json::parse(ReadFile(AppPaths::UamChatFilePath(app.data_root, chat.id)))["claude_quota_continuation"]["state"].get<std::string>(), std::string("continued"));
+		UAM_ASSERT(saved && saved->claude_quota_continuation.state == "held"); // Restart never auto-replays claimed/continued input.
+		UAM_ASSERT(saved->messages == chat.messages);
+		UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, 1);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+	}
+}
+
+namespace
+{
+	void PrepareRawRemoteSteerQueue(InjectedRemoteAdmissionFixture& fixture, bool copilot = false, bool small_model = false)
+	{
+		PrepareRemoteDirectSteer(fixture, copilot);
+		auto& chat = fixture.app.chats.front();
+		chat.small_model_mode = small_model;
+		if (small_model)
+		{
+			Goal goal;
+			goal.id = chat.active_goal_id = "raw-promotion-goal";
+			goal.objective = "Promote only the selected raw input";
+			chat.goals.push_back(goal);
+		}
+		std::string error;
+		for (const std::string text : {"Raw FIFO A", "Raw FIFO B", "Raw FIFO C"})
+			UAM_ASSERT(uam::SendAcpPrompt(fixture.app, chat.id, text, &error));
+		fixture.AwaitSave();
+		UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{3});
+		UAM_ASSERT(fixture.input.Bytes().empty());
+	}
+}
+
+UAM_TEST(AcpRemoteQueuedSteerPublishesOwnedPromotionBeforeOneControl)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI && UAM_ENABLE_RUNTIME_COPILOT_CLI
+	for (bool copilot : {false, true})
+	for (bool small_model : {false, true})
+	for (bool failed_write : {false, true})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRawRemoteSteerQueue(fixture, copilot, small_model);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto original = fixture.session->queued_user_prompts;
+		const auto selected = original[1];
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto before = ReadFile(primary);
+		const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+		UAM_ASSERT(prepared);
+		std::promise<void> entered;
+		auto locked = entered.get_future();
+		std::jthread publication([&entered, prepared]()
+		{
+			(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+			{
+				entered.set_value();
+				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				return false;
+			});
+		});
+		UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+		std::string error;
+		const auto started = std::chrono::steady_clock::now();
+		const bool accepted = uam::SteerQueuedAcpPrompt(app, chat.id, 1, &error, std::make_pair(selected.id, selected.revision));
+		const auto elapsed = std::chrono::steady_clock::now() - started;
+		if (failed_write) fixture.input.writer->Stop(); // Stop while publication still holds the repository mutex.
+		publication.join();
+		UAM_ASSERT(accepted && elapsed <= std::chrono::milliseconds(100));
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		const auto envelope = chat.remote_pending_requests.back();
+		const auto row = envelope.user_message_index;
+		UAM_ASSERT_EQ(chat.messages[row].content, selected.text);
+		UAM_ASSERT_EQ(chat.acp_unsent_prompt_recoveries.size(), std::size_t{1});
+		UAM_ASSERT(uam::prompt_recovery::BindingsMatch(chat));
+		// Append remains FIFO-safe; raw edits/removal/reorder and another steer wait for this receipt.
+		const auto pending_queue = fixture.session->queued_user_prompts;
+		UAM_ASSERT(!uam::EditQueuedAcpPrompt(app, chat.id, original.front().id, original.front().revision, "Changed raw A", &error));
+		UAM_ASSERT(!uam::RemoveQueuedAcpPrompt(app, chat.id, 0, &error, std::make_pair(original.front().id, original.front().revision)));
+		UAM_ASSERT(!uam::ReorderQueuedAcpPrompts(app, chat.id,
+		    {{original[0].id, original[0].revision}, {original[2].id, original[2].revision}}, {original[2].id, original[0].id}, &error));
+		UAM_ASSERT(!uam::SteerQueuedAcpPrompt(app, chat.id, 0, &error, std::make_pair(original.front().id, original.front().revision)));
+		UAM_ASSERT_EQ(fixture.session->queued_user_prompts, pending_queue);
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Raw FIFO D", &error));
+		chat.messages.push_back(Message{.role = MessageRole::Assistant, .content = "Parent output while promotion saves"});
+		uam::acp_detail::ScheduleChatSave(app, chat, 0.0);
+		fixture.AwaitSave();
+		const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved && saved->remote_pending_requests.size() == 1 && saved->remote_pending_requests.front() == envelope);
+		UAM_ASSERT_EQ(saved->messages[row].content, selected.text);
+		UAM_ASSERT_EQ(saved->messages.back().content, std::string("Parent output while promotion saves"));
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{3});
+		UAM_ASSERT(saved->acp_queued_prompts[0] == original[0] && saved->acp_queued_prompts[1] == original[2]);
+		UAM_ASSERT_EQ(saved->acp_queued_prompts[2].text, std::string("Raw FIFO D"));
+		if (!failed_write)
+		{
+			fixture.AwaitInput();
+			UAM_ASSERT_EQ(fixture.InputPayload(), envelope.payload);
+		}
+		else UAM_ASSERT(fixture.input.Bytes().empty());
+		UAM_ASSERT(!chat.messages[row].acp_prompt_not_sent && !chat.messages[row].input_write_completed);
+		const auto known = uam::KnownUnsentAcpMessageIndices(app, chat);
+		UAM_ASSERT(std::ranges::find(known, row) == known.end());
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 17);
+		UAM_ASSERT(fixture.session->pending_local_steer_abandon.empty());
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteQueuedSteerFailedOrStaleSaveRestoresRawFifoWithoutTruncatingOutput)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI && UAM_ENABLE_RUNTIME_COPILOT_CLI
+	for (bool copilot : {false, true})
+	for (const std::string mutation : {"storage", "native", "cancel", "stop", "root", "agent"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRawRemoteSteerQueue(fixture, copilot);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto original = fixture.session->queued_user_prompts;
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto before = ReadFile(primary);
+		const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+		UAM_ASSERT(prepared);
+		std::promise<void> entered;
+		auto locked = entered.get_future();
+		std::jthread publication([&entered, prepared]()
+		{
+			(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+			{
+				entered.set_value();
+				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				return false;
+			});
+		});
+		UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+		std::string error;
+		UAM_ASSERT(uam::SteerQueuedAcpPrompt(app, chat.id, 1, &error, std::make_pair(original[1].id, original[1].revision)));
+		const auto envelope = chat.remote_pending_requests.back();
+		const auto row = envelope.user_message_index;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Raw FIFO D", &error));
+		chat.messages.push_back(Message{.role = MessageRole::Assistant, .content = "Later parent output must survive refusal"});
+		uam::acp_detail::ScheduleChatSave(app, chat, 0.0);
+		if (mutation == "storage")
+		{
+			fs::rename(app.data_root, fixture.temp.root / "retained-raw-queue-primary");
+			UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked raw promotion"));
+		}
+		if (mutation == "native") fixture.session->session_id = "replacement-native-session";
+		if (mutation == "agent") fixture.session->active_uam_agent_definition_hash = "replacement-agent";
+		if (mutation == "cancel") UAM_ASSERT(uam::CancelAcpTurn(app, chat.id, &error, true, true));
+		if (mutation == "stop") fixture.session->remote_stop_pending = true; // Existing injected Stop state; no remote stop worker or SSH.
+		if (mutation == "root") app.data_root = fixture.temp.root / "replacement-root";
+		publication.join();
+		const auto results = std::make_shared<std::vector<bool>>();
+		if (uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }))
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (results->empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(app);
+				std::this_thread::yield();
+			}
+			UAM_ASSERT_EQ(results->size(), std::size_t{1});
+		}
+		UAM_ASSERT_EQ(chat.messages.back().content, std::string("Later parent output must survive refusal"));
+		UAM_ASSERT(chat.messages[row].acp_prompt_not_sent && chat.messages[row].interrupted);
+		UAM_ASSERT(chat.remote_pending_requests.empty());
+		UAM_ASSERT(chat.acp_queue_held && fixture.session->queue_held);
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{4});
+		UAM_ASSERT(chat.acp_queued_prompts[0] == original[0] && chat.acp_queued_prompts[2] == original[2]);
+		auto restored = chat.acp_queued_prompts[1];
+		UAM_ASSERT(!restored.append_user_message && restored.existing_user_message_index == row);
+		UAM_ASSERT_EQ(restored.existing_user_message_created_at, chat.messages[row].created_at);
+		restored.append_user_message = original[1].append_user_message;
+		restored.existing_user_message_index = original[1].existing_user_message_index;
+		restored.existing_user_message_created_at = original[1].existing_user_message_created_at;
+		UAM_ASSERT(restored == original[1]); // Complete raw identity/policy survives; only its row linkage changes.
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.back().text, std::string("Raw FIFO D"));
+		UAM_ASSERT(uam::prompt_recovery::BindingsMatch(chat));
+		UAM_ASSERT_EQ(std::ranges::count_if(chat.messages, [](const auto& message) { return message.role == MessageRole::User && message.content == "Raw FIFO B"; }), 1);
+		UAM_ASSERT(fixture.input.Bytes().find(envelope.delivery_id) == std::string::npos);
+		if (mutation == "storage")
+			UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(fixture.temp.root / "retained-raw-queue-primary", chat.id)), before);
+		if (mutation == "root")
+		{
+			UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, chat.id)));
+			UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(chat.id));
+			uam::acp_detail::ScheduleChatSave(app, chat, 0.0); // Explicit new-root owner after the old receipt is retired.
+			fixture.AwaitSave();
+			const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			UAM_ASSERT(saved && saved->acp_queue_held && saved->remote_pending_requests.empty());
+			UAM_ASSERT_EQ(saved->acp_queued_prompts, chat.acp_queued_prompts);
+			UAM_ASSERT(saved->messages[row].acp_prompt_not_sent);
+		}
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteQueuedSteerFullRecoveryCarrierPreservesOriginalQueue)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	InjectedRemoteAdmissionFixture fixture;
+	PrepareRawRemoteSteerQueue(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	for (std::size_t i = 0; i < uam::prompt_recovery::kMaxRecords; ++i)
+	{
+		Message row;
+		row.role = MessageRole::User;
+		row.content = "Retained prior policy " + std::to_string(i);
+		row.created_at = "2026-10-23T00:00:00Z";
+		row.provider = chat.provider_id;
+		row.acp_prompt_not_sent = true;
+		chat.messages.push_back(std::move(row));
+		auto prompt = fixture.session->queued_user_prompts.front();
+		prompt.id = "prior-policy-" + std::to_string(i);
+		chat.acp_unsent_prompt_recoveries.push_back(uam::prompt_recovery::Capture(chat, static_cast<int>(chat.messages.size()) - 1, prompt));
+	}
+	UAM_ASSERT(uam::prompt_recovery::BindingsMatch(chat));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const auto messages = chat.messages;
+	const auto queue = fixture.session->queued_user_prompts;
+	const auto policies = chat.acp_unsent_prompt_recoveries;
+	const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const auto before = ReadFile(primary);
+	std::string error;
+	UAM_ASSERT(!uam::SteerQueuedAcpPrompt(app, chat.id, 1, &error, std::make_pair(queue[1].id, queue[1].revision)));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT_EQ(chat.messages, messages);
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts, queue);
+	UAM_ASSERT_EQ(chat.acp_queued_prompts, std::vector<uam::AcpQueuedUserPromptState>(queue.begin(), queue.end()));
+	UAM_ASSERT_EQ(chat.acp_unsent_prompt_recoveries, policies);
+	UAM_ASSERT_EQ(ReadFile(primary), before);
+	UAM_ASSERT(fixture.input.Bytes().empty() && chat.remote_pending_requests.empty() && fixture.session->pending_local_steer_abandon.empty());
+#endif
+}
+
+UAM_TEST(AcpRemoteCopilotSteerRetainsNativeCorrelationThroughOwnedSaveAndRefusal)
+{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	for (bool small_model : {false, true})
+	for (const std::string mutation : {"none", "native", "writer", "goal"})
+	{
+		if (!small_model && mutation == "goal") continue;
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRemoteDirectSteer(fixture, true);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		chat.small_model_mode = small_model;
+		if (small_model)
+		{
+			Goal goal;
+			goal.id = chat.active_goal_id = "copilot-steer-goal";
+			goal.objective = "Keep the exact goal-owned Copilot steer";
+			chat.goals.push_back(goal);
+		}
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto before = ReadFile(primary);
+		const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+		UAM_ASSERT(prepared);
+		std::promise<void> entered;
+		auto locked = entered.get_future();
+		std::jthread publication([&entered, prepared]()
+		{
+			(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+			{
+				entered.set_value();
+				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				return false;
+			});
+		});
+		UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+		std::string error;
+		const auto started = std::chrono::steady_clock::now();
+		const bool accepted = uam::SteerAcpPrompt(app, chat.id, "One correlated Copilot steer", {}, {}, false, &error);
+		const auto elapsed = std::chrono::steady_clock::now() - started;
+		publication.join();
+		UAM_ASSERT(accepted && elapsed <= std::chrono::milliseconds(100));
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		UAM_ASSERT_EQ(chat.remote_pending_requests.size(), std::size_t{1});
+		const auto envelope = chat.remote_pending_requests.front();
+		UAM_ASSERT_EQ(envelope.method, std::string("copilot/steer"));
+		const auto frame = uam::structured_framing::Read(envelope.payload);
+		UAM_ASSERT(frame.status == uam::structured_framing::Status::Complete && frame.consumed_bytes == envelope.payload.size());
+		const auto request = nlohmann::json::parse(std::string_view(envelope.payload).substr(frame.body_offset, frame.body_bytes));
+		UAM_ASSERT_EQ(request["method"], nlohmann::json("session.send"));
+		UAM_ASSERT_EQ(request["params"]["mode"], nlohmann::json("immediate"));
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		if (mutation == "native") fixture.session->session_id = "replacement-native-session";
+		if (mutation == "writer") fixture.input.writer->Stop();
+		if (mutation == "goal") chat.goals.front().objective = "Replacement goal";
+		fixture.AwaitSave();
+		if (mutation == "native" || mutation == "goal")
+		{
+			UAM_ASSERT(fixture.input.Bytes().empty());
+			UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+			UAM_ASSERT(chat.remote_pending_requests.empty());
+		}
+		else
+		{
+			UAM_ASSERT(std::ranges::find(chat.remote_pending_requests, envelope) != chat.remote_pending_requests.end());
+			if (mutation == "none")
+			{
+				fixture.AwaitInput();
+				UAM_ASSERT_EQ(fixture.InputPayload(), envelope.payload);
+				UAM_ASSERT_EQ(fixture.session->pending_request_methods.at(envelope.request_id), std::string("copilot/steer"));
+			}
+			else UAM_ASSERT(fixture.input.Bytes().empty());
+			fixture.AssertInputRemainsUnconfirmed();
+		}
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 17);
+		UAM_ASSERT(fixture.session->pending_local_steer_abandon.empty());
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteSmallModelGoalSharesTheInitialFullInputReceipt)
+{
+	InjectedRemoteAdmissionFixture fixture;
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	chat.small_model_mode = true;
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const auto before = ReadFile(AppPaths::UamChatFilePath(app.data_root, chat.id));
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Remote small-model retained objective", &error));
+	UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(app.data_root, chat.id)), before);
+	UAM_ASSERT(!chat.active_goal_id.empty());
+	UAM_ASSERT(fixture.input.Bytes().empty());
+	fixture.AwaitSave();
+	const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved && saved->active_goal_id == chat.active_goal_id);
+	UAM_ASSERT_EQ(saved->messages.back().content, std::string("Remote small-model retained objective"));
+	UAM_ASSERT(saved->messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(fixture.input.Bytes().empty());
+	// The later small-model remote marker retains its existing barrier; this receipt grants no transport authority.
+}
+
+namespace
+{
+	void PrepareInjectedSmallModelPrompt(InjectedRemoteAdmissionFixture& fixture)
+	{
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		chat.small_model_mode = true;
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Goal-owned remote input", &error));
+		fixture.AwaitSave();
+		UAM_ASSERT(!chat.active_goal_id.empty() && chat.messages.back().acp_prompt_not_sent);
+		UAM_ASSERT(!uam::acp_detail::CanDeferRemotePromptAdmission(app, *fixture.session, chat));
+		UAM_ASSERT(uam::acp_detail::CanStageRemoteGoalPromptAdmission(app, *fixture.session, chat));
+	}
+}
+
+UAM_TEST(AcpLocalSmallModelDeliveryKeepsItsExistingOwnedMarkerRoute)
+{
+	InjectedRemoteAdmissionFixture fixture;
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	chat.execution_host_id = fixture.session->process_execution_host_id = "local";
+	app.settings.execution_hosts.push_back(uam::execution_hosts::LocalHost());
+	chat.small_model_mode = true;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Existing local small-model input", &error));
+	fixture.AwaitSave();
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+	UAM_ASSERT(fixture.session->pending_prompt_delivery && fixture.input.Bytes().empty());
+	fixture.AwaitSave();
+	fixture.AwaitInput();
+	UAM_ASSERT(fixture.input.writer->Flush(std::chrono::seconds(5)));
+	const auto wire = fixture.input.Bytes();
+	UAM_ASSERT(wire.find("Existing local small-model input") != std::string::npos);
+	UAM_ASSERT(!wire.starts_with(uam::remote::kRemoteInputDeliveryPrefix));
+	UAM_ASSERT(!chat.messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(fixture.session->prompt_request_id != 0);
+}
+
+UAM_TEST(AcpRemoteSmallModelMarkerWaitsForOwnedFullReceiptBeforeOneAttempt)
+{
+	InjectedRemoteAdmissionFixture fixture;
+	PrepareInjectedSmallModelPrompt(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const auto before = ReadFile(primary);
+	const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+	std::promise<void> entered;
+	auto locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	const auto started = std::chrono::steady_clock::now();
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+	const auto elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT_EQ(ReadFile(primary), before);
+	UAM_ASSERT(fixture.session->pending_prompt_delivery && fixture.input.Bytes().empty());
+	const auto delivery = chat.remote_prompt_delivery_id;
+	const auto payload = chat.remote_prompt_delivery_payload;
+	UAM_ASSERT(!delivery.empty() && !payload.empty());
+	fixture.AwaitSave();
+	const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved && saved->remote_prompt_delivery_id == delivery && saved->remote_prompt_delivery_payload == payload);
+	UAM_ASSERT(!saved->messages.back().acp_prompt_not_sent && fixture.input.Bytes().empty());
+	fixture.AwaitInput();
+	UAM_ASSERT_EQ(fixture.InputPayload(), payload);
+	fixture.AssertInputRemainsUnconfirmed();
+	for (int poll = 0; poll < 5; ++poll) (void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+	UAM_ASSERT_EQ(fixture.InputPayload(), payload);
+	fixture.AssertInputRemainsUnconfirmed();
+	UAM_ASSERT_EQ(chat.remote_prompt_delivery_id, delivery); // Attempted bytes are not a native delivery ACK.
+}
+
+UAM_TEST(AcpRemoteSmallModelMarkerUsesAuthoritativeGoalMetadataWithoutHydratingOwnerHistory)
+{
+	InjectedRemoteAdmissionFixture fixture;
+	PrepareInjectedSmallModelPrompt(fixture);
+	auto& app = fixture.app;
+	ChatSession owner = app.chats.front();
+	owner.id = "metadata-only-goal-owner";
+	owner.metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+	owner.goal_command_revision = "metadata-owner-command";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, owner));
+	const auto metadata = ChatRepository::LoadLocalChatSummaryReadOnly(app.data_root, owner.id);
+	UAM_ASSERT(metadata && !metadata->messages_loaded && metadata->messages.empty());
+	UAM_ASSERT_EQ(metadata->active_goal_id, owner.active_goal_id);
+	UAM_ASSERT_EQ(metadata->goals.size(), owner.goals.size());
+	UAM_ASSERT_EQ(metadata->goals.front().objective, owner.goals.front().objective);
+	app.chats.push_back(*metadata);
+	auto& chat = app.chats.front();
+	chat.goal_owner_chat_id = owner.id;
+	chat.goal_iteration_goal_id = metadata->active_goal_id;
+	chat.goal_iteration_turn_kind = fixture.session->goal_turn_kind = "worker_continuation";
+	fixture.session->goal_command_revision = metadata->goal_command_revision;
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const auto before = ReadFile(primary);
+	const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+	UAM_ASSERT(prepared);
+	std::promise<void> entered;
+	auto locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	const auto started = std::chrono::steady_clock::now();
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+	const auto elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT_EQ(ReadFile(primary), before);
+	UAM_ASSERT(fixture.session->pending_prompt_delivery && fixture.input.Bytes().empty());
+	const auto payload = chat.remote_prompt_delivery_payload;
+	fixture.AwaitSave();
+	UAM_ASSERT(fixture.input.Bytes().empty());
+	fixture.AwaitInput();
+	UAM_ASSERT_EQ(fixture.InputPayload(), payload);
+	fixture.AssertInputRemainsUnconfirmed();
+	UAM_ASSERT(!app.chats.back().messages_loaded && app.chats.back().messages.empty());
+	const auto persisted_owner = ChatRepository::LoadLocalChat(app.data_root, owner.id);
+	UAM_ASSERT(persisted_owner && persisted_owner->messages == owner.messages);
+}
+
+UAM_TEST(AcpRemoteSmallModelMarkerRejectsChangedExternalGoalBeforeOrAfterReceipt)
+{
+	for (bool after_receipt : {false, true})
+	for (const std::string mutation : {"revision", "incarnation", "iteration", "paused", "objective", "cancel", "stop", "token", "authority-token", "authority-exists", "row", "chat-incarnation", "writer", "storage", "native-goal", "budget", "model", "transport", "shutdown", "owner-model", "owner-mode", "owner-agent", "owner-approval", "owner-safety", "owner-reasoning", "owner-tier"})
+	{
+		if (after_receipt && mutation == "storage") continue; // A committed receipt is not revoked by later unrelated I/O failure.
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareInjectedSmallModelPrompt(fixture);
+		auto& app = fixture.app;
+		ChatSession owner = app.chats.front();
+		owner.id = "external-goal-owner";
+		owner.goal_command_revision = "external-command";
+		app.chats.push_back(std::move(owner));
+		auto& chat = app.chats.front();
+		auto& external = app.chats.back();
+		chat.goal_owner_chat_id = external.id;
+		chat.goal_iteration_goal_id = external.active_goal_id;
+		chat.goal_iteration_turn_kind = fixture.session->goal_turn_kind = "worker_continuation";
+		fixture.session->goal_command_revision = external.goal_command_revision;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+		UAM_ASSERT(fixture.session->pending_prompt_delivery);
+		if (after_receipt) fixture.AwaitSave();
+		if (mutation == "revision") external.goal_command_revision = "replacement-command";
+		if (mutation == "incarnation") external.metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+		if (mutation == "iteration") chat.goal_iteration_goal_id = "replacement-iteration";
+		if (mutation == "paused") external.goals.front().status = GoalStatus::Paused;
+		if (mutation == "objective") external.goals.front().objective = "Replacement objective";
+		if (mutation == "native-goal") external.goals.front().native_binding = NativeGoalBinding{.provider_id = "codex-cli", .thread_id = "replacement-native-goal"};
+		if (mutation == "budget") external.goals.front().token_budget = 12345;
+		if (mutation == "model") external.goals.front().worker_model_id = "replacement-model";
+		if (mutation == "owner-model") external.model_id = "replacement-owner-default";
+		if (mutation == "owner-mode") external.small_model_mode = !external.small_model_mode;
+		if (mutation == "owner-agent") external.uam_agent_id = "plan";
+		if (mutation == "owner-approval") external.approval_mode = "plan";
+		if (mutation == "owner-safety") external.command_safety_tier = "strict";
+		if (mutation == "owner-reasoning") external.reasoning_effort = "high";
+		if (mutation == "owner-tier") external.service_tier = "priority";
+		if (mutation == "cancel") fixture.session->cancel_requested = true;
+		if (mutation == "stop") fixture.session->remote_stop_pending = true;
+		if (mutation == "token") fixture.session->remote_output_delivery_token = "replacement-token";
+		if (mutation == "authority-token") chat.remote_process_control_token = "replacement-saved-token";
+		if (mutation == "authority-exists") chat.remote_process_exists = false;
+		if (mutation == "transport") fixture.session->transport_ownership_error = "Retained rejected goal transport";
+		if (mutation == "shutdown") (void)uam::AgentRunScheduler::QuiesceInitialForShutdown(app);
+		if (mutation == "row") chat.messages.back().attachments.push_back(MessageAttachment{.kind = "file", .path = "replacement-attachment"});
+		if (mutation == "chat-incarnation") chat.metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+		if (mutation == "writer") fixture.session->stdin_writer.reset();
+		if (mutation == "storage")
+		{
+			fs::rename(app.data_root, fixture.temp.root / "retained-small-model-primary");
+			UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked marker publication"));
+		}
+		if (mutation == "storage")
+		{
+			const auto results = std::make_shared<std::vector<bool>>();
+			UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (results->empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(app);
+				std::this_thread::yield();
+			}
+			UAM_ASSERT_EQ(results->size(), std::size_t{1});
+			UAM_ASSERT(!results->front()); // Failed full receipt; recovery may retain pending save work.
+		}
+		else fixture.AwaitSave();
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		UAM_ASSERT(!fixture.session->pending_prompt_delivery && fixture.session->queued_prompt.empty());
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.acp_queue_held);
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	}
+}
+
+UAM_TEST(AcpRemoteSmallModelDirectSteerOwnsGoalAndRetainsUncertainEnvelope)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (const std::string mutation : {"none", "goal", "writer"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRemoteDirectSteer(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		chat.small_model_mode = true;
+		Goal goal;
+		goal.id = chat.active_goal_id = "steer-goal";
+		goal.objective = "Goal-owned steering";
+		chat.goals.push_back(goal);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		std::string error;
+		UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "Goal-owned remote steer", {}, {}, false, &error));
+		const auto envelope = chat.remote_pending_requests.front();
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		if (mutation == "goal") chat.goals.front().objective = "Changed goal";
+		if (mutation == "writer") fixture.input.writer->Stop();
+		fixture.AwaitSave();
+		if (mutation == "none")
+		{
+			fixture.AwaitInput();
+			UAM_ASSERT_EQ(fixture.InputPayload(), envelope.payload);
+		}
+		else UAM_ASSERT(fixture.input.Bytes().empty());
+		if (mutation == "goal") UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.remote_pending_requests.empty());
+		else UAM_ASSERT(!chat.messages.back().acp_prompt_not_sent && std::ranges::find(chat.remote_pending_requests, envelope) != chat.remote_pending_requests.end());
+		if (mutation != "goal") fixture.AssertInputRemainsUnconfirmed();
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 17);
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteDeliveryMarkerReturnsWithinInputBudgetBeforeRunnerInput)
+{
+	RemoteAdmissionFixture fixture;
+	uam::AppState& app = fixture.app;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Remote prompt after both receipts", &error));
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+	fixture.AwaitSave();
+	const std::optional<ChatSession> first_receipt = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(first_receipt && first_receipt->messages.size() == 2);
+	UAM_ASSERT(first_receipt->messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(first_receipt->remote_prompt_delivery_id.empty());
+	const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(app.data_root, app.chats.front());
+	UAM_ASSERT(prepared);
+	std::promise<void> entered;
+	std::future<void> locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	const bool staged = uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, app.chats.front());
+	const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(staged);
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+	const std::string delivery_id = app.chats.front().remote_prompt_delivery_id;
+	UAM_ASSERT(!delivery_id.empty());
+	fixture.AwaitSave();
+	const std::optional<ChatSession> second_receipt = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(second_receipt && second_receipt->remote_turn_reconnect_pending);
+	UAM_ASSERT_EQ(second_receipt->remote_prompt_delivery_id, delivery_id);
+	UAM_ASSERT(!second_receipt->remote_prompt_delivery_payload.empty());
+	fixture.AwaitInput();
+	const std::string input = ReadFile(fixture.input_log);
+	UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+	UAM_ASSERT(input.find("Remote prompt after both receipts") != std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().remote_prompt_delivery_id, delivery_id);
+}
+
+UAM_TEST(AcpRemoteSetupReplyPreservesOwnedPromptReceiptAcrossProviders)
+{
+	for (const bool codex : {true, false})
+	{
+		RemoteAdmissionFixture fixture;
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		chat.provider_id = session.provider_id = codex ? "codex-cli" : "opencode-cli";
+		chat.native_session_id = session.session_id = "01a13bf6-87d5-7691-889f-79a8bf5a7b25";
+		chat.model_id = codex ? "gpt-6.1-sol" : "example-provider/normal";
+		session.current_model_id = chat.model_id;
+		session.available_models.push_back({.id = chat.model_id});
+		chat.reasoning_effort = "medium";
+		chat.service_tier = "priority";
+		chat.service_tier_explicit = true;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		session.protocol_kind = codex ? "codex-app-server" : "acp";
+		session.codex_thread_id = session.session_id;
+		session.session_ready = false;
+		session.initialized = true;
+		session.session_setup_request_id = 11;
+		session.next_request_id = 12;
+		session.pending_request_methods[11] = codex ? "thread/resume" : "session/load";
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "New authored input after the completed thread resumes.", &error));
+		UAM_ASSERT(session.processing && session.prompt_request_id == 0 && !session.session_ready);
+		fixture.AwaitSave();
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		const nlohmann::json resumed = {{"jsonrpc", "2.0"}, {"id", 11}, {"result", {
+		    {"thread", {{"id", chat.native_session_id}, {"cwd", chat.workspace_directory},
+		        {"path", R"(\\?\C:\Users\private\.codex\sessions\rollout.jsonl)"}, {"turns", nlohmann::json::array()},
+		        {"historyMode", "paginated"}, {"itemsCursor", "192"}}},
+		    {"model", chat.model_id}, {"approvalPolicy", "on-request"}, {"approvalsReviewer", "auto_review"}}}};
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, (codex ? resumed : nlohmann::json{{"jsonrpc", "2.0"}, {"id", 11}, {"result", nlohmann::json::object()}}).dump()));
+		UAM_ASSERT(session.session_ready && session.processing && session.pending_prompt_delivery && session.prompt_request_id == 0);
+		UAM_ASSERT_EQ(chat.remote_pending_requests.size(), std::size_t{1});
+		UAM_ASSERT_EQ(chat.remote_pending_requests.front().request_id, 12);
+		UAM_ASSERT(!chat.remote_pending_requests.front().response_consumed);
+		UAM_ASSERT(!session.pending_request_methods.contains(12));
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		fixture.AwaitSave();
+		fixture.AwaitInput();
+		const std::string input = ReadFile(fixture.input_log);
+		UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+		const nlohmann::json wire = nlohmann::json::parse(input);
+		UAM_ASSERT_EQ(wire.at("method"), nlohmann::json(codex ? "turn/start" : "session/prompt"));
+		UAM_ASSERT_EQ(wire.at("params").at(codex ? "threadId" : "sessionId"), nlohmann::json(chat.native_session_id));
+		UAM_ASSERT(wire.at("params").at(codex ? "input" : "prompt").at(0).at("text").get<std::string>().find("New authored input after the completed thread resumes.") != std::string::npos);
+		UAM_ASSERT_EQ(session.prompt_request_id, 12);
+		UAM_ASSERT(session.last_error.empty());
+		UAM_ASSERT(!chat.messages.back().acp_prompt_not_sent);
+	}
+}
+
+UAM_TEST(AcpRemoteRequestRetirementPreservesOnlyOwnedStagedInput)
+{
+	for (const int revoke : {0, 1, 2, 3})
+	{
+		RemoteAdmissionFixture fixture;
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Keep this original input behind its receipt.", &error));
+		fixture.AwaitSave();
+		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+		UAM_ASSERT(session.pending_prompt_delivery && chat.remote_pending_requests.size() == 1);
+		const int staged_id = chat.remote_pending_requests.front().request_id;
+		chat.remote_pending_requests.push_back({.request_id = 999, .method = "model/list", .turn_serial = session.turn_serial});
+		uam::acp_detail::RetireRemoteAcpRequests(app, session, chat);
+		UAM_ASSERT(!chat.remote_pending_requests.front().response_consumed);
+		UAM_ASSERT(chat.remote_pending_requests.back().response_consumed);
+		UAM_ASSERT(!session.pending_request_methods.contains(staged_id));
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		if (revoke == 0) session.remote_output_delivery_token = "foreign-proxy";
+		if (revoke == 1) ++session.turn_serial;
+		if (revoke == 2) session.cancel_requested = true;
+		if (revoke == 3) chat.model_id = "changed-selected-model";
+		uam::acp_detail::RetireRemoteAcpRequests(app, session, chat);
+		UAM_ASSERT(chat.remote_pending_requests.front().response_consumed);
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+		UAM_ASSERT(!session.pending_prompt_delivery && session.prompt_request_id == 0);
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
+	}
+}
+
+UAM_TEST(AcpRecoveredPreparedPrefixResumesAsOneFreshReadOnlyNativeInput)
+{
+	RemoteAdmissionFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	chat.provider_id = session.provider_id = "codex-cli";
+	chat.native_session_id = session.session_id = session.codex_thread_id = "01a13bf6-87d5-7691-889f-79a8bf5a7b25";
+	chat.uam_agent_id = "plan";
+	chat.created_at = chat.updated_at = "2026-10-14T20:17:11.000Z";
+	chat.remote_process_exists = true;
+	chat.remote_process_control_token = fixture.token; // Restart ownership requires the remote process authority.
+	chat.messages.push_back({.role = MessageRole::User, .content = "Original raw input.", .created_at = "2026-10-14T20:17:08.000Z", .interrupted = true, .acp_prompt_not_sent = true});
+	uam::AcpQueuedUserPromptState old;
+	old.text = "Old injected agent context.\n\nOriginal raw input.";
+	old.id = "old-prepared";
+	old.append_user_message = false;
+	old.prepared_for_delivery = true;
+	old.prepared_user_message_count = 1;
+	chat.acp_queued_prompts = {old, {.text = "Keep future input held until its own turn.", .id = "future"}};
+	chat.acp_dispatched_queued_prompt_count = 1;
+	chat.acp_queue_held = session.queue_held = true;
+	session.queued_user_prompts.push_back(chat.acp_queued_prompts.back());
+	session.lifecycle_state = "error";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	std::string error;
+	UAM_ASSERT(uam::RetryFailedAcpMessage(app, chat.id, 1, &error));
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+	UAM_ASSERT(chat.acp_queue_held && session.queue_held && chat.messages.size() == 2);
+	UAM_ASSERT_EQ(session.queued_user_prompts.front().uam_agent_workspace_access, std::string("read"));
+	const std::string fresh_id = session.queued_user_prompts.front().id;
+	UAM_ASSERT(uam::EditQueuedAcpPrompt(app, chat.id, fresh_id, 1, "Edited raw input.", &error));
+	UAM_ASSERT_EQ(chat.messages.back().content, std::string("Edited raw input."));
+	std::vector<std::pair<std::string, int>> expected;
+	for (const uam::AcpQueuedUserPromptState& queued : session.queued_user_prompts) expected.emplace_back(queued.id, queued.revision);
+	if (!uam::ResumeQueuedAcpPrompts(app, chat.id, expected, &error)) throw std::runtime_error("Recovered Resume rejected: " + error);
+	fixture.AwaitSave();
+	(void)uam::DrainNextQueuedAcpUserPrompt(app, session, chat);
+	fixture.AwaitInput();
+	const std::string input = ReadFile(fixture.input_log);
+	UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+	const nlohmann::json wire = nlohmann::json::parse(input);
+	UAM_ASSERT_EQ(wire.at("method"), nlohmann::json("turn/start"));
+	UAM_ASSERT_EQ(wire.at("params").at("sandboxPolicy").at("type"), nlohmann::json("readOnly"));
+	const std::string delivered = wire.at("params").at("input").at(0).at("text").get<std::string>();
+	UAM_ASSERT(delivered.find("Edited raw input.") != std::string::npos);
+	UAM_ASSERT(delivered.find("Original raw input.") == std::string::npos);
+	UAM_ASSERT(delivered.find("Old injected agent context.") == std::string::npos);
+	UAM_ASSERT(delivered.find("Keep future input held until its own turn.") == std::string::npos);
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{2});
+	UAM_ASSERT(!chat.messages.back().acp_prompt_not_sent && !chat.messages.back().interrupted);
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+}
+
+UAM_TEST(AcpRemoteBusyQueueAdmissionReturnsWithinInputBudget)
+{
+	RemoteAdmissionFixture fixture;
+	uam::AppState& app = fixture.app;
+	fixture.session->processing = true;
+	fixture.session->prompt_request_id = 17;
+	fixture.session->queued_prompt = "Already delivered remote turn";
+	const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(app.data_root, app.chats.front());
+	UAM_ASSERT(prepared);
+	std::promise<void> entered;
+	std::future<void> locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	std::string error;
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	const bool queued = uam::SendAcpPrompt(app, app.chats.front().id, "Remote queued input", &error);
+	const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(queued);
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 17);
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+	fixture.AwaitSave();
+	const std::optional<ChatSession> receipt = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(receipt && receipt->acp_queued_prompts.size() == 1);
+	UAM_ASSERT_EQ(receipt->acp_queued_prompts.front().text, std::string("Remote queued input"));
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 17);
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+}
+UAM_TEST(AcpRemoteCanceledMarkerNeverReleasesRunnerInput)
+{
+	RemoteAdmissionFixture fixture;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.app.chats.front().id, "Cancel staged remote input", &error));
+	fixture.AwaitSave();
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(fixture.app, *fixture.session, fixture.app.chats.front()));
+	UAM_ASSERT(fixture.session->pending_prompt_delivery != nullptr);
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	UAM_ASSERT(uam::CancelAcpTurn(fixture.app, fixture.app.chats.front().id, &error));
+	fixture.AwaitSave();
+	(void)uam::acp_detail::SendQueuedPromptIfReady(fixture.app, *fixture.session, fixture.app.chats.front());
+	UAM_ASSERT(fixture.session->pending_prompt_delivery == nullptr);
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	UAM_ASSERT(fixture.app.chats.front().messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(fixture.app.chats.front().remote_prompt_delivery_id.empty());
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+}
+
+UAM_TEST(AcpRemoteMarkerFailureRetainsPreparedHeadAndUnsentUser)
+{
+	RemoteAdmissionFixture fixture;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.app.chats.front().id, "Remote marker cannot save", &error));
+	fixture.AwaitSave();
+	const fs::path primary = AppPaths::UamChatFilePath(fixture.app.data_root, fixture.app.chats.front().id);
+	const std::string first_receipt = ReadFile(primary);
+	fixture.app.data_root = fixture.temp.root / "blocked-storage";
+	UAM_ASSERT(uam::io::WriteTextFile(fixture.app.data_root, "Not a directory"));
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(fixture.app, *fixture.session, fixture.app.chats.front()));
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (fixture.session->pending_prompt_delivery && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(fixture.app);
+		(void)uam::acp_detail::SendQueuedPromptIfReady(fixture.app, *fixture.session, fixture.app.chats.front());
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(fixture.session->pending_prompt_delivery == nullptr);
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	UAM_ASSERT(fixture.app.chats.front().messages.back().acp_prompt_not_sent);
+	UAM_ASSERT_EQ(fixture.app.chats.front().acp_queued_prompts.size(), std::size_t{1});
+	UAM_ASSERT(fixture.app.chats.front().acp_queued_prompts.front().prepared_for_delivery);
+	UAM_ASSERT(fixture.app.chats.front().remote_prompt_delivery_id.empty());
+	UAM_ASSERT_EQ(ReadFile(primary), first_receipt);
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+}
+
+UAM_TEST(AcpRemoteMarkerRejectsChangedHostRootAndProxyIdentity)
+{
+	for (const int mutation : {0, 1, 2, 3, 4})
+	{
+		RemoteAdmissionFixture fixture;
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.app.chats.front().id, "Must retain owned remote input", &error));
+		fixture.AwaitSave();
+		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(fixture.app, *fixture.session, fixture.app.chats.front()));
+		UAM_ASSERT(fixture.session->pending_prompt_delivery != nullptr);
+		if (mutation == 0) fixture.app.settings.execution_hosts.back().ssh_alias = "changed-private-alias";
+		if (mutation == 1) fixture.app.data_root = fixture.temp.root / "changed-data-root";
+		if (mutation == 2) fixture.session->remote_output_delivery_token = "changed-authority";
+		if (mutation == 3) fixture.session->remote_runner_protocol_version = 2;
+		if (mutation == 4) fixture.app.chats.front().native_session_id = "changed-native-session";
+		(void)uam::acp_detail::SendQueuedPromptIfReady(fixture.app, *fixture.session, fixture.app.chats.front());
+		UAM_ASSERT(fixture.session->pending_prompt_delivery == nullptr);
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+		UAM_ASSERT(fixture.app.chats.front().messages.back().acp_prompt_not_sent);
+		UAM_ASSERT(fixture.app.chats.front().remote_prompt_delivery_id.empty());
+		fixture.AwaitSave();
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+	}
+}
+
+UAM_TEST(AcpRemoteRecoveryCannotReplayBeforeMarkerCommit)
+{
+	RemoteAdmissionFixture fixture;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.app.chats.front().id, "Never replay pending marker", &error));
+	fixture.AwaitSave();
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(fixture.app, *fixture.session, fixture.app.chats.front()));
+	UAM_ASSERT(fixture.session->pending_prompt_delivery != nullptr);
+	UAM_ASSERT(!uam::acp_detail::WriteCommittedRemotePrompt(fixture.app, *fixture.session, fixture.app.chats.front()));
+	fixture.session->recovering_remote_turn = true;
+	UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(fixture.app, *fixture.session, fixture.app.chats.front(), &error));
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+	UAM_ASSERT(uam::CancelAcpTurn(fixture.app, fixture.app.chats.front().id, &error));
+	fixture.AwaitSave();
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+}
+
+UAM_TEST(AcpRemoteUncertainWriteKeepsOneCommittedDeliveryIdentity)
+{
+	RemoteAdmissionFixture fixture;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.app.chats.front().id, "Retain uncertain delivery", &error));
+	fixture.AwaitSave();
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(fixture.app, *fixture.session, fixture.app.chats.front()));
+	fixture.AwaitSave();
+	const std::string id = fixture.app.chats.front().remote_prompt_delivery_id;
+	const std::string payload = fixture.app.chats.front().remote_prompt_delivery_payload;
+	UAM_ASSERT(!id.empty());
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessInput(*fixture.session);
+	(void)uam::acp_detail::SendQueuedPromptIfReady(fixture.app, *fixture.session, fixture.app.chats.front());
+	UAM_ASSERT_EQ(fixture.app.chats.front().remote_prompt_delivery_id, id);
+	UAM_ASSERT_EQ(fixture.app.chats.front().remote_prompt_delivery_payload, payload);
+	UAM_ASSERT(fixture.app.chats.front().remote_turn_reconnect_pending);
+	const std::optional<ChatSession> receipt = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.app.chats.front().id);
+	UAM_ASSERT(receipt && receipt->remote_prompt_delivery_id == id && receipt->remote_prompt_delivery_payload == payload);
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+}
+
+UAM_TEST(AcpRemoteReconnectReplaysOneCommittedDeliveryId)
+{
+	RemoteAdmissionFixture fixture;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.app.chats.front().id, "One deduplicated remote input", &error));
+	fixture.AwaitSave();
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(fixture.app, *fixture.session, fixture.app.chats.front()));
+	fixture.AwaitSave();
+	fixture.AwaitInput();
+	const std::string id = fixture.app.chats.front().remote_prompt_delivery_id;
+	const std::string payload = fixture.app.chats.front().remote_prompt_delivery_payload;
+	fixture.AwaitSave();
+	fixture.RestartProxyAttached();
+	UAM_ASSERT(uam::acp_detail::WriteCommittedRemotePrompt(fixture.app, *fixture.session, fixture.app.chats.front()));
+	fixture.AwaitDeliveryReceipt(id);
+	UAM_ASSERT_EQ(fixture.app.chats.front().remote_prompt_delivery_id, id);
+	UAM_ASSERT_EQ(fixture.app.chats.front().remote_prompt_delivery_payload, payload);
+	const std::string input = ReadFile(fixture.input_log);
+	UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+}
+
+UAM_TEST(AcpUnreadyRemoteQueueAdmissionKeepsInputBudgetAndIntent)
+{
+	RemoteAdmissionFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	// The real private v3 proxy is connected while ACP session setup has not completed.
+	session.session_ready = false;
+	session.processing = true;
+	session.prompt_request_id = 0;
+	session.turn_serial = 7;
+	session.queued_prompt = "First remote input awaits native readiness";
+	chat.messages.push_back({.role = MessageRole::User, .content = session.queued_prompt, .acp_prompt_not_sent = true});
+	session.turn_user_message_index = session.turn_first_user_message_index = 1;
+	// The first raw input is deliberately unsaved: a queue journal cannot acknowledge it.
+	UAM_ASSERT_EQ(session.remote_runner_protocol_version, 3);
+	UAM_ASSERT(!uam::acp_detail::CanDeferRemotePromptAdmission(app, session, chat));
+	const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+	UAM_ASSERT(prepared);
+	std::promise<void> entered;
+	std::future<void> locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	std::string error;
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	const bool accepted = uam::SendAcpPrompt(app, chat.id, "Future input while the remote native session is unready", &error);
+	const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(accepted);
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT(!session.session_ready && session.processing && session.prompt_request_id == 0 && session.turn_serial == 7);
+	UAM_ASSERT_EQ(session.queued_prompt, std::string("First remote input awaits native readiness"));
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+	std::optional<bool> acknowledgement;
+	UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+	UAM_ASSERT(!acknowledgement.has_value());
+	fixture.AwaitSave();
+	UAM_ASSERT(acknowledgement.has_value() && *acknowledgement);
+	const std::optional<ChatSession> receipt = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(receipt && receipt->messages.size() == 2 && receipt->acp_queued_prompts.size() == 1);
+	UAM_ASSERT_EQ(receipt->messages[0].content, std::string("Previously saved remote history"));
+	UAM_ASSERT_EQ(receipt->messages[1].content, session.queued_prompt);
+	UAM_ASSERT(receipt->messages[1].acp_prompt_not_sent);
+	UAM_ASSERT_EQ(receipt->acp_queued_prompts.front().text, std::string("Future input while the remote native session is unready"));
+	UAM_ASSERT(!uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+}
+
+UAM_TEST(AcpUnreadyRemoteQueueReadyTransitionWaitsForFullReceipt)
+{
+	RemoteAdmissionFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	// The real private v3 proxy is connected while ACP session setup has not completed.
+	session.session_ready = false;
+	session.processing = true;
+	session.prompt_request_id = 0;
+	session.turn_serial = 7;
+	session.queued_prompt = "First remote input awaits native readiness";
+	chat.messages.push_back({.role = MessageRole::User, .content = session.queued_prompt, .acp_prompt_not_sent = true});
+	session.turn_user_message_index = session.turn_first_user_message_index = 1;
+	// The first raw input is deliberately unsaved: a queue journal cannot acknowledge it.
+	UAM_ASSERT_EQ(session.remote_runner_protocol_version, 3);
+	UAM_ASSERT(!uam::acp_detail::CanDeferRemotePromptAdmission(app, session, chat));
+	const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+	UAM_ASSERT(prepared);
+	std::promise<void> entered;
+	std::future<void> locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	std::string error;
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	const bool accepted = uam::SendAcpPrompt(app, chat.id, "Future input while the remote native session is unready", &error);
+	const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - started;
+	session.session_ready = true;
+	UAM_ASSERT(!uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+	UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, session, chat));
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+	publication.join();
+	UAM_ASSERT(accepted);
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT(session.session_ready && session.processing && session.prompt_request_id == 0 && session.turn_serial == 7);
+	UAM_ASSERT_EQ(session.queued_prompt, std::string("First remote input awaits native readiness"));
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+	std::optional<bool> acknowledgement;
+	UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+	UAM_ASSERT(!acknowledgement.has_value());
+	fixture.AwaitSave();
+	UAM_ASSERT(acknowledgement.has_value() && *acknowledgement);
+	const std::optional<ChatSession> receipt = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(receipt && receipt->messages.size() == 2 && receipt->acp_queued_prompts.size() == 1);
+	UAM_ASSERT_EQ(receipt->messages[0].content, std::string("Previously saved remote history"));
+	UAM_ASSERT_EQ(receipt->messages[1].content, session.queued_prompt);
+	UAM_ASSERT(receipt->messages[1].acp_prompt_not_sent);
+	UAM_ASSERT_EQ(receipt->acp_queued_prompts.front().text, std::string("Future input while the remote native session is unready"));
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+	fixture.AwaitSave();
+	fixture.AwaitInput();
+	const std::string input = ReadFile(fixture.input_log);
+	UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+	UAM_ASSERT(input.find("First remote input awaits native readiness") != std::string::npos);
+	UAM_ASSERT(input.find("Future input while the remote native session is unready") == std::string::npos);
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+}
+
+namespace
+{
+	void CheckUnreadyRemoteQueueRevocation(int mutation)
+	{
+		RemoteAdmissionFixture fixture;
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		session.session_ready = false;
+		session.processing = true;
+		session.prompt_request_id = 0;
+		session.turn_serial = 7;
+		session.queued_prompt = "Uncommitted initial remote input";
+		chat.messages.push_back({.role = MessageRole::User, .content = session.queued_prompt, .acp_prompt_not_sent = true});
+		session.turn_user_message_index = session.turn_first_user_message_index = 1;
+		std::string error;
+		const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Retained future remote input", &error));
+		UAM_ASSERT(std::chrono::steady_clock::now() - started <= std::chrono::milliseconds(100));
+		UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+		const std::string id = session.queued_user_prompts.front().id;
+		const int revision = session.queued_user_prompts.front().revision;
+		std::optional<bool> acknowledgement;
+		int callback_count = 0;
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement, &callback_count](bool saved) { ++callback_count; acknowledgement = saved; }));
+		const fs::path retained_root = fixture.temp.root / "retained-data";
+		if (mutation == 0)
+		{
+			fs::rename(app.data_root, retained_root);
+			UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "Private unavailable remote storage"));
+		}
+		if (mutation == 1) app.settings.execution_hosts.back().ssh_alias = "changed-private-connection";
+		if (mutation == 2) UAM_ASSERT(uam::CancelAcpTurn(app, chat.id, &error, true, true));
+		if (mutation == 3) fixture.RestartProxyAttached();
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!acknowledgement.has_value() && std::chrono::steady_clock::now() < deadline)
+		{
+			const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
+			(void)uam::FlushPendingChatSaves(app);
+			UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(acknowledgement.has_value());
+		UAM_ASSERT_EQ(*acknowledgement, mutation != 0);
+		UAM_ASSERT_EQ(callback_count, 1);
+		UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(session.queued_user_prompts.front().id, id);
+		UAM_ASSERT_EQ(session.queued_user_prompts.front().revision, revision);
+		UAM_ASSERT(session.queue_held);
+		UAM_ASSERT(chat.messages[1].acp_prompt_not_sent);
+		if (mutation == 3)
+		{
+			UAM_ASSERT(session.processing && session.queued_prompt == "Uncommitted initial remote input" && session.turn_serial == 7);
+			UAM_ASSERT(!chat.messages[1].interrupted);
+		}
+		else UAM_ASSERT(!session.processing && session.queued_prompt.empty());
+		if (mutation == 0)
+		{
+			fs::remove(app.data_root);
+			fs::rename(retained_root, app.data_root);
+		}
+		fixture.AwaitSave();
+		session.session_ready = true;
+		if (mutation != 3) UAM_ASSERT(!uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+		const std::string provider_input = fs::exists(fixture.input_log) ? ReadFile(fixture.input_log) : "";
+		UAM_ASSERT(provider_input.find("session/prompt") == std::string::npos);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved && saved->messages.size() == 2 && saved->acp_queued_prompts.size() == 1);
+		UAM_ASSERT(saved->messages[1].acp_prompt_not_sent);
+		UAM_ASSERT_EQ(saved->messages[1].interrupted, mutation == 0 || mutation == 1);
+		UAM_ASSERT_EQ(callback_count, 1);
+		UAM_ASSERT_EQ(saved->messages[1].content, std::string("Uncommitted initial remote input"));
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.front().id, id);
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.front().revision, revision);
+	}
+}
+
+UAM_TEST(AcpUnreadyRemoteQueueFailureRetainsFirstAndFutureIntent)
+{
+	CheckUnreadyRemoteQueueRevocation(0);
+}
+UAM_TEST(AcpUnreadyRemoteQueueRejectsChangedHostWithoutReplay)
+{
+	CheckUnreadyRemoteQueueRevocation(1);
+}
+UAM_TEST(AcpUnreadyRemoteQueueCancelPreservesFutureIntent)
+{
+	CheckUnreadyRemoteQueueRevocation(2);
+}
+
+UAM_TEST(AcpUnreadyRemoteQueueReplacementProcessKeepsCurrentTurn)
+{
+	CheckUnreadyRemoteQueueRevocation(3);
+}
+
+#endif
+
+UAM_TEST(OpenCodeAdvertisedModelResolutionPreservesExactIdsAndRejectsAmbiguousAliases)
+{
+	uam::AcpSessionState session;
+	session.provider_id = uam::provider_ids::kOpenCodeCli;
+	session.available_config_options.push_back({.id = "model", .category = "model", .choices = {{"example-provider/normal", "Normal", ""}}});
+	std::string error;
+	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "example-provider/Normal", error).value_or(""), "example-provider/normal");
+	UAM_ASSERT(error.empty());
+	session.current_model_id = "example-provider/Normal"; // Optimistic state is not proof that this native ID exists.
+	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "example-provider/Normal", error).value_or(""), "example-provider/normal");
+	session.available_config_options.front().choices.push_back({"example-provider/NORMAL", "Other native ID", ""});
+	UAM_ASSERT(!uam::acp_models::ResolveAdvertisedModelId(session, "example-provider/Normal", error));
+	UAM_ASSERT(error.find("multiple provider models") != std::string::npos);
+	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "example-provider/NORMAL", error).value_or(""), "example-provider/NORMAL");
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(!uam::acp_models::ResolveAdvertisedModelId(session, "example-provider/Pro", error));
+	UAM_ASSERT(error.find("no longer offers") != std::string::npos);
+	session.provider_id = uam::provider_ids::kGeminiCli;
+	session.current_model_id.clear();
+	UAM_ASSERT(!uam::acp_models::ResolveAdvertisedModelId(session, "example-provider/Normal", error));
+	session.available_config_options.clear();
+	session.provider_id = uam::provider_ids::kOpenCodeCli;
+	session.available_models.push_back({.id = "example-provider/normal", .name = "Normal"});
+	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "example-provider/Normal", error).value_or(""), "example-provider/normal");
+	session.provider_id = uam::provider_ids::kGeminiCli;
+	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "custom-native-model", error).value_or(""), "custom-native-model");
+}
+
+UAM_TEST(OpenCodeStartupRepairsUniqueAdvertisedModelCasingBeforeFirstPrompt)
+{
+	ChatSession chat;
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.model_id = "example-provider/Normal";
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.running = true;
+	session.session_ready = true;
+	session.session_id = "native-model-casing";
+	session.current_model_id = "example-provider/normal";
+	session.goal_turn_model_id = chat.model_id;
+	session.available_config_options.push_back({.id = "model", .category = "model", .choices = {{"example-provider/normal", "Normal", ""}}});
+	UAM_ASSERT(!uam::acp_detail::SendStartupModelIfNeeded(session, chat));
+	UAM_ASSERT_EQ(chat.model_id, "example-provider/normal");
+	UAM_ASSERT(session.last_error.empty());
+	UAM_ASSERT_EQ(session.next_request_id, 1);
+	UAM_ASSERT_EQ(session.goal_turn_model_id, "example-provider/normal");
+	chat.model_id = "ordinary-chat-model";
+	session.goal_turn_model_id = "example-provider/Normal";
+	session.goal_turn_kind = "review";
+	session.goal_review_turn = true;
+	UAM_ASSERT(!uam::acp_detail::SendStartupModelIfNeeded(session, chat));
+	UAM_ASSERT_EQ(session.goal_turn_model_id, "example-provider/normal");
+	UAM_ASSERT_EQ(chat.model_id, "ordinary-chat-model");
+}
+
+UAM_TEST(OptInRealRemoteOpenCodeFirstMessageUsesFullSetupAndRepairsSavedModel)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	const std::optional<std::string> alias = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_FIRST_MESSAGE_ALIAS");
+	const std::optional<std::string> workspace = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_FIRST_MESSAGE_WORKSPACE");
+	const std::optional<std::string> executable = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_FIRST_MESSAGE_EXECUTABLE");
+	const std::optional<std::string> resources = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_FIRST_MESSAGE_RESOURCES");
+	const std::optional<std::string> saved_model = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_SAVED_MODEL");
+	const std::optional<std::string> expected_model = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_EXPECTED_MODEL");
+	if (!alias || !workspace || !executable || !resources || !saved_model || !expected_model) return;
+	TempDir temp("uam-real-remote-first-message");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, uam::provider_ids::kOpenCodeCli);
+	UAM_ASSERT(profile != nullptr);
+	profile->interactive_command = *executable;
+	app.settings.central_provider_configuration.enabled = true;
+	app.settings.central_provider_configuration.instructions = uam::io::ReadTextFile(fs::path(*resources) / "AGENTS.md");
+	app.settings.central_provider_configuration.skill_directories = {(fs::path(*resources) / "skills").string()};
+	UAM_ASSERT(!app.settings.central_provider_configuration.instructions.empty());
+	ExecutionHost host;
+	host.id = "private-real-first-message-host";
+	host.transport = "ssh";
+	host.ssh_alias = *alias;
+	host.platform = "linux";
+	host.runner_directory = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_RUNNER_DIRECTORY").value_or("");
+	host.runner_status = "ready";
+	host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+	host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+	app.settings.execution_hosts = {host};
+	uam::execution_hosts::Normalize(app.settings.execution_hosts);
+	ChatSession chat;
+	chat.id = "real-first-message-" + temp.root.filename().string();
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = *workspace;
+	chat.model_id = *saved_model;
+	chat.approval_mode = "default";
+	chat.command_safety_tier = "yolo";
+	chat.uam_agent_id = "build";
+	app.chats.push_back(chat);
+	struct Cleanup
+	{
+		uam::AppState& app;
+		std::string chat_id;
+		~Cleanup()
+		{
+			(void)uam::StopAcpSession(app, chat_id);
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+			while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				(void)uam::FlushPendingChatSaves(app);
+				(void)uam::PollAllAcpSessions(app);
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+		}
+	} cleanup{app, chat.id};
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Respond with the single word OK. Do not use any tools.", {}, {}, false, &error));
+	uam::AcpSessionState* session = nullptr;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+	while (std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::FlushPendingChatSaves(app);
+		(void)uam::PollAllAcpSessions(app);
+		if (!app.acp_sessions.empty())
+		{
+			session = app.acp_sessions.front().get();
+			if (!session->last_error.empty() || (session->session_ready && !session->processing && session->prompt_request_id == 0)) break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(session != nullptr);
+	UAM_ASSERT(session->last_error.empty());
+	UAM_ASSERT(session->session_ready && !session->processing && session->prompt_request_id == 0);
+	UAM_ASSERT_EQ(app.chats.front().model_id, *expected_model);
+	int users = 0, assistants = 0;
+	for (const Message& message : app.chats.front().messages)
+	{
+		users += message.role == MessageRole::User;
+		assistants += message.role == MessageRole::Assistant;
+		UAM_ASSERT(!message.acp_prompt_not_sent && !message.interrupted);
+	}
+	UAM_ASSERT_EQ(users, 1);
+	UAM_ASSERT_EQ(assistants, 1);
+	UAM_ASSERT(!app.chats.front().messages.back().content.empty());
+	UAM_ASSERT(app.chats.front().acp_queued_prompts.empty());
+	UAM_ASSERT(session->provider_configuration_directory.filename() != "");
+	const nlohmann::json manifest = nlohmann::json::parse(uam::io::ReadTextFile(session->provider_configuration_directory / "owner.json"));
+	UAM_ASSERT(!manifest.value("mcpOnly", true));
+	UAM_ASSERT(manifest["files"].size() >= 12);
+#endif
+}
+
+
+UAM_TEST(OptInRealRemoteWindowsCodexCompletesPromptAfterIdleResume)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_CODEX_CLI
+	const std::optional<std::string> alias = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_CODEX_RESUME_ALIAS");
+	const std::optional<std::string> workspace = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_CODEX_RESUME_WORKSPACE");
+	const std::optional<std::string> resources = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_CODEX_RESUME_RESOURCES");
+	if (!alias || !workspace || !resources) return;
+	TempDir temp("uam-real-windows-codex-resume");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, uam::provider_ids::kCodexCli);
+	UAM_ASSERT(profile != nullptr);
+	// Codex uses its configured home; this read-only private-workspace test leaves new synthetic provider history.
+	app.settings.central_provider_configuration.enabled = true;
+	app.settings.central_provider_configuration.instructions = uam::io::ReadTextFile(fs::path(*resources) / "AGENTS.md");
+	app.settings.central_provider_configuration.skill_directories = {(fs::path(*resources) / "skills").string()};
+	UAM_ASSERT(!app.settings.central_provider_configuration.instructions.empty());
+	ExecutionHost host;
+	host.id = "private-real-windows-codex-resume-host";
+	host.transport = "ssh";
+	host.ssh_alias = *alias;
+	host.platform = "windows";
+	host.runner_directory = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_CODEX_RESUME_RUNNER_DIRECTORY").value_or("");
+	host.runner_status = "ready";
+	host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+	host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+	app.settings.execution_hosts = {host};
+	uam::execution_hosts::Normalize(app.settings.execution_hosts);
+	ChatSession chat;
+	chat.id = "chat-real-windows-codex-resume-" + temp.root.filename().string();
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = *workspace;
+	chat.model_id = "gpt-6.1-sol";
+	chat.reasoning_effort = "medium";
+	chat.service_tier = "priority";
+	chat.service_tier_explicit = true;
+	chat.approval_mode = "default";
+	chat.command_safety_tier = "safe";
+	chat.uam_agent_id = "plan";
+	app.chats.push_back(chat);
+	struct Cleanup
+	{
+		uam::AppState& app;
+		std::string chat_id;
+		~Cleanup()
+		{
+			(void)uam::StopAcpSession(app, chat_id);
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+			while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				(void)uam::FlushPendingChatSaves(app);
+				(void)uam::PollAllAcpSessions(app);
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+		}
+	} cleanup{app, chat.id};
+	const auto wait_for_turn = [&]()
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(180);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::FlushPendingChatSaves(app);
+			(void)uam::PollAllAcpSessions(app);
+			uam::AcpSessionState* current = uam::FindAcpSessionForChat(app, chat.id);
+			if (current != nullptr)
+			{
+				UAM_ASSERT(!current->waiting_for_permission && !current->waiting_for_user_input);
+				UAM_ASSERT(current->last_error.empty());
+				if (current->session_ready && !current->processing && current->prompt_request_id == 0)
+				{
+					UAM_ASSERT_EQ(current->active_uam_agent_workspace_access, std::string("read"));
+					return;
+				}
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(false);
+	};
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Respond with the single word OK. Do not use any tools.", {}, {}, false, &error));
+	wait_for_turn();
+	const std::string native_id = app.chats.front().native_session_id;
+	UAM_ASSERT(!native_id.empty());
+	(void)uam::StopAcpSession(app, chat.id, uam::AcpStopPurpose::Timeout);
+	const auto stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+	while (std::chrono::steady_clock::now() < stop_deadline)
+	{
+		(void)uam::FlushPendingChatSaves(app);
+		(void)uam::PollAllAcpSessions(app);
+		const uam::AcpSessionState* current = uam::FindAcpSessionForChat(app, chat.id);
+		if (app.pending_acp_remote_stops.empty() && (current == nullptr || !current->running)) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	const uam::AcpSessionState* stopped = uam::FindAcpSessionForChat(app, chat.id);
+	UAM_ASSERT(stopped == nullptr || !stopped->running);
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, native_id);
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Respond with the single word READY. Do not use any tools.", {}, {}, false, &error));
+	wait_for_turn();
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, native_id);
+	int users = 0, assistants = 0;
+	for (const Message& message : app.chats.front().messages)
+	{
+		users += message.role == MessageRole::User;
+		assistants += message.role == MessageRole::Assistant;
+		UAM_ASSERT(!message.acp_prompt_not_sent && !message.interrupted);
+		if (message.role == MessageRole::Assistant) UAM_ASSERT(!message.content.empty());
+	}
+	UAM_ASSERT_EQ(users, 2);
+	UAM_ASSERT_EQ(assistants, 2);
+	UAM_ASSERT(app.chats.front().acp_queued_prompts.empty());
+#endif
+}
+
+UAM_TEST(RemoteMemoryDetailReferencesAreReadableScopedAndEvidenceFree)
+{
+	TempDir temp("uam-remote-memory-details");
+	const fs::path workspace = fs::canonical(temp.root);
+	const fs::path entry = workspace / ".UAM/Lessons/User_Lessons/lesson.md";
+	UAM_ASSERT(uam::io::WriteTextFile(entry, "## Memory\nKeep tests.\n\n## Evidence\nREMOTE_DETAIL_é"));
+	uam::remote::RunnerState state;
+	const auto call = [&](const nlohmann::json& request) { return uam::remote::HandleRunnerRequest(request, "4.11.0", &state); };
+	const nlohmann::json response = call({{"id", "details"}, {"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", 512}, {"detailReferences", true}});
+	UAM_ASSERT(response.value("ok", false));
+	const std::string text = response["result"].value("text", "");
+	UAM_ASSERT(text.find("Keep tests.") != std::string::npos);
+	UAM_ASSERT(text.find("REMOTE_DETAIL") == std::string::npos);
+	UAM_ASSERT(text.find("## Evidence") == std::string::npos);
+	UAM_ASSERT(text.size() <= 512);
+	const std::size_t start = text.find(" [details: ");
+	UAM_ASSERT(start != std::string::npos);
+	const std::string path = text.substr(start + 11, text.find(']', start) - start - 11);
+	const nlohmann::json read = call({{"id", "read-detail"}, {"type", "workspace.file.read"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"path", path}});
+	UAM_ASSERT(read.value("ok", false));
+	std::string detail;
+	UAM_ASSERT(uam::base64::Decode(read["result"].value("dataBase64", ""), detail));
+	UAM_ASSERT(detail.find("REMOTE_DETAIL_é") != std::string::npos);
+	UAM_ASSERT(!call({{"id", "foreign"}, {"type", "workspace.file.read"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"path", "../foreign.md"}}).value("ok", true));
+	UAM_ASSERT(!call({{"id", "invalid"}, {"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", 512}, {"detailReferences", "yes"}}).value("ok", true));
+#if !defined(_WIN32)
+	fs::create_symlink(entry, entry.parent_path() / "linked.md");
+	UAM_ASSERT(!call({{"id", "linked"}, {"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", 512}, {"detailReferences", true}}).value("ok", true));
+#endif
+}
+
+UAM_TEST(RemoteMemoryOptionalReferencesNeverDisplaceFactsOrOverflowTheBudget)
+{
+	TempDir temp("uam-remote-memory-facts-first");
+	fs::path workspace = fs::canonical(temp.root);
+	for (int index = 0; index < 5; ++index) workspace /= std::string(95, 'w');
+	const fs::path directory = workspace / ".UAM/Lessons/User_Lessons";
+	for (int index = 0; index < 2; ++index)
+		UAM_ASSERT(uam::io::WriteTextFile(directory / (std::to_string(index) + ".md"), "## Memory\nFact" + std::to_string(index) + std::string(195, 'f') + "\n## Evidence\nNOT_INLINE"));
+	uam::remote::RunnerState state;
+	const auto read = [&](bool references)
+	{
+		return uam::remote::HandleRunnerRequest({{"id", "facts"}, {"type", "context.memory"},
+		    {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", 512}, {"detailReferences", references}}, "4.11.0", &state);
+	};
+	const nlohmann::json fallback = read(false);
+	const nlohmann::json progressive = read(true);
+	UAM_ASSERT(fallback.value("ok", false) && progressive.value("ok", false));
+	const std::string facts = progressive["result"].value("text", "");
+	UAM_ASSERT_EQ(facts, fallback["result"].value("text", ""));
+	UAM_ASSERT(facts.find("Fact0") != std::string::npos && facts.find("Fact1") != std::string::npos);
+	UAM_ASSERT(facts.find("NOT_INLINE") == std::string::npos);
+	UAM_ASSERT(facts.size() <= 512);
+}
+
+#if !defined(_WIN32)
+UAM_TEST(RemoteMemoryDetailReferenceRejectsLineBreakFilenameWithoutDroppingFact)
+{
+	TempDir temp("uam-remote-memory-reference-injection");
+	const fs::path workspace = fs::canonical(temp.root);
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / ".UAM/Lessons/User_Lessons/unsafe\nname.md", "## Memory\nFirst fact.\nSecond fact.\n## Evidence\nNOT_INLINE"));
+	uam::remote::RunnerState state;
+	const nlohmann::json response = uam::remote::HandleRunnerRequest({{"id", "unsafe-reference"}, {"type", "context.memory"},
+	    {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", 512}, {"detailReferences", true}}, "4.11.0", &state);
+	UAM_ASSERT(response.value("ok", false));
+	UAM_ASSERT_EQ(response["result"].value("text", ""), "- First fact. Second fact.\n");
+}
+#endif
+
+
+UAM_TEST(RemoteConfigurationRequiredThinkingAndFastRejectOlderSameProtocolHelpers)
+{
+	TempDir temp("uam-required-native-options");
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	for (const std::string provider : {"gemini-cli", "claude-cli"})
+	for (const bool available : {false, true})
+	{
+		const auto log = temp.root / (provider + (available ? "-new.jsonl" : "-old.jsonl"));
+		ScopedEnvVar log_env("UAM_TEST_CREATE_LOG", log.string());
+		ScopedEnvVar mode_env("UAM_TEST_CREATE_MODE", available ? "healthy" : provider == "gemini-cli" ? "old-gemini-options" : "old-claude-options");
+		nlohmann::json manifest{{"format", 1}, {"mcpOnly", true}, {"files", nlohmann::json::object()}};
+		if (provider == "gemini-cli") manifest["geminiThinking"] = {{"model", "gemini-3.1-pro-preview"}, {"effort", "high"}, {"cliVersion", "0.64.0"}};
+		else manifest["claudeTerminalFastMode"] = false; // An explicit Standard override is required too.
+		const auto source = temp.root / uam::provider_setup::Digest(manifest.dump());
+		std::vector<std::string> missing; std::string error;
+		UAM_ASSERT(uam::provider_setup::Prepare(source, manifest, missing, error));
+		uam::remote::RunnerClient client(service, {service.ResolveCurrentExecutablePath().string(), "--uam-test-remote-opencode-create"}, "development", uam::remote::kRunnerProtocolVersion);
+		UAM_ASSERT_EQ(client.InstallProviderConfiguration(source, temp.root / "target", &error), available);
+		if (!available) UAM_ASSERT(error.find("Update the SSH helper") != std::string::npos);
+		client.Disconnect();
+		std::istringstream requests(ReadFile(log)); std::string line; int prepares = 0;
+		while (std::getline(requests, line)) if (nlohmann::json::parse(line).value("type", "") == "configuration.prepare") ++prepares;
+		UAM_ASSERT_EQ(prepares, available ? 1 : 0);
+	}
+}
+
+UAM_TEST(RemoteConfigurationDefaultStillWorksWithoutOptionalThinkingCapability)
+{
+	TempDir temp("uam-default-native-options-old-helper");
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	ScopedEnvVar log_env("UAM_TEST_CREATE_LOG", (temp.root / "requests.jsonl").string());
+	ScopedEnvVar mode_env("UAM_TEST_CREATE_MODE", "old-gemini-options");
+	nlohmann::json manifest{{"format", 1}, {"mcpOnly", true}, {"files", nlohmann::json::object()}};
+	const auto source = temp.root / uam::provider_setup::Digest(manifest.dump());
+	std::vector<std::string> missing; std::string error;
+	UAM_ASSERT(uam::provider_setup::Prepare(source, manifest, missing, error));
+	uam::remote::RunnerClient client(service, {service.ResolveCurrentExecutablePath().string(), "--uam-test-remote-opencode-create"}, "development", uam::remote::kRunnerProtocolVersion);
+	UAM_ASSERT(client.InstallProviderConfiguration(source, temp.root / "target", &error));
+}
+
+
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI && (defined(__APPLE__) || defined(__linux__))
+UAM_TEST(AcpRemoteNativeMarkerFailurePreservesUnrelatedRpcRequest)
+{
+	{
+		// Constructed admission-policy fixture with an actual private runner/proxy.
+		// Native startup/UUID/image/ACK proof belongs to the separate joined Send test.
+		RemoteAdmissionFixture fixture;
+		auto& app = fixture.app;
+		auto& session = *fixture.session;
+		auto& chat = app.chats.front();
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		chat.provider_id = session.provider_id = "claude-cli";
+		session.protocol_kind = "claude-code-stream-json";
+		UAM_ASSERT(!chat.small_model_mode); // Exercise only the ordinary deferred marker boundary.
+		// An owned remote launch: matching process authority and known Default launch options.
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = fixture.token;
+		session.launch_model_options_captured = true;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Native input must retain unrelated RPC state on save failure.", &error));
+		fixture.AwaitSave();
+		UAM_ASSERT(error.empty() && uam::acp_detail::AcpSessionCanSendQueuedPrompt(session));
+		UAM_ASSERT(uam::acp_detail::CanDeferRemotePromptAdmission(app, session, chat));
+		UAM_ASSERT(!session.pending_prompt_delivery && session.prompt_request_id == 0);
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		// A valid, distinct constructed response-correlation record; it grants no
+		// process/native/delivery authority and is not a fabricated native method.
+		uam::AcpRemotePendingRequestState unrelated;
+		unrelated.request_id = 100001;
+		unrelated.method = "model/list";
+		unrelated.turn_serial = session.turn_serial;
+		chat.remote_pending_requests.push_back(unrelated);
+		session.pending_request_methods[unrelated.request_id] = unrelated.method;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		const auto prior_requests = chat.remote_pending_requests;
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto prior_primary = ReadFile(primary);
+		const auto prior_messages = chat.messages;
+		const auto prior_native = chat.native_session_id;
+		const auto real_root = app.data_root;
+		app.data_root = fixture.temp.root / "blocked-native-marker-storage";
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "This private storage root is a regular file."));
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+		UAM_ASSERT(uam::acp_detail::AcpSessionCanSendQueuedPrompt(session));
+		UAM_ASSERT(uam::acp_detail::CanDeferRemotePromptAdmission(app, session, chat));
+		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+		{
+			UAM_ASSERT(session.pending_prompt_delivery);
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (session.pending_prompt_delivery && std::chrono::steady_clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(app);
+				(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+				std::this_thread::yield();
+			}
+			UAM_ASSERT(!session.pending_prompt_delivery);
+			UAM_ASSERT_EQ(session.last_error, std::string("Remote prompt was not sent because its owned durable receipt was not confirmed."));
+			UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
+		}
+		UAM_ASSERT_EQ(chat.remote_pending_requests, prior_requests);
+		UAM_ASSERT_EQ(session.pending_request_methods.at(unrelated.request_id), unrelated.method);
+		UAM_ASSERT_EQ(session.prompt_request_id, 0);
+		UAM_ASSERT(chat.remote_prompt_delivery_id.empty() && chat.remote_prompt_delivery_payload.empty());
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		UAM_ASSERT_EQ(ReadFile(primary), prior_primary);
+		UAM_ASSERT_EQ(chat.native_session_id, prior_native);
+		UAM_ASSERT_EQ(chat.messages.size(), prior_messages.size());
+		for (std::size_t index = 0; index < prior_messages.size(); ++index)
+		{
+			UAM_ASSERT_EQ(chat.messages[index].role, prior_messages[index].role);
+			UAM_ASSERT_EQ(chat.messages[index].content, prior_messages[index].content);
+			UAM_ASSERT_EQ(chat.messages[index].attachments, prior_messages[index].attachments);
+		}
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{1});
+		UAM_ASSERT(chat.acp_queued_prompts.front().prepared_for_delivery);
+		// Drain the real failed publication before returning the private root to
+		// normal storage. No Send/dispatch is repeated to manufacture success.
+		app.data_root = real_root;
+		(void)uam::FlushPendingChatSaves(app, true);
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty() && app.pending_chat_save_tasks.empty());
+		UAM_ASSERT_EQ(chat.remote_pending_requests, prior_requests);
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+	}
+}
+#endif
+
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI && (defined(__APPLE__) || defined(__linux__))
+UAM_TEST(AcpRemoteClaudeResolvedModelReportDoesNotRestartAliasLaunch)
+{
+	// Issue #682: Claude reports the resolved model, so it never equals the launched alias.
+	for (const std::string launched : {"opus", "sonnet"})
+	{
+		RemoteAdmissionFixture fixture;
+		auto& app = fixture.app;
+		auto& session = *fixture.session;
+		auto& chat = app.chats.front();
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		chat.provider_id = session.provider_id = "claude-cli";
+		session.protocol_kind = "claude-code-stream-json";
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = fixture.token;
+		chat.model_id = "opus";
+		session.launch_model_options_id = launched;
+		session.launch_model_options_captured = true;
+		session.current_model_id = "claude-" + launched + "-5-5";
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Deliver the queued prompt.", &error));
+		const bool restarted = std::ranges::any_of(session.diagnostics, [&](const uam::AcpDiagnosticEntryState& entry)
+		{
+			return entry.event == "restart" && entry.reason == "model_changed" &&
+			       entry.detail == "running_model=" + launched + " turn_model=opus";
+		});
+		// Only a real alias change restarts, and its diagnostic names the reason.
+		UAM_ASSERT_EQ(restarted, launched != "opus");
+		UAM_ASSERT_EQ(chat.remote_restart_pending, launched != "opus");
+		if (!restarted) fixture.AwaitSave();
+	}
+}
+#endif
+
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI && (defined(__APPLE__) || defined(__linux__))
+UAM_TEST(AcpRemoteRpcMarkerRequiresActualPendingRequestWitness)
+{
+	for (const bool remove_witness : {false, true})
+	{
+		RemoteAdmissionFixture fixture;
+		auto& app = fixture.app;
+		auto& session = *fixture.session;
+		auto& chat = app.chats.front();
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Require the actual ACP response-correlation witness.", &error));
+		fixture.AwaitSave();
+		UAM_ASSERT(error.empty() && uam::acp_detail::AcpSessionCanSendQueuedPrompt(session));
+		UAM_ASSERT(uam::acp_detail::CanDeferRemotePromptAdmission(app, session, chat));
+		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+		UAM_ASSERT(session.pending_prompt_delivery && session.prompt_request_id == 0);
+		UAM_ASSERT_EQ(chat.remote_pending_requests.size(), std::size_t{1});
+		const auto actual_request = chat.remote_pending_requests.front();
+		UAM_ASSERT(actual_request.request_id > 0 && actual_request.turn_serial == session.turn_serial && !actual_request.response_consumed);
+		UAM_ASSERT_EQ(actual_request.method, std::string("session/prompt"));
+		UAM_ASSERT(!session.pending_request_methods.contains(actual_request.request_id));
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		if (remove_witness)
+		{
+			// Revoke the actual runtime-generated request, not its host/native/ACK
+			// identity. The real nonempty method must still require this witness.
+			chat.remote_pending_requests.erase(chat.remote_pending_requests.begin());
+			UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+			UAM_ASSERT(!session.pending_prompt_delivery && session.prompt_request_id == 0);
+			UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
+			UAM_ASSERT(chat.remote_pending_requests.empty() && chat.remote_prompt_delivery_id.empty());
+			fixture.AwaitSave();
+			UAM_ASSERT(!fs::exists(fixture.input_log));
+			const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id, true);
+			UAM_ASSERT(saved && saved->messages.back().acp_prompt_not_sent && saved->remote_pending_requests.empty());
+		}
+		else
+		{
+			fixture.AwaitSave();
+			const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id, true);
+			UAM_ASSERT(saved && saved->remote_pending_requests.size() == 1);
+			UAM_ASSERT_EQ(saved->remote_pending_requests.front(), actual_request);
+			fixture.AwaitInput();
+			const auto input = ReadFile(fixture.input_log);
+			UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+			const auto wire = nlohmann::json::parse(input);
+			UAM_ASSERT_EQ(wire.at("method"), nlohmann::json(actual_request.method));
+			UAM_ASSERT_EQ(wire.at("id"), nlohmann::json(actual_request.request_id));
+			UAM_ASSERT_EQ(wire.at("params").at("sessionId"), nlohmann::json(chat.native_session_id));
+			UAM_ASSERT_EQ(session.prompt_request_id, actual_request.request_id);
+		}
+	}
+}
+#endif
+
+
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI && UAM_ENABLE_RUNTIME_GEMINI_CLI && (defined(__APPLE__) || defined(__linux__))
+namespace
+{
+	void CheckRemoteSynchronousInternalMarkerRollback(bool native_input)
+	{
+		// Constructed policy scope only: use the existing real private runner/proxy,
+		// and the real internal continuation queue API, not ordinary public Send.
+		RemoteAdmissionFixture fixture;
+		auto& app = fixture.app;
+		auto& session = *fixture.session;
+		auto& chat = app.chats.front();
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		if (native_input)
+		{
+			chat.provider_id = session.provider_id = "claude-cli";
+			session.protocol_kind = "claude-code-stream-json";
+		}
+		chat.small_model_mode = true; // Supported synchronous fallback; never fake readiness/sent state.
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		UAM_ASSERT(uam::acp_detail::CanQueueGoalInternalPrompt(session));
+		UAM_ASSERT(!uam::acp_detail::CanDeferRemotePromptAdmission(app, session, chat));
+		const auto root = app.data_root;
+		const auto id = chat.id;
+		const auto incarnation = chat.metadata_incarnation;
+		const auto native = chat.native_session_id;
+		const auto process = session.last_process_id;
+		const auto* actual_session = &session;
+		struct Completion
+		{
+			int calls = 0;
+			bool accepted = false;
+			std::string error;
+		};
+		const auto completion = std::make_shared<Completion>();
+		const std::string prompt = "Keep the internal synchronous marker rollback scoped.";
+		UAM_ASSERT(uam::acp_detail::QueueGoalInternalPrompt(app, session, chat, prompt, false, "", false,
+		    [&app, root, id, incarnation, native, process, actual_session]()
+		    {
+			    const auto* current = ChatDomainService().FindChatById(app, id);
+			    const auto* runtime = uam::FindAcpSessionForChat(app, id);
+			    return app.data_root == root && current && current->metadata_incarnation == incarnation &&
+			        current->native_session_id == native && runtime == actual_session && runtime->last_process_id == process;
+		    },
+		    [completion](bool accepted, std::string error)
+		    {
+			    ++completion->calls;
+			    completion->accepted = accepted;
+			    completion->error = std::move(error);
+		    }));
+		// Only actual save polling completes the queue admission and its scheduled save.
+		// The production completion schedules before dispatch, so input remains gated.
+		fixture.AwaitSave();
+		UAM_ASSERT_EQ(completion->calls, 1);
+		UAM_ASSERT(completion->accepted && completion->error.empty());
+		UAM_ASSERT(session.processing && session.queued_prompt == prompt);
+		UAM_ASSERT_EQ(session.turn_first_user_message_index, -1);
+		UAM_ASSERT_EQ(session.turn_user_message_index, -1);
+		UAM_ASSERT_EQ(chat.messages.size(), std::size_t{1});
+		UAM_ASSERT(!session.pending_prompt_delivery && session.prompt_request_id == 0);
+		UAM_ASSERT(app.pending_chat_save_tasks.empty() && app.pending_chat_save_at_by_chat_id.empty());
+		UAM_ASSERT(uam::acp_detail::AcpSessionCanSendQueuedPrompt(session));
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+
+		// Distinct valid existing tail: the native path appends nothing, while the
+		// actual ACP encoder appends one request that must alone roll back.
+		uam::AcpRemotePendingRequestState unrelated;
+		unrelated.request_id = 100001;
+		unrelated.method = "model/list";
+		unrelated.turn_serial = session.turn_serial;
+		chat.remote_pending_requests.push_back(unrelated);
+		session.pending_request_methods[unrelated.request_id] = unrelated.method;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		const auto requests = chat.remote_pending_requests;
+		const auto methods = session.pending_request_methods;
+		const auto messages = chat.messages;
+		const auto primary = AppPaths::UamChatFilePath(root, id);
+		const auto primary_bytes = ReadFile(primary);
+		const int next_request = session.next_request_id;
+		app.data_root = fixture.temp.root / "blocked-internal-marker-root";
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "Private synchronous marker storage is unavailable."));
+		UAM_ASSERT(!uam::acp_detail::CanDeferRemotePromptAdmission(app, session, chat));
+		UAM_ASSERT(uam::acp_detail::AcpSessionCanSendQueuedPrompt(session));
+		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+		// Unique target-branch error: no authored unsent-row pre-save is involved
+		// because the real internal queue gave this continuation indices -1.
+		UAM_ASSERT_EQ(session.last_error, std::string("Prompt is waiting for its remote recovery marker to be saved."));
+		UAM_ASSERT_EQ(session.next_request_id, next_request + 1);
+		UAM_ASSERT(!session.pending_prompt_delivery && session.prompt_request_id == 0);
+		UAM_ASSERT_EQ(chat.remote_pending_requests, requests);
+		UAM_ASSERT_EQ(session.pending_request_methods, methods);
+		UAM_ASSERT(!session.pending_request_methods.contains(next_request));
+		UAM_ASSERT(!chat.remote_turn_reconnect_pending);
+		UAM_ASSERT(chat.remote_prompt_delivery_session_id.empty() && chat.remote_prompt_delivery_id.empty() && chat.remote_prompt_delivery_payload.empty());
+		UAM_ASSERT_EQ(chat.native_session_id, native);
+		UAM_ASSERT_EQ(chat.messages, messages);
+		UAM_ASSERT(chat.acp_queued_prompts.empty() && session.queued_user_prompts.empty());
+		UAM_ASSERT_EQ(ReadFile(primary), primary_bytes);
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		// Settle only the actual failed-save task; never repeat dispatch or Send.
+		app.data_root = root;
+		(void)uam::FlushPendingChatSaves(app, true);
+		UAM_ASSERT(app.pending_chat_save_tasks.empty() && app.pending_chat_save_at_by_chat_id.empty());
+		UAM_ASSERT_EQ(completion->calls, 1);
+		const auto saved = ChatRepository::LoadLocalChat(root, id, true);
+		UAM_ASSERT(saved && saved->messages == messages && saved->remote_pending_requests == requests);
+		UAM_ASSERT_EQ(saved->native_session_id, native);
+		UAM_ASSERT(saved->remote_prompt_delivery_id.empty() && saved->remote_prompt_delivery_payload.empty());
+		UAM_ASSERT_EQ(session.pending_request_methods, methods);
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+	}
+}
+
+UAM_TEST(AcpRemoteSynchronousNativeInternalMarkerFailureKeepsUnrelatedRpcTail)
+{
+	CheckRemoteSynchronousInternalMarkerRollback(true);
+}
+
+UAM_TEST(AcpRemoteSynchronousRpcInternalMarkerFailureRemovesOnlyOwnRequest)
+{
+	CheckRemoteSynchronousInternalMarkerRollback(false);
+}
+#endif
+#if UAM_ENABLE_SSH
+
+namespace
+{
+	void CheckOpenCodeNativeResultFrame(const nlohmann::json& operation,
+	    const nlohmann::json& emitted, bool accepted, bool generic = false, bool missing_result = false)
+	{
+		TempDir temp("uam-native-result-shape");
+		fs::create_directories(temp.root / "tmp");
+		const fs::path result_path = temp.root / "result.json";
+		UAM_ASSERT(uam::io::WriteTextFile(result_path, emitted.dump()));
+		ScopedEnvVar mode("UAM_TEST_CREATE_MODE", generic ? "generic-result-shape" : missing_result ? "native-result-missing" : "native-result-shape");
+		ScopedEnvVar path("UAM_TEST_NATIVE_RESULT_PATH", result_path.string());
+		ScopedEnvVar log("UAM_TEST_CREATE_LOG", (temp.root / "requests.jsonl").string());
+		ScopedEnvVar private_tmp("TMPDIR", (temp.root / "tmp").string());
+		auto& service = PlatformServicesFactory::Instance().process_service;
+		const auto executable = service.ResolveCurrentExecutablePath();
+		uam::remote::RunnerClient client(service, {executable.string(), "--uam-test-remote-opencode-create"}, "development");
+		client.SetProcessControlToken("typed-native-session", "typed-native-control");
+		std::string error;
+		UAM_ASSERT(client.Connect(&error));
+		if (generic)
+		{
+			uam::remote::ProcessPollResult result;
+			result.running = true; result.stdout_cursor = 77;
+			UAM_ASSERT(!client.PollProcess("typed-native-session", result, &error));
+			UAM_ASSERT(result.running && result.stdout_cursor == 77);
+		}
+		else
+		{
+			nlohmann::json result = "Caller sentinel";
+			UAM_ASSERT_EQ(client.QueryOpenCodeNative("typed-native-session", operation, result, &error), accepted);
+			if (accepted) { UAM_ASSERT_EQ(result, emitted); UAM_ASSERT(error.empty()); }
+			else UAM_ASSERT(result.is_null());
+		}
+		if (!accepted || generic)
+		{
+			UAM_ASSERT_EQ(error, std::string("The remote runner returned malformed result fields."));
+			UAM_ASSERT(!client.IsConnected());
+		}
+		// RunnerClient destruction performs owned bridge stop before private env/files unwind.
+	}
+
+	nlohmann::json NativeResultOperation(const std::string& name)
+	{
+		nlohmann::json operation{{"operation", name}};
+		if (name == "session" || name == "messages" || name == "enableTask" || name == "disableTask") operation["nativeSessionId"] = "ses_typed_native";
+		if (name == "enableTask" || name == "disableTask") operation["readOnly"] = name == "disableTask";
+		if (name == "reply") { operation["requestId"] = "per_typed_native"; operation["reply"] = "once"; }
+		return operation;
+	}
+}
+
+UAM_TEST(RemoteOpenCodeNativeResultShapesStayTypedAcrossOperations)
+{
+	using Json = nlohmann::json;
+	for (const std::string& name : {"health", "configProviders", "session", "status", "enableTask", "disableTask"})
+		CheckOpenCodeNativeResultFrame(NativeResultOperation(name), Json{{"native", "opaque native object"}}, true);
+	for (const std::string& name : {"permissions", "messages"})
+	{
+		CheckOpenCodeNativeResultFrame(NativeResultOperation(name), Json::array(), true);
+		CheckOpenCodeNativeResultFrame(NativeResultOperation(name), Json::array({Json{{"id", "native-item"}}}), true);
+	}
+	// False is valid native data; the permission owner still separately requires actual true before retirement.
+	for (const bool value : {false, true}) CheckOpenCodeNativeResultFrame(NativeResultOperation("reply"), Json(value), true);
+	Json boundary{{"data", ""}};
+	boundary["data"] = std::string(262144 - boundary.dump().size(), 'x');
+	UAM_ASSERT_EQ(boundary.dump().size(), std::size_t{262144});
+	CheckOpenCodeNativeResultFrame(NativeResultOperation("session"), boundary, true);
+}
+
+UAM_TEST(RemoteOpenCodeNativeMalformedShapesAndUnknownOperationsRefuse)
+{
+	using Json = nlohmann::json;
+	for (const std::string& name : {"health", "configProviders", "session", "status", "enableTask", "disableTask"})
+		CheckOpenCodeNativeResultFrame(NativeResultOperation(name), Json::array(), false);
+	for (const std::string& name : {"permissions", "messages"})
+	{
+		CheckOpenCodeNativeResultFrame(NativeResultOperation(name), Json::object(), false);
+		CheckOpenCodeNativeResultFrame(NativeResultOperation(name), Json(true), false);
+	}
+	for (const Json& wrong : {Json::object(), Json::array(), Json(), Json("true"), Json(1)})
+		CheckOpenCodeNativeResultFrame(NativeResultOperation("reply"), wrong, false);
+	CheckOpenCodeNativeResultFrame(NativeResultOperation("unknown-operation"), Json::object(), false);
+	CheckOpenCodeNativeResultFrame(Json::object(), Json::object(), false);
+	CheckOpenCodeNativeResultFrame(Json{{"operation", 7}}, Json::object(), false);
+	CheckOpenCodeNativeResultFrame(Json("session"), Json::object(), false);
+	CheckOpenCodeNativeResultFrame(NativeResultOperation("permissions"), Json(), false);
+	CheckOpenCodeNativeResultFrame(NativeResultOperation("session"), Json::object(), false, false, true);
+	Json oversized{{"data", ""}};
+	oversized["data"] = std::string(262145 - oversized.dump().size(), 'x');
+	UAM_ASSERT_EQ(oversized.dump().size(), std::size_t{262145});
+	CheckOpenCodeNativeResultFrame(NativeResultOperation("session"), oversized, false);
+}
+
+UAM_TEST(RemoteRunnerGenericResultsStillRejectNativeArraysAndBooleans)
+{
+	using Json = nlohmann::json;
+	for (const Json& emitted : {Json::array(), Json(true), Json(false), Json(), Json{{"stdoutCursor", "1"}}, Json{{"running", 1}}})
+		CheckOpenCodeNativeResultFrame(Json::object(), emitted, false, true);
+}
+
+#endif
+
+UAM_TEST(RemoteRunnerOpenCodeNativeSurfacesRespectBuildExclusion)
+{
+	using Json = nlohmann::json;
+	TempDir temp("uam-runner-opencode-build-boundary");
+	uam::remote::RunnerState state;
+	const Json hello = uam::remote::HandleRunnerRequest(
+	    {{"id", "hello-build-boundary"}, {"type", "hello"},
+	     {"protocolVersion", uam::remote::kRunnerProtocolVersion}, {"nonce", "build-boundary"}},
+	    "test-version", &state);
+	UAM_ASSERT(hello.value("ok", false));
+	const auto& capabilities = hello.at("capabilities");
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	UAM_ASSERT(capabilities.value("openCodeNativeControl", false));
+	UAM_ASSERT(capabilities.value("openCodeTerminalObservation", false));
+#else
+	UAM_ASSERT(!capabilities.contains("openCodeNativeControl"));
+	UAM_ASSERT(!capabilities.contains("openCodeTerminalObservation"));
+#endif
+	// Invalid endpoint/missing process authority keep the baseline fixture offline.
+	// The excluded build must reject at its feature boundary before either route's validation.
+	const Json observation{{"id", "observe-build-boundary"}, {"type", "opencode.terminal.observe"},
+	    {"port", 80}, {"token", "private"}, {"workspace", temp.root.string()},
+	    {"operation", {{"operation", "status"}}}};
+	const Json native{{"id", "native-build-boundary"}, {"type", "opencode.native"},
+	    {"sessionId", "owned-but-absent"}, {"controlToken", "test-token"},
+	    {"operation", {{"operation", "status"}}}};
+	for (const auto& request : {observation, native})
+	{
+		const Json response = uam::remote::HandleRunnerRequest(request, "test-version", &state);
+		UAM_ASSERT(!response.value("ok", true));
+		UAM_ASSERT_EQ(response.at("id"), request.at("id"));
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+		UAM_ASSERT_EQ(response.at("error").value("code", ""),
+		    request.at("type") == "opencode.terminal.observe" ? std::string("invalid_request") : std::string("session_not_found"));
+#else
+		UAM_ASSERT_EQ(response.at("error").value("code", ""), std::string("unsupported_request"));
+		const Json direct = state.HandleProcessRequest(request);
+		UAM_ASSERT(!direct.value("ok", true));
+		UAM_ASSERT_EQ(direct.at("error").value("code", ""), std::string("unsupported_request"));
+#endif
+	}
+	UAM_ASSERT(!state.HasManagedProcesses());
+}

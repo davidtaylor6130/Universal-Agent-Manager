@@ -1,22 +1,31 @@
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 /** The highest overlay layer owns keyboard input; later dialogs win ties. */
-export function getTopmostModal(): HTMLElement | null {
+export function getTopmostModal(doc: Document = document): HTMLElement | null {
   let top: HTMLElement | null = null
   let topLayer = -Infinity
-  for (const dialog of document.querySelectorAll<HTMLElement>('[aria-modal="true"]')) {
-    if (dialog.closest('[inert], [aria-hidden="true"], [data-state="closed"]')) continue
+  for (const dialog of doc.querySelectorAll<HTMLElement>('[aria-modal="true"]')) {
+    if (dialog.closest('[hidden], [inert], [aria-hidden="true"], [data-state="closed"]')) continue
     let layer = 0
+    let visible = true
     for (let parent: HTMLElement | null = dialog; parent; parent = parent.parentElement) {
-      const zIndex = Number.parseInt(window.getComputedStyle(parent).zIndex, 10)
+      const style = doc.defaultView?.getComputedStyle(parent)
+      if (style?.display === 'none' || style?.visibility === 'hidden' || style?.visibility === 'collapse') { visible = false; break }
+      const zIndex = Number.parseInt(style?.zIndex ?? '', 10)
       if (Number.isFinite(zIndex)) layer = Math.max(layer, zIndex)
     }
+    if (!visible) continue
     if (layer >= topLayer) {
       top = dialog
       topLayer = layer
     }
   }
   return top
+}
+
+/** True for keys pressed inside an open viewport menu (MenuSelect lists and the like): the menu handles them, so a modal's window listener must not. */
+export function fromViewportMenu(event: Event): boolean {
+  return event.target instanceof Element && event.target.closest('[data-viewport-menu]') !== null
 }
 
 export function trapModalTab(event: KeyboardEvent) {

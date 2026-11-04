@@ -1,9 +1,13 @@
+#include "common/platform/data_root_lock.h"
 #include "platform_services_macos_impl_internal.h"
 #include "common/platform/platform_application_macos.h"
 
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <Security/Security.h>
 #include <cstdio>
+#include <cerrno>
+#include <poll.h>
+#include <unistd.h>
 
 using namespace uam::platform_macos_impl;
 
@@ -16,6 +20,26 @@ class MacProcessService final : public IPlatformProcessService
 	bool EmbeddedBrowserUsesMockKeychain() const override
 	{
 		return true;
+	}
+
+	uam::platform::StandardInputReadResult ReadStandardInput(char* buffer, std::size_t capacity) const override
+	{
+		using uam::platform::StandardInputReadStatus;
+		if (buffer == nullptr || capacity == 0) return {};
+		pollfd input{STDIN_FILENO, POLLIN, 0};
+		const int ready = poll(&input, 1, 0);
+		if (ready == 0 || (ready < 0 && errno == EINTR))
+			return {StandardInputReadStatus::Pending, 0};
+		if (ready < 0 || (input.revents & (POLLERR | POLLNVAL)) != 0) return {};
+		if ((input.revents & (POLLIN | POLLHUP)) == 0)
+			return {StandardInputReadStatus::Pending, 0};
+		// Sole consumer: a ready redirected pipe cannot be drained by a competing reader.
+		const ssize_t count = read(STDIN_FILENO, buffer, capacity);
+		if (count > 0) return {StandardInputReadStatus::Data, static_cast<std::size_t>(count)};
+		if (count == 0) return {StandardInputReadStatus::EndOfStream, 0};
+		if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+			return {StandardInputReadStatus::Pending, 0};
+		return {};
 	}
 
 	bool SupportsDetachedProcesses() const override
@@ -263,6 +287,7 @@ class MacProcessService final : public IPlatformProcessService
 		process.stderr_read_fd = stderr_pipe[0];
 		process.child_pid = pid;
 		process.watchdog_pid = watchdog_pid;
+		process.reaped_exit_code = -1;
 
 		for (const int fd : {process.stdout_read_fd, process.stderr_read_fd})
 		{
@@ -281,6 +306,7 @@ class MacProcessService final : public IPlatformProcessService
 		CloseFdIfOpen(process.stdout_read_fd);
 		CloseFdIfOpen(process.stderr_read_fd);
 		process.child_pid = -1;
+		process.reaped_exit_code = -1;
 	}
 
 	bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, std::size_t len, std::string* error_out = nullptr) const override
@@ -303,6 +329,28 @@ class MacProcessService final : public IPlatformProcessService
 			process.stdin_writer = CreateAsyncFdWriter(process.stdin_write_fd, error_out);
 		}
 		return process.stdin_writer != nullptr && process.stdin_writer->Enqueue(bytes, len, error_out);
+	}
+
+	bool WriteToStdioProcessObserved(uam::platform::StdioProcessPlatformFields& process,
+	    const char* bytes, std::size_t len,
+	    std::shared_ptr<const uam::platform::AsyncByteWriter::EnqueueReceipt>& receipt_out,
+	    std::string* error_out = nullptr) const override
+	{
+		receipt_out.reset();
+		if (bytes == nullptr || len == 0)
+		{
+			if (error_out) *error_out = "An observed input write requires nonempty bytes.";
+			return false;
+		}
+		if (process.stdin_write_fd < 0)
+		{
+			if (error_out) *error_out = "stdin pipe handle is closed.";
+			return false;
+		}
+		if (process.stdin_writer == nullptr)
+			process.stdin_writer = CreateAsyncFdWriter(process.stdin_write_fd, error_out);
+		const std::shared_ptr<uam::platform::AsyncByteWriter> writer = process.stdin_writer;
+		return writer != nullptr && writer->EnqueueObserved(bytes, len, receipt_out, error_out);
 	}
 
 	void CloseStdioProcessInput(uam::platform::StdioProcessPlatformFields& process) const override
@@ -331,6 +379,7 @@ class MacProcessService final : public IPlatformProcessService
 		int status = 0;
 		if (TerminateCapturedCommandProcess(child_pid, &status))
 		{
+			process.reaped_exit_code = status >= 0 ? ExitCodeFromWaitStatus(status) : -1;
 			process.child_pid = -1;
 			StopParentDeathWatchdog(process.watchdog_pid);
 		}
@@ -358,7 +407,7 @@ class MacProcessService final : public IPlatformProcessService
 		{
 			if (exit_code_out != nullptr)
 			{
-				*exit_code_out = -1;
+				*exit_code_out = process.reaped_exit_code;
 			}
 			return true;
 		}
@@ -372,9 +421,10 @@ class MacProcessService final : public IPlatformProcessService
 		}
 		if (wait_result == process.child_pid || (wait_result < 0 && errno == ECHILD))
 		{
+			process.reaped_exit_code = wait_result == process.child_pid ? ExitCodeFromWaitStatus(status) : -1;
 			if (exit_code_out != nullptr)
 			{
-				*exit_code_out = wait_result == process.child_pid ? ExitCodeFromWaitStatus(status) : -1;
+				*exit_code_out = process.reaped_exit_code;
 			}
 			process.child_pid = -1;
 			StopParentDeathWatchdog(process.watchdog_pid);
@@ -405,41 +455,7 @@ class MacProcessService final : public IPlatformProcessService
 
 	std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const std::filesystem::path& data_root, std::string* error_out = nullptr) const override
 	{
-		std::error_code ec;
-		if (!uam::paths::CreateDirectoriesNoThrow(data_root, &ec))
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Failed to create data root lock directory: " + ec.message();
-			}
-			return nullptr;
-		}
-
-		const std::filesystem::path lock_path = data_root / ".uam-data-root.lock";
-		const int fd = open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-		if (fd < 0)
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Failed to open data root lock file: " + std::string(std::strerror(errno));
-			}
-			return nullptr;
-		}
-
-		if (flock(fd, LOCK_EX | LOCK_NB) != 0)
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Another Universal Agent Manager instance is already using this data root.";
-			}
-			(void)close(fd);
-			return nullptr;
-		}
-
-		const std::string pid_text = std::to_string(static_cast<long long>(getpid())) + "\n";
-		(void)ftruncate(fd, 0);
-		(void)write(fd, pid_text.data(), pid_text.size());
-		return std::make_unique<MacDataRootLock>(fd);
+		return uam::platform::AnchoredDataRootLock::TryAcquire(data_root, error_out);
 	}
 
 	uintmax_t NativeGeminiSessionMaxFileBytes() const override
@@ -510,7 +526,7 @@ class MacProcessService final : public IPlatformProcessService
 #endif
 	}
 
-	bool LaunchTerminalCommand(const std::vector<std::string>& argv, std::string* error_out) const override
+	bool LaunchTerminalCommand(const std::vector<std::string>& argv, std::string* error_out, std::string_view) const override
 	{
 #if defined(UAM_HEADLESS_RUNNER)
 		(void)argv;

@@ -1,0 +1,21 @@
+#pragma once
+#include <string_view>
+
+#include "app/execution_routing_service.h"
+#include "common/state/app_state.h"
+
+namespace uam
+{
+	/// Exact canonical projections shared with routing identity hashing; no execution authority.
+	std::string ExecutionRoutingConnectionConfiguration(const ExecutionHost& host);
+	std::string ExecutionRoutingProviderConfiguration(const AppState& app, const ProviderProfile& provider, std::string_view host_id = "local");
+	std::string ExecutionRoutingConnectionIdentity(const ExecutionHost& host);
+	std::string ExecutionRoutingProviderIdentity(const AppState& app, const ProviderProfile& provider, std::string_view host_id = "local");
+	/// Persist assignment and its reservation before the caller starts any provider operation.
+	ExecutionRoutingDecision AdmitExecutionRouting(AppState& app, ChatSession& chat, bool terminal = false);
+	bool ExecutionRoutingOwnsWork(const AppState& app, const ChatSession& chat);
+	bool RestoreExecutionRoutingReservations(AppState& app);
+	bool PollExecutionRouting(AppState& app);
+	/// Clears only local admission metadata after an explicit acknowledgement. Never stops a remote process.
+	bool ReleaseUnresolvedExecutionRouting(AppState& app, const ExecutionRoutingAssignment& expected, bool acknowledged, std::string& error);
+}

@@ -6,10 +6,18 @@ import { cx } from './cx'
 /** Exit animation length; keep in sync with --dur-exit in index.css. */
 export const EXIT_MS = 170
 
-function motionAllowed(): boolean {
-  // No matchMedia (jsdom) or reduced motion: unmount immediately.
+export function motionAllowed(): boolean {
+  // No matchMedia (jsdom), reduced motion or Motion Off (0 ms tokens, so no transitionend): change immediately.
   return typeof window !== 'undefined' && typeof window.matchMedia === 'function' &&
-    !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    !window.matchMedia('(prefers-reduced-motion: reduce)').matches &&
+    document.documentElement.getAttribute('data-motion') !== 'off'
+}
+
+/** `ms` scaled by --motion-scale (Appearance > Animation speed), so exit timers end with the scaled --dur-* tokens. */
+export function scaledMs(ms: number): number {
+  if (typeof document === 'undefined') return ms
+  const scale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--motion-scale'))
+  return Number.isFinite(scale) ? ms * scale : ms
 }
 
 /**
@@ -22,7 +30,7 @@ export function usePresence(open: boolean, exitMs = EXIT_MS) {
     if (open) { setMounted(true); return }
     if (!mounted) return
     if (!motionAllowed()) { setMounted(false); return }
-    const timer = window.setTimeout(() => setMounted(false), exitMs)
+    const timer = window.setTimeout(() => setMounted(false), scaledMs(exitMs))
     return () => window.clearTimeout(timer)
   }, [open, mounted, exitMs])
   return { mounted: open || mounted, closing: !open && mounted }
@@ -45,6 +53,9 @@ export interface OverlayProps {
  * filter or overflow can clip it. Direct children animate in and out.
  */
 export function Overlay({ open, children, onBackdropMouseDown, className, style, zIndex = 70, dim = true }: OverlayProps) {
+  // Inside <Presence>, the parent's exit window closes this overlay so its out-animation plays.
+  const presenceOpen = useContext(OverlayStateContext) !== 'closed'
+  open = open && presenceOpen
   const { mounted, closing } = usePresence(open)
   // Keep the last open content on screen while it animates out.
   const lastChildren = useRef(children)

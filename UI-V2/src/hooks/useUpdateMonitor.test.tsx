@@ -6,6 +6,7 @@ import { useAppStore } from '../store/useAppStore'
 import { useUpdateMonitor } from './useUpdateMonitor'
 import { UpdatesPanel } from '../components/layout/UpdatesPanel'
 import type { CliVersionProviderState } from '../store/cpp/types'
+import { APP_FAILURE_EVENT, type AppFailure } from '../utils/appFailure'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -23,23 +24,25 @@ describe('useUpdateMonitor', () => {
 
   it.each(['single', 'all'] as const)('shows the native helper installation error for %s updates', async (mode) => {
     const previous = useAppStore.getState()
-    const remoteHost = { id: 'alpha', label: 'Gaming AI Desktop', transport: 'ssh' as const, sshAlias: 'alpha', runnerStatus: 'ready' as const, runnerVersion: '4.9.0-alpha-9', platform: 'windows', architecture: 'x86_64', lastSeenAt: '' }
+    const remoteHost = { id: 'alpha', label: 'Windows workstation', transport: 'ssh' as const, sshAlias: 'alpha', runnerStatus: 'ready' as const, runnerVersion: '4.9.0-alpha-9', platform: 'windows', architecture: 'x86_64', lastSeenAt: '' }
     useAppStore.setState({ updateChecksEnabled: false, executionHosts: [remoteHost] })
     const detail = 'Stop or finish work running on this host before updating its helper.'
     window.cefQuery = ({ onFailure }) => onFailure(409, detail)
-    const updates = [{ id: 'remote-helper-alpha', remoteHostId: 'alpha', name: 'Gaming AI Desktop SSH helper', currentVersion: '4.9.0-alpha-9', latestVersion: '4.9.0-alpha-19', url: '', installable: true }]
+    const updates = [{ id: 'remote-helper-alpha', remoteHostId: 'alpha', name: 'Windows workstation SSH helper', currentVersion: '4.9.0-alpha-9', latestVersion: '4.9.0-alpha-19', url: '', installable: true }]
+    const failures: AppFailure[] = []
+    const listen = (event: Event) => failures.push((event as CustomEvent<AppFailure>).detail)
+    window.addEventListener(APP_FAILURE_EVENT, listen)
     function Panel() { return <UpdatesPanel monitor={{ ...useUpdateMonitor(), updates }} onClose={() => {}} /> }
     const host = document.createElement('div')
     const root = createRoot(host)
     try {
       await act(async () => root.render(<Panel />))
-      const label = mode === 'all' ? 'Update everything' : 'Update Gaming AI Desktop SSH helper to 4.9.0-alpha-19'
+      const label = mode === 'all' ? 'Update everything' : 'Update Windows workstation SSH helper to 4.9.0-alpha-19'
       await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click())
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain(detail)
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Gaming AI Desktop SSH helper')
-      await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Dismiss update error"]')!.click())
-      expect(host.querySelector('[role="alert"]')).toBeNull()
+      expect(failures).toEqual([expect.objectContaining({ message: 'Windows workstation SSH helper update failed', detail })])
+      expect(host.querySelector('button[aria-label="Retry Windows workstation SSH helper update to 4.9.0-alpha-19"]')).not.toBeNull()
     } finally {
+      window.removeEventListener(APP_FAILURE_EVENT, listen)
       act(() => root.unmount())
       useAppStore.setState(previous, true)
     }
@@ -83,6 +86,7 @@ describe('useUpdateMonitor', () => {
     window.cefQuery = ({ request, onSuccess }) => {
       const { action, payload } = JSON.parse(request)
       expect(action).toBe('applyCliProviderVersions')
+      expect(payload.allowInteractiveElevation).toBe(true)
       for (const target of payload.targets) {
         requests.push(target.executionHostId)
         push(target.executionHostId, { status: 'installing', running: true, lastInstallStatus: 'running' })
@@ -103,10 +107,48 @@ describe('useUpdateMonitor', () => {
       } else {
         await act(async () => push('beta', { status: 'verified', running: false, lastInstallStatus: 'failed', message: 'fixture failure' }))
         expect(host.textContent).toContain('beta update failed')
-        expect(host.textContent).toContain('alpha update installed')
+        expect(host.querySelector('[role="progressbar"][aria-label="alpha installed"]')).not.toBeNull()
       }
       expect(requests).toEqual(['alpha', 'beta', 'gamma'])
     } finally {
+      act(() => root.unmount())
+      useAppStore.setState(previous, true)
+    }
+  })
+
+  it('keeps interactive elevation pending until the owned host update is verified', async () => {
+    vi.useFakeTimers()
+    const previous = useAppStore.getState()
+    const provider: CliVersionProviderState = { providerId: 'codex-cli', executionHostId: 'alpha', installedVersion: '1.0.0', selectedVersion: '2.0.0', availableVersions: [], preferredVersion: 'latest', status: 'verified', message: '', running: false, lastCommand: '', lastOutput: '', lastInstallStatus: 'none' }
+    useAppStore.setState({ updateChecksEnabled: false, cliVersionManager: { providers: [], remoteProviders: [provider] } })
+    window.cefQuery = vi.fn(({ request, onSuccess }) => {
+      expect(JSON.parse(request)).toMatchObject({ action: 'applyCliProviderVersion', payload: { executionHostId: 'alpha', allowInteractiveElevation: true } })
+      useAppStore.setState({ cliVersionManager: { providers: [], remoteProviders: [{ ...provider, status: 'installing', running: true, lastInstallStatus: 'running' }] } })
+      onSuccess('{}')
+    })
+    let monitor: ReturnType<typeof useUpdateMonitor> | undefined
+    function Results() { monitor = useUpdateMonitor(); return null }
+    const root = createRoot(document.createElement('div'))
+    const controller = new AbortController()
+    try {
+      act(() => root.render(<Results />))
+      let completed!: Promise<boolean>
+      let settled = false
+      await act(async () => {
+        completed = monitor!.installCliProviderVersion('codex-cli', '2.0.0', 'alpha', controller.signal)
+        void completed.then(() => { settled = true })
+      })
+      await act(async () => {
+        useAppStore.setState({ cliVersionManager: { providers: [], remoteProviders: [{ ...provider, lastInstallStatus: 'awaiting-verification' }] } })
+        vi.advanceTimersByTime(16 * 60 * 1000)
+      })
+      expect(settled).toBe(false)
+      await act(async () => useAppStore.setState({ cliVersionManager: { providers: [], remoteProviders: [{ ...provider, installedVersion: '2.0.0', lastInstallStatus: 'succeeded' }] } }))
+      expect(await completed).toBe(true)
+      expect(window.cefQuery).toHaveBeenCalledTimes(1)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      controller.abort()
       act(() => root.unmount())
       useAppStore.setState(previous, true)
     }
@@ -150,6 +192,72 @@ describe('useUpdateMonitor', () => {
     } finally {
       act(() => root.unmount())
       subscription.mockRestore()
+      useAppStore.setState(previous, true)
+    }
+  })
+
+  it('preserves the native provider update rejection without guessing active work', async () => {
+    const previous = useAppStore.getState()
+    useAppStore.setState({ updateChecksEnabled: false })
+    const detail = 'The CLI installation method could not be identified.'
+    window.cefQuery = vi.fn(({ request, onFailure }) => {
+      expect(JSON.parse(request)).toMatchObject({ action: 'applyCliProviderVersion', payload: { providerId: 'opencode-cli', version: '1.18.35', executionHostId: 'homelab' } })
+      onFailure(400, detail)
+    })
+    let result: ReturnType<typeof useUpdateMonitor> | undefined
+    function Results() { result = useUpdateMonitor(); return null }
+    const root = createRoot(document.createElement('div'))
+    try {
+      act(() => root.render(<Results />))
+      await expect(result!.requestCliProviderUpdate('opencode-cli', '1.18.35', 'homelab')).resolves.toMatchObject({ ok: false, error: detail })
+      expect(window.cefQuery).toHaveBeenCalledTimes(1)
+    } finally {
+      act(() => root.unmount())
+      useAppStore.setState(previous, true)
+    }
+  })
+
+  it('observes Homebrew latest selection and shows the installed version after verification', async () => {
+    const previous = useAppStore.getState()
+    const provider: CliVersionProviderState = { providerId: 'opencode-cli', installedVersion: '1.18.34', selectedVersion: 'latest', installMethod: 'homebrew-formula', availableVersions: [], preferredVersion: 'latest', status: 'untested-newer', message: 'Newer than the last verified build.', running: false, lastCommand: '', lastOutput: '', lastInstallStatus: 'succeeded' }
+    useAppStore.setState({ updateChecksEnabled: false, cliVersionManager: { providers: [provider] } })
+    window.cefQuery = vi.fn(({ onSuccess }) => {
+      useAppStore.setState({ cliVersionManager: { providers: [{ ...provider, status: 'installing', running: true, lastInstallStatus: 'running' }] } })
+      useAppStore.setState({ cliVersionManager: { providers: [{ ...provider, installedVersion: '1.18.36' }] } })
+      onSuccess('{}')
+    })
+    let result: ReturnType<typeof useUpdateMonitor> | undefined
+    function Results() { result = useUpdateMonitor(); return null }
+    const root = createRoot(document.createElement('div'))
+    try {
+      act(() => root.render(<Results />))
+      await act(async () => {
+        expect(await result!.installCliProviderVersion('opencode-cli', '1.18.35', undefined, new AbortController().signal)).toBe(true)
+      })
+      expect(result!.providerUpdateResults[0].message).toBe('Installed 1.18.36.')
+      expect(window.cefQuery).toHaveBeenCalledTimes(1)
+    } finally {
+      act(() => root.unmount())
+      useAppStore.setState(previous, true)
+    }
+  })
+
+  it('withholds installation success until the version recheck finishes', () => {
+    const previous = useAppStore.getState()
+    const provider: CliVersionProviderState = { providerId: 'opencode-cli', installedVersion: '1.18.34', selectedVersion: 'latest', availableVersions: [], preferredVersion: 'latest', status: 'checking', message: 'Checking installed OpenCode version...', running: true, lastCommand: '', lastOutput: '', lastInstallStatus: 'succeeded' }
+    useAppStore.setState({ updateChecksEnabled: false, cliVersionManager: { providers: [provider] } })
+    let result: ReturnType<typeof useUpdateMonitor> | undefined
+    function Results() { result = useUpdateMonitor(); return null }
+    const root = createRoot(document.createElement('div'))
+    try {
+      act(() => root.render(<Results />))
+      expect(result!.providerUpdateResults).toEqual([])
+      act(() => useAppStore.setState({ cliVersionManager: { providers: [{ ...provider, running: false, checkError: 'Version check failed.' }] } }))
+      expect(result!.providerUpdateResults).toEqual([])
+      act(() => useAppStore.setState({ cliVersionManager: { providers: [{ ...provider, running: false, installedVersion: '1.18.35' }] } }))
+      expect(result!.providerUpdateResults[0].message).toBe('Installed 1.18.35.')
+    } finally {
+      act(() => root.unmount())
       useAppStore.setState(previous, true)
     }
   })
@@ -256,13 +364,11 @@ describe('useUpdateMonitor', () => {
   it('checks again every 24 hours while the app remains open', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-07-13T12:00:00.000Z'))
-    let request = 0
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      const isUamRequest = request % 6 === 0
-      request += 1
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
       return {
-        ok: true,
-        json: async () => isUamRequest
+        ok: !url.includes('/releases/tags/'),
+        json: async () => url.includes('api.github.com')
           ? { tag_name: 'V4.1.0', html_url: 'https://example.test/uam' }
           : { version: '1.0.0' },
       }
@@ -283,9 +389,9 @@ describe('useUpdateMonitor', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS - 1) })
     expect(fetch).not.toHaveBeenCalled()
     await act(async () => { await vi.advanceTimersByTimeAsync(1) })
-    expect(fetch).toHaveBeenCalledTimes(11)
+    expect(fetch).toHaveBeenCalledTimes(16)
     await act(async () => { await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS) })
-    expect(fetch).toHaveBeenCalledTimes(22)
+    expect(fetch).toHaveBeenCalledTimes(32)
 
     act(() => root.unmount())
   })
@@ -297,7 +403,8 @@ describe('useUpdateMonitor', () => {
       return null
     }
     const finishFetches: Array<(response: { ok: boolean; json: () => Promise<{ version: string }> }) => void> = []
-    vi.stubGlobal('fetch', vi.fn(() => new Promise((resolve) => finishFetches.push(resolve))))
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => String(input).includes('/releases/tags/')
+      ? Promise.resolve({ ok: false }) : new Promise((resolve) => finishFetches.push(resolve))))
     useAppStore.setState({
       providers: [],
       cliVersionManager: { providers: [] },
@@ -341,7 +448,7 @@ describe('useUpdateMonitor', () => {
     await act(async () => result!.checkNow())
     expect(result!.checking).toBe(true)
     await act(async () => result!.checkNow())
-    expect(fetch).toHaveBeenCalledTimes(11)
+    expect(fetch).toHaveBeenCalledTimes(16)
     act(() => useAppStore.setState({ cliVersionManager: { providers: [provider], remoteProviders: [
       { ...provider, executionHostId: 'alpha', status: 'checking', running: true },
     ] } }))
@@ -381,6 +488,33 @@ it('automatically installs only opted-in idle providers and defers running sessi
     useAppStore.setState(previous, true)
     if (cache) window.localStorage.setItem('uam-update-catalog-v1', cache)
     else window.localStorage.removeItem('uam-update-catalog-v1')
+    if (originalStorage) Object.defineProperty(window, 'localStorage', originalStorage)
+    delete window.cefQuery
+  }
+})
+
+it('neither offers nor automatically installs an update for a provider disabled on that computer', async () => {
+  const previous = useAppStore.getState()
+  const originalStorage = Object.getOwnPropertyDescriptor(window, 'localStorage')
+  const entries = new Map<string, string>()
+  Object.defineProperty(window, 'localStorage', { configurable: true, value: { getItem: (key: string) => entries.get(key) ?? null, setItem: (key: string, value: string) => entries.set(key, value), removeItem: (key: string) => entries.delete(key) } })
+  window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({ checkedAt: new Date().toISOString(), uam: { version: '4.9.0', url: '' }, providers: { 'codex-cli': { version: '2.0.0', url: '' } } }))
+  const provider = { providerId: 'codex-cli', installedVersion: '1.0.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest', status: 'verified' as const, message: '', running: false, blockingChatIds: [], lastCommand: '', lastOutput: '' }
+  useAppStore.setState({ appVersion: '4.9.0', updateChecksEnabled: false, automaticProviderUpdates: true, lastAppliedStateRevision: 0, dismissedUpdateVersions: {}, cliVersionManager: { providers: [provider] }, providerAvailability: [{ providerId: 'codex-cli', executionHostId: 'local', enabled: false }] })
+  const requests: { action: string }[] = []
+  window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') }
+  let result: ReturnType<typeof useUpdateMonitor> | undefined
+  function Results() { result = useUpdateMonitor(); return null }
+  const root = createRoot(document.createElement('div'))
+  try {
+    await act(async () => root.render(<Results />))
+    expect(result!.updates.map((update) => update.providerId)).not.toContain('codex-cli')
+    expect(requests.filter((request) => request.action === 'applyCliProviderVersions')).toEqual([])
+    await act(async () => useAppStore.setState({ providerAvailability: [] }))
+    expect(result!.updates.map((update) => update.providerId)).toContain('codex-cli')
+  } finally {
+    await act(async () => root.unmount())
+    useAppStore.setState(previous, true)
     if (originalStorage) Object.defineProperty(window, 'localStorage', originalStorage)
     delete window.cefQuery
   }

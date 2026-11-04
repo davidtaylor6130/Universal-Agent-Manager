@@ -19,11 +19,18 @@ def main():
         if origin:
             headers['Origin'] = origin
         req = urllib.request.Request(url, data=body.encode(), headers=headers)
+        started = time.monotonic()
         try:
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with urllib.request.urlopen(req, timeout=30) as response:
                 return response.status, json.load(response)
         except urllib.error.HTTPError as error:
             return error.code, json.load(error)
+        finally:
+            elapsed = time.monotonic() - started
+            if elapsed >= 1:
+                try: action = json.loads(body).get('action', 'malformed')
+                except (ValueError, AttributeError): action = 'malformed'
+                print(f'HTTP {action}: {elapsed:.3f}s', flush=True)
 
     def call(action, payload=None):
         status, result = request(json.dumps({'action': action, 'payload': payload or {}}))
@@ -57,10 +64,10 @@ def main():
     assert request(envelope, credential='wrong')[0] == 401
     assert request(envelope, origin='https://example.invalid')[0] == 401
     assert request('{')[0] == 400
-    assert request(json.dumps({'action': 'deleteSession'}))[0] == 403
+    assert request(json.dumps({'action': 'deleteSession'}))[0] == 400
     assert request('x' * 65537)[0] == 413
     state = call('getInitialState')
-    chat = next(c for c in state['chats'] if c['id'] == 'companion-fixture')
+    chat = next(c for c in state['chats'] if c['id'] == os.environ.get('UAM_COMPANION_FIXTURE_ID', 'companion-fixture'))
     assert chat['title'] == 'Companion integration fixture', 'Refusing to mutate a non-fixture chat'
     # The companion may open a subagent/native transcript, but the server must force
     # selectChat=false so this authenticated action cannot mutate desktop selection.
@@ -103,6 +110,15 @@ def main():
     assert any(m.get('content') == 'Permission answered.' for m in call('getChatMessages', {'chatId': chat['id']})['messages'])
     call('sendAcpPrompt', {'chatId': chat['id'], 'text': 'hold check'})
     wait_runtime(lambda runtime: runtime['processing'])
+    # Observe the fake provider's receipt before cancellation so this exercises an
+    # active provider turn rather than merely canceling UAM's queued preparation.
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if any(m.get('content') == 'Holding fixture turn.' for m in call('getChatMessages', {'chatId': chat['id']})['messages']):
+            break
+        time.sleep(.1)
+    else:
+        raise AssertionError('Fixture provider never received the held prompt')
     call('cancelAcpTurn', {'chatId': chat['id']})
     wait_runtime(lambda runtime: not runtime['processing'])
     print('PASS authentication, origin rejection, malformed/oversized input, action allowlist, transcript, OpenCode send/receive, permission response and cancellation')

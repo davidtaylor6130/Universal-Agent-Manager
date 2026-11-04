@@ -5,6 +5,7 @@ const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'u
 const styles = source('./index.css')
 const mainPanel = source('./components/layout/MainPanel.tsx')
 const chatView = source('./components/views/ChatView.tsx')
+const inlineQueue = source('./components/chat/InlinePromptQueue.tsx')
 
 describe('multi-pane density contract', () => {
   it('scopes dense presentation to narrow multi-pane containers', () => {
@@ -44,10 +45,12 @@ describe('multi-pane density contract', () => {
 
   it('gives live and recovery rows stable compact hooks without removing semantics', () => {
     expect(chatView).toContain('uam-turn-starting')
-    expect(chatView).toContain('uam-queued-prompt')
+    expect(chatView).toContain('<InlinePromptQueue')
+    expect(inlineQueue).toContain('uam-queued-prompt')
     expect(chatView).toContain('uam-composer-textarea')
     expect(chatView).toContain('role="status"')
-    expect(chatView).toContain('aria-label="Queued prompt"')
+    expect(inlineQueue).toContain('aria-label="Queued prompt"')
+    expect(inlineQueue).toContain('role="status"')
   })
 
   it('keeps tool events compact but visibly distinct from prose', () => {

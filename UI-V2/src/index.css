@@ -9,7 +9,7 @@
 
 /* ── Theme Tokens ─────────────────────────────────────────── */
 :root {
-  --provider-logo-codex-filter: none;
+  --provider-logo-mono-filter: none;
   --desktop-bg:      #e9edf5;
   --window-bg:       #f8f9fb;
   --bg:              #f7f8fa;
@@ -22,6 +22,8 @@
   --text-2:          #485163;
   --text-3:          #687285;
   --accent:          #ff6a00;
+  /* Text and icons on --accent: one of the theme's own colours with at least 4.5:1 contrast (onAccentContrast.test.ts). */
+  --on-accent:       var(--text);
   --accent-dim:      rgba(255, 106, 0, 0.10);
   --accent-glow:     rgba(255, 106, 0, 0.18);
   --teal:            #0891a1;
@@ -31,6 +33,8 @@
   --green:           #16a34a;
   --red:             #ef4444;
   --yellow:          #eab308;
+  /* Meter warning band: --yellow is ~1.9:1 on light surfaces, below the 3:1 graphic minimum. Dark themes reuse --warning below. */
+  --meter-warning:   #a16207;
   --purple:          var(--accent);
   --message-user-bg: #fff3eb;
   --message-assistant-bg: #ffffff;
@@ -42,8 +46,20 @@
   --warning-dim:      rgba(234, 179, 8, 0.14);
   --error:            var(--red);
   --error-dim:        rgba(239, 68, 68, 0.12);
+  /* Warning and error as text. Fills keep --warning and --error; text mixes toward --text so it reads on any surface
+     (light-theme yellow alone is about 1.9:1 on white). Defined once here, so every theme derives its own. */
+  --warning-text:     color-mix(in srgb, var(--warning) 55%, var(--text));
+  --error-text:       color-mix(in srgb, var(--error) 85%, var(--text));
   --info:             var(--blue);
   --info-dim:         var(--blue-dim);
+
+  /* Token categories (usage bars, legends, tooltips). Hues avoid provider, status and accent hues. Calm (low chroma),
+     at least 4.5:1 on light surfaces, and spread in lightness so pairs stay apart under red-green colour blindness. */
+  --token-input:       #b4466e;
+  --token-cache-read:  #46703a;
+  --token-cache-write: #4d59b2;
+  --token-output:      #91652e;
+  --token-reasoning:   #804387;
 
   /* Sidebar */
   --sidebar-bg:      #fbfcfe;
@@ -62,7 +78,7 @@
 }
 
 [data-theme="dark"] {
-  --provider-logo-codex-filter: invert(1);
+  --provider-logo-mono-filter: invert(1);
   --desktop-bg:      #31435b;
   --window-bg:       #0c0d11;
   --bg:              #0f1117;
@@ -75,6 +91,7 @@
   --text-2:          #aeb7c7;
   --text-3:          #838da0;
   --accent:          #ff6a00;
+  --on-accent:       var(--bg);
   --accent-dim:      rgba(255, 106, 0, 0.13);
   --accent-glow:     rgba(255, 106, 0, 0.22);
   --teal:            #22d3ee;
@@ -101,7 +118,7 @@
 }
 
 [data-theme="focus"] {
-  --provider-logo-codex-filter: invert(1);
+  --provider-logo-mono-filter: invert(1);
   --desktop-bg:      #151720;
   --window-bg:       #090a0d;
   --bg:              #0b0c0f;
@@ -114,6 +131,7 @@
   --text-2:          #b8bfcb;
   --text-3:          #8a93a3;
   --accent:          #cf7538;
+  --on-accent:       var(--bg);
   --accent-dim:      rgba(207, 117, 56, 0.09);
   --accent-glow:     rgba(207, 117, 56, 0.15);
   --teal:            #2dd4bf;
@@ -141,17 +159,36 @@
 
 /* Built-ins keep the same token contract as Dark/Light so every view, including
    focus rings, selections, scrollbars, and xterm fallback, changes together. */
-[data-theme="midnight"] { --desktop-bg:#17233a; --window-bg:#080d18; --bg:#0b1020; --surface:#11182b; --surface-up:#1a2440; --surface-high:#243152; --border:rgba(191,219,254,.13); --border-bright:rgba(191,219,254,.23); --text:#e6eefc; --text-2:#a7b8d6; --text-3:#7183a6; --accent:#60a5fa; --accent-dim:rgba(96,165,250,.18); --accent-glow:rgba(96,165,250,.34); --teal:#5eead4; --teal-dim:rgba(94,234,212,.14); --blue:#60a5fa; --blue-dim:rgba(96,165,250,.16); --green:#86efac; --red:#fda4af; --yellow:#fde68a; --message-user-bg:#13284a; --message-assistant-bg:#11182b; --sidebar-bg:#0d1425; --sidebar-item-hover:rgba(230,238,252,.07); --sidebar-item-active:rgba(96,165,250,.22); --scroll-thumb:rgba(191,219,254,.22); --scroll-track:transparent; --term-bg:#070b15; --term-fg:#e6eefc; --term-cursor:#93c5fd; --term-selection:rgba(96,165,250,.34); --success-dim:rgba(134,239,172,.16); --warning-dim:rgba(253,230,138,.18); --error-dim:rgba(253,164,175,.17); }
-[data-theme="paper"] { --desktop-bg:#dfe7e5; --window-bg:#fdfcf8; --bg:#f8f7f1; --surface:#fffef9; --surface-up:#f0eee5; --surface-high:#e6e3d8; --border:rgba(58,65,55,.14); --border-bright:rgba(58,65,55,.25); --text:#26302a; --text-2:#5d6a60; --text-3:#899289; --accent:#0f766e; --accent-dim:rgba(15,118,110,.14); --accent-glow:rgba(15,118,110,.28); --teal:#0f766e; --teal-dim:rgba(15,118,110,.13); --blue:#2563eb; --blue-dim:rgba(37,99,235,.12); --green:#15803d; --red:#c2410c; --yellow:#a16207; --message-user-bg:#e8f5f1; --message-assistant-bg:#fffef9; --sidebar-bg:#f2f3ed; --sidebar-item-hover:rgba(38,48,42,.06); --sidebar-item-active:rgba(15,118,110,.15); --scroll-thumb:rgba(38,48,42,.22); --scroll-track:transparent; --term-bg:#eeeee7; --term-fg:#202820; --term-cursor:#0f766e; --term-selection:rgba(15,118,110,.24); --success-dim:rgba(21,128,61,.14); --warning-dim:rgba(161,98,7,.15); --error-dim:rgba(194,65,12,.14); }
-[data-theme="dusk"] { --desktop-bg:#3c354e; --window-bg:#1c1828; --bg:#211c2d; --surface:#292239; --surface-up:#352d48; --surface-high:#433957; --border:rgba(231,217,255,.12); --border-bright:rgba(231,217,255,.22); --text:#f1eafd; --text-2:#c3b8d4; --text-3:#897d9c; --accent:#c4a7ff; --accent-dim:rgba(196,167,255,.18); --accent-glow:rgba(196,167,255,.34); --teal:#7dd3c7; --teal-dim:rgba(125,211,199,.14); --blue:#a5b4fc; --blue-dim:rgba(165,180,252,.16); --green:#a7f3d0; --red:#fda4af; --yellow:#fde68a; --message-user-bg:#392c4d; --message-assistant-bg:#292239; --sidebar-bg:#241e32; --sidebar-item-hover:rgba(241,234,253,.07); --sidebar-item-active:rgba(196,167,255,.22); --scroll-thumb:rgba(231,217,255,.22); --scroll-track:transparent; --term-bg:#181321; --term-fg:#f1eafd; --term-cursor:#c4a7ff; --term-selection:rgba(196,167,255,.34); --success-dim:rgba(167,243,208,.16); --warning-dim:rgba(253,230,138,.18); --error-dim:rgba(253,164,175,.17); }
-[data-theme="aurora"] { --desktop-bg:#123a3e; --window-bg:#071d25; --bg:#09252c; --surface:#0d3038; --surface-up:#12414a; --surface-high:#18545d; --border:rgba(203,255,243,.13); --border-bright:rgba(203,255,243,.24); --text:#e1fff7; --text-2:#a4d9cf; --text-3:#669b95; --accent:#f472b6; --accent-dim:rgba(244,114,182,.19); --accent-glow:rgba(244,114,182,.36); --teal:#5eead4; --teal-dim:rgba(94,234,212,.16); --blue:#67e8f9; --blue-dim:rgba(103,232,249,.16); --green:#a7f3d0; --red:#fda4af; --yellow:#fde68a; --message-user-bg:#143c4a; --message-assistant-bg:#0d3038; --sidebar-bg:#0a2931; --sidebar-item-hover:rgba(225,255,247,.07); --sidebar-item-active:rgba(244,114,182,.23); --scroll-thumb:rgba(203,255,243,.22); --scroll-track:transparent; --term-bg:#061a20; --term-fg:#e1fff7; --term-cursor:#f9a8d4; --term-selection:rgba(244,114,182,.34); --success-dim:rgba(167,243,208,.16); --warning-dim:rgba(253,230,138,.18); --error-dim:rgba(253,164,175,.17); }
-[data-theme="contrast"] { --desktop-bg:#000; --window-bg:#000; --bg:#000; --surface:#000; --surface-up:#111; --surface-high:#222; --border:#fff; --border-bright:#fff; --text:#fff; --text-2:#fff; --text-3:#d9d9d9; --accent:#00ffff; --accent-dim:rgba(0,255,255,.32); --accent-glow:rgba(0,255,255,.65); --teal:#00ffff; --teal-dim:rgba(0,255,255,.28); --blue:#6ea8ff; --blue-dim:rgba(110,168,255,.28); --green:#75ff75; --red:#ff8a8a; --yellow:#ffff4d; --message-user-bg:#001f2a; --message-assistant-bg:#000; --sidebar-bg:#000; --sidebar-item-hover:#222; --sidebar-item-active:#004c59; --scroll-thumb:#fff; --scroll-track:#000; --term-bg:#000; --term-fg:#fff; --term-cursor:#00ffff; --term-selection:rgba(0,255,255,.48); --success-dim:rgba(117,255,117,.28); --warning-dim:rgba(255,255,77,.30); --error-dim:rgba(255,138,138,.30); }
+[data-theme="midnight"] { --desktop-bg:#17233a; --window-bg:#080d18; --bg:#0b1020; --surface:#11182b; --surface-up:#1a2440; --surface-high:#243152; --border:rgba(191,219,254,.13); --border-bright:rgba(191,219,254,.23); --text:#e6eefc; --text-2:#a7b8d6; --text-3:#7183a6; --accent:#60a5fa; --on-accent:var(--bg); --accent-dim:rgba(96,165,250,.18); --accent-glow:rgba(96,165,250,.34); --teal:#5eead4; --teal-dim:rgba(94,234,212,.14); --blue:#60a5fa; --blue-dim:rgba(96,165,250,.16); --green:#86efac; --red:#fda4af; --yellow:#fde68a; --message-user-bg:#13284a; --message-assistant-bg:#11182b; --sidebar-bg:#0d1425; --sidebar-item-hover:rgba(230,238,252,.07); --sidebar-item-active:rgba(96,165,250,.22); --scroll-thumb:rgba(191,219,254,.22); --scroll-track:transparent; --term-bg:#070b15; --term-fg:#e6eefc; --term-cursor:#93c5fd; --term-selection:rgba(96,165,250,.34); --success-dim:rgba(134,239,172,.16); --warning-dim:rgba(253,230,138,.18); --error-dim:rgba(253,164,175,.17); }
+[data-theme="paper"] { --desktop-bg:#dfe7e5; --window-bg:#fdfcf8; --bg:#f8f7f1; --surface:#fffef9; --surface-up:#f0eee5; --surface-high:#e6e3d8; --border:rgba(58,65,55,.14); --border-bright:rgba(58,65,55,.25); --text:#26302a; --text-2:#5d6a60; --text-3:#899289; --accent:#0f766e; --on-accent:var(--surface); --accent-dim:rgba(15,118,110,.14); --accent-glow:rgba(15,118,110,.28); --teal:#0f766e; --teal-dim:rgba(15,118,110,.13); --blue:#2563eb; --blue-dim:rgba(37,99,235,.12); --green:#15803d; --red:#c2410c; --yellow:#a16207; --message-user-bg:#e8f5f1; --message-assistant-bg:#fffef9; --sidebar-bg:#f2f3ed; --sidebar-item-hover:rgba(38,48,42,.06); --sidebar-item-active:rgba(15,118,110,.15); --scroll-thumb:rgba(38,48,42,.22); --scroll-track:transparent; --term-bg:#eeeee7; --term-fg:#202820; --term-cursor:#0f766e; --term-selection:rgba(15,118,110,.24); --success-dim:rgba(21,128,61,.14); --warning-dim:rgba(161,98,7,.15); --error-dim:rgba(194,65,12,.14); }
+[data-theme="dusk"] { --desktop-bg:#3c354e; --window-bg:#1c1828; --bg:#211c2d; --surface:#292239; --surface-up:#352d48; --surface-high:#433957; --border:rgba(231,217,255,.12); --border-bright:rgba(231,217,255,.22); --text:#f1eafd; --text-2:#c3b8d4; --text-3:#897d9c; --accent:#c4a7ff; --on-accent:var(--bg); --accent-dim:rgba(196,167,255,.18); --accent-glow:rgba(196,167,255,.34); --teal:#7dd3c7; --teal-dim:rgba(125,211,199,.14); --blue:#a5b4fc; --blue-dim:rgba(165,180,252,.16); --green:#a7f3d0; --red:#fda4af; --yellow:#fde68a; --message-user-bg:#392c4d; --message-assistant-bg:#292239; --sidebar-bg:#241e32; --sidebar-item-hover:rgba(241,234,253,.07); --sidebar-item-active:rgba(196,167,255,.22); --scroll-thumb:rgba(231,217,255,.22); --scroll-track:transparent; --term-bg:#181321; --term-fg:#f1eafd; --term-cursor:#c4a7ff; --term-selection:rgba(196,167,255,.34); --success-dim:rgba(167,243,208,.16); --warning-dim:rgba(253,230,138,.18); --error-dim:rgba(253,164,175,.17); }
+[data-theme="aurora"] { --desktop-bg:#123a3e; --window-bg:#071d25; --bg:#09252c; --surface:#0d3038; --surface-up:#12414a; --surface-high:#18545d; --border:rgba(203,255,243,.13); --border-bright:rgba(203,255,243,.24); --text:#e1fff7; --text-2:#a4d9cf; --text-3:#669b95; --accent:#f472b6; --on-accent:var(--bg); --accent-dim:rgba(244,114,182,.19); --accent-glow:rgba(244,114,182,.36); --teal:#5eead4; --teal-dim:rgba(94,234,212,.16); --blue:#67e8f9; --blue-dim:rgba(103,232,249,.16); --green:#a7f3d0; --red:#fda4af; --yellow:#fde68a; --message-user-bg:#143c4a; --message-assistant-bg:#0d3038; --sidebar-bg:#0a2931; --sidebar-item-hover:rgba(225,255,247,.07); --sidebar-item-active:rgba(244,114,182,.23); --scroll-thumb:rgba(203,255,243,.22); --scroll-track:transparent; --term-bg:#061a20; --term-fg:#e1fff7; --term-cursor:#f9a8d4; --term-selection:rgba(244,114,182,.34); --success-dim:rgba(167,243,208,.16); --warning-dim:rgba(253,230,138,.18); --error-dim:rgba(253,164,175,.17); }
+[data-theme="contrast"] { --desktop-bg:#000; --window-bg:#000; --bg:#000; --surface:#000; --surface-up:#111; --surface-high:#222; --border:#fff; --border-bright:#fff; --text:#fff; --text-2:#fff; --text-3:#d9d9d9; --accent:#00ffff; --on-accent:var(--bg); --accent-dim:rgba(0,255,255,.32); --accent-glow:rgba(0,255,255,.65); --teal:#00ffff; --teal-dim:rgba(0,255,255,.28); --blue:#6ea8ff; --blue-dim:rgba(110,168,255,.28); --green:#75ff75; --red:#ff8a8a; --yellow:#ffff4d; --message-user-bg:#001f2a; --message-assistant-bg:#000; --sidebar-bg:#000; --sidebar-item-hover:#222; --sidebar-item-active:#004c59; --scroll-thumb:#fff; --scroll-track:#000; --term-bg:#000; --term-fg:#fff; --term-cursor:#00ffff; --term-selection:rgba(0,255,255,.48); --success-dim:rgba(117,255,117,.28); --warning-dim:rgba(255,255,77,.30); --error-dim:rgba(255,138,138,.30); }
 
 [data-theme="focus"], [data-theme="midnight"], [data-theme="dusk"], [data-theme="aurora"], [data-theme="contrast"] {
-  --provider-logo-codex-filter: invert(1);
+  --provider-logo-mono-filter: invert(1);
 }
 
-.uam-provider-logo--codex { filter: var(--provider-logo-codex-filter); }
+/* Token categories per theme (light lives in :root). Each theme tunes the five hues to its surfaces: at least 4.5:1 on
+   --bg, --surface and --surface-up (dark themes also carry --bg label text inside segments), lightness spread kept. */
+[data-theme="paper"] { --token-input:#a44b62; --token-cache-read:#426b3e; --token-cache-write:#5152a3; --token-output:#836633; --token-reasoning:#764276; }
+[data-theme="dark"] { --token-input:#dc7ba3; --token-cache-read:#80b756; --token-cache-write:#a3abf4; --token-output:#e0bd85; --token-reasoning:#b26dbd; }
+[data-theme="focus"] { --token-input:#cc86a3; --token-cache-read:#90b275; --token-cache-write:#a6ace5; --token-output:#d5be99; --token-reasoning:#a877b0; }
+[data-theme="midnight"] { --token-input:#dd88b1; --token-cache-read:#92bf70; --token-cache-write:#b3baf4; --token-output:#e5c99f; --token-reasoning:#b17dc2; }
+[data-theme="dusk"] { --token-input:#da93ac; --token-cache-read:#9dc181; --token-cache-write:#b6bbf0; --token-output:#e4cdab; --token-reasoning:#b78bc3; }
+[data-theme="aurora"] { --token-input:#ea9f8c; --token-cache-read:#9ed078; --token-cache-write:#c4cafd; --token-output:#f0d4a7; --token-reasoning:#c197d8; }
+[data-theme="contrast"] { --token-input:#fa78ae; --token-cache-read:#7ad335; --token-cache-write:#c0c7ff; --token-output:#fdd9a0; --token-reasoning:#d27ee0; }
+[data-theme="dark"], [data-theme="focus"], [data-theme="midnight"], [data-theme="dusk"], [data-theme="aurora"], [data-theme="contrast"] { --meter-warning: var(--warning); }
+
+/* Appearance "Higher contrast" setting. Mixes from --text/--bg (not the token itself) to avoid a cyclic custom property. */
+:root[data-contrast="more"] {
+  --text-2: color-mix(in srgb, var(--text) 86%, var(--bg));
+  --text-3: color-mix(in srgb, var(--text) 72%, var(--bg));
+  --border: color-mix(in srgb, var(--text) 28%, transparent);
+  --border-bright: color-mix(in srgb, var(--text) 45%, transparent);
+}
+
+.uam-provider-logo--codex, .uam-provider-logo--copilot { filter: var(--provider-logo-mono-filter); }
 
 /* ── Design System Scales (theme-independent) ─────────────────
    Redesign token layer. UI text is proportional sans; JetBrains Mono
@@ -198,18 +235,42 @@
   --elev-3: 0 12px 32px rgba(16, 24, 40, 0.16), 0 4px 8px rgba(16, 24, 40, 0.08);
 
   /* Motion */
-  --dur-fast: 120ms;
-  --dur-base: 180ms;
+  /* Durations scale with the Appearance > Motion setting (data-motion on the root). */
+  --dur-fast: calc(120ms * var(--motion-scale, 1));
+  --dur-base: calc(180ms * var(--motion-scale, 1));
   --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
   /* iOS-like curves: a soft deceleration and a gentle overshoot for things that "land". */
   --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-spring: cubic-bezier(0.34, 1.3, 0.64, 1);
-  --dur-enter: 240ms;
-  --dur-exit: 170ms;
+  --dur-enter: calc(240ms * var(--motion-scale, 1));
+  --dur-exit: calc(170ms * var(--motion-scale, 1));
+  /* Shared header height: sidebar search row, chat header and right-rail panel headers share one bottom border line. */
+  --pane-header-h: 44px;
 
-  /* One focus treatment everywhere: page-colored gap + accent ring. */
-  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px color-mix(in srgb, var(--accent) 60%, transparent);
+  /* One focus treatment everywhere (outline shorthand): an outline follows the element's own border-radius.
+     --focus-offset sits outside the shape; --focus-inset draws inside it for rows flush in clipping lists. */
+  --focus-ring: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  --focus-offset: 2px;
+  --focus-inset: -2px;
 
+}
+
+/* Appearance > Motion: scales every --dur-* token above. Default (no attribute) is 1x. */
+[data-motion="fast"] { --motion-scale: 0.67; }
+[data-motion="slow"] { --motion-scale: 1.5; }
+[data-motion="off"] { --motion-scale: 0; }
+@media (prefers-reduced-motion: reduce) { :root { --motion-scale: 0; } }
+/* One shared stop for Motion Off and OS reduced motion: fixed-millisecond animations settle too. .01ms (not none) keeps
+   animationend/transitionend firing for presence logic; static working states (spinners, rings) stay visible. */
+[data-motion="off"] *, [data-motion="off"] *::before, [data-motion="off"] *::after {
+  animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important;
+  transition-duration: .01ms !important; transition-delay: 0s !important; scroll-behavior: auto !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important; transition-delay: 0s !important; scroll-behavior: auto !important;
+  }
 }
 
 [data-theme="dark"], [data-theme="focus"] {
@@ -240,8 +301,11 @@
 }
 
 .uam-goal-banner__details:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+  outline: var(--focus-ring); outline-offset: var(--focus-offset);
+}
+/* Text-entry fields draw the ring inside their own border, so a dialog, scroll area or Swap can never clip it. */
+:is(input:not([type="checkbox"], [type="radio"], [type="range"]), textarea, select, [contenteditable="true"]):focus-visible {
+  outline-offset: var(--focus-inset);
 }
 
 .uam-chat-pane__header {
@@ -283,6 +347,21 @@
   pointer-events: auto;
 }
 
+/* Empty chat: heading and composer float to the middle of the pane. ChatView FLIPs the composer when this toggles. */
+.uam-composer-dock--centred {
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
+}
+
+.uam-composer-centre-heading {
+  padding-bottom: var(--sp-3);
+  text-align: center;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--text);
+}
+
 @keyframes uam-side-panel-in {
   from { opacity: 0; transform: translateX(12px); }
   to { opacity: 1; transform: translateX(0); }
@@ -313,7 +392,9 @@
 }
 
 /* Menus grow out of whatever opened them. */
-[data-viewport-menu] { animation: uam-menu-in 180ms var(--ease-out-soft) backwards; }
+[data-viewport-menu] { animation: uam-menu-in var(--dur-base) var(--ease-out-soft) backwards; }
+/* ViewportMenu leaves an inert copy behind on close so every menu shrinks back faster than it opened. */
+[data-viewport-menu][data-state="closed"] { animation: uam-menu-out var(--dur-fast) var(--ease) forwards; pointer-events: none; }
 [data-viewport-menu][data-menu-side="bottom"] { transform-origin: top center; }
 [data-viewport-menu][data-menu-side="top"] { transform-origin: bottom center; }
 [data-viewport-menu][data-menu-side="point"] { transform-origin: top left; }
@@ -321,6 +402,9 @@
 [data-viewport-menu][data-menu-side="right"] { transform-origin: center left; }
 @keyframes uam-menu-in {
   from { opacity: 0; transform: scale(0.95) translateY(-2px); }
+}
+@keyframes uam-menu-out {
+  to { opacity: 0; transform: scale(0.97); }
 }
 
 /* Native <details> open and close smoothly instead of snapping. */
@@ -339,7 +423,7 @@ details[open]::details-content { block-size: auto; }
 }
 
 /* Press feedback: controls give slightly under the finger/cursor. */
-.uam-btn:active:not(:disabled),
+.uam-btn:active:not(:disabled):not([aria-disabled="true"]),
 .uam-iconbtn:active:not(:disabled),
 .uam-layout-button:active:not(:disabled),
 .uam-segment-button:active:not(:disabled),
@@ -352,15 +436,6 @@ details[open]::details-content { block-size: auto; }
   transition-property: background, color, border-color, box-shadow, transform;
   transition-duration: var(--dur-fast);
   transition-timing-function: var(--ease);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    scroll-behavior: auto !important;
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
 }
 
 /* ── Base Reset ───────────────────────────────────────────── */
@@ -394,6 +469,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 }
 
 .uam-app {
+  position: relative; /* containing block for closing panels; same box as the viewport */
   min-width: 0;
   min-height: 0;
   width: 100%;
@@ -413,7 +489,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   gap: 8px;
   padding: 10px 7px;
   background: color-mix(in srgb, var(--window-bg) 96%, var(--bg));
-  z-index: 2;
+  z-index: 21; /* above sliding panels (closing ones sit at 20), which pass under the rail */
 }
 
 .uam-side-rail--left {
@@ -450,8 +526,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 }
 
 .uam-resize-handle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: var(--focus-ring); outline-offset: var(--focus-inset);
 }
 
 @media (max-width: 1000px) {
@@ -501,8 +576,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 
 .uam-layout-button:focus-visible,
 .uam-segment-button:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+  outline: var(--focus-ring); outline-offset: var(--focus-offset);
 }
 
 .uam-layout-button:disabled,
@@ -522,8 +596,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 
 .uam-composer-action:hover:not(:disabled) { filter: brightness(0.96); }
 .uam-composer-action:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+  outline: var(--focus-ring); outline-offset: var(--focus-offset);
 }
 .uam-composer-action:disabled { cursor: not-allowed; }
 
@@ -562,12 +635,12 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   }
 
   .uam-chat-pane[data-multi-pane="true"] .uam-chat-pane__title {
-    font-size: 12px;
+    font-size: var(--fs-sm);
     line-height: 1.2;
   }
 
   .uam-chat-pane[data-multi-pane="true"] .uam-chat-pane__workspace {
-    font-size: 10px;
+    font-size: var(--fs-xs);
     line-height: 1.1;
   }
 
@@ -610,7 +683,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   .uam-chat-pane[data-multi-pane="true"] .uam-message-frame__header {
     gap: 4px;
     margin-bottom: 2px;
-    font-size: 10px;
+    font-size: var(--fs-xs);
   }
 
   .uam-chat-pane[data-multi-pane="true"] .uam-message-frame__actions .uam-iconbtn {
@@ -671,7 +744,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   .uam-chat-pane[data-multi-pane="true"] .uam-goal-banner {
     gap: 6px;
     padding-block: 6px;
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
 }
 
@@ -745,7 +818,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .uam-attachment-remove:hover { background: var(--error-dim); color: var(--error) !important; }
-.uam-attachment-remove:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-attachment-remove:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 .uam-choice-button {
   cursor: pointer;
@@ -754,10 +827,9 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
               color var(--dur-fast) var(--ease),
               box-shadow var(--dur-fast) var(--ease);
 }
-.uam-choice-button:hover:not(:disabled) { background: var(--surface-up) !important; }
+.uam-choice-button:hover:not(:disabled):not([data-selected="true"]) { background: var(--surface-up) !important; }
 .uam-choice-button:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+  outline: var(--focus-ring); outline-offset: var(--focus-offset);
 }
 .uam-choice-button:disabled { cursor: not-allowed; opacity: 0.55; }
 
@@ -801,7 +873,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 
 .uam-tool-row__kind {
   color: var(--text-3);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -839,7 +911,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 }
 
 .uam-thinking-row__kind {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -848,7 +920,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 .uam-thinking-row__preview {
   overflow: hidden;
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -866,7 +938,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   border-top: 1px solid color-mix(in srgb, var(--yellow) 20%, var(--border));
   padding: 8px 10px;
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .uam-working-summary {
@@ -890,7 +962,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 }
 
 .uam-working-summary__label {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -898,7 +970,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 .uam-working-summary__last {
   overflow: hidden;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -931,7 +1003,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 .uam-working-summary__update {
   overflow: hidden;
   color: var(--text-2);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1.45;
   text-overflow: ellipsis;
   white-space: pre-wrap;
@@ -975,7 +1047,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   border-radius: 999px;
   padding: 2px 7px;
   color: var(--text-3);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -983,7 +1055,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 .uam-tool-modal__output-label {
   margin: 0 0 5px 1px;
   color: var(--text-3);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1123,9 +1195,9 @@ summary,
 }
 
 /* ── Focus Ring ───────────────────────────────────────────── */
+/* Rows flush inside scrolling or clipping containers draw the ring inside their own shape so it is never cut. */
 :focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
-  outline-offset: 2px;
+  outline: var(--focus-ring); outline-offset: var(--focus-offset);
 }
 
 /* ── Selection ────────────────────────────────────────────── */
@@ -1198,7 +1270,7 @@ summary,
   padding: 10px 12px;
   overflow-x: auto;
   margin: 0.5em 0;
-  font-size: 0.88em;
+  font-size: var(--fs-code, 0.88em);
 }
 .prose-msg pre code {
   background: transparent;
@@ -1270,6 +1342,21 @@ summary,
   animation: uam-status-spin 1s linear infinite;
 }
 
+.uam-working-ring {
+  animation: uam-status-spin 1s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-working-ring { animation: none; }
+}
+
+/* Reference capture in progress: the spinner turns while reading; the text alone carries the state without motion. */
+.uam-reference-pending__spinner { flex-shrink: 0; color: var(--text-3); animation: uam-status-spin 1s linear infinite; }
+[data-motion="off"] .uam-reference-pending__spinner { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .uam-reference-pending__spinner { animation: none; }
+}
+
 @keyframes uam-status-spin {
   to { transform: rotate(360deg); }
 }
@@ -1302,8 +1389,8 @@ summary,
   height: 12px;
   border-radius: 999px;
   border: 1.4px solid currentColor;
-  font-size: 8px;
-  font-weight: 700;
+  font-size: 8px; /* glyph size, not text */
+  font-weight: 600;
   line-height: 10px;
   text-align: center;
 }
@@ -1356,7 +1443,7 @@ summary,
   color: var(--accent);
   text-transform: uppercase;
   letter-spacing: 0.14em;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   margin-bottom: 12px;
 }
 
@@ -1398,7 +1485,7 @@ summary,
 .browser-guard__step-label {
   display: block;
   color: var(--text-2);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.12em;
   margin-bottom: 6px;
@@ -1406,7 +1493,7 @@ summary,
 
 .browser-guard__steps code {
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--fs-md);
   word-break: break-word;
 }
 
@@ -1487,24 +1574,24 @@ summary,
 .uam-btn--lg { height: 38px; padding: 0 var(--sp-4); font-size: var(--fs-md); }
 .uam-btn--block { width: 100%; }
 .uam-btn:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+  outline: var(--focus-ring); outline-offset: var(--focus-offset);
 }
-.uam-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.uam-btn:disabled,
+.uam-btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 
 .uam-btn--primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   border-color: color-mix(in srgb, var(--accent) 80%, #000);
 }
-.uam-btn--primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, #fff); }
+.uam-btn--primary:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--accent) 88%, var(--text)); }
 
 .uam-btn--secondary {
   background: var(--surface);
   color: var(--text);
   border-color: var(--border-bright);
 }
-.uam-btn--secondary:hover:not(:disabled) {
+.uam-btn--secondary:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--surface-up);
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border-bright));
 }
@@ -1513,16 +1600,29 @@ summary,
   background: transparent;
   color: var(--text-2);
 }
-.uam-btn--ghost:hover:not(:disabled) { background: var(--sidebar-item-hover); color: var(--text); }
+.uam-btn--ghost:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--sidebar-item-hover); color: var(--text); }
 
 .uam-btn--danger {
   background: var(--error-dim);
   color: var(--error);
   border-color: color-mix(in srgb, var(--error) 45%, transparent);
 }
-.uam-btn--danger:hover:not(:disabled) { background: color-mix(in srgb, var(--error) 18%, var(--surface)); }
+.uam-btn--danger:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--error) 18%, var(--surface)); }
 
 .uam-btn__spinner { opacity: 0.85; }
+/* asLink: inline text link (same look as .uam-add-link) */
+.uam-btn--link {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.uam-btn--link:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--sidebar-item-hover); color: var(--text); }
+.uam-btn--link:active:not(:disabled):not([aria-disabled="true"]) { transform: scale(0.96); }
 .uam-btn__kbd {
   margin-left: 2px;
   padding: 1px 5px;
@@ -1550,27 +1650,35 @@ summary,
 .uam-iconbtn--sm { width: 26px; height: 26px; }
 .uam-iconbtn--md { width: 30px; height: 30px; }
 .uam-iconbtn--lg { width: 36px; height: 36px; }
-.uam-iconbtn:hover:not(:disabled) { background: var(--sidebar-item-hover); color: var(--text); }
+.uam-iconbtn:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--sidebar-item-hover); color: var(--text); }
 .uam-iconbtn:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+  outline: var(--focus-ring); outline-offset: var(--focus-offset);
 }
-.uam-iconbtn:disabled { opacity: 0.45; cursor: not-allowed; }
+.uam-iconbtn:disabled, .uam-iconbtn[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
 .uam-iconbtn.is-active { background: var(--accent-dim); color: var(--accent); }
 .uam-iconbtn--solid { background: var(--surface); border-color: var(--border-bright); }
 .uam-iconbtn--danger:hover:not(:disabled) { background: var(--error-dim); color: color-mix(in srgb, var(--error) 72%, var(--text)); }
 
 .uam-switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; color: var(--text-2); }
-.uam-switch input { position: absolute; opacity: 0; pointer-events: none; }
+.uam-switch input, .uam-switch input[type="checkbox"]:disabled { position: absolute; opacity: 0; pointer-events: none; } /* outranks the global disabled-checkbox opacity */
 .uam-switch__track { position: relative; width: 34px; height: 19px; flex: 0 0 auto; border-radius: 999px; background: var(--surface-high); border: 1px solid var(--border-bright); transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
 .uam-switch__thumb { position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: var(--text-3); box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform 160ms var(--ease), background 160ms var(--ease); }
-.uam-switch input:checked + .uam-switch__track { background: var(--accent); border-color: var(--accent); }
-.uam-switch input:checked + .uam-switch__track .uam-switch__thumb { transform: translateX(15px); background: white; }
-.uam-switch input:focus-visible + .uam-switch__track { box-shadow: var(--focus-ring); }
+/* On is neutral (high-contrast ink); outside Settings (composer menu, companion) the thumb is plain black and white with no icons. */
+.uam-switch input:checked + .uam-switch__track { background: var(--text); border-color: var(--text); }
+.uam-switch input:checked + .uam-switch__track .uam-switch__thumb { transform: translateX(15px); background: var(--bg); }
+.uam-switch__icon { display: none; }
+/* Settings only (David, 2026-11-02; never the composer or other non-settings UI): same neutral track, but the thumb carries
+   the state as a green tick (on) or red X (off), which slides with it. --surface keeps both icons at 3:1 or more in every theme. */
+.uam-settings-scope .uam-switch__thumb { display: grid; place-items: center; background: var(--surface); box-shadow: 0 0 0 1px var(--border-bright), 0 1px 3px rgba(0,0,0,.25); transition: transform var(--dur-base) var(--ease); }
+.uam-settings-scope .uam-switch input:checked + .uam-switch__track .uam-switch__thumb { background: var(--surface); }
+.uam-settings-scope .uam-switch__icon { display: block; grid-area: 1 / 1; transition: opacity var(--dur-fast) var(--ease); }
+.uam-settings-scope .uam-switch__icon--on { color: var(--success); opacity: 0; }
+.uam-settings-scope .uam-switch__icon--off { color: var(--error); }
+.uam-settings-scope .uam-switch input:checked + .uam-switch__track .uam-switch__icon--on { opacity: 1; }
+.uam-settings-scope .uam-switch input:checked + .uam-switch__track .uam-switch__icon--off { opacity: 0; }
+.uam-switch input:focus-visible + .uam-switch__track { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-switch input:disabled + .uam-switch__track, .uam-switch input:disabled ~ .uam-switch__label { opacity: .45; }
 .uam-switch__label { font-size: var(--fs-sm); transition: color var(--dur-fast) var(--ease); }
-.uam-computer-use-switch .uam-switch__track { background: color-mix(in srgb, var(--surface-high) 72%, transparent); backdrop-filter: blur(12px); }
-.uam-computer-use-switch input:checked + .uam-switch__track { background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 56%, var(--purple))); border-color: color-mix(in srgb, white 24%, var(--accent)); box-shadow: inset 0 1px 0 rgba(255,255,255,.24), 0 4px 14px color-mix(in srgb, var(--accent) 28%, transparent); }
 
 .uam-dictation-wave { display: inline-flex; align-items: center; gap: 2px; height: 14px; }
 .uam-dictation-wave i { display: block; width: 2px; height: 5px; border-radius: 2px; background: currentColor; }
@@ -1596,8 +1704,7 @@ summary,
   border-color: var(--border-bright);
 }
 .uam-menu-select__trigger:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+  outline: var(--focus-ring); outline-offset: var(--focus-inset);
 }
 .uam-menu-select__trigger:disabled { opacity: 0.55; cursor: not-allowed; }
 .uam-menu-select__chevron { flex: none; transition: transform var(--dur-fast) var(--ease); }
@@ -1609,8 +1716,165 @@ summary,
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .uam-menu-select__option:hover,
-.uam-menu-select__option:focus-visible { background: var(--sidebar-item-hover); }
+.uam-menu-select__option:focus-visible { background: var(--sidebar-item-hover); outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 .uam-menu-select__option.is-selected { background: var(--accent-dim); }
+.uam-menu-select__option[aria-disabled="true"] { opacity: .5; cursor: default; }
+.uam-menu-select__option[aria-disabled="true"]:hover { background: transparent; }
+
+/* ── MenuItem (same look as the shared row-menu item in sidebar.css) ── */
+.uam-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px var(--sp-3);
+  text-align: left;
+  font-size: var(--fs-base);
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out-soft), color var(--dur-fast) var(--ease-out-soft);
+}
+.uam-menu-item:hover:not([aria-disabled="true"]) { background: var(--sidebar-item-hover); color: var(--text); }
+.uam-menu-item:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
+.uam-menu-item[aria-disabled="true"] { opacity: .5; cursor: default; }
+.uam-menu-item--danger { color: var(--error); }
+.uam-menu-item--danger:hover:not([aria-disabled="true"]) { background: var(--error-dim); color: var(--error); }
+.uam-menu-item.is-selected { color: var(--text); }
+.uam-menu-item__icon { flex: 0 0 16px; display: inline-flex; justify-content: center; color: var(--text-2); }
+.uam-menu-item__label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uam-menu-item__detail { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); color: var(--text-3); text-align: left; }
+.uam-menu-item__detail:empty { display: none; }
+.uam-menu-item__text { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; text-align: left; }
+.uam-menu-item__text .uam-menu-item__detail { flex: none; }
+.uam-menu-item__trailing { display: inline-flex; flex: 0 0 auto; align-items: center; margin-left: auto; padding-left: 12px; }
+.uam-menu-item__trailing + .uam-menu-kbd { margin-left: 0; }
+
+/* ── SegmentedControl: one sliding highlight behind the pressed option ── */
+.uam-seg {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.uam-seg > .uam-btn { position: relative; z-index: 1; }
+.uam-seg > .uam-btn[aria-pressed="true"] { color: var(--text); }
+/* Height is the button's, so only transform and width animate. */
+.uam-seg__indicator {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  pointer-events: none;
+  transition: transform var(--dur-base) var(--ease-out-soft), width var(--dur-base) var(--ease-out-soft);
+}
+[data-motion="off"] .uam-seg__indicator { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .uam-seg__indicator { transition: none; }
+}
+.uam-seg > .uam-btn.uam-seg__icon { padding: 0; aspect-ratio: 1 / 1; }
+
+/* ── Chip: compact choice button (same look as .uam-choice-button) ── */
+.uam-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border-bright);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+.uam-chip--sm { height: 24px; padding: 0 8px; }
+.uam-chip[data-selected="true"] {
+  background: var(--accent-dim);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-bright));
+  color: var(--text);
+}
+.uam-chip[data-tone="danger"] { color: var(--error); }
+.uam-chip[data-tone="danger"][data-selected="true"] {
+  background: var(--error-dim);
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+}
+
+/* ── Tabs: underline or pill, one sliding indicator (same motion rules as SegmentedControl) ── */
+.uam-tabs { position: relative; display: inline-flex; max-width: 100%; }
+.uam-tab {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 0;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.uam-tab:hover:not(:disabled) { color: var(--text); }
+.uam-tab[aria-selected="true"] { color: var(--text); }
+.uam-tab:disabled { opacity: .5; cursor: not-allowed; }
+.uam-tab:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
+.uam-tabs[data-variant="underline"] .uam-tab { height: 34px; padding: 8px var(--sp-1); }
+.uam-tabs[data-variant="pill"] {
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.uam-tabs[data-variant="pill"] .uam-tab { height: 26px; padding: 0 var(--sp-2); border-radius: var(--r-sm); color: var(--text-2); }
+.uam-tabs[data-variant="pill"] .uam-tab[aria-selected="true"] { color: var(--text); }
+.uam-tabs__indicator {
+  position: absolute;
+  left: 0;
+  pointer-events: none;
+  transition: transform var(--dur-base) var(--ease-out-soft), width var(--dur-base) var(--ease-out-soft);
+}
+.uam-tabs[data-variant="underline"] .uam-tabs__indicator { bottom: 0; height: 2px; background: var(--accent); }
+.uam-tabs[data-variant="pill"] .uam-tabs__indicator {
+  top: 2px;
+  bottom: 2px;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+[data-motion="off"] .uam-tabs__indicator { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .uam-tabs__indicator { transition: none; }
+}
+
+/* ── RowButton: reset plus hover and focus; row classes keep their look ── */
+/* :where keeps the reset at zero specificity so a row's own classes still win. */
+:where(.uam-row-button) {
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+.uam-row-button:hover { background: var(--sidebar-item-hover); }
+.uam-row-button:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 
 /* ── Tooltip ────────────────────────────────────────────────── */
 .uam-tooltip {
@@ -1627,7 +1891,7 @@ summary,
   font-family: var(--font-sans);
   font-size: var(--fs-sm);
   line-height: 1.35;
-  z-index: 60;
+  z-index: 2000;
   animation: uam-tooltip-in var(--dur-fast) var(--ease);
 }
 .uam-tooltip__kbd {
@@ -1685,6 +1949,13 @@ summary,
 .uam-status-dot--info    { background: var(--info); }
 .uam-status-dot--accent  { background: var(--accent); }
 .uam-status-dot.is-pulse { animation: uam-dot-pulse 1.6s var(--ease); }
+/* Success and error read as a tick or cross in the tone colour. Settings only (David, 2026-11-02): the mark sits in a rounded square with a tinted fill and border. */
+.uam-status-box { display: inline-grid; place-items: center; flex-shrink: 0; box-sizing: border-box; vertical-align: middle; }
+.uam-status-box--success { color: var(--success); }
+.uam-status-box--error { color: var(--error); }
+.uam-settings-scope .uam-status-box { width: var(--status-box-size); height: var(--status-box-size); border: 1px solid transparent; border-radius: var(--r-sm); }
+.uam-settings-scope .uam-status-box--success { background: var(--success-dim); border-color: color-mix(in srgb, var(--success) 35%, transparent); }
+.uam-settings-scope .uam-status-box--error { background: var(--error-dim); border-color: color-mix(in srgb, var(--error) 35%, transparent); }
 @keyframes uam-dot-pulse {
   0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
   50%      { box-shadow: 0 0 0 3px transparent; opacity: 0.75; }
@@ -1692,15 +1963,17 @@ summary,
 
 /* Shared workflow controls follow the active UAM theme. */
 .uam-status-indicator { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; flex-shrink:0; cursor:help; }
-.uam-status-count { font-size:11px; font-weight:700; border:1px solid currentColor; border-radius:50%; width:18px; height:18px; display:grid; place-items:center; }
-.uam-selection-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(76px,1fr)); gap:8px; }
-.uam-selection-option { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; min-width:0; padding:16px 8px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer; font-size:12px; transition:background-color 150ms,border-color 150ms; }
+.uam-status-count { font-size: var(--fs-xs); font-weight: 600; border:1px solid currentColor; border-radius:50%; width:18px; height:18px; display:grid; place-items:center; }
+.uam-selection-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(68px,1fr)); gap:6px; }
+.uam-selection-option { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; min-width:0; padding:10px 3px; background:var(--surface); color:var(--text-2); border:1px solid var(--border); border-radius:var(--r-md); cursor:pointer; font-size: var(--fs-xs); letter-spacing:-.01em; transition:background-color var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+.uam-selection-option:active:not(:disabled) { transform:scale(.97); }
+.uam-selection-option:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 .uam-selection-option:hover { background:var(--surface-up); }
-.uam-selection-option[aria-pressed="true"] { background:var(--accent-dim); border-color:var(--accent); }
+.uam-selection-option[aria-pressed="true"] { background:color-mix(in srgb, var(--accent) 8%, var(--surface)); border-color:color-mix(in srgb, var(--accent) 70%, transparent); color:var(--text); }
 .uam-selection-option:disabled { opacity:.5; cursor:not-allowed; }
 .uam-selection-icon { display:flex; height:24px; align-items:center; justify-content:center; }
 .uam-selection-status { position:absolute; top:2px; right:2px; }
-.uam-search-field:focus-within { outline:none; box-shadow:var(--focus-ring); }
+.uam-search-field:focus-within { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 .uam-search-field input:focus-visible { outline:none; }
 .uam-iconbtn[aria-label^="Close"]:hover,
 .uam-iconbtn[aria-label^="Dismiss"]:hover { color:var(--red); background:color-mix(in srgb,var(--red) 12%,transparent); }
@@ -1731,7 +2004,8 @@ summary,
 }
 
 /* Primary buttons read as "not ready yet" when disabled, not as a dim orange. */
-.uam-btn--primary:disabled {
+.uam-btn--primary:disabled,
+.uam-btn--primary[aria-disabled="true"] {
   background: var(--surface-high);
   border-color: var(--border);
   color: var(--text-3);
@@ -1760,11 +2034,11 @@ summary,
   border: 1px solid var(--border);
   background: var(--surface-up);
   color: var(--text-2);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   white-space: nowrap;
 }
-.uam-commit-chip--branch { color: var(--text); font-family: var(--font-mono); font-size: 10.5px; }
+.uam-commit-chip--branch { color: var(--text); font-family: var(--font-mono); font-size: var(--fs-xs); }
 .uam-commit-chip--branch svg { color: var(--accent); flex-shrink: 0; }
 .uam-commit-notice {
   margin: 10px 12px 0;
@@ -1773,7 +2047,7 @@ summary,
   border: 1px solid var(--border);
   background: var(--surface-up);
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .uam-commit-notice[data-tone="error"] { background: var(--error-dim); border-color: transparent; color: var(--error); }
 .uam-commit-list-header {
@@ -1782,7 +2056,7 @@ summary,
   gap: 10px;
   padding: 10px 14px 8px;
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   border-bottom: 1px solid var(--border);
 }
 .uam-commit-check {
@@ -1795,7 +2069,7 @@ summary,
   border-radius: 5px;
   border: 1.5px solid var(--border-bright);
   background: transparent;
-  color: #fff;
+  color: var(--on-accent);
   transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease-spring);
 }
 button.uam-commit-check { cursor: pointer; }
@@ -1814,17 +2088,17 @@ button.uam-commit-check { cursor: pointer; }
   width: 100%;
   padding: 7px 14px;
   text-align: left;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-2);
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease);
 }
 .uam-commit-file:hover { background: var(--sidebar-item-hover); }
 .uam-commit-file[data-selected="true"] { background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--text); }
-.uam-commit-file:focus-visible { outline: none; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 60%, transparent); }
+.uam-commit-file:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 .uam-commit-file__name { color: var(--text); }
-.uam-commit-file__dir { margin-left: 6px; color: var(--text-3); font-size: 11px; }
-.uam-commit-file__stat { display: inline-flex; gap: 6px; flex-shrink: 0; font-family: var(--font-mono); font-size: 11px; }
+.uam-commit-file__dir { margin-left: 6px; color: var(--text-3); font-size: var(--fs-xs); }
+.uam-commit-file__stat { display: inline-flex; gap: 6px; flex-shrink: 0; font-family: var(--font-mono); font-size: var(--fs-xs); }
 .uam-commit-status {
   display: inline-flex;
   align-items: center;
@@ -1833,8 +2107,8 @@ button.uam-commit-check { cursor: pointer; }
   height: 18px;
   border-radius: 4px;
   font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
+  font-size: var(--fs-xs);
+  font-weight: 600;
   color: var(--text-2);
   background: var(--surface-high);
 }
@@ -1851,7 +2125,7 @@ button.uam-commit-check { cursor: pointer; }
   gap: 8px;
   padding: 40px 16px;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .uam-commit-empty svg { color: var(--success); opacity: 0.8; }
 .uam-commit-composer {
@@ -1868,17 +2142,29 @@ button.uam-commit-check { cursor: pointer; }
   background: var(--bg);
   transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
-.uam-commit-message:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-bright)); box-shadow: 0 0 0 3px var(--accent-dim); }
+.uam-commit-message:focus-within { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 
-/* ── Side panels grow and shrink instead of popping ─────────────
-   The panel animates its own width while its content keeps the final
-   width (clipped), so the chat area eases over rather than jumping. */
-.uam-shell-panel { animation: uam-panel-grow var(--dur-enter) var(--ease-out-soft) backwards; }
-.uam-shell-panel[data-state="closed"] { animation: uam-panel-shrink var(--dur-exit) var(--ease) forwards; pointer-events: none; }
-.uam-shell-panel > * { width: 100%; min-width: var(--panel-w, auto); }
-.uam-shell-panel--right { align-items: flex-end; }
-@keyframes uam-panel-grow { from { width: 0; flex-basis: 0; opacity: 0; } }
-@keyframes uam-panel-shrink { to { width: 0; flex-basis: 0; opacity: 0; } }
+/* ── Side panels open and close on the compositor ──────────────
+   The slot changes once; only transform animates, so the chat area never
+   relayouts per frame. Panels slide in and out of their rail like a drawer. */
+.uam-shell-panel { --panel-dir: -1; overflow: hidden; animation: uam-panel-in var(--dur-enter) var(--ease-out-soft) backwards; }
+.uam-shell-panel--right { --panel-dir: 1; }
+.uam-shell-panel[data-state="closed"] { animation: uam-panel-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+/* A docked panel that is closing leaves the layout at once and slides out from where it was (beside its rail),
+   above the chat's own layers; narrow windows already show panels as fixed overlays. */
+@media not all and (max-width: 1000px) {
+  /* Below the native window strip, which pads .uam-app (absolute boxes start at its padding edge). */
+  .uam-shell-panel[data-state="closed"] { position: absolute; top: var(--uam-window-strip-height, 0px); bottom: 0; height: auto; z-index: 20; }
+  /* The chat list's only edge is its resize handle, which unmounts on close, so it draws its own (right panels have one). */
+  .uam-shell-panel--left[data-state="closed"] { left: 44px; border-right: 1px solid var(--border); }
+  .uam-shell-panel--right[data-state="closed"] { right: 44px; }
+}
+.uam-shell-panel > * { width: 100%; }
+/* The handle mounts at its final place; it fades in once the opening panel has arrived beside it. */
+.uam-resize-handle { animation: uam-handle-in var(--dur-fast) var(--ease-out-soft) var(--dur-enter) backwards; }
+@keyframes uam-handle-in { from { opacity: 0; } }
+@keyframes uam-panel-in { from { transform: translateX(calc(var(--panel-dir) * 100%)); } }
+@keyframes uam-panel-out { to { transform: translateX(calc(var(--panel-dir) * 100%)); } }
 
 /* ── Inline forms (new workspace / collection) and text fields ── */
 .uam-field {
@@ -1890,18 +2176,13 @@ button.uam-commit-check { cursor: pointer; }
   color: var(--text);
   font: inherit;
   font-size: var(--fs-sm);
-  outline: none;
-  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+  transition: border-color var(--dur-fast) var(--ease);
 }
 .uam-field::placeholder { color: var(--text-3); }
+.uam-field:disabled { opacity: 0.5; cursor: not-allowed; }
 .uam-field[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 .uam-field[type="number"]::-webkit-inner-spin-button,
 .uam-field[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-.uam-field:focus,
-.uam-field:focus-visible {
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--border-bright));
-  box-shadow: 0 0 0 3px var(--accent-dim);
-}
 .uam-inline-form {
   display: grid;
   gap: 10px;
@@ -1929,7 +2210,7 @@ button.uam-commit-check { cursor: pointer; }
 }
 .uam-add-link:hover { background: var(--sidebar-item-hover); color: var(--text); }
 .uam-add-link:active { transform: scale(0.96); }
-.uam-add-link:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-add-link:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 /* Icons passed as button children sit inline with the text. */
 .uam-btn__label { display: inline-flex; align-items: center; gap: 6px; }
@@ -1957,86 +2238,12 @@ button.uam-commit-check { cursor: pointer; }
   background: var(--surface);
 }
 .uam-settings-page { animation: uam-reveal-in var(--dur-enter) var(--ease-out-soft) backwards; }
-.uam-settings-page--narrow > * { max-width: 800px; margin-inline: auto; }
+.uam-settings-page--narrow > * { max-width: none; }
 
 /* ── Memory library ─────────────────────────────────────────── */
-.uam-memory-card {
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: var(--surface);
-  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), transform var(--dur-base) var(--ease-out-soft);
-  animation: uam-reveal-in var(--dur-enter) var(--ease-out-soft) backwards;
-}
-.uam-memory-card:hover { border-color: var(--border-bright); background: color-mix(in srgb, var(--surface-up) 50%, var(--surface)); }
-.uam-memory-card__actions { opacity: 0.55; transition: opacity var(--dur-fast) var(--ease); }
-.uam-memory-card:hover .uam-memory-card__actions,
-.uam-memory-card:focus-within .uam-memory-card__actions { opacity: 1; }
-.uam-memory-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-  margin-top: 8px;
-  font-size: var(--fs-xs);
-  color: var(--text-3);
-}
-.uam-memory-chip {
-  display: inline-flex;
-  align-items: center;
-  height: 18px;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: var(--surface-up);
-  color: var(--text-2);
-  font-weight: var(--fw-medium);
-}
-.uam-memory-chip[data-confidence="high"] { background: var(--success-dim); color: color-mix(in srgb, var(--success) 72%, var(--text)); }
-.uam-memory-chip[data-confidence="medium"] { background: var(--warning-dim); color: color-mix(in srgb, var(--warning) 72%, var(--text)); }
 
 .uam-field--select { height: 34px; padding-right: 6px; cursor: pointer; }
 
-/* ── Skills store ───────────────────────────────────────────── */
-.uam-skill-folder__summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 6px;
-  border-radius: var(--r-md);
-  font-size: var(--fs-md);
-  color: var(--text-2);
-  cursor: pointer;
-  list-style: none;
-  user-select: none;
-}
-.uam-skill-folder__summary::-webkit-details-marker { display: none; }
-.uam-skill-folder__summary:hover { background: var(--sidebar-item-hover); color: var(--text); }
-.uam-skill-folder__chevron { flex-shrink: 0; color: var(--text-3); transition: transform var(--dur-base) var(--ease-out-soft); }
-.uam-skill-folder[open] > .uam-skill-folder__summary .uam-skill-folder__chevron { transform: rotate(90deg); }
-.uam-skill-folder__count { margin-left: auto; font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; }
-.uam-skill-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  margin: 1px 0;
-  padding: 6px 4px 6px 10px;
-  border-radius: var(--r-md);
-  transition: background var(--dur-fast) var(--ease);
-}
-.uam-skill-row:hover { background: var(--sidebar-item-hover); }
-.uam-skill-row[data-selected="true"] { background: var(--accent-dim); box-shadow: inset 2px 0 0 var(--accent); }
-.uam-skill-row__command {
-  flex-shrink: 0;
-  font-size: 10.5px;
-  color: var(--accent);
-  opacity: 0.85;
-}
-.uam-skill-preview {
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: var(--surface);
-}
 .uam-field--area { height: auto; padding: 8px 9px; line-height: 1.5; resize: vertical; }
 .uam-form-dialog { background: var(--surface); border: 1px solid var(--border-bright); box-shadow: var(--elev-3); }
 .uam-form-dialog label { color: var(--text-2); font-weight: var(--fw-medium); }
@@ -2077,7 +2284,7 @@ button.uam-commit-check { cursor: pointer; }
   transition: background var(--dur-fast) var(--ease);
 }
 .uam-cmenu__item:hover:not(:disabled),
-.uam-cmenu__item:focus-visible { background: var(--sidebar-item-hover); outline: none; }
+.uam-cmenu__item:focus-visible { background: var(--sidebar-item-hover); outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 .uam-cmenu__item:disabled { opacity: 0.5; cursor: not-allowed; }
 .uam-cmenu__icon { flex: 0 0 18px; display: inline-flex; justify-content: center; color: var(--text-2); }
 .uam-cmenu__text { display: grid; min-width: 0; flex: 1; font-size: var(--fs-base); line-height: 1.3; }
@@ -2090,12 +2297,12 @@ button.uam-commit-check { cursor: pointer; }
   border-radius: 999px;
   background: var(--surface-high);
   color: var(--text-3);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: var(--fw-semibold);
   text-align: center;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.uam-cmenu__pill[data-on="true"] { background: var(--accent); color: #fff; }
+.uam-cmenu__pill[data-on="true"] { background: var(--accent); color: var(--on-accent); }
 .uam-cmenu__setting {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);
@@ -2143,20 +2350,11 @@ button.uam-commit-check { cursor: pointer; }
 }
 .uam-settings-nav-item svg { color: var(--text-3); transition: color var(--dur-fast) var(--ease); }
 .uam-settings-nav-item:hover { background: var(--sidebar-item-hover); color: var(--text); }
-.uam-settings-nav-item[data-active="true"] { background: var(--accent-dim); color: var(--text); }
+/* The active tint lives on the gliding .uam-settings-nav__indicator, so the item itself stays clear (also on hover). */
+.uam-settings-nav-item[data-active="true"] { background: transparent; color: var(--text); }
+.uam-settings-nav .uam-settings-nav-item { z-index: 1; }
 .uam-settings-nav-item[data-active="true"] svg { color: var(--accent); }
-.uam-settings-nav-item[data-active="true"]::before {
-  content: '';
-  position: absolute;
-  left: 3px;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  border-radius: 3px;
-  background: var(--accent);
-  animation: uam-reveal-in var(--dur-base) var(--ease-out-soft) backwards;
-}
-.uam-settings-nav-item:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-settings-nav-item:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 
 .uam-memory-worker-row {
   display: grid;
@@ -2197,10 +2395,60 @@ button.uam-commit-check { cursor: pointer; }
 .uam-disclosure-row[data-expanded="true"] .uam-disclosure-row__toggle svg { transform: rotate(90deg); }
 .uam-disclosure-row__panel { padding: 4px 0 14px 34px; }
 
+/* Row docked on top of the composer: workspace and goal tabs on the left, turn and side-chat controls on the right. */
+.uam-composer-tabs {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  min-width: 0;
+}
+.uam-composer-tabs__end {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
+  padding-bottom: 2px;
+}
+/* Side-chat tab docked on top of the composer, same shape as the workspace tab but warning-tinted. */
+.uam-composer-side-controls {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-end;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px 6px 2px 10px;
+  border: 1px solid var(--warning);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: var(--warning-dim);
+  color: var(--text);
+}
+.uam-composer-side-controls > button { color: var(--text); }
+.uam-composer-side-controls > button svg { color: var(--warning); }
+.uam-composer-side-controls__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 4px 0 0;
+  margin-right: 2px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--text);
+}
+.uam-composer-side-controls__pill svg { color: var(--warning); }
+
 /* Workspace / worktree tab docked on top of the composer */
 .uam-composer-workspace-tab {
   display: inline-flex;
-  align-self: flex-start;
+  align-self: flex-end;
   align-items: center;
   gap: 6px;
   max-width: 100%;
@@ -2212,31 +2460,46 @@ button.uam-commit-check { cursor: pointer; }
   color: var(--text-2);
 }
 /* Tab and composer read as one piece: square the corner the tab sits on. */
-.uam-composer-workspace-tab + .uam-composer-surface { border-top-left-radius: 0 !important; }
+.uam-composer-tabs[data-workspace="true"] + .uam-composer-surface { border-top-left-radius: 0 !important; }
 .uam-composer-workspace-tab__badge {
   margin-left: 4px;
   padding: 0 6px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   background: var(--success-dim);
   color: var(--green);
 }
+/* Goal tab: a sibling tab beside the workspace tab, same shell; the body opens the goal window, Edit and Stop sit after it. */
+.uam-composer-goal-tab {
+  display: inline-flex;
+  align-self: flex-end;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 2px 4px 2px 10px;
+  border: 0;
+  border-radius: 8px 8px 0 0;
+  background: var(--surface);
+  color: var(--text-2);
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  text-align: left;
+  transition: color var(--dur-fast) var(--ease);
+}
+.uam-composer-goal-tab__body { display: inline-flex; align-items: center; gap: 6px; min-width: 0; height: 100%; padding: 0 4px 0 0; border: 0; border-radius: var(--r-sm); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: color var(--dur-fast) var(--ease); }
+.uam-composer-goal-tab__body:hover { color: var(--text); }
+/* The ring belongs to the visible tab shape, not the inner body button. */
+.uam-composer-goal-tab .uam-composer-goal-tab__body:focus-visible { outline: none; }
+.uam-composer-goal-tab:has(> .uam-composer-goal-tab__body:focus-visible) { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
+.uam-composer-goal-tab__body > svg { flex-shrink: 0; color: var(--text-3); }
+.uam-composer-goal-tab__objective { min-width: 0; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 @keyframes uam-copy-pop { 0% { transform: scale(.6); opacity: 0; } 60% { transform: scale(1.18); opacity: 1; } 100% { transform: scale(1); } }
 .uam-copy-pop { animation: uam-copy-pop 260ms var(--ease) both; }
 @media (prefers-reduced-motion: reduce) { .uam-copy-pop { animation: none; } }
-.uam-composer-side-strip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-  padding: 2px 4px 2px 10px;
-  border-radius: 8px;
-  font-size: 12px;
-  background: var(--accent-dim);
-  color: var(--text-2);
-}
-
 /* UAM checkbox: one style for every native checkbox instead of the OS default. */
 input[type="checkbox"] {
   appearance: none;
@@ -2256,7 +2519,7 @@ input[type="checkbox"]::after {
   content: "";
   width: 9px;
   height: 9px;
-  background: var(--bg);
+  background: var(--on-accent);
   clip-path: polygon(14% 44%, 0 59%, 40% 100%, 100% 22%, 86% 8%, 39% 70%);
   transform: scale(0);
   transition: transform var(--dur-fast) var(--ease);
@@ -2264,5 +2527,103 @@ input[type="checkbox"]::after {
 input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
 input[type="checkbox"]:checked::after { transform: scale(1); }
 input[type="checkbox"]:hover:not(:disabled) { border-color: var(--accent); }
-input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type="checkbox"]:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Custom icon library grid (components/shared/LucideIcons.tsx): tokens only, calm state changes. */
+.uam-icon-cell { display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--r-md); transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
+.uam-icon-cell:hover { background: var(--surface-high); }
+.uam-icon-cell:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
+.uam-icon-skeleton { border-radius: var(--r-md); background: linear-gradient(90deg, var(--surface-up) 0%, var(--surface-high) 50%, var(--surface-up) 100%); background-size: 200% 100%; animation: uam-icon-shimmer 1.2s ease-in-out infinite; }
+@keyframes uam-icon-shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .uam-icon-skeleton { animation: none; } .uam-icon-cell { transition: none; } }
+
+/* Close/dismiss/remove: every X button is neutral at rest and turns red on hover or keyboard focus. */
+button:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):hover,
+button:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):focus-visible {
+  background: var(--error-dim);
+  color: color-mix(in srgb, var(--error) 72%, var(--text));
+}
+
+/* Progress: the item doing the work is the track. Its background fills left to right in --accent-dim
+   (determinate, --progress 0-1) or sweeps (indeterminate). Text stays on top; the fill follows the item's radius. */
+.uam-progress-fill { position: relative; isolation: isolate; overflow: hidden; }
+.uam-progress-fill::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: var(--accent-dim);
+  transform-origin: left center;
+  transform: scaleX(var(--progress, 0));
+  transition: transform var(--dur-base) var(--ease-out-soft);
+}
+.uam-progress-fill[data-indeterminate]::before {
+  width: 40%;
+  transform: none;
+  transition: none;
+  background: linear-gradient(90deg, transparent, var(--accent-dim), transparent);
+  animation: uam-progress-sweep 1.4s ease-in-out infinite;
+}
+@keyframes uam-progress-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(260%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .uam-progress-fill::before { transition: none; }
+  .uam-progress-fill[data-indeterminate]::before { animation: none; }
+}
+:root[data-motion="off"] .uam-progress-fill::before { transition: none; }
+:root[data-motion="off"] .uam-progress-fill[data-indeterminate]::before { animation: none; }
+/* Meter variant: a standalone bar for a measured quantity with a real limit. The fill grows from the left on mount
+   (the shared motion stop settles it); the marker is a thin tick, outlined in the surface colour so it reads over the fill.
+   An unknown share keeps the same empty track; reading sweeps inside it. */
+.uam-meter { position: relative; display: block; flex: none; height: 6px; border-radius: var(--r-full); background: var(--surface-high); box-shadow: inset 0 0 0 1px var(--border); }
+.uam-meter::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: var(--text-3); transform-origin: left center; transform: scaleX(var(--progress, 0));
+  transition: transform var(--dur-base) var(--ease-out-soft);
+  animation: uam-meter-grow var(--dur-enter) var(--ease-out-soft);
+}
+.uam-meter[data-tone="warning"]::before { background: var(--warning); }
+.uam-meter[data-tone="error"]::before { background: var(--error); }
+.uam-meter:not([role])::before { content: none; }
+.uam-meter[data-indeterminate] { overflow: hidden; }
+.uam-meter[data-indeterminate]::before {
+  content: ''; width: 40%; transform: none; transition: none;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text-3) 45%, transparent), transparent);
+  animation: uam-progress-sweep 1.4s ease-in-out infinite;
+}
+.uam-meter--lg { height: 10px; }
+.uam-meter__marker {
+  position: absolute; top: -3px; bottom: -3px; left: calc(var(--marker, 0) * 100%); width: 2px; margin-left: -1px;
+  border-radius: 1px; background: var(--text); box-shadow: 0 0 0 2px var(--surface); pointer-events: none;
+}
+.uam-meter--lg .uam-meter__marker { top: -5px; bottom: -5px; }
+/* Equal notches cut in the surface colour, over the fill, such as the 7 days of a weekly window. */
+.uam-meter__segments {
+  position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  --seg: calc(100% / var(--segments, 1));
+  background: repeating-linear-gradient(to right, transparent 0 calc(var(--seg) - 1px), var(--surface) calc(var(--seg) - 1px) calc(var(--seg) + 1px));
+}
+/* Projection: a caret under the track at --at, labelled; past about 60% the label sits to the caret's left. */
+.uam-meter__projection {
+  position: absolute; top: 100%; left: calc(var(--at, 0) * 100%); margin-top: var(--sp-1);
+  display: flex; align-items: center; gap: var(--sp-1); white-space: nowrap; pointer-events: none;
+  font-size: var(--fs-xs); line-height: 1; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--warning-text);
+}
+.uam-meter__projection::before {
+  content: ''; flex: none; width: 0; height: 0; margin-left: -4px;
+  border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 6px solid var(--warning);
+}
+.uam-meter__projection[data-flip] { flex-direction: row-reverse; transform: translateX(-100%); }
+.uam-meter__projection[data-flip]::before { margin: 0 -4px 0 0; }
+.uam-meter__projection[data-tone="error"] { color: var(--error-text); }
+.uam-meter__projection[data-tone="error"]::before { border-bottom-color: var(--error); }
+@keyframes uam-meter-grow { from { transform: scaleX(0); } }
+@media (forced-colors: active) {
+  .uam-usage-gauge path { stroke: CanvasText; }
+  .uam-usage-gauge__needle line { stroke: Highlight; }
+  .uam-usage-gauge__needle circle { fill: Highlight; }
+}

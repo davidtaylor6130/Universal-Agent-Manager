@@ -32,7 +32,7 @@ describe('attention shortcut', () => {
 })
 
 
-it('uses Command+Shift+J on macOS', async () => {
+it('uses Command for attention and input focus on macOS', async () => {
   const platform = Object.getOwnPropertyDescriptor(navigator, 'platform')
   Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' })
   vi.resetModules()
@@ -41,9 +41,19 @@ it('uses Command+Shift+J on macOS', async () => {
     expect(shortcuts.matchShortcut(key('J', { metaKey: true, shiftKey: true }))).toBe('nextAttention')
     expect(shortcuts.matchShortcut(key('J', { ctrlKey: true, shiftKey: true }))).toBeNull()
     expect(shortcuts.shortcutLabel('nextAttention')).toBe('⌘⇧J')
+    expect(shortcuts.matchShortcut(key('L', { metaKey: true, shiftKey: true }))).toBe('focusActiveInput')
+    expect(shortcuts.matchShortcut(key('L', { ctrlKey: true, shiftKey: true }))).toBeNull()
+    expect(shortcuts.shortcutLabel('focusActiveInput')).toBe('⌘⇧L')
   } finally {
     if (platform) Object.defineProperty(navigator, 'platform', platform)
     else delete (navigator as Partial<Navigator>).platform
     vi.resetModules()
   }
+})
+
+it('reserves only Ctrl+Shift+L for focusing the active input', () => {
+  expect(matchShortcut(key('L', { ctrlKey: true, shiftKey: true }))).toBe('focusActiveInput')
+  expect(matchShortcut(key('l', { ctrlKey: true }))).toBeNull()
+  expect(matchShortcut(key('l', { ctrlKey: true, shiftKey: true, altKey: true }))).toBeNull()
+  expect(matchShortcut(key('l', { ctrlKey: true, metaKey: true, shiftKey: true }))).toBeNull()
 })

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/models/app_models.h"
+#include "common/runtime/stream_watch.h"
 #include "common/utils/range_utils.h"
 #include "common/utils/string_utils.h"
 
@@ -99,6 +100,19 @@ namespace uam::settings
 			if (normalized.size() == kMaxFavoriteUamAgents) break;
 		}
 		settings.favorite_uam_agent_ids = std::move(normalized);
+		for (std::vector<std::string>* rules : {&settings.native_import_excluded_title_prefixes, &settings.native_import_excluded_directories})
+		{
+			std::vector<std::string> kept;
+			std::unordered_set<std::string> unique;
+			for (const std::string& raw : *rules)
+			{
+				std::string rule = uam::strings::Trim(raw);
+				if (rule.empty() || rule.size() > 4096 || rule.find('\0') != std::string::npos || !unique.insert(rule).second) continue;
+				kept.push_back(std::move(rule));
+				if (kept.size() == 100) break;
+			}
+			*rules = std::move(kept);
+		}
 		settings.uam_agent_cycle_shortcut = uam::strings::TrimAndLowerAscii(settings.uam_agent_cycle_shortcut);
 		if (!IsUamAgentCycleShortcut(settings.uam_agent_cycle_shortcut))
 		{
@@ -145,6 +159,7 @@ namespace uam::settings
 	{
 		settings.cli_idle_timeout_seconds = std::clamp(settings.cli_idle_timeout_seconds, kMinCliIdleTimeoutSeconds, kMaxCliIdleTimeoutSeconds);
 		settings.active_turn_inactivity_timeout_seconds = std::clamp(settings.active_turn_inactivity_timeout_seconds, kMinActiveTurnInactivityTimeoutSeconds, kMaxActiveTurnInactivityTimeoutSeconds);
+		settings.stream_loop_repeat_limit = stream_watch::NormalizeLoopRepeatLimit(settings.stream_loop_repeat_limit);
 		settings.acp_setup_inactivity_timeout_seconds = settings.acp_setup_inactivity_timeout_seconds <= 0
 		                                                    ? kDefaultAcpSetupInactivityTimeoutSeconds
 		                                                    : std::clamp(settings.acp_setup_inactivity_timeout_seconds, kMinAcpSetupInactivityTimeoutSeconds, kMaxAcpSetupInactivityTimeoutSeconds);
@@ -158,6 +173,7 @@ namespace uam::settings
 
 	inline void ClampGoalSettings(AppSettings& settings)
 	{
+		settings.goal_token_budget = std::max(0, settings.goal_token_budget);
 		settings.goal_max_loop_iterations = settings.goal_max_loop_iterations <= 0
 		                                        ? kDefaultGoalMaxLoopIterations
 		                                        : std::clamp(settings.goal_max_loop_iterations,

@@ -16,6 +16,7 @@
 @interface UamApplication : NSApplication <CefAppProtocol>
 {
 	BOOL handlingSendEvent_;
+	BOOL pickerQuitPending_;
 }
 @end
 
@@ -31,17 +32,51 @@
 	handlingSendEvent_ = handlingSendEvent;
 }
 
+/// AppKit termination exits directly; let CEF close first so Application::Shutdown runs.
+- (void)terminate:(id)sender
+{
+	if (pickerQuitPending_) return;
+	if ([[self modalWindow] isKindOfClass:[NSOpenPanel class]])
+	{
+		pickerQuitPending_ = YES;
+		NSOpenPanel* panel = (NSOpenPanel*)[self modalWindow];
+		[panel cancel:sender];
+		// Cancellation can arrive before the panel accepts actions; still unwind its owned loop.
+		if ([self modalWindow] == panel) [self stopModalWithCode:NSModalResponseCancel];
+		// Unwind BrowsePath and its CEF query callback before closing the browser.
+		[self performSelector:@selector(completePickerQuit:) withObject:nil afterDelay:0];
+		return;
+	}
+	NSWindow* window = [self mainWindow];
+	if (window == nil || [window isKindOfClass:[NSPanel class]])
+	{
+		window = nil;
+		for (NSWindow* candidate in [self windows])
+		{
+			if (![candidate isKindOfClass:[NSPanel class]])
+			{
+				window = candidate;
+				break;
+			}
+		}
+	}
+	if (window != nil) [window performClose:sender];
+}
+
+- (void)completePickerQuit:(id)sender
+{
+	pickerQuitPending_ = NO;
+	[self terminate:sender];
+}
+
 - (void)sendEvent:(NSEvent*)event
 {
 	const NSEventModifierFlags modifiers =
-		[event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
+		[event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask & ~NSEventModifierFlagCapsLock;
 	if ([event type] == NSEventTypeKeyDown && modifiers == NSEventModifierFlagCommand &&
 	    [[event charactersIgnoringModifiers] caseInsensitiveCompare:@"q"] == NSOrderedSame)
 	{
-		NSWindow* window = [self keyWindow];
-		if (window == nil) window = [self mainWindow];
-		if (window == nil) window = [[self windows] firstObject];
-		if (window != nil) [window performClose:self];
+		[self terminate:self];
 		return;
 	}
 	CefScopedSendingEvent sendingEvent;
@@ -146,7 +181,9 @@ namespace uam::platform
 				NSString* initial = [NSString stringWithUTF8String:initial_path.c_str()];
 				if (initial != nil) panel.directoryURL = [NSURL fileURLWithPath:initial];
 			}
-			if ([panel runModal] != NSModalResponseOK) return false;
+			const NSModalResponse response = [panel runModal];
+			[panel orderOut:nil];
+			if (response != NSModalResponseOK) return false;
 			const char* selected = panel.URL.fileSystemRepresentation;
 			if (selected == nullptr || *selected == '\0')
 			{

@@ -1,7 +1,32 @@
-import { formatContextReferences, sanitizeContextReferences } from '../../utils/contextReferences'
-import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
+import { browserDictationAvailable } from '../../ipc/companionPlatform'
+import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
+import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
+import type { AcpBinding, AcpQueuedPrompt, ManualCompactionAvailability } from '../../store/cpp/types'
+import { attachmentsEquivalent } from '../../store/cpp/reconcile'
+import { MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, messageAttachments, sanitizeManualCompaction, sanitizeNativeInputId, sanitizeOriginRequestId, sanitizeManagedOriginRunId } from '../../store/cpp/sanitizers'
+import { formatContextReferences } from '../../utils/contextReferences'
+import { acknowledgeComposerReferences, captureComposerReferenceSubmission, composerReferenceSubmissionIsCurrent, type ComposerReferenceSubmission } from '../../utils/composerReferenceSubmission'
+import { FileInspectionProvider } from '../shared/FileInspectionProvider'
+import { chatHasUnfinishedWork } from '../../utils/chatWork'
+import { MessageNavigationRail } from '../chat/MessageNavigationRail'
+import { motionScrollBehavior } from '../../utils/motionStorage'
+import { ChangedFilesTree } from '../chat/ChangedFilesTree'
+import { changedLineTotals } from '../chat/changedFilesTreeModel'
+import { SubagentWaitStatus, isWaitingOnSubagents } from '../chat/SubagentWaitStatus'
+import { isManagedSubagentTool } from '../chat/managedSubagents'
+import { isInlineSubagentLaunch } from '../chat/inlineSubagents'
+import { InitialManagedSubagentGroup, InlineSubagentProvider } from '../chat/InlineSubagentGroup'
+import { openSubagentView } from '../../utils/subagentNavigation'
+import { InlinePromptQueue, type UnsentPrompt } from '../chat/InlinePromptQueue'
+import { OutgoingRecoveryActions } from '../chat/OutgoingMessageRow'
+import type { ConversationDelivery } from '../chat/ConversationTurn'
+import { PersistedConversationMessage, TurnStartTime } from '../chat/PersistedConversationMessage'
+import { ALWAYS_OPEN_WORK_SECTION, buildVisibleWorkSections, findWorkSectionStartIndex, dayDividerLabel, hasSubstantiveOutput, previousAssistantMessage, responseFlags, reviewAssistantLabel, turnTimestampLabel } from '../chat/conversationHistoryModel'
+import { addOutgoingAttempt, nextOutgoingKey, outgoingScope, readOutgoingAttempts, subscribeOutgoingAttempts, updateOutgoingAttempts, type OutgoingAttempt } from '../../utils/outgoingMessagePresentation'
+import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
-import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactElement, type ReactNode, cloneElement, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import type { ComputerUseActionResult, Session } from '../../types/session'
@@ -9,27 +34,48 @@ import { useAppStore, type ChatAttachmentInput, type DictationPushMessage, type 
 import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { Goal } from '../../types/goal'
+import { RemoteDirectoryBrowser } from '../sidebar/RemoteDirectoryBrowser'
 import { GoalBanner } from '../shared/GoalBanner'
-import { DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerShortName } from '../../utils/providerMetadata'
+import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerDisabledOn, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
-import { buildAcpErrorCopyText, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
+import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusScenes'
+import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
+import { formatTimeoutDuration, TIMEOUT_RESTART_STEP_SECONDS, TimeoutStopNotice, type TimeoutRestartOutcome } from '../chat/TimeoutStopNotice'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
+import { createQuestionMemory, type QuestionMemory, type QuestionSubmitState } from '../chat/QuestionInput'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
-import { CompactionSeparator, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
-import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
-import { Notice, ViewportMenu, type NoticeTone } from '../ui'
-import { ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, MousePointer2, Paperclip, Shield, Target, X } from 'lucide-react'
+import { attachmentChipKind, AttachmentList, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
+import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerSendButton, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
+import { MenuItem, Notice, ViewportMenu, type NoticeTone } from '../ui'
+import { CustomIcon } from '../shared/CustomIcon'
+import { ChatBranchPicker } from '../chat/ChatBranchPicker'
+import { composerWorkspaceName } from '../../utils/workspacePresentation'
+import { AlertTriangle, ArrowDown, AtSign, CircleAlert, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquare, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Square, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
-import { Button, IconButton } from '../ui'
+import { Button, ConfirmDialog, IconButton, Overlay, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
+import { messageMotionPhase, type MessageMotionPhase } from '../chat/messageMotion'
+import '../chat/SubagentDisclosure.css'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
 import { setPreferredBranch } from '../../utils/branchPreferenceStorage'
-import { replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
-import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
+import { ContextChip } from '../chat/ContextChip'
+import { ComposerReferenceChips, useComposerReferences } from '../chat/ComposerContextReferences'
+import { draftFileMentions } from '../../utils/fileContextReferences'
+import { mentionActionToken, replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
+import { acknowledgeChatComposerDraft, readChatComposerDraft, subscribeComposerDraftAcknowledgements, withoutAcknowledgedComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
+import { fromViewportMenu, getTopmostModal, trapModalTab } from '../../utils/modalFocus'
+
+// Confirmed pre-send refusals only; a replaced chat's in-flight outcome is unknown and keeps its own notice.
+const UNSENT_PROMPT_NOTICE = /this prompt wasn't sent/i
+const UNSENT_PROMPT_MESSAGE = "The chat's workspace or provider changed, so this prompt wasn't sent. Review the selected references, then send again."
 
 interface ChatViewProps {
   session: Session
   accentColor?: string
+  navigationKey?: string
+  showSubagentLineage?: boolean
+  /** Presentation only: retain transcript actions/recovery; hide the standing input and its entry points. */
+  showComposer?: boolean
 }
 
 type SlashCommand = {
@@ -39,9 +85,28 @@ type SlashCommand = {
   icon: ReactNode
   run: () => void
   groupEntries?: SlashCommand[]
+  /** Listed with its reason but not selectable. */
+  disabled?: boolean
+}
+
+function manualCompactionForChat(session: Session | undefined, acp: AcpBinding | undefined): ManualCompactionAvailability | undefined {
+  const support = sanitizeManualCompaction(acp?.manualCompaction)
+  if (!session || !acp || !support?.available || session.importedReadOnly || !acp.running || acp.lifecycleState !== 'ready'
+    || acpRuntimeBlocksControlChanges(acp) || acp.compacting || acp.queueHeld || (acp.queuedPrompts?.length ?? 0) > 0
+    || acp.pendingPermission || acp.pendingUserInput || support.providerId !== session.providerId || support.providerId !== acp.providerId
+    || support.modelId !== (session.modelId ?? '') || support.nativeSessionId !== acp.sessionId) return undefined
+  return support
+}
+
+function sameManualCompactionTarget(left: ManualCompactionAvailability, right: ManualCompactionAvailability): boolean {
+  return left.providerId === right.providerId && left.modelId === right.modelId && left.nativeSessionId === right.nativeSessionId
 }
 
 type ComposerNoticeTone = NoticeTone
+type SlashNotice = { message: string; tone: NoticeTone }
+const noticeFor = (message: string, tone: NoticeTone): SlashNotice | null => message ? { message, tone } : null
+// Last chat-history failure alerted; module-level so remounting ChatView does not re-alert the same stored error.
+let reportedHistoryFailure = ''
 type PermissionChangeResult = { ok: boolean; cancelled?: boolean; error?: string }
 
 function normalizePermissionChangeResult(result: boolean | PermissionChangeResult): PermissionChangeResult {
@@ -53,33 +118,8 @@ const COMPANION_INITIAL_RENDERED_MESSAGES = 50
 const EMPTY_GOALS: Goal[] = []
 const RENDERED_MESSAGE_BATCH_SIZE = 100
 const SCROLL_NEAR_BOTTOM_THRESHOLD = 100
-const ALWAYS_OPEN_WORK_SECTION = { expanded: true, toggle: () => undefined }
 
-type WorkSection = { id: string; firstIndex: number; lastAssistantIndex: number; workedSeconds: number; hasAssistant: boolean }
-
-function findWorkSectionStartIndex(messages: Message[], index: number) {
-  let start = Math.min(index, messages.length - 1)
-  while (start > 0 && !(messages[start].role === 'user' && !messages[start].continuesTurn)) start -= 1
-  return Math.max(0, start)
-}
-
-export function buildVisibleWorkSections(messages: Message[], firstVisibleIndex: number) {
-  const sections = new Map<number, WorkSection>()
-  if (messages.length === 0) return sections
-
-  const startIndex = findWorkSectionStartIndex(messages, firstVisibleIndex)
-  let section: WorkSection = { id: '', firstIndex: startIndex, lastAssistantIndex: -1, workedSeconds: 0, hasAssistant: false }
-  for (let index = startIndex; index < messages.length; index += 1) {
-    const message = messages[index]
-    if (index === 0 || (message.role === 'user' && !message.continuesTurn))
-      section = { id: message.id, firstIndex: index, lastAssistantIndex: -1, workedSeconds: 0, hasAssistant: false }
-    section.workedSeconds = Math.max(section.workedSeconds, (message.processingTimeMs ?? 0) / 1000)
-    section.hasAssistant ||= message.role === 'assistant'
-    if (message.role === 'assistant') section.lastAssistantIndex = index
-    sections.set(index, section)
-  }
-  return sections
-}
+export { buildVisibleWorkSections, reviewAssistantLabel }
 
 export function uamAgentDisplayName(id: string) {
   if (id === 'build') return 'Build'
@@ -110,6 +150,13 @@ export function matchesUamAgentCycleShortcut(
 interface SelectedToolCallRef {
   id: string
   messageId?: string
+}
+
+interface PendingClaudePlanPrompt {
+  prompt: string
+  draft: string
+  attachments: Attachment[]
+  context: ComposerReferenceSubmission
 }
 
 const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
@@ -168,10 +215,49 @@ function lastMessageIndexWithRole(messages: Message[], role: Message['role']) {
   return -1
 }
 
-function hasSubstantiveOutput(message: Message) {
-  return Boolean(message.content.trim() || message.thoughts?.trim() || message.planSummary?.trim() ||
-    message.planEntries?.length || message.toolCalls?.length || message.blocks?.length || message.attachments?.length)
+function promptReferencesMessage(prompt: AcpQueuedPrompt, nativeIndex: number, message: Message) {
+  return Boolean(prompt.id && Number.isSafeInteger(prompt.revision) && prompt.revision! > 0 &&
+    !prompt.prepared && prompt.existingUserMessageIndex === nativeIndex && prompt.text === message.content &&
+    attachmentsEquivalent(message.attachments ?? [], messageAttachments(prompt)))
 }
+
+/** Native certainty owns recovery; pending direct input stays visible without granting Retry authority.
+ * Known-unsent user rows keep their transcript slot (only empty trailing output hides); queue-held and discarded rows hide. */
+export function projectUnsentPrompts(messages: Message[], historyStartIndex: number, knownIndices: readonly number[], retryIndices: readonly number[], heldPrompts: readonly AcpQueuedPrompt[] = [], pendingDirectPrompts: readonly AcpQueuedPrompt[] = []) {
+  const pendingIndices = new Set<number>()
+  if (knownIndices.length === 0 && heldPrompts.length === 0 && pendingDirectPrompts.length === 0 && !messages.some((message) => message.acpPromptDiscarded === true)) return { prompts: [] as UnsentPrompt[], hiddenIndices: new Set<number>(), pendingIndices }
+  const known = new Set(knownIndices)
+  const retryable = new Set(retryIndices)
+  const hiddenIndices = new Set<number>()
+  const prompts: UnsentPrompt[] = []
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]
+    const nativeIndex = historyStartIndex + index
+    if (message.role !== 'user' || !message.acpPromptNotSent) continue
+    let end = index + 1
+    while (end < messages.length && messages[end].role !== 'user') end += 1
+    if (messages.slice(index + 1, end).some((output) => output.role !== 'assistant' || hasSubstantiveOutput(output))) continue
+    if (!message.acpPromptDiscarded && pendingDirectPrompts.some((prompt) => promptReferencesMessage(prompt, nativeIndex, message))) {
+      pendingIndices.add(index)
+      continue
+    }
+    const representedByQueue = heldPrompts.some((prompt) => promptReferencesMessage(prompt, nativeIndex, message))
+    if (!representedByQueue && !message.acpPromptDiscarded && !known.has(nativeIndex)) continue
+    const inTranscript = !representedByQueue && !message.acpPromptDiscarded
+    if (inTranscript) prompts.push({ messageIndex: nativeIndex, text: message.content, attachments: message.attachments ?? [], retryable: retryable.has(nativeIndex) })
+    for (let hidden = inTranscript ? index + 1 : index; hidden < end; hidden += 1) hiddenIndices.add(hidden)
+  }
+  return { prompts, hiddenIndices, pendingIndices }
+}
+
+const SENDING_DELIVERY: ConversationDelivery = { state: 'sending', label: 'Waiting for the provider to accept this message. It is never resent automatically.' }
+const UNSENT_DELIVERY: ConversationDelivery = { state: 'unsent', label: 'This message was not delivered. Retry, edit or remove it; it is never resent automatically.' }
+const HELD_DELIVERY: ConversationDelivery = { state: 'unsent', label: 'This message was not delivered. Edit or remove it; it is never resent automatically.' }
+const ACCEPTED_DELIVERY: ConversationDelivery = { state: 'sending', label: 'UAM accepted this message and is waiting for the provider to confirm delivery. It is never resent automatically.' }
+const LOCAL_UNCONFIRMED_DELIVERY: ConversationDelivery = { state: 'unconfirmed', label: 'UAM could not confirm whether this message was sent. The submitted message is retained here and is never resent automatically.' }
+const attemptDelivery = (attempt: OutgoingAttempt) =>
+  attempt.recordedManagedInput ? { state: 'unconfirmed' as const, label: 'This request was saved in the parent chat. Saving it does not confirm provider delivery; it is never resent automatically.' } : attempt.phase === 'rejected' ? LOCAL_UNCONFIRMED_DELIVERY : attempt.phase === 'accepted' ? ACCEPTED_DELIVERY : SENDING_DELIVERY
+const RECEIPT_DELIVERY: ConversationDelivery = { state: 'unconfirmed', label: 'UAM could not confirm whether this message reached the provider. Check the chat, then remove it if needed; it is never resent automatically.' }
 
 function canRetryMessageInPlace(messages: Message[], messageIndex: number) {
   const message = messages[messageIndex]
@@ -206,23 +292,8 @@ function ProviderHandoffDialog({
   onCancel: () => void
   onConfirm: () => Promise<boolean>
 }) {
-  const dialogRef = useRef<HTMLElement>(null)
   const [switching, setSwitching] = useState(false)
   const [error, setError] = useState('')
-
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null
-    dialogRef.current?.focus()
-    return () => previouslyFocused?.focus?.()
-  }, [])
-
-  useEffect(() => {
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape' && !switching) onCancel()
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [onCancel, switching])
 
   const confirm = async () => {
     if (switching || blockedReason) return
@@ -230,237 +301,118 @@ function ProviderHandoffDialog({
     setError('')
     if (await onConfirm()) return
     setSwitching(false)
-    setError('The provider could not be changed. Finish any active work and try again.')
+    setError('The provider or model could not be changed. Finish any active work and try again.')
   }
-
-  return createPortal(
-    <div
-      className="uam-overlay fixed inset-0 z-[1000] flex items-center justify-center p-4"
-      style={{ background: 'rgba(0, 0, 0, 0.52)', backdropFilter: 'blur(3px)' }}
-      onMouseDown={() => { if (!switching) onCancel() }}
-    >
-      <section
-        ref={dialogRef}
-        role="alertdialog"
-        aria-modal="true"
-        aria-label={`Switch from ${sourceName} to ${targetName}`}
-        aria-describedby="provider-handoff-description"
-        tabIndex={-1}
-        className="w-full max-w-lg overflow-hidden rounded-xl"
-        style={{ border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header className="flex items-center gap-3 px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
-          <CornerUpRight size={18} aria-hidden style={{ color: 'var(--accent)' }} />
-          <div>
-            <h2 className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Switch this chat to {targetName}?</h2>
-            <p className="mt-0.5 text-xs" style={{ color: 'var(--text-3)' }}>{sourceName} → {targetName}</p>
-          </div>
-        </header>
-        <div id="provider-handoff-description" className="space-y-4 px-5 py-4 text-sm" style={{ color: 'var(--text-2)' }}>
-          <p>UAM keeps the recorded conversation, but provider-native state cannot move between providers.</p>
-          <div>
-            <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--green)' }}>Kept</div>
-            <ul className="list-disc space-y-1 pl-5">
-              <li>Chat messages and recorded tool results</li>
-              <li>Chat title and workspace</li>
-              <li>Selected UAM agent and goals</li>
-            </ul>
-          </div>
-          <div>
-            <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--yellow)' }}>Reset for {targetName}</div>
-            <ul className="list-disc space-y-1 pl-5">
-              <li>Native session and provider-specific live tool state</li>
-              <li>Model, reasoning or speed, permission, safety, and memory defaults</li>
-            </ul>
-          </div>
-          <p className="text-xs" style={{ color: 'var(--text-3)' }}>Anything the current provider did not record in UAM will not transfer.</p>
-          {blockedReason && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--yellow)', color: 'var(--yellow)' }}>{blockedReason}</div>}
-          {error && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--red)', color: 'var(--red)' }}>{error}</div>}
-        </div>
-        <footer className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-          <Button type="button" size="sm" variant="secondary" disabled={switching} onClick={onCancel}>Cancel</Button>
-          <Button type="button" size="sm" loading={switching} disabled={Boolean(blockedReason)} onClick={() => void confirm()}>Switch to {targetName}</Button>
-        </footer>
-      </section>
-    </div>,
-    document.body
-  )
-}
-
-/** Attribute each turn from its recorded metadata, independently of current provider/model settings. */
-export function reviewAssistantLabel(provider: string, message?: Message) {
-  const model = message?.modelId?.trim() || ''
-  const date = message?.createdAt
-  const time = date && Number.isFinite(date.getTime())
-    ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : ''
-  return [provider, model, time].filter(Boolean).join(' · ')
-}
-
-type PersistedPlanActions = Parameters<typeof PersistedMessageContent>[0]['planActions']
-
-const PersistedMessageRow = memo(function PersistedMessageRow({
-  message,
-  disclosureState,
-  index,
-  assistantLabel,
-  sessionId,
-  sessionParentChatId,
-  sessionBranchFromMessageIndex,
-  sessionBranchMessageEdited,
-  branchSessions,
-  isEditing,
-  editingText,
-  actionsDisabled,
-  canChangeProvider,
-  branching,
-  planActions,
-  workingMode,
-  retryInPlace,
-  onBeginEdit,
-  onCancelEdit,
-  onEditingTextChange,
-  onCreateBranch,
-  onSelectBranch,
-  onSelectTool,
-}: {
-  message: Message
-  disclosureState: WorkTraceDisclosureState
-  index: number
-  assistantLabel: string
-  sessionId: string
-  sessionParentChatId?: string
-  sessionBranchFromMessageIndex?: number
-  sessionBranchMessageEdited?: boolean
-  branchSessions: Session[]
-  isEditing: boolean
-  editingText: string
-  actionsDisabled: boolean
-  canChangeProvider: boolean
-  branching: boolean
-  planActions?: PersistedPlanActions
-  workingMode: WorkingDisplayMode
-  retryInPlace: boolean
-  onBeginEdit: (index: number, content: string) => void
-  onCancelEdit: () => void
-  onEditingTextChange: (content: string) => void
-  onCreateBranch: (index: number, content?: string) => void | Promise<void>
-  onSelectBranch: (parentId: string, index: number, sessionId: string) => void
-  onSelectTool: (messageId: string, toolId: string) => void
-}) {
-  if (message.blocks?.length === 1 && message.blocks[0].type === 'context_compaction') {
-    return <CompactionSeparator summary={message.blocks[0].text} />
-  }
-  const isUserMessage = message.role === 'user'
-  const branchParentId = sessionParentChatId && sessionBranchFromMessageIndex === index
-    ? sessionParentChatId
-    : sessionId
-  const messageBranchSessions = isUserMessage
-    ? branchSessions.filter((candidate) =>
-      candidate.id === branchParentId ||
-      (candidate.parentChatId === branchParentId && candidate.branchFromMessageIndex === index)
-    )
-    : []
-  const messageBranchIndex = messageBranchSessions.findIndex((candidate) => candidate.id === sessionId)
-  const isBranchPoint = messageBranchSessions.length > 1 && messageBranchIndex >= 0
-  const goalReview = goalReviewForMessage(message)
-  const branchLabel = sessionBranchFromMessageIndex === index
-    ? sessionBranchMessageEdited ? 'Edited branch' : 'Reverted branch'
-    : undefined
 
   return (
-		<>
-    <MessageFrame
-      role={message.role}
-      assistantLabel={assistantLabel}
-      copyText={message.content}
-      branchLabel={branchLabel}
-      branchNavigation={isBranchPoint ? {
-        current: messageBranchIndex + 1,
-        total: messageBranchSessions.length,
-        onPrevious: () => onSelectBranch(branchParentId, index, messageBranchSessions[messageBranchIndex - 1].id),
-        onNext: () => onSelectBranch(branchParentId, index, messageBranchSessions[messageBranchIndex + 1].id),
-      } : undefined}
-      goalReview={Boolean(goalReview)}
-      actionsDisabled={actionsDisabled}
-      onEdit={isUserMessage && !isCompanionContext() ? () => onBeginEdit(index, message.content) : undefined}
-      onRevert={isUserMessage && !isCompanionContext() ? () => void onCreateBranch(index) : undefined}
-      revertLabel={retryInPlace ? 'Retry message' : undefined}
+    <ConfirmDialog
+      open
+      tone="primary"
+      title={`Switch this chat to ${targetName}?`}
+      label={`Switch from ${sourceName} to ${targetName}`}
+      confirmLabel={`Switch to ${targetName}`}
+      confirmDisabled={Boolean(blockedReason)}
+      busy={switching}
+      error={error || undefined}
+      onConfirm={() => void confirm()}
+      onCancel={onCancel}
     >
-			{isUserMessage && message.interrupted && <div className="mb-2 text-xs" style={{ color: 'var(--warning)' }}>{message.acpPromptNotSent ? 'Message was not sent' : 'Response interrupted'}</div>}
-			{isEditing ? (
-        <div className="space-y-2">
-          <textarea
-            aria-label="Edit message"
-            autoFocus
-            value={editingText}
-            onChange={(event) => onEditingTextChange(event.target.value)}
-            rows={Math.max(3, editingText.split('\n').length)}
-            className="w-full resize-y rounded-md p-2 text-sm"
-            style={{ border: '1px solid var(--border-bright)', background: 'var(--bg)', color: 'var(--text)' }}
-          />
-          <div className="flex justify-end gap-2">
-            <Button type="button" size="sm" variant="ghost" onClick={onCancelEdit}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="primary"
-              loading={branching}
-              disabled={!editingText.trim() || !canChangeProvider}
-              onClick={() => void onCreateBranch(index, editingText)}
-            >
-              Save to new branch
-            </Button>
-          </div>
+      <div className="space-y-4">
+        <p>UAM keeps the recorded conversation, but provider-native state cannot move between providers.</p>
+        <div>
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--green)' }}>Kept</div>
+          <ul className="list-disc space-y-1 pl-5">
+            <li>Chat messages and recorded tool results</li>
+            <li>Chat title and workspace</li>
+            <li>Selected UAM agent and goals</li>
+          </ul>
         </div>
-      ) : (
-        <PersistedMessageContent
-          message={message}
-          disclosureState={disclosureState}
-          onSelectTool={onSelectTool}
-          planActions={planActions}
-          sourceChatId={sessionId}
-          workingMode={workingMode}
-        />
-      )}
-      {!isUserMessage && stoppedResponseLabel(message.stopReason, message.interrupted) &&
-        <div className="conversation-interrupted">{stoppedResponseLabel(message.stopReason, message.interrupted)}</div>}
-		</MessageFrame>
-		</>
+        <div>
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--yellow)' }}>Reset for {targetName}</div>
+          <ul className="list-disc space-y-1 pl-5">
+            <li>Native session and provider-specific live tool state</li>
+            <li>Model, reasoning or speed, permission, safety, and memory defaults</li>
+          </ul>
+        </div>
+        <p className="text-xs" style={{ color: 'var(--text-3)' }}>Anything the current provider did not record in UAM will not transfer.</p>
+        {blockedReason && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--yellow)', color: 'var(--yellow)' }}>{blockedReason}</div>}
+      </div>
+    </ConfirmDialog>
   )
-})
+}
 
-export const ChatView = memo(function ChatView({ session, accentColor }: ChatViewProps) {
+type ParentViewportDetails = {
+  subagentDisclosures?: Set<string>
+  workDisclosures?: Map<string, WorkTraceDisclosureState>
+  liveDisclosure?: { serial: number; state: WorkTraceDisclosureState }
+  sectionChoices?: { sessionId: string; expanded: Record<string, boolean> }
+}
+const parentViewportVisits = new Map<string, ParentViewportDetails & { top: number; nearBottom: boolean; renderedCount: number }>()
+
+const receiptRetryAvailable = (prompt: AcpQueuedPrompt) => prompt.retryAllowed === true || (prompt.retryAllowed !== false && Number.isSafeInteger(prompt.existingUserMessageIndex) && prompt.existingUserMessageIndex! >= 0)
+
+/** Composer tab that enters and leaves with the shared subagent disclosure motion; reduced motion skips the exit wait. */
+function ComposerTab({ open, children }: { open: boolean; children: ReactElement<{ className?: string; 'data-state'?: string }> }) {
+  const { mounted, closing } = usePresence(open)
+  const last = useRef(children)
+  if (open) last.current = children
+  if (!mounted) return null
+  const tab = open ? children : last.current
+  return cloneElement(tab, { className: `${tab.props.className ?? ''} uam-subagent-disclosure`, 'data-state': closing ? 'closed' : 'open' })
+}
+
+export const ChatView = memo(function ChatView({ session, accentColor, navigationKey = '', showSubagentLineage = true, showComposer = true }: ChatViewProps) {
+  const sessionBirth = session.createdAt.getTime()
+  const showComposerRef = useRef(showComposer)
+  showComposerRef.current = showComposer
+  const viewportKey = JSON.stringify([session.id, session.createdAt.getTime(), session.providerId, session.executionHostId, navigationKey, isCompanionContext() ? 'companion' : 'desktop'])
+  // Retention belongs to an explicit pane visit; standalone mounts keep their normal initial window.
+  const restoredViewport = useMemo(() => navigationKey ? parentViewportVisits.get(viewportKey) : undefined, [viewportKey, navigationKey])
+  const subagentDisclosures = useMemo(() => restoredViewport?.subagentDisclosures ?? new Set<string>(), [viewportKey])
+  const viewportDetails = useRef<ParentViewportDetails>({})
   const slashListboxId = useId()
   const workspaceMenuId = useId()
+  const goalsPopupId = useId()
+  const [goalsPopupOwner, setGoalsPopupOwner] = useState<string | null>(null)
+  const [goalEditing, setGoalEditing] = useState(false)
+  const goalEditingRef = useRef(goalEditing); goalEditingRef.current = goalEditing
+  const goalsTriggerRef = useRef<HTMLButtonElement>(null)
+  const goalsPopupRef = useRef<HTMLDivElement>(null)
+  const goalMutationGenerationRef = useRef(0)
+  const goalMutationOwnerRef = useRef<string | null>(null)
   const [draft, setDraft] = useState(() => readChatComposerDraft(session.id).text)
   const [composerSelection, setComposerSelection] = useState({ start: 0, end: 0 })
   const [submitting, setSubmitting] = useState(false)
+  const [referenceCaptureLoading, setReferenceCaptureLoading] = useState(false)
+  // The @ word the list was closed for (position and text); editing the word reopens the list.
+  const [dismissedMention, setDismissedMention] = useState<string | null>(null)
+  const [mentionNavigated, setMentionNavigated] = useState(false)
   const [compacting, setCompacting] = useState(false)
   const [chatHistoryRetryingIds, setChatHistoryRetryingIds] = useState<Set<string>>(() => new Set())
   const [steering, setSteering] = useState(false)
   const [dictationState, setDictationState] = useState<DictationState>('idle')
   const [dictationElapsedSeconds, setDictationElapsedSeconds] = useState(0)
   const [dictationError, setDictationError] = useState('')
+  const reportedDictationError = useRef('')
   const [selectedToolCallRef, setSelectedToolCallRef] = useState<SelectedToolCallRef | null>(null)
   const [modelOpen, setModelOpen] = useState(false)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
-  const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
+  const [remoteMoveFolderId, setRemoteMoveFolderId] = useState('')
+  const [remoteBrowseKey, setRemoteBrowseKey] = useState('')
+  const [claudePlanPrompt, setClaudePlanPrompt] = useState<PendingClaudePlanPrompt | null>(null)
+  const claudePlanResolvingRef = useRef<PendingClaudePlanPrompt | null>(null)
   const [workspaceFeedback, setWorkspaceFeedback] = useState<WorkspaceFeedback | null>(null)
   const [workspaceActionBusy, setWorkspaceActionBusy] = useState(false)
   const [goalError, setGoalError] = useState('')
   const [goalSubmitting, setGoalSubmitting] = useState(false)
   const [goalArmNextMessage, setGoalArmNextMessage] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
-  const [slashMessage, setSlashMessage] = useState('')
+  const [slashNotice, setSlashNotice] = useState<SlashNotice | null>(null)
+  const slashMessage = slashNotice?.message ?? ''
   const [slashGroup, setSlashGroup] = useState('')
   const [slashGroupIndex, setSlashGroupIndex] = useState(0)
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
   const [confirmYolo, setConfirmYolo] = useState(false)
-  const [memoryChipExplicit, setMemoryChipExplicit] = useState(false)
   const [composerAttachments, setComposerAttachments] = useState<LocalAttachment[]>(() =>
     readChatComposerDraft(session.id).attachments.map((attachment) => ({ ...attachment, status: 'ready' }))
   )
@@ -468,13 +420,18 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const [dismissedAcpErrorKey, setDismissedAcpErrorKey] = useState('')
   const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null)
   const [editingMessageText, setEditingMessageText] = useState('')
+  const [editingMessageAttachments, setEditingMessageAttachments] = useState<Attachment[]>([])
+  const [editingMessageSource, setEditingMessageSource] = useState<{ kind: 'branch'; hadMarkdownStoreAttachments?: boolean } | { kind: 'unsent'; message: Message }>({ kind: 'branch' })
+  const unsentEditInFlightRef = useRef<number | null>(null)
+  const messageBranchGenerationRef = useRef(0)
   const [branchingMessageIndex, setBranchingMessageIndex] = useState<number | null>(null)
   const [messageBranchError, setMessageBranchError] = useState('')
   const [rollbackConfirmation, setRollbackConfirmation] = useState<{ messageIndex: number; diff: string } | null>(null)
-  const [renderedMessageCount, setRenderedMessageCount] = useState(() => isCompanionContext() ? COMPANION_INITIAL_RENDERED_MESSAGES : INITIAL_RENDERED_MESSAGES)
+  const [renderedMessageCount, setRenderedMessageCount] = useState(() => restoredViewport?.renderedCount ?? (isCompanionContext() ? COMPANION_INITIAL_RENDERED_MESSAGES : INITIAL_RENDERED_MESSAGES))
   const [olderHistoryLoading, setOlderHistoryLoading] = useState(false)
   const [selectedRepositoryFile, setSelectedRepositoryFile] = useState<VcsChangedFile | null>(null)
   const [providerHandoffTargetId, setProviderHandoffTargetId] = useState('')
+  const [providerHandoffModelId, setProviderHandoffModelId] = useState<string | null>(null)
   const goalMutationInFlightRef = useRef(false)
   const appModalOpen = useAppStore((s) =>
     providerHandoffTargetId !== '' ||
@@ -487,7 +444,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 
   useEffect(() => setSteering(false), [session.id])
 
-  useEffect(() => setMemoryChipExplicit(false), [session.id])
   const composerDraftRef = useRef({ text: draft, attachments: [] as Attachment[] })
   composerDraftRef.current = {
     text: draft,
@@ -513,8 +469,285 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }, [session.id])
   const slashGroupButtonRefs = useRef<Record<string, HTMLSpanElement | null>>({})
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
+  const acp = useAppStore((s) => s.acpBindingBySessionId[session.id])
   const historyStartIndex = useAppStore((s) => s.historyStartIndexBySessionId[session.id] ?? 0)
-  const chatHistoryError = useAppStore((s) => s.chatHistoryErrorBySessionId[session.id] ?? '')
+  const searchNavigation = useAppStore((s) => s.chatSearchNavigation?.chatId === session.id ? s.chatSearchNavigation : null)
+  const searchNavigationRef = useRef(searchNavigation)
+  searchNavigationRef.current = searchNavigation
+  const storedHistoryError = useAppStore((s) => s.chatHistoryErrorBySessionId[session.id] ?? '')
+  const historyRefreshFailed = useAppStore((s) => s.chatHistoryErrorWasRefreshBySessionId?.[session.id] === true) && Boolean(storedHistoryError)
+  const historyPageMissing = useAppStore((s) => s.messages[session.id] === undefined)
+  const historyRead = useAppStore((s) => s.chatHistoryReadBySessionId?.[session.id])
+  const historyReadPending = Boolean(historyRead && historyRead.birth === session.createdAt.getTime())
+  const chatHistoryError = storedHistoryError || (historyPageMissing && (session.messageCount ?? 0) > 0 && !historyReadPending && searchNavigation?.phase !== 'loading'
+    ? 'Saved chat history has not loaded. Retry to refresh it.' : '')
+  const outgoingScopeKey = outgoingScope(session.id, session.createdAt)
+  const currentOutgoingBirth = useAppStore((state) => state.sessions.find((chat) => chat.id === session.id)?.createdAt.getTime())
+  const readScopedAttempts = useCallback(() => readOutgoingAttempts(currentOutgoingBirth === session.createdAt.getTime() ? outgoingScopeKey : ''),
+    [outgoingScopeKey, currentOutgoingBirth, session.createdAt])
+  const outgoingAttempts = useSyncExternalStore(subscribeOutgoingAttempts, readScopedAttempts, readScopedAttempts)
+  // A missing page is not evidence of work. Retained input stays visible without a replacement skeleton.
+  const hasRetainedInput = outgoingAttempts.length > 0 || Boolean(acp?.queuedPrompts?.length ||
+    acp?.pendingDirectPrompts?.length || acp?.unsentDirectPrompts?.length)
+  const historyLoading = historyReadPending && messages.length === 0 && !chatHistoryError &&
+    (session.messageCount ?? 0) > 0 && !hasRetainedInput
+  const historyIncomplete = historyLoading || (historyPageMissing && (session.messageCount ?? 0) > 0)
+  // A native refresh finishes its read before answering; show it over loaded messages once it is not instant.
+  const historyRefreshing = historyReadPending && Boolean(historyRead?.refreshNative) && !historyLoading &&
+    messages.length > 0 && !chatHistoryError
+  const [historyRefreshShown, setHistoryRefreshShown] = useState(false)
+  useEffect(() => {
+    setHistoryRefreshShown(false)
+    if (!historyRefreshing) return
+    const timer = window.setTimeout(() => setHistoryRefreshShown(true), 400)
+    return () => window.clearTimeout(timer)
+  }, [historyRefreshing])
+  const unsentProjection = useMemo(() => projectUnsentPrompts(messages, historyStartIndex, acp?.unsentMessageIndices ?? [], acp?.recoverableUnsentMessageIndices ?? [], acp?.queuedPrompts ?? [], acp?.pendingDirectPrompts ?? []),
+    [messages, historyStartIndex, acp?.unsentMessageIndices, acp?.recoverableUnsentMessageIndices, acp?.queuedPrompts, acp?.pendingDirectPrompts])
+  const unsentByLoadedIndex = useMemo(() => new Map(unsentProjection.prompts.map((prompt) => [prompt.messageIndex - historyStartIndex, prompt])),
+    [unsentProjection.prompts, historyStartIndex])
+  // Direct inputs with no materialized native message keep receipt id/revision identity at the transcript tail.
+  const outgoingReceipts = useMemo<UnsentPrompt[]>(() => [
+    ...(acp?.unsentDirectPrompts ?? []).map((prompt, index) => ({
+      recoveryPending: true, messageIndex: -1 - index, text: prompt.text, attachments: messageAttachments(prompt), retryable: true,
+      receipt: prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined,
+    })),
+    ...(acp?.pendingDirectPrompts ?? []).filter((prompt) => Boolean(sanitizeNativeInputId(prompt.nativeInputId)) || !messages.some((message, index) =>
+      message.role === 'user' && promptReferencesMessage(prompt, historyStartIndex + index, message))).map((prompt, index) => ({
+      sending: true, recoveryPending: true, messageIndex: -1 - (acp?.unsentDirectPrompts?.length ?? 0) - index,
+      text: prompt.text, attachments: messageAttachments(prompt), retryable: false,
+      receipt: prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined,
+    })),
+  ], [acp?.unsentDirectPrompts, acp?.pendingDirectPrompts, messages, historyStartIndex])
+  // New store-correlated actions bind only one valid native input ID with their exact request origin.
+  // Legacy attempts retain their existing exact-byte association below; neither path invents delivery or Retry authority.
+  // Once a strong input ID is bound, later records follow that ID rather than text, index or timestamp.
+  const outgoingPresentation = useMemo(() => {
+    const exact = (attempt: OutgoingAttempt, text: string, attachments: Attachment[]) => text === attempt.text && attachmentsEquivalent(attachments, attempt.attachments)
+    const unique = (list: OutgoingAttempt[]) => list.length === 1 ? list[0] : undefined
+    const byLoadedIndex = new Map<number, OutgoingAttempt>()
+    const byReceiptId = new Map<string, OutgoingAttempt>()
+    const represented = new Set<string>()
+    const patches = new Map<string, Partial<OutgoingAttempt>>()
+    const writeCompletedKeys = new Set<string>()
+    const retainedUnknownKeys = new Set<string>()
+    const receiptKey = (prompt: { id?: string; revision?: number }) => JSON.stringify([prompt.id, prompt.revision])
+    const directReceiptByLoadedIndex = new Map<number, { prompt: AcpQueuedPrompt; sending: boolean }>()
+    const receiptNativeIndexByKey = new Map<string, number>()
+    const bindNative = (attempt: OutgoingAttempt, loadedIndex: number) => {
+      const message = messages[loadedIndex]
+      byLoadedIndex.set(loadedIndex, attempt)
+      represented.add(attempt.key)
+      const binding = { kind: 'native' as const, messageId: message.id, nativeIndex: historyStartIndex + loadedIndex }
+      const inputId = attempt.actionCorrelationId ? sanitizeNativeInputId(message.nativeInputId) : undefined
+      const direct = directReceiptByLoadedIndex.get(loadedIndex)
+      if (direct) byReceiptId.set(direct.prompt.id!, attempt)
+      if (!attempt.recordedManagedInput && !direct && inputId && message.originRequestId === attempt.actionCorrelationId && message.inputWriteCompleted === true) writeCompletedKeys.add(attempt.key)
+      const current = attempt.binding
+      if (!attempt.materialized || current?.kind !== 'native' || current.messageId !== message.id || current.nativeIndex !== binding.nativeIndex ||
+          attempt.nativeInputId !== inputId || attempt.text !== message.content || !attachmentsEquivalent(message.attachments ?? [], attempt.attachments) ||
+          (attempt.recordedManagedInput && !attempt.recordedManagedInput.associated))
+        patches.set(attempt.key, { binding, materialized: true, nativeInputId: inputId, text: message.content, attachments: message.attachments ?? [],
+          ...(attempt.recordedManagedInput ? { recordedManagedInput: { ...attempt.recordedManagedInput, associated: true } } : {}) })
+    }
+    const queued = acp?.queuedPrompts ?? []
+    const receipts = [...(acp?.pendingDirectPrompts ?? []), ...(acp?.unsentDirectPrompts ?? []), ...queued]
+    const bindReceipt = (attempt: OutgoingAttempt, prompt: AcpQueuedPrompt) => {
+      represented.add(attempt.key)
+      const inputId = attempt.actionCorrelationId ? sanitizeNativeInputId(prompt.nativeInputId) : undefined
+      // A real future queue entry stays in the queue; only direct receipts take over the transcript row.
+      if (queued.includes(prompt)) {
+        if (inputId && attempt.nativeInputId !== inputId) patches.set(attempt.key, { nativeInputId: inputId })
+        return
+      }
+      byReceiptId.set(prompt.id!, attempt)
+      const attachments = messageAttachments(prompt)
+      if (!attempt.materialized || attempt.binding?.kind !== 'receipt' || attempt.binding.id !== prompt.id || attempt.nativeInputId !== inputId || attempt.text !== prompt.text || !attachmentsEquivalent(attachments, attempt.attachments))
+        patches.set(attempt.key, { binding: { kind: 'receipt', id: prompt.id! }, materialized: true, nativeInputId: inputId, text: prompt.text, attachments })
+    }
+    type InputRecord = { id: string; origin?: string; loadedIndex?: number; prompt?: AcpQueuedPrompt }
+    const recordsByInput = new Map<string, InputRecord[]>()
+    const inputsByOrigin = new Map<string, Set<string>>()
+    const attemptsByOrigin = new Map<string, number>()
+    const addInput = (record: InputRecord) => {
+      const sameInput = recordsByInput.get(record.id)
+      if (sameInput) sameInput.push(record)
+      else recordsByInput.set(record.id, [record])
+      if (record.origin) {
+        const ids = inputsByOrigin.get(record.origin) ?? new Set<string>()
+        ids.add(record.id)
+        inputsByOrigin.set(record.origin, ids)
+      }
+    }
+    messages.forEach((message, loadedIndex) => {
+      const id = sanitizeNativeInputId(message.nativeInputId)
+      if (id) addInput({ id, origin: sanitizeOriginRequestId(message.originRequestId), loadedIndex })
+    })
+    receipts.forEach((prompt) => {
+      const id = sanitizeNativeInputId(prompt.nativeInputId)
+      if (id) addInput({ id, origin: sanitizeOriginRequestId(prompt.originRequestId), prompt })
+    })
+    outgoingAttempts.forEach((attempt) => {
+      if (attempt.actionCorrelationId && !attempt.retired) attemptsByOrigin.set(attempt.actionCorrelationId, (attemptsByOrigin.get(attempt.actionCorrelationId) ?? 0) + 1)
+    })
+    // Exact producer identity selects candidates; byte/resource equality is an additional conservation guard,
+    // never an alias finder. A future queue entry or conflicting/duplicate carrier keeps its own representation.
+    for (const records of recordsByInput.values()) {
+      const native = records.filter((record) => record.loadedIndex !== undefined)
+      const direct = records.filter((record) => record.prompt && !queued.includes(record.prompt))
+      if (records.length !== 2 || native.length !== 1 || direct.length !== 1) continue
+      const { loadedIndex } = native[0]
+      const prompt = direct[0].prompt!
+      const message = messages[loadedIndex!]
+      if (message.role !== 'user' || !native[0].origin || native[0].origin !== direct[0].origin ||
+          !prompt.id || !Number.isSafeInteger(prompt.revision) || prompt.revision! < 1 ||
+          receipts.filter((other) => receiptKey(other) === receiptKey(prompt)).length !== 1 ||
+          message.content !== prompt.text || !attachmentsEquivalent(message.attachments ?? [], messageAttachments(prompt))) continue
+      directReceiptByLoadedIndex.set(loadedIndex!, { prompt, sending: (acp?.pendingDirectPrompts ?? []).includes(prompt) })
+      receiptNativeIndexByKey.set(receiptKey(prompt), loadedIndex!)
+    }
+    // Legacy receipts have no per-input ID. Only the native producer's validated raw-row reference
+    // may share their representation; text, time or an index alone cannot discover an alias.
+    for (const prompt of acp?.unsentDirectPrompts ?? []) {
+      const nativeIndex = prompt.existingUserMessageIndex
+      if (sanitizeNativeInputId(prompt.nativeInputId) || !prompt.id || !Number.isSafeInteger(prompt.revision) || prompt.revision! < 1 ||
+          !prompt.referencedMessageCreatedAt || !Number.isSafeInteger(nativeIndex) || nativeIndex! < historyStartIndex ||
+          receipts.filter(other => other.existingUserMessageIndex === nativeIndex).length !== 1) continue
+      const loadedIndex = nativeIndex! - historyStartIndex
+      const message = messages[loadedIndex]
+      if (!message || sanitizeNativeInputId(message.nativeInputId) || message.role !== 'user' || !message.acpPromptNotSent || message.acpPromptDiscarded ||
+          message.createdAt.getTime() !== Date.parse(prompt.referencedMessageCreatedAt) ||
+          message.content !== prompt.text || !attachmentsEquivalent(message.attachments ?? [], messageAttachments(prompt))) continue
+      directReceiptByLoadedIndex.set(loadedIndex, { prompt, sending: false })
+      receiptNativeIndexByKey.set(receiptKey(prompt), loadedIndex)
+    }
+    const correlatedInput = (attempt: OutgoingAttempt): InputRecord | undefined => {
+      const origin = sanitizeOriginRequestId(attempt.actionCorrelationId)
+      if (!origin || attemptsByOrigin.get(origin) !== 1) return
+      const ids = inputsByOrigin.get(origin)
+      // First alias considers only actual producer IDs not already observed at capture. Correlation is not
+      // idempotency: a reused origin on an old record cannot settle this action or veto its one fresh input.
+      const eligibleIds = [...(ids ?? [])].filter((id) => !attempt.nativeInputIdsAtCapture?.has(id))
+      const id = attempt.nativeInputId ?? (eligibleIds.length === 1 ? eligibleIds[0] : undefined)
+      if (!id) return
+      const sameInput = recordsByInput.get(id) ?? []
+      if (sameInput.some((record) => record.origin !== origin)) return
+      const native = sameInput.filter((record) => record.loadedIndex !== undefined)
+      const queuedRecords = sameInput.filter((record) => record.prompt !== undefined)
+      if (native.length > 1 || queuedRecords.length > 1) return
+      if (native.length === 1) return messages[native[0].loadedIndex!].role === 'user' ? native[0] : undefined
+      const record = queuedRecords[0]
+      if (record?.prompt?.id && record.prompt.revision && !attempt.receiptIds.has(record.prompt.id)) return record
+    }
+    const unbound: OutgoingAttempt[] = []
+    for (const attempt of outgoingAttempts) {
+      if (attempt.actionCorrelationId !== undefined) {
+        if (attempt.retired) continue
+        const recorded = attempt.recordedManagedInput
+        const managedRows = recorded?.managedOriginRunId
+          ? messages.flatMap((message, index) => message.managedOriginRunId === recorded.managedOriginRunId ? [index] : []) : []
+        const managedOwners = recorded?.managedOriginRunId ? outgoingAttempts.filter((candidate) => !candidate.retired &&
+          candidate.recordedManagedInput?.managedOriginRunId === recorded.managedOriginRunId).length : 0
+        const recordedIndex = recorded && managedRows.length === 1 && managedOwners === 1 && messages[managedRows[0]].role === 'user' &&
+          (recorded.associated || messages[managedRows[0]] === recorded.message) ? managedRows[0] : -1
+        // First association was the actual validated receipt object. The locked, scoped managed origin then
+        // follows only one user record; conflicts never fall back to content, index, time or another input ID.
+        const record = recorded ? undefined : correlatedInput(attempt)
+        if (recordedIndex >= 0) bindNative(attempt, recordedIndex)
+        else if (record?.loadedIndex !== undefined) bindNative(attempt, record.loadedIndex)
+        else if (record?.prompt) bindReceipt(attempt, record.prompt)
+        else if (attempt.materialized) {
+          const lastIndex = attempt.binding?.kind === 'native' ? attempt.binding.nativeIndex : undefined
+          const outsideLoadedWindow = lastIndex !== undefined && messages.length > 0 &&
+            (lastIndex < historyStartIndex || lastIndex >= historyStartIndex + messages.length) &&
+            Number.isSafeInteger(session.messageCount) && session.messageCount! > lastIndex &&
+            !(attempt.nativeInputId && recordsByInput.has(attempt.nativeInputId)) &&
+            !inputsByOrigin.has(attempt.actionCorrelationId) && managedRows.length === 0
+          if (outsideLoadedWindow) represented.add(attempt.key)
+          else retainedUnknownKeys.add(attempt.key) // Lost/conflicting identity is not proof of removal or delivery.
+        }
+        // Correlated actions never enter the legacy text/index/time association path below.
+        continue
+      }
+      const binding = attempt.binding
+      if (binding?.kind === 'native') {
+        const loadedIndex = binding.nativeIndex - historyStartIndex
+        const message = messages[loadedIndex]
+        // The store's ACK placeholder (`sent-user-*`) may be replaced by the native row at the same index with the same bytes.
+        if (message?.role === 'user' && (message.id === binding.messageId || (binding.messageId.startsWith('sent-user-') && exact(attempt, message.content, message.attachments ?? [])))) bindNative(attempt, loadedIndex)
+        else if (loadedIndex >= 0 && loadedIndex < messages.length) patches.set(attempt.key, { binding: undefined, retired: true })
+        else represented.add(attempt.key) // Bound row is outside the loaded history window.
+        continue
+      }
+      if (binding?.kind === 'receipt') {
+        const prompt = receipts.find((candidate) => candidate.id === binding.id)
+        if (prompt) { bindReceipt(attempt, prompt); continue }
+        patches.set(attempt.key, { binding: undefined })
+      }
+      if (!attempt.retired) unbound.push(attempt)
+    }
+    const boundIndices = new Set(byLoadedIndex.keys())
+    const candidates = new Map<number, OutgoingAttempt[]>()
+    for (const attempt of unbound) {
+      const loadedIndex = attempt.nativeIndex - historyStartIndex
+      const message = messages[loadedIndex]
+      if (!boundIndices.has(loadedIndex) && message?.role === 'user' && exact(attempt, message.content, message.attachments ?? [])) candidates.set(loadedIndex, [...(candidates.get(loadedIndex) ?? []), attempt])
+    }
+    for (const [loadedIndex, list] of candidates) {
+      const attempt = unique(list)
+      if (attempt) bindNative(attempt, loadedIndex)
+    }
+    const boundReceipts = new Set(byReceiptId.keys())
+    const isNewExact = (attempt: OutgoingAttempt, prompt: AcpQueuedPrompt) => Boolean(prompt.id) && !boundReceipts.has(prompt.id!) && !attempt.receiptIds.has(prompt.id!) && exact(attempt, prompt.text, messageAttachments(prompt))
+    for (const prompt of receipts) {
+      if (!prompt.id) continue
+      const attempt = unique(unbound.filter((candidate) => !represented.has(candidate.key) && isNewExact(candidate, prompt)))
+      if (!attempt || receipts.some((other) => other !== prompt && isNewExact(attempt, other))) continue
+      bindReceipt(attempt, prompt)
+    }
+    return { byLoadedIndex, byReceiptId, directReceiptByLoadedIndex, receiptNativeIndexByKey, writeCompletedKeys, retainedUnknownKeys, patches,
+      tail: outgoingAttempts.filter((attempt) => !represented.has(attempt.key) && (!attempt.materialized || retainedUnknownKeys.has(attempt.key)) && !attempt.retired) }
+  }, [outgoingAttempts, messages, historyStartIndex, session.messageCount, acp?.pendingDirectPrompts, acp?.unsentDirectPrompts, acp?.queuedPrompts])
+  useEffect(() => {
+    if (outgoingPresentation.patches.size) updateOutgoingAttempts(outgoingScopeKey, outgoingPresentation.patches)
+  }, [outgoingPresentation, outgoingScopeKey])
+  const navigableUserMessageIndices = useMemo(() => {
+    if (unsentProjection.hiddenIndices.size === 0) return session.userMessageIndices
+    const indices = session.userMessageIndices ?? messages.flatMap((message, index) => message.role === 'user' ? [historyStartIndex + index] : [])
+    return indices.filter((index) => {
+      const loadedIndex = index - historyStartIndex
+      return loadedIndex < 0 || loadedIndex >= messages.length || !unsentProjection.hiddenIndices.has(loadedIndex)
+    })
+  }, [messages, historyStartIndex, session.userMessageIndices, unsentProjection])
+  // Mirrors MessageNavigationRail's own presence rule so the gutter exists exactly when the rail does.
+  const messageNavigationVisible = Boolean(session.messagesDigest) &&
+    (navigableUserMessageIndices ?? messages.filter((message) => message.role === 'user')).length > 1
+  // Queue-held and discarded inputs do not turn an otherwise empty chat into history; outgoing rows do.
+  const composerCentred = showComposer && historyStartIndex === 0 && messages.length === unsentProjection.hiddenIndices.size &&
+    outgoingReceipts.length === 0 && outgoingPresentation.tail.length === 0 && !chatHistoryError && !historyIncomplete
+  const composerFormRef = useRef<HTMLFormElement>(null)
+  const composerCentredRef = useRef(composerCentred)
+  const composerTopRef = useRef(0)
+  const composerSessionRef = useRef(session.id)
+  // FLIP: when the first message moves the composer from centred to the bottom, animate the delta from its centred top.
+  // Layout is only read while centred (an empty chat), never on commits of a streaming transcript.
+  useLayoutEffect(() => {
+    const form = composerFormRef.current
+    const wasCentred = composerCentredRef.current && composerSessionRef.current === session.id
+    composerCentredRef.current = composerCentred
+    composerSessionRef.current = session.id
+    if (!form || !showComposer) return
+    if (composerCentred) { composerTopRef.current = form.getBoundingClientRect().top; return }
+    if (!wasCentred) return
+    const delta = composerTopRef.current - form.getBoundingClientRect().top
+    if (Math.abs(delta) < 1 || (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) return
+    form.style.transition = 'none'
+    form.style.transform = `translateY(${delta}px)`
+    void form.offsetHeight
+    form.style.transition = 'transform var(--dur-base) var(--ease-out-soft)'
+    form.style.transform = ''
+    form.addEventListener('transitionend', () => { form.style.transition = '' }, { once: true })
+  })
   const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
   const loadOlderSessionMessages = useAppStore((s) => s.loadOlderSessionMessages)
   const retryChatHistory = useCallback(async (chatId: string) => {
@@ -533,32 +766,117 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
   )
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
-  const acp = useAppStore((s) => s.acpBindingBySessionId[session.id])
+  const folderIcon = useAppStore((s) => session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.customIcon : undefined)
   const workingDisplayMode = useAppStore((s) => s.workingDisplayMode)
   const cli = useAppStore((s) => s.cliBindingBySessionId[session.id])
   const providers = useAppStore((s) => s.providers)
+  const providerAvailability = useAppStore((s) => s.providerAvailability)
+  // The composer offers only providers enabled on this chat's computer; it keeps showing the chat's own provider.
+  const composerProviders = useMemo(() => providers.filter((provider) => !providerDisabledOn(providerAvailability, provider.id, session.executionHostId || 'local')), [providers, providerAvailability, session.executionHostId])
   const cliVersionManager = useAppStore((s) => s.cliVersionManager)
   const stageChatAttachments = useAppStore((s) => s.stageChatAttachments)
   const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
-  const sendComposerPrompt = useCallback(async (chatId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => {
-    const references = sanitizeContextReferences(readChatComposerDraft(chatId).references)
-    const context = formatContextReferences(references)
-    const submittedText = context ? `${text}\n\n${context}` : text
-    const accepted = await (steerNow !== undefined ? sendAcpPrompt(chatId, submittedText, attachments, steerNow)
-      : attachments !== undefined ? sendAcpPrompt(chatId, submittedText, attachments) : sendAcpPrompt(chatId, submittedText))
-    if (accepted && references.length > 0 && useAppStore.getState().sessions.some((candidate) => candidate.id === chatId)) {
-      const sentIds = new Set(references.map((reference) => reference.id))
-      const current = readChatComposerDraft(chatId)
-      writeChatComposerDraft(chatId, { ...current, references: (current.references ?? []).filter((reference) => !sentIds.has(reference.id)) })
+  // Generated actions take already-formed input; user-authored sends explicitly supply their frozen references.
+  const sendSubmittedPrompt = useCallback(async (chatId: string, submittedText: string, attachments?: Attachment[], steerNow?: boolean) => {
+    // Display only: an idle direct send occupies its transcript slot before ACK and keeps it after settling. It never enters
+    // messages[] or ACP state; ACK records admission only, and a failed request stays visible as unconfirmed.
+    const state = useAppStore.getState()
+    const binding = state.acpBindingBySessionId[chatId]
+    const owner = state.sessions.find((candidate) => candidate.id === chatId)
+    const scope = owner ? outgoingScope(chatId, owner.createdAt) : ''
+    const attempt: OutgoingAttempt | null = binding?.processing || !owner ? null : {
+      key: nextOutgoingKey(), text: submittedText.trim(),
+      nativeIndex: Math.max((state.historyStartIndexBySessionId[chatId] ?? 0) + (state.messages[chatId]?.length ?? 0),
+        state.sessions.find((candidate) => candidate.id === chatId)?.messageCount ?? 0),
+      attachments: messageAttachments({ markdownStoreFiles: (state.markdownStoreAttachedBySessionId[chatId] ?? []).map((entry) => entry.filePath), attachments: attachments ?? [] }),
+      receiptIds: new Set([...(binding?.pendingDirectPrompts ?? []), ...(binding?.unsentDirectPrompts ?? []), ...(binding?.queuedPrompts ?? [])].flatMap((prompt) => prompt.id ? [prompt.id] : [])),
+      nativeInputIdsAtCapture: new Set([
+        ...(state.messages[chatId] ?? []), ...(binding?.pendingDirectPrompts ?? []), ...(binding?.unsentDirectPrompts ?? []), ...(binding?.queuedPrompts ?? []),
+      ].flatMap((record) => { const id = sanitizeNativeInputId(record.nativeInputId); return id ? [id] : [] })),
+      createdAt: new Date(), phase: 'pending',
+    }
+    if (attempt) addOutgoingAttempt(scope, attempt)
+    let startedRequestId: string | undefined
+    const onStarted: AcpPromptPresentationObserver = (identity) => {
+      if (!attempt || startedRequestId !== undefined || identity.sessionId !== chatId ||
+          identity.createdAtMs !== owner?.createdAt.getTime() || !identity.requestId || identity.requestId.length > 128) return
+      startedRequestId = identity.requestId
+      // Existing presentation record only; the store calls this before IPC, never from its ACK callback.
+      updateOutgoingAttempts(scope, new Map([[attempt.key, { actionCorrelationId: identity.requestId }]]))
+    }
+    let recordedInputObserved = false
+    onStarted.onInputRecorded = (identity) => {
+      const current = useAppStore.getState()
+      const retained = attempt && readOutgoingAttempts(scope).find((candidate) => candidate.key === attempt.key)
+      const managedOriginRunId = sanitizeManagedOriginRunId(identity.message.managedOriginRunId)
+      if (!managedOriginRunId || !attempt || recordedInputObserved || retained?.retired || startedRequestId !== identity.requestId || identity.sessionId !== chatId ||
+          identity.createdAtMs !== owner?.createdAt.getTime() || current.sessions.find((chat) => chat.id === chatId)?.createdAt.getTime() !== identity.createdAtMs ||
+          identity.message.role !== 'user' || !current.messages[chatId]?.includes(identity.message)) return
+      recordedInputObserved = true
+      updateOutgoingAttempts(scope, new Map([[attempt.key, { recordedManagedInput: {
+        // The guarded observer has already associated this exact projected object with this request.
+        // Lock that observation now so canonical replacement need not wait for a React commit.
+        message: identity.message, managedOriginRunId, associated: true,
+      } }]]))
+    }
+    let accepted = false
+    try {
+      accepted = await sendAcpPrompt(chatId, submittedText, attachments, steerNow, onStarted)
+    } finally {
+      // Scoped outside ChatView: the outcome lands even if this view remounted or switched chats meanwhile.
+      if (attempt) updateOutgoingAttempts(scope, new Map([[attempt.key, { phase: accepted ? 'accepted' : 'rejected' }]]))
     }
     return accepted
   }, [sendAcpPrompt])
+  const sendCapturedComposerPrompt = useCallback(async (submission: ComposerReferenceSubmission, text: string, attachments?: Attachment[], steerNow?: boolean) => {
+    if (!composerReferenceSubmissionIsCurrent(submission)) return false
+    const context = formatContextReferences(submission.references)
+    const submittedText = context ? `${text}\n\n${context}` : text
+    const accepted = await sendSubmittedPrompt(submission.chatId, submittedText, attachments, steerNow)
+    if (accepted) {
+      acknowledgeComposerReferences(submission)
+      // A newer admitted send resolves earlier not-sent guidance, but only for the chat this view still shows.
+      if (mountedRef.current && currentSessionIdRef.current === submission.chatId && composerReferenceSubmissionIsCurrent(submission)) {
+        setSlashNotice((notice) => notice && UNSENT_PROMPT_NOTICE.test(notice.message) ? null : notice)
+      }
+    }
+    return accepted
+  }, [sendSubmittedPrompt])
+  const sendComposerPrompt = useCallback(async (chatId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => {
+    const submission = captureComposerReferenceSubmission(chatId)
+    return submission ? sendCapturedComposerPrompt(submission, text, attachments, steerNow) : false
+  }, [sendCapturedComposerPrompt])
   const getVcsCommitStatus = useAppStore((s) => s.getVcsCommitStatus)
   const getVcsFileDiff = useAppStore((s) => s.getVcsFileDiff)
   const repositoryChanges = useAppStore((s) => s.repositoryReviewBySessionId[session.id] ?? null)
+  // Branch read once when the chat (or its workspace) is opened; see the composer branch effect below.
+  const [composerVcsBranch, setComposerVcsBranch] = useState<{
+    scope: string
+    status: Pick<VcsCommitStatus, 'available' | 'activeVcsType' | 'branchOrRevision'> | null
+  }>({ scope: '', status: null })
+  const composerBranchScope = `${session.id}\n${workspaceDirectory}\n${session.executionHostId ?? ''}`
+  // The composer's own read (refreshed after a branch switch) wins over the last completed-turn snapshot.
+  const composerRepository = composerVcsBranch.scope === composerBranchScope && composerVcsBranch.status
+    ? composerVcsBranch.status
+    : repositoryChanges?.workspaceDirectory === workspaceDirectory ? repositoryChanges : null
+  const composerBranch = composerRepository
+    ? composerRepository.available ? composerRepository.branchOrRevision : ''
+    : session.workspaceBranchName
+  const composerVcsType = composerRepository?.activeVcsType ?? 'git'
+  const branchSwitching = useAppStore((s) => s.branchSwitching === true)
+  // The global bridge flag is not a per-workspace capability; native validation remains authoritative.
+  const canSwitchComposerBranch = branchSwitching && (session.executionHostId || 'local') === 'local'
+    && !session.importedReadOnly && !session.temporaryParentChatId
+    && (composerVcsType === 'git' ? session.workspaceIsolationKind === 'gitWorktree' : !session.workspaceIsolationKind && !session.workspaceWorktreeDirectory)
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const removeQueuedAcpPrompt = useAppStore((s) => s.removeQueuedAcpPrompt)
+  const retryUnsentAcpPrompt = useAppStore((s) => s.retryUnsentAcpPrompt)
+  const discardUnsentMessage = useAppStore((s) => s.discardUnsentMessage)
+  const editUnsentMessage = useAppStore((s) => s.editUnsentMessage)
+  const resumeQueuedAcpPrompts = useAppStore((s) => s.resumeQueuedAcpPrompts)
   const steerQueuedAcpPrompt = useAppStore((s) => s.steerQueuedAcpPrompt)
+  const editQueuedAcpPrompt = useAppStore((s) => s.editQueuedAcpPrompt)
+  const reorderQueuedAcpPrompts = useAppStore((s) => s.reorderQueuedAcpPrompts)
   const branchFromMessage = useAppStore((s) => s.branchFromMessage)
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const branchRootChatId = session.branchRootChatId || session.parentChatId || session.id
@@ -566,6 +884,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootChatId)
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())))
   const retryFailedMessage = useAppStore((s) => s.retryFailedMessage)
+  const setMemorySettings = useAppStore((s) => s.setMemorySettings)
   const cancelAcpTurn = useAppStore((s) => s.cancelAcpTurn)
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
   const resolveAcpPermission = useAppStore((s) => s.resolveAcpPermission)
@@ -574,6 +893,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const setSessionModel = useAppStore((s) => s.setSessionModel)
 	const setSessionReviewerModel = useAppStore((s) => s.setSessionReviewerModel)
 	const discoverProviderModels = useAppStore((s) => s.discoverProviderModels)
+  const refreshDisplayedModels = useCallback(() => discoverProviderModels(session.id),
+    [discoverProviderModels, session.id, session.createdAt.getTime()])
   const setSessionCodexOptions = useAppStore((s) => s.setSessionCodexOptions)
   const setAcpConfigOption = useAppStore((s) => s.setAcpConfigOption)
   const setSessionApprovalMode = useAppStore((s) => s.setSessionApprovalMode)
@@ -586,8 +907,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const setSessionComputerUseEnabled = useAppStore((s) => s.setSessionComputerUseEnabled)
   const setSessionComputerUseControl = useAppStore((s) => s.setSessionComputerUseControl)
   const computerUseMode = COMPUTER_USE_ENABLED && Boolean(session.computerUseEnabled)
-  const remoteComputerUseDisabled = (session.executionHostId ?? 'local') !== 'local'
+  const remoteComputerUseDisabled = SSH_ENABLED && (session.executionHostId ?? 'local') !== 'local'
   const recoveryHost = useAppStore((s) => s.executionHosts.find((host) => host.id === session.executionHostId))
+  const workspaceFolders = useAppStore((s) => s.folders)
+  const workspaceName = useMemo(() => composerWorkspaceName(session, workspaceFolders, workspaceDirectory), [session, workspaceFolders, workspaceDirectory])
+  const remoteContextKey = JSON.stringify([session.id, session.createdAt.getTime(), session.executionHostId, workspaceDirectory, recoveryHost?.sshAlias, recoveryHost?.platform, recoveryHost?.runnerDirectory, recoveryHost?.runnerVersion, recoveryHost?.runnerProtocolVersion])
+  useEffect(() => { setRemoteMoveFolderId(''); setRemoteBrowseKey('') }, [remoteContextKey])
   const setSessionMemoryLevel = useAppStore((s) => s.setSessionMemoryLevel)
   const setSessionSmallModelMode = useAppStore((s) => s.setSessionSmallModelMode)
   const configuredApprovalMode = useAppStore((s) => s.sessions.find((candidate) => candidate.id === session.id)?.approvalMode)
@@ -627,8 +952,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const updateGoalObjective = useAppStore((s) => s.updateGoalObjective)
   const removeGoal = useAppStore((s) => s.removeGoal)
   const resumeGoal = useAppStore((s) => s.resumeGoal)
-  const defaultGoalTokenBudget = useAppStore((s) => s.defaultGoalTokenBudgetByChatId[session.id] ?? 0)
-  const setDefaultGoalTokenBudget = useAppStore((s) => s.setDefaultGoalTokenBudget)
+  const goalTokenBudget = useAppStore((s) => s.goalTokenBudget)
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const transcriptContentRef = useRef<HTMLDivElement>(null)
@@ -651,19 +975,49 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const dictationSubmitAfterStopRef = useRef(false)
   const submitDictatedPromptRef = useRef<(prompt: string) => void>(() => {})
   const submitInFlightRef = useRef(false)
+  const previousComposerIdentityRef = useRef({ id: session.id, birth: sessionBirth })
+  const abandonedBirthSubmission = previousComposerIdentityRef.current.id === session.id &&
+    previousComposerIdentityRef.current.birth !== sessionBirth && submitInFlightRef.current
   const compactRequestIdRef = useRef<string | null>(null)
   const currentSessionIdRef = useRef(session.id)
   const mountedRef = useRef(true)
+  const composerFocusOwner = JSON.stringify([session.id, session.createdAt.getTime(), navigationKey])
+  const previousComposerVisibility = useRef({ owner: composerFocusOwner, visible: showComposer })
+  useLayoutEffect(() => {
+    const previous = previousComposerVisibility.current
+    previousComposerVisibility.current = { owner: composerFocusOwner, visible: showComposer }
+    // Use only this ChatView's existing scoped ref; global focus cannot distinguish nested child panes.
+    // Mounting a normal main chat (default true) does not gain autofocus.
+    if (previous.owner === composerFocusOwner && !previous.visible && showComposer && currentSessionIdRef.current === session.id) {
+      const input = composerTextareaRef.current
+      if (input && !input.disabled && !input.readOnly) input.focus({ preventScroll: true })
+    }
+    if (!showComposer && editingMessageIndex !== null) composerTextareaRef.current?.focus({ preventScroll: true })
+  }, [showComposer, editingMessageIndex, composerFocusOwner])
   const removedAttachmentIdsRef = useRef(new Set<string>())
 
-  useEffect(() => () => {
-    mountedRef.current = false
-	if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current)
+  useEffect(() => subscribeComposerDraftAcknowledgements((chatId, createdAt, submitted) => {
+    if (chatId !== session.id || createdAt !== session.createdAt.getTime()) return
+    const next = withoutAcknowledgedComposerDraft(composerDraftRef.current, submitted)
+    // Timers and pagehide read this same ref, so they cannot restore an acknowledged draft.
+    composerDraftRef.current = next
+    setDraft((current) => current === submitted.text ? '' : current)
+    setComposerAttachments((current) => current.filter((attachment) => !submitted.attachments.some((sent) =>
+      attachmentsEquivalent([attachment], [sent]))))
+  }), [session.id, session.createdAt])
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current)
+    }
   }, [])
 
   useEffect(() => {
+    previousComposerIdentityRef.current = { id: session.id, birth: sessionBirth }
     currentSessionIdRef.current = session.id
-    isNearBottomRef.current = true
+    isNearBottomRef.current = restoredViewport?.nearBottom ?? true
     showScrollToBottomRef.current = false
     setShowScrollToBottom(false)
     submitInFlightRef.current = false
@@ -674,7 +1028,24 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     setProviderHandoffTargetId('')
     setConfirmYolo(false)
     setRollbackConfirmation(null)
-  }, [session.id])
+  }, [session.id, sessionBirth])
+
+  const renderedCountRef = useRef(renderedMessageCount)
+  renderedCountRef.current = renderedMessageCount
+  useLayoutEffect(() => {
+    const region = scrollRef.current
+    const saved = restoredViewport
+    if (region && saved) {
+      region.scrollTop = saved.top
+      isNearBottomRef.current = saved.nearBottom
+    }
+    return () => {
+      if (!region || !navigationKey) return
+      parentViewportVisits.delete(viewportKey)
+      parentViewportVisits.set(viewportKey, { ...viewportDetails.current, top: region.scrollTop, nearBottom: isNearBottomRef.current, renderedCount: renderedCountRef.current })
+      if (parentViewportVisits.size > 64) parentViewportVisits.delete(parentViewportVisits.keys().next().value!)
+    }
+  }, [viewportKey])
 
   const selectedToolCall = useMemo(
     () => {
@@ -690,18 +1061,25 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     [acp?.toolCalls, messages, selectedToolCallRef]
   )
 
-  const turnEvents = acp?.turnEvents ?? []
+  const turnEvents = useMemo(() => acp?.turnEvents ?? [], [acp?.turnEvents])
+  const liveTools = useMemo(() => acp?.toolCalls ?? [], [acp?.toolCalls])
+  const livePlanEntries = useMemo(() => acp?.planEntries ?? [], [acp?.planEntries])
+  const selectLiveTool = useCallback((toolId: string) => setSelectedToolCallRef({ id: toolId }), [])
+  const resolveLivePermission = useCallback((requestId: string, optionId: string) => resolveAcpPermission(session.id, requestId, optionId), [resolveAcpPermission, session.id])
+  const cancelLiveTurn = useCallback(() => { void cancelAcpTurn(session.id) }, [cancelAcpTurn, session.id])
+  const stopLiveRuntime = useCallback(() => { void stopAcpSession(session.id) }, [stopAcpSession, session.id])
   const firstTurnEvent = turnEvents.find((event) => event.type === 'assistant_text' ? event.text.length > 0 : true)
   const turnAssistantMessageIndex = acp?.turnAssistantMessageIndex === undefined || acp.turnAssistantMessageIndex < 0
     ? -1 : acp.turnAssistantMessageIndex - historyStartIndex
   const turnUserMessageIndex = acp?.turnUserMessageIndex === undefined || acp.turnUserMessageIndex < 0
     ? -1 : acp.turnUserMessageIndex - historyStartIndex
   const turnSerial = acp?.turnSerial ?? 0
-  const liveWorkDisclosure = useMemo<WorkTraceDisclosureState>(() => ({}), [session.id, turnSerial])
-  const savedWorkDisclosures = useMemo(() => new Map<string, WorkTraceDisclosureState>(), [session.id])
+  const liveWorkDisclosure = useMemo<WorkTraceDisclosureState>(() => restoredViewport?.liveDisclosure?.serial === turnSerial ? restoredViewport.liveDisclosure.state : {}, [viewportKey, turnSerial])
+  const savedWorkDisclosures = useMemo(() => restoredViewport?.workDisclosures ?? new Map<string, WorkTraceDisclosureState>(), [viewportKey])
   const expandWorkTraces = useAppStore((state) => state.expandWorkTraces)
   const collapsibleWorkSections = useAppStore((state) => state.collapsibleWorkSections)
-  const [sectionChoices, setSectionChoices] = useState<{ sessionId: string; expanded: Record<string, boolean> }>({ sessionId: session.id, expanded: {} })
+  const [sectionChoices, setSectionChoices] = useState<{ sessionId: string; expanded: Record<string, boolean> }>(() => restoredViewport?.sectionChoices ?? { sessionId: session.id, expanded: {} })
+  viewportDetails.current = { subagentDisclosures, workDisclosures: savedWorkDisclosures, liveDisclosure: { serial: turnSerial, state: liveWorkDisclosure }, sectionChoices }
   const earliestRenderedMessageIndex = Math.max(0, messages.length - renderedMessageCount)
   const workSections = useMemo(
     () => buildVisibleWorkSections(messages, earliestRenderedMessageIndex),
@@ -717,10 +1095,14 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       return controls.get(id)!
     }
   }, [session.id, sectionChoices, expandWorkTraces])
-  const latestUserMessageIndex = lastMessageIndexWithRole(messages, 'user')
-  const retryInPlaceMessageIndex = canRetryMessageInPlace(messages, latestUserMessageIndex)
-    ? latestUserMessageIndex : -1
-  const latestAssistantMessageIndex = lastMessageIndexWithRole(messages, 'assistant')
+  const { latestUserMessageIndex, retryInPlaceMessageIndex, latestAssistantMessageIndex } = useMemo(() => {
+    const latestUserMessageIndex = lastMessageIndexWithRole(messages, 'user')
+    return {
+      latestUserMessageIndex,
+      retryInPlaceMessageIndex: canRetryMessageInPlace(messages, latestUserMessageIndex) ? latestUserMessageIndex : -1,
+      latestAssistantMessageIndex: lastMessageIndexWithRole(messages, 'assistant'),
+    }
+  }, [messages])
   const activeWorkMessageIndex = turnUserMessageIndex >= 0 ? turnUserMessageIndex : latestUserMessageIndex
   const activeWorkSectionFirstIndex = activeWorkMessageIndex >= 0 && activeWorkMessageIndex < messages.length
     ? workSections.get(activeWorkMessageIndex)?.firstIndex ?? findWorkSectionStartIndex(messages, activeWorkMessageIndex)
@@ -778,10 +1160,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   )
 
   useEffect(() => {
-    if (isNearBottomRef.current) {
+    if (isNearBottomRef.current && !searchNavigation) {
       bottomRef.current?.scrollIntoView?.({ block: 'end' })
     }
   }, [
+    searchNavigation,
     messages.length,
     messages[messages.length - 1]?.content,
     messages[messages.length - 1]?.planSummary,
@@ -799,24 +1182,24 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 
   useEffect(() => {
     const dock = composerDockRef.current
-    if (!dock || typeof ResizeObserver === 'undefined') return
+    if (typeof ResizeObserver === 'undefined' || (showComposer && !dock)) return
     // Written as a CSS variable, not React state, so composer growth never re-renders the transcript.
     let lastHeight = -1
     const observer = new ResizeObserver(() => {
-      const height = dock.offsetHeight
+      const height = dock?.offsetHeight ?? 0
       if (height !== lastHeight) {
         lastHeight = height
-        dock.parentElement?.style.setProperty('--composer-dock-h', `${height}px`)
+        dock?.parentElement?.style.setProperty('--composer-dock-h', `${height}px`)
       }
       const el = scrollRef.current
-      if (el && isNearBottomRef.current) el.scrollTop = el.scrollHeight
+      if (el && isNearBottomRef.current && !searchNavigationRef.current) el.scrollTop = el.scrollHeight
     })
-    observer.observe(dock)
+    if (dock) observer.observe(dock)
     // Content and viewport changes also move the end, even when the dock height is unchanged.
     if (transcriptContentRef.current) observer.observe(transcriptContentRef.current)
     if (scrollRef.current) observer.observe(scrollRef.current)
     return () => observer.disconnect()
-  }, [])
+  }, [showComposer])
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
@@ -833,12 +1216,36 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 	})
   }, [])
 
+  useEffect(() => {
+    if (!searchNavigation || searchNavigation.phase !== 'ready' || searchNavigation.anchored) return
+    const state = useAppStore.getState()
+    if (state.activeSessionId !== session.id || state.chatSearchNavigation?.generation !== searchNavigation.generation ||
+        state.chatSearchNavigation.chatId !== session.id) return
+    const target = transcriptContentRef.current?.querySelector<HTMLElement>(`[data-message-index="${searchNavigation.messageIndex}"]`)
+    if (!target) return
+    isNearBottomRef.current = false
+    // Message-rail jumps glide to the top (the rail selects the first visible message, subject to Motion); search results centre immediately.
+    target.scrollIntoView?.(searchNavigation.queryRequestId.startsWith('message-rail:')
+      ? { block: 'start', behavior: motionScrollBehavior() } : { block: 'center' })
+    useAppStore.getState().consumeChatSearchJump(session.id, searchNavigation.generation)
+  }, [searchNavigation, messages, historyStartIndex, session.id, unsentProjection])
+
   const scrollToBottom = useCallback(() => {
-    isNearBottomRef.current = true
-    showScrollToBottomRef.current = false
-    setShowScrollToBottom(false)
-    bottomRef.current?.scrollIntoView?.({ block: 'end', behavior: 'smooth' })
-  }, [])
+    const followLatest = () => {
+      if (currentSessionIdRef.current !== session.id || useAppStore.getState().chatSearchNavigation) return
+      isNearBottomRef.current = true
+      showScrollToBottomRef.current = false
+      setShowScrollToBottom(false)
+      bottomRef.current?.scrollIntoView?.({ block: 'end', behavior: motionScrollBehavior() })
+    }
+    if (searchNavigationRef.current) {
+      void useAppStore.getState().clearChatSearchNavigation().then(() => {
+        const state = useAppStore.getState()
+        const count = state.sessions.find((candidate) => candidate.id === session.id)?.messageCount
+        if (state.activeSessionId === session.id && count === (state.historyStartIndexBySessionId[session.id] ?? 0) + (state.messages[session.id]?.length ?? 0)) followLatest()
+      })
+    } else followLatest()
+  }, [session.id])
 
   useEffect(() => {
     if (selectedToolCallRef && !selectedToolCall) {
@@ -854,22 +1261,30 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     setSteering(false)
     setAttachmentError('')
     setGoalError('')
+    goalMutationGenerationRef.current += 1
+    goalMutationOwnerRef.current = null
+    goalMutationInFlightRef.current = false
+    setGoalSubmitting(false)
     setWorkspaceFeedback(null)
     setWorkspaceActionBusy(false)
     setWorkspaceMenuOpen(false)
     setGoalArmNextMessage(false)
-    setSlashMessage('')
+    setSlashNotice(noticeFor(abandonedBirthSubmission ? 'The chat was replaced. Check the earlier input before sending again.' : '', 'warning'))
     setPermissionMenuOpen(false)
+    messageBranchGenerationRef.current += 1
     setEditingMessageIndex(null)
     setEditingMessageText('')
+    setEditingMessageAttachments([])
+    setEditingMessageSource({ kind: 'branch' })
+    unsentEditInFlightRef.current = null
     setBranchingMessageIndex(null)
     setMessageBranchError('')
     setClaudePlanPrompt(null)
-    setRenderedMessageCount(isCompanionContext() ? COMPANION_INITIAL_RENDERED_MESSAGES : INITIAL_RENDERED_MESSAGES)
+    setRenderedMessageCount(restoredViewport?.renderedCount ?? (isCompanionContext() ? COMPANION_INITIAL_RENDERED_MESSAGES : INITIAL_RENDERED_MESSAGES))
     setOlderHistoryLoading(false)
     setDictationState('idle')
     setDictationError('')
-  }, [session.id])
+  }, [session.id, sessionBirth])
 
   useEffect(() => {
     if (!acp?.lastError && !acp?.promptActionError) setDismissedAcpErrorKey('')
@@ -888,11 +1303,49 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     }
   }, [session.workspaceIsolationKind])
 
+  // Workspace success is a completed system action: it goes to the shared notifications path, not an inline banner.
   useEffect(() => {
     if (workspaceFeedback?.tone !== 'success') return
-    const timeout = window.setTimeout(() => setWorkspaceFeedback(null), 5000)
-    return () => window.clearTimeout(timeout)
+    reportAppNotice(workspaceFeedback.message, 'success')
+    setWorkspaceFeedback(null)
   }, [workspaceFeedback])
+  // Failures and completed actions reach the shared alert path instead of inline banners; error state is cleared once reported.
+  useEffect(() => {
+    if (!workspaceFeedback || workspaceFeedback.tone === 'success') return
+    reportAppFailure('Workspace action failed', workspaceFeedback.message)
+    setWorkspaceFeedback(null)
+  }, [workspaceFeedback])
+  useEffect(() => {
+    if (!goalError) return
+    reportAppFailure('Goal update failed', goalError)
+    setGoalError('')
+  }, [goalError])
+  useEffect(() => {
+    if (!messageBranchError) return
+    reportAppFailure(editingMessageSource.kind === 'unsent' ? 'Message edit failed' : 'Message branch failed', messageBranchError)
+    setMessageBranchError('')
+  }, [messageBranchError])
+  useEffect(() => {
+    if (!attachmentError) return
+    reportAppFailure('Attachment failed', attachmentError)
+    setAttachmentError('')
+  }, [attachmentError])
+  // Toggling showComposer re-runs this effect; the reported ref keeps one alert per distinct dictation error.
+  useEffect(() => {
+    if (!dictationError) reportedDictationError.current = ''
+    if (!dictationError || showComposer || reportedDictationError.current === dictationError) return
+    reportedDictationError.current = dictationError
+    reportAppFailure('Dictation failed', dictationError)
+  }, [dictationError, showComposer])
+  // The history error lives in the store, so a remount would re-report it; alert once per distinct failure.
+  useEffect(() => {
+    if (!chatHistoryError) { reportedHistoryFailure = ''; return }
+    const title = historyRefreshFailed ? 'Chat history did not refresh' : 'Chat history did not load'
+    const key = `${session.id}\u0000${title}\u0000${chatHistoryError}`
+    if (key === reportedHistoryFailure) return
+    reportedHistoryFailure = key
+    reportAppFailure(title, `${chatHistoryError} Use Retry at the top of the transcript to try again.`)
+  }, [chatHistoryError, historyRefreshFailed, session.id])
 
   const runtimeBlocksControlChanges = acpRuntimeBlocksControlChanges(acp)
 
@@ -907,6 +1360,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       const target = event.target
       if (!(target instanceof Node)) return
       if (target instanceof Element && target.closest('[data-viewport-menu]')) return
+      if (target instanceof Element && target.closest('[aria-modal="true"]')) return
+      if (!goalsTriggerRef.current?.contains(target)) setGoalsPopupOwner(null)
 
       if (modelOpen && modelMenuRef.current && !modelMenuRef.current.contains(target)) {
         setModelOpen(false)
@@ -918,9 +1373,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     }
 
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== 'Escape') return
+      if (event.key !== 'Escape' || event.defaultPrevented || getTopmostModal()) return
       setModelOpen(false)
       setWorkspaceMenuOpen(false)
+      setGoalsPopupOwner(null)
       setSelectedToolCallRef(null)
     }
 
@@ -933,6 +1389,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }, [modelOpen, workspaceMenuOpen])
 
   const stageFiles = async (files: File[]) => {
+    if (!showComposerRef.current) return
     if (isCompanionContext()) { setAttachmentError('Add attachments from the desktop app.'); return }
     const stagingSessionId = session.id
     const realFiles = files.filter((file) => file.size > 0 || file.type || file.name)
@@ -1001,6 +1458,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }
 
   const stageDirectoryPaths = async (paths: string[]) => {
+    if (!showComposerRef.current) return
     const stagingSessionId = session.id
     const uniquePaths = Array.from(new Set(paths.map((path) => path.trim()).filter(Boolean)))
     if (uniquePaths.length === 0) return
@@ -1076,77 +1534,121 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     void stageFiles(files)
   }
 
+  const createGoalAndSend = async (request: {
+    objective: string; tokenBudget: number; executionOwner: 'uam' | 'provider'; prompt: string;
+    attachments: Attachment[]; sendFailure: string; steerNow?: boolean; disarm?: boolean;
+  }) => {
+    const submittedSessionId = session.id
+    const submittedDraft = draft
+    const submittedContext = captureComposerReferenceSubmission(submittedSessionId)
+    if (!submittedContext) { setGoalError("The chat's workspace or provider changed, so this goal wasn't sent. Review the selected references, then send again."); return }
+    const generation = ++goalMutationGenerationRef.current
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === submittedSessionId && goalMutationGenerationRef.current === generation &&
+      useAppStore.getState().sessions.find((chat) => chat.id === submittedSessionId)?.createdAt.getTime() === submittedContext.birth
+    submitInFlightRef.current = true
+    goalMutationInFlightRef.current = true
+    setSubmitting(true)
+    setGoalSubmitting(true)
+    try {
+      const result = await setGoalStore(submittedSessionId, request.objective, request.tokenBudget, request.executionOwner)
+      // A pane switch alone does not cancel the first prompt; its original target/context must still match.
+      const sent = result.ok ? await sendCapturedComposerPrompt(submittedContext, request.prompt, request.attachments, request.steerNow) : false
+      const acknowledgedSession = useAppStore.getState().sessions.find((candidate) => candidate.id === submittedSessionId)
+      if (sent && acknowledgedSession?.createdAt.getTime() === session.createdAt.getTime()) {
+        acknowledgeChatComposerDraft(submittedSessionId, session.createdAt.getTime(), { text: submittedDraft, attachments: request.attachments })
+      }
+      if (!ownsFeedback()) return
+      if (!sent) { setGoalError(result.ok ? request.sendFailure : result.error || 'Failed to create goal.'); return }
+      setGoalError('')
+      if (request.disarm) setGoalArmNextMessage(false)
+      setDraft((current) => current === submittedDraft ? '' : current)
+      setComposerAttachments((current) => current.filter((attachment) => !request.attachments.some((sentAttachment) => attachmentsEquivalent([attachment], [sentAttachment]))))
+      setAttachmentError('')
+    } catch {
+      if (ownsFeedback()) setGoalError('Failed to create goal.')
+    } finally {
+      if (ownsFeedback()) {
+        submitInFlightRef.current = false
+        goalMutationInFlightRef.current = false
+        setSubmitting(false)
+        setGoalSubmitting(false)
+      }
+    }
+  }
+
   const submitGoal = async (prompt: string) => {
     const goalMatch = prompt.match(/^\/goal\s+(.+?)(?:\s+--budget\s+(\d+))?\s*$/s)
     if (!goalMatch) return false
-
     const objective = goalMatch[1].trim()
-    const tokenBudget = goalMatch[2] ? parseInt(goalMatch[2], 10) : defaultGoalTokenBudget
-
-    if (!objective) {
-      setGoalError('Goal objective is required.')
-      return true
-    }
-
-	goalMutationInFlightRef.current = true
-    setGoalSubmitting(true)
-	try {
-	  const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
-	  const providerManaged = featurePreference === 'provider' && Boolean(nativeGoalCommand)
-	  const goalResult = await setGoalStore(session.id, objective, tokenBudget, providerManaged ? 'provider' : 'uam')
-	  const goalAttachments = composerAttachments
-	    .filter((attachment) => attachment.status === 'ready')
-	    .map(({ status, error, ...attachment }) => attachment)
-	  const sent = goalResult.ok ? await sendComposerPrompt(session.id, providerManaged ? `${nativeGoalCommand} ${objective}` : objective, goalAttachments) : false
-
-	  if (goalResult.ok && sent && currentSessionIdRef.current === session.id) {
-        setDraft((current) => current === draft ? '' : current)
-	    setComposerAttachments((current) => current.filter((attachment) => !goalAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
-	    setAttachmentError('')
-        setGoalError('')
-      } else {
-	    setGoalError(goalResult.ok ? 'Goal was created, but the first prompt failed to send.' : (goalResult.error || 'Failed to create goal.'))
-      }
-	} catch {
-	  setGoalError('Failed to create goal.')
-	} finally {
-	  goalMutationInFlightRef.current = false
-	  setGoalSubmitting(false)
-	}
+    if (!objective) { setGoalError('Goal objective is required.'); return true }
+    const tokenBudget = goalMatch[2] ? parseInt(goalMatch[2], 10) : goalTokenBudget
+    const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
+    const providerManaged = featurePreference === 'provider' && Boolean(nativeGoalCommand)
+    await createGoalAndSend({ objective, tokenBudget, executionOwner: providerManaged ? 'provider' : 'uam',
+      prompt: providerManaged ? `${nativeGoalCommand} ${objective}` : objective,
+      attachments: composerAttachments.filter((attachment) => attachment.status === 'ready').map(({ status, error, ...attachment }) => attachment),
+      sendFailure: 'Goal was created, but the first prompt failed to send.' })
     return true
   }
 
-  const runCompact = async (commandDraft = draft) => {
-    if (session.importedReadOnly || submitInFlightRef.current || goalSubmitting) return
+  const runCompact = async (commandDraft = draft, closePalette = false) => {
+    if (!mountedRef.current || currentSessionIdRef.current !== session.id || submitInFlightRef.current || goalSubmitting) return
     if (!isCefContext()) {
-      setSlashMessage('Manual compaction is unavailable without a connected native runtime.')
+      setSlashNotice(noticeFor('Manual compaction is unavailable without a connected native runtime.', 'warning'))
       return
+    }
+    const state = useAppStore.getState()
+    const currentChat = state.sessions.find(chat => chat.id === session.id)
+    const currentAcp = state.acpBindingBySessionId[session.id]
+    const renderedTarget = manualCompactionForChat(session, acp)
+    const target = manualCompactionForChat(currentChat, currentAcp)
+    if (!mountedRef.current || currentSessionIdRef.current !== session.id || !renderedTarget || !target
+      || !sameManualCompactionTarget(renderedTarget, target) || state.cliBindingBySessionId[session.id]?.running
+      || !state.providers.some(provider => provider.id === target.providerId && provider.supportsStructured)) {
+      setSlashNotice(noticeFor('Manual compaction is unavailable for this chat.', 'warning'))
+      return
+    }
+    // Revalidate before clearing a palette token; an old option cannot erase a newer draft.
+    if (closePalette) {
+      if (activeSlashToken) setDraft(current => current === commandDraft ? replaceSlashAction(current, activeSlashToken, '') : current)
+      setSlashIndex(0)
+      setSlashGroup('')
+      setPermissionMenuOpen(false)
     }
     const submittedSessionId = session.id
     const requestId = createRequestId('compactAcpSession')
+    const ownsRequest = () => mountedRef.current && currentSessionIdRef.current === submittedSessionId && compactRequestIdRef.current === requestId
+    const ownsFeedback = () => {
+      if (!ownsRequest()) return false
+      const current = useAppStore.getState()
+      const chat = current.sessions.find(candidate => candidate.id === submittedSessionId)
+      const binding = current.acpBindingBySessionId[submittedSessionId]
+      return chat?.providerId === target.providerId && (chat?.modelId ?? '') === target.modelId
+        && binding?.providerId === target.providerId && binding?.sessionId === target.nativeSessionId
+    }
     compactRequestIdRef.current = requestId
     submitInFlightRef.current = true
     setSubmitting(true)
     setCompacting(true)
-    setSlashMessage('')
+    setSlashNotice(null)
     try {
       const response = await sendToCEF<{ accepted?: boolean }>({
         action: 'compactAcpSession',
         payload: { chatId: submittedSessionId },
         requestId,
       })
-      if (!mountedRef.current || currentSessionIdRef.current !== submittedSessionId || compactRequestIdRef.current !== requestId) return
+      if (!ownsFeedback()) return
       if (!response.ok || response.data?.accepted !== true) {
-        setSlashMessage(response.error || 'Compaction request was not accepted.')
+        // "failed" keeps this on the error tone; a plain message would show green.
+        setSlashNotice(noticeFor(`Compaction failed: ${response.error || 'the request was not accepted.'}`, 'error'))
         return
       }
-      // Acceptance is not completion; provider events report the actual compaction outcome.
-      setSlashMessage('Compaction requested.')
+      // Acceptance is not completion; the "Compacting context" strip and the transcript show progress.
       setDraft((current) => current === commandDraft && current.trim() === '/compact' ? '' : current)
     } catch {
-      if (mountedRef.current && currentSessionIdRef.current === submittedSessionId && compactRequestIdRef.current === requestId) setSlashMessage('Failed to request compaction.')
+      if (ownsFeedback()) setSlashNotice(noticeFor('Failed to request compaction.', 'error'))
     } finally {
-      if (mountedRef.current && currentSessionIdRef.current === submittedSessionId && compactRequestIdRef.current === requestId) {
+      if (ownsRequest()) {
         compactRequestIdRef.current = null
         submitInFlightRef.current = false
         setSubmitting(false)
@@ -1157,9 +1659,25 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 
   const submit = async (event?: FormEvent, promptOverride?: string, steerNow = false) => {
     event?.preventDefault()
+    if (editingMessageIndex !== null) {
+      if (branchingMessageIndex === null && canChangeProvider && (editingMessageText.trim() || editingMessageAttachments.length > 0)) {
+        if (editingMessageSource.kind === 'unsent') await saveEditedUnsentMessage()
+        else {
+          const nativeIds = editingMessageAttachments.filter((attachment) => attachment.type !== 'markdown-store').map((attachment) => attachment.id)
+          const skillFiles = editingMessageAttachments.filter((attachment) => attachment.type === 'markdown-store').map((attachment) => attachment.id)
+          await createMessageBranch(editingMessageIndex, editingMessageText, nativeIds,
+            editingMessageSource.hadMarkdownStoreAttachments || skillFiles.length > 0 ? skillFiles : undefined)
+        }
+      }
+      return
+    }
+    // Explicit row editing above remains available; a hidden ordinary draft cannot submit.
+    if (!showComposerRef.current) return
     const prompt = (promptOverride ?? draft).trim()
     if (prompt === '/compact') { await runCompact(promptOverride ?? draft); return }
-    if (!providerSupported || session.importedReadOnly || (!prompt && composerAttachments.length === 0) || submitInFlightRef.current || goalSubmitting || composerAttachments.some((attachment) => attachment.status !== 'ready')) return
+    if (!providerSupported || session.importedReadOnly || (!prompt && composerAttachments.length === 0) || submitInFlightRef.current || goalSubmitting || referenceCaptureLoading ||
+      useAppStore.getState().sessions.find((chat) => chat.id === session.id)?.createdAt.getTime() !== session.createdAt.getTime() ||
+      composerAttachments.some((attachment) => attachment.status !== 'ready')) return
 	if (dictationActiveRef.current && promptOverride === undefined) {
 	  await stopDictation(true)
 	  return
@@ -1171,95 +1689,33 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     if (prompt === '/side' && !session.temporaryParentChatId && !isCompanionContext()) { setDraft(''); await navigateSide(); return }
     if ((prompt === '/side-return' || prompt === '/side-dismiss') && session.temporaryParentChatId && !isCompanionContext()) { setDraft(''); await navigateSide(prompt === '/side-return' ? 'return' : 'dismiss'); return }
     // Handle /goal command
-    if (prompt.startsWith('/goal ')) {
-      const submittedSessionId = session.id
-      submitInFlightRef.current = true
-      setSubmitting(true)
-      try {
-        await submitGoal(prompt)
-      } finally {
-        submitInFlightRef.current = false
-        if (currentSessionIdRef.current === submittedSessionId) setSubmitting(false)
-      }
+    if (prompt.startsWith('/goal ')) { await submitGoal(prompt); return }
+    const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
+    if (nativeGoalCommand && (prompt === nativeGoalCommand || prompt.startsWith(`${nativeGoalCommand} `))) {
+      const objective = prompt.slice(nativeGoalCommand.length).trim()
+      if (!objective) { setGoalError('Goal objective is required.'); return }
+      await createGoalAndSend({ objective, tokenBudget: goalTokenBudget, executionOwner: 'provider',
+        prompt, attachments: readyAttachments, sendFailure: 'Goal was created, but the provider command failed to send.' })
       return
     }
-	const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
-	if (nativeGoalCommand && (prompt === nativeGoalCommand || prompt.startsWith(`${nativeGoalCommand} `))) {
-	  const objective = prompt.slice(nativeGoalCommand.length).trim()
-	  if (!objective) {
-		setGoalError('Goal objective is required.')
-		return
-	  }
-	  const submittedSessionId = session.id
-	  submitInFlightRef.current = true
-	  goalMutationInFlightRef.current = true
-	  setSubmitting(true)
-	  setGoalSubmitting(true)
-	  try {
-		const goalResult = await setGoalStore(session.id, objective, defaultGoalTokenBudget, 'provider')
-		const ok = goalResult.ok ? await sendComposerPrompt(session.id, prompt, readyAttachments) : false
-		if (!ok) {
-		  setGoalError(goalResult.ok ? 'Goal was created, but the provider command failed to send.' : (goalResult.error || 'Failed to create goal.'))
-		  return
-		}
-		if (currentSessionIdRef.current !== submittedSessionId) return
-		setGoalError('')
-		setDraft((current) => current === draft ? '' : current)
-		setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
-		setAttachmentError('')
-	  } catch {
-		setGoalError('Failed to create goal.')
-	  } finally {
-		goalMutationInFlightRef.current = false
-		setGoalSubmitting(false)
-		submitInFlightRef.current = false
-		if (currentSessionIdRef.current === submittedSessionId) setSubmitting(false)
-	  }
-	  return
-	}
-
     if (goalArmNextMessage) {
-      const submittedSessionId = session.id
-      submitInFlightRef.current = true
-	  goalMutationInFlightRef.current = true
-      setSubmitting(true)
-      setGoalSubmitting(true)
-	  try {
-		const providerGoalCommand = featurePreference === 'provider' ? currentProvider.nativeGoalCommand?.trim() ?? '' : ''
-		const goalResult = await setGoalStore(session.id, prompt, defaultGoalTokenBudget, providerGoalCommand ? 'provider' : 'uam')
-		if (!goalResult.ok) {
-		  setGoalError(goalResult.error || 'Failed to create goal.')
-		  return
-		}
-		const ok = steerNow
-		  ? await sendComposerPrompt(session.id, providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, readyAttachments, true)
-		  : await sendComposerPrompt(session.id, providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, readyAttachments)
-		if (!ok) {
-		  setGoalError('Goal was created, but the first prompt failed to send.')
-		  return
-		}
-		if (currentSessionIdRef.current !== submittedSessionId) return
-		setGoalError('')
-		setGoalArmNextMessage(false)
-		setDraft((current) => current === draft ? '' : current)
-		setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
-		setAttachmentError('')
-	  } catch {
-		setGoalError('Failed to create goal.')
-	  } finally {
-		goalMutationInFlightRef.current = false
-		setGoalSubmitting(false)
-		submitInFlightRef.current = false
-		if (currentSessionIdRef.current === submittedSessionId) setSubmitting(false)
-	  }
+      const providerGoalCommand = featurePreference === 'provider' ? currentProvider.nativeGoalCommand?.trim() ?? '' : ''
+      await createGoalAndSend({ objective: prompt, tokenBudget: goalTokenBudget, executionOwner: providerGoalCommand ? 'provider' : 'uam',
+        prompt: providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, attachments: readyAttachments,
+        sendFailure: 'Goal was created, but the first prompt failed to send.', steerNow: steerNow || undefined, disarm: true })
       return
     }
 
     if (!steerNow && isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
-      setClaudePlanPrompt(prompt)
+      const context = captureComposerReferenceSubmission(session.id)
+      if (!context) { setSlashNotice(noticeFor(UNSENT_PROMPT_MESSAGE, 'warning')); return }
+      setClaudePlanPrompt({ prompt, draft, attachments: readyAttachments, context })
       return
     }
     const submittedSessionId = session.id
+    const submittedBirth = sessionBirth
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === submittedSessionId &&
+      useAppStore.getState().sessions.find((chat) => chat.id === submittedSessionId)?.createdAt.getTime() === submittedBirth
     submitInFlightRef.current = true
     setSubmitting(true)
     if (steerNow) setSteering(true)
@@ -1271,14 +1727,19 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     } catch {
       ok = false
     }
-    if (currentSessionIdRef.current === submittedSessionId) {
+    const acknowledgedSession = useAppStore.getState().sessions.find((candidate) => candidate.id === submittedSessionId)
+    if (ok && acknowledgedSession?.createdAt.getTime() === submittedBirth) {
+      acknowledgeChatComposerDraft(submittedSessionId, submittedBirth, { text: draft, attachments: readyAttachments })
+    }
+    if (ownsFeedback()) {
       submitInFlightRef.current = false
       setSubmitting(false)
       if (steerNow) setSteering(false)
     }
-    if (ok && currentSessionIdRef.current === submittedSessionId) {
+    if (ok && ownsFeedback()) {
       setDraft((current) => current === draft ? '' : current)
-      setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
+      setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) =>
+        attachmentsEquivalent([attachment], [sentAttachment]))))
       setAttachmentError('')
     }
   }
@@ -1287,24 +1748,53 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const pendingPermission = acp?.pendingPermission
   const pendingUserInput = acp?.pendingUserInput
   const latestAssistantMessage = latestAssistantMessageIndex >= 0 ? messages[latestAssistantMessageIndex] : undefined
-  const repositoryComparisonRef = session.workspaceIsolationKind === 'gitWorktree' ? session.workspaceBaseRef?.trim() : undefined
-  const completedTurnKey = !acp?.processing && !cli?.processing && latestAssistantMessageIndex > latestUserMessageIndex
+  const repositoryComparisonRef = !isCompanionContext() && session.workspaceIsolationKind === 'gitWorktree' && session.workspaceBaseRef?.trim()
+    ? session.workspaceBaseRef.trim()
+    : 'chat'
+  const reviewGoal = activeGoalId ? goals.find(goal => goal.id === activeGoalId) : null
+  const chatWorking = chatHasUnfinishedWork(acp, cli, reviewGoal)
+  useEffect(() => {
+    if (chatWorking || historyIncomplete) setSelectedRepositoryFile(null)
+  }, [chatWorking, historyIncomplete])
+  const completedTurnKey = !chatWorking && latestAssistantMessageIndex > latestUserMessageIndex
     ? `${latestAssistantMessage?.id ?? ''}:${turnSerial}:${cli?.terminalId ?? ''}`
     : ''
   useEffect(() => {
     let cancelled = false
-    if (isCompanionContext() || remoteComputerUseDisabled || !completedTurnKey || !workspaceDirectory || !repositoryComparisonRef) return
+    if (!completedTurnKey || !workspaceDirectory) return
 
     void getVcsCommitStatus(session.id, 'git', {
       includeLineStats: true,
       requestId: `chat-summary:${session.id}:${completedTurnKey}`,
       comparisonRef: repositoryComparisonRef,
     }).then((status) => {
-      if (cancelled || !status?.available) return
-      setRepositoryReview(session.id, status.changedFiles.length > 0 ? status : null)
+      if (cancelled) return
+      setRepositoryReview(session.id, status?.available && !status.error && status.changedFiles.length > 0 ? status : null)
     })
     return () => { cancelled = true }
-  }, [completedTurnKey, getVcsCommitStatus, remoteComputerUseDisabled, repositoryComparisonRef, session.id, workspaceDirectory])
+  }, [completedTurnKey, getVcsCommitStatus, repositoryComparisonRef, session.id, workspaceDirectory])
+  useEffect(() => {
+    let cancelled = false
+    if (isCompanionContext() || remoteComputerUseDisabled || !workspaceDirectory) return
+    // One light read per chat/workspace open (no polling): feeds the composer's repository branch.
+    void getVcsCommitStatus(session.id, 'git', { includeLineStats: false, contextOnly: true, requestId: `composer-branch:${composerBranchScope}` }).then((status) => {
+      if (cancelled) return
+      setComposerVcsBranch({ scope: composerBranchScope, status })
+    })
+    return () => { cancelled = true }
+  }, [composerBranchScope, getVcsCommitStatus, remoteComputerUseDisabled, session.id, workspaceDirectory])
+  const handleBranchSwitched = (branch: string, vcsType: 'git' | 'svn' = 'git') => {
+    setComposerVcsBranch({ scope: composerBranchScope, status: { available: true, activeVcsType: vcsType, branchOrRevision: branch } })
+    void getVcsCommitStatus(session.id, vcsType, { includeLineStats: false, contextOnly: true, requestId: `composer-branch:${composerBranchScope}` }).then((status) => {
+      if (status?.available && status.activeVcsType === vcsType) setComposerVcsBranch({ scope: composerBranchScope, status })
+    })
+  }
+  // Native creates a pending branch on the first send; refresh the composer's own read once it lands.
+  const pendingBranchRef = useRef(session.pendingGitBranch)
+  useEffect(() => {
+    if (pendingBranchRef.current && !session.pendingGitBranch && session.workspaceBranchName) handleBranchSwitched(session.workspaceBranchName)
+    pendingBranchRef.current = session.pendingGitBranch
+  })
   const sideBusyRef = useRef(false)
   const [sideBusy, setSideBusy] = useState(false)
   // A main chat keeps at most one live side chat; reopening it is a local switch,
@@ -1324,20 +1814,79 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     try {
       const dismiss = action === 'dismiss'
       const response = await sendToCEF<{ chatId?: string; parentChatId?: string }>({ action: dismiss ? 'dismissSideChat' : 'createSideChat', payload: { chatId: session.id }, requestId: createRequestId('side') })
-      if (!response.ok) { setSlashMessage(response.error || 'Side chat could not be changed.'); return }
+      if (!response.ok) { setSlashNotice(noticeFor(response.error || 'Side chat could not be changed.', 'error')); return }
       const id = dismiss ? response.data?.parentChatId : response.data?.chatId
       if (id) showChatInPane(id)
     } finally { sideBusyRef.current = false; setSideBusy(false) }
   }
+  useSyncExternalStore(subscribeSubagentNavigation, subagentNavigationRevision)
+  const subagentParent = useAppStore(state => subagentParentFor(session, state.sessions))
+  const startedBy = useAppStore(state => session.createdByChatId ? state.sessions.find(candidate => candidate.id === session.createdByChatId) : undefined)
+  const showSideChatControls = !isCompanionContext() && Boolean(session.temporaryParentChatId || liveSideChatId)
+  // Keeps the tab row mounted while the Editing tab plays its exit.
+  const editTabMounted = usePresence(editingMessageIndex !== null).mounted
+  // A question the running turn waits on replaces the composer body; any other pending question (UAM control, or one
+  // arriving while editing or without a composer) floats above the composer so it stays usable.
+  const questionKey = pendingUserInput ? `${session.id}:${pendingUserInput.requestId}:${pendingUserInput.itemId}` : ''
+  const [answeredQuestionKey, setAnsweredQuestionKey] = useState('')
+  // Both card forms share one answer state per question, so a lifecycle flip (permission, message edit) never resets it.
+  const [questionMemories] = useState(() => new Map<string, QuestionMemory>())
+  if (questionKey && !questionMemories.has(questionKey)) questionMemories.set(questionKey, createQuestionMemory())
+  const questionMemory = questionMemories.get(questionKey)
+  // Once the chat has no pending question its answer state is dropped, so a provider that reuses a request id
+  // (Copilot's JSON-RPC ids restart with the runtime) opens a fresh, answerable question.
+  useEffect(() => {
+    if (pendingUserInput) return
+    const prefix = `${session.id}:`
+    for (const key of questionMemories.keys()) if (key.startsWith(prefix)) questionMemories.delete(key)
+    setAnsweredQuestionKey((key) => key.startsWith(prefix) ? '' : key)
+  }, [pendingUserInput, questionMemories, session.id])
+  const showQuestion = Boolean(pendingUserInput && !session.importedReadOnly)
+  // An answer accepted from the floating card keeps that card's "Answers submitted" until native clears the question.
+  const questionInComposer = showQuestion && questionKey !== answeredQuestionKey && !questionMemory?.accepted && showComposer && editingMessageIndex === null &&
+    acp?.lifecycleState === 'waitingUserInput' && !pendingUserInput?.requestId.startsWith('uam-control:')
+  const questionTabMounted = usePresence(questionInComposer).mounted
+  const questionSubmitRef = useRef<(() => void) | null>(null)
+  const [questionSubmitState, setQuestionSubmitState] = useState<QuestionSubmitState>('incomplete')
+  const questionWasInComposer = useRef(false)
+  useEffect(() => {
+    if (questionInComposer) { questionWasInComposer.current = true; return }
+    // Answering removes the focused question; give focus back to the restored composer.
+    if (questionWasInComposer.current && (!document.activeElement || document.activeElement === document.body)) composerTextareaRef.current?.focus({ preventScroll: true })
+  }, [questionInComposer])
   const isGitWorktree = session.workspaceIsolationKind === 'gitWorktree'
-  const sourceWorkspaceDirectory = session.workspaceSourceDirectory?.trim() || (!isGitWorktree ? workspaceDirectory : '')
   const workspaceActionsDisabled = remoteComputerUseDisabled || workspaceActionBusy || Boolean(
     acp?.processing ||
     acp?.pendingPermission ||
     acp?.pendingUserInput ||
     (acp?.queuedPrompts?.length ?? 0) > 0 ||
+    (acp?.pendingDirectPrompts?.length ?? 0) > 0 ||
+    (acp?.unsentDirectPrompts?.length ?? 0) > 0 ||
     cli?.running
   )
+  const remoteMoveDisabled = workspaceActionBusy || !recoveryHost || recoveryHost.runnerStatus !== 'ready' ||
+    session.importedReadOnly || Boolean(acp?.running || cli?.running || acp?.processing || acp?.pendingPermission ||
+      acp?.pendingUserInput || (acp?.queuedPrompts?.length ?? 0) > 0 ||
+      (acp?.pendingDirectPrompts?.length ?? 0) > 0 || (acp?.unsentDirectPrompts?.length ?? 0) > 0)
+  const moveRemoteWorkspace = async () => {
+    const destination = useAppStore.getState().folders.find((folder) => folder.id === remoteMoveFolderId)
+    if (remoteMoveDisabled || !destination || destination.id === session.folderId || destination.executionHostId !== session.executionHostId) return
+    const movingChatId = session.id
+    setWorkspaceActionBusy(true)
+    setWorkspaceFeedback(null)
+    try {
+      const response = await sendToCEF({ action: 'moveChatWorkspace', payload: { chatId: movingChatId, folderId: destination.id } })
+      if (!mountedRef.current || currentSessionIdRef.current !== movingChatId) return
+      setWorkspaceFeedback(response.ok
+        ? { tone: 'success', message: 'Moved chat. The next provider session uses the selected workspace.' }
+        : { tone: 'error', message: response.error || 'The workspace move was not confirmed. Check this chat before retrying.' })
+      if (response.ok) { setRemoteMoveFolderId(''); setWorkspaceMenuOpen(false) }
+    } catch (error) {
+      if (mountedRef.current && currentSessionIdRef.current === movingChatId) setWorkspaceFeedback({ tone: 'error', message: error instanceof Error ? error.message : 'The workspace move was not confirmed. Check this chat before retrying.' })
+    } finally {
+      if (mountedRef.current) setWorkspaceActionBusy(false)
+    }
+  }
   const openWorkspace = async () => {
     if (!workspaceDirectory) return
     setWorkspaceFeedback(null)
@@ -1363,7 +1912,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       : { message: 'Failed to open terminal.', tone: 'error' })
   }
   const openSelectedSubAgentSession = async () => {
-    if (!selectedToolCall?.isSubAgent || !selectedToolCall.subAgentId) return
+    if (!selectedToolCall?.isSubAgent || !selectedToolCall.subAgentId || isManagedSubagentTool(selectedToolCall)) return
     const ok = await openSubAgentSession(session.id, selectedToolCall.subAgentId, selectedToolCall.subAgentTitle)
     if (ok) {
       setSelectedToolCallRef(null)
@@ -1429,6 +1978,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     [currentProviderId, providers]
   )
   const providerAcp = acp?.providerId === currentProviderId ? acp : undefined
+  const manualCompactionAvailable = Boolean(providerSupported && currentProvider.supportsStructured && !cli?.running
+    && isCefContext() && manualCompactionForChat(session, providerAcp))
   const providerRuntime = cli?.running ? cli : providerAcp
   const providerVariants = useMemo(
     () => providerConfigVariantOptions(providerAcp, currentProviderId),
@@ -1451,68 +2002,263 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     : ''
   const errorProviderId = acp?.providerId || currentProviderId
   const errorProvider = providers.find((candidate) => candidate.id === errorProviderId) ?? fallbackProviderForId(errorProviderId)
-  const currentErrorSource = `${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)}`
+  const currentErrorSource = `Universal Agent Manager · ${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)}`
   const currentErrorTitle = `${currentErrorSource} error`
   const currentAcpError = acp?.promptActionError?.message || acp?.lastError || ''
   const currentAcpErrorKey = acp?.promptActionError ? `${session.id}:prompt:${acp.promptActionError.id}` : currentAcpError ? `${session.id}:${currentAcpError}` : ''
-  const slashNoticeTone: ComposerNoticeTone = /failed|unsupported/i.test(slashMessage)
-    ? 'error'
-    : /working|unavailable|provider-managed/i.test(slashMessage)
-      ? 'warning'
-      : 'success'
+  const stoppedStatusLabel = acp && !acp.running && !currentAcpError && acp.lastStopReason &&
+    !messages.some((message) => message.stopReason === acp.lastStopReason)
+    ? stoppedResponseLabel(acp.lastStopReason, acp.lastStopReason !== 'timeout' && acp.lastStopReason !== 'provider-update')
+    : ''
+  // A timeout stop is a transcript status notice with its own recovery action, not a raw composer error.
+  const timeoutStop = acp?.timeoutStop && currentAcpError && !acp.promptActionError ? acp.timeoutStop : undefined
+  // While the stop's cancel is still settling, the turn is not yet restartable.
+  const timeoutStopShown = Boolean(timeoutStop) && !acp?.processing && currentAcpErrorKey !== dismissedAcpErrorKey
+  const liveDividerOpen = Boolean(acp?.compacting) || isWaitingOnSubagents(acp) || Boolean(stoppedStatusLabel) || timeoutStopShown
+  useEffect(() => {
+    // Live dividers sit at the end of the transcript; bring them into view as a new message would.
+    if (liveDividerOpen && isNearBottomRef.current) bottomRef.current?.scrollIntoView?.({ block: 'end' })
+  }, [liveDividerOpen])
+  const slashNoticeTone: ComposerNoticeTone = slashNotice?.tone ?? 'success'
+  const slashNoticeTitle = UNSENT_PROMPT_NOTICE.test(slashMessage) ? 'Message not sent' : /chat was replaced/i.test(slashMessage) ? 'Check earlier message' : 'Command'
+  useEffect(() => {
+    if (!slashNotice) return
+    if (slashNotice.tone === 'error' || slashNotice.tone === 'warning') reportAppFailure(slashNoticeTitle, slashNotice.message)
+    else reportAppNotice(slashNotice.message, slashNotice.tone === 'info' ? 'info' : 'success')
+  }, [slashNotice])
   const unsupportedProviderMessage = providerSupported
     ? ''
-    : `${currentProviderName} is not supported in this build. Switch this chat to Gemini CLI to continue.`
-  const canChangeProvider = !acp?.processing && !(acp?.queuedPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
-  const createMessageBranch = useCallback(async (messageIndex: number, content?: string) => {
+    : `${currentProviderName} is not available in this app. Switch this chat to ${providerMetadataForId(DEFAULT_PROVIDER_ID).name} to continue.`
+  const canDeleteUnsentReceipt = !acp?.processing && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy' && ['ready', 'stopped', 'error'].includes(acp?.lifecycleState ?? 'stopped')
+  const canManageUnsent = !acp?.processing && !(acp?.queuedPrompts?.length) && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
+  const canChangeProvider = canManageUnsent && !(acp?.unsentDirectPrompts?.length)
+  const canSaveEdit = branchingMessageIndex === null && canChangeProvider && (editingMessageText.trim().length > 0 || editingMessageAttachments.length > 0)
+  const unsentActionsDisabled = session.importedReadOnly || !canManageUnsent || branchingMessageIndex !== null || editingMessageIndex !== null
+  const unsentReceiptDeleteDisabled = session.importedReadOnly || !canDeleteUnsentReceipt || branchingMessageIndex !== null || editingMessageIndex !== null
+  const removeUnsent = async (index: number, receipt?: { id: string; revision: number }) => {
+    if (session.importedReadOnly || (receipt ? !canDeleteUnsentReceipt : !canManageUnsent) || branchingMessageIndex !== null || editingMessageIndex !== null) return false
+    const alias = receipt ? outgoingPresentation.byReceiptId.get(receipt.id) : outgoingPresentation.byLoadedIndex.get(index - historyStartIndex)
+    const captured = alias && readOutgoingAttempts(outgoingScopeKey).find((attempt) => attempt.key === alias.key)
+    const observed = useAppStore.getState()
+    const observedMessages = observed.messages[session.id]
+    const observedBinding = observed.acpBindingBySessionId[session.id]
+    const removed = receipt ? await removeQueuedAcpPrompt(session.id, 0, receipt)
+      : await discardUnsentMessage(session.id, index, messages[index - historyStartIndex]?.id ?? '')
+    const state = useAppStore.getState()
+    const current = captured && readOutgoingAttempts(outgoingScopeKey).find((attempt) => attempt.key === captured.key)
+    const currentBinding = state.acpBindingBySessionId[session.id]
+    const receiptChanged = receipt && [...(currentBinding?.pendingDirectPrompts ?? []), ...(currentBinding?.unsentDirectPrompts ?? []), ...(currentBinding?.queuedPrompts ?? [])]
+      .some((prompt) => prompt.id === receipt.id && prompt.revision !== receipt.revision)
+    const receiptLists = (binding: typeof observedBinding) => [...(binding?.pendingDirectPrompts ?? []), ...(binding?.unsentDirectPrompts ?? []), ...(binding?.queuedPrompts ?? [])]
+    const withoutTargetReceipt = (binding: typeof observedBinding) => ({ ...binding,
+      pendingDirectPrompts: (binding?.pendingDirectPrompts ?? []).filter((prompt) => !receipt || prompt.id !== receipt.id || prompt.revision !== receipt.revision),
+      unsentDirectPrompts: (binding?.unsentDirectPrompts ?? []).filter((prompt) => !receipt || prompt.id !== receipt.id || prompt.revision !== receipt.revision),
+      queuedPrompts: (binding?.queuedPrompts ?? []).filter((prompt) => !receipt || prompt.id !== receipt.id || prompt.revision !== receipt.revision),
+    })
+    const onlyExactReceiptRemoved = receipt && receiptLists(observedBinding).filter((prompt) => prompt.id === receipt.id && prompt.revision === receipt.revision).length === 1 &&
+      !receiptLists(currentBinding).some((prompt) => prompt.id === receipt.id) &&
+      JSON.stringify(withoutTargetReceipt(observedBinding)) === JSON.stringify(withoutTargetReceipt(currentBinding))
+    const currentRows = state.messages[session.id]
+    const observedIndex = index - historyStartIndex
+    const observedRow = observedMessages?.[observedIndex]
+    const currentRow = currentRows?.[observedIndex]
+    const onlyExactNativeDiscarded = !receipt && captured?.binding?.kind === 'native' &&
+      captured.binding.nativeIndex === index && captured.binding.messageId === observedRow?.id &&
+      observedRow?.role === 'user' && observedRow.acpPromptNotSent === true && observedRow.acpPromptDiscarded !== true &&
+      currentRow?.acpPromptDiscarded === true && currentRows?.length === observedMessages?.length &&
+      observedMessages?.every((row, rowIndex) => rowIndex === observedIndex || currentRows?.[rowIndex] === row) &&
+      [...new Set([...Object.keys(observedRow), ...Object.keys(currentRow)])].every((key) =>
+        key === 'acpPromptDiscarded' || Object.is(observedRow[key as keyof Message], currentRow[key as keyof Message]))
+    // The existing discard action changes exactly its captured row's discarded flag on guarded success.
+    // All other row objects/fields must remain identical; neither trimming nor absence proves removal.
+    // A receipt-only removal push may precede this exact guarded success. Absence alone never settles the
+    // action, and every other field/carrier must remain unchanged; no push-causality or delivery inference.
+    // A stale callback, remount, new birth, revised receipt or changed alias cannot settle a display record.
+    if (removed === true && captured?.actionCorrelationId && current === captured && !receiptChanged && (currentRows === observedMessages || onlyExactNativeDiscarded) &&
+        (currentBinding === observedBinding || onlyExactReceiptRemoved) && mountedRef.current &&
+        currentSessionIdRef.current === session.id && state.sessions.find((chat) => chat.id === session.id)?.createdAt.getTime() === session.createdAt.getTime())
+      updateOutgoingAttempts(outgoingScopeKey, new Map([[captured.key, { retired: true, binding: undefined }]]))
+    return removed
+  }
+  const retryUnsentReceipt = async (receipt: { id: string; revision: number }) => {
+    if (session.importedReadOnly || !canDeleteUnsentReceipt || branchingMessageIndex !== null || editingMessageIndex !== null) return false
+    return retryUnsentAcpPrompt(session.id, receipt)
+  }
+  // Raise the turn timeout, then re-deliver the same user message in place (never a duplicate row).
+  // A next turn on a running OpenCode process relaunches it so the new limit applies.
+  const lastUserMessageIndex = (chatMessages: Message[]) => {
+    let lastUser = chatMessages.length - 1
+    while (lastUser >= 0 && chatMessages[lastUser].role !== 'user') lastUser -= 1
+    return lastUser
+  }
+  // A loop stop usually follows output, so Restart re-runs the message in a new branch chat; the label says so.
+  const loopRestartsInNewChat = timeoutStop?.kind === 'loop' && !canRetryMessageInPlace(messages, lastUserMessageIndex(messages))
+  const restartLoopedTurn = async (): Promise<TimeoutRestartOutcome | undefined> => {
+    const lastUser = lastUserMessageIndex(useAppStore.getState().messages[session.id] ?? [])
+    if (lastUser < 0) return { tone: 'error', message: 'There is no message to restart from.' }
+    await createMessageBranch(lastUser + historyStartIndex)
+    return undefined
+  }
+  const restartTimedOutTurn = async (): Promise<TimeoutRestartOutcome | undefined> => {
+    // Decide whether an in-place restart is possible before any side effect.
+    const chatMessages = useAppStore.getState().messages[session.id] ?? []
+    const lastUser = lastUserMessageIndex(chatMessages)
+    const queued = (acp?.queuedPrompts?.length ?? 0) > 0
+    const retryable = lastUser >= 0 && canRetryMessageInPlace(chatMessages, lastUser) && !queued
+    const timeout = Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, useAppStore.getState().activeTurnInactivityTimeoutSeconds + TIMEOUT_RESTART_STEP_SECONDS)
+    if (!await setMemorySettings({ activeTurnInactivityTimeoutSeconds: timeout })) return { tone: 'error', message: 'Could not save the new timeout. Nothing was restarted.' }
+    const raised = `Timeout raised to ${formatTimeoutDuration(timeout)}.`
+    if (queued) return { tone: 'info', message: `${raised} Queued messages are sent first, so this turn was not restarted; send a follow-up afterwards to continue it.` }
+    if (!retryable) return { tone: 'info', message: `${raised} This turn already produced output, so send a follow-up to continue it.` }
+    const result = await retryFailedMessage(session.id, lastUser + historyStartIndex)
+    return result.ok ? undefined : { tone: 'error', message: `${raised} The turn did not restart: ${result.error || 'retry was refused.'}` }
+  }
+  const retryUnsent = async (index: number) => {
+    if (session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null) return false
+    const generation = ++messageBranchGenerationRef.current
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === session.id && messageBranchGenerationRef.current === generation
+    setBranchingMessageIndex(index)
+    setMessageBranchError('')
+    try {
+      const result = await retryFailedMessage(session.id, index)
+      if (!result.ok) throw new Error(result.error || 'Could not retry the failed message.')
+      return true
+    } finally {
+      if (ownsFeedback()) setBranchingMessageIndex(null)
+    }
+  }
+  const saveEditedUnsentMessage = async () => {
+    if (editingMessageSource.kind !== 'unsent' || editingMessageIndex === null || unsentEditInFlightRef.current !== null) return
+    const generation = ++messageBranchGenerationRef.current
+    unsentEditInFlightRef.current = generation
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === session.id && messageBranchGenerationRef.current === generation
+    setBranchingMessageIndex(editingMessageIndex)
+    setMessageBranchError('')
+    try {
+      const result = await editUnsentMessage(session.id, editingMessageIndex, editingMessageSource.message, editingMessageText, editingMessageAttachments)
+      if (!ownsFeedback()) return
+      if (!result.ok) {
+        setMessageBranchError(result.error || 'Could not save the unsent message. Your edit is kept.')
+        return
+      }
+      setEditingMessageIndex(null)
+      setEditingMessageText('')
+      setEditingMessageAttachments([])
+      setEditingMessageSource({ kind: 'branch' })
+    } catch {
+      if (ownsFeedback()) setMessageBranchError('Could not save the unsent message. Your edit is kept; check the chat before retrying.')
+    } finally {
+      if (unsentEditInFlightRef.current === generation) unsentEditInFlightRef.current = null
+      if (ownsFeedback()) {
+        setBranchingMessageIndex(null)
+        window.requestAnimationFrame(() => {
+          if (ownsFeedback()) composerTextareaRef.current?.focus()
+        })
+      }
+    }
+  }
+  const createMessageBranch = useCallback(async (messageIndex: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[]) => {
+    const generation = ++messageBranchGenerationRef.current
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === session.id && messageBranchGenerationRef.current === generation
     setBranchingMessageIndex(messageIndex)
     setMessageBranchError('')
     const chatMessages = useAppStore.getState().messages[session.id] ?? []
     if (content === undefined && canRetryMessageInPlace(chatMessages, messageIndex - historyStartIndex)) {
       try {
         const result = await retryFailedMessage(session.id, messageIndex)
-        if (!result.ok) setMessageBranchError(result.error || 'Could not retry the failed message.')
+        if (ownsFeedback() && !result.ok) setMessageBranchError(result.error || 'Could not retry the failed message.')
       } catch {
-        setMessageBranchError('Could not retry the failed message. Check the chat before trying again.')
+        if (ownsFeedback()) setMessageBranchError('Could not retry the failed message. Check the chat before trying again.')
       } finally {
-        setBranchingMessageIndex(null)
+        if (ownsFeedback()) setBranchingMessageIndex(null)
       }
       return
     }
-    const branchId = await branchFromMessage(session.id, messageIndex, content)
+    let branchId: string | null = null
+    let branchError = 'Could not create the message branch.'
+    try {
+      branchId = retainedMarkdownStoreFiles !== undefined
+        ? await branchFromMessage(session.id, messageIndex, content, retainedAttachmentIds, retainedMarkdownStoreFiles)
+        : retainedAttachmentIds === undefined
+          ? await branchFromMessage(session.id, messageIndex, content)
+          : await branchFromMessage(session.id, messageIndex, content, retainedAttachmentIds)
+    } catch (error) {
+      if (error instanceof Error && error.message.trim()) branchError = error.message
+    }
+    if (!ownsFeedback()) return
     setBranchingMessageIndex(null)
     if (!branchId) {
-      setMessageBranchError('Could not create the message branch. Wait for the current turn to finish and try again.')
+      setMessageBranchError(branchError)
       return
     }
     setEditingMessageIndex(null)
     setEditingMessageText('')
   }, [branchFromMessage, historyStartIndex, retryFailedMessage, session.id])
   const beginEditingMessage = useCallback((messageIndex: number, content: string) => {
+    messageBranchGenerationRef.current += 1
+    setBranchingMessageIndex(null)
     setEditingMessageIndex(messageIndex)
     setEditingMessageText(content)
+    const message = useAppStore.getState().messages[session.id]?.[messageIndex - historyStartIndex]
+    setEditingMessageSource({ kind: 'branch', hadMarkdownStoreAttachments: Boolean(message?.attachments?.some((attachment) => attachment.type === 'markdown-store')) })
+    setEditingMessageAttachments([...(message?.attachments ?? [])])
     setMessageBranchError('')
+    composerTextareaRef.current?.focus()
+  }, [session.id, historyStartIndex])
+  const beginEditingUnsentMessage = useCallback((messageIndex: number, content: string) => {
+    // Anchor the row/resources that produced this rendered action, never a newer same-ID store row.
+    const message = messages[messageIndex - historyStartIndex]
+    if (!message) return
+    messageBranchGenerationRef.current += 1
+    setBranchingMessageIndex(null)
+    setEditingMessageIndex(messageIndex)
+    setEditingMessageSource({ kind: 'unsent', message })
+    setEditingMessageText(content)
+    setEditingMessageAttachments([...(message.attachments ?? [])])
+    setMessageBranchError('')
+    composerTextareaRef.current?.focus()
+  }, [historyStartIndex, messages, session.id])
+  const removeEditingAttachment = useCallback((id: string, markdownStore: boolean) => {
+    setEditingMessageAttachments((current) => current.filter((attachment) => attachment.id !== id || (attachment.type === 'markdown-store') !== markdownStore))
   }, [])
-  const cancelEditingMessage = useCallback(() => setEditingMessageIndex(null), [])
-  const selectMessageBranch = useCallback((parentId: string, messageIndex: number, branchId: string) => {
+  const cancelEditingMessage = useCallback(() => {
+    messageBranchGenerationRef.current += 1
+    setEditingMessageIndex(null)
+    setBranchingMessageIndex(null)
+  }, [])
+  const [branchMotion, setBranchMotion] = useState<{ phase: MessageMotionPhase; anchor: number; sessionId: string } | null>(null)
+  const branchMotionTimer = useRef(0)
+  useEffect(() => () => window.clearTimeout(branchMotionTimer.current), [])
+  const selectMessageBranch = useCallback((parentId: string, messageIndex: number, branchId: string, direction: 'next' | 'prev' = 'next') => {
+    // Switch at once so each click steps from the branch on screen; the swipe only decorates the arriving rows.
     setPreferredBranch(parentId, messageIndex, branchId)
     setActiveSession(branchId)
+    window.clearTimeout(branchMotionTimer.current)
+    if (!motionAllowed()) { setBranchMotion(null); return }
+    setBranchMotion({ phase: `in-${direction}`, anchor: messageIndex, sessionId: branchId })
+    branchMotionTimer.current = window.setTimeout(() => setBranchMotion(null), scaledMs(180))
   }, [setActiveSession])
+  const messageListRef = useRef<HTMLDivElement>(null)
+  // A swipe belongs to the branch it switched to; picking another chat mid-swipe does not animate that chat.
+  const activeBranchMotion = branchMotion?.sessionId === session.id ? branchMotion : null
+  const messageMotion = messageMotionPhase({ branch: activeBranchMotion?.phase ?? null, editing: editingMessageIndex !== null && editingMessageSource.kind === 'branch',
+    saving: branchingMessageIndex !== null && branchingMessageIndex === editingMessageIndex })
+  const messageMotionAnchor = activeBranchMotion?.anchor ?? (messageMotion ? editingMessageIndex : null)
   const selectPersistedTool = useCallback((messageId: string, toolId: string) => {
     setSelectedToolCallRef({ id: toolId, messageId })
   }, [])
   const dictationActive = dictationState !== 'idle'
   const canSend = useMemo(
-    () => providerSupported && !session.importedReadOnly && (draft.trim().length > 0 || composerAttachments.length > 0) && !submitting && !goalSubmitting && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
-    [providerSupported, session.importedReadOnly, draft, submitting, goalSubmitting, composerAttachments]
+    () => editingMessageIndex === null && providerSupported && !session.importedReadOnly && (draft.trim().length > 0 || composerAttachments.length > 0) && !submitting && !goalSubmitting && !referenceCaptureLoading && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
+    [editingMessageIndex, providerSupported, session.importedReadOnly, draft, submitting, goalSubmitting, referenceCaptureLoading, composerAttachments]
   )
-  const dictationAvailable = isCefContext()
-
+  const dictationAvailable = isCompanionContext() ? browserDictationAvailable() : isCefContext()
   submitDictatedPromptRef.current = (prompt) => {
     void submit(undefined, prompt)
   }
 
   const startDictation = async () => {
+    if (!showComposerRef.current) return
     if (!dictationAvailable || dictationActiveRef.current) return
     const dictationId = createRequestId('dictation')
     dictationIdRef.current = dictationId
@@ -1559,11 +2305,17 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     setDictationState('idle')
     setDictationError('')
     if (wasActive) void sendToCEF({ action: 'stopDictation', payload: { dictationId: dictationIdRef.current } })
-    window.setTimeout(() => composerTextareaRef.current?.focus(), 0)
+    window.setTimeout(() => { if (showComposerRef.current) composerTextareaRef.current?.focus() }, 0)
   }
 
   useEffect(() => {
+    if (!showComposer) {
+      dictationSubmitAfterStopRef.current = false
+      setDictationState('idle')
+      return
+    }
     const onDictation = (event: Event) => {
+      if (!showComposerRef.current) return
       const message = (event as CustomEvent<DictationPushMessage>).detail
       if (!dictationActiveRef.current || !message || message.type !== 'dictation' || message.dictationId !== dictationIdRef.current) return
 
@@ -1610,7 +2362,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
         void sendToCEF({ action: 'stopDictation', payload: { dictationId: dictationIdRef.current } })
       }
     }
-  }, [session.id])
+  }, [session.id, showComposer])
   // The persisted chat setting is the choice for the next turn. ACP can still
   // report the previous idle model until that turn begins.
   const currentModelId = session.modelId || providerAcp?.currentModelId || ''
@@ -1629,13 +2381,13 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
         session.reasoningEffort ?? '',
         isCopilotProvider(currentProvider, currentProviderId)
           ? currentProviderCapabilities.reasoningOptions.map((option) => option.id)
-          : undefined
+          : currentProviderId === CODEX_CLI_PROVIDER_ID ? undefined : []
       )
-    : [], [currentModel.id, currentProvider, currentProviderCapabilities, providerAcp, runtimeSupportsReasoning, session.reasoningEffort])
+    : [], [currentModel.id, currentProvider, currentProviderId, currentProviderCapabilities, providerAcp, runtimeSupportsReasoning, session.reasoningEffort])
   const serviceTierExplicit = session.serviceTierExplicit ?? (session.serviceTier ?? '') !== ''
   const speedOptions = useMemo(() => currentProviderCapabilities.hasServiceTier
-    ? buildCodexSpeedOptions(providerAcp, currentModel.id, session.serviceTier ?? '')
-    : [], [currentModel.id, currentProviderCapabilities.hasServiceTier, providerAcp, session.serviceTier])
+    ? buildCodexSpeedOptions(providerAcp, currentModel.id, session.serviceTier ?? '', currentProviderId === CODEX_CLI_PROVIDER_ID)
+    : [], [currentModel.id, currentProviderId, currentProviderCapabilities.hasServiceTier, providerAcp, session.serviceTier])
   const currentModeId = configuredApprovalMode || session.approvalMode || providerAcp?.currentModeId || 'default'
   const providerModes = useMemo(() => {
     const offered = providerAcp?.availableModes.filter((mode) => mode.id === 'default' || mode.id === 'plan') ?? []
@@ -1667,7 +2419,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     if (!isClaudeProvider(currentProvider, currentProviderId) || currentModeId !== 'plan') {
       setClaudePlanPrompt(null)
     }
-    setSlashMessage('')
+    setSlashNotice(null)
   }, [currentModeId, currentProvider, currentProviderCapabilities.structuredPermissionControl, currentProviderId])
   const permissionControlsDisabled = runtimeBlocksControlChanges && !providerAcp?.pendingPermission
   const permissionModes = useMemo(
@@ -1693,7 +2445,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     return applyPermissionMode(modeId)
   }
   const showPermissionResult = (result: PermissionChangeResult, fallback: string) => {
-    setSlashMessage(result.ok || result.cancelled ? '' : result.error || fallback)
+    setSlashNotice(noticeFor(result.ok || result.cancelled ? '' : result.error || fallback, 'error'))
   }
   const selectPermissionMode = async (modeId: string) => {
     const mode = permissionModes.find((candidate) => candidate.id === modeId)
@@ -1705,11 +2457,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     setSlashIndex(0)
     setPermissionMenuOpen(false)
     if (!providerSupported || !currentProvider.supportsStructured || !permissionsManagedByUam) {
-      setSlashMessage(`${currentProviderName} permissions are provider-managed; respond in the provider interface.`)
+      setSlashNotice(noticeFor(`${currentProviderName} permissions are provider-managed; respond in the provider interface.`, 'warning'))
       return
     }
     if (permissionControlsDisabled) {
-      setSlashMessage(`${currentProviderName} is still working; permissions can be changed when the current operation stops.`)
+      setSlashNotice(noticeFor(`${currentProviderName} is still working; permissions can be changed when the current operation stops.`, 'warning'))
       return
     }
 
@@ -1723,7 +2475,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       mode.id.toLowerCase() === normalized || mode.name.toLowerCase().replace(/\s+/g, '-') === normalized
     )
     if (!requested) {
-      setSlashMessage(`Unsupported permission mode "${rawMode}". Supported: ${permissionModes.map((mode) => mode.id).join(', ')}.`)
+      setSlashNotice(noticeFor(`Unsupported permission mode "${rawMode}". Supported: ${permissionModes.map((mode) => mode.id).join(', ')}.`, 'error'))
       return
     }
 
@@ -1733,13 +2485,13 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const runCodexOptionCommand = async (kind: 'reasoning' | 'speed', rawValue?: string) => {
     setSlashIndex(0)
     if (runtimeBlocksControlChanges) {
-      setSlashMessage(`${currentProviderName} is still working.`)
+      setSlashNotice(noticeFor(`${currentProviderName} is still working.`, 'warning'))
       return
     }
     const options = kind === 'reasoning' ? reasoningOptions : speedOptions
     const label = kind === 'reasoning' ? 'Reasoning' : 'Speed'
     if (options.length === 0) {
-      setSlashMessage(`${label} changes are unavailable for ${currentProviderName}.`)
+      setSlashNotice(noticeFor(`${label} changes are unavailable for ${currentProviderName}.`, 'warning'))
       return
     }
     if (!rawValue) {
@@ -1752,22 +2504,22 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       option.label.toLowerCase().replace(/\s+/g, '-') === normalized
     )
     if (!requested) {
-      setSlashMessage(`Unsupported ${kind} "${rawValue}". Supported: ${options.map((option) => option.id || 'default').join(', ')}.`)
+      setSlashNotice(noticeFor(`Unsupported ${kind} "${rawValue}". Supported: ${options.map((option) => option.id || 'default').join(', ')}.`, 'error'))
       return
     }
     const changed = kind === 'reasoning'
       ? await setSessionCodexOptions(session.id, { reasoningEffort: requested.id })
       : await setSessionCodexOptions(session.id, { serviceTier: requested.id === CODEX_SPEED_INHERIT_ID ? '' : requested.id, serviceTierExplicit: requested.id !== CODEX_SPEED_INHERIT_ID })
-    setSlashMessage(changed ? `${label} changed to ${requested.label}.` : `Failed to change ${kind} to ${requested.label}.`)
+    setSlashNotice(noticeFor(changed ? `${label} changed to ${requested.label}.` : `Failed to change ${kind} to ${requested.label}.`, changed ? 'success' : 'error'))
   }
   const runVariantCommand = async (configId: string, value: string, label: string) => {
     setSlashIndex(0)
     if (runtimeBlocksControlChanges) {
-      setSlashMessage(`${currentProviderName} is still working.`)
+      setSlashNotice(noticeFor(`${currentProviderName} is still working.`, 'warning'))
       return
     }
     const changed = await setAcpConfigOption(session.id, configId, value)
-    setSlashMessage(changed ? `${label} requested.` : `Failed to change ${label}.`)
+    setSlashNotice(noticeFor(changed ? `${label} requested.` : `Failed to change ${label}.`, changed ? 'success' : 'error'))
   }
   const supportsPlanActions = isCodexProvider(currentProvider, currentProviderId) && currentModeId === 'plan'
   const latestPlanMessageIndex = useMemo(() => supportsPlanActions ? messages.reduce((latest, message, index) => {
@@ -1781,20 +2533,57 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const canShowPlanActions = supportsPlanActions && latestPlanMessageIndex >= 0 && !latestPlanHasLaterUser
   const planActionBlockedByRuntime = runtimeBlocksControlChanges
   const planActionsDisabled = Boolean(submitting || planActionBlockedByRuntime)
-  const planActionsDisabledTitle = planActionBlockedByRuntime
+  const planActionsDisabledTitle = CODEX_ENABLED && planActionBlockedByRuntime
     ? 'Codex is still working.'
     : 'Plan action is unavailable.'
   const sendPlanAction = useCallback(async (prompt: string, nextModeId: 'default' | 'plan') => {
     if (planActionsDisabled) return
+    const submittedBirth = sessionBirth
     setSubmitting(true)
     const modeOk = await setSessionApprovalMode(session.id, nextModeId)
     if (modeOk) {
-      await sendAcpPrompt(session.id, prompt)
+      await sendSubmittedPrompt(session.id, prompt)
     }
-    setSubmitting(false)
-  }, [planActionsDisabled, sendAcpPrompt, session.id, setSessionApprovalMode])
+    if (mountedRef.current && currentSessionIdRef.current === session.id &&
+      useAppStore.getState().sessions.find((chat) => chat.id === session.id)?.createdAt.getTime() === submittedBirth) setSubmitting(false)
+  }, [planActionsDisabled, sendSubmittedPrompt, session.id, sessionBirth, setSessionApprovalMode])
   const activeGoal = activeGoalId ? goals.find((g) => g.id === activeGoalId) ?? null : null
   const displayedGoal = activeGoal ?? (goals.length > 0 ? goals[goals.length - 1] : null)
+  const goalOwner = displayedGoal ? `${session.id}:${displayedGoal.id}` : ''
+  const goalOwnerRef = useRef(goalOwner); goalOwnerRef.current = goalOwner
+  const goalsPopupOpen = Boolean(goalOwner && goalsPopupOwner === goalOwner)
+  useEffect(() => {
+    setGoalsPopupOwner(null)
+    setGoalEditing(false)
+    if (goalMutationOwnerRef.current !== null && goalMutationOwnerRef.current !== goalOwner) {
+      goalMutationGenerationRef.current += 1
+      goalMutationOwnerRef.current = null
+      goalMutationInFlightRef.current = false
+      setGoalSubmitting(false)
+      setGoalError('')
+    }
+  }, [goalOwner])
+  useEffect(() => {
+    if (!goalsPopupOpen) return
+    const dialog = goalsPopupRef.current
+    // Edit mode has already focused the objective field.
+    if (!dialog?.contains(document.activeElement)) dialog?.focus()
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || fromViewportMenu(event) || getTopmostModal() !== dialog) return
+      if (event.key === 'Escape') {
+        event.preventDefault(); event.stopPropagation()
+        // Escape cancels an in-place edit first (never while it saves, so a failed save keeps its draft), then closes the window.
+        if (goalEditingRef.current) { if (!goalMutationInFlightRef.current) setGoalEditing(false) }
+        else setGoalsPopupOwner(null)
+      }
+      else trapModalTab(event)
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      if (!document.activeElement || document.activeElement === document.body || dialog?.contains(document.activeElement)) goalsTriggerRef.current?.focus()
+    }
+  }, [goalsPopupOpen])
   const displayedGoalWorkerLabel = session.smallModelMode && displayedGoal?.workerModelId
     ? modelOptionFor(buildModelOptions(providerAcp, displayedGoal.workerModelId, currentProvider, currentProviderId), displayedGoal.workerModelId).label
     : ''
@@ -1807,19 +2596,27 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     fallbackError: string,
   ) => {
     if (goalSubmitting || goalMutationInFlightRef.current) return false
+    const mutationGeneration = ++goalMutationGenerationRef.current
+    const owner = goalOwner
+    goalMutationOwnerRef.current = owner
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === session.id &&
+      goalMutationGenerationRef.current === mutationGeneration && goalOwnerRef.current === owner
     goalMutationInFlightRef.current = true
     setGoalError('')
     setGoalSubmitting(true)
     try {
       const result = await mutation()
-      if (!result.ok) setGoalError(result.error || fallbackError)
+      if (!result.ok && ownsFeedback()) setGoalError(result.error || fallbackError)
       return result.ok
     } catch {
-      setGoalError(fallbackError)
+      if (ownsFeedback()) setGoalError(fallbackError)
       return false
     } finally {
-      goalMutationInFlightRef.current = false
-      setGoalSubmitting(false)
+      if (ownsFeedback()) {
+        goalMutationInFlightRef.current = false
+        goalMutationOwnerRef.current = null
+        setGoalSubmitting(false)
+      }
     }
   }
   const handleCompleteGoal = () => {
@@ -1877,8 +2674,9 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }
 
   const setComputerUseActive = async (active: boolean): Promise<ComputerUseActionResult> => {
+    if (!COMPUTER_USE_ENABLED) return { ok: false }
     const result = await setSessionComputerUseEnabled(session.id, active)
-    if (!result.ok) setSlashMessage(result.error || 'Computer use could not be changed.')
+    if (!result.ok) setSlashNotice(noticeFor(result.error || 'Computer use could not be changed.', 'error'))
     return result
   }
 
@@ -1887,7 +2685,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const currentMemoryLevel: MemoryLevel = session.memoryLevel ?? ((session.memoryEnabled ?? true) ? 'strict' : 'off')
   const runMemoryCommand = (level: MemoryLevel) => {
     setSlashIndex(0)
-    setMemoryChipExplicit(true)
     void setSessionMemoryLevel(session.id, level)
   }
   const slashCommands = useMemo<SlashCommand[]>(
@@ -1932,16 +2729,16 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       }
 
       const commands: SlashCommand[] = [
-        ...(!session.temporaryParentChatId && !isCompanionContext() ? [{ id: 'side', label: '/side', hint: liveSideChatId ? 'Resume the open side chat' : 'Open a temporary side chat', icon: <CornerUpRight size={15} />, run: () => void navigateSide() }] : []),
+        ...(!session.temporaryParentChatId && !isCompanionContext() ? [{ id: 'side', label: '/side', hint: liveSideChatId ? 'Resume the open side chat' : 'Open a temporary side chat', icon: <MessageSquareDashed size={15} />, run: () => void navigateSide() }] : []),
         ...(session.temporaryParentChatId && !isCompanionContext() ? [
           { id: 'side-return', label: '/side-return', hint: 'Back to the main chat; this side chat stays open', icon: <CornerUpLeft size={15} />, run: () => void navigateSide('return') },
           { id: 'side-dismiss', label: '/side-dismiss', hint: 'Close and discard this side chat', icon: <X size={15} />, run: () => void navigateSide('dismiss') },
         ] : []),
-        { id: 'compact', label: '/compact', hint: 'Request native context compaction', icon: <FileText size={15} />, run: () => void runCompact() },
+        ...(manualCompactionAvailable ? [{ id: 'compact', label: '/compact', hint: 'Request native context compaction', icon: <FileText size={15} />, run: () => void runCompact() }] : []),
         { id: 'model', label: '/model', hint: 'Change the model', icon: <Cpu size={15} />, run: () => setModelOpen(true) },
-        ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: 'Choose Codex reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
-        ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: 'Choose Codex speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
-        ...(providerVariants.length > 0 ? [{ id: 'variants', label: '/variants', hint: 'Choose OpenCode model variants', icon: <Cpu size={15} />, run: () => setDraft('/variants ') }] : []),
+        ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: CODEX_ENABLED ? 'Choose Codex reasoning' : 'Choose reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
+        ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: CODEX_ENABLED ? 'Choose Codex speed' : 'Choose speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
+        ...(OPENCODE_ENABLED && providerVariants.length > 0 ? [{ id: 'variants', label: '/variants', hint: 'Choose OpenCode model variants', icon: <Cpu size={15} />, run: () => setDraft('/variants ') }] : []),
         { id: 'permission', label: '/permission', hint: 'Choose the permission mode', icon: <Shield size={15} />, run: () => void runPermissionCommand() },
         { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', icon: <Target size={15} />, run: handleToggleGoal },
         ...(COMPUTER_USE_ENABLED ? [{ id: 'computer', label: '/computer', hint: `${computerUseMode ? 'Turn off' : 'Turn on'} computer use`, icon: <MousePointer2 size={15} />, run: () => void setComputerUseActive(!computerUseMode) }] : []),
@@ -1959,7 +2756,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       const usedLabels = new Set(commands.map((command) => command.label.toLowerCase()))
       for (const command of providerAcp?.availableCommands ?? []) {
         const label = `/${command.name}`
-        if (usedLabels.has(label.toLowerCase())) continue
+        if (label.toLowerCase() === '/compact' || usedLabels.has(label.toLowerCase())) continue
         usedLabels.add(label.toLowerCase())
         commands.push({
           id: `acp:${command.name}`,
@@ -1972,9 +2769,47 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       return commands
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session.id, session.temporaryParentChatId, liveSideChatId, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants, activeGoal?.id, displayedGoal?.id, displayedGoal?.status]
+    [session.id, session.providerId, session.modelId, manualCompactionAvailable, providerAcp?.sessionId, providerAcp?.manualCompaction, session.temporaryParentChatId, liveSideChatId, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants, activeGoal?.id, displayedGoal?.id, displayedGoal?.status]
   )
+  const composerReferences = useComposerReferences({ chatId: session.id, ownerKey: `${session.id}:${session.createdAt.getTime()}`,
+    disabled: submitting || goalSubmitting || session.importedReadOnly === true, onBusyChange: setReferenceCaptureLoading })
   const activeSlashToken = slashActionToken(draft, composerSelection.start, composerSelection.end)
+  // `@` offers context references (current branch, chat worktree or a file path); `/` stays for commands and skills.
+  const typedMentionToken = activeSlashToken ? null : mentionActionToken(draft, composerSelection.start, composerSelection.end)
+  const activeMentionToken = typedMentionToken && `${typedMentionToken.start}:${typedMentionToken.query}` !== dismissedMention ? typedMentionToken : null
+  const mentionQuery = activeMentionToken?.query
+  useEffect(() => { if (!typedMentionToken) setDismissedMention(null) }, [typedMentionToken === null])
+  useEffect(() => { setMentionNavigated(false) }, [activeMentionToken?.start, mentionQuery])
+  const removeMentionToken = (token: NonNullable<typeof activeMentionToken>) => {
+    setDraft((current) => current.slice(token.start, token.end) === draft.slice(token.start, token.end)
+      ? `${current.slice(0, token.start)}${current.slice(token.end).replace(/^ /, '')}` : current)
+    setComposerSelection({ start: token.start, end: token.start })
+    requestAnimationFrame(() => composerTextareaRef.current?.setSelectionRange(token.start, token.start))
+  }
+  const mentionMatches: SlashCommand[] = mentionQuery === undefined || !activeMentionToken ? [] : [
+    ...(['branch', 'worktree'] as const).filter((kind) => kind.startsWith(mentionQuery.toLowerCase())).map((kind) => {
+      const unavailable = kind === 'worktree' && !composerReferences.worktreeConfigured ? 'Needs a configured worktree for this chat'
+        : composerReferences.actionsDisabled ? composerReferences.unavailableReason : ''
+      return {
+        id: `mention:${kind}`,
+        label: `@${kind}`,
+        hint: unavailable || (kind === 'branch' ? 'Quote the current branch · does not switch it' : 'Quote this chat\u2019s worktree · does not switch it'),
+        icon: kind === 'branch' ? <GitBranch size={15} /> : <FolderGit2 size={15} />,
+        disabled: Boolean(unavailable),
+        run: () => { if (unavailable) return; removeMentionToken(activeMentionToken); composerReferences.captureRepository(kind) },
+      }
+    }),
+    // Only path-like mentions are offered as files, so prose @handles and @Annotations stay plain text.
+    ...(mentionQuery && composerReferences.pending !== mentionQuery && (activeMentionToken.quoted || /[./\\]/.test(mentionQuery)) && draftFileMentions(draft.slice(activeMentionToken.start, activeMentionToken.end))[0] === mentionQuery && !composerReferences.fileCaptured(mentionQuery) ? [{
+      id: 'mention:file',
+      label: activeMentionToken.quoted ? `@"${mentionQuery}"` : `@${mentionQuery}`,
+      hint: composerReferences.actionsDisabled ? composerReferences.unavailableReason : 'Quote this file\u2019s current text',
+      icon: <FileText size={15} />,
+      disabled: composerReferences.actionsDisabled,
+      // Close the list for this word so the reading/error state beside the chips stays visible.
+      run: () => { if (composerReferences.actionsDisabled) return; setDismissedMention(`${activeMentionToken.start}:${activeMentionToken.query}`); composerReferences.captureFile(mentionQuery) },
+    }] : []),
+  ]
   const slashSubPalette = Boolean(activeSlashToken && activeSlashToken.queryStart > activeSlashToken.commandStart + 1)
   const slashQuery = activeSlashToken && !slashSubPalette ? activeSlashToken.query : null
   const permissionModeQuery = permissionMenuOpen ? '' : slashSubPalette && activeSlashToken?.command === 'permission' ? activeSlashToken.query : undefined
@@ -2029,20 +2864,20 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           }))
     : slashQuery !== null
       ? slashCommands.filter((command) => command.label.slice(1).toLowerCase().startsWith(slashQuery))
-      : []
-  const slashOpen = !appModalOpen && slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined)
-  const slashPaletteVisible = slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined
+      : mentionMatches
+  const slashOpen = showComposer && editingMessageIndex === null && !questionInComposer && !appModalOpen && slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined || mentionQuery !== undefined)
+  const slashPaletteVisible = showComposer && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined || mentionQuery !== undefined)
+  const commandPaletteVisible = slashPaletteVisible && mentionQuery === undefined
   useEffect(() => {
-    if (slashPaletteVisible && markdownStoreEntries.length === 0) {
+    if (commandPaletteVisible && markdownStoreEntries.length === 0) {
       void refreshMarkdownStore()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slashPaletteVisible])
+  }, [commandPaletteVisible])
   const runSlashCommand = (command: SlashCommand) => {
+    if (command.disabled) return
     if (command.id === 'compact') {
-      const commandDraft = activeSlashToken ? replaceSlashAction(draft, activeSlashToken, '/compact') : draft
-      setDraft(commandDraft)
-      void runCompact(commandDraft)
+      void runCompact(draft, true)
       return
     }
     if (command.groupEntries) {
@@ -2075,7 +2910,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     return groups
   }, []) : []
   const activeSlashGroup = activeSlashGroups[activeSlashGroups.length - 1]
-  const activeSlashOptionId = !slashOpen
+  // The @ list has no active option until the user arrows into it, so Enter keeps sending the message.
+  const mentionListUntouched = mentionQuery !== undefined && !mentionNavigated
+  const activeSlashIndex = mentionListUntouched ? -1 : Math.min(slashIndex, slashMatches.length - 1)
+  const activeSlashOptionId = !slashOpen || (mentionListUntouched && !activeSlashGroup?.groupEntries)
     ? undefined
     : activeSlashGroup?.groupEntries
       ? `${slashListboxId}-group-${activeSlashGroups.length - 1}-option-${Math.min(slashGroupIndex, activeSlashGroup.groupEntries.length - 1)}`
@@ -2085,12 +2923,18 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     : undefined
 
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!showComposerRef.current && editingMessageIndex === null) return
+    if (editingMessageIndex !== null) {
+      if (event.key === 'Escape') { event.preventDefault(); cancelEditingMessage() }
+      else if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) { event.preventDefault(); void submit() }
+      return
+    }
 	const nativeEvent = event.nativeEvent
 	if (nativeEvent.isComposing || nativeEvent.keyCode === 229) return
 	if (matchesUamAgentCycleShortcut(uamAgentCycleShortcut, event) &&
 		!event.repeat &&
 		!appModalOpen && !selectedToolCallRef && !modelOpen && !workspaceMenuOpen &&
-		!slashPaletteVisible && !permissionMenuOpen && !slashGroup) {
+		!commandPaletteVisible && !slashOpen && !permissionMenuOpen && !slashGroup) {
 	  event.preventDefault()
 	  const currentIndex = uamAgentCycle.indexOf(selectedUamAgentId)
 	  void setSessionUamAgent(session.id, uamAgentCycle[currentIndex < 0 ? 0 : (currentIndex + 1) % uamAgentCycle.length])
@@ -2122,11 +2966,13 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     if (slashOpen) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
+        if (mentionListUntouched) { setMentionNavigated(true); setSlashIndex(0); return }
         setSlashIndex((i) => (i + 1) % slashMatches.length)
         return
       }
       if (event.key === 'ArrowUp') {
         event.preventDefault()
+        if (mentionListUntouched) { setMentionNavigated(true); setSlashIndex(slashMatches.length - 1); return }
         setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length)
         return
       }
@@ -2138,13 +2984,24 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           return
         }
       }
-      if (event.key === 'Enter' || event.key === 'Tab') {
+      // In the @ list, Enter still sends unless the user arrowed to an option. Tab accepts the chosen option, or the
+      // first available one before arrowing; Shift+Tab and Tab on an unavailable option keep their normal focus move.
+      if (mentionQuery !== undefined && event.key === 'Tab') {
+        const option = mentionListUntouched ? slashMatches.find((command) => !command.disabled) : slashMatches[Math.min(slashIndex, slashMatches.length - 1)]
+        if (!event.shiftKey && option && !option.disabled) {
+          event.preventDefault()
+          runSlashCommand(option)
+          return
+        }
+      } else if (event.key === 'Tab' || (event.key === 'Enter' && !mentionListUntouched)) {
         event.preventDefault()
         runSlashCommand(slashMatches[Math.min(slashIndex, slashMatches.length - 1)])
         return
       }
       if (event.key === 'Escape') {
         event.preventDefault()
+        // Escape closes the @ palette and leaves the typed text as it is.
+        if (activeMentionToken) setDismissedMention(`${activeMentionToken.start}:${activeMentionToken.query}`)
         if (activeSlashToken) setDraft(replaceSlashAction(draft, activeSlashToken, '', slashSubPalette))
         setPermissionMenuOpen(false)
         return
@@ -2180,45 +3037,343 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       }
     : undefined, [canShowPlanActions, planActionsDisabled, planActionsDisabledTitle, providerSupported, sendPlanAction])
   const resolveClaudePlanPrompt = async (nextModeId: 'acceptEdits' | 'default' | 'plan') => {
-    const prompt = claudePlanPrompt?.trim()
-    if (!prompt) {
-      setClaudePlanPrompt(null)
+    const submission = claudePlanPrompt
+    if (!submission || claudePlanResolvingRef.current === submission) return
+    const submittedSessionId = submission.context.chatId
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === submittedSessionId &&
+      useAppStore.getState().sessions.find((chat) => chat.id === submittedSessionId)?.createdAt.getTime() === submission.context.birth
+    const refuseStaleSubmission = () => {
+      if (mountedRef.current) setClaudePlanPrompt((current) => current === submission ? null : current)
+      if (ownsFeedback()) setSlashNotice(noticeFor(UNSENT_PROMPT_MESSAGE, 'warning'))
+    }
+    if (!composerReferenceSubmissionIsCurrent(submission.context)) {
+      refuseStaleSubmission()
       return
     }
-
-    const submittedSessionId = session.id
-    const submittedDraft = draft
+    claudePlanResolvingRef.current = submission
+    submitInFlightRef.current = true
     setSubmitting(true)
-    const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(session.id, 'default')
-    if (!modeOk) {
-      setSlashMessage('Failed to change provider mode.')
-      setSubmitting(false)
-      return
-    }
-    const permissionResult = nextModeId === 'acceptEdits'
-      ? normalizePermissionChangeResult(await setSessionCommandSafetyTier(session.id, 'acceptEdits'))
-      : { ok: true }
-    if (!permissionResult.ok) {
-      if (!permissionResult.cancelled) setSlashMessage(permissionResult.error || 'Failed to change permission mode to Accept Edits.')
-      setSubmitting(false)
-      return
-    }
-    const readyAttachments = composerAttachments
-      .filter((attachment) => attachment.status === 'ready')
-      .map(({ status, error, ...attachment }) => attachment)
-    const ok = readyAttachments.length > 0
-      ? await sendComposerPrompt(session.id, prompt, readyAttachments)
-      : await sendComposerPrompt(session.id, prompt)
-    if (ok && currentSessionIdRef.current === submittedSessionId) {
-      setDraft((current) => current === submittedDraft ? '' : current)
-      setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
+    try {
+      const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(submittedSessionId, 'default')
+      if (!modeOk) { if (ownsFeedback()) setSlashNotice(noticeFor('Failed to change provider mode.', 'error')); return }
+      if (!composerReferenceSubmissionIsCurrent(submission.context)) {
+        refuseStaleSubmission()
+        return
+      }
+      const permissionResult = nextModeId === 'acceptEdits'
+        ? normalizePermissionChangeResult(await setSessionCommandSafetyTier(submittedSessionId, 'acceptEdits'))
+        : { ok: true }
+      if (!permissionResult.ok) {
+        if (ownsFeedback() && !permissionResult.cancelled) setSlashNotice(noticeFor(permissionResult.error || 'Failed to change permission mode to Accept Edits.', 'error'))
+        return
+      }
+      if (!composerReferenceSubmissionIsCurrent(submission.context)) {
+        refuseStaleSubmission()
+        return
+      }
+      const readyAttachments = submission.attachments
+      const ok = await sendCapturedComposerPrompt(submission.context, submission.prompt, readyAttachments.length ? readyAttachments : undefined)
+      const acknowledgedSession = useAppStore.getState().sessions.find((candidate) => candidate.id === submittedSessionId)
+      if (ok && acknowledgedSession?.createdAt.getTime() === submission.context.birth) {
+        acknowledgeChatComposerDraft(submittedSessionId, submission.context.birth, { text: submission.draft, attachments: readyAttachments })
+      }
+      if (!ownsFeedback()) return
+      if (!ok) { setSlashNotice(noticeFor('Could not confirm the prompt. Check its saved state before retrying.', 'warning')); return }
+      setDraft((current) => current === submission.draft ? '' : current)
+      setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => attachmentsEquivalent([attachment], [sentAttachment]))))
       setAttachmentError('')
       setClaudePlanPrompt(null)
+    } catch {
+      if (ownsFeedback()) setSlashNotice(noticeFor('Could not confirm the prompt. Check its saved state before retrying.', 'warning'))
+    } finally {
+      if (claudePlanResolvingRef.current === submission) {
+        if (ownsFeedback()) { submitInFlightRef.current = false; setSubmitting(false) }
+        claudePlanResolvingRef.current = null
+      }
     }
-    setSubmitting(false)
   }
 
+  // Draft keystrokes re-render ChatView; the transcript only depends on conversation state, so keep its rows.
+  // Unsent actions run at click time and read the latest render through this ref.
+  const unsentActionsRef = useRef({ removeUnsent, retryUnsent, retryUnsentReceipt })
+  useLayoutEffect(() => { unsentActionsRef.current = { removeUnsent, retryUnsent, retryUnsentReceipt } })
+  // Today/Yesterday dividers read the clock, so a new local day rebuilds the rows on the next render.
+  const transcriptDay = new Date().toDateString()
+  // Turn times format in local time, so a timezone change also rebuilds the rows.
+  const transcriptTimezoneOffset = new Date().getTimezoneOffset()
+  // formatWorkedDuration rounds to whole seconds, so rounding here keeps the label identical.
+  const turnWorkedDisplaySeconds = turnWorkedSeconds === undefined ? undefined : Math.round(turnWorkedSeconds)
+  const transcriptRows = useMemo(() => {
+                // One keyed list: messages, unmaterialized receipts and display-only attempts share the same row shape,
+                // so an attempt's alias key keeps the same outer row and article from click through ACK and native push.
+                const outgoingSlot = (key: string, message: Message, delivery: ConversationDelivery, actions?: ReactNode, receiptId?: string) => (
+                  <WorkSectionContext.Provider key={key} value={ALWAYS_OPEN_WORK_SECTION}>
+                  <div className="space-y-1" data-outgoing-message="" data-unsent-receipt-id={receiptId}>
+                    {null}{null}{null}
+                    <PersistedConversationMessage message={message} hasDeliveredResponse={false} hasStoppedResponse={false} pendingDirectAdmission={false}
+                      delivery={delivery} deliveryActions={actions} disclosureState={liveWorkDisclosure} index={-1}
+                      assistantLabel="" sessionId={session.id} branchSessions={[]} actionsDisabled planActions={undefined}
+                      workingMode={workingDisplayMode} retryInPlace={false} onBeginEdit={beginEditingMessage}
+                      onCreateBranch={createMessageBranch} onSelectBranch={selectMessageBranch} onSelectTool={selectPersistedTool} />
+                    {null}{null}{null}
+                  </div>
+                  </WorkSectionContext.Provider>
+                )
+                const outgoingMessage = (id: string, text: string, attachments: readonly Attachment[], createdAt = new Date(0)): Message =>
+                  ({ id, sessionId: session.id, role: 'user', content: text, attachments: [...attachments], createdAt })
+                const nativeRows = visibleMessages.map((message, visibleIndex) => {
+                const index = earliestRenderedMessageIndex + visibleIndex
+                if (index === redundantStreamingMessageIndex || unsentProjection.hiddenIndices.has(index)) return null
+                const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
+                const shouldSkipAssistantMessage = renderTimelineAfterUser && turnAssistantMessageMatches && index === turnAssistantMessageIndex
+                const { followingResponse, hasDeliveredResponse, hasStoppedResponse } = responseFlags(messages, index)
+                const messageProviderId = message.providerId?.trim() || followingResponse?.providerId?.trim() || currentProviderId
+                const messageProviderName = providerShortName(
+                  providers.find((candidate) => candidate.id === messageProviderId),
+                  messageProviderId
+                )
+
+                if (shouldSkipAssistantMessage) return null
+                let disclosureState = savedWorkDisclosures.get(message.id)
+                if (!disclosureState) {
+                  disclosureState = {}
+                  savedWorkDisclosures.set(message.id, disclosureState)
+                }
+
+                const outgoingAlias = message.role === 'user' ? outgoingPresentation.byLoadedIndex.get(index) : undefined
+                // Admission/materialization/output are not write witnesses. Only this exact input's positive native
+                // OS-sink write fact can settle its presentation; explicit queue/recovery authority remains above.
+                const outgoingUnresolved = Boolean(outgoingAlias && !outgoingPresentation.writeCompletedKeys.has(outgoingAlias.key))
+                const nativeDirectReceipt = outgoingPresentation.directReceiptByLoadedIndex.get(index)
+                const section = workSections.get(index)!
+                const sectionActive = Boolean(acp?.processing && section.firstIndex === activeWorkSectionFirstIndex)
+                const containsSearchTarget = searchNavigation && workSections.get(searchNavigation.messageIndex - historyStartIndex)?.firstIndex === section.firstIndex
+                const sectionControl = sectionActive || containsSearchTarget || !collapsibleWorkSections ? ALWAYS_OPEN_WORK_SECTION : sectionControls(section.id)
+                const sectionCollapsed = !sectionActive && !sectionControl.expanded
+                const hideCollapsedMessage = sectionCollapsed && (
+                  (message.role === 'user' && message.continuesTurn) ||
+                  (message.role === 'assistant' && index !== section.lastAssistantIndex)
+                )
+                if (hideCollapsedMessage) return message.role === 'assistant' && message.toolCalls?.some(isInlineSubagentLaunch) ? (
+                  <div key={message.id} data-message-index={index + historyStartIndex}>
+                    <PersistedMessageContent message={message} disclosureState={disclosureState} sourceChatId={session.id}
+                      workingMode={workingDisplayMode} onSelectTool={selectPersistedTool} launchesOnly />
+                  </div>
+                ) : null
+                const firstVisibleInSection = index === Math.max(section.firstIndex, earliestRenderedMessageIndex) ||
+                  (sectionCollapsed && section.firstIndex < earliestRenderedMessageIndex && index === section.lastAssistantIndex)
+                const sectionStart = messages[section.firstIndex]
+                const sectionResponse = messages[section.firstIndex + 1]?.role === 'assistant' ? messages[section.firstIndex + 1] : undefined
+                const sectionProviderId = sectionStart.providerId?.trim() || sectionResponse?.providerId?.trim() || currentProviderId
+                const sectionProviderName = providerShortName(providers.find((candidate) => candidate.id === sectionProviderId), sectionProviderId)
+                // Brief turns with no tool or reasoning activity drop the "Worked" toggle; live turns always show it.
+                const briefTurn = !sectionActive && !section.hasTrace && section.workedSeconds < 2
+                const heading = firstVisibleInSection && (section.hasAssistant || sectionActive) && !briefTurn ? <div data-testid={sectionActive && turnEvents.length === 0 ? "turn-starting" : undefined}><ConversationWork
+                  sectionHeading headerOnly active={sectionActive} startedAt={sectionActive ? turnClockStart : undefined}
+                  duration={formatWorkedDuration(section.workedSeconds)} events={[]} tools={[]} collapsible={collapsibleWorkSections}
+                  onSelectTool={selectLiveTool}
+                /></div> : null
+                const turnStart = firstVisibleInSection && sectionStart.role === 'user' && Number.isFinite(sectionStart.createdAt.getTime()) ? sectionStart : undefined
+                const turnModelId = sectionStart.modelId?.trim() || sectionResponse?.modelId?.trim() || (section.firstIndex === activeWorkSectionFirstIndex ? acp?.currentModelId || session.modelId : '') || ''
+                const turnIdentity = [sectionProviderName, turnModelId].filter(Boolean).join(' · ')
+                const previousAssistant = turnStart ? previousAssistantMessage(messages, section.firstIndex) : undefined
+                const previousProviderId = previousAssistant ? previousAssistant.providerId?.trim() || currentProviderId : ''
+                const previousIdentity = previousAssistant
+                  ? [providerShortName(providers.find((candidate) => candidate.id === previousProviderId), previousProviderId), previousAssistant.modelId?.trim()].filter(Boolean).join(' · ')
+                  : ''
+                const showTurnIdentity = Boolean(turnStart && turnIdentity && (!previousAssistant || turnIdentity !== previousIdentity))
+                const priorMessage = section.firstIndex > 0 ? messages[section.firstIndex - 1] : undefined
+                const dayChanged = Boolean(turnStart) && (!priorMessage || priorMessage.createdAt.toDateString() !== sectionStart.createdAt.toDateString())
+                return (
+                  <WorkSectionContext.Provider key={outgoingAlias?.key ?? message.id} value={sectionControl}>
+                  <div className="space-y-1" data-message-index={index + historyStartIndex} data-unsent-message-index={unsentByLoadedIndex.has(index) ? index + historyStartIndex : undefined} title={turnStart ? turnTimestampLabel(turnStart.createdAt) : undefined}>
+                    {dayChanged && turnStart && <div className="conversation-day-divider"><span>{dayDividerLabel(turnStart.createdAt, new Date(transcriptDay))}</span></div>}
+                    {turnStart && <TurnStartTime
+                      timestamp={turnStart.createdAt.getTime()}
+                      timezoneOffset={turnStart.createdAt.getTimezoneOffset()}
+                      identity={turnIdentity}
+                      showIdentity={showTurnIdentity}
+                    />}
+                    {message.role !== 'user' && heading}
+                    {shouldRenderTimelineAtAssistant ? (
+                      <MessageFrame
+                        role={message.role}
+                        assistantLabel={reviewAssistantLabel(messageProviderName, message)}
+                        goalReview={Boolean(goalReviewForMessage(message))}
+                        streaming={Boolean(acp?.processing)}
+                        actionsDisabled={session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null}
+                      >
+                        <TurnTimelineContent
+                          disclosureState={liveWorkDisclosure}
+                          key={`turn-${turnSerial}-assistant`}
+                          startedAt={turnClockStart}
+                          interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
+                          stopReason={messages[turnAssistantMessageIndex]?.stopReason}
+                          events={turnEvents}
+                            tools={liveTools}
+                            planSummary={acp?.planSummary ?? ''}
+                            planEntries={livePlanEntries}
+                            planActions={activePlanActions}
+                            pendingPermission={pendingPermission ?? null}
+                            pendingUserInput={pendingUserInput ?? null}
+                            waitIsStale={acp?.waitIsStale}
+                            waitStaleReason={acp?.waitStaleReason}
+                            waitSeconds={acp?.waitSeconds}
+                            onSelectTool={selectLiveTool}
+                            onResolvePermission={resolveLivePermission}
+                          onCancelTurn={cancelLiveTurn}
+                          onStopRuntime={stopLiveRuntime}
+                          sourceChatId={session.id}
+                          active={Boolean(acp?.processing)}
+                          workingMode={workingDisplayMode}
+                          workedSeconds={turnWorkedDisplaySeconds}
+                        />
+                      </MessageFrame>
+                    ) : (
+                      <PersistedConversationMessage
+                        message={message}
+                        hasDeliveredResponse={hasDeliveredResponse}
+                        hasStoppedResponse={hasStoppedResponse}
+                        pendingDirectAdmission={unsentProjection.pendingIndices.has(index) || nativeDirectReceipt?.sending === true}
+                        delivery={unsentByLoadedIndex.has(index) ? (unsentByLoadedIndex.get(index)!.retryable ? UNSENT_DELIVERY : HELD_DELIVERY)
+                          : nativeDirectReceipt ? (nativeDirectReceipt.sending ? SENDING_DELIVERY : RECEIPT_DELIVERY)
+                          : unsentProjection.pendingIndices.has(index) ? SENDING_DELIVERY : outgoingUnresolved ? attemptDelivery(outgoingAlias!) : undefined}
+                        deliveryActions={unsentByLoadedIndex.has(index) && !isCompanionContext() ? <OutgoingRecoveryActions
+                          onEdit={() => beginEditingUnsentMessage(index + historyStartIndex, message.content)}
+                          onRetry={unsentByLoadedIndex.get(index)!.retryable ? () => unsentActionsRef.current.retryUnsent(index + historyStartIndex) : undefined}
+                          onRemove={() => unsentActionsRef.current.removeUnsent(index + historyStartIndex)}
+                          editDisabled={unsentActionsDisabled} retryDisabled={unsentActionsDisabled} removeDisabled={unsentActionsDisabled} />
+                          : nativeDirectReceipt && !nativeDirectReceipt.sending && !isCompanionContext() ? <OutgoingRecoveryActions
+                            retryUnavailable={!receiptRetryAvailable(nativeDirectReceipt.prompt)}
+                            onRetry={receiptRetryAvailable(nativeDirectReceipt.prompt) ? () => unsentActionsRef.current.retryUnsentReceipt({ id: nativeDirectReceipt.prompt.id!, revision: nativeDirectReceipt.prompt.revision! }) : undefined}
+                            retryDisabled={unsentReceiptDeleteDisabled}
+                            onRemove={() => unsentActionsRef.current.removeUnsent(-1, { id: nativeDirectReceipt.prompt.id!, revision: nativeDirectReceipt.prompt.revision! })}
+                            removeDisabled={unsentReceiptDeleteDisabled} /> : undefined}
+                        disclosureState={disclosureState}
+                        index={index + historyStartIndex}
+                        assistantLabel={reviewAssistantLabel(messageProviderName, message)}
+                        sessionId={session.id}
+                        sessionParentChatId={session.parentChatId}
+                        sessionBranchFromMessageIndex={session.branchFromMessageIndex}
+                        sessionBranchMessageEdited={session.branchMessageEdited}
+                        branchSessions={branchSessions}
+                        actionsDisabled={session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || unsentProjection.pendingIndices.has(index) || Boolean(nativeDirectReceipt)}
+                        planActions={index === latestPlanMessageIndex ? activePlanActions : undefined}
+                        workingMode={workingDisplayMode}
+                        retryInPlace={index === retryInPlaceMessageIndex}
+                        onBeginEdit={beginEditingMessage}
+                        onCreateBranch={createMessageBranch}
+                        onSelectBranch={selectMessageBranch}
+                        onSelectTool={selectPersistedTool}
+                      />
+                    )}
+                    {message.role === 'user' && message.managedOriginRunId && <InitialManagedSubagentGroup runId={message.managedOriginRunId} sourceChatId={session.id} />}
+                    {message.role === 'user' && heading}
+                    {renderTimelineAfterUser && index === turnUserMessageIndex && (
+                      <div data-message-index={turnAssistantMessageMatches ? turnAssistantMessageIndex + historyStartIndex : undefined}>
+                      <MessageFrame
+                        key={`turn-${turnSerial}-after-user`}
+                        role="assistant"
+                        assistantLabel={reviewAssistantLabel(currentProviderName, messages[turnAssistantMessageIndex] ?? messages[turnUserMessageIndex])}
+                        streaming={Boolean(acp?.processing)}
+                      >
+                        <TurnTimelineContent
+                          disclosureState={liveWorkDisclosure}
+                          key={`turn-${turnSerial}-after-user-content`}
+                          startedAt={turnClockStart}
+                          interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
+                          stopReason={messages[turnAssistantMessageIndex]?.stopReason}
+                          events={turnEvents}
+                            tools={liveTools}
+                            planSummary={acp?.planSummary ?? ''}
+                            planEntries={livePlanEntries}
+                            planActions={activePlanActions}
+                            pendingPermission={pendingPermission ?? null}
+                            pendingUserInput={pendingUserInput ?? null}
+                            waitIsStale={acp?.waitIsStale}
+                            waitStaleReason={acp?.waitStaleReason}
+                            waitSeconds={acp?.waitSeconds}
+                            onSelectTool={selectLiveTool}
+                            onResolvePermission={resolveLivePermission}
+                          onCancelTurn={cancelLiveTurn}
+                          onStopRuntime={stopLiveRuntime}
+                          sourceChatId={session.id}
+                          active={Boolean(acp?.processing)}
+                          workingMode={workingDisplayMode}
+                          workedSeconds={turnWorkedDisplaySeconds}
+                        />
+                      </MessageFrame>
+                      </div>
+                    )}
+                  </div>
+                  </WorkSectionContext.Provider>
+                )
+              })
+                const outgoingRows = [...outgoingReceipts.filter((prompt) => {
+                  const index = prompt.receipt ? outgoingPresentation.receiptNativeIndexByKey.get(JSON.stringify([prompt.receipt.id, prompt.receipt.revision])) : undefined
+                  // A bound but hidden/off-page native row cannot stand in for the direct receipt's bytes/actions.
+                  return index === undefined || nativeRows[index - earliestRenderedMessageIndex] == null
+                }).map((prompt) => {
+                  const alias = prompt.receipt ? outgoingPresentation.byReceiptId.get(prompt.receipt.id) : undefined
+                  const nativeReceipt = (acp?.unsentDirectPrompts ?? []).find(entry => entry.id === prompt.receipt?.id && entry.revision === prompt.receipt?.revision)
+                  // Explicit Retry prepares the exact native receipt; nothing here infers delivery or replays on mount.
+                  return { attempt: alias, node: outgoingSlot(alias?.key ?? prompt.receipt?.id ?? String(prompt.messageIndex),
+                    outgoingMessage(prompt.receipt?.id ?? String(prompt.messageIndex), prompt.text, prompt.attachments, alias?.createdAt),
+                    prompt.sending ? SENDING_DELIVERY : RECEIPT_DELIVERY,
+                    !prompt.sending && prompt.receipt && !isCompanionContext() ? <OutgoingRecoveryActions
+                      retryUnavailable={!nativeReceipt || !receiptRetryAvailable(nativeReceipt)}
+                      onRetry={nativeReceipt && receiptRetryAvailable(nativeReceipt) ? () => unsentActionsRef.current.retryUnsentReceipt(prompt.receipt!) : undefined}
+                      retryDisabled={unsentReceiptDeleteDisabled}
+                      onRemove={() => unsentActionsRef.current.removeUnsent(prompt.messageIndex, prompt.receipt)} removeDisabled={unsentReceiptDeleteDisabled} /> : undefined,
+                    prompt.receipt?.id) }
+                }), ...outgoingPresentation.tail.map((attempt) => ({ attempt,
+                  node: outgoingSlot(attempt.key, outgoingMessage(attempt.key, attempt.text, attempt.attachments, attempt.createdAt),
+                    outgoingPresentation.retainedUnknownKeys.has(attempt.key) ? LOCAL_UNCONFIRMED_DELIVERY : attemptDelivery(attempt)),
+                }))]
+                // A discarded native row may be hidden before an action can safely retire its display alias.
+                // Keep that unresolved alias rendered now, rather than unmounting it and reviving it after trim.
+                // Exact receipts already rendered above keep their own precedence; this adds no recovery authority.
+                const outgoingKeys = new Set(outgoingRows.flatMap(({ attempt }) => attempt ? [attempt.key] : []))
+                for (const [index, attempt] of outgoingPresentation.byLoadedIndex) {
+                  if (messages[index]?.acpPromptDiscarded !== true || nativeRows[index - earliestRenderedMessageIndex] != null || outgoingKeys.has(attempt.key)) continue
+                  outgoingKeys.add(attempt.key)
+                  outgoingRows.push({ attempt, node: outgoingSlot(attempt.key,
+                    outgoingMessage(attempt.key, attempt.text, attempt.attachments, attempt.createdAt), LOCAL_UNCONFIRMED_DELIVERY) })
+                }
+                // Captured indices place display rows only; they never identify or confirm a native message.
+                // Keep one flat keyed list so a receipt/native alias retains the same outer row and article.
+                const attemptOrder = new Map(outgoingAttempts.map((attempt, ordinal) => [attempt.key, ordinal]))
+                const anchoredRows = outgoingRows.flatMap(({ attempt, node }, sourceIndex) => attempt ? [{
+                  boundary: attempt.nativeIndex, ordinal: attemptOrder.get(attempt.key)!, sourceIndex, node,
+                }] : []).sort((left, right) => left.boundary - right.boundary || left.ordinal - right.ordinal)
+                const rows: ReactNode[] = []
+                const placed = new Set<number>()
+                let nextAnchor = 0
+                nativeRows.forEach((row, visibleIndex) => {
+                  const boundary = historyStartIndex + earliestRenderedMessageIndex + visibleIndex
+                  while (nextAnchor < anchoredRows.length && anchoredRows[nextAnchor].boundary <= boundary) {
+                    const anchored = anchoredRows[nextAnchor++]
+                    rows.push(anchored.node)
+                    placed.add(anchored.sourceIndex)
+                  }
+                  // Hidden/null native slots still preserve their original raw-index boundary.
+                  rows.push(row)
+                })
+                // Cold receipts retain their fallback slots. Unreached local rows keep capture order in the remaining slots.
+                const trailingRows = outgoingRows.filter((_, sourceIndex) => !placed.has(sourceIndex))
+                return [...rows, ...trailingRows.map(({ attempt, node }) => attempt ? anchoredRows[nextAnchor++].node : node)]
+  }, [acp, activePlanActions, activeWorkSectionFirstIndex, beginEditingMessage, beginEditingUnsentMessage, branchSessions, branchingMessageIndex, canChangeProvider, cancelLiveTurn, collapsibleWorkSections, createMessageBranch, currentProviderId, currentProviderName, earliestRenderedMessageIndex, historyStartIndex, latestPlanMessageIndex, livePlanEntries, liveTools, liveWorkDisclosure, messages, outgoingAttempts, outgoingPresentation, outgoingReceipts, pendingPermission, pendingUserInput, providers, redundantStreamingMessageIndex, renderTimelineAfterUser, renderTimelineAtAssistant, resolveLivePermission, retryInPlaceMessageIndex, savedWorkDisclosures, searchNavigation, sectionControls, selectLiveTool, selectMessageBranch, selectPersistedTool, session, stopLiveRuntime, turnAssistantMessageIndex, turnAssistantMessageMatches, turnClockStart, turnEvents, turnSerial, turnUserMessageIndex, turnWorkedDisplaySeconds, unsentActionsDisabled, unsentByLoadedIndex, unsentProjection, unsentReceiptDeleteDisabled, visibleMessages, transcriptDay, transcriptTimezoneOffset, workSections, workingDisplayMode])
+  // The fork/edited row is marked so CSS can move or dim only the rows after it (`[data-motion-anchor] ~ *`).
+  useLayoutEffect(() => {
+    const list = messageListRef.current
+    if (!list) return
+    const target = messageMotionAnchor === null ? null : list.querySelector(`:scope > [data-message-index="${messageMotionAnchor}"]`)
+    list.querySelectorAll(':scope > [data-motion-anchor]').forEach((row) => { if (row !== target) row.removeAttribute('data-motion-anchor') })
+    target?.setAttribute('data-motion-anchor', '')
+  }, [messageMotionAnchor, transcriptRows])
+
   return (
+    <FileInspectionProvider chatId={session.id}>
     <div className="relative h-full flex overflow-hidden"
       onPointerDownCapture={() => {
         const revision = session.attentionRevision
@@ -2237,8 +3392,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           onCancel={() => setProviderHandoffTargetId('')}
           onConfirm={async () => {
             const changed = await setSessionProvider(session.id, providerHandoffTarget.id)
-            if (changed) setProviderHandoffTargetId('')
-            return changed
+            if (!changed) return false
+            if (currentSessionIdRef.current !== session.id) return false
+            if (providerHandoffModelId !== null && !await setSessionModel(session.id, providerHandoffModelId)) return false
+            setProviderHandoffTargetId('')
+            setProviderHandoffModelId(null)
+            return true
           }}
         />
       )}
@@ -2248,11 +3407,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           chatId={session.id}
           messageIndex={selectedToolCallRef?.messageId ? messages.findIndex((message) => message.id === selectedToolCallRef.messageId) + historyStartIndex : undefined}
           onClose={() => setSelectedToolCallRef(null)}
-          onOpenSubAgent={selectedToolCall.isSubAgent ? () => void openSelectedSubAgentSession() : undefined}
+          onOpenSubAgent={selectedToolCall.isSubAgent && !isManagedSubagentTool(selectedToolCall) ? () => void openSelectedSubAgentSession() : undefined}
           accentColor={accentColor}
         />
       )}
-      {selectedRepositoryFile && repositoryChanges && (
+      {!chatWorking && !historyIncomplete && selectedRepositoryFile && repositoryChanges && (
         <RepositoryDiffDialog
           chatId={session.id}
           file={selectedRepositoryFile}
@@ -2262,27 +3421,54 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           onClose={() => setSelectedRepositoryFile(null)}
         />
       )}
-      <div className="relative flex-1 flex flex-col min-w-0">
-        <div className="relative flex-1 min-h-0">
+      <div className="relative flex-1 flex flex-col min-w-0"
+        style={showComposer ? undefined : { '--composer-dock-h': '0px' } as React.CSSProperties}>
+        {showSubagentLineage && subagentParent && <nav aria-label="Subagent lineage" className="px-4 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)' }}>
+          <Button type="button" variant="ghost" size="sm" leadingIcon={<CornerUpLeft size={14} aria-hidden />} onClick={() => showChatInPane(subagentParent.id)}>
+            Subagent of {subagentParent.name}
+          </Button>
+        </nav>}
+        {showSubagentLineage && session.createdByChatId && <nav aria-label="Chat provenance" className="px-4 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)' }}>
+          {startedBy
+            ? <Button type="button" size="sm" variant="ghost" leadingIcon={<CornerUpLeft size={14} aria-hidden />} onClick={() => showChatInPane(startedBy.id)}>Started by {startedBy.name}</Button>
+            : <span style={{ color: 'var(--text-3)' }}>Started by a chat that is no longer available</span>}
+        </nav>}
+        <div className="uam-chat-viewport relative flex-1 min-h-0" data-message-navigation={messageNavigationVisible || undefined}>
           <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
             <div ref={transcriptContentRef} className="uam-chat-content w-full py-4" style={{ paddingBottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
               {chatHistoryError && (
-                <Notice
-                  key={`chat-history:${session.id}:${chatHistoryError}`}
-                  tone="error"
-                  title="Chat history unavailable"
-                  dismissLabel="Dismiss chat history error"
-                  actions={(
-                    <Button size="sm" variant="secondary" loading={chatHistoryRetryingIds.has(session.id)} onClick={() => void retryChatHistory(session.id)}>
-                      Retry
-                    </Button>
-                  )}
-                >
-                  {chatHistoryError}
-                </Notice>
+                <div className="mb-2 flex justify-end px-4">
+                  <Button size="sm" variant="secondary" loading={chatHistoryRetryingIds.has(session.id)} onClick={() => void retryChatHistory(session.id)}>
+                    {historyRefreshFailed ? 'Reload history' : 'Retry'}
+                  </Button>
+                </div>
               )}
-              <SubAgentDisclosureProvider key={session.id}>
-              <div className="uam-message-list space-y-1.5">
+              <InlineSubagentProvider key={session.id} sourceChatId={session.id} onOpenManagedRun={runId => {
+                const parent = useAppStore.getState().sessions.find(candidate => candidate.id === session.id)
+                if (parent) {
+                  useAppStore.getState().setActiveSession(parent.id)
+                  openSubagentView(parent, { kind: 'managed', runId })
+                }
+              }}>
+              <SubAgentDisclosureProvider expandedTools={subagentDisclosures}>
+              <div ref={messageListRef} className="uam-message-list space-y-1.5" aria-busy={historyLoading} data-message-motion={messageMotion}>
+              {historyLoading && <div role="status" className="conversation-empty">
+                <div className="conversation-skeleton" aria-hidden>
+                  <span className="conversation-skeleton__bubble" />
+                  <div className="conversation-skeleton__text">
+                    <span className="conversation-skeleton__line" />
+                    <span className="conversation-skeleton__line" />
+                    <span className="conversation-skeleton__line conversation-skeleton__line--mid" />
+                    <span className="conversation-skeleton__line conversation-skeleton__line--short" />
+                  </div>
+                  <span className="conversation-skeleton__bubble conversation-skeleton__bubble--short" />
+                  <div className="conversation-skeleton__text">
+                    <span className="conversation-skeleton__line" />
+                    <span className="conversation-skeleton__line conversation-skeleton__line--short" />
+                  </div>
+                </div>
+                <span>Loading chat history…</span>
+              </div>}
               {(earliestRenderedMessageIndex > 0 || historyStartIndex > 0) && (
                 <div className="flex justify-center">
                   <Button
@@ -2306,156 +3492,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   </Button>
                 </div>
               )}
-              {visibleMessages.map((message, visibleIndex) => {
-                const index = earliestRenderedMessageIndex + visibleIndex
-                if (index === redundantStreamingMessageIndex) return null
-                const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
-                const shouldSkipAssistantMessage = renderTimelineAfterUser && turnAssistantMessageMatches && index === turnAssistantMessageIndex
-                const followingResponse = message.role === 'user' && messages[index + 1]?.role === 'assistant' ? messages[index + 1] : undefined
-                const messageProviderId = message.providerId?.trim() || followingResponse?.providerId?.trim() || currentProviderId
-                const messageProviderName = providerShortName(
-                  providers.find((candidate) => candidate.id === messageProviderId),
-                  messageProviderId
-                )
-
-                if (shouldSkipAssistantMessage) return null
-                let disclosureState = savedWorkDisclosures.get(message.id)
-                if (!disclosureState) {
-                  disclosureState = {}
-                  savedWorkDisclosures.set(message.id, disclosureState)
-                }
-
-                const section = workSections.get(index)!
-                const sectionActive = Boolean(acp?.processing && section.firstIndex === activeWorkSectionFirstIndex)
-                const sectionControl = sectionActive || !collapsibleWorkSections ? ALWAYS_OPEN_WORK_SECTION : sectionControls(section.id)
-                const sectionCollapsed = !sectionActive && !sectionControl.expanded
-                const hideCollapsedMessage = sectionCollapsed && (
-                  (message.role === 'user' && message.continuesTurn) ||
-                  (message.role === 'assistant' && index !== section.lastAssistantIndex)
-                )
-                if (hideCollapsedMessage) return null
-                const firstVisibleInSection = index === Math.max(section.firstIndex, earliestRenderedMessageIndex) ||
-                  (sectionCollapsed && section.firstIndex < earliestRenderedMessageIndex && index === section.lastAssistantIndex)
-                const sectionStart = messages[section.firstIndex]
-                const sectionResponse = messages[section.firstIndex + 1]?.role === 'assistant' ? messages[section.firstIndex + 1] : undefined
-                const sectionProviderId = sectionStart.providerId?.trim() || sectionResponse?.providerId?.trim() || currentProviderId
-                const sectionProviderName = providerShortName(providers.find((candidate) => candidate.id === sectionProviderId), sectionProviderId)
-                const heading = firstVisibleInSection && (section.hasAssistant || sectionActive) ? <div data-testid={sectionActive && turnEvents.length === 0 ? "turn-starting" : undefined}><ConversationWork
-                  sectionHeading headerOnly active={sectionActive} startedAt={sectionActive ? turnClockStart : undefined}
-                  duration={formatWorkedDuration(section.workedSeconds)} events={[]} tools={[]} collapsible={collapsibleWorkSections}
-                  onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
-                /></div> : null
-                return (
-                  <WorkSectionContext.Provider key={message.id} value={sectionControl}>
-                  <div className="space-y-1">
-                    {firstVisibleInSection && sectionStart.role === 'user' && Number.isFinite(sectionStart.createdAt.getTime()) && <time className="conversation-turn-start" dateTime={sectionStart.createdAt.toISOString()}>{[
-                      sectionProviderName,
-                      sectionStart.modelId?.trim() || sectionResponse?.modelId?.trim() || (section.firstIndex === activeWorkSectionFirstIndex ? acp?.currentModelId || session.modelId : ''),
-                      sectionStart.createdAt.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }),
-                    ].filter(Boolean).join(' · ')}</time>}
-                    {message.role !== 'user' && heading}
-                    {shouldRenderTimelineAtAssistant ? (
-                      <MessageFrame
-                        role={message.role}
-                        assistantLabel={reviewAssistantLabel(messageProviderName, message)}
-                        copyText={message.content}
-                        goalReview={Boolean(goalReviewForMessage(message))}
-                        streaming={Boolean(acp?.processing)}
-                        actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
-                      >
-                        <TurnTimelineContent
-                          disclosureState={liveWorkDisclosure}
-                          key={`turn-${turnSerial}-assistant`}
-                          startedAt={turnClockStart}
-                          interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
-                          stopReason={messages[turnAssistantMessageIndex]?.stopReason}
-                          events={turnEvents}
-                            tools={acp?.toolCalls ?? []}
-                            planSummary={acp?.planSummary ?? ''}
-                            planEntries={acp?.planEntries ?? []}
-                            planActions={activePlanActions}
-                            pendingPermission={pendingPermission ?? null}
-                            pendingUserInput={pendingUserInput ?? null}
-                            waitIsStale={acp?.waitIsStale}
-                            waitStaleReason={acp?.waitStaleReason}
-                            waitSeconds={acp?.waitSeconds}
-                            onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
-                            onResolvePermission={(requestId, optionId) => resolveAcpPermission(session.id, requestId, optionId)}
-                          onCancelTurn={() => void cancelAcpTurn(session.id)}
-                          onStopRuntime={() => void stopAcpSession(session.id)}
-                          sourceChatId={session.id}
-                          active={Boolean(acp?.processing)}
-                          workingMode={workingDisplayMode}
-                          workedSeconds={turnWorkedSeconds}
-                        />
-                      </MessageFrame>
-                    ) : (
-                      <PersistedMessageRow
-                        message={message}
-                        disclosureState={disclosureState}
-                        index={index + historyStartIndex}
-                        assistantLabel={reviewAssistantLabel(messageProviderName, message)}
-                        sessionId={session.id}
-                        sessionParentChatId={session.parentChatId}
-                        sessionBranchFromMessageIndex={session.branchFromMessageIndex}
-                        sessionBranchMessageEdited={session.branchMessageEdited}
-                        branchSessions={branchSessions}
-                        isEditing={editingMessageIndex === index + historyStartIndex}
-                        editingText={editingMessageIndex === index + historyStartIndex ? editingMessageText : ''}
-                        actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
-                        canChangeProvider={canChangeProvider}
-                        branching={branchingMessageIndex === index + historyStartIndex}
-                        planActions={index === latestPlanMessageIndex ? activePlanActions : undefined}
-                        workingMode={workingDisplayMode}
-                        retryInPlace={index === retryInPlaceMessageIndex}
-                        onBeginEdit={beginEditingMessage}
-                        onCancelEdit={cancelEditingMessage}
-                        onEditingTextChange={setEditingMessageText}
-                        onCreateBranch={createMessageBranch}
-                        onSelectBranch={selectMessageBranch}
-                        onSelectTool={selectPersistedTool}
-                      />
-                    )}
-                    {message.role === 'user' && heading}
-                    {renderTimelineAfterUser && index === turnUserMessageIndex && (
-                      <MessageFrame
-                        key={`turn-${turnSerial}-after-user`}
-                        role="assistant"
-                        assistantLabel={reviewAssistantLabel(currentProviderName, messages[turnAssistantMessageIndex] ?? messages[turnUserMessageIndex])}
-                        streaming={Boolean(acp?.processing)}
-                      >
-                        <TurnTimelineContent
-                          disclosureState={liveWorkDisclosure}
-                          key={`turn-${turnSerial}-after-user-content`}
-                          startedAt={turnClockStart}
-                          interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
-                          stopReason={messages[turnAssistantMessageIndex]?.stopReason}
-                          events={turnEvents}
-                            tools={acp?.toolCalls ?? []}
-                            planSummary={acp?.planSummary ?? ''}
-                            planEntries={acp?.planEntries ?? []}
-                            planActions={activePlanActions}
-                            pendingPermission={pendingPermission ?? null}
-                            pendingUserInput={pendingUserInput ?? null}
-                            waitIsStale={acp?.waitIsStale}
-                            waitStaleReason={acp?.waitStaleReason}
-                            waitSeconds={acp?.waitSeconds}
-                            onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
-                            onResolvePermission={(requestId, optionId) => resolveAcpPermission(session.id, requestId, optionId)}
-                          onCancelTurn={() => void cancelAcpTurn(session.id)}
-                          onStopRuntime={() => void stopAcpSession(session.id)}
-                          sourceChatId={session.id}
-                          active={Boolean(acp?.processing)}
-                          workingMode={workingDisplayMode}
-                          workedSeconds={turnWorkedSeconds}
-                        />
-                      </MessageFrame>
-                    )}
-                  </div>
-                  </WorkSectionContext.Provider>
-                )
-              })}
-              {acp?.processing && turnEvents.length === 0 && activeWorkMessageIndex < 0 && (
+              {transcriptRows}
+              {acp?.processing && turnEvents.length === 0 && (activeWorkMessageIndex < 0 || unsentProjection.hiddenIndices.has(activeWorkMessageIndex)) && (
                 <div
                   data-testid="turn-starting"
                   role="status"
@@ -2465,7 +3503,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   <ConversationWork
                     headerOnly active startedAt={turnClockStart} duration="0s"
                     disclosureState={liveWorkDisclosure} events={[]} tools={[]}
-                    onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
+                    onSelectTool={selectLiveTool}
                   />
                 </div>
               )}
@@ -2486,19 +3524,19 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                           interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
                           stopReason={messages[turnAssistantMessageIndex]?.stopReason}
                           events={turnEvents}
-                      tools={acp?.toolCalls ?? []}
+                      tools={liveTools}
                       planSummary={acp?.planSummary ?? ''}
-                      planEntries={acp?.planEntries ?? []}
+                      planEntries={livePlanEntries}
                       planActions={activePlanActions}
                       pendingPermission={pendingPermission ?? null}
                       pendingUserInput={pendingUserInput ?? null}
                       waitIsStale={acp?.waitIsStale}
                       waitStaleReason={acp?.waitStaleReason}
                       waitSeconds={acp?.waitSeconds}
-                      onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
-                      onResolvePermission={(requestId, optionId) => resolveAcpPermission(session.id, requestId, optionId)}
-                    onCancelTurn={() => void cancelAcpTurn(session.id)}
-                    onStopRuntime={() => void stopAcpSession(session.id)}
+                      onSelectTool={selectLiveTool}
+                      onResolvePermission={resolveLivePermission}
+                    onCancelTurn={cancelLiveTurn}
+                    onStopRuntime={stopLiveRuntime}
                     sourceChatId={session.id}
                     active={Boolean(acp?.processing)}
                     workingMode={workingDisplayMode}
@@ -2507,47 +3545,40 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   </WorkSectionContext.Provider>
                 </MessageFrame>
               )}
-              {(repositoryChanges || (isGitWorktree && latestAssistantMessage?.checkpointSha)) && (
+              {!chatWorking && !historyIncomplete && (repositoryChanges || (isGitWorktree && latestAssistantMessage?.checkpointSha)) && (
                 <section
                   aria-label="Review changes"
-                  className="mx-4 overflow-hidden rounded-md text-xs"
+                  className="uam-changes-card mx-4 overflow-hidden rounded-md text-xs"
                   style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 font-medium" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text)' }}>
                     <div className="flex min-w-0 items-baseline gap-2">
-                      <span>Review changes</span>
+                      <span>Chat changes</span>
                       {repositoryChanges && (
                         <span className="font-normal" style={{ color: 'var(--text-3)' }}>
-                          {repositoryChanges.changedFiles.length} changed file{repositoryChanges.changedFiles.length === 1 ? '' : 's'}
+                          {repositoryChanges.changedFiles.length} changed file{repositoryChanges.changedFiles.length === 1 ? '' : 's'} · +{repositoryChanges.changedFiles.reduce((total, file) => total + file.additions, 0)} / -{repositoryChanges.changedFiles.reduce((total, file) => total + file.deletions, 0)}
                         </span>
                       )}
+                      {repositoryChanges && (() => {
+                        const totals = changedLineTotals(repositoryChanges.changedFiles)
+                        return (
+                          <span className="flex gap-2 font-mono font-normal">
+                            <span style={{ color: 'var(--success)' }}>+{totals.additions}</span>
+                            <span style={{ color: 'var(--error)' }}>-{totals.deletions}</span>
+                          </span>
+                        )
+                      })()}
                     </div>
                     <Button style={isCompanionContext() ? { display: 'none' } : undefined} type="button" size="sm" variant="secondary" aria-label="Open commit panel" onClick={() => setCommitPanelOpen(true)}>
                       Open commit panel
                     </Button>
                   </div>
                   {repositoryChanges && (
-                    <div className="max-h-48 overflow-y-auto">
-                      {repositoryChanges.changedFiles.map((file) => (
-                      <button
-                        key={file.path}
-                        type="button"
-                        aria-label={`Review changes to ${file.path}`}
-                        className="uam-choice-button flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left"
-                        style={{ borderBottom: '1px solid var(--border)', background: 'transparent', color: 'var(--text-2)' }}
-                        onClick={() => setSelectedRepositoryFile(file)}
-                      >
-                        <span className="w-6 shrink-0 text-center font-mono" style={{ color: 'var(--text-3)' }}>{file.status.trim() || 'M'}</span>
-                        <span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span>
-                        {file.binary ? (
-                          <span className="shrink-0 font-mono" style={{ color: 'var(--text-3)' }}>BIN</span>
-                        ) : (
-                          <span className="flex shrink-0 gap-2 font-mono"><span style={{ color: 'var(--green)' }}>+{file.additions}</span><span style={{ color: 'var(--red)' }}>-{file.deletions}</span></span>
-                        )}
-                        <ChevronRight size={14} aria-hidden className="shrink-0" style={{ color: 'var(--text-3)' }} />
-                      </button>
-                      ))}
-                    </div>
+                    <ChangedFilesTree
+                      files={repositoryChanges.changedFiles}
+                      selectedPath={selectedRepositoryFile?.path}
+                      onOpenFile={setSelectedRepositoryFile}
+                    />
                   )}
                   {isGitWorktree && latestAssistantMessage?.checkpointSha && (
                     <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-2" style={{ borderTop: repositoryChanges ? '1px solid var(--border)' : undefined, color: 'var(--text-2)' }}>
@@ -2559,12 +3590,32 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   )}
                 </section>
               )}
+              <ChatStatusStrip open={historyRefreshShown && historyRefreshing} tone="info" scene={<RefreshingScene />} title="Refreshing history" />
+              <ChatStatusStrip open={Boolean(acp?.compacting)} tone="info" scene={<CompactingScene />} title="Compacting context" />
+              <SubagentWaitStatus binding={acp} />
+              <ChatStatusStrip open={Boolean(stoppedStatusLabel)} tone="warning" scene={<SleepingScene />} title={stoppedStatusLabel} timeMode="since" />
+              {acp && timeoutStop && timeoutStopShown && (
+                <TimeoutStopNotice
+                  key={currentAcpErrorKey}
+                  timeoutStop={timeoutStop}
+                  onRestart={timeoutStop.kind === 'loop' ? restartLoopedTurn : restartTimedOutTurn}
+                  restartLabel={loopRestartsInNewChat ? 'Continue in new chat' : 'Restart'}
+                  onDismiss={() => setDismissedAcpErrorKey(currentAcpErrorKey)}
+                  copyAction={<CopyTextButton text={buildAcpErrorCopyText({ ...acp, lastError: currentAcpError }, currentErrorTitle)} label="Copy error" title="Copy error details" />}
+                />
+              )}
               </div>
               </SubAgentDisclosureProvider>
+              </InlineSubagentProvider>
             </div>
             {/* Follow the padded end so the latest output clears the floating composer. */}
             <div ref={bottomRef} />
           </div>
+          {session.messagesDigest && <MessageNavigationRail key={session.id}
+            userMessageIndices={navigableUserMessageIndices} startIndex={historyStartIndex} messages={messages}
+            currentIndex={searchNavigation?.messageIndex ?? Math.max(0, historyStartIndex + messages.length - 1)}
+            viewportRef={scrollRef} busy={searchNavigation?.phase === 'loading'}
+            onNavigate={(index) => { isNearBottomRef.current = false; void useAppStore.getState().jumpToSessionMessage(session.id, index) }} />}
           {showScrollToBottom && (
             <div className="pointer-events-none absolute inset-x-0 z-10 flex justify-center" style={{ bottom: 'calc(var(--composer-dock-h, 0px) + 12px)' }}>
               <IconButton
@@ -2579,80 +3630,71 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           )}
         </div>
 
-        <div ref={composerDockRef} className="uam-composer-dock">
-        {displayedGoal && (
-          <GoalBanner
-            goal={displayedGoal}
-            onComplete={handleCompleteGoal}
-            onPause={handlePauseGoal}
+        <div ref={showComposer ? composerDockRef : undefined} className={showComposer ? `uam-composer-dock${composerCentred ? ' uam-composer-dock--centred' : ''}` : 'contents'}>
+        <Overlay open={Boolean(displayedGoal && goalsPopupOpen)} zIndex={1000} onBackdropMouseDown={() => setGoalsPopupOwner(null)}>
+          {displayedGoal && <div ref={goalsPopupRef} id={goalsPopupId} role="dialog" aria-modal="true" aria-label="Chat goals" tabIndex={-1}
+            className="w-full max-w-xl rounded-xl p-4"
+            style={{ maxHeight: 'min(640px, calc(100dvh - 32px))', overflowY: 'auto', background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)', color: 'var(--text)' }}
+            onMouseDown={(event) => event.stopPropagation()}>
+            <div className="mb-3 flex items-center gap-3">
+              <h2 className="flex-1 text-base font-semibold" style={{ color: 'var(--text)' }}>Goal</h2>
+              <IconButton icon={<X size={17} aria-hidden />} label="Close goal" onClick={() => setGoalsPopupOwner(null)} />
+            </div>
+            <GoalBanner key={goalOwner}
+              goal={displayedGoal}
+              onComplete={handleCompleteGoal}
+              onPause={handlePauseGoal}
 			onResume={session.importedReadOnly ? undefined : () => void handleResumeGoal()}
-            onRestart={session.importedReadOnly ? undefined : () => void runGoalMutation(
-              () => resumeGoal(session.id, displayedGoal.id, true), 'Failed to restart goal.',
-            )}
-            turnRunning={Boolean(acp?.processing || cli?.processing)}
-            resumePending={goalSubmitting}
-            onRemove={handleRemoveGoal}
-            onEdit={displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' ? handleEditGoal : undefined}
-            workerModelLabel={displayedGoalWorkerLabel}
-            reviewerModelLabel={displayedGoalReviewerLabel}
-          />
-        )}
+              onRestart={session.importedReadOnly ? undefined : () => void runGoalMutation(
+                () => resumeGoal(session.id, displayedGoal.id, true), 'Failed to restart goal.',
+              )}
+              turnRunning={Boolean(acp?.processing || cli?.processing)}
+              resumePending={goalSubmitting}
+              onRemove={handleRemoveGoal}
+              onEdit={displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' ? handleEditGoal : undefined}
+              workerModelLabel={displayedGoalWorkerLabel}
+              reviewerModelLabel={displayedGoalReviewerLabel}
+              editing={goalEditing}
+              onEditingChange={setGoalEditing}
+            />
+          </div>}
+        </Overlay>
 
+        {composerCentred && <div className="uam-composer-region uam-composer-centre-heading">What would you like to work on?</div>}
         <form
-          onSubmit={submit}
-          className="flex-shrink-0"
+          ref={composerFormRef}
+          onSubmit={(event) => {
+            if (!questionInComposer) return submit(event)
+            event.preventDefault()
+            questionSubmitRef.current?.()
+          }}
+          className={showComposer ? "flex-shrink-0" : "contents"}
         >
-            <div className="uam-chat-content uam-composer-region flex flex-col p-3">
-            {confirmYolo && (
-              <Notice
-                tone="warning"
-                title="Enable YOLO?"
-                dismissLabel="Dismiss YOLO warning"
-                onDismiss={() => setConfirmYolo(false)}
-                actions={(
-                  <>
-                    <Button size="sm" variant="secondary" onClick={() => setConfirmYolo(false)}>Cancel</Button>
-                    <Button size="sm" variant="danger" onClick={() => {
-                      setConfirmYolo(false)
-                      void applyPermissionMode('yolo').then((result) => showPermissionResult(result, 'Failed to change permission mode to YOLO.'))
-                    }}>Enable YOLO</Button>
-                  </>
-                )}
-              >
-                YOLO automatically approves every permission in this chat, including computer use, commands, and file changes.
-              </Notice>
-            )}
-            {rollbackConfirmation && (
-              <Notice
-                tone="warning"
-                title="Roll back workspace?"
-                dismissLabel="Dismiss workspace rollback warning"
-                onDismiss={() => setRollbackConfirmation(null)}
-                actions={(
-                  <>
-                    <Button size="sm" variant="secondary" onClick={() => setRollbackConfirmation(null)}>Cancel</Button>
-                    <Button size="sm" variant="danger" loading={workspaceActionBusy} onClick={() => void confirmLatestTurnRollback()}>Roll back turn</Button>
-                  </>
-                )}
-              >
-                This returns the isolated workspace to before the selected turn. {rollbackConfirmation.diff}
-              </Notice>
-            )}
-            {messageBranchError && (
-              <Notice key={`branch:${messageBranchError}`} tone="error" title="Message branch failed" dismissLabel="Dismiss message branch error" onDismiss={() => setMessageBranchError('')}>
-                {messageBranchError}
-              </Notice>
-            )}
-            {goalError && (
-              <Notice key={`goal:${goalError}`} tone="error" title="Goal update failed" dismissLabel="Dismiss goal error" onDismiss={() => setGoalError('')}>
-                {goalError}
-              </Notice>
-            )}
-            {workspaceFeedback && (
-              <Notice key={`workspace:${workspaceFeedback.tone}:${workspaceFeedback.message}`} tone={workspaceFeedback.tone} title="Workspace" dismissLabel="Dismiss workspace action message" onDismiss={() => setWorkspaceFeedback(null)}>
-                {workspaceFeedback.message}
-              </Notice>
-            )}
+            <div className={showComposer ? "uam-chat-content uam-composer-region flex flex-col p-3" : "uam-chat-content flex shrink-0 flex-col"}>
+            <ConfirmDialog
+              open={confirmYolo}
+              title="Enable YOLO?"
+              confirmLabel="Enable YOLO"
+              tone="danger"
+              onCancel={() => setConfirmYolo(false)}
+              onConfirm={() => {
+                setConfirmYolo(false)
+                void applyPermissionMode('yolo').then((result) => showPermissionResult(result, 'Failed to change permission mode to YOLO.'))
+              }}
+            >
+              {COMPUTER_USE_ENABLED ? 'YOLO automatically approves every permission in this chat, including computer use, commands, and file changes.' : 'YOLO automatically approves every permission in this chat, including commands and file changes.'}
+            </ConfirmDialog>
+            <ConfirmDialog
+              open={rollbackConfirmation !== null}
+              title="Roll back workspace?"
+              confirmLabel="Roll back turn"
+              tone="danger"
+              busy={workspaceActionBusy}
+              onCancel={() => setRollbackConfirmation(null)}
+              onConfirm={() => void confirmLatestTurnRollback()}
+            >
+              This returns the isolated workspace to before the selected turn. {rollbackConfirmation?.diff}
+            </ConfirmDialog>
             {!providerSupported && (
               <Notice key={`unsupported:${currentProviderId}`} tone="warning" title="Provider unavailable" dismissLabel="Dismiss unsupported provider warning">
                 {unsupportedProviderMessage}
@@ -2663,151 +3705,78 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 This portable transcript is read-only and cannot start a provider. Create a new chat in a workspace to continue.
               </Notice>
             )}
-            {acp && !acp.running && !currentAcpError && acp.lastStopReason &&
-              !messages.some((message) => message.stopReason === acp.lastStopReason) && (
-                <div role="status" className="conversation-interrupted">
-                  {stoppedResponseLabel(acp.lastStopReason, acp.lastStopReason !== 'timeout' && acp.lastStopReason !== 'provider-update')}
-                </div>
-              )}
-            {acp && currentAcpError && currentAcpErrorKey !== dismissedAcpErrorKey && (
-              <div
-                role="alert"
-                className="uam-notice mb-2 flex items-start gap-2 rounded-md px-2 py-1.5 text-xs"
-                style={{
-                  border: '1px solid color-mix(in srgb, var(--red) 42%, var(--border))',
-                  background: 'color-mix(in srgb, var(--red) 9%, var(--surface))',
-                  color: 'var(--red)',
-                }}
-              >
-                <span className="min-w-0 flex-1" style={{ overflowWrap: 'anywhere' }}>{currentErrorSource}: {currentAcpError}</span>
-                <span className="flex shrink-0 items-center gap-1">
-                  <CopyTextButton text={buildAcpErrorCopyText({ ...acp, lastError: currentAcpError }, currentErrorTitle)} label="Copy error" title="Copy error details" />
-                  <IconButton icon={<X size={13} />} size="sm" label="Dismiss composer error" onClick={() => setDismissedAcpErrorKey(currentAcpErrorKey)} />
-                </span>
-              </div>
-            )}
-            {claudePlanPrompt !== null && (
+            {acp && currentAcpError && currentAcpErrorKey !== dismissedAcpErrorKey && !timeoutStop && (
               <Notice
-                tone="warning"
-                title="Claude Plan mode"
-                dismissLabel="Dismiss Claude Plan mode warning"
-                onDismiss={() => setClaudePlanPrompt(null)}
-                actions={(
-                  <>
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    disabled={submitting}
-                    onClick={() => void resolveClaudePlanPrompt('acceptEdits')}
-                  >
-                    Accept edits and proceed
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={submitting}
-                    onClick={() => void resolveClaudePlanPrompt('default')}
-                  >
-                    Review each edit
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={submitting}
-                    onClick={() => void resolveClaudePlanPrompt('plan')}
-                  >
-                    Keep planning
-                  </Button>
-                  </>
-                )}
+                tone="error"
+                title={currentErrorTitle}
+                dismissLabel="Dismiss composer error"
+                onDismiss={() => setDismissedAcpErrorKey(currentAcpErrorKey)}
+                actions={<CopyTextButton text={buildAcpErrorCopyText({ ...acp, lastError: currentAcpError }, currentErrorTitle)} label="Copy error" title="Copy error details" />}
               >
-                Claude Plan mode is read-only. Choose how to proceed with this prompt.
+                {currentErrorSource}: {currentAcpError}
               </Notice>
             )}
-            {slashMessage && (
-              <Notice key={`command:${slashMessage}`} tone={slashNoticeTone} title="Command" dismissLabel="Dismiss command feedback" onDismiss={() => setSlashMessage('')}>
-                {slashMessage}
-              </Notice>
+            {CLAUDE_ENABLED && <ConfirmDialog
+              open={claudePlanPrompt !== null}
+              title="Claude Plan mode"
+              confirmLabel="Accept edits and proceed"
+              tone="primary"
+              busy={submitting}
+              cancelLabel="Keep planning"
+              secondaryAction={{ label: 'Review each edit', onClick: () => void resolveClaudePlanPrompt('default') }}
+              onCancel={() => void resolveClaudePlanPrompt('plan')}
+              onConfirm={() => void resolveClaudePlanPrompt('acceptEdits')}
+            >
+              Claude Plan mode is read-only. Choose how to proceed with this prompt.
+              {claudePlanPrompt && claudePlanPrompt.context.references.length > 0 && <> The prompt keeps the reference snapshots selected when you pressed Send; new selections belong to your next message.</>}
+            </ConfirmDialog>}
+            <InlinePromptQueue key={session.id}
+              held={Boolean(acp?.queueHeld && acp.queuedPrompts?.length)} onResume={(expected) => resumeQueuedAcpPrompts(session.id, expected)} prompts={acp?.queuedPrompts ?? []} disabled={steering || session.importedReadOnly}
+              onEdit={(id, revision, text, retainedAttachmentIds) => editQueuedAcpPrompt(session.id, id, revision, text, retainedAttachmentIds)}
+              onReorder={(expected, orderedIds) => reorderQueuedAcpPrompts(session.id, expected, orderedIds)}
+              onRemove={(index, expected) => expected ? removeQueuedAcpPrompt(session.id, index, expected) : removeQueuedAcpPrompt(session.id, index)}
+              onSteer={async (index, expected) => {
+                const submittedSessionId = session.id
+                setSteering(true)
+                try { return await (expected ? steerQueuedAcpPrompt(submittedSessionId, index, expected) : steerQueuedAcpPrompt(submittedSessionId, index)) }
+                finally { if (currentSessionIdRef.current === submittedSessionId) setSteering(false) }
+              }}
+            />
+            {showQuestion && !questionInComposer && questionKey !== answeredQuestionKey && pendingUserInput && (
+              <UserInputInlineCard
+                key={questionKey}
+                memory={questionMemory}
+                input={pendingUserInput}
+                onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
+                waitIsStale={acp?.waitIsStale}
+                waitStaleReason={acp?.waitStaleReason}
+                waitSeconds={acp?.waitSeconds}
+                onCancelTurn={cancelLiveTurn}
+                onStopRuntime={stopLiveRuntime}
+              />
             )}
-            {attachmentError && (
-              <Notice key={`attachment:${attachmentError}`} tone="error" title="Attachment failed" dismissLabel="Dismiss attachment error" onDismiss={() => setAttachmentError('')}>
-                {attachmentError}
-              </Notice>
-            )}
-            {(acp?.queuedPrompts?.length ?? 0) > 0 && (
-              <div className="mb-1.5" role="status" aria-label="Queued prompt">
-                {acp!.queuedPrompts!.slice(0, 1).map((prompt, index) => (
-                  <div
-                    key={`${index}-${prompt.text}`}
-                    className="uam-queued-prompt flex items-center gap-2 px-3 py-1.5 text-[11px] animate-fade-in transition-colors duration-150"
-                    style={{
-                      color: 'var(--text-2)',
-                      border: '1px solid color-mix(in srgb, var(--accent) 28%, var(--border))',
-                      borderRadius: 8,
-                      background: 'color-mix(in srgb, var(--accent) 7%, var(--surface))',
-                    }}
-                  >
-                    <span className="shrink-0 font-medium" style={{ color: 'var(--accent)' }}>Queued</span>
-                    <span className="min-w-0 flex-1">
-                      <span className="line-clamp-2 whitespace-pre-wrap break-words">{prompt.text}</span>
-                      {(prompt.attachments.length > 0 || prompt.markdownStoreFiles.length > 0) && (
-                        <span style={{ color: 'var(--text-3)' }}>{prompt.attachments.length + prompt.markdownStoreFiles.length} attachment{prompt.attachments.length + prompt.markdownStoreFiles.length === 1 ? '' : 's'}</span>
-                      )}
-                    </span>
-                    <IconButton
-                      icon={<CornerUpRight size={14} />}
-                      label="Steer with this prompt now"
-                      disabled={steering}
-                      onClick={() => {
-                        const submittedSessionId = session.id
-                        setSteering(true)
-                        void steerQueuedAcpPrompt(submittedSessionId, index)
-                          .catch(() => false)
-                          .finally(() => {
-                            if (currentSessionIdRef.current === submittedSessionId) setSteering(false)
-                          })
-                      }}
-                    />
-                    <IconButton
-                      icon={<X size={14} />}
-                      label="Remove queued prompt"
-                      disabled={steering}
-                      onClick={() => { void removeQueuedAcpPrompt(session.id, index) }}
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-            {!isCompanionContext() && (session.temporaryParentChatId || liveSideChatId) && (
-              <div className="uam-composer-side-strip" role="group" aria-label="Side chat">
-                <CornerUpRight size={12} aria-hidden style={{ color: 'var(--accent)' }} />
-                {session.temporaryParentChatId ? <>
-                  <span className="min-w-0 flex-1 truncate">Side chat · main chat context is reference only</span>
-                  <Button size="sm" variant="ghost" leadingIcon={<CornerUpLeft size={13} aria-hidden />} title="Back to the main chat; this side chat stays open (/side-return)" onClick={() => void navigateSide('return')}>Return</Button>
-                  <Button size="sm" variant="ghost" leadingIcon={<X size={13} aria-hidden />} title="Close and discard this side chat (/side-dismiss)" disabled={sideBusy} onClick={() => void navigateSide('dismiss')}>Dismiss</Button>
-                </> : <>
-                  <span className="min-w-0 flex-1 truncate">A side chat is open for this chat</span>
-                  <Button size="sm" variant="ghost" leadingIcon={<CornerUpRight size={13} aria-hidden />} title="Resume the side chat (/side)" onClick={() => void navigateSide()}>Resume side chat</Button>
-                </>}
-              </div>
-            )}
-            {!isCompanionContext() && (
-              <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
+            {((showComposer && (!isCompanionContext() || displayedGoal || showSideChatControls)) || editTabMounted || questionTabMounted) && <div className="uam-composer-tabs" data-workspace={showComposer && (!isCompanionContext() || displayedGoal) ? 'true' : undefined}>
+            {showComposer && !isCompanionContext() && <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
+              <>
                 <div ref={workspaceMenuRef} className="relative shrink-0">
                   <IconButton
                     size="sm"
                     disabled={!workspaceDirectory}
                     onClick={() => {
                       setWorkspaceMenuOpen((open) => !open)
+                      setGoalsPopupOwner(null)
                       setModelOpen(false)
                     }}
-                    icon={<ComposerIcon name="folder" size={14} />}
+                    icon={<CustomIcon icon={folderIcon} fallback={<ComposerIcon name="folder" size={14} />} />}
                     label={workspaceDirectory ? 'Workspace actions' : 'Workspace not selected'}
                     aria-haspopup="menu"
                     aria-expanded={workspaceMenuOpen}
                     aria-controls={workspaceMenuOpen ? workspaceMenuId : undefined}
                     tooltipSide="bottom"
                   />
+                  {remoteBrowseKey === remoteContextKey && recoveryHost && (
+                    <RemoteDirectoryBrowser key={remoteContextKey} host={recoveryHost} initialPath={workspaceDirectory} onCancel={() => setRemoteBrowseKey('')} onSelect={(path) => { setRemoteBrowseKey(''); void stageDirectoryPaths([path]) }} />
+                  )}
                   {workspaceMenuOpen && workspaceDirectory && (
                     <ViewportMenu
                       anchorRef={workspaceMenuRef}
@@ -2823,20 +3792,28 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                         {workspaceDirectory}
                       </div>
                       {isGitWorktree && (
-                        <div className="flex items-center gap-2 px-2 py-1 text-[11px]" title={session.workspaceBranchName}>
-                          <ComposerIcon name="git-tree" size={14} />
-                          <span className="truncate">{session.workspaceBranchName}</span>
-                        </div>
-                      )}
-                      {isGitWorktree && (
-                        <div className="px-2 pb-1 text-[11px]" style={{ color: 'var(--green)' }}>
-                          Git worktree{sourceWorkspaceDirectory ? ` · source ${sourceWorkspaceDirectory}` : ''}
-                        </div>
+                        <Tooltip label={workspaceDirectory} side="right">
+                          <div className="flex items-center gap-2 px-2 py-1 text-[11px]" style={{ color: 'var(--green)' }}>
+                            <ComposerIcon name="git-tree" size={14} />
+                            <span className="truncate">{session.workspaceBranchName || 'Git worktree'}</span>
+                          </div>
+                        </Tooltip>
                       )}
                       {remoteComputerUseDisabled ? (
                         <div className="px-2 py-2 text-xs" style={{ color: 'var(--text-2)' }}>
                           This directory lives on the remote computer. Use this chat or its CLI view for target-side work.
-                          <button type="button" role="menuitem" className="uam-menu-select__option mt-2 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }}><ComposerIcon name="terminal" size={14} /><span>Open terminal</span></button>
+                          <MenuItem className="mt-2" icon={<ComposerIcon name="terminal" size={14} />} label="Open terminal" onSelect={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }} />
+                          <MenuItem icon={<ComposerIcon name="folder" size={14} />} label="Attach remote directory" disabled={!recoveryHost || recoveryHost.runnerStatus !== 'ready' || workspaceActionBusy} onSelect={() => { setWorkspaceMenuOpen(false); setRemoteBrowseKey(remoteContextKey) }} />
+                          <label className="mt-2 grid gap-1">
+                            Move this chat to
+                            <select aria-label="Move chat workspace" value={remoteMoveFolderId} disabled={remoteMoveDisabled} onChange={(event) => setRemoteMoveFolderId(event.target.value)} className="px-2 py-1" style={{ background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)' }}>
+                              <option value="">Select workspace on {recoveryHost?.label || 'this host'}</option>
+                              {workspaceFolders.filter((folder) => folder.executionHostId === session.executionHostId && folder.id !== session.folderId).map((folder) => <option key={folder.id} value={folder.id}>{folder.name} · {folder.directory}</option>)}
+                            </select>
+                          </label>
+                          <MenuItem nativeDisabled disabled={remoteMoveDisabled || !remoteMoveFolderId} aria-busy={workspaceActionBusy || undefined} className="uam-menu-select__option mt-1 w-full px-2 py-2 text-left" label={workspaceActionBusy ? 'Moving chat…' : 'Move chat'} onClick={() => void moveRemoteWorkspace()} />
+                          <div className="mt-1">History and goals stay with this chat. A new provider session starts in the selected workspace.</div>
+                          {Boolean(acp?.running || cli?.running) && <div className="mt-1">Stop the chat before moving its workspace.</div>}
                           <label className="mt-2 flex items-center gap-2">
                             <input type="checkbox" checked={session.remoteRecoveryEnabled ?? false} disabled={!recoveryHost?.startupEnabled || recoveryHost.startupStatus !== 'enabled'} onChange={(event) => {
                               void sendToCEF({ action: 'setChatRemoteRecovery', payload: { chatId: session.id, enabled: event.target.checked } }).then((response) => {
@@ -2850,16 +3827,16 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                         </div>
                       ) : (
                         <>
-                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspace() }}><ComposerIcon name="folder" size={14} /><span>Open workspace</span></button>
-                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceEditor() }}><ComposerIcon name="editor" size={14} /><span>Open in editor</span></button>
-                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }}><ComposerIcon name="terminal" size={14} /><span>Open terminal</span></button>
+                          <MenuItem icon={<ComposerIcon name="folder" size={14} />} label="Open workspace" onSelect={() => { setWorkspaceMenuOpen(false); void openWorkspace() }} />
+                          <MenuItem icon={<ComposerIcon name="editor" size={14} />} label="Open in editor" onSelect={() => { setWorkspaceMenuOpen(false); void openWorkspaceEditor() }} />
+                          <MenuItem icon={<ComposerIcon name="terminal" size={14} />} label="Open terminal" onSelect={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }} />
                           <div className="my-1 border-t" style={{ borderColor: 'var(--border)' }} />
                           {!isGitWorktree ? (
-                            <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('create') }}><ComposerIcon name="git-tree" size={14} /><span>Create worktree</span></button>
+                            <MenuItem icon={<ComposerIcon name="git-tree" size={14} />} label="Create worktree" disabled={workspaceActionsDisabled} onSelect={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('create') }} />
                           ) : (
                             <>
-                              <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('discard') }}><span>Discard &amp; return</span></button>
-                              <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('port') }}><span>Port back</span></button>
+                              <MenuItem label={'Discard & return'} disabled={workspaceActionsDisabled} onSelect={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('discard') }} />
+                              <MenuItem label={'Port back'} disabled={workspaceActionsDisabled} onSelect={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('port') }} />
                             </>
                           )}
                         </>
@@ -2868,96 +3845,119 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   )}
                 </div>
                 <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
-                  <span className="truncate">{workspaceDirectory.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'No workspace'}</span>
+                  <span className="max-w-[12rem] shrink-0 truncate">{workspaceName}</span>
+                  {composerBranch && (canSwitchComposerBranch
+                    ? <ChatBranchPicker key={`${composerBranchScope}:${composerVcsType}`} chatId={session.id} branch={composerBranch} vcsType={composerVcsType} disabled={workspaceActionsDisabled} pendingBranch={session.pendingGitBranch} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
+                    : <Tooltip label={composerVcsType === 'svn' ? 'SVN folder switching needs a local working copy outside imported, temporary or isolated chats.' : composerBranch}>
+                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : `Branch ${composerBranch}`}>
+                        {composerVcsType !== 'svn' && <GitBranch size={12} aria-hidden />}<span className="truncate font-mono">{composerVcsType === 'svn' ? `SVN r${composerBranch}` : composerBranch}</span>
+                      </span>
+                    </Tooltip>)}
                   {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
                 </span>
-              </div>
-            )}
-            {pendingUserInput && !session.importedReadOnly && (
-              <UserInputInlineCard
-                key={`${session.id}:${pendingUserInput.requestId}:${pendingUserInput.itemId}`}
-                input={pendingUserInput}
-                onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
-                waitIsStale={acp?.waitIsStale}
-                waitStaleReason={acp?.waitStaleReason}
-                waitSeconds={acp?.waitSeconds}
-                onCancelTurn={() => void cancelAcpTurn(session.id)}
-                onStopRuntime={() => void stopAcpSession(session.id)}
-              />
-            )}
-            <div
+              </>
+            </div>}
+            {/* ui: raw button kept — goal tab look (its own status and objective layout); Chip would add the uam-chip look */}
+            {showComposer && displayedGoal && <div className="uam-composer-goal-tab" role="group" aria-label="Goal">
+              {/* ui: raw button kept — tab body look; Chip would add the uam-chip look */}
+              <button ref={goalsTriggerRef} type="button" aria-label="Goals" aria-expanded={goalsPopupOpen}
+                aria-controls={goalsPopupOpen ? goalsPopupId : undefined} aria-haspopup="dialog"
+                className="uam-composer-goal-tab__body" title={displayedGoal.objective}
+                onClick={() => { setGoalsPopupOwner(goalsPopupOpen ? null : goalOwner); setGoalEditing(false); setWorkspaceMenuOpen(false); setModelOpen(false) }}
+                onKeyDown={(event) => {
+                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setGoalEditing(false); setGoalsPopupOwner(goalOwner) }
+                }}>
+                <Target size={13} aria-hidden /><span className="uam-composer-goal-tab__objective">{displayedGoal.objective}</span>
+              </button>
+              {displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' && !session.importedReadOnly &&
+                <IconButton size="sm" icon={<Pencil size={12} aria-hidden />} label="Edit goal" disabled={goalSubmitting} onClick={() => { setGoalEditing(true); setGoalsPopupOwner(goalOwner); setWorkspaceMenuOpen(false); setModelOpen(false) }} />}
+              {displayedGoal.status === 'active' &&
+                <IconButton size="sm" icon={<Square size={11} aria-hidden />} label="Stop goal" disabled={goalSubmitting} onClick={handlePauseGoal} />}
+            </div>}
+            <div className="uam-composer-tabs__end">
+              <ComposerTab open={questionInComposer}>
+                <div className="uam-composer-side-controls" role="group" aria-label="Question">
+                  <span className="uam-composer-side-controls__pill" title="The agent is waiting for your answer">
+                    <MessageSquare size={12} aria-hidden />
+                    Question
+                  </span>
+                </div>
+              </ComposerTab>
+              <ComposerTab open={editingMessageIndex !== null}>
+                <div className="uam-composer-side-controls" role="group" aria-label="Editing message">
+                  <span className="uam-composer-side-controls__pill" title={editingMessageSource.kind === 'unsent' ? 'Saving updates this unsent input' : 'Saving creates a new branch'}>
+                    <Pencil size={12} aria-hidden />
+                    Editing message
+                  </span>
+                  <IconButton size="sm" icon={<X size={14} aria-hidden />} label="Cancel edit" tooltip="Cancel edit (Esc)" disabled={branchingMessageIndex !== null} onClick={cancelEditingMessage} />
+                </div>
+              </ComposerTab>
+              <ComposerTab open={showComposer && showSideChatControls}>{session.temporaryParentChatId ? (
+                <div className="uam-composer-side-controls" role="group" aria-label="Side chat">
+                  <span className="uam-composer-side-controls__pill" title="Main chat context is reference only">
+                    <MessageSquareDashed size={12} aria-hidden />
+                    Side chat
+                  </span>
+                  <IconButton size="sm" icon={<CornerUpLeft size={14} aria-hidden />} label="Return to main chat" tooltip="Back to the main chat; this side chat stays open (/side-return)" onClick={() => void navigateSide('return')} />
+                  <IconButton size="sm" icon={<X size={14} aria-hidden />} label="Dismiss side chat" tooltip="Close and discard this side chat (/side-dismiss)" disabled={sideBusy} onClick={() => void navigateSide('dismiss')} />
+                </div>
+              ) : (
+                <div className="uam-composer-side-controls">
+                  <Button type="button" size="sm" variant="ghost" leadingIcon={<MessageSquareDashed size={13} aria-hidden />} title="Resume the side chat (/side)" onClick={() => void navigateSide()}>Resume side chat</Button>
+                </div>
+              )}</ComposerTab>
+            </div>
+            </div>}
+            {(showComposer || editingMessageIndex !== null) && <div
               className="uam-composer-surface"
               onDragOver={(event) => event.preventDefault()}
               onDrop={onComposerDrop}
-              style={{
-                border: 'none',
-                borderRadius: 10,
-                background: 'var(--surface)',
-                boxShadow: 'var(--elev-1)',
-                overflow: 'visible',
-              }}
             >
-            {(markdownStoreAttachments.length > 0 || composerAttachments.length > 0) && (
+            {questionInComposer && pendingUserInput && <UserInputInlineCard
+              key={questionKey}
+              memory={questionMemory}
+              variant="composer"
+              input={pendingUserInput}
+              onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
+              submitRef={questionSubmitRef}
+              onSubmitStateChange={setQuestionSubmitState}
+              onAnswered={() => setAnsweredQuestionKey(questionKey)}
+              waitIsStale={acp?.waitIsStale}
+              waitStaleReason={acp?.waitStaleReason}
+              waitSeconds={acp?.waitSeconds}
+              onCancelTurn={cancelLiveTurn}
+              onStopRuntime={stopLiveRuntime}
+            />}
+            {/* The composer body stays mounted under a question so its draft, refs and menus survive; it swaps back in on answer. */}
+            <div className={!questionInComposer && questionWasInComposer.current ? 'uam-swap__in' : undefined} hidden={questionInComposer}>
+            {editingMessageIndex === null && <ComposerReferenceChips key={`${session.id}:${session.createdAt.getTime()}`} references={composerReferences} />}
+            {editingMessageIndex === null && (markdownStoreAttachments.length > 0 || composerAttachments.length > 0) && (
               <div className="flex flex-wrap gap-2 px-3 pt-3">
                 {markdownStoreAttachments.map((entry) => (
-                  <span
+                  <ContextChip
                     key={entry.filePath}
-                    className="inline-flex items-center gap-2 max-w-full text-[11px]"
-                    title={entry.filePath}
-                    style={{
-                      border: '1px solid color-mix(in srgb, var(--purple) 45%, var(--border))',
-                      borderRadius: 7,
-                      background: 'color-mix(in srgb, var(--purple) 10%, var(--surface-up))',
-                      color: 'var(--text-2)',
-                      padding: '5px 8px',
-                    }}
-                  >
-                    <BookOpen size={13} aria-hidden style={{ color: 'var(--purple)' }} />
-                    <span style={{ color: 'var(--purple)' }}>Skills</span>
-                    <span className="truncate max-w-[260px]">{entry.title || entry.filePath.split(/[\\/]/).pop()}</span>
-                    <button
-                      type="button"
-                      onClick={() => detachMarkdownStoreEntry(session.id, entry.filePath)}
-                      title="Remove skill attachment"
-                      aria-label={`Remove ${entry.title || 'skill'} attachment`}
-                      className="uam-attachment-remove"
-                      style={{ color: 'var(--text-3)' }}
-                    >
-                      <X size={12} aria-hidden />
-                    </button>
-                  </span>
+                    kind="skill"
+                    name={entry.title || entry.filePath.split(/[\\/]/).pop() || 'skill'}
+                    detail={entry.filePath}
+                    onRemove={() => detachMarkdownStoreEntry(session.id, entry.filePath)}
+                    removeLabel={`Remove ${entry.title || 'skill'} attachment`}
+                  />
                 ))}
                 {composerAttachments.map((attachment) => (
-                  <span
+                  <ContextChip
                     key={attachment.id}
-                    className="inline-flex items-center gap-2 max-w-full text-[11px]"
-                    title={attachment.error || attachmentLabel(attachment)}
-                    style={{
-                      border: `1px solid ${attachment.status === 'failed' ? 'color-mix(in srgb, var(--red) 55%, var(--border))' : 'var(--border)'}`,
-                      borderRadius: 999,
-                      background: attachment.status === 'failed' ? 'color-mix(in srgb, var(--red) 10%, var(--surface))' : 'var(--surface-up)',
-                      color: attachment.status === 'failed' ? 'var(--red)' : 'var(--text-2)',
-                      padding: '3px 7px',
+                    kind={attachmentChipKind(attachment)}
+                    name={attachment.name}
+                    detail={attachment.error || attachmentLabel(attachment)}
+                    path={attachment.status === 'ready' ? attachment.path : undefined}
+                    meta={attachment.status === 'staging' ? 'copying' : undefined}
+                    error={attachment.status === 'failed'}
+                    onRemove={() => {
+                      removedAttachmentIdsRef.current.add(attachment.id)
+                      setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id))
                     }}
-                  >
-                    <span className="truncate max-w-[260px]">{attachment.name}</span>
-                    <span style={{ color: 'var(--text-3)' }}>
-                      {attachment.status === 'staging' ? 'copying' : attachment.type === 'directory' ? 'dir' : attachment.type}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        removedAttachmentIdsRef.current.add(attachment.id)
-                        setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id))
-                      }}
-                      title="Remove attachment"
-                      aria-label={`Remove ${attachment.name} attachment`}
-                      className="uam-attachment-remove"
-                      style={{ color: 'var(--text-3)' }}
-                    >
-                      <X size={12} aria-hidden />
-                    </button>
-                  </span>
+                    removeLabel={`Remove ${attachment.name} attachment`}
+                  />
                 ))}
               </div>
             )}
@@ -2969,22 +3969,24 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   className="overflow-hidden rounded-lg animate-fade-in"
                   style={{ width: composerTextareaRef.current?.getBoundingClientRect().width ?? 320, border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
                   role="listbox"
-                  aria-label={permissionModeQuery !== undefined ? 'Permission modes' : codexOptionKind === 'reasoning' ? 'Reasoning options' : codexOptionKind === 'speed' ? 'Speed options' : variantQuery !== undefined ? 'OpenCode variants' : 'Slash commands'}
+                  aria-label={permissionModeQuery !== undefined ? 'Permission modes' : codexOptionKind === 'reasoning' ? 'Reasoning options' : codexOptionKind === 'speed' ? 'Speed options' : OPENCODE_ENABLED && variantQuery !== undefined ? 'OpenCode variants' : mentionQuery !== undefined ? 'Context references' : 'Slash commands'}
                 >
                   <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)', borderBottom: '1px solid var(--border)' }}>
-                    {permissionModeQuery !== undefined ? <Shield size={12} aria-hidden /> : codexOptionKind !== undefined || variantQuery !== undefined ? <Cpu size={12} aria-hidden /> : <BookOpen size={12} aria-hidden />}
-                    {permissionModeQuery !== undefined ? 'Permission mode' : codexOptionKind === 'reasoning' ? 'Reasoning' : codexOptionKind === 'speed' ? 'Speed' : variantQuery !== undefined ? 'OpenCode variants' : 'Commands'}
+                    {permissionModeQuery !== undefined ? <Shield size={12} aria-hidden /> : codexOptionKind !== undefined || variantQuery !== undefined ? <Cpu size={12} aria-hidden /> : mentionQuery !== undefined ? <AtSign size={12} aria-hidden /> : <BookOpen size={12} aria-hidden />}
+                    {permissionModeQuery !== undefined ? 'Permission mode' : codexOptionKind === 'reasoning' ? 'Reasoning' : codexOptionKind === 'speed' ? 'Speed' : OPENCODE_ENABLED && variantQuery !== undefined ? 'OpenCode variants' : mentionQuery !== undefined ? 'Context' : 'Commands'}
                   </div>
                   <div className="overflow-y-auto" style={{ maxHeight: 360 }}>
                   {slashMatches.map((command, index) => {
-                    const active = index === Math.min(slashIndex, slashMatches.length - 1)
+                    const active = index === activeSlashIndex
                     return (
+                      // ui: raw button kept — role="option" in a listbox (aria-selected, active descendant); MenuItem is role="menuitem"
                       <button
                         key={command.id}
                         id={`${slashListboxId}-option-${index}`}
                         type="button"
                         role="option"
                         aria-selected={active}
+                        aria-disabled={command.disabled || undefined}
                         aria-haspopup={command.groupEntries ? 'menu' : undefined}
                         aria-expanded={command.groupEntries ? slashGroup === command.id.slice('md-group:'.length) : undefined}
                         ref={(element) => {
@@ -2996,11 +3998,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                         }}
                         onMouseDown={(e) => { e.preventDefault(); runSlashCommand(command) }}
                         className={`uam-menu-select__option flex w-full items-start gap-2.5 px-3 py-2 text-left${active ? ' is-selected' : ''}`}
-                        style={{ color: active ? 'var(--text)' : 'var(--text-2)' }}
+                        style={{ color: command.disabled ? 'var(--text-3)' : active ? 'var(--text)' : 'var(--text-2)', cursor: command.disabled ? 'not-allowed' : undefined }}
                       >
-                        <span aria-hidden className="mt-0.5 shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--text-2)' }}>{command.icon}</span>
+                        <span aria-hidden className="mt-0.5 shrink-0" style={{ color: command.disabled ? 'var(--text-3)' : active ? 'var(--accent)' : 'var(--text-2)' }}>{command.icon}</span>
                         <span className="min-w-0 flex-1">
-                          <span className={permissionModeQuery === undefined && codexOptionKind === undefined && variantQuery === undefined ? 'block font-mono text-sm' : 'block text-sm'} style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[command.id.slice('md-group:'.length)] = element }} data-slash-group-anchor=""><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span>
+                          <span className={permissionModeQuery === undefined && codexOptionKind === undefined && variantQuery === undefined ? 'block font-mono text-sm' : 'block text-sm'} style={{ color: command.disabled ? 'var(--text-3)' : active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[command.id.slice('md-group:'.length)] = element }} data-slash-group-anchor=""><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span>
                           <span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span>
                         </span>
                       </button>
@@ -3018,7 +4020,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 {group.groupEntries.map((command, index) => {
                   const childPath = command.id.startsWith('md-group:') ? command.id.slice('md-group:'.length) : path
                   const active = group === activeSlashGroup && index === Math.min(slashGroupIndex, group.groupEntries!.length - 1)
-                  return <button key={command.id} id={`${slashListboxId}-group-${groupIndex}-option-${index}`} type="button" role="menuitem" aria-haspopup={command.groupEntries ? 'menu' : undefined} aria-expanded={command.groupEntries ? slashGroup === childPath : undefined} onMouseEnter={() => { setSlashGroupIndex(command.groupEntries ? 0 : index); setSlashGroup(childPath) }} onMouseDown={(event) => { event.preventDefault(); runSlashCommand(command) }} className={`uam-menu-select__option w-full flex items-start gap-2 px-2 py-2 text-left${active ? ' is-selected' : ''}`} style={{ borderRadius: 6, color: active ? 'var(--text)' : 'var(--text-2)' }}>{command.groupEntries ? <BookOpen size={15} className="mt-0.5 shrink-0" aria-hidden /> : <FileText size={15} className="mt-0.5 shrink-0" aria-hidden />}<span className="min-w-0 flex-1"><span className="block font-mono text-sm" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[childPath] = element }}><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span><span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span></span></button>
+                  return <MenuItem key={command.id} id={`${slashListboxId}-group-${groupIndex}-option-${index}`} aria-haspopup={command.groupEntries ? 'menu' : undefined} aria-expanded={command.groupEntries ? slashGroup === childPath : undefined} onMouseEnter={() => { setSlashGroupIndex(command.groupEntries ? 0 : index); setSlashGroup(childPath) }} onMouseDown={(event) => { event.preventDefault(); runSlashCommand(command) }} className={`uam-menu-select__option w-full${active ? ' is-selected' : ''}`} style={{ borderRadius: 6, color: active ? 'var(--text)' : 'var(--text-2)' }} icon={command.groupEntries ? <BookOpen size={15} aria-hidden /> : <FileText size={15} aria-hidden />} detailLayout="stacked" label={<span className="font-mono text-sm" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[childPath] = element }}><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span>} detail={command.hint} />
                 })}
               </ViewportMenu>
             })}
@@ -3031,6 +4033,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 className="flex items-center gap-2 px-3 pt-2 text-[11px]"
                 style={{ color: dictationError ? 'var(--red)' : 'var(--accent)' }}
               >
+                {dictationError && <CircleAlert size={13} aria-hidden className="shrink-0" />}
                 <span className="min-w-0 flex-1">
                   {dictationError || (
                     dictationState === 'starting'
@@ -3051,7 +4054,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               </div>
             )}
             <div className="uam-composer-input-row">
-              {featurePreference === 'uam' && <ComposerAgentSelector
+              {showComposer && featurePreference === 'uam' && <ComposerAgentSelector
                 agents={uamAgents}
                 agentId={selectedUamAgentId}
                 nextTurn={Boolean(providerAcp?.processing)}
@@ -3060,23 +4063,27 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 
             <textarea
               ref={composerTextareaRef}
-              value={draft}
+              value={editingMessageIndex !== null ? editingMessageText : draft}
+              aria-label={editingMessageIndex !== null ? "Edit message" : undefined}
               onChange={(event) => {
+                if (editingMessageIndex !== null) { setEditingMessageText(event.target.value); return }
                 setDraft(event.target.value)
                 setComposerSelection({ start: event.target.selectionStart, end: event.target.selectionEnd })
                 setSlashGroup('')
                 setPermissionMenuOpen(false)
               }}
               onSelect={(event) => {
-                if (draft.includes('/')) {
+                if (draft.includes('/') || draft.includes('@')) {
                   setComposerSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })
                 }
               }}
               onKeyDown={onComposerKeyDown}
-              onPaste={onComposerPaste}
+              // Leaving the input closes the @ list for this word instead of leaving it drawn over the chips.
+              onBlur={() => { if (activeMentionToken) setDismissedMention(`${activeMentionToken.start}:${activeMentionToken.query}`) }}
+              onPaste={editingMessageIndex === null ? onComposerPaste : undefined}
               rows={1}
-              placeholder={`Message ${currentProviderName} · / for commands`}
-              disabled={(submitting && !compacting) || dictationActive || session.importedReadOnly}
+              placeholder={`Message ${currentProviderName} · / for commands · @ for context${isCompanionContext() ? ' · keyboard mic for dictation' : ''}`}
+              disabled={dictationActive || session.importedReadOnly || branchingMessageIndex !== null}
               aria-describedby={dictationActive || dictationError ? `dictation-status-${session.id}` : undefined}
               aria-haspopup="listbox"
               aria-expanded={slashOpen}
@@ -3084,15 +4091,21 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               aria-activedescendant={activeSlashOptionId}
               aria-autocomplete="list"
               className="uam-composer-textarea w-full resize-none text-sm"
-              style={{
-                border: 'none',
-                background: 'transparent',
-                color: 'var(--text)',
-                padding: '10px 12px',
-                outline: 'none',
-              }}
             />
             </div>
+            {editingMessageIndex !== null && (
+              <div className="flex flex-wrap items-center justify-end gap-2 px-3 pb-2">
+                {editingMessageAttachments.map((attachment) => (
+                  <div key={`${attachment.type === 'markdown-store' ? 'skill' : 'native'}:${attachment.id}`} className="inline-flex items-center gap-1">
+                    <AttachmentList attachments={[attachment]} chatId={session.id} nativeMessageIndex={messages[editingMessageIndex - historyStartIndex]?.nativeMessageIndex} />
+                    <IconButton icon={<X size={14} />} label={`Remove ${attachment.name} from edited message`} disabled={branchingMessageIndex !== null} onClick={() => removeEditingAttachment(attachment.id, attachment.type === 'markdown-store')} />
+                  </div>
+                ))}
+                {!showComposer && <ComposerSendButton canSend={canSaveEdit} editing />}
+              </div>
+            )}
+            </div>
+            {showComposer && <>
             <input
               ref={fileInputRef}
               type="file"
@@ -3105,12 +4118,16 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               }}
             />
             <ComposerToolbar
+              draftPending={editingMessageIndex === null && draft.trim().length > 0}
               acp={providerAcp}
               provider={currentProvider}
-              providers={providers}
+              providers={composerProviders}
               providerId={currentProviderId}
               canChangeProvider={canChangeProvider}
-              canSend={canSend}
+              canSend={questionInComposer ? questionSubmitState === 'ready' : editingMessageIndex !== null ? canSaveEdit : canSend}
+              editing={editingMessageIndex !== null}
+              sendLabel={questionInComposer ? 'Submit answers' : undefined}
+              holdSend={questionInComposer}
               runtimeStatusLabel={statusLabel(providerRuntime)}
               runtimeStatusColor={statusColor(providerRuntime)}
               modelId={session.smallModelMode ? activeGoal?.workerModelId || currentModelId : currentModelId}
@@ -3132,21 +4149,26 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               computerUseAwaitingTarget={computerUseMode && !session.computerUseTargetId}
               memoryLevel={currentMemoryLevel}
               defaultMemoryLevel={defaultMemoryLevel}
-              memoryChipVisible={memoryChipExplicit || currentMemoryLevel !== defaultMemoryLevel}
               smallModelMode={session.smallModelMode ?? false}
               modelOpen={modelOpen}
               modelMenuRef={modelMenuRef}
 			  onToggleModel={() => {
 				if (!modelOpen && isOpenCodeProvider(currentProvider, currentProviderId) && !providerAcp?.modelsLoading && !providerAcp?.availableModels.length) {
-				  void discoverProviderModels('', currentProviderId, workspaceDirectory)
+				  void discoverProviderModels('', currentProviderId, workspaceDirectory, session.executionHostId || 'local')
 				}
                 setModelOpen((value) => !value)
                 setWorkspaceMenuOpen(false)
               }}
-              onSelectProvider={(providerId) => {
+              workspaceDirectory={workspaceDirectory}
+              executionHostId={session.executionHostId || 'local'}
+              onSelectProviderModel={(providerId, modelId) => {
                 setModelOpen(false)
-                if (providerId !== currentProviderId) setProviderHandoffTargetId(providerId)
+                if (providerId !== currentProviderId) {
+                  setProviderHandoffModelId(modelId)
+                  setProviderHandoffTargetId(providerId)
+                }
               }}
+              onRefreshModels={refreshDisplayedModels}
               onSelectModel={(modelId) => {
                 setModelOpen(false)
                 void setSessionModel(session.id, modelId)
@@ -3163,38 +4185,31 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               onSelectUamAgent={(agentId) => void setSessionUamAgent(session.id, agentId)}
               onSelectPermissionMode={(modeId) => void selectPermissionMode(modeId)}
               onToggleComputerUseMode={() => void setComputerUseActive(!computerUseMode)}
-              onSelectMemoryLevel={(level) => {
-                setMemoryChipExplicit(true)
-                void setSessionMemoryLevel(session.id, level)
-              }}
-              onClearMemoryLevel={() => {
-                setMemoryChipExplicit(false)
-                void setSessionMemoryLevel(session.id, defaultMemoryLevel)
-              }}
+              onSelectMemoryLevel={(level) => void setSessionMemoryLevel(session.id, level)}
               onToggleSmallModelMode={() => void setSessionSmallModelMode(session.id, !(session.smallModelMode ?? false))}
               goalArmed={goalArmNextMessage}
               goalActive={Boolean(activeGoal)}
               goalPaused={Boolean(goalPaused)}
-              defaultGoalTokenBudget={defaultGoalTokenBudget}
               onToggleGoal={handleToggleGoal}
-              onSetDefaultGoalTokenBudget={(value) => setDefaultGoalTokenBudget(session.id, value)}
-              onCancelTurn={() => void cancelAcpTurn(session.id)}
+              onCancelTurn={cancelLiveTurn}
               onAttachFile={() => fileInputRef.current?.click()}
               onOpenMarkdownStore={() => void openMarkdownStore()}
               dictationState={dictationState}
               dictationError={dictationError}
               dictationElapsedSeconds={dictationElapsedSeconds}
-              dictationAvailable={!isCompanionContext() && dictationAvailable}
+              dictationAvailable={dictationAvailable}
               onToggleDictation={() => {
                 if (dictationActiveRef.current) void stopDictation()
                 else void startDictation()
               }}
             />
-            </div>
+            </>}
+            </div>}
           </div>
         </form>
         </div>
       </div>
     </div>
+    </FileInspectionProvider>
   )
 })

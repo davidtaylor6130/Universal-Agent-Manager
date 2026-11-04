@@ -6,6 +6,8 @@
 #include <vector>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 
 struct PreparedFolderSave
 {
@@ -20,7 +22,12 @@ struct PreparedFolderSave
 class ChatFolderStore
 {
   public:
+	/// <summary>Allocate a collision-checked ID independently of names and folder order.</summary>
+	static std::string AllocateId(const std::unordered_set<std::string>& used_ids);
+	static std::string AllocateId(const std::vector<ChatFolder>& folders);
 	static std::string Serialize(const std::vector<ChatFolder>& folders);
+	/// Admission only: retain external/remote workspace references; refuse local bindings into a stopped source profile.
+	static bool ValidateDataFolderReferences(std::string_view text, const std::filesystem::path& source, std::string& error);
 	static std::shared_ptr<PreparedFolderSave> PrepareSave(const std::filesystem::path& data_root, const std::vector<ChatFolder>& folders);
 	static bool PublishPreparedSave(const std::shared_ptr<PreparedFolderSave>& prepared);
 	/// <summary>Loads folder definitions from the data root.</summary>

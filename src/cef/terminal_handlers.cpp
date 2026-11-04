@@ -1,4 +1,5 @@
 #include "cef/uam_query_handler.h"
+#include "app/vcs_commit_service.h"
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
 
@@ -28,6 +29,7 @@
 // ---------------------------------------------------------------------------
 
 using namespace uam::query_handler_internal;
+using namespace uam::query_handler_async;
 
 namespace
 {
@@ -82,6 +84,7 @@ namespace
 	{
 		nlohmann::json data;
 		data["terminalId"] = terminal.terminal_id;
+		data["startupTime"] = terminal.startup_time_s;
 		data["sessionId"] = terminal.frontend_chat_id;
 		data["sourceChatId"] = uam::CliTerminalPrimaryChatId(terminal);
 		data["running"] = terminal.running;
@@ -174,10 +177,144 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		cb->Success(BuildCliBindingResponse(terminal).dump());
 		return;
 	}
+	if (ApplyPendingChatBranch(browser, *chat, cb, [this, browser, payload, cb]() { HandleStartCli(browser, payload, cb); }))
+		return;
+	const uam::WorktreeLaunchPreparationResult workspace = uam::PrepareWorktreeForLaunch(m_app, *chat);
+	if (workspace.state == uam::WorktreeLaunchPreparationState::Failed)
+	{
+		terminal.last_error = workspace.error;
+		if (terminal.native_session_setup_cancel) terminal.native_session_setup_cancel->request_stop();
+		terminal.native_session_setup_cancel.reset();
+		terminal.worktree_launch_pending = false;
+		terminal.worktree_launch_cancellation.reset();
+		terminal.should_launch = false;
+		cb->Success(BuildCliBindingResponse(terminal).dump());
+		return;
+	}
+	if (workspace.state == uam::WorktreeLaunchPreparationState::Pending)
+	{
+		// Reattachments share one continuation and use its latest terminal dimensions.
+		if (terminal.native_session_setup_cancel != nullptr)
+		{
+			cb->Success(BuildCliBindingResponse(terminal).dump());
+			return;
+		}
+		std::shared_ptr<std::stop_source> request = workspace.cancellation ? workspace.cancellation : std::make_shared<std::stop_source>();
+		terminal.native_session_setup_cancel = request;
+		terminal.worktree_launch_pending = true;
+		terminal.worktree_launch_cancellation = request;
+		terminal.should_launch = false;
+		CefRefPtr<PendingCliStartTask> pending = new PendingCliStartTask(m_asyncLifetime,
+		    [this, browser, payload, cb, request, chat_id, root = m_app.data_root, created = chat->created_at, incarnation = chat->metadata_incarnation,
+		    provider_id = chat->provider_id, host_id = chat->execution_host_id, native_id = chat->native_session_id,
+		    directory = chat->workspace_directory, folder_id = chat->folder_id, imported = chat->imported_read_only,
+		    agent_run = chat->agent_run_id, goal_owner = chat->goal_owner_chat_id, side_parent = chat->temporary_parent_chat_id,
+		    git_enabled = m_app.settings.git_enabled, automatic = m_app.settings.git_auto_worktree, pull = m_app.settings.git_pull_before_chat,
+		    snapshot_svn = m_app.settings.git_snapshot_svn, snapshot_plain_folders = m_app.settings.git_snapshot_plain_folders,
+		    base_branch = m_app.settings.git_default_base_branch, base_override = chat->git_base_branch_override](std::string_view task_error) mutable
+		    {
+			ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
+			uam::CliTerminalState* target = uam::FindCliTerminalForChat(m_app, chat_id);
+			if (current == nullptr || target == nullptr || target->native_session_setup_cancel != request || request->stop_requested() || !target->ui_attached ||
+			    m_app.data_root != root || current->created_at != created || current->metadata_incarnation != incarnation || current->provider_id != provider_id || current->execution_host_id != host_id ||
+			    current->native_session_id != native_id || current->workspace_directory != directory || current->folder_id != folder_id ||
+			    current->imported_read_only != imported || current->agent_run_id != agent_run || current->goal_owner_chat_id != goal_owner ||
+			    current->temporary_parent_chat_id != side_parent || current->git_base_branch_override != base_override || m_app.settings.git_enabled != git_enabled ||
+			    m_app.settings.git_auto_worktree != automatic ||
+			    (uam::paths::IsControllerLocalWorkspace(*current) && (m_app.settings.git_snapshot_svn != snapshot_svn || m_app.settings.git_snapshot_plain_folders != snapshot_plain_folders)) || m_app.settings.git_default_base_branch != base_branch || m_app.settings.git_pull_before_chat != pull)
+			{
+				request->request_stop();
+				uam::CancelWorktreeLaunchPreparation(m_app, chat_id, request);
+				if (target != nullptr && target->native_session_setup_cancel == request)
+				{
+					target->native_session_setup_cancel.reset();
+					target->worktree_launch_pending = false;
+					target->worktree_launch_cancellation.reset();
+				}
+				cb->Failure(409, "Terminal start was canceled.");
+				return true;
+			}
+			const uam::WorktreeLaunchPreparationResult prepared = task_error.empty()
+			    ? uam::PrepareWorktreeForLaunch(m_app, *current)
+			    : uam::WorktreeLaunchPreparationResult{uam::WorktreeLaunchPreparationState::Failed, std::string(task_error), {}};
+			if (prepared.state == uam::WorktreeLaunchPreparationState::Pending)
+			{
+				if (prepared.cancellation && prepared.cancellation != request)
+				{
+					request = prepared.cancellation;
+					target->native_session_setup_cancel = request;
+					target->worktree_launch_cancellation = request;
+				}
+				return false;
+			}
+			target->native_session_setup_cancel.reset();
+			target->worktree_launch_pending = false;
+			target->worktree_launch_cancellation.reset();
+			if (prepared.state == uam::WorktreeLaunchPreparationState::Failed)
+			{
+				target->last_error = prepared.error;
+				uam::PushStateUpdateIfChanged(browser, m_app);
+				cb->Success(BuildCliBindingResponse(*target).dump());
+				return true;
+			}
+			nlohmann::json resumed_payload = payload;
+			resumed_payload["attachmentId"] = target->ui_attachment_id;
+			resumed_payload["rows"] = target->rows;
+			resumed_payload["cols"] = target->cols;
+			HandleStartCli(browser, resumed_payload, cb);
+			return true;
+		    });
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		pending->Execute();
+		return;
+	}
 	if (terminal.native_session_setup_cancel != nullptr)
 	{
 		// Reattachments share the outstanding creation; stale detaches carry a different attachment ID.
 		cb->Success(BuildCliBindingResponse(terminal).dump());
+		return;
+	}
+
+	std::string baseline_error;
+	std::shared_ptr<std::stop_source> baseline_cancel;
+	const uam::ChatBaselineReadiness baseline = uam::PrepareChatRepositoryBaseline(m_app, *chat, &baseline_error, &baseline_cancel, true);
+	if (baseline == uam::ChatBaselineReadiness::Failed)
+	{
+		terminal.last_error = baseline_error;
+		cb->Success(BuildCliBindingResponse(terminal).dump());
+		return;
+	}
+	if (baseline == uam::ChatBaselineReadiness::Pending)
+	{
+		terminal.native_session_setup_cancel = baseline_cancel;
+		const std::shared_ptr<uam::ChatBaselinePreparation> task = m_app.repository_baseline_preparations.at(chat_id);
+		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
+		const std::string host_id = chat->execution_host_id;
+		const std::string attachment_id = terminal.ui_attachment_id;
+		if (!RunAsyncCefQuery(m_asyncLifetime, cb,
+		    [task, baseline_cancel]
+		    {
+			    std::string error;
+			    const uam::ChatBaselineReadiness ready = uam::WaitForChatRepositoryBaseline(task, baseline_cancel->get_token(), &error);
+			    return ready == uam::ChatBaselineReadiness::Failed ? AsyncFailure(409, error) : AsyncSuccess({});
+		    },
+		    [this, browser, payload, cb, chat_id, workspace, host_id, attachment_id, baseline_cancel](AsyncCefResult& result)
+		    {
+			    ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
+			    uam::CliTerminalState* target = FindCliTerminalByRoutingKey(m_app, chat_id, "");
+			    if (target == nullptr || target->native_session_setup_cancel != baseline_cancel || baseline_cancel->stop_requested() ||
+			        current == nullptr || current->execution_host_id != host_id || uam::paths::ResolveWorkspaceRootPath(m_app, *current) != workspace ||
+			        target->ui_attachment_id != attachment_id || !target->ui_attached)
+			    {
+				    if (target != nullptr && target->native_session_setup_cancel == baseline_cancel) target->native_session_setup_cancel.reset();
+				    result = AsyncFailure(409, "The chat changed while its repository baseline was being saved.");
+				    return;
+			    }
+			    target->native_session_setup_cancel.reset();
+			    if (!result.ok) { target->last_error = result.error; return; }
+			    result.callback_deferred = true;
+			    HandleStartCli(browser, payload, cb);
+		    })) terminal.native_session_setup_cancel.reset();
 		return;
 	}
 
@@ -290,7 +427,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		terminal.native_session_setup_cancel = request;
 		terminal.last_error.clear();
 		using namespace uam::query_handler_async;
-		if (!CefPostTask(TID_FILE_BACKGROUND, new CefQueryWorkerTask(m_asyncLifetime, cb,
+		if (!CefPostTask(TID_FILE_USER_BLOCKING, new CefQueryWorkerTask(m_asyncLifetime, cb,
 		    [workspace, provider, request, remote_host]()
 		    {
 			    std::string error;
@@ -505,6 +642,7 @@ void UamQueryHandler::HandleSteerCliTerminal(CefRefPtr<CefBrowser> browser, cons
 }
 
 /// <summary>Passively reads an owned live terminal without launching, resizing, or replacing its desktop attachment.</summary>
+#if UAM_ENABLE_MOBILE_COMPANION
 void UamQueryHandler::HandleCompanionCli(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
@@ -549,6 +687,7 @@ void UamQueryHandler::HandleCompanionCli(CefRefPtr<CefBrowser> browser, const nl
 	response["replayData"] = uam::base64::Encode(std::string(output));
 	cb->Success(response.dump());
 }
+#endif
 
 /// <summary>Records deliberate UI activity in transient runtime state; backend pushes never call this.</summary>
 void UamQueryHandler::HandleRuntimeActivity(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -561,6 +700,6 @@ void UamQueryHandler::HandleRuntimeActivity(CefRefPtr<CefBrowser> browser, const
 		session->idle_interaction_started_time_s = now;
 	if (uam::CliTerminalState* terminal = uam::FindCliTerminalForChat(m_app, *chat); terminal != nullptr && terminal->running && terminal->lifecycle_state == uam::CliTerminalLifecycleState::Idle)
 		terminal->idle_interaction_started_time_s = now;
-	uam::PushStateUpdateIfChanged(browser, m_app);
+	// The originating pane already updates its idle deadline locally; typing must not serialize the catalogue.
 	cb->Success("{}");
 }

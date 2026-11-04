@@ -8,19 +8,28 @@ import type { Session, Folder } from '../../types/session'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import { readChatViewMode } from '../../utils/chatGridStorage'
+import { COPILOT_ENABLED } from '../../config/buildFeatures'
 import {
-  DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
+  DEFAULT_PROVIDER_ID,
+  COPILOT_CLI_PROVIDER_ID,
   normalizeCliProviderIdAlias,
 } from '../../utils/providerMetadata'
 import {
+  sanitizeManagedOriginRunId,
+  sanitizeNativeInputId,
+  sanitizeOriginRequestId,
   messageAttachments,
+  sanitizeNativeModelOptions,
+  sanitizeManualCompaction,
   sanitizeTurnEvent,
+  sanitizeToolCall,
   normalizeAcpApprovalMode,
   normalizeCommandSafetyTier,
   normalizeAcpModelId,
   normalizeCodexReasoningEffort,
   normalizeCodexServiceTier,
   normalizeMemoryLevel,
+  memoryEnabledForLevel,
 } from './sanitizers'
 import {
   pendingModelByChatId,
@@ -69,11 +78,11 @@ export function normalizeProviderIdForVisibleProviders(
   providerId: string | undefined,
   providers: Array<{ id: string }>
 ): string {
-  const requestedProviderId = normalizeCliProviderIdAlias(providerId ?? '') || GEMINI_CLI_PROVIDER_ID
+  const requestedProviderId = normalizeCliProviderIdAlias(providerId ?? '') || DEFAULT_PROVIDER_ID
   if (providers.some((provider) => provider.id === requestedProviderId)) {
     return requestedProviderId
   }
-  return providers[0]?.id ?? GEMINI_CLI_PROVIDER_ID
+  return providers[0]?.id ?? DEFAULT_PROVIDER_ID
 }
 
 export function foldersEquivalent(previous: Folder, next: Folder): boolean {
@@ -142,14 +151,24 @@ export function providerFromCppProvider(provider: CppProvider, previous: Provide
 }
 
 export function sessionsEquivalent(previous: Session, next: Session): boolean {
-  return (previous.uamControlEnabled ?? false) === (next.uamControlEnabled ?? false) &&
+  return previous.gitBaseBranch === next.gitBaseBranch &&
+    (previous.uamControlEnabled ?? false) === (next.uamControlEnabled ?? false) &&
     (previous.executionHostId ?? 'local') === (next.executionHostId ?? 'local') &&
     (previous.remoteRecoveryEnabled ?? false) === (next.remoteRecoveryEnabled ?? false) &&
     (previous.remoteRecoveryState ?? '') === (next.remoteRecoveryState ?? '') &&
+    previous.routingMode === next.routingMode &&
+    previous.routingSourceFolderId === next.routingSourceFolderId &&
+    previous.routingSourceDirectory === next.routingSourceDirectory &&
+    previous.routingAssignedConnectionIdentity === next.routingAssignedConnectionIdentity &&
+    previous.routingAssignedProviderConfigurationIdentity === next.routingAssignedProviderConfigurationIdentity &&
+    previous.routingWaitReason === next.routingWaitReason &&
+    previous.routingReservationPending === next.routingReservationPending &&
+    previous.routingUnresolvedReservation === next.routingUnresolvedReservation &&
     previous.name === next.name &&
+    customIconsEqual(previous.customIcon, next.customIcon) &&
     previous.folderId === next.folderId &&
     (previous.isPinned ?? false) === (next.isPinned ?? false) &&
-    (previous.providerId ?? GEMINI_CLI_PROVIDER_ID) === next.providerId &&
+    (previous.providerId ?? DEFAULT_PROVIDER_ID) === next.providerId &&
     (previous.temporaryParentChatId ?? '') === (next.temporaryParentChatId ?? '') &&
     (previous.sideCleanupRequested ?? false) === (next.sideCleanupRequested ?? false) &&
     (previous.parentChatId ?? '') === (next.parentChatId ?? '') &&
@@ -183,9 +202,15 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     (previous.workspaceSourceDirectory ?? '') === (next.workspaceSourceDirectory ?? '') &&
     (previous.workspaceBaseRef ?? '') === (next.workspaceBaseRef ?? '') &&
     (previous.workspaceBranchName ?? '') === (next.workspaceBranchName ?? '') &&
+    (previous.pendingGitBranch ?? '') === (next.pendingGitBranch ?? '') &&
     (previous.workspaceWorktreeDirectory ?? '') === (next.workspaceWorktreeDirectory ?? '') &&
     (previous.importedReadOnly ?? false) === (next.importedReadOnly ?? false) &&
     (previous.messageCount ?? 0) === (next.messageCount ?? 0) &&
+    (previous.subagentParentChatId ?? '') === (next.subagentParentChatId ?? '') &&
+    (previous.subagentParentCreatedAt ?? '') === (next.subagentParentCreatedAt ?? '') &&
+    (previous.createdByChatId ?? '') === (next.createdByChatId ?? '') &&
+    (previous.managedSubagentCount ?? 0) === (next.managedSubagentCount ?? 0) &&
+    (previous.managedSubagentRevision ?? 0) === (next.managedSubagentRevision ?? 0) &&
     (previous.messagesDigest ?? '') === (next.messagesDigest ?? '') &&
     previous.viewMode === next.viewMode &&
     previous.createdAt.getTime() === next.createdAt.getTime() &&
@@ -194,7 +219,9 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     previous.attentionRevision === next.attentionRevision &&
     previous.interactionAt?.getTime() === next.interactionAt?.getTime() &&
     (previous.interactionAt === null) === (next.interactionAt === null) &&
-    previous.settledAt === next.settledAt
+    previous.settledAt === next.settledAt &&
+    previous.snoozedUntilMs === next.snoozedUntilMs &&
+    previous.userMessageIndices === next.userMessageIndices
 }
 
 export function sessionFromCppChat(
@@ -209,11 +236,13 @@ export function sessionFromCppChat(
   if (pendingViewMode) pendingViewModeBySessionId.delete(chat.id)
   const nextSession: Session = {
     uamControlEnabled: chat.uamControlEnabled ?? false,
+    gitBaseBranch: chat.gitBaseBranch === undefined ? previous?.gitBaseBranch : chat.gitBaseBranch,
     id: chat.id,
     executionHostId: chat.executionHostId ?? 'local',
     remoteRecoveryEnabled: chat.remoteRecoveryEnabled ?? false,
     remoteRecoveryState: chat.remoteRecoveryState ?? '',
     name: chat.title || 'Untitled',
+    customIcon: chat.customIcon,
     viewMode: pendingViewMode ?? readChatViewMode(chat.id) ?? previous?.viewMode ?? 'chat',
     folderId: chat.folderId || null,
     isPinned: chat.pinned ?? false,
@@ -242,7 +271,7 @@ export function sessionFromCppChat(
     computerUseTargetInputMode: chat.computerUseTargetInputMode ?? 'foreground',
     computerUse: chat.computerUse,
     memoryLevel: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true),
-    memoryEnabled: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true) !== 'off',
+    memoryEnabled: memoryEnabledForLevel(chat.memoryLevel, chat.memoryEnabled ?? true),
     smallModelMode: chat.smallModelMode ?? false,
     memoryLastProcessedMessageCount: chat.memoryLastProcessedMessageCount ?? 0,
     memoryLastProcessedAt: chat.memoryLastProcessedAt ?? '',
@@ -251,9 +280,24 @@ export function sessionFromCppChat(
     workspaceSourceDirectory: chat.workspaceSourceDirectory ?? '',
     workspaceBaseRef: chat.workspaceBaseRef ?? '',
     workspaceBranchName: chat.workspaceBranchName ?? '',
+    pendingGitBranch: chat.pendingGitBranch,
+    routingMode: chat.routingMode,
+    routingSourceFolderId: chat.routingSourceFolderId,
+    routingSourceDirectory: chat.routingSourceDirectory,
+    routingAssignedConnectionIdentity: chat.routingAssignedConnectionIdentity,
+    routingAssignedProviderConfigurationIdentity: chat.routingAssignedProviderConfigurationIdentity,
+    routingWaitReason: chat.routingWaitReason,
+    routingReservationPending: chat.routingReservationPending,
+    routingUnresolvedReservation: chat.routingUnresolvedReservation,
+
     workspaceWorktreeDirectory: chat.workspaceWorktreeDirectory ?? '',
     importedReadOnly: chat.importedReadOnly ?? false,
     messageCount: chat.messageCount ?? 0,
+    subagentParentChatId: chat.subagentParentChatId ?? '',
+    subagentParentCreatedAt: chat.subagentParentCreatedAt ?? '',
+    createdByChatId: chat.createdByChatId ?? '',
+    managedSubagentCount: chat.managedSubagentCount ?? 0,
+    managedSubagentRevision: chat.managedSubagentRevision ?? 0,
     messagesDigest: chat.messagesDigest ?? '',
     createdAt,
     updatedAt,
@@ -263,6 +307,8 @@ export function sessionFromCppChat(
     lastOpenedAt,
     attentionRevision: chat.attentionRevision,
     settledAt: chat.settledAt,
+    snoozedUntilMs: chat.snoozedUntilMs ?? 0,
+    userMessageIndices: previous?.messagesDigest === chat.messagesDigest ? previous?.userMessageIndices : undefined,
   }
 
   return previous && sessionsEquivalent(previous, nextSession) ? previous : nextSession
@@ -284,18 +330,26 @@ export function clampCliTranscript(content: string): string {
     : content
 }
 
+export function cliOutputMatchesBinding(binding: Pick<CliBinding, 'terminalId' | 'startupTime'> | undefined, terminalId: string, startupTime?: number): boolean {
+  if (binding?.terminalId && terminalId && binding.terminalId !== terminalId) return false
+  return binding?.startupTime === undefined || binding.startupTime === startupTime
+}
+
 export function appendCliTranscriptChunk(
   existing: CliTranscript | undefined,
   terminalId: string,
-  chunk: string
+  chunk: string,
+  startupTime?: number
 ): CliTranscript {
   const nextTerminalId = terminalId || existing?.terminalId || ''
   const resetTranscript =
-    Boolean(existing?.terminalId) && Boolean(terminalId) && existing?.terminalId !== terminalId
+    (Boolean(existing?.terminalId) && Boolean(terminalId) && existing?.terminalId !== terminalId) ||
+    (startupTime !== undefined && existing?.startupTime !== startupTime)
   const nextContent = clampCliTranscript((resetTranscript ? '' : existing?.content ?? '') + chunk)
 
   return {
     terminalId: nextTerminalId,
+    startupTime,
     content: nextContent,
   }
 }
@@ -397,7 +451,9 @@ function modelsEquivalent(existing: AcpModel[], next: AcpModel[]) {
       model.description === other.description &&
       (model.defaultReasoningEffort ?? '') === (other.defaultReasoningEffort ?? '') &&
       (model.supportedReasoningEfforts ?? []).join('|') === (other.supportedReasoningEfforts ?? []).join('|') &&
-      (model.additionalSpeedTiers ?? []).join('|') === (other.additionalSpeedTiers ?? []).join('|')
+      (model.additionalSpeedTiers ?? []).join('|') === (other.additionalSpeedTiers ?? []).join('|') &&
+      (model.contextWindowTokens ?? null) === (other.contextWindowTokens ?? null) &&
+      (model.maxOutputTokens ?? null) === (other.maxOutputTokens ?? null)
   })
 }
 
@@ -413,19 +469,36 @@ function configOptionsEquivalent(existing: AcpConfigOption[], next: AcpConfigOpt
   })
 }
 
+// Compare every field sanitizeTurnEvent keeps: shareTurnEvents reuses the prior object when this says equal.
+function turnEventEquivalent(event: AcpTurnEvent, other: AcpTurnEvent) {
+  if (event.type !== other.type) return false
+  if ((event.type === 'context_compaction' || event.type === 'context_compaction_interrupted') &&
+    (other.type === 'context_compaction' || other.type === 'context_compaction_interrupted') &&
+    (event.tokensBefore !== other.tokensBefore || event.tokensAfter !== other.tokensAfter)) return false
+  if ('text' in event || 'text' in other) {
+    if ((event as { text?: string }).text !== (other as { text?: string }).text) return false
+  }
+  return (
+    (event as { toolCallId?: string }).toolCallId === (other as { toolCallId?: string }).toolCallId &&
+    (event as { requestId?: string }).requestId === (other as { requestId?: string }).requestId
+  )
+}
+
 function turnEventsEquivalent(existing: AcpTurnEvent[], next: AcpTurnEvent[]) {
-  if (existing.length !== next.length) return false
-  return existing.every((event, index) => {
-    const other = next[index]
-    if (event.type !== other.type) return false
-    if ('text' in event || 'text' in other) {
-      if ((event as { text?: string }).text !== (other as { text?: string }).text) return false
-    }
-    return (
-      (event as { toolCallId?: string }).toolCallId === (other as { toolCallId?: string }).toolCallId &&
-      (event as { requestId?: string }).requestId === (other as { requestId?: string }).requestId
-    )
+  return existing.length === next.length && existing.every((event, index) => turnEventEquivalent(event, next[index]))
+}
+
+/** Reuses unchanged previous event objects (and the array itself) so per-event and timeline memos hold while a turn grows. */
+export function shareTurnEvents(previous: AcpTurnEvent[] | undefined, next: AcpTurnEvent[]): AcpTurnEvent[] {
+  if (!previous || previous.length === 0) return next
+  let changed = previous.length !== next.length
+  const shared = next.map((event, index) => {
+    const prior = previous[index]
+    if (prior && turnEventEquivalent(prior, event)) return prior
+    changed = true
+    return event
   })
+  return changed ? shared : previous
 }
 
 function agentInfoEquivalent(existing: AcpAgentInfo | null, next: AcpAgentInfo | null) {
@@ -500,6 +573,12 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.idleShutdownAtMs === next.idleShutdownAtMs &&
     existing.idleShutdownTimeoutSeconds === next.idleShutdownTimeoutSeconds &&
     existing.processing === next.processing &&
+    existing.compacting === next.compacting &&
+    existing.manualCompaction?.available === next.manualCompaction?.available &&
+    existing.manualCompaction?.providerId === next.manualCompaction?.providerId &&
+    existing.manualCompaction?.modelId === next.manualCompaction?.modelId &&
+    existing.manualCompaction?.nativeSessionId === next.manualCompaction?.nativeSessionId &&
+    existing.backgroundTaskCount === next.backgroundTaskCount &&
     existing.idleShutdownAtMs === next.idleShutdownAtMs &&
     existing.idleShutdownTimeoutSeconds === next.idleShutdownTimeoutSeconds &&
     existing.readySinceLastSelect === next.readySinceLastSelect &&
@@ -510,6 +589,8 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.recentStderr === next.recentStderr &&
     existing.lastExitCode === next.lastExitCode &&
     existing.lastStopReason === next.lastStopReason &&
+    existing.timeoutStop?.label === next.timeoutStop?.label && existing.timeoutStop?.seconds === next.timeoutStop?.seconds &&
+    existing.timeoutStop?.kind === next.timeoutStop?.kind && existing.timeoutStop?.count === next.timeoutStop?.count && existing.timeoutStop?.example === next.timeoutStop?.example &&
     diagnosticsEquivalent(existing.diagnostics, next.diagnostics) &&
     toolCallsEquivalent(existing.toolCalls, next.toolCalls) &&
     existing.planSummary === next.planSummary &&
@@ -519,6 +600,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.currentModeId === next.currentModeId &&
     modelsEquivalent(existing.availableModels, next.availableModels) &&
     configOptionsEquivalent(existing.configOptions ?? [], next.configOptions ?? []) &&
+    (existing.nativeModelOptions === next.nativeModelOptions || JSON.stringify(existing.nativeModelOptions) === JSON.stringify(next.nativeModelOptions)) &&
     existing.modelsLoading === next.modelsLoading &&
     existing.modelRefreshError === next.modelRefreshError &&
     existing.currentModelId === next.currentModelId &&
@@ -526,7 +608,12 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.turnUserMessageIndex === next.turnUserMessageIndex &&
     existing.turnAssistantMessageIndex === next.turnAssistantMessageIndex &&
     existing.turnSerial === next.turnSerial &&
+    (existing.queueHeld ?? false) === (next.queueHeld ?? false) &&
+    sameArrayEntries(existing.unsentMessageIndices ?? [], next.unsentMessageIndices ?? []) &&
+    sameArrayEntries(existing.recoverableUnsentMessageIndices ?? [], next.recoverableUnsentMessageIndices ?? []) &&
     queuedPromptsEquivalent(existing.queuedPrompts ?? [], next.queuedPrompts ?? []) &&
+    queuedPromptsEquivalent(existing.pendingDirectPrompts ?? [], next.pendingDirectPrompts ?? []) &&
+    queuedPromptsEquivalent(existing.unsentDirectPrompts ?? [], next.unsentDirectPrompts ?? []) &&
     existing.waitIsStale === next.waitIsStale &&
     existing.waitStaleReason === next.waitStaleReason &&
     existing.waitSeconds === next.waitSeconds &&
@@ -541,6 +628,7 @@ export function cliBindingsEquivalent(existing: CliBinding | undefined, next: Cl
   if (!existing) return false
   return (
     existing.terminalId === next.terminalId &&
+    existing.startupTime === next.startupTime &&
     existing.boundChatId === next.boundChatId &&
     existing.running === next.running &&
     existing.lifecycleState === next.lifecycleState &&
@@ -569,6 +657,7 @@ export function cliBindingFromCppChat(chat: CppChat, previous: CliBinding | unde
   const processing = lifecycleState !== 'unknown' && (Boolean(chat.cliTerminal.processing) || cliLifecycleIsProcessing(lifecycleState))
   const next: CliBinding = {
     terminalId: chat.cliTerminal.terminalId ?? '',
+    startupTime: chat.cliTerminal.startupTime,
     boundChatId: chat.cliTerminal.sourceChatId ?? chat.id,
     idleCountdownStartsAtMs: chat.cliTerminal.idleCountdownStartsAtMs,
     idleShutdownAtMs: chat.cliTerminal.idleShutdownAtMs,
@@ -598,14 +687,30 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
         lifecycleState === 'processing' ||
         lifecycleState === 'waitingPermission' ||
         lifecycleState === 'waitingUserInput'
+  // Only the owning visible Copilot chat may receive this native action target.
+  let nativeModelOptions = sanitizeNativeModelOptions(acp?.nativeModelOptions)
+  const owner = nativeModelOptions?.autoRouting?.ownership
+  if (nativeModelOptions && (chat.importedReadOnly || normalizeCliProviderIdAlias(chat.providerId ?? '') !== COPILOT_CLI_PROVIDER_ID
+    || normalizeCliProviderIdAlias(acp?.providerId ?? '') !== COPILOT_CLI_PROVIDER_ID || !COPILOT_ENABLED || acp?.protocolKind !== 'copilot-sdk'
+    || (owner && (owner.chatId !== chat.id || owner.nativeSessionId !== acp.sessionId || owner.executionHostId !== (chat.executionHostId || 'local'))))) {
+    nativeModelOptions = undefined
+  }
+  let manualCompaction = sanitizeManualCompaction(acp?.manualCompaction)
+  if (manualCompaction && (manualCompaction.providerId !== (chat.providerId ?? '')
+    || manualCompaction.providerId !== (acp?.providerId ?? chat.providerId ?? '')
+    || manualCompaction.modelId !== (chat.modelId ?? '')
+    || manualCompaction.nativeSessionId !== (acp?.sessionId ?? ''))) manualCompaction = undefined
   const next: AcpBinding = {
     sessionId: acp?.sessionId ?? '',
-    providerId: acp?.providerId ?? chat.providerId ?? GEMINI_CLI_PROVIDER_ID,
+    providerId: acp?.providerId ?? chat.providerId ?? DEFAULT_PROVIDER_ID,
     protocolKind: acp?.protocolKind ?? '',
     threadId: acp?.threadId ?? '',
     running,
     lifecycleState,
     processing: effectiveProcessing,
+    compacting: running && effectiveProcessing && acp?.compacting === true,
+    manualCompaction,
+    backgroundTaskCount: acp?.backgroundTaskCount ?? 0,
     idleCountdownStartsAtMs: acp?.idleCountdownStartsAtMs,
     idleShutdownAtMs: acp?.idleShutdownAtMs,
     idleShutdownTimeoutSeconds: acp?.idleShutdownTimeoutSeconds,
@@ -621,6 +726,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     recentStderr: acp?.recentStderr ?? '',
     lastExitCode: typeof acp?.lastExitCode === 'number' ? acp.lastExitCode : null,
     lastStopReason: acp?.lastStopReason,
+    timeoutStop: acp?.timeoutStop ?? undefined,
     diagnostics: Array.isArray(acp?.diagnostics) ? acp!.diagnostics : [],
     toolCalls: Array.isArray(acp?.toolCalls) ? acp!.toolCalls : [],
     planSummary: acp?.planSummary ?? '',
@@ -630,14 +736,20 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     currentModeId: normalizeAcpApprovalMode(acp?.currentModeId ?? chat.approvalMode),
     availableModels: Array.isArray(acp?.availableModels) ? acp!.availableModels : [],
     configOptions: Array.isArray(acp?.configOptions) ? acp!.configOptions : [],
+    nativeModelOptions,
     modelsLoading: Boolean(acp?.modelsLoading),
     modelRefreshError: acp?.modelRefreshError ?? '',
     currentModelId: normalizeAcpModelId(acp?.currentModelId ?? chat.modelId),
-    turnEvents: Array.isArray(acp?.turnEvents) ? acp!.turnEvents : [],
+    turnEvents: shareTurnEvents(previous?.turnEvents, Array.isArray(acp?.turnEvents) ? acp!.turnEvents : []),
     turnUserMessageIndex: typeof acp?.turnUserMessageIndex === 'number' ? acp.turnUserMessageIndex : -1,
     turnAssistantMessageIndex: typeof acp?.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
     turnSerial: typeof acp?.turnSerial === 'number' ? acp.turnSerial : 0,
+    queueHeld: acp?.queueHeld ?? false,
+    unsentMessageIndices: acp?.unsentMessageIndices ?? [],
+    recoverableUnsentMessageIndices: acp?.recoverableUnsentMessageIndices ?? [],
     queuedPrompts: acp?.queuedPrompts ?? [],
+    pendingDirectPrompts: acp?.pendingDirectPrompts ?? [],
+    unsentDirectPrompts: acp?.unsentDirectPrompts ?? [],
     waitIsStale: Boolean(acp?.waitIsStale),
     waitStaleReason: typeof acp?.waitStaleReason === 'string' ? acp.waitStaleReason : '',
     waitSeconds: typeof acp?.waitSeconds === 'number' ? acp.waitSeconds : 0,
@@ -658,23 +770,26 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
 
 export function normalizeCliTranscript(
   existing: CliTranscript | undefined,
-  terminalId: string
+  terminalId: string,
+  startupTime?: number
 ): CliTranscript | undefined {
   if (!existing) {
     return undefined
   }
 
-  if (existing.terminalId && terminalId && existing.terminalId !== terminalId) {
+  if (!cliOutputMatchesBinding({ terminalId, startupTime }, existing.terminalId, existing.startupTime)) {
     return undefined
   }
 
   const nextTranscript: CliTranscript = {
     terminalId: terminalId || existing.terminalId || '',
+    startupTime: startupTime ?? existing.startupTime,
     content: clampCliTranscript(existing.content),
   }
 
   if (
     existing.terminalId === nextTranscript.terminalId &&
+    existing.startupTime === nextTranscript.startupTime &&
     existing.content === nextTranscript.content
   ) {
     return existing
@@ -750,8 +865,13 @@ function cppMessageCreatedAtMillis(message: CppMessage) {
   return Number.isFinite(timestamp) ? timestamp : 0
 }
 
-function cppMessagesEquivalent(existing: Message, next: CppMessage) {
+function cppMessagesEquivalent(existing: Message, next: CppMessage, index: number) {
   return (
+    existing.nativeMessageIndex === index &&
+    existing.managedOriginRunId === sanitizeManagedOriginRunId(next.managedOriginRunId) &&
+    existing.nativeInputId === sanitizeNativeInputId(next.nativeInputId) &&
+    existing.originRequestId === sanitizeOriginRequestId(next.originRequestId) &&
+    existing.inputWriteCompleted === (next.role === 'user' && sanitizeNativeInputId(next.nativeInputId) && next.inputWriteCompleted === true ? true : undefined) &&
     existing.role === next.role &&
     existing.content === next.content &&
     (existing.providerId ?? '') === (next.providerId ?? '') &&
@@ -766,6 +886,7 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
 		Boolean(existing.interrupted) === Boolean(next.interrupted) &&
     existing.stopReason === next.stopReason &&
 		Boolean(existing.acpPromptNotSent) === Boolean(next.acpPromptNotSent) &&
+		Boolean(existing.acpPromptDiscarded) === Boolean(next.acpPromptDiscarded) &&
 		Boolean(existing.prioritySteer) === Boolean(next.prioritySteer) &&
 		Boolean(existing.continuesTurn) === Boolean(next.continuesTurn) &&
     (existing.checkpointSha ?? '') === (next.checkpointSha ?? '') &&
@@ -785,6 +906,11 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
   return {
     id: `cef-m-${chatId}-${createdAtMillis}-${index}-${message.role}`,
     sessionId: chatId,
+    nativeMessageIndex: Number.isSafeInteger(index) && index >= 0 ? index : undefined,
+    managedOriginRunId: sanitizeManagedOriginRunId(message.managedOriginRunId),
+    nativeInputId: sanitizeNativeInputId(message.nativeInputId),
+    originRequestId: sanitizeOriginRequestId(message.originRequestId),
+    inputWriteCompleted: message.role === 'user' && sanitizeNativeInputId(message.nativeInputId) && message.inputWriteCompleted === true ? true : undefined,
     role: message.role,
     content: message.content,
     providerId: message.providerId,
@@ -792,13 +918,17 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
     thoughts: message.thoughts ?? '',
     planSummary: message.planSummary ?? '',
     planEntries: message.planEntries?.length ? message.planEntries : undefined,
-    toolCalls: message.toolCalls?.length ? message.toolCalls : undefined,
+    toolCalls: message.toolCalls?.length ? message.toolCalls.flatMap(value => {
+      const tool = sanitizeToolCall(value)
+      return tool ? [tool] : []
+    }) : undefined,
     blocks: blocks?.length ? blocks : undefined,
     attachments: attachments.length ? attachments : undefined,
     processingTimeMs: message.processingTimeMs ?? 0,
 		interrupted: Boolean(message.interrupted),
     stopReason: message.stopReason === 'timeout' || message.stopReason === 'provider-update' || message.stopReason === 'forced' || message.stopReason === 'failed' || message.stopReason === 'unknown' || message.stopReason === 'interrupt' ? message.stopReason : undefined,
 		acpPromptNotSent: Boolean(message.acpPromptNotSent),
+		acpPromptDiscarded: message.acpPromptDiscarded === true,
 		prioritySteer: Boolean(message.prioritySteer),
 		continuesTurn: Boolean(message.continuesTurn),
     checkpointSha: message.checkpointSha,
@@ -807,11 +937,53 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
   }
 }
 
+/** Authoritative count contraction retires only an exact recovered or explicitly removed native outbox suffix. */
+export function reconcileHeldOutboxHistory(chat: CppChat, existing: Message[] | undefined, startIndex = 0, previousBinding?: AcpBinding, previousSession?: Pick<Session, 'messageCount' | 'messagesDigest'>): Message[] | undefined {
+  if (!existing?.length || !Number.isSafeInteger(chat.messageCount) || chat.messageCount! < 0 || !chat.messagesDigest) return existing
+  const retained = chat.messageCount! - startIndex
+  if (retained >= existing.length) return existing
+  const incomingQueue = chat.acpSession?.queuedPrompts ?? []
+  const known = new Set(previousBinding?.unsentMessageIndices ?? [])
+  const removedReferences = previousBinding?.queueHeld && Array.isArray(chat.acpSession?.queuedPrompts) &&
+    previousSession?.messagesDigest && previousSession.messagesDigest !== chat.messagesDigest &&
+    Number.isSafeInteger(previousSession.messageCount) && chat.messageCount! < previousSession.messageCount!
+    ? (previousBinding.queuedPrompts ?? []).filter((prompt) => !prompt.prepared &&
+        Number.isSafeInteger(prompt.existingUserMessageIndex) && known.has(prompt.existingUserMessageIndex!) &&
+        !incomingQueue.some((incoming) => incoming.id === prompt.id)) : []
+  const queue = [...(chat.acpSession?.queueHeld ? incomingQueue : []), ...removedReferences]
+  if (!queue.length || queue.some((prompt) => !prompt.id || !Number.isSafeInteger(prompt.revision) || prompt.revision! < 1)) return existing
+  const unmatched = [...queue]
+  let matchedRemovedReference = false
+  let optimisticStart = existing.length
+  for (let index = Math.max(0, retained); index < existing.length; index += 1) {
+    const message = existing[index]
+    if (message.nativeMessageIndex === undefined && message.role === 'user' && matchedRemovedReference) {
+      optimisticStart = index
+      break
+    }
+    if (message.role === 'assistant' && !message.content.trim() && !message.thoughts?.trim() && !message.planSummary?.trim() &&
+        !message.planEntries?.length && !message.toolCalls?.length && !message.blocks?.length && !message.attachments?.length) continue
+    if (message.role !== 'user' || message.nativeMessageIndex !== startIndex + index) return existing
+    const queuedIndex = unmatched.findIndex((prompt) =>
+      (prompt.existingUserMessageIndex === undefined || prompt.existingUserMessageIndex === startIndex + index) &&
+      (!removedReferences.includes(prompt) || message.acpPromptNotSent) && prompt.text === message.content &&
+      attachmentsEquivalent(message.attachments ?? [], messageAttachments(prompt)))
+    if (queuedIndex < 0) return existing
+    matchedRemovedReference ||= removedReferences.includes(unmatched[queuedIndex])
+    unmatched.splice(queuedIndex, 1)
+  }
+  const optimistic = existing.slice(optimisticStart)
+  if (optimistic.some((message) => message.role !== 'user' || message.nativeMessageIndex !== undefined || message.isStreaming ||
+      message.thoughts?.trim() || message.planSummary?.trim() || message.planEntries?.length || message.toolCalls?.length || message.blocks?.length)) return existing
+  return retained <= 0 && chat.messageCount! > 0 && !optimistic.length ? undefined : [...existing.slice(0, Math.max(0, retained)), ...optimistic]
+}
+
 export function reconcileCppMessages(
   chatId: string,
   existingMessages: Message[] | undefined,
   cppMessages: CppMessage[],
-  authoritative = false
+  authoritative = false,
+  startIndex = 0
 ): Message[] {
   const existing = existingMessages ?? []
   if (!authoritative && existing[existing.length - 1]?.isStreaming) {
@@ -839,7 +1011,7 @@ export function reconcileCppMessages(
   while (
     prefixLength < existingRealMessages.length &&
     prefixLength < cppMessages.length &&
-    cppMessagesEquivalent(existingRealMessages[prefixLength], cppMessages[prefixLength])
+    cppMessagesEquivalent(existingRealMessages[prefixLength], cppMessages[prefixLength], startIndex + prefixLength)
   ) {
     prefixLength++
   }
@@ -850,7 +1022,7 @@ export function reconcileCppMessages(
 
   const reconciled = existingRealMessages.slice(0, prefixLength)
   for (let index = prefixLength; index < cppMessages.length; index += 1) {
-    reconciled.push(buildMessageFromCpp(chatId, cppMessages[index], index))
+    reconciled.push(buildMessageFromCpp(chatId, cppMessages[index], startIndex + index))
   }
   return reconciled
 }
@@ -873,12 +1045,22 @@ export function toolCallsEquivalent(existing: AcpToolCall[], next: AcpToolCall[]
       tool.kind === other.kind &&
       tool.status === other.status &&
       (tool.approvalStatus ?? '') === (other.approvalStatus ?? '') &&
-      tool.content === other.content &&
+      (tool.content ?? '') === (other.content ?? '') &&
       Boolean(tool.contentDeferred) === Boolean(other.contentDeferred) &&
       (tool.contentDigest ?? '') === (other.contentDigest ?? '') &&
+      tool.historyDigest === other.historyDigest &&
+      tool.managedLaunchRunId === other.managedLaunchRunId &&
       Boolean(tool.isSubAgent) === Boolean(other.isSubAgent) &&
       (tool.subAgentId ?? '') === (other.subAgentId ?? '') &&
-      (tool.subAgentTitle ?? '') === (other.subAgentTitle ?? '')
+      (tool.subAgentTitle ?? '') === (other.subAgentTitle ?? '') &&
+      (tool.subAgentResultContent ?? '') === (other.subAgentResultContent ?? '') &&
+      (tool.subAgentChildren?.length ?? 0) === (other.subAgentChildren?.length ?? 0) &&
+      (tool.subAgentChildren ?? []).every((child, childIndex) => {
+        const otherChild = other.subAgentChildren![childIndex]
+        return child.id === otherChild.id && (child.title ?? '') === (otherChild.title ?? '') && (child.status ?? '') === (otherChild.status ?? '') &&
+          child.startedAtEpochMs === otherChild.startedAtEpochMs && child.finishedAtEpochMs === otherChild.finishedAtEpochMs && child.durationMs === otherChild.durationMs
+      }) &&
+      (tool.currentActivity ?? '') === (other.currentActivity ?? '')
     )
   })
 }
@@ -887,6 +1069,9 @@ export function messageBlocksEquivalent(existing: MessageBlock[], next: MessageB
   if (existing.length !== next.length) return false
   return existing.every((block, index) => {
     const other = next[index]
+    if ((block.type === 'context_compaction' || block.type === 'context_compaction_interrupted') &&
+      (other.type === 'context_compaction' || other.type === 'context_compaction_interrupted') &&
+      (block.tokensBefore !== other.tokensBefore || block.tokensAfter !== other.tokensAfter)) return false
     return (
       block.type === other.type &&
       (block.text ?? '') === (other.text ?? '') &&
@@ -904,7 +1089,19 @@ export function attachmentsEquivalent(existing: Attachment[], next: Attachment[]
       attachment.name === other.name &&
       attachment.type === other.type &&
       attachment.size === other.size &&
-      (attachment.path ?? '') === (other.path ?? '')
+      (attachment.path ?? '') === (other.path ?? '') &&
+      (attachment.mimeType ?? '') === (other.mimeType ?? '') &&
+      (attachment.previewKey ?? '') === (other.previewKey ?? '') &&
+      (attachment.previewOriginPath ?? '') === (other.previewOriginPath ?? '') &&
+      (attachment.source ?? 'legacy_path') === (other.source ?? 'legacy_path') &&
+      (attachment.sourceUri ?? '') === (other.sourceUri ?? '') &&
+      (attachment.originExecutionHostId ?? '') === (other.originExecutionHostId ?? '') &&
+      (attachment.nativePartKey ?? '') === (other.nativePartKey ?? '') &&
+      (attachment.nativeToolCallId ?? '') === (other.nativeToolCallId ?? '') &&
+      (attachment.nativeSourceField ?? '') === (other.nativeSourceField ?? '') &&
+      (attachment.nativeAssetKey ?? '') === (other.nativeAssetKey ?? '') &&
+      (attachment.contentDigest ?? '') === (other.contentDigest ?? '') &&
+      attachment.historyDigest === other.historyDigest
   })
 }
 
@@ -914,7 +1111,12 @@ export function queuedPromptsEquivalent(existing: AcpBinding['queuedPrompts'], n
   if (previous.length !== incoming.length) return false
   return previous.every((prompt, index) => {
     const other = incoming[index]
-    return prompt.id === other.id && prompt.revision === other.revision &&
+    return prompt.id === other.id && prompt.revision === other.revision && Boolean(prompt.prepared) === Boolean(other.prepared) &&
+      sanitizeNativeInputId(prompt.nativeInputId) === sanitizeNativeInputId(other.nativeInputId) &&
+      sanitizeOriginRequestId(prompt.originRequestId) === sanitizeOriginRequestId(other.originRequestId) &&
+      prompt.existingUserMessageIndex === other.existingUserMessageIndex &&
+      prompt.referencedMessageCreatedAt === other.referencedMessageCreatedAt &&
+      prompt.retryAllowed === other.retryAllowed &&
       prompt.uamAgentId === other.uamAgentId && prompt.text === other.text &&
       prompt.goalMode === other.goalMode &&
       prompt.goalId === other.goalId &&

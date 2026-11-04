@@ -68,7 +68,7 @@ using BrowserReadyCallback = std::function<void(CefRefPtr<CefBrowser>)>;
 /// CefClient implementation for UAM.
 /// Handles browser lifecycle, message routing, and the initial state push.
 /// </summary>
-class UamCefClient : public CefClient, public CefLifeSpanHandler, public CefLoadHandler, public CefDisplayHandler, public CefContextMenuHandler, public CefKeyboardHandler, public CefRequestHandler
+class UamCefClient : public CefClient, public CefLifeSpanHandler, public CefLoadHandler, public CefDisplayHandler, public CefContextMenuHandler, public CefKeyboardHandler, public CefRequestHandler, public CefDragHandler
 {
   public:
 	explicit UamCefClient(uam::AppState& app, std::string trusted_ui_index_url, BrowserReadyCallback on_ready = nullptr);
@@ -100,7 +100,15 @@ class UamCefClient : public CefClient, public CefLifeSpanHandler, public CefLoad
 		return this;
 	}
 
+	CefRefPtr<CefDragHandler> GetDragHandler() override
+	{
+		return this;
+	}
+
 	bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefProcessId source_process, CefRefPtr<CefProcessMessage> message) override;
+
+	// CefDragHandler — only the trusted root document may define the frameless window's drag area.
+	void OnDraggableRegionsChanged(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const std::vector<CefDraggableRegion>& regions) override;
 
 	// CefRequestHandler — block bridge access and route external links safely.
 	bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefRequest> request, bool user_gesture, bool is_redirect) override;
@@ -112,6 +120,7 @@ class UamCefClient : public CefClient, public CefLifeSpanHandler, public CefLoad
 	/// <summary>Reloads only the interface; providers and their sessions remain in the browser process.</summary>
 	void ReloadInterface();
 	void SetNativeRecoveryCallback(std::function<void(bool)> callback) { m_nativeRecovery = std::move(callback); }
+	void SetWindowRecoveryMode(bool visible);
 
 	// CefLifeSpanHandler
 	bool OnBeforePopup(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int popup_id, const CefString& target_url, const CefString& target_frame_name, CefLifeSpanHandler::WindowOpenDisposition target_disposition, bool user_gesture, const CefPopupFeatures& popup_features, CefWindowInfo& window_info, CefRefPtr<CefClient>& client, CefBrowserSettings& settings, CefRefPtr<CefDictionaryValue>& extra_info, bool* no_javascript_access) override;
@@ -141,6 +150,8 @@ class UamCefClient : public CefClient, public CefLifeSpanHandler, public CefLoad
 	}
 
   private:
+	std::vector<CefDraggableRegion> m_windowDragRegions;
+	bool m_windowRecoveryVisible = false;
 	uam::AppState& m_app;
 	std::string m_trustedUiIndexUrl;
 	CefRefPtr<CefBrowser> m_browser;

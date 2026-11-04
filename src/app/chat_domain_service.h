@@ -4,13 +4,49 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
 
+namespace uam { class PreparedBranchOriginals; }
+
 class ChatDomainService
 {
   public:
+	struct BranchHistoryIdentity
+	{
+		std::string chat_id;
+		std::string updated_at;
+		std::string provider_id;
+		std::string execution_host_id;
+		std::string native_identity_key;
+		std::string workspace_directory;
+		std::string workspace_isolation_kind;
+		std::string workspace_source_directory;
+		std::string workspace_base_ref;
+		std::string workspace_branch_name;
+		std::string workspace_worktree_directory;
+		std::size_t message_count = 0;
+		std::string messages_digest;
+	};
+
+	struct ColdHistoryPreparation
+	{
+		std::filesystem::path data_root;
+		BranchHistoryIdentity identity;
+		ChatSession snapshot;
+		std::string storage_revision;
+		std::shared_ptr<uam::BranchPreparationOwnership> ownership;
+	};
+
+	/// <summary>Reserve before reading; prompt and branch actions cannot overtake each other.</summary>
+	std::shared_ptr<ColdHistoryPreparation> BeginColdHistoryPreparation(uam::AppState& app, const std::string& chat_id) const;
+	/// <summary>Hydrate only a worker snapshot; Stop never joins this read.</summary>
+	bool LoadColdHistoryPreparation(ColdHistoryPreparation& preparation, std::string& error) const;
+	/// <summary>Consume ownership and validate storage/history before adopting messages.</summary>
+	bool CompleteColdHistoryPreparation(uam::AppState& app, ColdHistoryPreparation& preparation) const;
+
 	struct MessageAnalytics
 	{
 		std::string provider;
@@ -22,8 +58,13 @@ class ChatDomainService
 	};
 
 	std::string AttentionRevision(const uam::AppState& app, const ChatSession& chat) const;
-	void MarkChatNeedsAttention(uam::AppState& app, const std::string& chat_id) const;
+	/// <summary>background_save_queued: the caller has just queued an ordinary background save of this chat,
+	/// which publishes the attention fields, so the durable summary write is skipped.</summary>
+	void MarkChatNeedsAttention(uam::AppState& app, const std::string& chat_id, bool background_save_queued = false) const;
 	bool AcknowledgeChatAttention(uam::AppState& app, const std::string& chat_id, const std::string& revision) const;
+	/// Snoozes attention until a future epoch timestamp; zero wakes without stopping the run.
+	bool ValidateChatSnooze(const uam::AppState& app, const std::string& chat_id, std::int64_t until_ms, std::string* error_out = nullptr) const;
+	bool SetChatSnoozedUntil(uam::AppState& app, const std::string& chat_id, std::int64_t until_ms, std::string* error_out = nullptr) const;
 	bool SetChatSettled(uam::AppState& app, const std::string& chat_id, bool settled) const;
 	std::string NewFolderId() const;
 	int FindFolderIndexById(const uam::AppState& app, const std::string& folder_id) const;
@@ -52,8 +93,21 @@ class ChatDomainService
 	std::vector<ChatSession> DeduplicateChatsById(std::vector<ChatSession> chats) const;
 	void RefreshRememberedSelection(uam::AppState& app) const;
 	void SelectChatById(uam::AppState& app, const std::string& chat_id) const;
-	ChatSession CreateNewChat(const std::string& folder_id, const std::string& provider_id) const;
-	bool CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content = std::nullopt, const std::optional<std::string>& operation_id = std::nullopt, bool* reused_existing_branch = nullptr) const;
+	BranchHistoryIdentity CaptureBranchHistoryIdentity(const ChatSession& chat) const;
+	bool MatchesBranchHistoryIdentity(const ChatSession& chat, const BranchHistoryIdentity& identity) const;
+	std::optional<ChatSession> LoadBranchHistoryDetached(const std::filesystem::path& data_root,
+	                                                     const BranchHistoryIdentity& identity) const;
+	/// <summary>Reserve the source before a cold read; an outstanding request cannot be replaced.</summary>
+	std::shared_ptr<uam::BranchPreparationOwnership> BeginBranchPreparation(uam::AppState& app, const std::string& source_id, const std::string& existing_branch_id) const;
+	/// <summary>Consume only this request's reservation before any completion side effects.</summary>
+	bool ConsumeBranchPreparation(uam::AppState& app, const std::string& source_id, const std::shared_ptr<uam::BranchPreparationOwnership>& ownership) const;
+	void CancelBranchPreparations(uam::AppState& app, const std::string& chat_id) const;
+	bool MatchesPreparedBranchHistory(const ChatSession& current, const BranchHistoryIdentity& identity, bool was_loaded, const ChatSession* loaded) const;
+	ChatSession CreateNewChat(const std::string& folder_id, const std::string& provider_id, bool automatic_worktree = true, std::optional<std::string> git_base_branch_override = std::nullopt) const;
+	/// Asset-bearing null-token calls are worker/test-only; UI must supply worker-prepared originals.
+	bool CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content = std::nullopt, const std::optional<std::string>& operation_id = std::nullopt, bool* reused_existing_branch = nullptr, const std::optional<std::vector<std::string>>& retained_attachment_ids = std::nullopt, const ChatSession* prepared_source = nullptr, const ChatSession* prepared_existing_branch = nullptr, uam::PreparedBranchOriginals* prepared_originals = nullptr, const std::optional<std::vector<std::string>>& retained_markdown_store_files = std::nullopt, bool select_chat = true, std::string* branch_id_out = nullptr) const;
+	/// Preserve companion positional selection controls without weakening prepared-asset callers.
+	bool CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, const std::optional<std::string>& operation_id, bool* reused_existing_branch, const std::optional<std::vector<std::string>>& retained_attachment_ids, const ChatSession* prepared_source, const ChatSession* prepared_existing_branch, bool select_chat, std::string* branch_id_out = nullptr) const;
 	void AddMessage(ChatSession& chat, MessageRole role, const std::string& text) const;
 	void AddMessageWithAnalytics(ChatSession& chat, MessageRole role, const std::string& text, const MessageAnalytics& analytics) const;
 };

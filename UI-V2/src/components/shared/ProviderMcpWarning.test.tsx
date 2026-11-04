@@ -1,0 +1,306 @@
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { ProviderMcpWarning } from './ProviderMcpWarning'
+import { useAppStore } from '../../store/useAppStore'
+
+const bridge = vi.hoisted(() => vi.fn())
+vi.mock('../../ipc/cefBridge', async importOriginal => ({ ...await importOriginal<typeof import('../../ipc/cefBridge')>(), sendToCEF: bridge, isCompanionContext: () => false }))
+;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+let host: HTMLDivElement
+let root: Root
+beforeEach(() => {
+  bridge.mockReset()
+  useAppStore.setState({ activeSessionId: 'one', sessions: [{ id: 'one', providerId: 'claude-cli', executionHostId: 'local', viewMode: 'chat', name: 'Test', messages: [] } as never] })
+  host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host)
+})
+afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.useRealTimers() })
+const render = async () => { await act(async () => root.render(<ProviderMcpWarning />)) }
+it('shows missing exact-chat connection and permits deliberate continuation', async () => {
+  bridge.mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'missing', detail: 'No UAM tools configured.' }] } })
+  await render()
+  expect(bridge.mock.calls[0][0].payload.chatId).toBe('one')
+  expect(host.querySelector('[role="status"]')).not.toBeNull()
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Continue without it')!.click())
+  expect(host.textContent).toBe('')
+})
+it.each(['connected', 'configured-unverified', 'unsupported', 'disabled'])('does not call %s a missing connection', async status => {
+  bridge.mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status, detail: 'Status' }] } })
+  await render()
+  expect(host.querySelector('[role="status"]')).toBeNull()
+})
+it('ignores stale status from a different chat', async () => {
+  let resolve!: (value: unknown) => void
+  bridge.mockReturnValueOnce(new Promise(done => { resolve = done })).mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [] } })
+  await render()
+  await act(async () => useAppStore.setState({ activeSessionId: null }))
+  await act(async () => resolve({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'missing', detail: 'Old chat' }] } }))
+  expect(host.querySelector('[role="status"]')).toBeNull()
+})
+
+
+it('checks a new workspace even after deliberate continuation in the old workspace', async () => {
+  bridge.mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'missing', detail: 'Missing' }] } })
+  await render()
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Continue without it')!.click())
+  await act(async () => useAppStore.setState({ sessions: useAppStore.getState().sessions.map(session => ({ ...session, workspaceDirectory: '/another/workspace' })) }))
+  expect(host.querySelector('[role="status"]')).not.toBeNull()
+  expect(bridge.mock.calls.at(-1)?.[0].payload.workspaceDirectory).toBe('/another/workspace')
+})
+
+
+it('clears a missing warning when the same chat later confirms its handshake', async () => {
+  vi.useFakeTimers()
+  bridge.mockResolvedValueOnce({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'missing', detail: 'Missing' }] } }).mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'handshake-confirmed', detail: 'Confirmed' }] } })
+  await render()
+  expect(host.querySelector('[role="status"]')).not.toBeNull()
+  await act(async () => vi.advanceTimersByTimeAsync(5000))
+  expect(host.querySelector('[role="status"]')).toBeNull()
+})
+
+it('does not enable a chat whose provider changed while repair was saving', async () => {
+  bridge.mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'missing', detail: 'Missing' }] } })
+  let finish!: (value: { ok: boolean }) => void
+  const save = vi.fn(() => new Promise<{ ok: boolean }>(resolve => { finish = resolve }))
+  const enableChat = vi.fn(async () => true)
+  useAppStore.setState({ setCentralProviderConfiguration: save, setSessionUamControlEnabled: enableChat })
+  await render()
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Enable UAM connection')!.click())
+  await act(async () => {
+    useAppStore.setState({ sessions: useAppStore.getState().sessions.map(session => ({ ...session, providerId: 'codex-cli' })) })
+    finish({ ok: true })
+  })
+  expect(enableChat).not.toHaveBeenCalled()
+})
+
+it.each(['failed response', 'thrown lookup', 'wrong host'])('clears an outdated missing claim after %s', async outcome => {
+  vi.useFakeTimers()
+  bridge.mockResolvedValueOnce({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'missing', detail: 'Old missing claim' }] } })
+  if (outcome === 'thrown lookup') bridge.mockRejectedValue(new Error('Unavailable'))
+  else bridge.mockResolvedValue(outcome === 'wrong host'
+    ? { ok: true, data: { executionHostId: 'other', providers: [{ providerId: 'claude-cli', status: 'missing', detail: 'Another host' }] } }
+    : { ok: false, error: 'Unavailable' })
+  await render()
+  expect(host.querySelector('[role="status"]')).not.toBeNull()
+  await act(async () => vi.advanceTimersByTimeAsync(5000))
+  expect(host.querySelector('[role="status"]')).toBeNull()
+})
+
+it('refreshes after effective configuration changes without calling an enabled setup connected', async () => {
+  bridge.mockResolvedValueOnce({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'configured-unverified', detail: 'Waiting' }] } })
+    .mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'disabled', detail: 'Disabled' }] } })
+  await render()
+  expect(host.querySelector('[role="status"]')).toBeNull()
+  await act(async () => useAppStore.setState(state => ({ centralProviderConfiguration: { ...state.centralProviderConfiguration, uamControlEnabled: false } })))
+  expect(bridge).toHaveBeenCalledTimes(2)
+  expect(host.querySelector('[role="status"]')).toBeNull()
+})
+
+it('checks a running connection periodically after a warning clears', async () => {
+  vi.useFakeTimers()
+  useAppStore.setState({ acpBindingBySessionId: { one: { running: true, sessionId: 'runtime', lifecycleState: 'ready' } as never } })
+  bridge.mockResolvedValueOnce({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'connected', detail: 'Live heartbeat' }] } })
+    .mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'missing', detail: 'Capability unavailable' }] } })
+  await render()
+  expect(host.querySelector('[role="status"]')).toBeNull()
+  await act(async () => vi.advanceTimersByTimeAsync(30000))
+  expect(bridge).toHaveBeenCalledTimes(2)
+  expect(host.querySelector('[role="status"]')).not.toBeNull()
+})
+
+it('does not poll an idle configured chat without a warning', async () => {
+  vi.useFakeTimers()
+  useAppStore.setState({ acpBindingBySessionId: {} })
+  bridge.mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'configured-unverified', detail: 'Next session' }] } })
+  await render()
+  await act(async () => vi.advanceTimersByTimeAsync(60000))
+  expect(bridge).toHaveBeenCalledTimes(1)
+  expect(host.querySelector('[role="status"]')).toBeNull()
+})
+
+it('keeps an active missing-capability warning after enable succeeds without a handshake', async () => {
+  bridge.mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'missing', detail: 'No active capability' }] } })
+  const enableChat = vi.fn(async (id: string, enabled: boolean) => {
+    useAppStore.setState(state => ({ sessions: state.sessions.map(session => session.id === id ? { ...session, uamControlEnabled: enabled } : session) }))
+    return true
+  })
+  useAppStore.setState({
+    setCentralProviderConfiguration: async configuration => { useAppStore.setState({ centralProviderConfiguration: configuration }); return { ok: true } },
+    setSessionUamControlEnabled: enableChat,
+    acpBindingBySessionId: { one: { running: true, sessionId: 'runtime', lifecycleState: 'processing' } as never },
+  })
+  await render()
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Enable UAM connection')!.click())
+  expect(enableChat).toHaveBeenCalledWith('one', true, true)
+  expect(host.querySelector('[role="status"]')).not.toBeNull()
+  expect(host.textContent).toContain('UAM MCP setup enabled. It applies when this provider session next starts; current work keeps running.')
+})
+
+
+it('does not look up status for identical configuration objects or unrelated instruction pushes', async () => {
+  bridge.mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'configured-unverified', detail: 'Next session' }] } })
+  await render()
+  await act(async () => useAppStore.setState(state => ({
+    centralProviderConfiguration: { ...state.centralProviderConfiguration, instructions: 'Unrelated new instruction',
+      mcpOverrides: state.centralProviderConfiguration.mcpOverrides?.map(override => ({ ...override })) },
+    mcpServers: state.mcpServers.map(server => ({ ...server })),
+  })))
+  expect(bridge).toHaveBeenCalledTimes(1)
+})
+
+
+it('checks a replacement provider session after continuing without the old connection', async () => {
+  useAppStore.setState({ acpBindingBySessionId: { one: { running: true, sessionId: 'old-runtime', lifecycleState: 'ready' } as never } })
+  bridge.mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'missing', detail: 'Missing' }] } })
+  await render()
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Continue without it')!.click())
+  expect(host.querySelector('[role="status"]')).toBeNull()
+  await act(async () => useAppStore.setState({ acpBindingBySessionId: { one: { running: true, sessionId: 'new-runtime', lifecycleState: 'ready' } as never } }))
+  expect(bridge).toHaveBeenCalledTimes(2)
+  expect(host.querySelector('[role="status"]')).not.toBeNull()
+})
+
+
+it('checks a resumed runtime with the same provider conversation ID after Stop', async () => {
+  useAppStore.setState({ acpBindingBySessionId: { one: { running: true, sessionId: 'same-conversation', lifecycleState: 'ready' } as never } })
+  bridge.mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'missing', detail: 'Missing' }] } })
+  await render()
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Continue without it')!.click())
+  expect(host.querySelector('[role="status"]')).toBeNull()
+  await act(async () => useAppStore.setState({ acpBindingBySessionId: { one: { running: false, sessionId: 'same-conversation', lifecycleState: 'stopped' } as never } }))
+  bridge.mockClear()
+  await act(async () => useAppStore.setState({ acpBindingBySessionId: { one: { running: true, sessionId: 'same-conversation', lifecycleState: 'ready' } as never } }))
+  expect(bridge).toHaveBeenCalledTimes(1)
+  expect(host.querySelector('[role="status"]')).not.toBeNull()
+})
+
+
+it('checks a background Stop and same-ID resume while preserving another running dismissal', async () => {
+  useAppStore.setState({ sessions: [
+    ...useAppStore.getState().sessions,
+    { id: 'two', providerId: 'claude-cli', executionHostId: 'local', viewMode: 'chat', name: 'Other', messages: [] } as never,
+  ], acpBindingBySessionId: {
+    one: { running: true, sessionId: 'same-one', lifecycleState: 'ready' } as never,
+    two: { running: true, sessionId: 'same-two', lifecycleState: 'ready' } as never,
+  } })
+  bridge.mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'missing', detail: 'Missing' }] } })
+  await render()
+  const dismiss = async () => { await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Continue without it')!.click()) }
+  await dismiss()
+  await act(async () => useAppStore.setState({ activeSessionId: 'two' }))
+  await dismiss()
+  await act(async () => useAppStore.setState(state => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, one: { ...state.acpBindingBySessionId.one, running: false } } })))
+  expect(host.querySelector('[role="status"]')).toBeNull()
+  await act(async () => useAppStore.setState(state => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, one: { ...state.acpBindingBySessionId.one, running: true } } })))
+  bridge.mockClear()
+  await act(async () => useAppStore.setState({ activeSessionId: 'one' }))
+  expect(bridge).toHaveBeenCalledTimes(1)
+  expect(host.querySelector('[role="status"]')).not.toBeNull()
+  bridge.mockClear()
+  await act(async () => useAppStore.setState({ activeSessionId: 'two' }))
+  expect(bridge).not.toHaveBeenCalled()
+  expect(host.querySelector('[role="status"]')).toBeNull()
+})
+
+const status = (value: string, detail = 'Status') => ({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: value, detail }] } })
+
+it.each(['idle', 'starting', 'processing'])('does not alarm on configured-unverified while %s', async lifecycleState => {
+  useAppStore.setState({ acpBindingBySessionId: { one: { running: lifecycleState !== 'idle', sessionId: 'runtime', lifecycleState } as never } })
+  bridge.mockResolvedValue(status('configured-unverified', 'Enabled; no handshake yet'))
+  await render()
+  expect(host.querySelector('[role="status"]')).toBeNull()
+})
+
+it('keeps the warning for an explicit failure while the provider is starting', async () => {
+  useAppStore.setState({ acpBindingBySessionId: { one: { running: true, sessionId: 'runtime', lifecycleState: 'starting' } as never } })
+  bridge.mockResolvedValue(status('failed', 'UAM MCP server failed to start'))
+  await render()
+  expect(host.querySelector('[role="status"]')).not.toBeNull()
+  expect(host.textContent).toContain('UAM MCP server failed to start')
+})
+
+it('shows Enabling… on the repair button, then settles to no alert once status is configured-unverified', async () => {
+  bridge.mockResolvedValueOnce(status('missing', 'Not configured')).mockResolvedValue(status('configured-unverified', 'Enabled; applies next start'))
+  let finish!: (value: { ok: boolean }) => void
+  const enableChat = vi.fn(async (id: string, enabled: boolean) => {
+    useAppStore.setState(state => ({ sessions: state.sessions.map(session => session.id === id ? { ...session, uamControlEnabled: enabled } : session) }))
+    return true
+  })
+  useAppStore.setState({
+    setCentralProviderConfiguration: configuration => new Promise<{ ok: boolean }>(resolve => {
+      finish = value => { useAppStore.setState({ centralProviderConfiguration: configuration }); resolve(value) }
+    }),
+    setSessionUamControlEnabled: enableChat,
+  })
+  await render()
+  const repair = () => [...host.querySelectorAll('button')].find(button => button.getAttribute('aria-busy') === 'true' || button.textContent === 'Enable UAM connection')!
+  await act(async () => repair().click())
+  expect(repair().textContent).toBe('Enabling…')
+  expect(repair().disabled).toBe(true)
+  await act(async () => finish({ ok: true }))
+  expect(enableChat).toHaveBeenCalledWith('one', true, true)
+  expect(host.querySelector('[role="status"]')).toBeNull()
+  expect(host.textContent).not.toContain('Enabling…')
+})
+
+it('retains a genuine failure after enable when the provider still reports failed', async () => {
+  bridge.mockResolvedValue(status('failed', 'Handshake rejected'))
+  useAppStore.setState({
+    setCentralProviderConfiguration: async configuration => { useAppStore.setState({ centralProviderConfiguration: configuration }); return { ok: true } },
+    setSessionUamControlEnabled: async () => true,
+  })
+  await render()
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Enable UAM connection')!.click())
+  expect(host.querySelector('[role="status"]')).not.toBeNull()
+  expect(host.textContent).toContain('Handshake rejected')
+  expect(host.textContent).not.toContain('UAM MCP setup enabled. It applies when this provider session next starts; current work keeps running.')
+})
+
+
+it.each(['missing', 'failed'])('hides a prior %s structured warning in CLI View and retains fresh Chat failure', async previousStatus => {
+  vi.useFakeTimers()
+  useAppStore.setState({ acpBindingBySessionId: { one: { running: true, sessionId: 'same-runtime', lifecycleState: 'ready' } as never } })
+  let finishChatLookup!: (value: ReturnType<typeof status>) => void
+  bridge.mockResolvedValueOnce(status(previousStatus, 'Previously observed structured connection problem'))
+    .mockReturnValueOnce(new Promise<ReturnType<typeof status>>(resolve => { finishChatLookup = resolve }))
+    .mockResolvedValue(status('failed', 'Fresh Chat handshake failure'))
+  const switchView = async (viewMode: 'chat' | 'cli') => {
+    await act(async () => useAppStore.setState(state => ({ sessions: state.sessions.map(session => session.id === 'one' ? { ...session, viewMode } : session) })))
+  }
+  await render()
+  expect(host.querySelector('[role="status"]')).not.toBeNull()
+  expect(host.textContent).toContain('Previously observed structured connection problem')
+  expect(bridge).toHaveBeenCalledTimes(1)
+
+  await switchView('cli')
+  expect(host.querySelector('[role="status"]')).toBeNull()
+  await act(async () => vi.advanceTimersByTimeAsync(60000))
+  expect(bridge).toHaveBeenCalledTimes(1)
+  expect(useAppStore.getState().acpBindingBySessionId.one.sessionId).toBe('same-runtime')
+
+  await switchView('chat')
+  expect(bridge).toHaveBeenCalledTimes(2)
+  expect(bridge.mock.calls.at(-1)?.[0]).toEqual({ action: 'getProviderMcpStatus', payload: { chatId: 'one', executionHostId: 'local', workspaceDirectory: '' } })
+  expect(host.querySelector('[role="status"]')).toBeNull()
+  expect(host.textContent).not.toContain('Previously observed structured connection problem')
+  await act(async () => finishChatLookup(status('failed', 'Fresh Chat handshake failure')))
+  expect(host.querySelector('[role="status"]')).not.toBeNull()
+  expect(host.textContent).toContain('Fresh Chat handshake failure')
+  expect(host.textContent).not.toContain('Previously observed structured connection problem')
+  expect([...host.querySelectorAll('button')].some(button => button.textContent === 'Enable UAM connection')).toBe(true)
+})
+
+it.each(['missing', 'failed'])('clears prior %s evidence when returning from CLI to setup-unverified Chat', async previousStatus => {
+  useAppStore.setState({ acpBindingBySessionId: { one: { running: true, sessionId: 'same-runtime', lifecycleState: 'ready' } as never } })
+  bridge.mockResolvedValueOnce(status(previousStatus, 'Previous structured warning'))
+    .mockResolvedValue(status('configured-unverified', 'Enabled; no handshake yet'))
+  await render()
+  expect(host.querySelector('[role="status"]')).not.toBeNull()
+  await act(async () => useAppStore.setState(state => ({ sessions: state.sessions.map(session => session.id === 'one' ? { ...session, viewMode: 'cli' as const } : session) })))
+  expect(host.querySelector('[role="status"]')).toBeNull()
+  expect(bridge).toHaveBeenCalledTimes(1)
+  await act(async () => useAppStore.setState(state => ({ sessions: state.sessions.map(session => session.id === 'one' ? { ...session, viewMode: 'chat' as const } : session) })))
+  expect(bridge).toHaveBeenCalledTimes(2)
+  expect(host.querySelector('[role="status"]')).toBeNull()
+  expect(host.textContent).not.toContain('Previous structured warning')
+})

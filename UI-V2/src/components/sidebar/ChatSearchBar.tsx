@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { Search, X, SlidersHorizontal, Check } from 'lucide-react'
+import { Check, Search, X, SlidersHorizontal } from 'lucide-react'
 import type { ChatSearchFilters, ChatStatusFilterId } from './chatSearch'
-import { Tooltip, ViewportMenu } from '../ui'
+import { IconButton, MenuItem, Tooltip, ViewportMenu } from '../ui'
+import { ProviderLogo } from '../shared/ProviderLogo'
+
+/** Columns for the provider grid: at most 6 per row, at least 3, rows as even as possible. */
+export function providerGridColumns(count: number): number {
+  if (count <= 0) return 3
+  const rows = Math.ceil(count / 6)
+  return Math.min(6, Math.max(3, Math.ceil(count / rows)))
+}
 
 interface ChatSearchProviderFilterOption {
   id: string
@@ -75,12 +83,12 @@ export function ChatSearchBar({
 
   return (
     <div
-      className="flex h-12 flex-shrink-0 items-center px-4"
-      style={{ background: 'var(--sidebar-bg)' }}
+      className="flex flex-shrink-0 items-center px-4"
+      style={{ height: 'var(--pane-header-h)', background: 'var(--sidebar-bg)' }}
     >
-      <div className="flex w-full items-center gap-2 rounded-md focus-within:ring-1 focus-within:ring-[var(--accent)]">
+      <div className="flex w-full items-center gap-2">
         <div
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 focus-within:[outline:var(--focus-ring)] focus-within:[outline-offset:var(--focus-offset)]"
           style={{
             height: 32,
             background: 'var(--surface-up)',
@@ -112,7 +120,7 @@ export function ChatSearchBar({
 
           {value && (
             <Tooltip label="Clear search" side="top">
-              <button
+              {/* ui: raw button kept — 18px inline clear chip with JS hover handlers; IconButton has no 18px size */}<button
                 type="button"
                 aria-label="Clear search"
                 className="flex items-center justify-center rounded transition-colors duration-100"
@@ -142,40 +150,30 @@ export function ChatSearchBar({
         </div>
         <div className="relative" ref={popoverRef}>
           <Tooltip label={activeFilterCount > 0 ? `${activeFilterCount} chat filter${activeFilterCount === 1 ? '' : 's'} active` : 'Filter chats'} side="bottom">
-          <button
+          <IconButton
             ref={triggerRef}
-            type="button"
-            aria-label="Filter chats"
+            tooltip={false}
+            label={activeFilterCount > 0 ? `Filter chats, ${activeFilterCount} active` : 'Filter chats'}
+            icon={<>
+              <SlidersHorizontal size={15} aria-hidden />
+              {activeFilterCount > 0 && <span aria-hidden="true" className="font-semibold">{activeFilterCount}</span>}
+            </>}
             aria-haspopup="menu"
             aria-expanded={filtersOpen}
             aria-controls={filtersOpen ? menuId : undefined}
-            className="relative flex items-center justify-center rounded-md transition-colors duration-fast"
+            className="flex items-center justify-center gap-1 rounded-md transition-colors duration-fast"
             style={{
-              width: 32,
+              minWidth: 32,
               height: 32,
-              border: '1px solid transparent',
-              background: activeFilterCount > 0 ? 'var(--accent)' : 'var(--surface-up)',
-              color: activeFilterCount > 0 ? 'white' : 'var(--text-2)',
+              padding: activeFilterCount > 0 ? '0 8px' : 0,
+              border: `1px solid ${activeFilterCount > 0 ? 'color-mix(in srgb, var(--accent) 40%, transparent)' : 'transparent'}`,
+              background: activeFilterCount > 0 ? 'var(--accent-dim)' : 'var(--surface-up)',
+              color: activeFilterCount > 0 ? 'var(--accent)' : 'var(--text-2)',
+              fontSize: 'var(--fs-xs)',
+              fontVariantNumeric: 'tabular-nums',
             }}
             onClick={() => setFiltersOpen((open) => !open)}
-          >
-            <SlidersHorizontal size={15} aria-hidden />
-            {activeFilterCount > 0 && (
-              <span
-                aria-hidden="true"
-                className="absolute -right-1 -top-1 flex items-center justify-center rounded-full text-[10px] font-semibold"
-                style={{
-                  minWidth: 14,
-                  height: 14,
-                  background: 'var(--surface)',
-                  color: 'var(--accent)',
-                  border: '1px solid var(--border)',
-                }}
-              >
-                {activeFilterCount}
-              </span>
-            )}
-          </button>
+          />
           </Tooltip>
 
           {filtersOpen && (
@@ -187,7 +185,7 @@ export function ChatSearchBar({
               role="menu"
               aria-label="Chat filters"
               onRequestClose={closeFilters}
-              className="w-56 rounded-md p-2 text-xs shadow-xl"
+              className="uam-reveal w-56 rounded-md p-2 text-xs shadow-xl"
               style={{
                 background: 'var(--surface-up)',
                 border: '1px solid var(--border-bright)',
@@ -197,6 +195,8 @@ export function ChatSearchBar({
               <div className="mb-2 flex items-center justify-between gap-2">
                 <span className="font-semibold" style={{ color: 'var(--text-2)' }}>Filters</span>
                 {(activeFilterCount > 0) && (
+                  
+                  // ui: raw button kept — small bordered text pill with menuitem role; Chip is a choice button, not a menu item
                   <button
                     type="button"
                     role="menuitem"
@@ -212,21 +212,12 @@ export function ChatSearchBar({
                 )}
               </div>
 
-              <button
-                type="button"
-                role="menuitemcheckbox"
-                aria-checked={deepSearch}
-                className="mb-2 flex w-full items-center justify-between rounded px-2 py-1.5"
-                style={{
-                  background: deepSearch ? 'color-mix(in srgb, var(--accent) 16%, var(--surface))' : 'transparent',
-                  color: deepSearch ? 'var(--text)' : 'var(--text-2)',
-                  border: '1px solid var(--border)',
-                }}
+              <MenuItem
+                checked={deepSearch}
+                className="mb-2 rounded"
+                label="Search contents"
                 onClick={onToggleDeepSearch}
-              >
-                <span>Search contents</span>
-                <span style={{ color: deepSearch ? 'var(--accent)' : 'var(--text-3)' }}>{deepSearch ? 'On' : 'Off'}</span>
-              </button>
+              />
 
               <div className="mb-1 text-xs uppercase" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>
                 State
@@ -235,21 +226,14 @@ export function ChatSearchBar({
                 {STATUS_OPTIONS.map((option) => {
                   const active = filters.statusIds.includes(option.id)
                   return (
-                    <button
+                    
+                    <MenuItem
                       key={option.id}
-                      type="button"
-                      role="menuitemcheckbox"
-                      aria-checked={active}
-                      className="flex w-full items-center justify-between rounded px-2 py-1"
-                      style={{
-                        background: active ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))' : 'transparent',
-                        color: active ? 'var(--text)' : 'var(--text-2)',
-                      }}
+                      checked={active}
+                      className="rounded"
+                      label={option.label}
                       onClick={() => onToggleStatusFilter(option.id)}
-                    >
-                      <span>{option.label}</span>
-                      {active && <Check size={13} style={{ color: 'var(--accent)' }} aria-hidden />}
-                    </button>
+                    />
                   )
                 })}
               </div>
@@ -257,25 +241,27 @@ export function ChatSearchBar({
               <div className="mb-1 text-xs uppercase" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>
                 Provider
               </div>
-              <div className="max-h-40 space-y-1 overflow-auto">
+              {/* Even grid: 3–6 columns chosen so rows fill evenly (6 → 6, 7 → 4+3, 8 → 4+4). */}
+              <div className="grid max-h-40 gap-1 overflow-auto p-1" style={{ gridTemplateColumns: `repeat(${providerGridColumns(providerOptions.length)}, minmax(0, 1fr))` }}>
                 {providerOptions.map((provider) => {
                   const active = filters.providerIds.includes(provider.id)
                   return (
-                    <button
-                      key={provider.id}
-                      type="button"
-                      role="menuitemcheckbox"
-                      aria-checked={active}
-                      className="flex w-full items-center justify-between rounded px-2 py-1"
-                      style={{
-                        background: active ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))' : 'transparent',
-                        color: active ? 'var(--text)' : 'var(--text-2)',
-                      }}
-                      onClick={() => onToggleProviderFilter(provider.id)}
-                    >
-                      <span className="truncate">{provider.label}</span>
-                      {active && <Check size={13} style={{ color: 'var(--accent)' }} aria-hidden />}
-                    </button>
+                    <Tooltip key={provider.id} label={provider.label} side="bottom">
+                      {/* ui: raw button kept — icon-only checkbox chip; MenuItem always renders a text label row */}<button
+                        type="button"
+                        role="menuitemcheckbox"
+                        aria-label={provider.label}
+                        aria-checked={active}
+                        className="flex h-8 w-full items-center justify-center rounded-md transition-colors duration-fast"
+                        style={{
+                          background: active ? 'var(--accent-dim)' : 'transparent',
+                          border: `1px solid ${active ? 'color-mix(in srgb, var(--accent) 40%, transparent)' : 'var(--border)'}`,
+                        }}
+                        onClick={() => onToggleProviderFilter(provider.id)}
+                      >
+                        <ProviderLogo providerId={provider.id} size={16} />
+                      </button>
+                    </Tooltip>
                   )
                 })}
               </div>

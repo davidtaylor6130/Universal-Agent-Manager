@@ -1,12 +1,13 @@
+import { createPortal } from 'react-dom'
 // Tool call inline rows, permission cards, user-input cards, tool modal, and
 // the MessageFrame wrapper. Extracted from ChatView.tsx (MO-3).
 
 import { ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { ConversationTurn } from './ConversationTurn'
+import { ConversationTurn, type ConversationDelivery } from './ConversationTurn'
 import { useSubAgentDisclosure } from './ConversationWork'
 import { useToolQuestionDialog } from './useToolQuestionDialog'
 import './ToolDetails.css'
+import './SubagentDisclosure.css'
 import { ChevronLeft, ChevronRight, User, Pencil, RotateCcw, Wrench, X } from 'lucide-react'
 import type {
   AcpPendingPermission,
@@ -14,8 +15,9 @@ import type {
   AcpToolCall,
 } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
-import { EXIT_MS, IconButton } from '../ui'
+import { Button, Chip, EXIT_MS, IconButton, Overlay, RowButton, Tab, Tabs, Tooltip, motionAllowed, usePresence } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
+import { formatReadableToolOutput } from './toolOutputFormat'
 import {
   CopyTextButton,
   roleAccent,
@@ -44,13 +46,14 @@ export function SubAgentRunningPanel({
   renderHistory?: () => ReactNode
 }) {
   const [open, setOpen] = useSubAgentDisclosure(tool.id)
+  // The native <details> stays open through the exit window so the body can collapse before it unmounts.
+  const { mounted, closing } = usePresence(open)
   const displayTitle = toolDisplayTitle(tool)
   const transcriptAvailable = Boolean(tool.subAgentId)
   return (
     <details
       className="w-full uam-subagent-panel"
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
+      open={mounted}
       style={{
         borderRadius: 8,
         border: '1px solid color-mix(in srgb, var(--blue) 35%, var(--border-bright))',
@@ -62,6 +65,7 @@ export function SubAgentRunningPanel({
     >
       <summary
         className="w-full text-left cursor-pointer"
+        onClick={(event) => { event.preventDefault(); setOpen(!open) }}
         style={{
           display: 'grid',
           gridTemplateColumns: 'minmax(0, 1fr) auto',
@@ -90,30 +94,25 @@ export function SubAgentRunningPanel({
           </span>
           <span className="min-w-0" style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 2 }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--blue)' }}>
-              {transcriptAvailable ? 'Subtask:' : 'Provider sub-agent event:'}
+              {transcriptAvailable ? 'Subtask:' : 'Sub-agent event:'}
               <span style={{ fontSize: 10, fontWeight: 500, color: 'var(--text-3)', textTransform: 'none', letterSpacing: 0 }}>
                 {tool.kind && tool.kind !== 'sub-agent' ? tool.kind : ''}
               </span>
             </span>
             <span className="truncate" style={{ fontSize: 12, color: 'var(--text)' }}>{displayTitle}</span>
+            {tool.currentActivity && <Tooltip label={tool.currentActivity}><span className="truncate text-xs">{tool.currentActivity}</span></Tooltip>}
           </span>
         </span>
-        <span className="flex flex-col items-end gap-1">
-          <ToolStatusIcon status={tool.status} />
-          <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>{transcriptAvailable ? 'Transcript available' : 'Provider event'}</span>
-        </span>
+        <ToolStatusIcon status={tool.status} />
       </summary>
-      {open && (
-        <div className="space-y-3" style={{ borderTop: '1px solid var(--border)', padding: 12 }}>
-          {renderHistory?.() ?? <pre className="whitespace-pre-wrap text-xs">{tool.content || 'No sub-agent history available yet.'}</pre>}
-          <button
-            type="button"
-            onClick={() => onSelectTool(tool.id)}
-            className="h-7 px-2 text-xs"
-            style={{ border: '1px solid var(--border)', borderRadius: 5, background: 'var(--bg)', color: 'var(--text-2)' }}
-          >
-            Tool details
-          </button>
+      {mounted && (
+        <div style={{ display: 'grid', gridTemplateRows: closing ? '0fr' : '1fr', transition: `grid-template-rows ${closing ? 'var(--dur-exit)' : 'var(--dur-base)'} var(--ease-out-soft)` }}>
+          <div style={{ minHeight: 0, overflow: 'hidden' }}>
+            <div className="space-y-3 uam-subagent-disclosure" data-state="open" style={{ borderTop: '1px solid var(--border)', padding: 12 }}>
+              {renderHistory?.() ?? <pre className="whitespace-pre-wrap text-xs">{tool.content || 'No sub-agent history available yet.'}</pre>}
+              <Button size="sm" onClick={() => onSelectTool(tool.id)}>Tool details</Button>
+            </div>
+          </div>
         </div>
       )}
     </details>
@@ -147,18 +146,19 @@ export function ToolCallInlineRows({
         const active = normalizedStatus === 'running' || normalizedStatus === 'in_progress' || normalizedStatus === 'inprogress'
         return (
           <div key={tool.id} className="uam-tool-timeline__item">
-            <button
-              type="button"
-              title="Open tool details"
-              data-active={active}
-              onClick={() => onSelectTool(tool.id)}
-              className="w-full grid text-left uam-tool-row"
-            >
-              <Wrench className="uam-tool-row__icon" size={13} aria-hidden />
-              <span className="uam-tool-row__kind">Tool</span>
-              <span className="text-xs truncate" style={{ color: 'var(--text)' }}>{displayTitle}</span>
-              <ToolStatusIcon status={tool.status} />
-            </button>
+            <Tooltip label="Open tool details">
+              <RowButton
+                type="button"
+                data-active={active}
+                onClick={() => onSelectTool(tool.id)}
+                className="w-full grid text-left uam-tool-row"
+              >
+                <Wrench className="uam-tool-row__icon" size={13} aria-hidden />
+                <span className="uam-tool-row__kind">Tool</span>
+                <span className="text-xs truncate" style={{ color: 'var(--text)' }}>{displayTitle}</span>
+                <ToolStatusIcon status={tool.status} />
+              </RowButton>
+            </Tooltip>
           </div>
         )
       })}
@@ -260,13 +260,12 @@ export function PermissionInlineCard({
           }}
         >
           <div className="font-medium" style={{ color: 'var(--text)' }}>
-            This approval has not had runtime activity for {Math.max(120, waitSeconds ?? 0)}s.
+            This approval has had no activity for {Math.max(120, waitSeconds ?? 0)}s.
           </div>
           <div>{waitStaleReason || 'The provider may be waiting on a stale command or tool request.'}</div>
           <div className="flex flex-wrap gap-2 mt-2">
-            <button
-              type="button"
-              className="uam-choice-button px-2.5 h-7 text-[11px] font-medium"
+            <Chip
+              className="px-2.5 h-7 text-[11px] font-medium"
               style={{
                 borderRadius: 6,
                 border: '1px solid var(--border-bright)',
@@ -277,10 +276,9 @@ export function PermissionInlineCard({
               disabled={Boolean(submittingOptionId)}
             >
               Cancel turn
-            </button>
-            <button
-              type="button"
-              className="uam-choice-button px-2.5 h-7 text-[11px]"
+            </Chip>
+            <Chip
+              className="px-2.5 h-7 text-[11px]"
               style={{
                 borderRadius: 6,
                 border: '1px solid var(--border)',
@@ -290,17 +288,16 @@ export function PermissionInlineCard({
               onClick={onStopRuntime}
               disabled={Boolean(submittingOptionId)}
             >
-              Stop runtime
-            </button>
+              Stop
+            </Chip>
           </div>
         </div>
       )}
       <div className="flex flex-wrap gap-2">
         {normalizedOptions.map((option) => (
-          <button
+          <Chip
             key={option.id}
-            type="button"
-            className="uam-choice-button px-3 h-7 text-[11px] font-medium"
+            className="px-3 h-7 text-[11px] font-medium"
             style={{
               borderRadius: 6,
               border: '1px solid var(--border-bright)',
@@ -312,7 +309,7 @@ export function PermissionInlineCard({
             onClick={() => void resolve(option.id)}
           >
             {submittingOptionId === option.id ? 'Submitting…' : option.displayName}
-          </button>
+          </Chip>
         ))}
       </div>
       {submitError && <div role="alert" className="mt-2 text-[11px]" style={{ color: 'var(--error)' }}>{submitError}</div>}
@@ -376,7 +373,7 @@ type ToolCallModalProps = {
 }
 
 export function ToolCallModal(props: ToolCallModalProps) {
-  return <ToolCallDetails key={`${props.chatId ?? ''}:${props.messageIndex ?? 'live'}:${props.tool.id}`} {...props} />
+  return <ToolCallDetails key={`${props.chatId ?? ''}:${props.messageIndex ?? 'live'}:${props.tool.id}:${props.tool.historyDigest ?? ''}`} {...props} />
 }
 
 function ToolCallDetails({
@@ -397,13 +394,13 @@ function ToolCallDetails({
     hasPrevious: boolean
     hasMore: boolean
   }
-	const isLive = tool.status === 'running' || tool.status === 'in_progress' || tool.status === 'pending'
+  const isLive = tool.status === 'running' || tool.status === 'in_progress' || tool.status === 'pending'
   const [contentPage, setContentPage] = useState<ToolContentPage | null>(null)
-	const [contentPages, setContentPages] = useState<ToolContentPage[]>([])
+  const [contentPages, setContentPages] = useState<ToolContentPage[]>([])
   const [contentError, setContentError] = useState('')
   const [contentLoading, setContentLoading] = useState(false)
   const [retryOffset, setRetryOffset] = useState(0)
-	const [followLive, setFollowLive] = useState(isLive)
+  const [followLive, setFollowLive] = useState(isLive)
   const contentRequestSerial = useRef(0)
   const [managedTranscript, setManagedTranscript] = useState<{ runId: string; title: string; status: string; executionCapability: string; messages: Array<{ role: string; content: string; thoughts: string }> } | null>(null)
   const [managedTranscriptError, setManagedTranscriptError] = useState('')
@@ -414,30 +411,45 @@ function ToolCallDetails({
   const contentOffset = useRef(initialContentOffset)
   const contentDigest = useRef(tool.contentDigest)
   const output = cleanToolOutput(
-	shouldLoadContent && contentPages.length === 0
+    shouldLoadContent && contentPages.length === 0
       ? contentLoading ? 'Loading tool output…' : 'Tool output is unavailable.'
-	  : contentPages.length > 0
-		? contentPages
-			.slice()
-			.sort((left, right) => left.offset - right.offset)
-			.map((page, index, pages) => index > 0 && page.offset > pages[index - 1].nextOffset
-				? `\n\n… ${page.offset - pages[index - 1].nextOffset} bytes not loaded …\n\n${page.content}`
-				: page.content)
-			.join('')
-		: tool.content || 'No tool output yet.'
+      : contentPages.length > 0
+        ? contentPages
+          .slice()
+          .sort((left, right) => left.offset - right.offset)
+          .map((page, index, pages) => index > 0 && page.offset > pages[index - 1].nextOffset
+            ? `\n\n… ${page.offset - pages[index - 1].nextOffset} bytes not loaded …\n\n${page.content}`
+            : page.content)
+          .join('')
+        : tool.content || (tool.contentDeferred && !chatId ? 'Tool output was not included in this stored transcript.' : 'No tool output yet.')
   )
   const transcriptChatId = chatId ? managedTranscriptChatId(output) : ''
   const toolCopyText = cleanToolOutput(contentPages.length
     ? [...contentPages].sort((left, right) => left.offset - right.offset).map(page => page.content).join('')
     : shouldLoadContent ? '' : tool.content)
   const [tab, setTab] = useState('Output')
+  const [showRawOutput, setShowRawOutput] = useState(false)
+  const readableOutput = formatReadableToolOutput(output)
   const [closing, setClosing] = useState(false)
-  // Play the exit animation before the parent unmounts the dialog.
+  const closeTimerRef = useRef(0)
+  const closedRef = useRef(false)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  const close = useCallback(() => {
+    if (closedRef.current) return
+    closedRef.current = true
+    window.clearTimeout(closeTimerRef.current)
+    onCloseRef.current()
+  }, [])
+  // A re-keyed dialog unmounts mid-exit: finish the requested close rather than dropping it.
+  useEffect(() => () => { if (closeTimerRef.current) close() }, [close])
+  // Play the exit animation before the parent unmounts the dialog; repeated requests close once.
   const requestClose = useCallback(() => {
-    if (typeof window.matchMedia !== 'function' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { onClose(); return }
+    if (closeTimerRef.current || closedRef.current) return
+    if (!motionAllowed()) { close(); return }
     setClosing(true)
-    window.setTimeout(onClose, EXIT_MS)
-  }, [onClose])
+    closeTimerRef.current = window.setTimeout(close, EXIT_MS)
+  }, [close])
   const dialogRef = useToolQuestionDialog(requestClose)
   const outputRef = useRef<HTMLPreElement>(null)
   const id = useId()
@@ -463,7 +475,8 @@ function ToolCallDetails({
     setContentError('')
     const response = await sendToCEF<ToolContentPage>({
       action: 'getToolCallContent',
-      payload: { chatId, toolCallId: tool.id, offset, ...(messageIndex === undefined ? {} : { messageIndex }) },
+      payload: { chatId, toolCallId: tool.id, offset, ...(messageIndex === undefined ? {} : { messageIndex }),
+        ...(tool.historyDigest ? { historyDigest: tool.historyDigest } : {}) },
     }).catch(() => ({ ok: false, error: 'Failed to load tool output.', data: undefined }))
     if (requestSerial !== contentRequestSerial.current) return
     setContentLoading(false)
@@ -472,29 +485,29 @@ function ToolCallDetails({
       return
     }
     setContentPage(response.data)
-	setContentPages((current) => {
-	  if (replace) return [response.data!]
-	  const pages = current.filter((page) => page.offset !== response.data!.offset)
-	  pages.push(response.data!)
-	  return pages
-	})
-  }, [chatId, messageIndex, shouldLoadContent, tool.id])
+    setContentPages((current) => {
+      if (replace) return [response.data!]
+      const pages = current.filter((page) => page.offset !== response.data!.offset)
+      pages.push(response.data!)
+      return pages
+    })
+  }, [chatId, messageIndex, shouldLoadContent, tool.id, tool.historyDigest])
 
   useEffect(() => {
     ++contentRequestSerial.current
     setContentPage(null)
-	setContentPages([])
+    setContentPages([])
     setContentError('')
     setContentLoading(false)
-	setRetryOffset(initialContentOffset)
-	setFollowLive(isLive)
-	if (shouldLoadContent) void loadContent(initialContentOffset, true)
-	// The selected tool is fixed for the lifetime of this modal. A status change
-	// must not discard pages the user has already loaded.
-	// eslint-disable-next-line react-hooks/exhaustive-deps
+    setRetryOffset(initialContentOffset)
+    setFollowLive(isLive)
+    if (shouldLoadContent) void loadContent(initialContentOffset, true)
+    // The selected tool is fixed for the lifetime of this modal. A status change
+    // must not discard pages the user has already loaded.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialContentOffset, loadContent, shouldLoadContent, tool.id])
 
-	useEffect(() => {
+  useEffect(() => {
       const changed = contentDigest.current !== tool.contentDigest
       if (!isLive) contentDigest.current = tool.contentDigest
       if (shouldLoadContent && !isLive && (followLive || changed)) {
@@ -502,13 +515,13 @@ function ToolCallDetails({
         setContentPages([])
         void loadContent(followLive ? Number.MAX_SAFE_INTEGER : contentOffset.current, true)
       }
-	}, [followLive, isLive, loadContent, shouldLoadContent, tool.contentDigest])
+  }, [followLive, isLive, loadContent, shouldLoadContent, tool.contentDigest])
 
-	useEffect(() => {
-	  if (!shouldLoadContent || !isLive || !followLive || contentLoading) return
-	  const timer = window.setInterval(() => void loadContent(Number.MAX_SAFE_INTEGER, true), 1500)
-	  return () => window.clearInterval(timer)
-	}, [contentLoading, followLive, isLive, loadContent, shouldLoadContent])
+  useEffect(() => {
+    if (!shouldLoadContent || !isLive || !followLive || contentLoading) return
+    const timer = window.setInterval(() => void loadContent(Number.MAX_SAFE_INTEGER, true), 1500)
+    return () => window.clearInterval(timer)
+  }, [contentLoading, followLive, isLive, loadContent, shouldLoadContent])
 
   useEffect(() => {
     setManagedTranscript(null)
@@ -547,7 +560,7 @@ function ToolCallDetails({
       runId: response.data?.runId || '',
       title: response.data?.title || 'Managed agent transcript',
       status: response.data?.status || 'unknown',
-	  executionCapability: response.data?.executionCapability || 'unknown',
+      executionCapability: response.data?.executionCapability || 'unknown',
       messages,
     })
     setManagedTranscriptLoading(false)
@@ -568,43 +581,33 @@ function ToolCallDetails({
       : response.error || 'Failed to resume the interrupted run.')
   }
 
+  // ui: own portal kept — the tool details window sizes itself (820px wide, fixed height); the shared Overlay's flex wrapper shrinks it.
   return createPortal(
     <div className="tool-details-backdrop" data-state={closing ? 'closed' : 'open'} style={accentColor ? { '--accent': accentColor } as React.CSSProperties : undefined}
       onMouseDown={event => { if (event.target === event.currentTarget) requestClose() }}>
       <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} tabIndex={-1} className="uam-tool-modal tool-details-dialog">
         <header className="tool-details-header">
           <span className="tool-details-icon"><ToolStatusIcon status={tool.status} /></span>
-          <div className="tool-details-heading">
+          <Tooltip label={[toolDisplayTitle(tool), tool.isSubAgent && tool.subAgentTitle ? `Sub-agent: ${tool.subAgentTitle}` : ''].filter(Boolean).join(' · ')}>
             <h2 id={`${id}-title`}>{toolDisplayTitle(tool)}</h2>
-            <div className="tool-details-subtitle">
-              {toolDisplayKind(tool) && <span className="tool-details-chip">{toolDisplayKind(tool)}</span>}
-              {tool.status && <span className="tool-details-chip" data-status={tool.status}>{tool.status.replace(/_/g, ' ')}</span>}
-              {tool.isSubAgent && <span>{tool.subAgentTitle || 'Sub-agent'}</span>}
-            </div>
-          </div>
+          </Tooltip>
           <CopyTextButton text={toolCopyText} label="Copy loaded output" title="Copy loaded output" />
           <IconButton size="sm" icon={<X size={17} aria-hidden />} label="Close tool details" onClick={requestClose} />
         </header>
-        <div role="tablist" aria-label="Tool information" className="tool-details-tabs">
-          {tabs.map((name, index) => <button key={name} type="button" role="tab" id={`${id}-${name}-tab`}
-            aria-controls={`${id}-panel`} aria-selected={activeTab === name} tabIndex={activeTab === name ? 0 : -1}
-            onClick={() => setTab(name)} onKeyDown={event => {
-              const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1
-              if (next < 0) return
-              event.preventDefault()
-              setTab(tabs[next])
-              document.getElementById(`${id}-${tabs[next]}-tab`)?.focus()
-            }}>{name}</button>)}
-        </div>
+        <Tabs value={activeTab} onChange={setTab} aria-label="Tool information" className="tool-details-tabs">
+          {tabs.map(name => <Tab key={name} value={name} id={`${id}-${name}-tab`} aria-controls={`${id}-panel`}>{name}</Tab>)}
+        </Tabs>
         <div role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${activeTab}-tab`} tabIndex={0}
           className={`tool-details-panel${activeTab === 'Output' ? ' tool-details-panel--output' : ''}`}>
           {activeTab === 'Output' && <>
+          {/* ui: raw button kept — pill live toggle with tool-details-follow styling (ToolDetails.css); Chip would add the chip look */}
           {isLive && !shouldLoadContent && <button type="button" className="tool-details-follow" aria-pressed={followLive} onClick={() => setFollowLive(value => !value)}>Follow live</button>}
+          {readableOutput !== null && <Chip className="h-7 self-end px-2" aria-pressed={showRawOutput} onClick={() => setShowRawOutput(value => !value)}>Raw</Chip>}
           {shouldLoadContent && contentPage && (
             <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]" style={{ color: 'var(--text-3)' }}>
-			  <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || !contentPage.hasPrevious} onClick={() => { setFollowLive(false); void loadContent(contentPage.previousOffset) }}>Load earlier</button>
-			  <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || !contentPage.hasMore} onClick={() => { setFollowLive(false); void loadContent(contentPage.nextOffset) }}>Load later</button>
-			  <button type="button" className="uam-choice-button h-7 px-2" aria-pressed={isLive ? followLive : undefined} disabled={contentLoading} onClick={() => { if (isLive && followLive) setFollowLive(false); else { setFollowLive(isLive); void loadContent(Number.MAX_SAFE_INTEGER, isLive) } }}>{isLive ? 'Follow live' : 'Load latest'}</button>
+                <Chip className="h-7 px-2" disabled={contentLoading || !contentPage.hasPrevious} onClick={() => { setFollowLive(false); void loadContent(contentPage.previousOffset) }}>Load earlier</Chip>
+                <Chip className="h-7 px-2" disabled={contentLoading || !contentPage.hasMore} onClick={() => { setFollowLive(false); void loadContent(contentPage.nextOffset) }}>Load later</Chip>
+                <Chip className="h-7 px-2" aria-pressed={isLive ? followLive : undefined} disabled={contentLoading} onClick={() => { if (isLive && followLive) setFollowLive(false); else { setFollowLive(isLive); void loadContent(Number.MAX_SAFE_INTEGER, isLive) } }}>{isLive ? 'Follow live' : 'Load latest'}</Chip>
               <span aria-live="polite">
                 {contentPage.totalBytes === 0
                   ? '0 bytes'
@@ -615,7 +618,7 @@ function ToolCallDetails({
           {contentError && (
             <div role="alert" className="mb-2 flex items-center gap-2 text-[11px]" style={{ color: 'var(--error)' }}>
               <span>{contentError}</span>
-              <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading} onClick={() => void loadContent(retryOffset)}>Retry</button>
+              <Chip className="h-7 px-2" disabled={contentLoading} onClick={() => void loadContent(retryOffset)}>Retry</Chip>
             </div>
           )}
           <pre
@@ -627,7 +630,7 @@ function ToolCallDetails({
             tabIndex={0}
             className="whitespace-pre-wrap text-xs uam-tool-modal__output"
           >
-            {output}
+            {showRawOutput || readableOutput === null ? output : readableOutput}
           </pre>
           </>}
           {activeTab === 'Details' && <div className="tool-details-meta">
@@ -636,12 +639,13 @@ function ToolCallDetails({
               <dt>Type</dt><dd>{[toolDisplayKind(tool), tool.kind].filter(Boolean).join(' / ') || 'tool'}</dd>
               <dt>Status</dt><dd>{tool.status || 'unknown'}</dd>
               {tool.isSubAgent && <><dt>Agent</dt><dd>{tool.subAgentId || tool.subAgentTitle || 'provider sub-agent'}</dd></>}
-              {managedTranscript && <><dt>Run ID</dt><dd>{managedTranscript.runId}</dd><dt>Execution</dt><dd>{managedTranscript.executionCapability}</dd></>}
+              {managedTranscript && <><dt>Run ID</dt><dd>{managedTranscript.runId}</dd>{managedTranscript.executionCapability !== 'unknown' && <><dt>Execution</dt><dd>{managedTranscript.executionCapability}</dd></>}</>}
             </dl>
-            {tool.isSubAgent && onOpenSubAgent && <button type="button" onClick={onOpenSubAgent}>Open chat</button>}
+            {tool.isSubAgent && onOpenSubAgent && <Button size="sm" onClick={onOpenSubAgent}>Open chat</Button>}
           </div>}
           {activeTab === 'Transcript' && <div className="tool-details-transcript">
           {transcriptChatId && !managedTranscript && (
+            // ui: raw button kept — inline-styled transcript action; Button would restyle it
             <button
               type="button"
               onClick={() => void openManagedTranscript()}
@@ -652,15 +656,16 @@ function ToolCallDetails({
               {managedTranscriptLoading ? 'Loading transcript…' : 'View managed agent transcript'}
             </button>
           )}
-          {managedTranscriptError && <div role="alert" className="mt-2 text-xs" style={{ color: 'var(--red)' }}>{managedTranscriptError}</div>}
+          {managedTranscriptError && <div role="alert" className="mt-2 text-xs" style={{ color: 'var(--error)' }}>{managedTranscriptError}</div>}
           {managedTranscript && (
             <section className="mt-3 grid gap-2" aria-label="Managed agent transcript">
               <div className="flex items-center justify-between gap-2 text-xs">
                 <strong>{managedTranscript.title}</strong>
                 <span className="flex items-center gap-2">
-				  <span style={{ color: 'var(--text-3)' }}>{managedTranscript.status}</span>
+                    <span style={{ color: 'var(--text-3)' }}>{managedTranscript.status}</span>
 
                   {managedTranscript.status === 'interrupted' && (
+                    // ui: raw button kept — inline-styled resume action; Button would restyle it
                     <button
                       type="button"
                       onClick={() => void resumeManagedRun()}
@@ -671,7 +676,7 @@ function ToolCallDetails({
                   )}
                 </span>
               </div>
-              {managedResumeMessage && <div role="status" className="text-xs" style={{ color: managedResumeMessage.startsWith('Failed') ? 'var(--red)' : 'var(--text-2)' }}>{managedResumeMessage}</div>}
+              {managedResumeMessage && <div role="status" className="text-xs" style={{ color: managedResumeMessage.startsWith('Failed') ? 'var(--error)' : 'var(--text-2)' }}>{managedResumeMessage}</div>}
               {managedTranscript.messages.length === 0 ? (
                 <div className="text-xs" style={{ color: 'var(--text-3)' }}>No persisted messages yet.</div>
               ) : managedTranscript.messages.map((message, index) => (
@@ -686,7 +691,9 @@ function ToolCallDetails({
           </div>}
         </div>
       </section>
-    </div>, document.body
+    </div>,
+    document.body,
+  
   )
 }
 
@@ -694,7 +701,6 @@ export function MessageFrame({
   role,
   children,
   assistantLabel,
-  copyText = '',
   branchLabel,
   branchNavigation,
   onEdit,
@@ -703,11 +709,14 @@ export function MessageFrame({
   actionsDisabled = false,
   streaming = false,
   goalReview = false,
+  delivery,
+  deliveryActions,
 }: {
   role: Message['role']
   children: ReactNode
   assistantLabel: string
-  copyText?: string
+  delivery?: ConversationDelivery
+  deliveryActions?: ReactNode
   branchLabel?: string
   branchNavigation?: {
     current: number
@@ -723,10 +732,11 @@ export function MessageFrame({
   goalReview?: boolean
 }) {
   if (role === 'user' || role === 'assistant') {
-    return <ConversationTurn role={role} assistantLabel={assistantLabel} copyText={copyText}
+    return <ConversationTurn role={role} assistantLabel={assistantLabel}
       branchLabel={branchLabel} branchNavigation={branchNavigation} onEdit={onEdit} onRevert={onRevert}
       revertLabel={revertLabel}
-      actionsDisabled={actionsDisabled} streaming={streaming} goalReview={goalReview}>{children}</ConversationTurn>
+      actionsDisabled={actionsDisabled} streaming={streaming} goalReview={goalReview}
+      delivery={delivery} deliveryActions={deliveryActions}>{children}</ConversationTurn>
   }
   const accent = goalReview ? 'var(--purple)' : roleAccent(role)
   return (
@@ -755,9 +765,8 @@ export function MessageFrame({
               {branchLabel}
             </span>
           )}
-          {(copyText.trim() || onEdit || onRevert) && (
+          {(onEdit || onRevert) && (
             <span className="ml-auto flex items-center gap-1 uam-message-frame__actions">
-              {!streaming && copyText.trim() && <CopyTextButton text={copyText} label="Copy message" title="Copy message" />}
               {onEdit && (
                 <IconButton
                   icon={<Pencil size={13} aria-hidden />}
