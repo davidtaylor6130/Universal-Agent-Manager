@@ -1,3 +1,4 @@
+#include "common/platform/background_thread_priority.h"
 #include "app/managed_parent_continuation_service.h"
 #include "app/execution_routing_integration.h"
 #include "app/agent_run_scheduler.h"
@@ -695,6 +696,7 @@ namespace uam
 				std::thread(
 				    [work, function = std::move(function)]() mutable
 				    {
+				    	uam::platform::LowerCurrentThreadToBackgroundPriority();
 					    try
 					    {
 						    function(*work);
@@ -3606,6 +3608,20 @@ namespace uam
 				continue;
 			}
 
+			// Every pre-launch failure (lost ownership, workspace, CLI version) holds the input, possibly with the
+			// staged turn still processing. A managed child is never relaunched, so a held session with no
+			// process and no launch in flight ends its run here instead of leaving agent_wait hanging.
+			if (session != nullptr && session->managed_agent_run_id == run.id && session->queue_held &&
+			    !session->managed_launch_attempted && !session->running &&
+			    !session->reconnect_pending && !session->pending_local_launch && !session->worktree_launch_pending)
+			{
+				acp_detail::AppendAcpDiagnostic(*session, "process_launch", "managed_launch_failed", "", "", false, 0,
+				    session->last_error, "agentRunId=" + run.id);
+				FinishRun(app, run, "failed", "managed_launch_failed",
+				          "The managed provider launch failed before it started; managed runs are not relaunched.");
+				changed = true;
+				continue;
+			}
 			if (session != nullptr && session->managed_launch_attempted &&
 			    !session->managed_cancellation_pending && !session->running &&
 			    !session->processing && !session->reconnect_pending)

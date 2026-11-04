@@ -1,4 +1,5 @@
 #include "app/computer_use_service.h"
+#include "common/platform/background_thread_priority.h"
 
 #include "computer_use/computer_use_mcp_config.h"
 #include "common/paths/path_utils.h"
@@ -290,7 +291,7 @@ namespace uam
 				return scan;
 			});
 			m_scan = task.get_future();
-			std::thread(std::move(task)).detach();
+			uam::platform::StartBackgroundThread(std::move(task)).detach();
 			m_nextScanTime = GetAppTimeSeconds() + 0.25;
 		}
 		const std::chrono::steady_clock::time_point finished = std::chrono::steady_clock::now();
