@@ -1856,9 +1856,19 @@ done
 	bool completion_guard_exercised = false;
 	const fs::path blocked_chats = app.data_root / "chats";
 	const fs::path saved_chats = app.data_root / "fixture-saved-chats";
-	const std::chrono::steady_clock::time_point deadline = started + completion_limit;
+	std::chrono::steady_clock::time_point deadline = started + completion_limit;
+	bool receiptexit_restart_seen = false;
 	while (std::chrono::steady_clock::now() < deadline)
 	{
+		if (variation == "receiptexit" && !receiptexit_restart_seen && app.acp_sessions.front()->crash_restart_attempts > 0)
+		{
+			// The exit case needs a second configuration and launch after the first provider exits. Its tiny
+			// chat leaves the save calibration near zero, while hosted Windows spends 3-6 s per launch (#526),
+			// so allow twice the time until this restart was observed; the poll budgets are unchanged.
+			receiptexit_restart_seen = true;
+			const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+			deadline = std::max(deadline, now + 2 * (now - started));
+		}
 		const std::chrono::steady_clock::time_point poll_started = std::chrono::steady_clock::now();
 		(void)uam::PollAllAcpSessions(app);
 		if (std::chrono::steady_clock::now() - poll_started > input_budget)
