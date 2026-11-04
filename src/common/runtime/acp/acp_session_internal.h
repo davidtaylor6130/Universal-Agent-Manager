@@ -530,6 +530,19 @@ inline void MarkAcpTimeoutStop(AcpSessionState& session, std::string label, int 
 	session.timeout_stop_error = session.last_error;
 	session.timeout_stop_label = std::move(label);
 	session.timeout_stop_seconds = seconds;
+	session.timeout_stop_kind.clear();
+	session.timeout_stop_channel.clear();
+	session.timeout_stop_example.clear();
+	session.timeout_stop_count = 0;
+}
+/// A stream-watch loop stop (#636) on the same notice mechanism; it has no limit value to raise.
+inline void MarkAcpLoopStop(AcpSessionState& session, std::string channel, int count, std::string example)
+{
+	MarkAcpTimeoutStop(session, "Repeated output limit", 0);
+	session.timeout_stop_kind = "loop";
+	session.timeout_stop_channel = std::move(channel);
+	session.timeout_stop_count = count;
+	session.timeout_stop_example = std::move(example);
 }
 void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
 	                      const std::string& message);

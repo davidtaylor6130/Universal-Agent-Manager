@@ -146,9 +146,26 @@ bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& sess
 	}
 
 	bool changed = false;
-	for (const AcpToolCallState& tool_call : session.tool_calls)
+	const double now = GetAppTimeSeconds();
+	for (std::size_t index = 0; index < session.tool_calls.size(); ++index)
 	{
+		AcpToolCallState& tool_call = session.tool_calls[index];
 		if (tool_call.id.empty()) continue;
+		// Every provider's tool calls reach this sink. Feed each finished call to the stream watch once, after a later
+		// call has started, so a result that arrives in a later update is the one hashed.
+		if (!tool_call.stream_watch_observed)
+		{
+			const bool finished = !uam::strings::IsBlank(tool_call.status) && !uam::acp_statuses::IsActiveStatus(tool_call.status);
+			if (tool_call.stream_watch_started_s == 0.0) tool_call.stream_watch_started_s = finished ? -1.0 : now;
+			if (finished && tool_call.stream_watch_finished_s == 0.0) tool_call.stream_watch_finished_s = now;
+			if (finished && index + 1 < session.tool_calls.size())
+			{
+				tool_call.stream_watch_observed = true;
+				const double duration = tool_call.stream_watch_started_s < 0.0 ? -1.0 : tool_call.stream_watch_finished_s - tool_call.stream_watch_started_s;
+				session.stream_watch.ObserveTool(uam::strings::NonEmptyOrFallback(tool_call.title, tool_call.kind), tool_call.args_json, tool_call.content,
+				                                 duration, tool_call.stream_watch_finished_s);
+			}
+		}
 		Message* message = nullptr;
 		const std::unordered_map<std::string, int>::const_iterator owner = session.tool_call_message_indices.find(tool_call.id);
 		if (owner != session.tool_call_message_indices.end())

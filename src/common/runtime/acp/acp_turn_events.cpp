@@ -165,6 +165,7 @@ namespace
 			    .child_activity = tool_call.child_activity,
 			    .sub_agent_children = tool_call.sub_agent_children,
 			    .sub_agent_children_authoritative = tool_call.sub_agent_children_authoritative,
+			    .stream_watch_observed = true, // Restored history is never new loop evidence after a reattach.
 			});
 		}
 	}
@@ -321,6 +322,7 @@ void AppendAssistantTextTurnEvent(AcpSessionState& session, const std::string& c
 	    std::ranges::any_of(session.turn_events, [&](const AcpTurnEventState& event)
 	    { return event.type == "context_compaction_summary" && event.request_id_json == identity; });
 	const std::string type = summary ? "context_compaction_summary" : uam::acp_stream_types::kTurnEventAssistantText;
+	if (!summary) session.stream_watch.ObserveText(stream_watch::Channel::Text, chunk);
 	if (!session.turn_events.empty() && session.turn_events.back().type == type &&
 	    session.turn_events.back().request_id_json == identity)
 	{
@@ -341,6 +343,7 @@ bool AppendThoughtTurnEvent(AcpSessionState& session, const std::string& chunk)
 	{
 		return false;
 	}
+	session.stream_watch.ObserveText(stream_watch::Channel::Thought, chunk);
 
 	if (!session.turn_events.empty() && session.turn_events.back().type == uam::acp_stream_types::kTurnEventThought)
 	{

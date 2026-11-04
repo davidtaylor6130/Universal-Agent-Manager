@@ -35,6 +35,7 @@ Every provider checklist must account for every row. Conditional features must c
 | `memory` | [Memory](../memory/memory.md) |
 | `central-setup` | [Central setup](../settings/central-setup/central-setup.md) |
 | `remote-execution` | [SSH execution](../remote-environments/ssh.md) |
+| `stream-watch` | [Loop and stall stops](runtime-lifecycle.md#stream-watch) |
 
 ## Provider checklists
 

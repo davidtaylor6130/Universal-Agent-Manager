@@ -136,7 +136,7 @@ namespace uam::companion
 	inline nlohmann::json SettingsProjection(const nlohmann::json& settings)
 	{
 		using settings_protocol::Pick;
-		nlohmann::json result = Pick(settings, {"theme", "showProviderIconsInSidebar", "showWorktreePathInSidebar", "activeProviderId", "defaultNewChatProviderId", "memoryEnabledDefault", "memoryLevelDefault", "memoryIdleDelaySeconds", "memoryRecallBudgetBytes", "goalMaxLoopIterations", "goalTokenBudget", "acpTurnOutputLimitMiB", "acpSetupInactivityTimeoutSeconds", "activeTurnInactivityTimeoutSeconds", "permissionReviewerProviderId", "permissionReviewerModelId", "favoriteUamAgentIds", "uamAgentCycleShortcut", "hostScopedSettings", "worktreeCleanupEnabled", "worktreeRetentionDays", "backupLogRetentionDays", "httpCacheClearIntervalDays"});
+		nlohmann::json result = Pick(settings, {"theme", "showProviderIconsInSidebar", "showWorktreePathInSidebar", "activeProviderId", "defaultNewChatProviderId", "memoryEnabledDefault", "memoryLevelDefault", "memoryIdleDelaySeconds", "memoryRecallBudgetBytes", "goalMaxLoopIterations", "goalTokenBudget", "acpTurnOutputLimitMiB", "acpSetupInactivityTimeoutSeconds", "activeTurnInactivityTimeoutSeconds", "streamLoopRepeatLimit", "permissionReviewerProviderId", "permissionReviewerModelId", "favoriteUamAgentIds", "uamAgentCycleShortcut", "hostScopedSettings", "worktreeCleanupEnabled", "worktreeRetentionDays", "backupLogRetentionDays", "httpCacheClearIntervalDays"});
 		result["providerChatDefaults"] = settings_protocol::DefaultsProjection(settings.value("providerChatDefaults", nlohmann::json::object()));
 		result["memoryWorkerBindings"] = settings_protocol::WorkerProjection(settings.value("memoryWorkerBindings", nlohmann::json::object()));
 		result["providerAvailability"] = nlohmann::json::array();
@@ -163,7 +163,7 @@ namespace uam::companion
 		nlohmann::json result = Pick(source, {"memoryRequestId", "outcome", "scope", "revision", "primaryValidated"});
 		if (source.contains("values") && source["values"].is_object())
 		{
-			result["values"] = Pick(source["values"], {"memoryEnabledDefault", "memoryLevelDefault", "memoryIdleDelaySeconds", "memoryRecallBudgetBytes", "goalMaxLoopIterations", "acpSetupInactivityTimeoutSeconds", "acpTurnOutputLimitMiB", "activeTurnInactivityTimeoutSeconds", "permissionReviewerProviderId", "permissionReviewerModelId"});
+			result["values"] = Pick(source["values"], {"memoryEnabledDefault", "memoryLevelDefault", "memoryIdleDelaySeconds", "memoryRecallBudgetBytes", "goalMaxLoopIterations", "acpSetupInactivityTimeoutSeconds", "acpTurnOutputLimitMiB", "activeTurnInactivityTimeoutSeconds", "streamLoopRepeatLimit", "permissionReviewerProviderId", "permissionReviewerModelId"});
 			if (source["values"].contains("memoryWorkerBindings"))
 				result["values"]["memoryWorkerBindings"] = settings_protocol::WorkerProjection(source["values"]["memoryWorkerBindings"]);
 		}
@@ -196,7 +196,7 @@ namespace uam::companion
 		}
 		else if (action == "setMemorySettings")
 		{
-			if (!Keys(payload, {"enabledDefault", "levelDefault", "idleDelaySeconds", "recallBudgetBytes", "workerBindings", "permissionReviewerProviderId", "permissionReviewerModelId", "goalMaxLoopIterations", "goalTokenBudget", "acpTurnOutputLimitMiB", "acpSetupInactivityTimeoutSeconds", "activeTurnInactivityTimeoutSeconds", "expectedSettingsScope", "expectedSettingsRevision", "memoryRequestId"})) return {403, "Only memory, reviewer and runtime defaults can be changed here."};
+			if (!Keys(payload, {"enabledDefault", "levelDefault", "idleDelaySeconds", "recallBudgetBytes", "workerBindings", "permissionReviewerProviderId", "permissionReviewerModelId", "goalMaxLoopIterations", "goalTokenBudget", "acpTurnOutputLimitMiB", "acpSetupInactivityTimeoutSeconds", "activeTurnInactivityTimeoutSeconds", "streamLoopRepeatLimit", "expectedSettingsScope", "expectedSettingsRevision", "memoryRequestId"})) return {403, "Only memory, reviewer and runtime defaults can be changed here."};
 			const bool fenced = payload.contains("expectedSettingsScope") || payload.contains("expectedSettingsRevision") || payload.contains("memoryRequestId");
 			if (fenced && (!payload.contains("expectedSettingsScope") || !Text(payload["expectedSettingsScope"], 128) ||
 			    !payload.contains("expectedSettingsRevision") || !payload["expectedSettingsRevision"].is_number_integer() || payload["expectedSettingsRevision"] < 0 || payload["expectedSettingsRevision"] > 9007199254740991ULL ||
@@ -207,7 +207,8 @@ namespace uam::companion
 			                          std::tuple{"goalMaxLoopIterations", uam::settings::kMinGoalMaxLoopIterations, uam::settings::kMaxGoalMaxLoopIterations},
 			                          std::tuple{"acpTurnOutputLimitMiB", uam::settings::kMinAcpTurnOutputLimitMiB, uam::settings::kMaxAcpTurnOutputLimitMiB},
 			                          std::tuple{"acpSetupInactivityTimeoutSeconds", uam::settings::kMinAcpSetupInactivityTimeoutSeconds, uam::settings::kMaxAcpSetupInactivityTimeoutSeconds},
-			                          std::tuple{"activeTurnInactivityTimeoutSeconds", uam::settings::kMinActiveTurnInactivityTimeoutSeconds, uam::settings::kMaxActiveTurnInactivityTimeoutSeconds}})
+			                          std::tuple{"activeTurnInactivityTimeoutSeconds", uam::settings::kMinActiveTurnInactivityTimeoutSeconds, uam::settings::kMaxActiveTurnInactivityTimeoutSeconds},
+			                          std::tuple{"streamLoopRepeatLimit", 0, uam::stream_watch::kMaxLoopRepeatLimit}})
 				if (payload.contains(std::get<0>(bound)) && !Integer(payload[std::get<0>(bound)], std::get<1>(bound), std::get<2>(bound))) return {400, "Settings integer exceeds its supported range."};
 			if ((payload.contains("permissionReviewerProviderId") && payload["permissionReviewerProviderId"] != "" && !Provider(payload["permissionReviewerProviderId"])) ||
 			    (payload.contains("permissionReviewerModelId") && !Model(payload["permissionReviewerModelId"]))) return {400, "Invalid reviewer provider or model."};

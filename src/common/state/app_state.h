@@ -11,6 +11,7 @@
 #include "common/provider/provider_profile.h"
 #include "common/provider/attached_skill_resources.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
+#include "common/runtime/stream_watch.h"
 
 #include <atomic>
 #include <array>
@@ -236,6 +237,9 @@ namespace uam
 		std::string child_activity;
 		std::vector<SubAgentChild> sub_agent_children;
 		bool sub_agent_children_authoritative = false;
+		double stream_watch_started_s = 0.0; // Runtime-only: when the stream watch first saw this call active; -1 when first seen finished.
+		double stream_watch_finished_s = 0.0; // Runtime-only: when the stream watch first saw this call finished.
+		bool stream_watch_observed = false; // Runtime-only: its terminal result has been fed to the stream watch.
 	};
 
 	struct AcpPlanEntryState
@@ -774,6 +778,7 @@ namespace uam
 		bool cancel_requested = false;
 		double cancel_requested_time_s = 0.0;
 		bool inactivity_timeout_pending = false;
+		stream_watch::StreamWatch stream_watch; // Runtime-only, reset per turn.
 		bool turn_checkpoint_eligible = false;
 		bool turn_checkpoint_preflight_pending = false;
 		bool turn_checkpoint_commit_pending = false;
@@ -818,6 +823,9 @@ namespace uam
 		// Runtime-only: a timeout stop the UI presents as its own notice while last_error still equals timeout_stop_error.
 		std::string timeout_stop_error, timeout_stop_label;
 		int timeout_stop_seconds = 0;
+		// Runtime-only: kind "loop" marks a stream-watch repeat stop (#636) with its repeated channel, count and bounded example.
+		std::string timeout_stop_kind, timeout_stop_channel, timeout_stop_example;
+		int timeout_stop_count = 0;
 		std::string provider_protocol_instructions;
 		std::string uam_control_capability_id;
 		bool managed_launch_attempted = false;

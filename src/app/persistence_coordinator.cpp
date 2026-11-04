@@ -112,7 +112,7 @@ bool PersistenceCoordinator::ResolveMemorySettingsUncertainty(uam::AppState& app
 			app.status_line = "Memory settings require a validated primary settings file before another settings save.";
 			return false;
 		}
-		// No throwing copies after validation: only these ten covered fields are reconciled.
+		// No throwing copies after validation: only these covered fields are reconciled.
 		app.settings.memory_enabled_default = primary.memory_enabled_default;
 		app.settings.memory_level_default.swap(primary.memory_level_default);
 		app.settings.memory_idle_delay_seconds = primary.memory_idle_delay_seconds;
@@ -120,6 +120,8 @@ bool PersistenceCoordinator::ResolveMemorySettingsUncertainty(uam::AppState& app
 		app.settings.goal_max_loop_iterations = primary.goal_max_loop_iterations;
 		app.settings.acp_setup_inactivity_timeout_seconds = primary.acp_setup_inactivity_timeout_seconds;
 		app.settings.acp_turn_output_limit_mib = primary.acp_turn_output_limit_mib;
+		app.settings.active_turn_inactivity_timeout_seconds = primary.active_turn_inactivity_timeout_seconds;
+		app.settings.stream_loop_repeat_limit = primary.stream_loop_repeat_limit;
 		app.settings.memory_worker_bindings.swap(primary.memory_worker_bindings);
 		app.settings.permission_reviewer_provider_id.swap(primary.permission_reviewer_provider_id);
 		app.settings.permission_reviewer_model_id.swap(primary.permission_reviewer_model_id);

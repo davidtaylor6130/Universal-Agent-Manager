@@ -1034,6 +1034,7 @@ struct AppSettings
 	std::string provider_extra_flags;
 	int cli_idle_timeout_seconds = 600;
 	int active_turn_inactivity_timeout_seconds = 1800;
+	int stream_loop_repeat_limit = 20; // 0 turns stream loop stops off; see stream_watch.h.
 	std::string ui_theme = "focus";
 	bool show_provider_icons_in_sidebar = true;
 	bool show_worktree_path_in_sidebar = true;
