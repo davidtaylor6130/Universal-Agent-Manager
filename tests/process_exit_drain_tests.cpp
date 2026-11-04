@@ -2,7 +2,7 @@
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_native_context.h"
 #include "common/usage/account_allowance_fetcher.h"
-#include "common/usage/account_credentials_macos.h"
+#include "common/usage/account_credentials.h"
 #include "common/usage/claude_account_allowance.h"
 #include "common/usage/google_account_allowance.h"
 #include "common/utils/base64.h"

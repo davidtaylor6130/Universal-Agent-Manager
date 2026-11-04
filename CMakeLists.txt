@@ -393,6 +393,7 @@ if(WIN32)
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
     src/common/platform/platform_services_windows_impl.cpp
     src/common/platform/platform_process_windows.cpp
+    src/common/platform/credential_store_windows.cpp
     src/common/platform/platform_dialogs_windows.cpp
     src/common/platform/platform_paths_windows.cpp
     src/common/platform/platform_dictation_windows.cpp
@@ -635,7 +636,8 @@ add_library(uam_core_objects OBJECT
   src/common/usage/multi_host_history.cpp
   src/common/usage/account_allowance_fetcher.cpp
   src/common/usage/account_allowance_service.cpp
-  src/common/usage/account_credentials_macos.cpp
+  src/common/usage/account_credentials.cpp
+  src/common/platform/credential_store.cpp
   src/common/usage/usage_pricing.cpp
   src/common/usage/usage_pricing_cache.cpp
   src/core/chat_import_utils.cpp
