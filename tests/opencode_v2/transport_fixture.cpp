@@ -199,6 +199,7 @@ public:
 	bool StartStdioProcess(Fields& fields, const std::filesystem::path&, const std::vector<std::string>& argv, std::string*, const std::vector<std::pair<std::string, std::string>>& env) const override
 	{
 		commands.push_back(argv);
+		if (argv.back() == "--version") { processes[&fields] = {"capture", version_output.empty() ? version + '\n' : version_output}; return true; }
 		if (std::find(argv.begin(), argv.end(), "serve") == argv.end()) { processes[&fields] = {"history", history}; return true; }
 		Require(argv == ServeArgv({"opencode"}), "Native serve argv changed");
 		server = &fields; ++server_starts;
@@ -363,14 +364,19 @@ void RunOpenCodeV2TransportFixtures()
 		Require(listed.at(0).at("opencode_v2_session_id") == "ses_v2", "V2 imported session lost its exact-ID downgrade refusal hint");
 		Require(native.commands.back() == HistoryArgv("2.1.2", {"opencode"}, "list", {}), "V2 list used legacy argv");
 	}
+	for (const std::string version : {"2.1.2", "2.1.4"})
 	{
-		SimulatedProcesses native;
+		SimulatedProcesses native; native.version = version;
 		native.history = Json{{"info", {{"id", "ses_v2"}, {"location", {{"directory", native.cwd}}}}}, {"messages", Json::array({{{"id", "msg_user"}, {"type", "user"}, {"text", "Retained input"}}})}}.dump();
 		OutputCapture capture;
 		Require(RunCommand({"uam-fixture", "--uam-opencode-history", "export", "ses_v2", "--", "opencode"}, native) == std::optional<int>{0}, "V2 history export failed");
 		const auto exported = Json::parse(capture.Read());
 		Require(exported.at("info").at("directory") == native.cwd && exported.at("messages").at(0).at("parts").at(0).at("text") == "Retained input", "V2 export failed the internal history contract");
-		Require(native.commands.back() == HistoryArgv("2.1.2", {"opencode"}, "export", "ses_v2"), "V2 export used legacy argv");
+#if defined(_WIN32)
+		Require(native.commands.back() == HistoryArgv(version, {"opencode"}, "export", "ses_v2"), "V2 export used legacy argv");
+#else
+		Require(native.commands.back() == FileBackedStdoutArgv(HistoryArgv(version, {"opencode"}, "export", "ses_v2")), "V2 export bypassed file-backed stdout");
+#endif
 	}
 	{
 		SimulatedProcesses native; native.text_worker = true; native.input = {"Text-only reviewer fixture"};

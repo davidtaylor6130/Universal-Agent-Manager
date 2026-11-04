@@ -273,10 +273,13 @@ class ChatRepository
 	/// <summary>Queue identity and payload comparisons exclude changing assistant output.</summary>
 	static std::string QueueStorageOwner(const ChatSession& chat);
 	static std::string QueueAdmissionFingerprint(const ChatSession& chat);
-	/// <summary>Persists selection time in the validated summary without rewriting an unchanged transcript.</summary>
-	/// <summary>Prepares selection metadata off-thread, preserving the primary transcript when its summary is current.</summary>
-	static std::shared_ptr<PreparedChatSave> PrepareLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& metadata);
-	static bool SaveLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& chat);
+	/// <summary>Prepares selection metadata off-thread, preserving the primary transcript when its summary is current.
+	/// A stale summary prepares a full transcript save unless allow_full_save is false, which returns null.</summary>
+	static std::shared_ptr<PreparedChatSave> PrepareLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& metadata, bool allow_full_save = true);
+	/// <summary>Persists selection time in the validated summary without rewriting an unchanged transcript.
+	/// When the summary is not current or cannot be updated it falls back to a full synchronous save; callers on the poll path pass
+	/// allow_full_save = false and schedule a background save when this returns false instead.</summary>
+	static bool SaveLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& chat, bool allow_full_save = true);
 	/// <summary>Saves one chat only when neither its primary nor backup storage already exists.</summary>
 	static bool SaveChatIfAbsent(const std::filesystem::path& data_root, const ChatSession& chat, std::string* saved_revision = nullptr);
 	/// Pure bounded canonical archive decoder; never reads an outbox, resumes input or changes passive-load suppression.
