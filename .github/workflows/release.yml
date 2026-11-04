@@ -5,6 +5,9 @@ name: Release Build
 #
 # Trigger: push a tag like `v2.0.3`. Use workflow_dispatch to dry-run a build
 # without publishing a release (artifacts are still uploaded to the run).
+# A release candidate tag (`v5.0.0-rc.1`) runs every check on all three platforms and
+# publishes nothing. A final tag on a commit whose release candidate passed packages and
+# publishes without repeating the native test runs; otherwise it runs them too.
 on:
   push:
     tags:
@@ -120,9 +123,24 @@ jobs:
             archive: UAM-Windows.zip
             artifact: UAM-Windows
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Find a passed release candidate for this commit
+        id: candidate
+        if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-rc')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          passed=$(gh api "repos/${{ github.repository }}/actions/workflows/release.yml/runs?head_sha=${{ github.sha }}&event=push&status=success" \
+            --jq '[.workflow_runs[] | select(.head_branch | test("-rc"))] | length')
+          echo "passed=$([ "$passed" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "Passed release candidate runs for ${{ github.sha }}: $passed"
 
       - uses: actions/download-artifact@v4
         with:
@@ -192,10 +210,12 @@ jobs:
         run: Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE", "$env:RUNNER_TEMP", "$env:TEMP"
 
       - name: Test native Release build
+        if: steps.candidate.outputs.passed != 'true'
         run: ctest --test-dir Builds -C Release --output-on-failure -E "^uam_core_tests$"
 
       # Same gate as CI: every case runs; only tests/ci_quarantine.txt entries may fail after one retry.
       - name: Test native core cases
+        if: steps.candidate.outputs.passed != 'true'
         shell: bash
         run: |
           binary=Builds/uam_core_tests python=python3
@@ -236,7 +256,8 @@ jobs:
   release:
     name: Publish release
     needs: [build, security-evidence, remote-runner]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    # Release candidates are verification runs; only other tags publish.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-rc')
     runs-on: ubuntu-latest
     permissions:
       contents: write
