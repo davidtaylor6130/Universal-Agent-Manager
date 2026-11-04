@@ -1163,6 +1163,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     messageCount: typeof value.messageCount === 'number' && Number.isSafeInteger(value.messageCount) && value.messageCount >= 0 ? value.messageCount : undefined,
     subagentParentChatId: isString(value.subagentParentChatId) ? value.subagentParentChatId : undefined,
     subagentParentCreatedAt: isString(value.subagentParentCreatedAt) ? value.subagentParentCreatedAt : undefined,
+    createdByChatId: isString(value.createdByChatId) && value.createdByChatId ? value.createdByChatId : undefined,
     managedSubagentCount: typeof value.managedSubagentCount === 'number' && Number.isSafeInteger(value.managedSubagentCount) && value.managedSubagentCount >= 0 ? value.managedSubagentCount : 0,
     managedSubagentRevision: typeof value.managedSubagentRevision === 'number' && Number.isSafeInteger(value.managedSubagentRevision) && value.managedSubagentRevision >= 0 ? value.managedSubagentRevision : 0,
     messagesDigest: isString(value.messagesDigest) ? value.messagesDigest : undefined,

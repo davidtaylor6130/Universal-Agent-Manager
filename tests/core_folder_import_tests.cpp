@@ -26,6 +26,7 @@
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/utils/diagnostic_log.h"
+#include "common/utils/hash_utils.h"
 #include "common/utils/time_utils.h"
 #include "common/utils/uuid.h"
 
@@ -1913,6 +1914,55 @@ UAM_TEST(GeminiAndCopilotScansSkipOwnedWorktreeSessions)
 		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, session_id).has_value());
 	}
 #endif
+}
+
+UAM_TEST(ImportedChatsLinkRemovedManagedWorktreesAndBundlesToWorkspaceFolders)
+{
+	TempDir temp("uam-import-link");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	ChatFolder broad;
+	broad.id = "broad-folder";
+	broad.directory = temp.root.string();
+	ChatFolder folder;
+	folder.id = "repo-folder";
+	folder.directory = repo.string();
+	const std::vector<ChatFolder> folders = {broad, folder};
+	// The managed worktree was removed: only its <data-root>/worktrees/<source key>/<branch> path remains.
+	const fs::path worktrees = temp.root / "other-data-root" / "worktrees";
+	const fs::path removed = worktrees / uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(repo))) / "codex" / "fix-676";
+	UAM_ASSERT(!fs::exists(removed));
+	// The registered source wins over a broad folder that merely contains the data root.
+	UAM_ASSERT_EQ(uam::FindImportedWorkspaceFolder(folders, removed / "src")->id, folder.id);
+	UAM_ASSERT(uam::ImportedWorkspaceMatchesFolder(removed, repo));
+	UAM_ASSERT(!uam::ImportedWorkspaceMatchesFolder(worktrees / "unrelated" / "branch", repo));
+	UAM_ASSERT_EQ(uam::FindImportedWorkspaceFolder(folders, worktrees / "unrelated" / "branch")->id, broad.id);
+
+	// Portable bundles keep the local location and link to the destination's registered folder.
+	const fs::path source = temp.root / "source";
+	const fs::path target = temp.root / "target";
+	const fs::path bundle = temp.root / "bundle";
+	UAM_ASSERT(ChatFolderStore::Save(target, {folder}));
+	ChatSession exported;
+	exported.id = "bundle-chat";
+	exported.provider_id = "codex-cli";
+	exported.folder_id = "source-folder";
+	exported.workspace_directory = removed.string();
+	exported.workspace_isolation_kind = "gitWorktree";
+	exported.workspace_worktree_directory = removed.string();
+	exported.created_at = "2026-01-01T00:00:00.000Z";
+	exported.updated_at = "2026-01-01T00:00:01.000Z";
+	exported.messages.push_back(Message{MessageRole::User, "portable transcript"});
+	UAM_ASSERT(ChatRepository::SaveChat(source, exported));
+	UAM_ASSERT(uam::LocalChatBundleService::Export(source, bundle).ok);
+	UAM_ASSERT(uam::LocalChatBundleService::Import(target, bundle).ok);
+	const std::optional<ChatSession> imported = ChatRepository::LoadLocalChat(target, exported.id);
+	UAM_ASSERT(imported.has_value());
+	UAM_ASSERT_EQ(imported->folder_id, folder.id);
+	UAM_ASSERT_EQ(imported->workspace_directory, removed.string());
+	UAM_ASSERT(imported->workspace_isolation_kind.empty());
+	UAM_ASSERT(imported->workspace_worktree_directory.empty());
+	UAM_ASSERT(imported->imported_read_only);
 }
 
 UAM_TEST(ImportedWorktreeFoldersPreserveProviderWorkingDirectories)

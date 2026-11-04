@@ -1795,6 +1795,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }
   useSyncExternalStore(subscribeSubagentNavigation, subagentNavigationRevision)
   const subagentParent = useAppStore(state => subagentParentFor(session, state.sessions))
+  const startedBy = useAppStore(state => session.createdByChatId ? state.sessions.find(candidate => candidate.id === session.createdByChatId) : undefined)
   const showSideChatControls = !isCompanionContext() && Boolean(session.temporaryParentChatId || liveSideChatId)
   const isGitWorktree = session.workspaceIsolationKind === 'gitWorktree'
   const workspaceActionsDisabled = remoteComputerUseDisabled || workspaceActionBusy || Boolean(
@@ -3313,6 +3314,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           <button type="button" className="uam-btn uam-btn--ghost uam-btn--sm" onClick={() => showChatInPane(subagentParent.id)}>
             <CornerUpLeft size={14} aria-hidden /><span>Subagent of {subagentParent.name}</span>
           </button>
+        </nav>}
+        {showSubagentLineage && session.createdByChatId && <nav aria-label="Chat provenance" className="px-4 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)' }}>
+          {startedBy
+            ? <Button type="button" size="sm" variant="ghost" leadingIcon={<CornerUpLeft size={14} aria-hidden />} onClick={() => showChatInPane(startedBy.id)}>Started by {startedBy.name}</Button>
+            : <span style={{ color: 'var(--text-3)' }}>Started by a chat that is no longer available</span>}
         </nav>}
         <div className="uam-chat-viewport relative flex-1 min-h-0" data-message-navigation={messageNavigationVisible || undefined}>
           <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>

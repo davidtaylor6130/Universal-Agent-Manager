@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common/config/build_features.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <functional>
@@ -25,10 +26,12 @@ using Query = std::function<Json(const std::string&, const std::string&, const J
 using PublishPolicy = std::function<void(const std::string&, const std::string&, bool)>;
 using Emit = std::function<void(const Json&)>;
 
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 std::string Encode(std::string_view value);
 std::string ToolKey(std::string_view message_id, std::string_view tool_id);
 std::string PermissionPluginSource();
 std::string WorkerVersionError(bool checked, bool same_host, std::string_view version, std::string_view check_error);
+#endif
 inline int HistoryCommandTimeoutMilliseconds(const std::vector<std::string>& argv)
 {
 	// 10s version probe + the original complete 30s native command + 5s
@@ -44,6 +47,7 @@ inline std::string AdapterError(std::string_view diagnostic_tail)
 	const std::string_view line = diagnostic_tail.substr(start + prefix.size());
 	return std::string(line.substr(0, std::min<std::size_t>(line.find_first_of("\r\n"), 512)));
 }
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 Json NormalizeExport(const Json& native);
 std::vector<std::string> ServeArgv(std::vector<std::string> command);
 std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::string> command,
@@ -51,7 +55,9 @@ std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::
 /// <summary>POSIX only: OpenCode 1.x export can exit 0 before a piped stdout drains (1.19.4 stops at 128/192 KiB),
 /// so its stdout goes to a private regular file that cat then streams completely.</summary>
 std::vector<std::string> FileBackedStdoutArgv(std::vector<std::string> command);
+#endif
 
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 class Session
 {
 public:
@@ -100,4 +106,5 @@ private:
 // are modified; the process owns its private service, config and policy lease.
 bool IsCommand(const std::vector<std::string>& arguments);
 std::optional<int> RunCommand(const std::vector<std::string>& arguments, IPlatformProcessService& process_service);
+#endif
 }
