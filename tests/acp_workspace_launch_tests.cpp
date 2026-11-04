@@ -2,6 +2,11 @@
 #include "app/worktree_launch_preparation_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/paths/app_paths.h"
+#include "app/agent_run_ledger.h"
+#include "app/agent_run_scheduler.h"
+#include "common/utils/string_utils.h"
+#include "common/utils/time_utils.h"
+#include <algorithm>
 
 using namespace uam_test;
 
@@ -117,6 +122,54 @@ UAM_TEST(AcpWorkspaceFailureOrRevocationHoldsInputWithoutReplacement)
 		UAM_ASSERT(!session.last_error.empty());
 		UAM_ASSERT(fixture.app.worktree_launch_preparations.empty());
 	}
+}
+
+
+namespace
+{
+	// Binds the fixture session to a running managed run so the scheduler owns its outcome.
+	std::string BindManagedRunForLaunchFailure(uam::AppState& app, uam::AcpSessionState& session, const std::string& transcript_id)
+	{
+		AgentRun run;
+		run.id = uam::AgentRunLedger::NewRunId();
+		run.root_chat_id = "managed-launch-root";
+		run.transcript_chat_id = transcript_id;
+		run.agent_id = "reviewer";
+		run.provider_id = session.provider_id;
+		run.definition_snapshot = "Review safely.";
+		run.task = "Review.";
+		run.effective_workspace_access = "read";
+		run.status = "running";
+		run.depth = 1;
+		run.created_at = run.updated_at = uam::time::TimestampNow();
+		UAM_ASSERT(uam::AgentRunLedger::Save(app.data_root, run));
+		app.agent_runs.push_back(run);
+		session.managed_agent_run_id = run.id;
+		return run.id;
+	}
+
+	void AssertManagedLaunchFailed(uam::AppState& app)
+	{
+		(void)uam::AgentRunScheduler::PollAtForTests(app, 1000);
+		UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("failed"));
+		UAM_ASSERT_EQ(app.agent_runs.front().diagnostic_code, std::string("managed_launch_failed"));
+		UAM_ASSERT(!uam::strings::Contains(app.agent_runs.front().diagnostic, "Retry"));
+	}
+}
+
+UAM_TEST(AcpWorkspaceFailureFailsManagedRunInsteadOfHolding)
+{
+	WorkspacePromptFixture fixture;
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedOwnedAcpWorkspaceTask(fixture);
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = fixture.app.chats.front();
+	(void)BindManagedRunForLaunchFailure(fixture.app, session, chat.id);
+	session.worktree_launch_pending = true;
+	session.worktree_launch_cancellation = task->cancellation;
+	task->error = "Private workspace preparation failed";
+	UAM_ASSERT_EQ(uam::acp_detail::PrepareAcpWorkspaceForLaunch(fixture.app, session, chat), uam::WorktreeLaunchPreparationState::Failed);
+	UAM_ASSERT(session.queue_held && !session.managed_launch_attempted);
+	AssertManagedLaunchFailed(fixture.app);
 }
 
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI && UAM_ENABLE_SSH && defined(__APPLE__)
