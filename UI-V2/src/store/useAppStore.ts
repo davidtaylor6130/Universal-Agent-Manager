@@ -634,7 +634,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
 // Store
 // ---------------------------------------------------------------------------
 
-const BOOTSTRAP_STATE_RETRIES = 3
+const BOOTSTRAP_STATE_BACKOFF_MS = [100, 300, 900]
 
 export const useAppStore = create<AppState>((set, get) => {
   const flushPendingCliTranscriptChunks = () => {
@@ -762,128 +762,143 @@ export const useAppStore = create<AppState>((set, get) => {
   // reply and pushes travel separate IPC paths, so a diff-only patch can overtake the
   // snapshot. Until a full state hydrates, re-pull a stale snapshot (#622).
   let bootstrapHydrated = false
-  const pullInitialState = (retriesLeft = BOOTSTRAP_STATE_RETRIES) => {
+  let bootstrapRetryTimer: ReturnType<typeof setTimeout> | null = null
+  // A newer store instance (module reload) owns window.uamPush; this one must stop re-pulling.
+  let ownedUamPush: unknown = null
+  const failBootstrap = (bootstrapStateError: string) => {
+    if (!bootstrapHydrated) set({ bootstrapStateError, bootstrapStateLoading: false })
+  }
+  // ponytail: a stale reply with a newer revision than the last stale one resets the budget,
+  // so a startup that keeps advancing keeps re-pulling; cap total pulls if that ever spins.
+  const pullInitialState = (attempt = 0, lastStaleRevision = -1) => {
+    bootstrapRetryTimer = null
+    // Companion pages bootstrap through CompanionShell, never this desktop pull.
+    if (isCompanionContext()) return
     sendToCEF<CppAppState>({ action: 'getInitialState', payload: { summaryOnly: true } }).then((resp) => {
       // resp.data is the raw CppAppState object. Sanitize before deserializing.
       const sanitized = resp.ok ? sanitizeCppAppState(resp.data) : null
       if (!sanitized) {
-        set({ bootstrapStateError: resp.ok ? 'The backend returned an invalid startup state.' : (resp.error || 'The backend did not return the startup state.') })
+        failBootstrap(resp.ok ? 'The backend returned an invalid startup state.' : (resp.error || 'The backend did not return the startup state.'))
         return
       }
-      {
-        const current = get()
-        const nextRevision = cppStateRevision(sanitized)
-        // The bootstrap pull is a one-shot authoritative full state. Apply it when
-        // its revision is >= the store's: a same-revision full state is complete
-        // and idempotent, so it must win over a partial statePatch that already
-        // advanced the revision (the stale-UI-after-abnormal-exit race, #622).
-        // Only skip when the pull is strictly older than what was applied.
-        if (nextRevision >= current.lastAppliedStateRevision) {
-          const deserialized = deserializeState(sanitized, {
-            sessions: current.sessions,
-            folders: current.folders,
-            resourceCollections: current.resourceCollections,
-            messages: current.messages,
-            historyStartIndexBySessionId: current.historyStartIndexBySessionId,
-            chatSearchNavigation: current.chatSearchNavigation,
-            providers: current.providers,
-            activeSessionId: current.activeSessionId,
-            cliTranscriptBySessionId: current.cliTranscriptBySessionId,
-            cliBindingBySessionId: current.cliBindingBySessionId,
-            acpBindingBySessionId: current.acpBindingBySessionId,
-            providerModelCatalogs: current.providerModelCatalogs,
-            cliDebugState: current.cliDebugState,
-            memoryEnabledDefault: current.memoryEnabledDefault,
-            memoryLevelDefault: current.memoryLevelDefault,
-            memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
-            memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
-            goalMaxLoopIterations: current.goalMaxLoopIterations,
-            goalTokenBudget: current.goalTokenBudget,
-            acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
-            activeTurnInactivityTimeoutSeconds: current.activeTurnInactivityTimeoutSeconds,
-            streamLoopRepeatLimit: current.streamLoopRepeatLimit,
-            acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
-            appVersion: current.appVersion,
-            runnerProtocolVersion: current.runnerProtocolVersion,
-            showProviderIconsInSidebar: current.showProviderIconsInSidebar,
-            showWorktreePathInSidebar: current.showWorktreePathInSidebar,
+      const current = get()
+      const nextRevision = cppStateRevision(sanitized)
+      // The bootstrap pull is a one-shot authoritative full state. Apply it when
+      // its revision is >= the store's: a same-revision full state is complete
+      // and idempotent, so it must win over a partial statePatch that already
+      // advanced the revision (the stale-UI-after-abnormal-exit race, #622).
+      // Only skip when the pull is strictly older than what was applied.
+      if (nextRevision >= current.lastAppliedStateRevision) {
+        const deserialized = deserializeState(sanitized, {
+          sessions: current.sessions,
+          folders: current.folders,
+          resourceCollections: current.resourceCollections,
+          messages: current.messages,
+          historyStartIndexBySessionId: current.historyStartIndexBySessionId,
+          chatSearchNavigation: current.chatSearchNavigation,
+          providers: current.providers,
+          activeSessionId: current.activeSessionId,
+          cliTranscriptBySessionId: current.cliTranscriptBySessionId,
+          cliBindingBySessionId: current.cliBindingBySessionId,
+          acpBindingBySessionId: current.acpBindingBySessionId,
+          providerModelCatalogs: current.providerModelCatalogs,
+          cliDebugState: current.cliDebugState,
+          memoryEnabledDefault: current.memoryEnabledDefault,
+          memoryLevelDefault: current.memoryLevelDefault,
+          memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
+          memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
+          goalMaxLoopIterations: current.goalMaxLoopIterations,
+          goalTokenBudget: current.goalTokenBudget,
+          acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
+          activeTurnInactivityTimeoutSeconds: current.activeTurnInactivityTimeoutSeconds,
+          streamLoopRepeatLimit: current.streamLoopRepeatLimit,
+          acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
+          appVersion: current.appVersion,
+          runnerProtocolVersion: current.runnerProtocolVersion,
+          showProviderIconsInSidebar: current.showProviderIconsInSidebar,
+          showWorktreePathInSidebar: current.showWorktreePathInSidebar,
         gitEnabled: current.gitEnabled,
         svnEnabled: current.svnEnabled,
-            updateChecksEnabled: current.updateChecksEnabled,
-            automaticProviderUpdates: current.automaticProviderUpdates,
-            updateLastCheckedAt: current.updateLastCheckedAt,
-            dismissedUpdateVersions: current.dismissedUpdateVersions,
-            memoryLastStatus: current.memoryLastStatus,
-            memoryWorkerBindings: current.memoryWorkerBindings,
-            permissionReviewerProviderId: current.permissionReviewerProviderId,
-            permissionReviewerModelId: current.permissionReviewerModelId,
-            memoryActivity: current.memoryActivity,
-            cliVersionManager: current.cliVersionManager,
-            markdownStoreDirectory: current.markdownStoreDirectory,
-            defaultNewChatProviderId: current.defaultNewChatProviderId,
-            providerChatDefaults: current.providerChatDefaults,
-            voiceInputMode: current.voiceInputMode,
-            voiceInputServerBaseUrl: current.voiceInputServerBaseUrl,
-            voiceInputServerEndpoint: current.voiceInputServerEndpoint,
-            voiceInputServerModel: current.voiceInputServerModel,
-            voiceInputApiKeyEnv: current.voiceInputApiKeyEnv,
-            voiceInputCapabilities: current.voiceInputCapabilities,
-            providerAvailability: current.providerAvailability,
-            gitAutoWorktree: current.gitAutoWorktree,
-            gitSnapshotSvn: current.gitSnapshotSvn,
-            gitSnapshotPlainFolders: current.gitSnapshotPlainFolders,
-            gitDefaultBaseBranch: current.gitDefaultBaseBranch,
-            gitPullBeforeChat: current.gitPullBeforeChat,
-            svnUpdateBeforeChat: current.svnUpdateBeforeChat,
-            gitPortMethod: current.gitPortMethod,
-            worktreeCleanupEnabled: current.worktreeCleanupEnabled,
-            worktreeRetentionDays: current.worktreeRetentionDays,
-            backupLogRetentionDays: current.backupLogRetentionDays,
-            httpCacheClearIntervalDays: current.httpCacheClearIntervalDays,
-            fileExplorerApplication: current.fileExplorerApplication,
-            windowsPowerShell: current.windowsPowerShell,
+          updateChecksEnabled: current.updateChecksEnabled,
+          automaticProviderUpdates: current.automaticProviderUpdates,
+          updateLastCheckedAt: current.updateLastCheckedAt,
+          dismissedUpdateVersions: current.dismissedUpdateVersions,
+          memoryLastStatus: current.memoryLastStatus,
+          memoryWorkerBindings: current.memoryWorkerBindings,
+          permissionReviewerProviderId: current.permissionReviewerProviderId,
+          permissionReviewerModelId: current.permissionReviewerModelId,
+          memoryActivity: current.memoryActivity,
+          cliVersionManager: current.cliVersionManager,
+          markdownStoreDirectory: current.markdownStoreDirectory,
+          defaultNewChatProviderId: current.defaultNewChatProviderId,
+          providerChatDefaults: current.providerChatDefaults,
+          voiceInputMode: current.voiceInputMode,
+          voiceInputServerBaseUrl: current.voiceInputServerBaseUrl,
+          voiceInputServerEndpoint: current.voiceInputServerEndpoint,
+          voiceInputServerModel: current.voiceInputServerModel,
+          voiceInputApiKeyEnv: current.voiceInputApiKeyEnv,
+          voiceInputCapabilities: current.voiceInputCapabilities,
+          providerAvailability: current.providerAvailability,
+          gitAutoWorktree: current.gitAutoWorktree,
+          gitSnapshotSvn: current.gitSnapshotSvn,
+          gitSnapshotPlainFolders: current.gitSnapshotPlainFolders,
+          gitDefaultBaseBranch: current.gitDefaultBaseBranch,
+          gitPullBeforeChat: current.gitPullBeforeChat,
+          svnUpdateBeforeChat: current.svnUpdateBeforeChat,
+          gitPortMethod: current.gitPortMethod,
+          worktreeCleanupEnabled: current.worktreeCleanupEnabled,
+          worktreeRetentionDays: current.worktreeRetentionDays,
+          backupLogRetentionDays: current.backupLogRetentionDays,
+          httpCacheClearIntervalDays: current.httpCacheClearIntervalDays,
+          fileExplorerApplication: current.fileExplorerApplication,
+          windowsPowerShell: current.windowsPowerShell,
         defaultEditorPresetId: current.defaultEditorPresetId,
-            editorFileAssociations: current.editorFileAssociations,
-            centralProviderConfiguration: current.centralProviderConfiguration,
-            mcpServers: current.mcpServers,
-            executionRouting: current.executionRouting,
-            executionHosts: current.executionHosts,
-            favoriteUamAgentIds: current.favoriteUamAgentIds,
-            nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
-            nativeImportExcludedDirectories: current.nativeImportExcludedDirectories,
-            uamAgentCycleShortcut: current.uamAgentCycleShortcut,
-            computerUseEnabled: current.computerUseEnabled,
-            computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
-            computerUseAllowedApplications: current.computerUseAllowedApplications,
-            branchSwitching: current.branchSwitching,
-            hostScopedSettings: current.hostScopedSettings,
-            hostScopedSettingsValues: current.hostScopedSettingsValues,
-            uamAgentsBySessionId: current.uamAgentsBySessionId,
-            shellActions: current.shellActions,
-            shellActionNotification: current.shellActionNotification,
-            statusLine: current.statusLine,
+          editorFileAssociations: current.editorFileAssociations,
+          centralProviderConfiguration: current.centralProviderConfiguration,
+          mcpServers: current.mcpServers,
+          executionRouting: current.executionRouting,
+          executionHosts: current.executionHosts,
+          favoriteUamAgentIds: current.favoriteUamAgentIds,
+          nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
+          nativeImportExcludedDirectories: current.nativeImportExcludedDirectories,
+          uamAgentCycleShortcut: current.uamAgentCycleShortcut,
+          computerUseEnabled: current.computerUseEnabled,
+          computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
+          computerUseAllowedApplications: current.computerUseAllowedApplications,
+          branchSwitching: current.branchSwitching,
+          hostScopedSettings: current.hostScopedSettings,
+          hostScopedSettingsValues: current.hostScopedSettingsValues,
+          uamAgentsBySessionId: current.uamAgentsBySessionId,
+          shellActions: current.shellActions,
+          shellActionNotification: current.shellActionNotification,
+          statusLine: current.statusLine,
+        })
+        bootstrapHydrated = true
+        if (bootstrapRetryTimer !== null) clearTimeout(bootstrapRetryTimer)
+        bootstrapRetryTimer = null
+        set({ ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), bootstrapStateError: '', bootstrapStateLoading: false })
+        // Sync theme to DOM
+        if (deserialized.theme) {
+          persistTheme(deserialized.theme, get().customThemes)
+        }
+      } else {
+        if (
+          (sanitized.appVersion && sanitized.appVersion !== current.appVersion) ||
+          (sanitized.runnerProtocolVersion && sanitized.runnerProtocolVersion !== current.runnerProtocolVersion)
+        ) {
+          // A state patch can overtake bootstrap; its revision must win, but it lacks runtime metadata.
+          set({
+            appVersion: sanitized.appVersion || current.appVersion,
+            runnerProtocolVersion: sanitized.runnerProtocolVersion || current.runnerProtocolVersion,
           })
-          bootstrapHydrated = true
-          set(current.reconcileMemorySettingsProjection(deserialized, sanitized.settings))
-          // Sync theme to DOM
-          if (deserialized.theme) {
-            persistTheme(deserialized.theme, get().customThemes)
-          }
+        }
+        // Never apply an older snapshot over newer patch data; ask for a fresh one.
+        if (bootstrapHydrated) return
+        const nextAttempt = nextRevision > lastStaleRevision ? 0 : attempt + 1
+        if (nextAttempt < BOOTSTRAP_STATE_BACKOFF_MS.length) {
+          bootstrapRetryTimer = setTimeout(() => { if (window.uamPush === ownedUamPush) pullInitialState(nextAttempt, nextRevision) }, BOOTSTRAP_STATE_BACKOFF_MS[nextAttempt])
         } else {
-          if (
-            (sanitized.appVersion && sanitized.appVersion !== current.appVersion) ||
-            (sanitized.runnerProtocolVersion && sanitized.runnerProtocolVersion !== current.runnerProtocolVersion)
-          ) {
-            // A state patch can overtake bootstrap; its revision must win, but it lacks runtime metadata.
-            set({
-              appVersion: sanitized.appVersion || current.appVersion,
-              runnerProtocolVersion: sanitized.runnerProtocolVersion || current.runnerProtocolVersion,
-            })
-          }
-          // Never apply an older snapshot over newer patch data; ask for a fresh one.
-          if (bootstrapHydrated) return
-          if (retriesLeft > 0) pullInitialState(retriesLeft - 1)
-          else set({ bootstrapStateError: 'Startup state stayed behind live updates, so collections, workspaces and provider details may be incomplete.' })
+          failBootstrap('Startup state stayed behind live updates, so collections, workspaces and provider details may be incomplete.')
         }
       }
     })
@@ -1105,7 +1120,7 @@ export const useAppStore = create<AppState>((set, get) => {
       }
     }
     // A failing handler must not throw into native code; report it and let the next push recover the status.
-    window.uamPush = (payload: unknown) => {
+    ownedUamPush = window.uamPush = (payload: unknown) => {
       try {
         handlePush(payload)
       } catch (error) {
@@ -1119,7 +1134,13 @@ export const useAppStore = create<AppState>((set, get) => {
 
   return {
     bootstrapStateError: '',
-    retryBootstrapState: () => { set({ bootstrapStateError: '' }); pullInitialState() },
+    bootstrapStateLoading: false,
+    retryBootstrapState: () => {
+      if (bootstrapRetryTimer !== null) clearTimeout(bootstrapRetryTimer)
+      // Keep the error (and its Notice) mounted while the retry runs so focus stays on Retry.
+      set({ bootstrapStateLoading: true })
+      pullInitialState()
+    },
     startupNativeImports: EMPTY_STARTUP_NATIVE_IMPORT_STATUS,
     startupNativeImportReviewSequence: 0,
     startupNativeImportFolderId: null,

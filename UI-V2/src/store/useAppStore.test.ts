@@ -1574,57 +1574,130 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().sessions.find((session) => session.id === 'chat-1')?.providerId).toBe('gemini-cli')
   })
 
-  it('re-pulls a bootstrap snapshot that a newer patch overtook, then hydrates (#622)', async () => {
-    const testWindow = ensureTestWindow()
-    vi.resetModules()
-    const stale = makeCppState(1)
-    const fresh = makeCppState(2)
-    fresh.resourceCollections = [{ id: 'col-1', name: 'Docs', resources: [] } as unknown as CppAppState['resourceCollections'][number]]
-    const replies = [stale, fresh]
-    const pending: Array<() => void> = []
-    testWindow.cefQuery = ({ request, onSuccess }) => {
+  // Defers getInitialState replies so a test can order them against pushes.
+  const holdBootstrapPulls = (testWindow: ReturnType<typeof ensureTestWindow>) => {
+    const pending: Array<(reply: unknown, ok?: boolean) => void> = []
+    testWindow.cefQuery = ({ request, onSuccess, onFailure }) => {
       if (JSON.parse(request).action === 'getInitialState') {
-        const reply = replies.shift()
-        pending.push(() => onSuccess(JSON.stringify(reply)))
+        pending.push((reply, ok = true) => ok ? onSuccess(JSON.stringify(reply)) : onFailure?.(500, String(reply)))
       } else onSuccess('{}')
     }
-    const { useAppStore: cefStore } = await import('./useAppStore')
-    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, settings: fresh.settings } })
-    pending.shift()?.()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(cefStore.getState().resourceCollections).toEqual([])
-    expect(pending).toHaveLength(1)
-    pending.shift()?.()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(cefStore.getState().resourceCollections.map((collection) => collection.id)).toEqual(['col-1'])
-    expect(cefStore.getState().lastAppliedStateRevision).toBe(2)
-    expect(cefStore.getState().bootstrapStateError).toBe('')
-  })
+    return pending
+  }
+  const flush = () => vi.advanceTimersByTimeAsync(0)
 
-  it('surfaces a retryable error when every bootstrap re-pull stays stale (#622)', async () => {
-    const testWindow = ensureTestWindow()
-    vi.resetModules()
-    let pulls = 0
-    let patched = false
-    const held: Array<() => void> = []
-    testWindow.cefQuery = ({ request, onSuccess }) => {
-      if (JSON.parse(request).action === 'getInitialState') {
-        pulls += 1
-        const reply = () => onSuccess(JSON.stringify(makeCppState(1)))
-        if (patched) reply()
-        else held.push(reply)
-      } else onSuccess('{}')
-    }
-    const { useAppStore: cefStore } = await import('./useAppStore')
-    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, settings: makeCppState(2).settings } })
-    patched = true
-    held.shift()?.()
-    await vi.waitFor(() => expect(cefStore.getState().bootstrapStateError).not.toBe(''))
-    expect(pulls).toBe(4)
-    expect(cefStore.getState().lastAppliedStateRevision).toBe(2)
-    cefStore.getState().retryBootstrapState()
-    expect(cefStore.getState().bootstrapStateError).toBe('')
-    await vi.waitFor(() => expect(pulls).toBe(8))
+  describe('bootstrap re-pull (#622)', () => {
+    beforeEach(() => { vi.useFakeTimers() })
+    afterEach(() => {
+      const leaked = vi.getTimerCount()
+      vi.useRealTimers()
+      expect(leaked).toBe(0)
+    })
+
+    it('re-pulls a snapshot a newer patch overtook, then hydrates without leaking timers', async () => {
+      const testWindow = ensureTestWindow()
+      vi.resetModules()
+      const pending = holdBootstrapPulls(testWindow)
+      const fresh = makeCppState(2)
+      fresh.resourceCollections = [{ id: 'col-1', name: 'Docs', resources: [] } as unknown as CppAppState['resourceCollections'][number]]
+      const { useAppStore: cefStore } = await import('./useAppStore')
+      testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, settings: fresh.settings } })
+      pending.shift()?.(makeCppState(1))
+      await flush()
+      expect(cefStore.getState().resourceCollections).toEqual([])
+      expect(pending).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(100)
+      expect(pending).toHaveLength(1)
+      pending.shift()?.(fresh)
+      await flush()
+      expect(cefStore.getState().resourceCollections.map((collection) => collection.id)).toEqual(['col-1'])
+      expect(cefStore.getState().lastAppliedStateRevision).toBe(2)
+      expect(cefStore.getState().bootstrapStateError).toBe('')
+    })
+
+    it('never applies a stale snapshot over newer patch fields', async () => {
+      const testWindow = ensureTestWindow()
+      vi.resetModules()
+      const pending = holdBootstrapPulls(testWindow)
+      const { useAppStore: cefStore } = await import('./useAppStore')
+      const patched = makeCppState(2)
+      patched.resourceCollections = [{ id: 'patched', name: 'New', resources: [] } as unknown as CppAppState['resourceCollections'][number]]
+      testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, resourceCollections: patched.resourceCollections } })
+      const stale = makeCppState(1)
+      stale.resourceCollections = [{ id: 'stale', name: 'Old', resources: [] } as unknown as CppAppState['resourceCollections'][number]]
+      for (const delay of [0, 100, 300, 900]) {
+        await vi.advanceTimersByTimeAsync(delay)
+        pending.shift()?.(stale)
+        await flush()
+        expect(cefStore.getState().resourceCollections.map((collection) => collection.id)).toEqual(['patched'])
+      }
+      expect(cefStore.getState().bootstrapStateError).toContain('behind live updates')
+    })
+
+    it('backs off 100/300/900 ms, resets on progress, then shows a retryable error', async () => {
+      const testWindow = ensureTestWindow()
+      vi.resetModules()
+      const pending = holdBootstrapPulls(testWindow)
+      const { useAppStore: cefStore } = await import('./useAppStore')
+      testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 5, settings: makeCppState(5).settings } })
+      const replyStale = async (revision: number, delay: number) => {
+        await vi.advanceTimersByTimeAsync(delay - 1)
+        expect(pending).toHaveLength(0)
+        await vi.advanceTimersByTimeAsync(1)
+        expect(pending).toHaveLength(1)
+        pending.shift()?.(makeCppState(revision))
+        await flush()
+      }
+      pending.shift()?.(makeCppState(1))
+      await flush()
+      await replyStale(1, 100)
+      await replyStale(1, 300)
+      // Revision 2 is newer than the last stale reply: the budget resets to the first delay.
+      await replyStale(2, 900)
+      await replyStale(2, 100)
+      await replyStale(2, 300)
+      expect(cefStore.getState().bootstrapStateError).toBe('')
+      await replyStale(2, 900)
+      expect(cefStore.getState().bootstrapStateError).toContain('behind live updates')
+      expect(cefStore.getState().lastAppliedStateRevision).toBe(5)
+      cefStore.getState().retryBootstrapState()
+      // The error stays mounted while retrying; Retry is busy instead.
+      expect(cefStore.getState()).toMatchObject({ bootstrapStateLoading: true, bootstrapStateError: expect.stringContaining('behind') })
+      expect(pending).toHaveLength(1)
+      pending.shift()?.(makeCppState(5))
+      await flush()
+      expect(cefStore.getState()).toMatchObject({ bootstrapStateLoading: false, bootstrapStateError: '' })
+    })
+
+    it('shows the native error when the pull fails, and an invalid-reply error', async () => {
+      const testWindow = ensureTestWindow()
+      vi.resetModules()
+      const pending = holdBootstrapPulls(testWindow)
+      const { useAppStore: cefStore } = await import('./useAppStore')
+      pending.shift()?.('backend busy', false)
+      await flush()
+      expect(cefStore.getState().bootstrapStateError).toContain('backend busy')
+      cefStore.getState().retryBootstrapState()
+      pending.shift()?.('not a state')
+      await flush()
+      expect(cefStore.getState()).toMatchObject({ bootstrapStateLoading: false, bootstrapStateError: 'The backend returned an invalid startup state.' })
+    })
+
+    it('ignores a late failure from a second Retry chain after hydration', async () => {
+      const testWindow = ensureTestWindow()
+      vi.resetModules()
+      const pending = holdBootstrapPulls(testWindow)
+      const { useAppStore: cefStore } = await import('./useAppStore')
+      pending.shift()?.('down', false)
+      await flush()
+      cefStore.getState().retryBootstrapState()
+      cefStore.getState().retryBootstrapState()
+      pending.shift()?.(makeCppState(1))
+      await flush()
+      pending.shift()?.('late', false)
+      await flush()
+      expect(cefStore.getState().bootstrapStateError).toBe('')
+    })
   })
 
   it('does not associate an edited pre-existing queue entry with a newer acknowledged input', async () => {

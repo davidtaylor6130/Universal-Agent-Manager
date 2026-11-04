@@ -4,7 +4,7 @@ import { SubagentRouteStage, subagentStageKey } from './SubagentRouteStage'
 import { activateSubagentLeaf, canExecuteNativeSubagent, hasNativeSubagentLineage, clearSubagentView, subagentRouteFor, type SubagentRoute, subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import { ExecutionRoutingWaitNotice } from '../modals/ExecutionRoutingDialog'
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { AlertTriangle, CheckCircle2, Columns2, MessageSquare, Plus, PowerOff, Rows2, SquareTerminal, X, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Columns2, Loader2, MessageSquare, Plus, PowerOff, Rows2, SquareTerminal, X, XCircle } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -66,13 +66,22 @@ const PushStatusDot = memo(function PushStatusDot() {
   )
 })
 
-function BootstrapStateNotice() {
+export function BootstrapStateNotice() {
   const error = useAppStore((s) => s.bootstrapStateError)
+  const loading = useAppStore((s) => s.bootstrapStateLoading)
   const retry = useAppStore((s) => s.retryBootstrapState)
   if (!error) return null
   return (
     <div className="px-2 pt-2">
-      <Notice tone="error" title="Startup state not loaded" dismissible={false} dismissLabel="Dismiss startup state error" actions={<Button size="sm" onClick={retry}>Retry</Button>}>
+      <Notice tone="error" title="Startup state not loaded" dismissible={false} actions={<Button
+        size="sm"
+        aria-label="Retry loading startup state"
+        // aria-disabled, not disabled: a disabled button drops focus to body mid-retry.
+        aria-disabled={loading || undefined}
+        aria-busy={loading || undefined}
+        leadingIcon={loading ? <Loader2 className="uam-btn__spinner" size={13} aria-hidden /> : undefined}
+        onClick={() => { if (!loading) retry() }}
+      >Retry</Button>}>
         {error}
       </Notice>
     </div>

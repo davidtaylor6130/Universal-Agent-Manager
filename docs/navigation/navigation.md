@@ -4,6 +4,4 @@ Main navigation switches between chats, Usage and Settings while retaining each 
 
 On macOS and Windows, window controls share the app-level strip with the split-layout actions; empty strip space drags the window. macOS uses its native traffic lights, and Windows places Minimize, Maximize/Restore and Close at the upper right. Chat search stays inside the sidebar, and each split pane keeps its own title and controls below the strip. Settings, Usage and tool panels retain window controls without taking over a chat header. If the native window does not provide integrated controls, UAM keeps the system title bar and draws no strip, so content is never pushed below a second title area.
 
-If the startup state cannot be loaded, a persistent error notice above the chat panes says Collections, workspaces and provider details may be incomplete and offers Retry; it clears once a full startup state loads. See [the React–CEF transport](../reference/architecture/react-cef-transport.md).
-
 [Chat panes](../chat/panes.md) · [Composer](../chat/composer/composer.md) · [Search](../sidebar/search.md) · [Accessibility](../ui/accessibility.md).
