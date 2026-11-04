@@ -1554,6 +1554,26 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts).toEqual([expect.objectContaining({ id: 'real-outbox', revision: 1, text: 'Keep this input', attachments: [expect.objectContaining(attachment)] })])
   })
 
+  it('hydrates the bootstrap full state even when a same-revision patch arrived first (#622)', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    const initial = makeCppState(1)
+    initial.resourceCollections = [{ id: 'col-1', name: 'Docs', resources: [] } as unknown as CppAppState['resourceCollections'][number]]
+    let respond = () => { throw new Error('Pull not requested') }
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).action === 'getInitialState') respond = () => onSuccess(JSON.stringify(initial))
+      else onSuccess('{}')
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    // The poll loop's partial patch lands before the pull resolves, at the pull's revision.
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 1, settings: initial.settings } })
+    respond()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cefStore.getState().folders.map((folder) => folder.id)).toContain('default')
+    expect(cefStore.getState().resourceCollections.map((collection) => collection.id)).toEqual(['col-1'])
+    expect(cefStore.getState().sessions.find((session) => session.id === 'chat-1')?.providerId).toBe('gemini-cli')
+  })
+
   it('does not associate an edited pre-existing queue entry with a newer acknowledged input', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()

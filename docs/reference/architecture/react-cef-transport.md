@@ -2,7 +2,7 @@
 
 > Engineering reference retained from the trial base (`3a7c8477`, 2026-10-16). This records implementation detail and historical verification, not full feature acceptance. Start with the [feature guide](../../README.md); its agreements and [documented corrections](../../documentation-review.md) take precedence over stale claims here.
 
-The React app runs inside the native CEF window. React sends action envelopes through `window.cefQuery`; C++ validates and dispatches them. Native state and terminal output return through `window.uamPush`.
+The React app runs inside the native CEF window. React sends action envelopes through `window.cefQuery`; C++ validates and dispatches them. Native state and terminal output return through `window.uamPush`. At startup the one-shot `getInitialState` pull is the only full state; it applies when its `stateRevision` is equal to or newer than the store's, because a partial `statePatch` from the poll loop can arrive first at the same revision and must not leave Collections, workspaces and provider identities empty (#622).
 
 ## Flow and invariants
 

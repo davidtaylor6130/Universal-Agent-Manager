@@ -763,7 +763,12 @@ export const useAppStore = create<AppState>((set, get) => {
       if (sanitized) {
         const current = get()
         const nextRevision = cppStateRevision(sanitized)
-        if (isNewerStateRevision(nextRevision, current.lastAppliedStateRevision)) {
+        // The bootstrap pull is a one-shot authoritative full state. Apply it when
+        // its revision is >= the store's: a same-revision full state is complete
+        // and idempotent, so it must win over a partial statePatch that already
+        // advanced the revision (the stale-UI-after-abnormal-exit race, #622).
+        // Only skip when the pull is strictly older than what was applied.
+        if (nextRevision >= current.lastAppliedStateRevision) {
           const deserialized = deserializeState(sanitized, {
             sessions: current.sessions,
             folders: current.folders,
