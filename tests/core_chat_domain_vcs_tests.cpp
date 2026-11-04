@@ -567,6 +567,43 @@ UAM_TEST(ChatAttentionRequiresMatchingInteractionAndSurvivesRestart)
 	UAM_ASSERT(loaded->attention_revision.empty());
 }
 
+UAM_TEST(ChatAttentionWithStaleSummaryDefersTheFullSaveToTheBackground)
+{
+	// Provider output marks attention on the poll thread. A stale summary used to fall back to a
+	// synchronous full transcript save there, about one save of a 26 MB chat per completed turn (#526).
+	TempDir temp("uam-attention-stale-summary");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+	chat.id = "attention-stale-summary";
+	chat.messages.push_back({.role = MessageRole::User, .content = "Durable history"});
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	const fs::path primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const std::string saved = uam::io::ReadTextFile(primary);
+	fs::remove(AppPaths::UamChatSummaryFilePath(app.data_root, chat.id));
+	app.chats.front().messages.push_back({.role = MessageRole::Assistant, .content = "Unsaved completion"});
+	UAM_ASSERT(!ChatRepository::SaveLastOpenedAt(app.data_root, app.chats.front(), false));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(primary), saved);
+	ChatDomainService().MarkChatNeedsAttention(app, chat.id);
+	const std::string revision = app.chats.front().attention_revision;
+	UAM_ASSERT(!revision.empty());
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(primary), saved);
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(chat.id));
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (!app.pending_chat_save_at_by_chat_id.empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::FlushPendingChatSaves(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->attention_revision, revision);
+	UAM_ASSERT_EQ(loaded->messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(loaded->messages.back().content, std::string("Unsaved completion"));
+}
+
 UAM_TEST(LegacyChatAttentionCanBeAcknowledgedWithoutClearingANewerCompletion)
 {
 	TempDir temp("uam-legacy-attention");
