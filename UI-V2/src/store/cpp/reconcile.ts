@@ -208,6 +208,7 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     (previous.messageCount ?? 0) === (next.messageCount ?? 0) &&
     (previous.subagentParentChatId ?? '') === (next.subagentParentChatId ?? '') &&
     (previous.subagentParentCreatedAt ?? '') === (next.subagentParentCreatedAt ?? '') &&
+    (previous.createdByChatId ?? '') === (next.createdByChatId ?? '') &&
     (previous.managedSubagentCount ?? 0) === (next.managedSubagentCount ?? 0) &&
     (previous.managedSubagentRevision ?? 0) === (next.managedSubagentRevision ?? 0) &&
     (previous.messagesDigest ?? '') === (next.messagesDigest ?? '') &&
@@ -294,6 +295,7 @@ export function sessionFromCppChat(
     messageCount: chat.messageCount ?? 0,
     subagentParentChatId: chat.subagentParentChatId ?? '',
     subagentParentCreatedAt: chat.subagentParentCreatedAt ?? '',
+    createdByChatId: chat.createdByChatId ?? '',
     managedSubagentCount: chat.managedSubagentCount ?? 0,
     managedSubagentRevision: chat.managedSubagentRevision ?? 0,
     messagesDigest: chat.messagesDigest ?? '',

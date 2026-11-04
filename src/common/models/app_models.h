@@ -719,6 +719,10 @@ struct ChatSession
 	std::string subagent_parent_chat_id;
 	/// Exact creation timestamp of the originating UAM parent, preventing ID-reuse attachment.
 	std::string subagent_parent_created_at;
+	/// Display provenance for a top-level chat started through UAM chat_create; grants no lineage or authority.
+	std::string created_by_chat_id;
+	/// Hash of the creating request's arguments, so a model retry returns the same chat.
+	std::string created_by_request_key;
 	int branch_from_message_index = -1;
 	bool branch_message_edited = false;
 	std::string branch_operation_id;
