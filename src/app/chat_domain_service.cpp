@@ -1203,7 +1203,8 @@ void ChatDomainService::MarkChatNeedsAttention(uam::AppState& app, const std::st
 	chat->snoozed_until_ms = 0;
 	chat->attention_revision = uam::chat_ids::NewChatId();
 	app.chats_with_unseen_updates.insert(chat_id);
-	if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat))
+	// Runs from provider output on the poll thread: never fall back to a synchronous full transcript save.
+	if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat, false))
 		app.pending_chat_save_at_by_chat_id[chat_id] = 0.0;
 }
 
