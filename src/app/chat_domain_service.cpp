@@ -1184,7 +1184,7 @@ void ChatDomainService::AddMessageWithAnalytics(ChatSession& chat, const Message
 	AppendMessage(chat, role, text, &analytics);
 }
 
-void ChatDomainService::MarkChatNeedsAttention(uam::AppState& app, const std::string& chat_id) const
+void ChatDomainService::MarkChatNeedsAttention(uam::AppState& app, const std::string& chat_id, bool background_save_queued) const
 {
 	ChatSession* chat = FindChatById(app, chat_id);
 	if (chat == nullptr) return;
@@ -1204,7 +1204,9 @@ void ChatDomainService::MarkChatNeedsAttention(uam::AppState& app, const std::st
 	chat->attention_revision = uam::chat_ids::NewChatId();
 	app.chats_with_unseen_updates.insert(chat_id);
 	// Runs from provider output on the poll thread: never fall back to a synchronous full transcript save.
-	if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat, false))
+	// A caller that has just queued an ordinary background save of this chat leaves these fields to that save.
+	if (app.data_root.empty() || background_save_queued) return;
+	if (!ChatRepository::SaveLastOpenedAt(app.data_root, *chat, false))
 		app.pending_chat_save_at_by_chat_id[chat_id] = 0.0;
 }
 

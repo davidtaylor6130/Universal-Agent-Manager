@@ -25,7 +25,9 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <fcntl.h>
@@ -506,14 +508,8 @@ inline CapturedPipeReadResult ReadAvailablePipeData(int fd, ProcessExecutionResu
 
 inline void SignalTerminalProcessGroup(pid_t child_pid, int signal_number);
 
-inline void StopParentDeathWatchdog(pid_t& watchdog_pid)
+inline void ReapStoppedParentDeathWatchdog(const pid_t watchdog_pid)
 {
-	if (watchdog_pid <= 0)
-	{
-		return;
-	}
-
-	(void)kill(watchdog_pid, SIGTERM);
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
 	int status = 0;
 	while (std::chrono::steady_clock::now() < deadline)
@@ -521,7 +517,6 @@ inline void StopParentDeathWatchdog(pid_t& watchdog_pid)
 		const pid_t wait_result = waitpid(watchdog_pid, &status, WNOHANG);
 		if (wait_result == watchdog_pid || (wait_result < 0 && errno == ECHILD))
 		{
-			watchdog_pid = -1;
 			return;
 		}
 		if (wait_result < 0 && errno != EINTR)
@@ -545,7 +540,27 @@ inline void StopParentDeathWatchdog(pid_t& watchdog_pid)
 		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(5));
 	}
-	watchdog_pid = -1;
+}
+
+inline void StopParentDeathWatchdog(pid_t& watchdog_pid)
+{
+	if (watchdog_pid <= 0)
+	{
+		return;
+	}
+
+	const pid_t stopped = std::exchange(watchdog_pid, -1);
+	(void)kill(stopped, SIGTERM);
+	// The watchdog has no SIGTERM handler and never signals the child on this path, so the caller (often
+	// the poll thread when a provider exits) need not wait for it: reap it on a detached thread.
+	try
+	{
+		std::thread(ReapStoppedParentDeathWatchdog, stopped).detach();
+	}
+	catch (const std::system_error&)
+	{
+		ReapStoppedParentDeathWatchdog(stopped);
+	}
 }
 
 inline bool ArmParentDeathWatchdogAndReleaseChild(pid_t child_pid, pid_t& watchdog_pid, std::string* error_out = nullptr)

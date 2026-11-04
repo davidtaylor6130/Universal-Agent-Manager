@@ -794,7 +794,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, nullptr);
 		if (defer_completion) ScheduleChatSave(app, chat, 0.0);
 		else SaveChatQuietly(app, chat);
-		MarkAcpChatUnseenIfBackground(app, chat);
+		MarkAcpChatUnseenIfBackground(app, chat, defer_completion);
 		return;
 	}
 
