@@ -2,7 +2,7 @@
 
 Claude Code CLI uses stream JSON. Common behaviour is defined once in the [provider agreements](../providers.md); this checklist only records delivery and known limits. Native capabilities depend on the installed CLI, selected model and execution environment; shared UAM routes do not imply that every native variant is supported.
 
-**Assessment:** source routes and retained base evidence only, 2026-10-16. Implemented is not live verification or David’s acceptance. Consult the [status definitions](../../documentation-rules.md#agreements-and-implementation) and the GitHub issues.
+**Assessment:** source routes and retained base evidence only, 2026-10-16. Implemented is not live verification or David’s acceptance. Consult the [status definitions](../../documentation-rules.md#agreements-and-implementation) and the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md).
 
 | Capability | Delivery | Implementation | Limit or route |
 |---|---|---|---|
@@ -35,4 +35,4 @@ Claude Code CLI uses stream JSON. Common behaviour is defined once in the [provi
 | `remote-execution` | Both | Needs verification | Private helper-backed ordinary image Send verifies launch, native initialization, durable input and saved response; same-process indexed retained-image Retry is verified privately, and cold resume and live platform/CLI combinations remain pending. Shared UAM [bootstrap failure classification](../../remote-environments/ssh.md#bootstrap-failures) has passing isolated native probe regressions; helper delivery and live acceptance remain unverified. |
 | `stream-watch` | UAM | Partial | Structured Chat text, thought and tool events reach the shared [stream watch](../runtime-lifecycle.md#stream-watch) through the common turn-event and tool-call sinks, so loop and stall stops use the normal cancel path with focused native and UI verification; CLI View turns keep only the existing busy-time limit without loop detection or the notice, and live provider, SSH and Windows acceptance is pending. |
 
-**Source:** [provider runtime](../../../src/common/provider/claude/cli/claude_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the GitHub issues.
+**Source:** [provider runtime](../../../src/common/provider/claude/cli/claude_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed V5 acceptance and owners are recorded in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md).

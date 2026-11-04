@@ -27,4 +27,4 @@ Run the desktop companion from this branch, or a newer build advertising the sam
 
 Recorded checks and delivery limits: [Verification](VERIFICATION.md).
 
-Product behaviour and current delivery limits: [Native phone agreement](../../docs/phone-native.md). Exact verification, Claude review and David’s acceptance remain separate in the GitHub issues.
+Product behaviour and current delivery limits: [Native phone agreement](../../docs/phone-native.md). Exact verification, Claude review and David’s acceptance remain separate; see the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md).

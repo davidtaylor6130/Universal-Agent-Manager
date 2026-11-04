@@ -1,6 +1,6 @@
 # Native iOS verification
 
-The implementation lives on `t3/mobile-app-redesign`, derived from `codex/v5-documentation-contract` through merge `6c5ad9aa`. These checks establish implementation evidence, not David’s acceptance. GitHub PRs and issues remain authoritative for review and sign-off.
+The implementation lives on `t3/mobile-app-redesign`, derived from `codex/v5-documentation-contract` through merge `6c5ad9aa`. These checks establish implementation evidence, not David’s acceptance. Review and sign-off at integration are recorded in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md).
 
 ## Verified boundaries
 
@@ -36,7 +36,7 @@ Claude’s first two bounded GUI attempts were rate-limited; focused read-only r
 
 Saved connections use explicit QR/manual pairing. Automatic LAN discovery, embedded Tailscale networking, push notifications, cloud relay and App Store/TestFlight publication are outside this implementation. The optional CLI view is bounded plain output/input for an existing desktop session, rather than a full terminal emulator.
 
-The repository’s complete native inventory is a separate gate and is not represented by the focused passes above. Its remaining failures and the source-triage limits are retained in the GitHub issues and task evidence.
+The repository’s complete native inventory is a separate gate and is not represented by the focused passes above. Its remaining failures and the source-triage limits are retained in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md) and task evidence.
 
 [Build and connect](README.md) · [Native agreement](../../docs/phone-native.md) · [Exact shared protocol](../../docs/reference/companion-protocol.md).
 
@@ -45,4 +45,4 @@ The repository’s complete native inventory is a separate gate and is not repre
 
 On 17 October 2026, merge `1a7858bd` integrates the native companion with newer V5 usage/OAuth/window changes. The signed desktop `4.11.0-alpha-120` package is installed and reopened from the user Applications folder with matching helpers; native AX inspection confirms Pair iPhone controls. Settings, 41 queue journals and chat metadata were unchanged during the atomic replacement. The saved LAN address is stale and QR reveal remains disabled until connection configuration is updated; no publication setting was changed. Native iOS source, kit, tests and Xcode project still match`c16fee25`, so this desktop rebuild does not extend the iPhone development profile.
 
-Merged checks pass1878 frontend unit + 23 performance, 26 protocol, 8 lifecycle and 7 connected CEF cases, a complete real companion/fake-provider round trip and 46 non-core CTests. The full native gate remains failed at 2,409/2,451 with 42 previously recorded failure names; its one additional case against the older 41-failure run passes an unchanged isolated rerun. Initial disk/fixture/timing/live failures and their follow-up receipts remain retained. Integration, build and installation are distinct from broader physical or user acceptance. Detailed evidence is in `<private working evidence>` and the GitHub issues.
+Merged checks pass1878 frontend unit + 23 performance, 26 protocol, 8 lifecycle and 7 connected CEF cases, a complete real companion/fake-provider round trip and 46 non-core CTests. The full native gate remains failed at 2,409/2,451 with 42 previously recorded failure names; its one additional case against the older 41-failure run passes an unchanged isolated rerun. Initial disk/fixture/timing/live failures and their follow-up receipts remain retained. Integration, build and installation are distinct from broader physical or user acceptance. Detailed evidence is in `<private working evidence>` and the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md).

@@ -4,7 +4,7 @@ Runtime state distinguishes startup, ready, working, waiting, stopping, stopped 
 
 Shutdown must preserve a saved, undispatched remote queue when an idle runtime has no corresponding queued input or active turn; an empty runtime queue does not prove that saved input was consumed. A retiring runtime and its late stop results must not overwrite a replacement chat's queue, authored state or delivery evidence. Failed stop-worker setup or pending remote-stop publication must retain the original process fields; the runtime switches from running to pending remote stop only after successful publication.
 
-**Implementation: Partial.** The shared runtime has shutdown projection and stop-handoff guards; independent cold Retry process lifetime and cleanup remain incomplete. Verification, review and acceptance are recorded in the GitHub issues.
+**Implementation: Partial.** The shared runtime has shutdown projection and stop-handoff guards; independent cold Retry process lifetime and cleanup remain incomplete. Verification, review and acceptance are recorded in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md).
 
 ## Stream watch
 

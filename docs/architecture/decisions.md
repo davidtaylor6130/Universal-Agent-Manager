@@ -6,13 +6,13 @@ This page records decisions already agreed with David. It also states whether th
 
 **Agreed 2026-10-12:** app-wide messages should use the notifications panel and one shared transient alert surface. Replace feature-specific popups, including the collection-move failure toast and bottom-right upgrade notice. Features must not add their own popup systems.
 
-**Implementation:** Implemented. `Single Notification System` retains pending verification, Claude Review and user testing; [Notifications](../ui/notifications.md) owns the delivered behaviour.
+**Implementation:** Implemented. Verification, Claude review and user testing remain pending (`Single Notification System` in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md)); [Notifications](../ui/notifications.md) owns the delivered behaviour.
 
 ## Remove organization undo
 
 **Agreed 2026-10-12:** remove the organization undo feature, including its toast, store and backend undo payloads for workspace, collection, reference and resource reorder/move operations. Route failures through notifications.
 
-**Implementation:** Implemented. The organization undo toast, store and payloads are removed; `Remove Organization Undo` retains pending verification, code review and user testing.
+**Implementation:** Implemented. The organization undo toast, store and payloads are removed; verification, code review and user testing remain pending (`Remove Organization Undo` in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md)).
 
 Do not mark either decision complete from documentation alone; completion requires the tracked review and user-test gates to clear.
 

@@ -1,6 +1,6 @@
 # Asynchronous send durability
 
-Current source disposition for `task-1176`, 2026-10-24. David expanded the original bounded task to include cold launch and fresh raw queue promotion. The [sending agreement](../chat/sending.md), [data authority](../architecture/source-of-truth.md) and recorded original task scope remain authoritative. Implementation, scoped verification and acceptance are separate; ownership and historical failures remain in the GitHub issues.
+Current source disposition for `task-1176`, 2026-10-24. David expanded the original bounded task to include cold launch and fresh raw queue promotion. The [sending agreement](../chat/sending.md), [data authority](../architecture/source-of-truth.md) and recorded original task scope remain authoritative. Implementation, scoped verification and acceptance are separate; ownership and historical failures are recorded in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md).
 
 ## Current asynchronous predicates
 

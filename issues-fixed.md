@@ -339,7 +339,7 @@ The final startup repair also covers missing Keychain credentials and invalid sa
 - Data flow reviewed: ChatView unmount cache → same chat/pane identity → companion initial window.
 - Fix: Retain viewport only for explicit pane keys scoped to desktop or companion.
 - Regression: Existing ordered ChatView cases reproduce RED, plus actual MainPanel desktop-to-companion regression; unchanged258 ChatView cases and21navigation pass.
-- Validation: Root full frontend1970/1970 passed; pending gates remain in V5 log.
+- Validation: Root full frontend1970/1970 passed; pending gates are recorded in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md).
 
 
 ## Provider parity — Nested catalogue recovery
@@ -888,7 +888,7 @@ Claude round1 identified mounted off-tail page growth and optional transcript-hi
 
 BUG-036 follow-up (Claude round3, 2026-10-18): Enter and Retry genuinely dropped focus to BODY in private Chromium before correction; four new unit oracles failed and one external-focus control passed. Pending submission now keeps a focusable read-only editor and transfers only this form’s existing focus before button mutation; removal hands owned focus to the surviving active child heading. Focused91/91 and actual Enter/Retry/accepted-removal browser checks pass; full gates and Claude round4 remain pending. No user acceptance is claimed.
 
-BUG-036 review closure: Claude round4 approves the pinned correction with no supported P0-P2; full frontend2254/2254 passes101.24seconds. Optional scope-loss button-focus P3 is deferred separately in the V5 Incomplete Work table. Current quiet native/performance/package gates are still pending; acceptance is not claimed.
+BUG-036 review closure: Claude round4 approves the pinned correction with no supported P0-P2; full frontend2254/2254 passes101.24seconds. Optional scope-loss button-focus P3 is deferred separately in the Incomplete Work table of the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md). Current quiet native/performance/package gates are still pending; acceptance is not claimed.
 
 ## BUG-038 — Revoked preparation rejected fresh receipt
 
@@ -1050,7 +1050,7 @@ Passive residual boundaries: actual legacy service-created live projections can 
 
 Passive ACK-warning follow-up: real pre-fix receipt-obstruction test reaches the missing native-status assertion only after successful callback warning and actual committed originals; R9 passes all11 focused CEF cases, including unchanged committed primary/summary, originals and serialized status after real ACK failure. The shared status notification route is source-traced, not a newly rendered native-visual acceptance; true directory-fsync failure remains untested.
 
-Passive child-original R10 checkpoint (2026-10-18): actual public shorter-native-history RED is corrected without relaxing equal-count refresh or owner/revision guards; focused12/12 and frozen full3114core/95managed/69CEF/3goals/23performance/52auxiliary PASS. Actual Claude R3 gives scoped source approval with no P0-P2; nonblocking wording/digest-cost/repeated-warning limits are retained in the V5 incomplete table. Combined r4 zip is extracted/signature/four-helper verified; native visual, live providers, Windows, SSH and David acceptance remain unverified. See `<private working evidence>`; no Complete or phone rebuild/install is claimed.
+Passive child-original R10 checkpoint (2026-10-18): actual public shorter-native-history RED is corrected without relaxing equal-count refresh or owner/revision guards; focused12/12 and frozen full3114core/95managed/69CEF/3goals/23performance/52auxiliary PASS. Actual Claude R3 gives scoped source approval with no P0-P2; nonblocking wording/digest-cost/repeated-warning limits are retained in the incomplete table of the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md). Combined r4 zip is extracted/signature/four-helper verified; native visual, live providers, Windows, SSH and David acceptance remain unverified. See `<private working evidence>`; no Complete or phone rebuild/install is claimed.
 
 
 ### Remote native originals — 2026-10-18

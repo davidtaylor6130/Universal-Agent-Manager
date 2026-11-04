@@ -11,6 +11,9 @@ Acceptance is not implementation. Every React/frontend UI or UX code change, inc
 another agent's work and Bugfix or Performance changes, requires Claude review with its
 findings resolved. Only David's explicit approval of the specific change counts as user
 sign-off; automated tests, builds, installation, restarts and requests to continue do not.
+Record that approval (link or quote) on the PR or issue, and keep pending review and
+acceptance status when adding follow-up fixes. Claim work with your real UAM chat or agent
+ID, never an invented one, and contact an existing owner before overlapping or taking over.
 
 ## Feature documentation agreement
 
