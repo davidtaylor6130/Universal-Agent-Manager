@@ -225,6 +225,25 @@ namespace uam::paths
 		return std::string(reinterpret_cast<const char*>(value.data()), value.size());
 	}
 
+#if defined(_WIN32)
+	inline constexpr bool kHostUsesWindowsPathRules = true;
+#else
+	inline constexpr bool kHostUsesWindowsPathRules = false;
+#endif
+
+	/// <summary>Allowlist for workspace paths from untrusted data (portable bundles): Windows accepts only a
+	/// drive letter, ':' and a separator; POSIX accepts only one leading '/' not followed by another separator.
+	/// Everything else (UNC, \\?\, \\.\, \??\, drive-relative, rooted-without-drive, URIs, relative, ~) is
+	/// rejected, because probing it can make Windows contact a remote SMB server and expose credentials.</summary>
+	inline bool IsPlainLocalAbsoluteWorkspacePath(std::string_view path, bool windows_rules = kHostUsesWindowsPathRules)
+	{
+		const auto separator = [](char value) { return value == '\\' || value == '/'; };
+		if (windows_rules)
+			return path.size() >= 3 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
+			    path[1] == ':' && separator(path[2]);
+		return !path.empty() && path[0] == '/' && (path.size() == 1 || !separator(path[1]));
+	}
+
 	inline std::string NormalizedPortablePathString(const std::filesystem::path& path)
 	{
 		return PortablePathString(LexicallyNormalPath(path));
