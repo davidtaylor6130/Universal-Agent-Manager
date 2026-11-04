@@ -7,10 +7,13 @@ on:
   schedule:
     - cron: '41 5 * * 2'
   # The weekly schedule runs only on the default branch, so the V5 integration branch
-  # would otherwise never run the native rows. Relevant pushes to it always do.
+  # would otherwise never run the native rows. Relevant pushes to it always do, and every
+  # release candidate tag runs them all (path filters do not apply to tags).
   push:
     branches:
       - uam/v5-improvements
+    tags:
+      - 'v*-rc*'
     paths:
       - '.github/workflows/build-flag-leaks.yml'
       - 'scripts/check_build_flag_leaks.py'
@@ -101,21 +104,21 @@ jobs:
   # A skipped matrix job shows only its unexpanded name, so say plainly why the native rows did not run.
   native-skipped:
     name: Native flag builds not requested (add the build-flags label to run 19 full builds)
-    if: github.event_name == 'pull_request' && github.base_ref != 'uam/v5-improvements' && !contains(github.event.pull_request.labels.*.name, 'build-flags') && (github.event.action != 'labeled' || github.event.label.name == 'build-flags')
+    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'build-flags') && (github.event.action != 'labeled' || github.event.label.name == 'build-flags')
     runs-on: ubuntu-latest
     steps:
       - run: |
           echo "### Native build-flag rows skipped" >> "$GITHUB_STEP_SUMMARY"
-          echo "Each native row is a full application build with one feature or provider set turned off. Pull requests into the V5 integration branch always run them; other pull requests need the \`build-flags\` label; pushes, schedules and manual runs always do. The UI rows above already checked the frontend bundle for every flag." >> "$GITHUB_STEP_SUMMARY"
+          echo "Each native row is a full application build with one feature or provider set turned off. Pull requests need the \`build-flags\` label; pushes to the V5 integration branch, release candidate tags, schedules and manual runs always run them. The UI rows above already checked the frontend bundle for every flag." >> "$GITHUB_STEP_SUMMARY"
 
   native:
     name: Native ${{ matrix.name }}
     needs: ui
-    # Full application builds are expensive: pull requests run them when they target uam/v5-improvements or carry the
-    # build-flags label; pushes, schedules and manual runs always do. Every row's native residue is reviewed in build_flag_native_residue.json,
+    # Full application builds are expensive and fill the account's macOS runners: pull requests run them only with the
+    # build-flags label; pushes, release candidate tags, schedules and manual runs always do. Every row's native residue is reviewed in build_flag_native_residue.json,
     # so a new excluded name fails the row; the failure uploads the candidate strings for review.
     # Adding an unrelated label must not restart the 19 builds.
-    if: (github.event_name != 'pull_request' || github.base_ref == 'uam/v5-improvements' || contains(github.event.pull_request.labels.*.name, 'build-flags')) && (github.event.action != 'labeled' || github.event.label.name == 'build-flags')
+    if: (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'build-flags')) && (github.event.action != 'labeled' || github.event.label.name == 'build-flags')
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -149,7 +152,8 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: UI-V2/package-lock.json
-      - uses: actions/cache@v4
+      # Pull requests restore only; the CI workflow prunes superseded copies after base pushes.
+      - uses: actions/cache/restore@v4
         with:
           path: Builds/flags/_deps
           key: macOS-uam-flag-deps-${{ hashFiles('CMakeLists.txt') }}
@@ -157,6 +161,13 @@ jobs:
       - run: npm --prefix UI-V2 ci
       - run: cmake -S . -B Builds/flags -DCMAKE_BUILD_TYPE=Release -DUAM_PACKAGE_REMOTE_RUNNERS=OFF ${{ matrix.cmake }}
       - run: cmake --build Builds/flags --config Release --target ${{ matrix.target || 'universal_agent_manager' }} --parallel 4
+      - uses: actions/cache/save@v4
+        # Tag pushes get their own cache scope that pruning never reaches.
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/') && strategy.job-index == 0
+        continue-on-error: true
+        with:
+          path: Builds/flags/_deps
+          key: macOS-uam-flag-deps-${{ hashFiles('CMakeLists.txt') }}
       - name: Check the application, runner and bundle for excluded names
         run: python3 scripts/check_build_flag_leaks.py --build-dir Builds/flags
       - name: Record unreviewed native strings for review

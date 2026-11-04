@@ -45,6 +45,29 @@ class NativeRunnerTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertCountEqual(calls, ['Case3', 'Case7'])
 
+    def test_shards_partition_the_selection(self):
+        names = [f'Case{index}' for index in range(75)]
+        serial = {'Case4', 'Case5', 'Case6', 'Case70'}
+        shards = []
+        for index in range(1, 5):
+            batches = []
+            def execute(command, **kwargs):
+                if command[1] == '--list-tests':
+                    return subprocess.CompletedProcess(command, 0, '\n'.join(names))
+                batches.append(command[1:])
+                return subprocess.CompletedProcess(command, 0, ''.join(f'[PASS] {name}\n' for name in command[1:]))
+            with patch.object(runner.subprocess, 'run', side_effect=execute), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(runner.run_tests(Path('/fixture'), 2, serial=serial, shard=(index, 4)), 0)
+            ran = [name for batch in batches for name in batch]
+            # Serial cases still run alone, after the shard's parallel cases.
+            alone = [batch[0] for batch in batches if len(batch) == 1 and batch[0] in serial]
+            self.assertEqual(alone, [name for name in ran if name in serial])
+            self.assertEqual(ran[len(ran) - len(alone):], alone)
+            shards.append(ran)
+        self.assertCountEqual([name for ran in shards for name in ran], names)
+        self.assertEqual(len({name for ran in shards for name in ran}), len(names))
+        self.assertTrue(all(18 <= len(ran) <= 19 for ran in shards))
+
     def test_serial_cases_run_alone_after_parallel_batches(self):
         names = [f'Case{index}' for index in range(75)]
         batches, running, overlapped, lock = [], [0], [], threading.Lock()
