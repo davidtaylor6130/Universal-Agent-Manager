@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
+import { Check } from 'lucide-react'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
-import { Button } from '../ui'
+import { Button, Notice } from '../ui'
 import '../settings/provider-settings.css'
 
 type Connection = { providerId: string; status: string; detail: string }
@@ -62,9 +63,10 @@ export function ProviderMcpWarning() {
   }, [notice, key, session?.viewMode, runtime?.running, isDismissed])
 
   if (session?.viewMode === 'cli' || !notice || notice.key !== key || isDismissed) return null
+  const showResult = result?.key === key && !(result.success && notice.connection.status === 'failed')
   return <div role="alert" className="uam-prov-warning shrink-0 px-4 py-3 text-sm">
-    <strong className="uam-prov-warning__title">UAM tools are unavailable in this chat</strong>
-    <p className="mt-1 uam-prov-sub">{result?.key === key && !(result.success && notice.connection.status === 'failed') ? result.text : notice.connection.detail}</p>
+    <Notice tone="warning" title="UAM tools are unavailable in this chat" dismissLabel="Dismiss" dismissible={false}>
+    <p className="uam-prov-sub flex items-center gap-1.5">{showResult && result?.success && <Check size={14} aria-hidden style={{ color: 'var(--success)' }} />}{showResult ? result?.text : notice.connection.detail}</p>
     <div className="mt-2 flex flex-wrap gap-2">
       <Button size="sm" variant="primary" loading={busy} onClick={() => {
         if (!session) return
@@ -86,5 +88,6 @@ export function ProviderMcpWarning() {
       <Button size="sm" onClick={() => useAppStore.getState().setSettingsOpen(true)}>View settings</Button>
       <Button size="sm" variant="ghost" disabled={busy} onClick={() => { if (session) setDismissed(previous => new Map(previous).set(scopeKey, { chatId: session.id, runtimeId })) }}>Continue without it</Button>
     </div>
+    </Notice>
   </div>
 }

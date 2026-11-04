@@ -80,3 +80,16 @@ describe('on-accent contrast', () => {
     }
   })
 })
+
+describe('token-type colours', () => {
+  const names = ['--token-input', '--token-cache-read', '--token-cache-write', '--token-output', '--token-reasoning']
+  const bodies = (selector: string) => [...styles.matchAll(new RegExp(`(?:^|\\n)${selector.replace(/[[\]"]/g, (c) => `\\${c}`)}\\s*\\{([^}]*)\\}`, 'g'))].map((match) => match[1]).join('\n')
+  it.each(BUILT_IN_THEMES.filter((theme) => theme.id !== 'system').map((theme) => theme.id))('%s defines its own token colours at 4.5:1 on its surfaces', (id) => {
+    const own = bodies(id === 'light' ? ':root' : `[data-theme="${id}"]`)
+    const pick = (name: string) => hex(token(own, name) ?? token(bodies(':root'), name) ?? '')
+    for (const name of names) {
+      expect(token(own, name), `${id} ${name}`).toMatch(/^#[0-9a-f]{6}$/)
+      for (const surface of ['--bg', '--surface', '--surface-up']) expect(contrastRatio(pick(name), pick(surface)), `${id} ${name} on ${surface}`).toBeGreaterThanOrEqual(4.5)
+    }
+  })
+})

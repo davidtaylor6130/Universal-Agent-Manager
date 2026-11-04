@@ -271,7 +271,7 @@ describe('FolderTree', () => {
       expect(menu?.textContent).toContain('New chat')
       expect(menu?.textContent).not.toContain('Rename folder')
       expect(menu?.textContent).not.toContain('Delete folder')
-      expect(menu?.textContent).not.toContain('Review native chats')
+      expect(menu?.textContent).not.toContain('Review chats')
 
       act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-b"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
       expect(host.querySelector('[aria-label="Delete 2 selected workspaces"]')).toBeNull()
@@ -1266,7 +1266,7 @@ describe('FolderTree', () => {
     expect(trigger.getAttribute('aria-expanded')).toBe('true')
     expect(document.activeElement?.textContent).toContain('New chat')
     act(() => document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
-    expect(document.activeElement?.textContent).toContain('Review native chats')
+    expect(document.activeElement?.textContent).toContain('Review chats')
     act(() => document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     expect(document.body.contains(menu)).toBe(false)
     expect(document.activeElement).toBe(trigger)
@@ -1300,7 +1300,7 @@ describe('FolderTree', () => {
     act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
     const remove = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Delete folder'))!
     act(() => remove.click())
-    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Delete Folder')!.click())
+    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Delete folder')!.click())
     expect(document.body.querySelector('[aria-label="Delete folder and chats"]')?.textContent).toContain('workspace could not be deleted')
 
     act(() => root.unmount())
@@ -1465,7 +1465,7 @@ describe('FolderTree', () => {
         ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
     })
     const rescan = Array.from(document.body.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('Review native chats')
+      button.textContent?.includes('Review chats')
     )
     act(() => rescan?.click())
 
@@ -1491,7 +1491,7 @@ describe('FolderTree', () => {
 
     act(() => host.querySelector('[data-testid="folder-header-project"]')
       ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
-    const rescan = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Review native chats'))
+    const rescan = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Review chats'))
     act(() => rescan?.click())
 
     expect(useAppStore.getState().rescanFolderChats).toHaveBeenCalledWith('project')
@@ -1508,10 +1508,10 @@ describe('FolderTree', () => {
     act(() => root.render(<FolderTree searchQuery="" />))
     act(() => host.querySelector('[data-testid="folder-header-project"]')
       ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
-    const rescan = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Review native chats'))
+    const rescan = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Review chats'))
     await act(async () => { rescan?.click(); await Promise.resolve() })
 
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not open native history for Project')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not rescan chats for Project')
     const dismiss = host.querySelector<HTMLButtonElement>('[aria-label="Dismiss folder action error"]')
     expect(dismiss).not.toBeNull()
     act(() => dismiss?.click())
@@ -1519,9 +1519,9 @@ describe('FolderTree', () => {
 
     act(() => host.querySelector('[data-testid="folder-header-project"]')
       ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
-    const retry = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Review native chats'))
+    const retry = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Review chats'))
     await act(async () => { retry?.click(); await Promise.resolve() })
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not open native history for Project')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not rescan chats for Project')
 
 
     act(() => root.unmount())
@@ -1677,9 +1677,9 @@ describe('FolderTree', () => {
       act(() => menuItem.click())
       expect(deleteFolders).not.toHaveBeenCalled()
       expect(deleteFolder).not.toHaveBeenCalled()
-      const dialog = host.querySelector(selectedTarget ? '[role="alertdialog"]' : '[role="dialog"][aria-label="Delete folder and chats"]')!
+      const dialog = document.body.querySelector(selectedTarget ? '[role="alertdialog"]' : '[role="alertdialog"][aria-label="Delete folder and chats"]')!
       expect(dialog.textContent).toContain(selectedTarget ? '3 workspaces and 3 chats' : 'd')
-      const confirm = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === (selectedTarget ? 'Delete workspaces' : 'Delete Folder'))!
+      const confirm = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === (selectedTarget ? 'Delete workspaces' : 'Delete folder'))!
       await act(async () => confirm.click())
       if (selectedTarget) {
         expect(deleteFolders).toHaveBeenCalledExactlyOnceWith(['a', 'b', 'c'])
@@ -1713,20 +1713,20 @@ describe('FolderTree', () => {
     act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-c"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
     expect(host.querySelectorAll('[data-workspace-id][aria-label$="selected for bulk actions"]')).toHaveLength(3)
     const openDelete = () => host.querySelector<HTMLButtonElement>('[aria-label="Delete 3 selected workspaces"]')!.click()
-    const dialogButton = (label: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === label)!
+    const dialogButton = (label: string) => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === label)!
     act(openDelete)
-    expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain('3 workspaces and 3 chats')
+    expect(document.body.querySelector('[role="alertdialog"]')?.textContent).toContain('3 workspaces and 3 chats')
     act(() => dialogButton('Cancel').click())
     expect(deleteFolders).not.toHaveBeenCalled()
     act(openDelete)
     await act(async () => dialogButton('Delete workspaces').click())
     expect(deleteFolders).toHaveBeenCalledWith(['a', 'b', 'c'])
-    expect(host.querySelector('[role="alert"]')?.textContent).toBe('Remote stop could not be confirmed.')
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toBe('Remote stop could not be confirmed.')
     expect(host.querySelectorAll('[data-workspace-id][aria-label$="selected for bulk actions"]')).toHaveLength(3)
     deleteFolders.mockResolvedValue(true)
     await act(async () => dialogButton('Delete workspaces').click())
     expect(deleteFolders).toHaveBeenCalledTimes(2)
-    expect(host.querySelector('[role="alertdialog"]')).toBeNull()
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
     expect(host.querySelectorAll('[data-workspace-id][aria-label$="selected for bulk actions"]')).toHaveLength(0)
     act(() => root.unmount())
     host.remove()
@@ -1750,9 +1750,9 @@ describe('FolderTree', () => {
       await Promise.resolve()
     })
     expect(host.querySelector('[data-workspace-id="b"]')?.getAttribute('aria-label')).toBe('b')
-    expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain('2 workspaces')
+    expect(document.body.querySelector('[role="alertdialog"]')?.textContent).toContain('2 workspaces')
     act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
-    expect(host.querySelector('[role="alertdialog"]')).toBeNull()
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
     act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     expect(host.querySelectorAll('[data-workspace-id][aria-label$="selected for bulk actions"]')).toHaveLength(0)
     act(() => root.unmount())
@@ -1768,21 +1768,21 @@ describe('FolderTree', () => {
     act(() => root.render(<FolderTree searchQuery="" />))
     act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspaces"]')!.click())
-    const confirm = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Delete workspaces')!
+    const confirm = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Delete workspaces')!
     await act(async () => { confirm.click(); await Promise.resolve() })
-    expect(host.querySelector('[role="alertdialog"] [role="progressbar"]')?.hasAttribute('aria-valuenow')).toBe(false)
+    expect(document.body.querySelector('[role="alertdialog"] [role="progressbar"]')?.hasAttribute('aria-valuenow')).toBe(false)
     await act(async () => {
       useAppStore.setState({ deletionProgress: { completed: 3, total: 12, currentLabel: 'alpha' } })
       await Promise.resolve()
     })
-    const bar = host.querySelector<HTMLElement>('[role="alertdialog"] [role="progressbar"]')!
+    const bar = document.body.querySelector<HTMLElement>('[role="alertdialog"] [role="progressbar"]')!
     expect(bar.getAttribute('aria-valuenow')).toBe('3')
     expect(bar.getAttribute('aria-valuemax')).toBe('12')
-    expect(bar.querySelector<HTMLElement>('span')!.style.transform).toBe('scaleX(0.25)')
-    expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain('3 of 12 removed')
-    expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain('alpha')
+    expect(bar.style.getPropertyValue('--progress')).toBe('0.25')
+    expect(document.body.querySelector('[role="alertdialog"]')?.textContent).toContain('3 of 12 removed')
+    expect(document.body.querySelector('[role="alertdialog"]')?.textContent).toContain('alpha')
     await act(async () => finish(true))
-    expect(host.querySelector('[role="alertdialog"]')).toBeNull()
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
     useAppStore.setState({ deletionProgress: undefined })
     act(() => root.unmount())
     host.remove()
@@ -1798,21 +1798,21 @@ describe('FolderTree', () => {
     act(() => root.render(<FolderTree searchQuery="" />))
     act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspaces"]')!.click())
-    const confirm = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Delete workspaces')!
-    const dialog = host.querySelector<HTMLElement>('[role="alertdialog"]')!
+    const confirm = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Delete workspaces')!
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')!
     confirm.focus()
     await act(async () => { confirm.click(); await Promise.resolve() })
     expect(confirm.disabled).toBe(true)
     expect(document.activeElement).toBe(dialog)
-    expect(host.querySelector('[role="alertdialog"] [role="status"]')?.textContent).toBe('Deleting 1 workspace and 7 chats…')
+    expect(document.body.querySelector('[role="alertdialog"] [role="status"]')?.textContent).toBe('Deleting 1 workspace and 7 chats…')
     const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
     act(() => { confirm.click(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); document.dispatchEvent(tab) })
     expect(tab.defaultPrevented).toBe(true)
     expect(document.activeElement).toBe(dialog)
     expect(deleteFolders).toHaveBeenCalledTimes(1)
-    expect(host.querySelector('[role="alertdialog"]')).toBeTruthy()
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeTruthy()
     await act(async () => finish(true))
-    expect(host.querySelector('[role="alertdialog"]')).toBeNull()
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
     act(() => root.unmount())
     host.remove()
   })

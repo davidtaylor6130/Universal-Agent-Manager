@@ -416,6 +416,7 @@ UAM_TEST(StatePatchSettingsIncludeChatDefaults)
 	app.settings.memory_recall_budget_bytes = 100000;
 	app.settings.memory_level_default = "balanced";
 	app.settings.goal_max_loop_iterations = -1;
+	app.settings.goal_token_budget = 50000;
 	app.settings.update_checks_enabled = false;
 	app.settings.update_last_checked_at = "2026-07-13T20:00:00.000Z";
 	app.settings.dismissed_update_versions["uam"] = "4.2.0";
@@ -438,6 +439,7 @@ UAM_TEST(StatePatchSettingsIncludeChatDefaults)
 	UAM_ASSERT_EQ(settings.value("memoryLevelDefault", ""), std::string("balanced"));
 	UAM_ASSERT(settings.value("memoryEnabledDefault", false));
 	UAM_ASSERT_EQ(settings.value("goalMaxLoopIterations", -1), 200);
+	UAM_ASSERT_EQ(settings.value("goalTokenBudget", -1), 50000);
 	UAM_ASSERT(!settings.value("updateChecksEnabled", true));
 	UAM_ASSERT_EQ(settings.value("updateLastCheckedAt", ""), std::string("2026-07-13T20:00:00.000Z"));
 	UAM_ASSERT_EQ(settings["dismissedUpdateVersions"].value("uam", ""), std::string("4.2.0"));

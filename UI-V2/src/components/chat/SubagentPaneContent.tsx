@@ -192,7 +192,7 @@ function NativeConversationContent({ parent, chatId, child, autoFocus = true, na
     {details && <details className="mt-2" key={details}><summary>Technical details</summary><pre className="mt-1 whitespace-pre-wrap font-mono" style={{ color: 'var(--text-2)', overflowWrap: 'anywhere' }}>{details}</pre></details>}
   </Notice>
   return <section className="uam-managed-conversation" aria-label="Native subagent conversation">
-    <SubagentHeader title={child?.name || 'Native subagent'} parentName={parent?.name} detail="Read-only" headingRef={heading} onBack={onBack} onClose={onClose}
+    <SubagentHeader title={child?.name || 'Native subagent'} parentName={parent?.name} headingRef={heading} onBack={onBack} onClose={onClose}
       onRefresh={child ? () => { scopedHistory.invalidate(); setAttempt(value => value + 1) } : undefined} refreshing={loading} refreshDisabled={loading} />
     <p className="sr-only">Read-only native conversation. Follow-up messages and Stop are unavailable here.</p>
     {child && visibleMessages && visibleMessages.length > 0
@@ -203,9 +203,9 @@ function NativeConversationContent({ parent, chatId, child, autoFocus = true, na
           {failure}
           {loading ? <SubagentTranscriptLoading label="Loading native conversation…" />
             : <p role="status" className="conversation-empty">{readError?.savedRetained
-              ? 'Saved history was retained, but could not be read this time. Refresh to try reading it again.'
+              ? 'Saved history kept, but could not be read. Refresh to try again.'
               : !child || !messages
-              ? 'This native conversation is unavailable. The provider has not supplied a readable transcript.'
+              ? 'No readable transcript from the provider.'
               : 'No readable native messages are available.'}</p>}
         </div>}
   </section>

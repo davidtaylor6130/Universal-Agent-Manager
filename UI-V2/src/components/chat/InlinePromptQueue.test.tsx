@@ -4,6 +4,9 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { InlinePromptQueue } from './InlinePromptQueue'
 import type { AcpQueuedPrompt } from '../../store/cpp/types'
+import { reportAppFailure } from '../../utils/appFailure'
+
+vi.mock('../../utils/appFailure', () => ({ reportAppFailure: vi.fn() }))
 
 const prompt = (id: string, text = id, attachments: AcpQueuedPrompt['attachments'] = []): AcpQueuedPrompt => ({ id, revision: 1, text, uamAgentId: 'agent', markdownStoreFiles: ['/skill.md'], attachments, goalMode: false, goalId: '' })
 let host: HTMLDivElement
@@ -42,7 +45,7 @@ describe('inline queued prompts', () => {
     expect(host.textContent).toContain('Legacy unsent input')
     await act(async () => finish(false))
     expect(host.textContent).toContain('Legacy unsent input')
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('could not be removed')
+    expect(reportAppFailure).toHaveBeenCalledWith(expect.stringContaining('could not be removed'), expect.anything())
     expect(remove.disabled).toBe(false)
   })
 
@@ -91,7 +94,7 @@ describe('inline queued prompts', () => {
     expect(button('Remove queued prompt').disabled).toBe(true)
     await act(async () => finish(false))
     expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Keep my edit')
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('could not be saved')
+    expect(reportAppFailure).toHaveBeenCalledWith(expect.stringContaining('could not be saved'), expect.anything())
   })
   it('removes only the selected queued attachment and saves the remaining IDs', async () => {
     const attachments = [
@@ -136,7 +139,7 @@ describe('inline queued prompts', () => {
     editText('keep this text')
     await click(save)
     expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('keep this text')
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('could not be saved')
+    expect(reportAppFailure).toHaveBeenCalledWith(expect.stringContaining('could not be saved'), expect.anything())
   })
   it.each(['stale', 'prepared'] as const)('blocks attachment removal from a %s queue row', async (change) => {
     const attachments = [{ id: 'keep', name: 'keep.png', type: 'image' as const, size: 1 }]
@@ -186,7 +189,7 @@ describe('inline queued prompts', () => {
     act(() => root.render(<InlinePromptQueue {...props} />))
     await click(button('Move queued prompt down'))
     expect(props.onReorder).toHaveBeenCalledWith([{ id: 'a', revision: 1 }, { id: 'b', revision: 1 }], ['b', 'a'])
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('could not be reordered')
+    expect(reportAppFailure).toHaveBeenCalledWith(expect.stringContaining('could not be reordered'), expect.anything())
     expect(button('Move queued prompt up').disabled).toBe(true)
   })
   it('drags a queued row onto another and submits the same expected snapshot as the buttons', async () => {
@@ -264,7 +267,7 @@ describe('inline queued prompts', () => {
     expect(props.onResume).toHaveBeenCalledTimes(1)
     expect(props.onResume).toHaveBeenCalledWith([{ id: 'a', revision: 1 }, { id: 'b', revision: 1 }])
     await act(async () => finish(false))
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('could not be resumed')
+    expect(reportAppFailure).toHaveBeenCalledWith(expect.stringContaining('could not be resumed'), expect.anything())
     expect(props.prompts).toEqual([prompt('a'), prompt('b')])
     expect(resume().disabled).toBe(false)
     expect(submitComposer).not.toHaveBeenCalled()

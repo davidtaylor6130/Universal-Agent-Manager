@@ -1,6 +1,7 @@
 import { useCountdownClock } from '../../hooks/useCountdownClock'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
+import { Tooltip } from '../ui'
 
 /** Uses the backend's shared grace/deadline across Chat and CLI views. */
 export function RuntimeTimeout({ chatId }: { chatId: string }) {
@@ -12,7 +13,9 @@ export function RuntimeTimeout({ chatId }: { chatId: string }) {
   const now = useCountdownClock(binding.running, binding.idleCountdownStartsAtMs, binding.idleShutdownAtMs)
   if (!binding?.running || !binding.idleCountdownStartsAtMs || !binding.idleShutdownAtMs || now < binding.idleCountdownStartsAtMs) return null
   const seconds = Math.max(0, Math.ceil((binding.idleShutdownAtMs - now) / 1000))
-  return <span className="shrink-0 text-xs tabular-nums" title="Activity restarts the one-minute grace period" aria-label="Runtime idle timeout">
-    Stops in {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, '0')}
-  </span>
+  return <Tooltip label="Activity restarts the one-minute grace period">
+    <span role="timer" aria-label="Runtime idle timeout" className="shrink-0 text-xs tabular-nums">
+      Stops in {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, '0')}
+    </span>
+  </Tooltip>
 }

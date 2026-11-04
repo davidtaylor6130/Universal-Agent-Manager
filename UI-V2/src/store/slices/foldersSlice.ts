@@ -892,6 +892,13 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       return true
     },
 
+    // Full text for the detail view; callers keep the list preview when this fails.
+    readMemoryEntry: (request: Pick<MemoryScope, 'scopeType' | 'folderId'> & { entryId: string }) =>
+      sendToCEF<{ content: string }>({
+        action: 'readMemoryEntry',
+        payload: { scopeType: request.scopeType, folderId: request.folderId, entryId: request.entryId },
+      }),
+
     openMemoryScanModal: async () => {
       set({
         isMemoryScanModalOpen: true,

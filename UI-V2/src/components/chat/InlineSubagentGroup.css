@@ -7,5 +7,5 @@
 .uam-inline-subagents p { margin-block: 4px; overflow-wrap: anywhere; }
 .uam-inline-subagents summary { display: flex; align-items: center; gap: 8px; cursor: pointer; padding-block: 4px; transition: color var(--dur-fast) var(--ease); }
 .uam-inline-subagents summary:hover { color: var(--text); }
-.uam-inline-subagents summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.uam-inline-subagents summary:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 @media (prefers-reduced-motion: reduce) { .uam-inline-subagents summary { transition: none; } }

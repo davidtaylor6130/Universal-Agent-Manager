@@ -1,18 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { FileText, RefreshCw, X } from 'lucide-react'
+import { ArrowLeft, FileText, RefreshCw, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
 import type { WorkspaceFilePreview } from '../../types/filePreview'
 import type { FileReference } from '../../utils/fileReferences'
 import { getTopmostModal } from '../../utils/modalFocus'
 import { CopyTextButton } from '../chat/StatusHelpers'
-import { Button, IconButton, Overlay } from '../ui'
+import { Button, IconButton, Notice, Overlay, Tooltip } from '../ui'
 import './review.css'
 
 const ROW_HEIGHT = 20
 
-export function FilePreviewDialog({ chatId, reference, onClose, onShowChanges, zIndex = 1100 }: {
-  chatId: string; reference: FileReference; onClose: () => void; onShowChanges?: (file: WorkspaceFilePreview | null) => Promise<void>; zIndex?: number
+export function FilePreviewDialog({ chatId, reference, onClose, onBack, onShowChanges, zIndex = 1100 }: {
+  chatId: string; reference: FileReference; onClose: () => void; onBack?: () => void; onShowChanges?: (file: WorkspaceFilePreview | null) => Promise<void>; zIndex?: number
 }) {
   const read = useAppStore((state) => state.getWorkspaceFilePreview)
   const context = useAppStore(useShallow((state) => {
@@ -70,19 +70,19 @@ export function FilePreviewDialog({ chatId, reference, onClose, onShowChanges, z
       className="uam-rv-dialog flex h-[85vh] w-full max-w-5xl" onMouseDown={(event) => event.stopPropagation()}>
       <header className="uam-rv-dialog__header">
         <FileText size={16} aria-hidden style={{ color: 'var(--accent)' }} />
-        <div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold" title={reference.path} style={{ color: 'var(--text)' }}>{file?.path ?? reference.path}</div>
-          {file && <div className="truncate text-xs" title={`${file.executionHostId}: ${file.workspace}`} style={{ color: 'var(--text-3)' }}>{file.executionHostId} · {file.workspace}</div>}</div>
+        <div className="min-w-0 flex-1"><Tooltip label={file ? `${file.executionHostId} · ${file.workspace}` : reference.path}><div className="truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{file?.path ?? reference.path}</div></Tooltip></div>
         {onShowChanges && <Button type="button" size="sm" variant="ghost" disabled={changesLoading} onClick={() => {
           setChangesLoading(true); setChangesError('')
           void onShowChanges(file).catch((reason) => setChangesError(reason instanceof Error ? reason.message : 'Could not load changes.')).finally(() => setChangesLoading(false))
         }}>{changesLoading ? 'Loading changes…' : 'Changes'}</Button>}
         {file && <CopyTextButton text={file.text} label="Copy file" title="Copy file contents" />}
         <IconButton icon={<RefreshCw size={15} />} label="Reload file" onClick={() => setRefresh((value) => value + 1)} />
+        {onBack && <IconButton icon={<ArrowLeft size={16} />} label="Back to changes" onClick={onBack} />}
         <IconButton icon={<X size={16} />} label="Close file inspection" onClick={onClose} />
       </header>
       {file && reference.line !== undefined && reference.line > lines.length && <p role="status" className="px-3 py-1 text-xs" style={{ color: 'var(--text-2)' }}>Line {reference.line} is past the end of this file.</p>}
-      {changesError && <p role="alert" className="uam-rv-alert mx-3 my-2" style={{ background: 'var(--error-dim)', color: 'var(--error)' }}>{changesError}</p>}
-      {error ? <div role="alert" className="uam-rv-alert m-4" style={{ background: 'var(--error-dim)', color: 'var(--error)' }}>{error}</div> : !file ? <div role="status" className="p-4 text-sm" style={{ color: 'var(--text-2)' }}>Loading file…</div> :
+      {changesError && <div className="mx-3 my-2"><Notice tone="error" dismissLabel="Dismiss">{changesError}</Notice></div>}
+      {error ? <div className="m-4"><Notice tone="error" dismissLabel="Dismiss">{error}</Notice></div> : !file ? <div role="status" className="p-4 text-sm" style={{ color: 'var(--text-2)' }}>Loading file…</div> :
         <div ref={viewportRef} role="region" aria-label={`Source of ${file.path}`} tabIndex={0} className="uam-rv-diff min-h-0 flex-1 overflow-auto"
           onScroll={(event) => setViewport({ top: event.currentTarget.scrollTop, height: event.currentTarget.clientHeight })}>
           <div style={{ height: lines.length * ROW_HEIGHT, minWidth: `calc(${width}ch + 70px)`, position: 'relative' }}>

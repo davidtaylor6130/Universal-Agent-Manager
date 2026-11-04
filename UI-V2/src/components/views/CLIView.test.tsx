@@ -234,7 +234,7 @@ describe('CLIView', () => {
       root.render(<CLIView session={session} />)
     })
 
-    expect(host.textContent).toContain("Provider 'codex-cli' is not supported in this build.")
+    expect(host.textContent).toContain("Terminal mode isn't available for")
     expect(useAppStore.getState().cliBindingBySessionId['chat-1']).toBeUndefined()
     expect(host.querySelector('.xterm')).toBeNull()
 

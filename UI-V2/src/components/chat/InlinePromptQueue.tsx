@@ -2,8 +2,9 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, CornerUpRight, GripVertical, Pencil, X } from 'lucide-react'
 import type { AcpQueuedPrompt } from '../../store/cpp/types'
 import type { Attachment } from '../../types/message'
-import { Button, IconButton, StatusDot, motionAllowed } from '../ui'
+import { Button, IconButton, Notice, StatusDot, motionAllowed } from '../ui'
 import { EXIT_MS } from '../ui/Overlay'
+import { reportAppFailure } from '../../utils/appFailure'
 import './InlinePromptQueue.css'
 
 export interface UnsentPrompt {
@@ -48,7 +49,6 @@ export function InlinePromptQueue({ prompts, unsentPrompts = [], unsentActionsDi
   const [editing, setEditing] = useState<{ id: string; revision: number; text: string; retainedAttachmentIds?: string[] } | null>(null)
   const [pending, setPending] = useState(false)
   const pendingRef = useRef(false)
-  const [error, setError] = useState('')
   const blocked = disabled || pending
   const reorderable = prompts.every((prompt) => prompt.id && prompt.revision && !prompt.prepared)
   const [leaving, setLeaving] = useState<{ prompt: AcpQueuedPrompt; index: number }[]>([])
@@ -92,12 +92,11 @@ export function InlinePromptQueue({ prompts, unsentPrompts = [], unsentActionsDi
     if (blocked || pendingRef.current) return
     pendingRef.current = true
     setPending(true)
-    setError('')
     try {
       if (await operation()) finish?.()
-      else setError(failure)
+      else reportAppFailure(failure, '')
     } catch (error) {
-      setError(error instanceof Error && error.message.trim() ? error.message : failure)
+      reportAppFailure(failure, error instanceof Error && error.message.trim() ? error.message : '')
     } finally {
       pendingRef.current = false
       setPending(false)
@@ -188,7 +187,7 @@ export function InlinePromptQueue({ prompts, unsentPrompts = [], unsentActionsDi
         <span className="uam-queue-row__label">Queued{prompts.length > 1 ? ` ${index + 1}` : ''}</span>
         <span className="uam-queue-row__text">{prompt.text}</span>
         <div className="uam-queue-row__actions">
-          <IconButton size="sm" icon={<Pencil size={13} />} label="Edit queued prompt" disabled={blocked || !prompt.id || !prompt.revision || prompt.prepared || Boolean(editing)} onClick={() => { setEditing({ id: prompt.id!, revision: prompt.revision!, text: prompt.text }); setError('') }} />
+          <IconButton size="sm" icon={<Pencil size={13} />} label="Edit queued prompt" disabled={blocked || !prompt.id || !prompt.revision || prompt.prepared || Boolean(editing)} onClick={() => { setEditing({ id: prompt.id!, revision: prompt.revision!, text: prompt.text }) }} />
           <IconButton size="sm" icon={<ArrowUp size={13} />} label="Move queued prompt up" disabled={blocked || !reorderable || index === 0 || Boolean(editing)} onClick={() => move(index, -1)} />
           <IconButton size="sm" icon={<ArrowDown size={13} />} label="Move queued prompt down" disabled={blocked || !reorderable || index === prompts.length - 1 || Boolean(editing)} onClick={() => move(index, 1)} />
           <IconButton size="sm" icon={<CornerUpRight size={14} />} label="Steer with this prompt now" disabled={held || blocked || prompt.prepared || Boolean(editing)} onClick={() => void run(() => onSteer(index, prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined), 'Queued prompt could not be sent. Try again.')} />
@@ -208,15 +207,14 @@ export function InlinePromptQueue({ prompts, unsentPrompts = [], unsentActionsDi
       {retainedAttachments.length > 0 && <div className="uam-queue-row__files" aria-label="Queued prompt attachments">
         {retainedAttachments.map((attachment) => <FileChip key={attachment.id} name={attachment.name} title={attachment.path || attachment.name} trailing={<>
           <span className="uam-queue-chip__type">{attachment.type === 'directory' ? 'dir' : attachment.type}</span>
-          <button type="button" disabled={blocked || staleEdit || editedPrompt?.prepared} onClick={() => {
+          <IconButton icon={<X size={12} aria-hidden />} label={`Remove ${attachment.name} attachment`} size="sm" className="uam-attachment-remove"
+            disabled={blocked || staleEdit || editedPrompt?.prepared} onClick={() => {
             if (blocked || staleEdit || editedPrompt?.prepared || pendingRef.current) return
             setEditing((current) => current ? {
               ...current,
               retainedAttachmentIds: (current.retainedAttachmentIds ?? editedPrompt?.attachments.map((item) => item.id) ?? []).filter((id) => id !== attachment.id),
             } : current)
-          }} title="Remove attachment" aria-label={`Remove ${attachment.name} attachment`} className="uam-attachment-remove">
-            <X size={12} aria-hidden />
-          </button>
+          }} />
         </>} />)}
       </div>}
       {markdownStoreFiles.length > 0 && <div className="uam-queue-row__files" aria-label="Queued Skills context">
@@ -226,7 +224,7 @@ export function InlinePromptQueue({ prompts, unsentPrompts = [], unsentActionsDi
         if (event.key === 'Escape') {
           event.preventDefault()
           event.stopPropagation()
-          if (!pendingRef.current) { setEditing(null); setError('') }
+          if (!pendingRef.current) setEditing(null)
         } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
           event.preventDefault()
           event.stopPropagation()
@@ -235,10 +233,9 @@ export function InlinePromptQueue({ prompts, unsentPrompts = [], unsentActionsDi
       }} />
       <div className="uam-queue-edit__actions">
         <Button type="button" size="sm" variant="primary" disabled={blocked || staleEdit || editedPrompt?.prepared || !hasPromptContent} onClick={saveEdit}>{pending ? 'Saving…' : 'Save'}</Button>
-        <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => { setEditing(null); setError('') }}>Cancel</Button>
+        <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => setEditing(null)}>Cancel</Button>
       </div>
-      {staleEdit && <div role="alert" className="uam-queue-error">Queued prompt changed. Cancel to reload it. Your edit is kept.</div>}
+      {staleEdit && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">Queued prompt changed. Cancel to reload it. Your edit is kept.</Notice>}
     </div>}
-    {error && <div role="alert" className="uam-queue-error">{error}</div>}
   </div>
 }

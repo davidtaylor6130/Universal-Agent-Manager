@@ -219,7 +219,8 @@ describe('ChatView exact outgoing action identity', () => {
     await render(); await send()
     if (route === 'claude-plan') {
       expect(sends()).toHaveLength(0)
-      const keep = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Keep planning')!
+      // The Claude Plan prompt is a ConfirmDialog, which portals to document.body.
+      const keep = [...document.body.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Keep planning')!
       expect(keep).toBeTruthy(); await act(async () => keep.click())
     } else expect(requests.filter(request => request.action === 'setGoal')).toHaveLength(1)
     expect(sends()).toHaveLength(1)

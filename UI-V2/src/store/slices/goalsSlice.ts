@@ -7,7 +7,6 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
     goalsByChatId: {} as Record<string, Goal[]>,
     activeGoalIdByChatId: {} as Record<string, string | null>,
     goalModeByChatId: {} as Record<string, boolean>,
-    defaultGoalTokenBudgetByChatId: {} as Record<string, number>,
 
 		setGoal: async (chatId: string, objective: string, tokenBudget = 0, executionOwner: 'uam' | 'provider' = 'uam') => {
 		  const trimmedObjective = objective.trim()
@@ -205,13 +204,5 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
       }))
     },
 
-    setDefaultGoalTokenBudget: (chatId: string, tokenBudget: number) => {
-      set((state: AppState) => ({
-        defaultGoalTokenBudgetByChatId: {
-          ...state.defaultGoalTokenBudgetByChatId,
-          [chatId]: Math.max(0, Math.floor(Number.isFinite(tokenBudget) ? tokenBudget : 0)),
-        },
-      }))
-    },
   }
 }

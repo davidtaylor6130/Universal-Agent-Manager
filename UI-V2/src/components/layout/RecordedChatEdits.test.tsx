@@ -51,15 +51,15 @@ describe('recorded chat edit scope', () => {
   it('shows honest empty and omitted receipt states', async () => {
     getReceipts.mockResolvedValue(response([], 3))
     await openRecorded()
-    expect(host.textContent).toContain('No recorded completed Codex edits')
+    expect(host.textContent).toContain('No Codex edits recorded')
     expect(host.textContent).toContain('3 saved edits could not be shown')
-    expect(host.textContent).toContain('Shell changes and other providers are not attributed')
+    expect(host.textContent).toContain('Shell and other providers are not shown')
   })
   it('shows load failures and refreshes explicitly', async () => {
     getReceipts.mockRejectedValueOnce(new Error('History changed. Refresh to retry.')).mockResolvedValueOnce(response())
     await openRecorded()
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('History changed')
-    await act(async () => Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Refresh recorded edits')!.click())
+    await act(async () => Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Refresh')!.click())
     expect(host.querySelector('[role="alert"]')).toBeNull()
     expect(host.textContent).toContain('old.ts')
   })
@@ -86,7 +86,7 @@ describe('recorded chat edit scope', () => {
     await act(async () => useAppStore.setState((state) => change === 'chat' ? { activeSessionId: 'chat-b', sessions: [...state.sessions, { ...state.sessions[0], id: 'chat-b' }] } : { sessions: state.sessions.map((session) => ({ ...session, ...(change === 'workspace' ? { workspaceDirectory: '/tmp/other' } : change === 'worktree' ? { workspaceWorktreeDirectory: '/tmp/new-worktree' } : { executionHostId: 'remote' }) })) }))
     await act(async () => resolve(response()))
     expect(host.textContent).not.toContain('old.ts')
-    expect(host.textContent).toContain('No recorded completed Codex edits')
+    expect(host.textContent).toContain('No Codex edits recorded')
   })
   it('rejects receipts attributed to a different chat', async () => {
     getReceipts.mockResolvedValue(response([{ ...receipt, chatId: 'other-chat' }]))

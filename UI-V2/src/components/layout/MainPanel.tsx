@@ -4,14 +4,15 @@ import { SubagentRouteStage, subagentStageKey } from './SubagentRouteStage'
 import { activateSubagentLeaf, canExecuteNativeSubagent, hasNativeSubagentLineage, clearSubagentView, subagentRouteFor, type SubagentRoute, subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import { ExecutionRoutingWaitNotice } from '../modals/ExecutionRoutingDialog'
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Columns2, MessageSquare, Plus, PowerOff, Rows2, SquareTerminal, X } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Columns2, MessageSquare, Plus, PowerOff, Rows2, SquareTerminal, X, XCircle } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
 import { isCefContext, isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
-import { Button, IconButton, Notice, StatusDot, Tooltip } from '../ui'
+import { Button, IconButton, SegmentedControl, Tooltip } from '../ui'
 import { shortcutLabel } from '../../utils/shortcuts'
+import { reportAppFailure } from '../../utils/appFailure'
 import type { Session } from '../../types/session'
 import type { Message } from '../../types/message'
 import { RuntimeTimeout } from '../shared/RuntimeTimeout'
@@ -45,19 +46,21 @@ const PushStatusDot = memo(function PushStatusDot() {
   const pushChannelStatus = useAppStore((s) => s.pushChannelStatus)
   const pushChannelError = useAppStore((s) => s.pushChannelError)
   const lastPushAtMs = useAppStore((s) => s.lastPushAtMs)
-  const uiBuildId = useAppStore((s) => s.uiBuildId)
 
   const tooltip =
     pushChannelStatus === 'connected'
-      ? `Push connected • last update ${lastPushAtMs ? new Date(lastPushAtMs).toLocaleTimeString() : '—'} • UI ${uiBuildId}`
+      ? `Connected. Last update ${lastPushAtMs ? new Date(lastPushAtMs).toLocaleTimeString() : '—'}.`
       : pushChannelStatus === 'no-push-yet'
-        ? `Waiting for backend push channel • UI ${uiBuildId}`
+        ? 'Waiting for the backend.'
         : `Push error: ${pushChannelError}`
+  const state = pushChannelStatus === 'connected' ? 'connected' : pushChannelStatus === 'no-push-yet' ? 'waiting' : 'error'
+  const StateIcon = pushChannelStatus === 'connected' ? CheckCircle2 : pushChannelStatus === 'no-push-yet' ? AlertTriangle : XCircle
+  const tone = pushChannelStatus === 'connected' ? 'var(--success)' : pushChannelStatus === 'no-push-yet' ? 'var(--warning)' : 'var(--error)'
 
   return (
     <Tooltip label={tooltip} side="bottom">
-      <span className="mr-3 inline-flex h-7 items-center px-2" aria-label={`Backend connection: ${pushChannelStatus}`}>
-        <StatusDot tone={pushChannelStatus === 'connected' ? 'success' : pushChannelStatus === 'no-push-yet' ? 'warning' : 'error'} pulse={pushChannelStatus === 'connected'} size={7} />
+      <span role="status" className="mr-3 inline-flex h-7 items-center px-2" aria-label={`Backend connection: ${state}`} style={{ color: tone }}>
+        <StateIcon size={14} aria-hidden />
       </span>
     </Tooltip>
   )
@@ -131,6 +134,11 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
   const [stopRuntimeError, setStopRuntimeError] = useState('')
   useEffect(() => setStopRuntimeError(''), [session.id])
+  useEffect(() => {
+    if (!stopRuntimeError) return
+    reportAppFailure('Runtime stop failed', stopRuntimeError)
+    setStopRuntimeError('')
+  }, [stopRuntimeError])
   const refreshFor = useRef({ key: nativeFollowupOwnerKey })
   if (refreshFor.current.key !== nativeFollowupOwnerKey) refreshFor.current = { key: nativeFollowupOwnerKey }
   const refreshOwner = refreshFor.current
@@ -138,6 +146,12 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   // Derive flags during render so a changed owner never paints the previous owner's state.
   const refreshing = refreshState.owner === refreshOwner && refreshState.pending
   const refreshError = refreshState.owner === refreshOwner ? refreshState.error : ''
+  // Pane failures go to the shared notifications path; the retained entry keeps the detail.
+  useEffect(() => {
+    if (!refreshError) return
+    reportAppFailure('Refresh failed', refreshError)
+    setRefreshState(current => current.owner === refreshOwner ? { ...current, error: '' } : current)
+  }, [refreshError, refreshOwner])
   useLayoutEffect(() => { setRefreshState({ owner: refreshOwner, pending: false, error: '' }) }, [refreshOwner])
   const cliSwitchLocked = useAppStore((s) => {
     const acpBinding = s.acpBindingBySessionId[session.id]
@@ -156,7 +170,8 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
   const workspaceLabel = workspaceDirectory.split(/[\\/]/).filter(Boolean).pop() ?? workspaceDirectory
   const executionHost = executionHosts.find((candidate) => candidate.id === session.executionHostId)
-  const executionHostLabel = session.executionHostId && session.executionHostId !== 'local'
+  const executionHostIsRemote = Boolean(session.executionHostId && session.executionHostId !== 'local')
+  const executionHostLabel = executionHostIsRemote
     ? `Remote · ${executionHost?.label?.trim() || executionHost?.sshAlias?.trim() || session.executionHostId}`
     : 'Local'
 
@@ -183,6 +198,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             : 'Runtime running · click to stop it'}
         side="bottom"
       >
+        {/* ui: raw button kept — runtime pill has its own chrome (uam-runtime-pill); Button would restyle it */}
         <button
           type="button"
           className="uam-runtime-pill"
@@ -261,7 +277,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
       <div
         className="uam-chat-pane__header flex items-center gap-3 flex-shrink-0 px-4"
         style={{
-          height: 44,
+          height: 'var(--pane-header-h)',
           borderBottom: '1px solid var(--border)',
           background: 'var(--surface)',
         }}
@@ -276,7 +292,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             title={workspaceDirectory ? `${workspaceDirectory} · ${executionHostLabel}` : executionHostLabel}
           >
             {workspaceLabel && <span className="min-w-0 truncate">{workspaceLabel}</span>}
-            <span data-testid={`chat-host-${session.id}`} className="shrink-0">{workspaceLabel ? ` · ${executionHostLabel}` : executionHostLabel}</span>
+            {executionHostIsRemote && <span data-testid={`chat-host-${session.id}`} className="shrink-0">{workspaceLabel ? ` · ${executionHostLabel}` : executionHostLabel}</span>}
           </span>
         </div>
 
@@ -287,54 +303,36 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             background: 'var(--surface-up)',
           }}
         >
-          <Tooltip label="Chat view" side="bottom">
-            <button
-              type="button"
-              onClick={() => {
+          <SegmentedControl
+            aria-label="Session view"
+            value={view}
+            onChange={(next) => {
+              if (next === 'chat') {
                 if (view === 'cli') void loadSessionMessages(session.id, true, true)
                 setView('chat')
-              }}
-              aria-label="Chat view"
-              aria-pressed={view === 'chat'}
-              className="uam-segment-button flex h-7 w-7 items-center justify-center"
-              style={{
-                borderRadius: 5,
-                color: view === 'chat' ? 'var(--text)' : 'var(--text-2)',
-                background: view === 'chat' ? 'var(--surface-high)' : 'transparent',
-              }}
-            >
-              <MessageSquare size={14} aria-hidden />
-            </button>
-          </Tooltip>
-          <Tooltip label={session.importedReadOnly ? 'Imported transcripts are read-only' : cliSwitchLocked && view !== 'cli' ? 'Wait for current output to finish' : 'Terminal fallback'} side="bottom">
-            <button
-              type="button"
-              disabled={session.importedReadOnly || (cliSwitchLocked && view !== 'cli')}
-              aria-label="Terminal fallback"
-              aria-pressed={view === 'cli'}
-              onClick={() => {
-                if (!session.importedReadOnly && !cliSwitchLocked) {
-                  setView('cli')
-                }
-              }}
-              className="uam-segment-button flex h-7 w-7 items-center justify-center"
-              style={{
-                borderRadius: 5,
-                color: view === 'cli' ? 'var(--text)' : 'var(--text-2)',
-                background: view === 'cli' ? 'var(--surface-high)' : 'transparent',
-                opacity: session.importedReadOnly || cliSwitchLocked && view !== 'cli' ? 0.5 : 1,
-                cursor: session.importedReadOnly || cliSwitchLocked && view !== 'cli' ? 'not-allowed' : 'default',
-              }}
-            >
-              <SquareTerminal size={14} aria-hidden />
-            </button>
-          </Tooltip>
+              } else if (!session.importedReadOnly && !cliSwitchLocked) {
+                setView('cli')
+              }
+            }}
+            options={[
+              { value: 'chat', label: 'Chat view', icon: <MessageSquare size={14} aria-hidden />, iconOnly: true },
+              {
+                value: 'cli',
+                label: 'Terminal fallback',
+                icon: <SquareTerminal size={14} aria-hidden />,
+                iconOnly: true,
+                disabled: session.importedReadOnly || (cliSwitchLocked && view !== 'cli'),
+                tooltip: session.importedReadOnly ? 'Imported transcripts are read-only' : cliSwitchLocked && view !== 'cli' ? 'Wait for current output to finish' : 'Terminal fallback',
+              },
+            ]}
+          />
         </div>
         {view === 'cli' && <RuntimeTimeout chatId={session.id} />}
         {runtimePill}
         <IconButton
           icon={<X size={14} aria-hidden />}
           label={`Close ${session.name}`}
+          variant="danger"
           tooltip="Close chat"
           tooltipSide="bottom"
           size="sm"
@@ -346,16 +344,6 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
       )}
 
       {SSH_ENABLED && <ExecutionRoutingWaitNotice session={session} />}
-      {refreshError && (
-        <Notice tone="error" title="Refresh failed" dismissLabel="Dismiss refresh error" onDismiss={() => setRefreshState(current => current.owner === refreshOwner ? { ...current, error: '' } : current)}>
-          {refreshError}
-        </Notice>
-      )}
-      {stopRuntimeError && (
-        <Notice tone="error" title="Runtime stop failed" dismissLabel="Dismiss runtime error" onDismiss={() => setStopRuntimeError('')}>
-          {stopRuntimeError}
-        </Notice>
-      )}
 
       {/* View content */}
       <div key={`${session.id}:${view}`} className={`${glide && !multiPane ? 'uam-pane-glide ' : ''}flex-1 overflow-hidden`} data-pane-content={session.id} data-view={view}>
@@ -416,16 +404,17 @@ const EmptyPane = memo(function EmptyPane({ active, leafId, paneIndex, multiPane
       onFocusCapture={() => { if (!active) onActivate(leafId) }}
       style={{ color: 'var(--text-3)', '--pane-color': paneColor } as React.CSSProperties}
     >
-      {multiPane && <div className="absolute right-2 top-2"><IconButton size="sm" icon={<X size={14} />} label="Close view" onClick={() => onClose(leafId)} /></div>}
+      {multiPane && <div className="absolute right-2 top-2"><IconButton size="sm" variant="danger" icon={<X size={14} />} label="Close view" onClick={() => onClose(leafId)} /></div>}
       <div className="flex max-w-xs flex-col items-center gap-4 px-4">
-        <button type="button" className="flex cursor-pointer flex-col items-center gap-2 rounded-lg p-2 text-sm hover:text-[var(--text-2)] focus-visible:outline" onClick={() => onActivate(leafId)}>
+        {/* ui: raw button kept — large text-link placeholder with custom layout; Button would restyle it */}
+        <button type="button" className="flex cursor-pointer flex-col items-center gap-2 rounded-lg p-2 text-sm hover:text-[var(--text-2)]" onClick={() => onActivate(leafId)}>
           <MessageSquare size={28} aria-hidden style={{ opacity: 0.35 }} />
           Drag a chat here or select one
         </button>
         <Button variant="primary" size="sm" onClick={() => {
           onActivate(leafId)
           useAppStore.getState().setNewChatModalOpen(true)
-        }}>New Chat</Button>
+        }}>New chat</Button>
       </div>
     </div>
   )
@@ -731,18 +720,16 @@ export function MainPanel() {
   const splitButton = (direction: ChatSplitDirection, icon: React.ReactNode) => {
     const label = `Split active pane ${direction === 'horizontal' ? 'into columns' : 'into rows'}`
     return (
-      <Tooltip label={paneLimitReached ? `Maximum ${MAX_CHAT_PANES} panes` : label} side="bottom">
-        <button
-          type="button"
-          className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
-          aria-label={label}
-          disabled={paneLimitReached}
-          onClick={() => splitActivePane(direction)}
-          style={{ color: 'var(--text-2)', background: 'transparent' }}
-        >
-          {icon}
-        </button>
-      </Tooltip>
+      <IconButton
+        icon={icon}
+        label={label}
+        tooltip={paneLimitReached ? `Maximum ${MAX_CHAT_PANES} panes` : undefined}
+        tooltipSide="bottom"
+        className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
+        disabled={paneLimitReached}
+        onClick={() => splitActivePane(direction)}
+        style={{ color: 'var(--text-2)', background: 'transparent' }}
+      />
     )
   }
 
@@ -752,21 +739,18 @@ export function MainPanel() {
         className="uam-layout-toolbar flex h-9 flex-shrink-0 items-center justify-between px-2"
         style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}
       >
-        <div className="flex items-center gap-1" aria-label={`Chat pane layout, ${leaves.length} of ${MAX_CHAT_PANES} panes`}>
+        <div role="group" className="flex items-center gap-1" aria-label={`Chat pane layout, ${leaves.length} of ${MAX_CHAT_PANES} panes`}>
           {splitButton('horizontal', <Columns2 size={15} aria-hidden />)}
           {splitButton('vertical', <Rows2 size={15} aria-hidden />)}
           {leaves.length > 1 && (
-            <Tooltip label="Close active pane" side="bottom">
-              <button
-                type="button"
-                className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
-                aria-label="Close active pane"
-                onClick={() => activeLeaf && closePane(activeLeaf.id)}
-                style={{ color: 'var(--text-2)', background: 'transparent' }}
-              >
-                <X size={15} aria-hidden />
-              </button>
-            </Tooltip>
+            <IconButton
+              icon={<X size={15} aria-hidden />}
+              label="Close active pane"
+              tooltipSide="bottom"
+              variant="danger"
+              className="flex h-7 w-8 items-center justify-center rounded"
+              onClick={() => activeLeaf && closePane(activeLeaf.id)}
+            />
           )}
         </div>
         {isCefContext() && <PushStatusDot />}

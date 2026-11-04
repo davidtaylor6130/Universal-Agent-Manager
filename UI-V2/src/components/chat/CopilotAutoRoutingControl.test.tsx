@@ -7,6 +7,7 @@ import { acpBindingFromCppChat } from '../../store/cpp/reconcile'
 import { sanitizeCppChat } from '../../store/cpp/sanitizers'
 import { CopilotAutoRoutingControl } from './CopilotAutoRoutingControl'
 import { ViewportMenu } from '../ui'
+import { APP_FAILURE_EVENT } from '../../utils/appFailure'
 
 vi.mock('../../ipc/cefBridge', async (importOriginal) => ({ ...await importOriginal<typeof import('../../ipc/cefBridge')>(), sendToCEF: vi.fn() }))
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -57,10 +58,10 @@ describe('Copilot Auto routing native action control', () => {
     choose('Default')
     expect(host.textContent).toContain('Sending preference…')
     expect(button('Refresh Auto routing').disabled).toBe(true)
-    expect(host.textContent).toContain('Effective: Balanced')
+    expect(host.textContent).toContain('Current: Balanced')
     expect(sendToCEF).toHaveBeenCalledWith({ action: 'setNativeModelOption', payload: { ...value.ownership, optionId: 'autoRouting', value: null } }, false)
     await act(async () => {})
-    expect(host.textContent).toContain('Effective: Balanced')
+    expect(host.textContent).toContain('Current: Balanced')
     expect(host.textContent).not.toContain('invented')
     expect(host.textContent).toContain('Preference request accepted.')
   })
@@ -81,9 +82,9 @@ describe('Copilot Auto routing native action control', () => {
   it('separates committed, pending-null and activating states and displays native unavailability verbatim', () => {
     render({ ...projection(), pending: { present: true, value: null }, activating: { present: true, value: 'intelligence' },
       available: false, disabledCode: 'activating', disabledReason: 'Wait for the native Auto routing activation to finish.' })
-    expect(host.textContent).toContain('Effective: Balanced')
-    expect(host.textContent).toContain('Pending: Default')
-    expect(host.textContent).toContain('Activating: intelligence')
+    expect(host.textContent).toContain('Current: Balanced')
+    expect(host.textContent).toContain('Next: Default')
+    expect(host.textContent).toContain('Switching to intelligence')
     expect(host.textContent).toContain('Wait for the native Auto routing activation to finish.')
     expect(host.querySelector<HTMLButtonElement>('[role="combobox"]')!.disabled).toBe(true)
     expect(sendToCEF).not.toHaveBeenCalled()
@@ -113,10 +114,13 @@ describe('Copilot Auto routing native action control', () => {
     const next = projection(); next.ownership!.lifetime = 'replacement-token'; render(next)
     await act(async () => { finish({ ok: false, error: 'Old session failure' }) })
     expect(host.textContent).not.toContain('Old session failure')
+    const failures: string[] = []
+    const onFailure = (event: Event) => failures.push((event as CustomEvent<{ detail: string }>).detail.detail)
+    window.addEventListener(APP_FAILURE_EVENT, onFailure)
     vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: false, error: 'Current refusal' })
     choose('Default'); await act(async () => {})
-    expect(host.querySelector('.uam-notice[role="alert"]')?.textContent).toContain('Current refusal')
-    render({ ...next, pending: { present: true, value: null } })
+    window.removeEventListener(APP_FAILURE_EVENT, onFailure)
+    expect(failures).toEqual(['Current refusal'])
     expect(host.textContent).not.toContain('Current refusal')
   })
 
@@ -194,7 +198,7 @@ describe('Copilot Auto routing Claude follow-up regressions', () => {
     expect.soft(host.textContent).toContain('Preference requested; waiting for Copilot.')
     renderFollowup({ ...projection(), lastAckStatus: 'unchanged' })
     expect.soft(host.textContent).toContain('No change; already Balanced.')
-    expect(host.textContent).toContain('Effective: Balanced')
+    expect(host.textContent).toContain('Current: Balanced')
     expect(host.textContent).not.toContain('invented')
   })
 
@@ -221,14 +225,14 @@ describe('Copilot Auto routing Claude follow-up regressions', () => {
       expect.soft(status?.getAttribute('aria-busy')).not.toBe('true')
       expect.soft(host.querySelector('[role="group"][aria-label="Copilot Auto routing"]')?.getAttribute('aria-busy')).toBe('true')
       expect.soft(host.querySelector('.uam-working-ring')).not.toBeNull()
-      expect.soft(host.textContent).toContain(kind === 'request' ? 'Waiting for Copilot' : 'Activating: intelligence')
+      expect.soft(host.textContent).toContain(kind === 'request' ? 'Waiting for Copilot' : 'Switching to intelligence')
       expect(host.textContent).not.toContain('later Auto turn')
     } finally { delete document.documentElement.dataset.motion }
   })
 
   it('keeps an idle staged preference readable without working motion or a busy region', () => {
     renderFollowup({ ...projection(), pending: { present: true, value: null } })
-    expect.soft(host.textContent).toContain('Pending: Default')
+    expect.soft(host.textContent).toContain('Next: Default')
     expect.soft(host.querySelector('.uam-working-ring')).toBeNull()
     expect.soft(host.querySelector('[role="group"][aria-label="Copilot Auto routing"]')?.getAttribute('aria-busy')).not.toBe('true')
     expect.soft(host.querySelector<HTMLButtonElement>('[role="combobox"]')?.disabled).toBe(false)
@@ -239,14 +243,14 @@ describe('Copilot Auto routing Claude follow-up regressions', () => {
     renderFollowup(); followupSelect('Default')
     renderFollowup({ ...projection(), pending: { present: true, value: null } })
     await act(async () => {})
-    expect.soft(host.textContent).toContain('Pending: Default')
+    expect.soft(host.textContent).toContain('Next: Default')
     expect.soft(host.textContent).toContain('Preference request accepted.')
     expect.soft(host.textContent).not.toContain('waiting for Copilot')
     expect.soft(host.querySelector('.uam-working-ring')).toBeNull()
     expect.soft(host.querySelector('[role="group"][aria-label="Copilot Auto routing"]')?.getAttribute('aria-busy')).not.toBe('true')
     expect.soft(host.querySelector<HTMLButtonElement>('[role="combobox"]')?.disabled).toBe(false)
     expect.soft(sendToCEF).toHaveBeenCalledTimes(1)
-    expect(host.textContent).toContain('Effective: Balanced')
+    expect(host.textContent).toContain('Current: Balanced')
   })
 
   it('uses one stable Notice for an unchanged native error across same-owner pushes', () => {
@@ -310,7 +314,7 @@ describe('Copilot Auto routing Claude R2 boundaries', () => {
     renderFollowup(); followupSelect('Low latency'); await act(async () => {})
     renderFollowup({ ...projection(), pending: { present: true, value: ' vendor/Latency:Fast+V2 ' }, lastAckStatus: 'pending' })
     renderFollowup({ ...projection(), effective: { present: true, value: ' vendor/Latency:Fast+V2 ' }, lastAckStatus: 'pending' })
-    expect.soft(host.textContent).toContain('Effective: Low latency')
+    expect.soft(host.textContent).toContain('Current: Low latency')
     expect.soft(host.textContent).not.toContain('waiting for Copilot.')
     expect(host.textContent).not.toContain('Copilot accepted the preference request.')
   })
@@ -342,7 +346,7 @@ describe('Copilot Auto routing Claude R2 boundaries', () => {
     renderFollowup({ ...projection(), lastAckStatus: 'unchanged' })
     expect(host.textContent).toContain('No change; already Balanced.')
     renderFollowup({ ...projection(), lastAckStatus: 'unchanged', effective: { present: true, value: 'intelligence' } })
-    expect.soft(host.textContent).toContain('Effective: intelligence')
+    expect.soft(host.textContent).toContain('Current: intelligence')
     expect.soft(host.textContent).not.toContain('No change; already')
     renderFollowup({ ...projection(), lastAckStatus: 'unchanged' })
     expect(host.textContent).not.toContain('No change; already')
@@ -351,7 +355,7 @@ describe('Copilot Auto routing Claude R2 boundaries', () => {
   it('does not attribute a mismatched native unchanged ACK to the issued opaque preference', async () => {
     renderFollowup(); followupSelect('Low latency'); await act(async () => {})
     renderFollowup({ ...projection(), lastAckStatus: 'unchanged' })
-    expect.soft(host.textContent).toContain('Effective: Balanced')
+    expect.soft(host.textContent).toContain('Current: Balanced')
     expect(host.textContent).not.toContain('No change; already Balanced.')
   })
 
@@ -376,7 +380,7 @@ describe('Copilot Auto routing coalesced native observations', () => {
     renderFollowup({ ...value })
     expect.soft(host.textContent).not.toContain('waiting for Copilot.')
     expect.soft(host.textContent).toContain(kind === 'preference' ? 'Preference request accepted.' : 'Refresh request accepted.')
-    expect.soft(host.textContent).toContain('Effective: Balanced')
+    expect.soft(host.textContent).toContain('Current: Balanced')
     expect.soft(host.textContent).not.toContain('No change; already')
     expect(sendToCEF).toHaveBeenCalledTimes(1)
   })
