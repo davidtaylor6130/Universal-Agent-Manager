@@ -10,6 +10,7 @@ import { fallbackProviderForId } from '../../utils/providerMetadata'
 import { acpBindingFromCppChat } from '../../store/cpp/reconcile'
 import { sanitizeCppAcpSession } from '../../store/cpp/sanitizers'
 import { captureContextReference } from '../../utils/contextReferences'
+import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { readChatComposerDraft, removeComposerDrafts, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { resetOutgoingPresentation } from '../../utils/outgoingMessagePresentation'
@@ -103,7 +104,7 @@ describe('showComposer presentation contract, authored UNRUN', () => {
         expect(field()).toBeNull(); expect(button('Send prompt')).toBeUndefined()
         expect(host.querySelector('.uam-chat-transcript .uam-message-list')).not.toBeNull()
         expect(host.querySelector('.uam-message-list code')?.textContent).toContain('const value = 1')
-        expect(host.querySelector('[aria-label="Navigate user messages"]')).not.toBeNull()
+        expect(host.querySelector('[aria-label="Navigate user messages"]')).toBeNull() // one user message: the rail does not appear
         expect(host.querySelector('[style*="--composer-dock-h"]')?.getAttribute('style')).toContain('0px')
         expect(readChatComposerDraft(child.id).text).toBe('Unsent child draft')
     })
@@ -176,9 +177,9 @@ describe('showComposer presentation contract, authored UNRUN', () => {
             const editor = host.querySelector<HTMLTextAreaElement>('[aria-label="Edit message"]')!
             expect(editor.value).toBe('Unconfirmed child input')
             expect(document.activeElement).toBe(editor)
-            expect(button('Save changes')).toBeDefined()
+            expect(button('Save edit')).toBeDefined()
             expect(button('Send prompt')).toBeUndefined()
-            await act(async () => button('Cancel')!.click())
+            await act(async () => button('Cancel edit')!.click())
             expect(field()).toBeNull()
         }
         expect(readChatComposerDraft(child.id).text).toBe('Independent hidden child draft')
@@ -584,12 +585,14 @@ describe('showComposer presentation contract, authored UNRUN', () => {
 
         await act(async () => refresh().click())
         expect(reads).toHaveLength(3)
+        const reported: string[] = []
+        const onFailure = (event: Event) => { reported.push((event as CustomEvent<AppFailure>).detail.detail) }
+        window.addEventListener(APP_FAILURE_EVENT, onFailure)
         await act(async () => reads[2].resolve(false))
         expect(refresh().disabled).toBe(false)
-        expect(actualNativePane().textContent).toContain(errorText)
-        const dismiss = actualNativePane().querySelector<HTMLButtonElement>('[aria-label="Dismiss refresh error"]')
-        expect(dismiss).not.toBeNull()
-        await act(async () => dismiss!.click())
+        // Refresh failures go to the shared notifications path, not an inline banner.
+        expect(reported).toEqual([errorText])
+        window.removeEventListener(APP_FAILURE_EVENT, onFailure)
         expect(actualNativePane().textContent).not.toContain(errorText)
         await act(async () => refresh().click())
         expect(reads).toHaveLength(4)

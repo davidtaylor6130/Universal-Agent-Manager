@@ -23,6 +23,11 @@ export function getTopmostModal(doc: Document = document): HTMLElement | null {
   return top
 }
 
+/** True for keys pressed inside an open viewport menu (MenuSelect lists and the like): the menu handles them, so a modal's window listener must not. */
+export function fromViewportMenu(event: Event): boolean {
+  return event.target instanceof Element && event.target.closest('[data-viewport-menu]') !== null
+}
+
 export function trapModalTab(event: KeyboardEvent) {
   if (event.key !== 'Tab' || event.defaultPrevented) return
   if ((document.activeElement as HTMLElement | null)?.closest('[data-viewport-menu]')) return

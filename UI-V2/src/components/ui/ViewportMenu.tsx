@@ -1,7 +1,9 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, HTMLAttributes, RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { motionAllowed } from './Overlay'
+import { motionAllowed, usePresence } from './Overlay'
+import { cx } from './cx'
+import './viewport-menu.css'
 
 const VIEWPORT_GAP = 8
 export const VIEWPORT_MENU_Z_INDEX = 1100
@@ -85,9 +87,14 @@ export interface ViewportMenuProps extends HTMLAttributes<HTMLDivElement> {
   gap?: number
   onRequestClose?: () => void
   manageFocus?: boolean
+  /**
+   * Controlled presence. Pass `open` on a persistently rendered menu so it plays its exit (scale back toward the
+   * trigger) before unmounting. Omit it for `cond && <ViewportMenu>`: the parent unmount then plays the inert-copy exit.
+   */
+  open?: boolean
 }
 
-export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(function ViewportMenu({
+const ViewportMenuPanel = forwardRef<HTMLDivElement, ViewportMenuProps & { closing?: boolean }>(function ViewportMenuPanel({
   anchorRef,
   point,
   side = 'bottom',
@@ -95,6 +102,8 @@ export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(functi
   gap = 4,
   onRequestClose,
   manageFocus,
+  closing,
+  className,
   style,
   ...props
 }, forwardedRef) {
@@ -182,6 +191,9 @@ export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(functi
       ref={menuRef}
       data-viewport-menu=""
       data-menu-side={point ? 'point' : side}
+      data-menu-align={align}
+      data-state={(props as Record<string, unknown>)['data-state'] as string ?? (closing ? 'closed' : 'open')}
+      className={cx('uam-viewport-menu', className)}
       style={{
         ...style,
         position: 'fixed',
@@ -196,4 +208,13 @@ export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(functi
     />,
     document.body,
   )
+})
+
+export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(function ViewportMenu({ open = true, ...props }, forwardedRef) {
+  const { mounted, closing } = usePresence(open)
+  // Keep the last open props on screen while the exit plays.
+  const lastProps = useRef(props)
+  if (open) lastProps.current = props
+  if (!mounted) return null
+  return <ViewportMenuPanel ref={forwardedRef} {...(open ? props : lastProps.current)} closing={closing} />
 })

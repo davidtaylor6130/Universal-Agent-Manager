@@ -1,10 +1,14 @@
 """Exercise the packaged macOS Computer Use relay without requesting permissions or input."""
+import atexit
 import json
 import pathlib
 import subprocess
 import sys
 import tempfile
 import os
+
+# macOS keeps a ~0.5 GB code_sign_clone copy of each launched bundle (#684).
+atexit.register(subprocess.run, [sys.executable, str(pathlib.Path(__file__).resolve().parents[1] / 'scripts/prune_code_sign_clones.py')])
 
 app = pathlib.Path(sys.argv[1]).resolve()
 executable = app / 'Contents/MacOS/universal_agent_manager'

@@ -2,8 +2,10 @@ import { act, createRef } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
+import { reportAppFailure } from '../../utils/appFailure'
 import * as bridge from '../../ipc/cefBridge'
 import { CentralProviderSettings, type CentralProviderSettingsHandle } from './CentralProviderSettings'
+vi.mock('../../utils/appFailure', async importOriginal => ({ ...await importOriginal<typeof import('../../utils/appFailure')>(), reportAppFailure: vi.fn() }));
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 ;(globalThis as typeof globalThis & { ResizeObserver?: typeof ResizeObserver }).ResizeObserver ??= class {
@@ -14,6 +16,7 @@ import { CentralProviderSettings, type CentralProviderSettingsHandle } from './C
 const defaults = { ...useAppStore.getState().centralProviderConfiguration, instructionFiles: [], defaultSkills: [], defaultAgents: [], defaultAgentId: 'build' }
 let root: Root
 let host: HTMLDivElement
+const saveFile = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save file')!
 const handle = createRef<CentralProviderSettingsHandle>()
 
 beforeEach(() => {
@@ -58,7 +61,7 @@ it('keeps a rejected save guarded and leaves only after successful retry', async
   act(() => handle.current!.requestLeave(leave))
   await click('Save and leave')
   expect(leave).not.toHaveBeenCalled()
-  expect(document.querySelector('[role="alert"]')?.textContent).toContain('Private save rejection')
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Private save rejection', expect.any(String))
   expect(host.textContent).toContain('private-AGENTS.md')
   await click('Save and leave')
   expect(save).toHaveBeenCalledTimes(2)
@@ -100,14 +103,14 @@ it('edits a saved instruction file inline without saving unchanged content', asy
       ? { ok: true, data: { path: instructionPath, content: request.payload.content } }
       : { ok: true, data: { agents: [], errors: [] } })
   await openInstructions()
-  expect(host.querySelector<HTMLButtonElement>('[aria-label="Save instruction file"]')!.disabled).toBe(true)
+  expect(saveFile().disabled).toBe(true)
   expect(document.activeElement).toBe(host.querySelector('[aria-label="Instruction file contents"]'))
   editInstructionText('Updated instructions\n')
-  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save instruction file"]')!.click())
+  await act(async () => saveFile().click())
   expect(send).toHaveBeenCalledWith({ action: 'saveCentralInstructionFile', payload: {
     path: instructionPath, content: 'Updated instructions\n', expectedContent: 'Keep CRLF\r\n日本語\r\n',
   } })
-  expect(host.querySelector<HTMLButtonElement>('[aria-label="Save instruction file"]')!.disabled).toBe(true)
+  expect(saveFile().disabled).toBe(true)
   expect(useAppStore.getState().centralProviderConfiguration.instructionFiles).toEqual([instructionPath])
   expect(document.activeElement).toBe(host.querySelector('[aria-label="Instruction file contents"]'))
 })
@@ -120,7 +123,7 @@ it('retains an instruction draft after conflict and guards leaving until discard
       : { ok: true, data: { agents: [], errors: [] } })
   await openInstructions()
   editInstructionText('Keep this unsaved draft\n')
-  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save instruction file"]')!.click())
+  await act(async () => saveFile().click())
   expect(host.querySelector<HTMLTextAreaElement>('[aria-label="Instruction file contents"]')!.value).toBe('Keep this unsaved draft\n')
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('The file changed outside UAM')
   const leave = vi.fn()
@@ -154,7 +157,7 @@ it('keeps an empty-file editor mounted after clearing a failed save draft', asyn
     : request.action === 'saveCentralInstructionFile' ? { ok: false, error: 'Disk full' } : { ok: true, data: { agents: [], errors: [] } })
   await openInstructions()
   editInstructionText('x')
-  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save instruction file"]')!.click())
+  await act(async () => saveFile().click())
   editInstructionText('')
   expect(host.querySelector<HTMLTextAreaElement>('[aria-label="Instruction file contents"]')!.value).toBe('')
 })
@@ -171,7 +174,7 @@ it('focuses Retry after a read failure and shows the defaults error when leaving
   act(() => handle.current!.requestLeave(leave))
   await click('Save and leave')
   const dialog = document.querySelector('[role="alertdialog"]')!
-  expect(dialog.querySelector('[role="alert"]')?.textContent).toBe('Defaults could not be saved')
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Defaults could not be saved', expect.any(String))
   expect(leave).not.toHaveBeenCalled()
 })
 
@@ -222,7 +225,7 @@ it('keeps a file save single-flight and blocks leaving until it settles', async 
     : request.action === 'saveCentralInstructionFile' ? pending : { ok: true, data: { agents: [], errors: [] } })
   await openInstructions()
   editInstructionText('Changed')
-  const save = host.querySelector<HTMLButtonElement>('[aria-label="Save instruction file"]')!
+  const save = saveFile()
   const leave = vi.fn()
   act(() => { save.click(); save.click(); handle.current!.requestLeave(leave) })
   expect(send.mock.calls.filter(([request]) => request.action === 'saveCentralInstructionFile')).toHaveLength(1)
@@ -240,10 +243,10 @@ it('retains a draft when its file is removed from the saved configuration', asyn
   await openInstructions()
   editInstructionText('Retain me')
   act(() => useAppStore.setState({ centralProviderConfiguration: defaults }))
-  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save instruction file"]')!.click())
+  await act(async () => saveFile().click())
   expect(send.mock.calls.some(([request]) => request.action === 'saveCentralInstructionFile')).toBe(false)
   expect(host.querySelector<HTMLTextAreaElement>('[aria-label="Instruction file contents"]')!.value).toBe('Retain me')
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain('no longer in Central Setup')
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('no longer in central setup')
 })
 
 it('disables clean custom agent Save and enables only changed drafts', async () => {

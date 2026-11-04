@@ -112,6 +112,7 @@ Current bridge actions, grouped by domain (the live dispatch table is `UamQueryH
 | `browseFolderDirectory` | Native folder picker |
 | `searchChatMessages` | Full-text search across chat messages |
 | `listMemoryEntries` | List durable memory entries |
+| `readMemoryEntry` | Read an entry's complete `## Memory` body by scoped entry ID; accepts `{scopeType, folderId, entryId}` and returns `{content}` (remote entries report that only the preview is available) |
 | `createMemoryEntry` | Create a durable memory entry |
 | `deleteMemoryEntry` | Delete a durable memory entry |
 | `openMemoryRoot` | Open the memory root in the OS file manager |

@@ -1,15 +1,16 @@
-import { Library } from 'lucide-react'
+import { Check, Library } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import type { ResourceReferenceType } from '../../types/resourceCollection'
 import { reportAppFailure } from '../../utils/appFailure'
 import { RowSubmenu } from './RowSubmenu'
+import { MenuItem } from '../ui'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 
 /** Moves membership through one guarded native transaction and reports failures to the shell. */
 export async function moveResourceToCollection(collectionId: string | null, type: ResourceReferenceType, target: string, label: string) {
   try {
     if (await useAppStore.getState().moveResourceToCollection(collectionId, type, target, label)) return true
-    throw new Error('Collection membership changed or could not be saved. Refresh and try again.')
+    throw new Error('Could not save the change. Refresh and try again.')
   } catch (error) {
     reportAppFailure(`Could not move "${label}".`, error instanceof Error ? error.message : 'Collection move failed.')
     return false
@@ -51,7 +52,7 @@ export function CollectionMenuItems({
     // Rows already in the destination are left alone; every other row is moved and failures are reported by name.
     const moving = rows.filter((_, index) => collectionId === null ? memberships[index].size > 0 : !memberships[index].has(collectionId))
     void runForEach(moving, async (row) => await useAppStore.getState().moveResourceToCollection(collectionId, type, row.id, row.label)
-      ? null : 'Collection membership changed or could not be saved. Refresh and try again.', 'Could not move to collection')
+      ? null : 'Could not save the change. Refresh and try again.', 'Could not move to collection')
       .then((moved) => { if (moved.length === moving.length) onAdded() })
   }
 
@@ -60,33 +61,22 @@ export function CollectionMenuItems({
       {showDivider && <div className="uam-sb-menu-divider" role="separator" />}
       <RowSubmenu label="Move to collection" ariaLabel="Move to collection" icon={<Library size={13} aria-hidden />}>
         {inAnyCollection && (
-          <button
-            type="button"
-            role="menuitem"
-            className="uam-sb-menu-item"
-            onClick={() => move(null)}
-          >
-            <Library size={13} aria-hidden />
-            <span>Remove from collection</span>
-          </button>
+          <MenuItem className="uam-sb-menu-item" icon={<Library size={13} aria-hidden />} label="Remove from collection" onSelect={() => move(null)} />
         )}
         {collections.map((collection) => {
           const current = memberships.every((ids) => ids.has(collection.id))
           return (
-            <button
+            <MenuItem
               key={collection.id}
-              type="button"
-              role="menuitem"
+              nativeDisabled
               disabled={current}
               className="uam-sb-menu-item"
-              onClick={() => {
-                if (current) return
-                move(collection.id)
-              }}
-            >
-              <Library size={13} aria-hidden />
-              <span className="truncate">{collection.name}{current ? ' (current)' : ''}</span>
-            </button>
+              icon={<Library size={13} aria-hidden />}
+              aria-label={current ? `${collection.name} (current)` : collection.name}
+              label={<span className="truncate">{collection.name}</span>}
+              trailing={current ? <Check size={13} aria-hidden className="shrink-0" /> : undefined}
+              onSelect={() => move(collection.id)}
+            />
           )
         })}
       </RowSubmenu>

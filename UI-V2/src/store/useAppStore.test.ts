@@ -79,6 +79,7 @@ function makeCppState(
       memoryIdleDelaySeconds: 60,
       memoryRecallBudgetBytes: 2048,
       goalMaxLoopIterations: 200,
+      goalTokenBudget: 0,
       updateChecksEnabled: true,
       updateLastCheckedAt: '',
       dismissedUpdateVersions: {},
@@ -135,6 +136,7 @@ function resetStore() {
     memoryIdleDelaySeconds: 60,
       memoryRecallBudgetBytes: 2048,
       goalMaxLoopIterations: 200,
+      goalTokenBudget: 0,
       updateChecksEnabled: true,
       updateLastCheckedAt: '',
       dismissedUpdateVersions: {},
@@ -1207,7 +1209,6 @@ describe('useAppStore Gemini CLI slice', () => {
 
     cefStore.setState({
       goalModeByChatId: { 'chat-1': true },
-      defaultGoalTokenBudgetByChatId: { 'chat-1': 100 },
       markdownStoreAttachedBySessionId: { 'chat-1': [] },
       repositoryReviewBySessionId: { 'chat-1': {} as never },
       uamAgentsBySessionId: { 'chat-1': [] },
@@ -1227,7 +1228,6 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.messages['chat-1']).toBeUndefined()
     expect(state.cliBindingBySessionId['chat-1']).toBeUndefined()
     expect(state.goalModeByChatId['chat-1']).toBeUndefined()
-    expect(state.defaultGoalTokenBudgetByChatId['chat-1']).toBeUndefined()
     expect(state.markdownStoreAttachedBySessionId['chat-1']).toBeUndefined()
     expect(state.repositoryReviewBySessionId['chat-1']).toBeUndefined()
     expect(state.uamAgentsBySessionId['chat-1']).toBeUndefined()
@@ -5385,7 +5385,6 @@ describe('useAppStore Gemini CLI slice', () => {
       goalsByChatId: { 'chat-a': [] },
       activeGoalIdByChatId: { 'chat-a': null },
       goalModeByChatId: { 'chat-a': true },
-      defaultGoalTokenBudgetByChatId: { 'chat-a': 100 },
       cliBindingBySessionId: {
         'chat-a': {
           terminalId: 'terminal-a',
@@ -5416,7 +5415,6 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(Object.keys(state.goalsByChatId)).toEqual([])
     expect(Object.keys(state.activeGoalIdByChatId)).toEqual([])
     expect(Object.keys(state.goalModeByChatId)).toEqual([])
-    expect(Object.keys(state.defaultGoalTokenBudgetByChatId)).toEqual([])
     expect(Object.keys(state.cliBindingBySessionId)).toEqual([])
     expect(Object.keys(state.acpBindingBySessionId)).toEqual([])
     expect(Object.keys(state.cliTranscriptBySessionId)).toEqual([])
@@ -6715,6 +6713,7 @@ describe('useAppStore Gemini CLI slice', () => {
       memoryIdleDelaySeconds: state.memoryIdleDelaySeconds,
       memoryRecallBudgetBytes: state.memoryRecallBudgetBytes,
       goalMaxLoopIterations: state.goalMaxLoopIterations,
+      goalTokenBudget: state.goalTokenBudget,
       acpSetupInactivityTimeoutSeconds: state.acpSetupInactivityTimeoutSeconds,
       acpTurnOutputLimitMiB: state.acpTurnOutputLimitMiB,
       memoryWorkerBindings: state.memoryWorkerBindings,
@@ -6807,7 +6806,7 @@ describe('useAppStore Gemini CLI slice', () => {
     vi.resetModules()
     const scope = '11111111-1111-4111-8111-111111111111'
     let canonical = { memoryEnabledDefault: true, memoryLevelDefault: 'strict', memoryIdleDelaySeconds: 60,
-      memoryRecallBudgetBytes: 2048, goalMaxLoopIterations: 200, acpSetupInactivityTimeoutSeconds: 600,
+      memoryRecallBudgetBytes: 2048, goalMaxLoopIterations: 200, goalTokenBudget: 0, acpSetupInactivityTimeoutSeconds: 600,
       acpTurnOutputLimitMiB: 1024, memoryWorkerBindings: {}, permissionReviewerProviderId: '', permissionReviewerModelId: '' }
     const sent: string[] = []
     let settingsRevision = 0
@@ -8245,7 +8244,7 @@ describe('observed memory fallback through real store ingestion, authored UNRUN'
     vi.resetModules()
     const scope = '11111111-1111-4111-8111-111111111111'
     const values = { memoryEnabledDefault: true, memoryLevelDefault: 'strict', memoryIdleDelaySeconds: 60,
-      memoryRecallBudgetBytes: 2048, goalMaxLoopIterations: 200, acpSetupInactivityTimeoutSeconds: 600,
+      memoryRecallBudgetBytes: 2048, goalMaxLoopIterations: 200, goalTokenBudget: 0, acpSetupInactivityTimeoutSeconds: 600,
       acpTurnOutputLimitMiB: 1024, memoryWorkerBindings: {}, permissionReviewerProviderId: '', permissionReviewerModelId: '' }
     const actions: string[] = []
     const gets: { done: boolean; fail: () => void }[] = []

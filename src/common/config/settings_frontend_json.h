@@ -144,6 +144,7 @@ namespace uam::settings_frontend_json
 		AppSettings normalized_goal_settings = settings;
 		uam::settings::ClampGoalSettings(normalized_goal_settings);
 		settings_json["goalMaxLoopIterations"] = normalized_goal_settings.goal_max_loop_iterations;
+		settings_json["goalTokenBudget"] = normalized_goal_settings.goal_token_budget;
 		AppSettings normalized_output_settings = settings;
 		uam::settings::ClampAcpOutputSettings(normalized_output_settings);
 		settings_json["acpTurnOutputLimitMiB"] = normalized_output_settings.acp_turn_output_limit_mib;

@@ -1,3 +1,4 @@
+vi.mock('../../utils/appFailure', () => ({ reportAppFailure: vi.fn() }))
 import { reconcileCppMessages } from '../../store/cpp/reconcile'
 import { sanitizeCppMessage } from '../../store/cpp/sanitizers'
 import claudeLogo from '../../assets/provider-logos/claude.svg'
@@ -8,8 +9,10 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
 import { SubagentGroup, subagentRows, subagentState } from './SubagentGroup'
+import { reportAppFailure } from '../../utils/appFailure'
 import { useAppStore } from '../../store/useAppStore'
 import { SubAgentDisclosureProvider } from './ConversationWork'
+
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const tools = [{ id: 'spawn', title: 'Review', kind: 'sub-agent', status: 'completed', content: '', isSubAgent: true,
@@ -45,10 +48,10 @@ describe('SubagentGroup', () => {
       await act(async () => root.render(<SubagentGroup active tools={tools} sourceChatId="parent" />))
       await act(async () => { const panel = host.querySelector('details')!; panel.open = true; panel.dispatchEvent(new Event('toggle', { bubbles: true })) })
       await act(async () => (host.querySelector('[aria-label="Open Tests"]') as HTMLButtonElement).click())
-      expect(host.textContent).toContain('Could not open this subagent conversation')
+      expect(reportAppFailure).toHaveBeenCalledWith('Subagent conversation unavailable.', 'Could not open this subagent conversation. Try again.')
       expect(host.querySelectorAll('li')).toHaveLength(2)
       await act(async () => (host.querySelector('[aria-label="Open Tests"]') as HTMLButtonElement).click())
-      expect(host.textContent).not.toContain('Could not open this subagent conversation')
+      expect(vi.mocked(reportAppFailure).mock.calls.length).toBe(1)
     } finally { act(() => root.unmount()); host.remove() }
   })
 })

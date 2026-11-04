@@ -313,8 +313,7 @@ describe('Message navigation rail', () => {
       act(() => root.render(<MessageNavigationRail userMessageIndices={[0, 2, 40]} startIndex={0} messages={messages} currentIndex={0} viewportRef={createRef()} busy={false} onNavigate={vi.fn()} />))
       const slider = host.querySelector('[role="slider"]')!
       act(() => slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })))
-      expect(host.textContent).toContain('Not loaded yet')
-      expect(host.textContent).toContain('Scroll up or click to load this part of the chat.')
+      expect(host.textContent).toContain('Not loaded. Scroll up or click to load.')
       expect(host.textContent).not.toContain('Open this message')
       expect(slider.getAttribute('aria-valuetext')).toBe('User message 3 of 3. Not loaded yet. Scroll up or click to load this part of the chat.')
     } finally { act(() => root.unmount()); host.remove() }
@@ -324,16 +323,16 @@ describe('Message navigation rail', () => {
     const host = document.createElement('div')
     document.body.append(host)
     const root = createRoot(host)
-    const messages = [{ id: '0', sessionId: 'chat', role: 'user' as const, content: 'First\n  question', createdAt: new Date() }]
+    const messages = [{ id: '0', sessionId: 'chat', role: 'user' as const, content: 'First\n  question', createdAt: new Date() }, { id: '1', sessionId: 'chat', role: 'user' as const, content: 'Second', createdAt: new Date() }]
     try {
-      act(() => root.render(<MessageNavigationRail userMessageIndices={[0]} startIndex={0} messages={messages} currentIndex={0} viewportRef={createRef()} busy={false} onNavigate={vi.fn()} />))
+      act(() => root.render(<MessageNavigationRail userMessageIndices={[0, 1]} startIndex={0} messages={messages} currentIndex={0} viewportRef={createRef()} busy={false} onNavigate={vi.fn()} />))
       const slider = host.querySelector('[role="slider"]')!
       expect(host.querySelector('.conversation-rail-preview')).toBeNull()
       act(() => slider.dispatchEvent(new FocusEvent('focusin', { bubbles: true })))
       const preview = host.querySelector('.conversation-rail-preview')!
       expect(preview.getAttribute('aria-hidden')).toBe('true')
       expect(preview.textContent).toContain('First')
-      expect(slider.getAttribute('aria-valuetext')).toBe('User message 1 of 1: First question')
+      expect(slider.getAttribute('aria-valuetext')).toBe('User message 1 of 2: First question')
       act(() => slider.dispatchEvent(new FocusEvent('focusout', { bubbles: true })))
       expect(host.querySelector('.conversation-rail-preview')).toBeNull()
     } finally { act(() => root.unmount()); host.remove() }
@@ -343,9 +342,9 @@ describe('Message navigation rail', () => {
     const host = document.createElement('div')
     document.body.append(host)
     const root = createRoot(host)
-    const messages = [{ id: '0', sessionId: 'chat', role: 'user' as const, content: 'Focused question', createdAt: new Date() }]
+    const messages = [{ id: '0', sessionId: 'chat', role: 'user' as const, content: 'Focused question', createdAt: new Date() }, { id: '1', sessionId: 'chat', role: 'user' as const, content: 'Second', createdAt: new Date() }]
     try {
-      act(() => root.render(<MessageNavigationRail userMessageIndices={[0]} startIndex={0} messages={messages} currentIndex={0} viewportRef={createRef()} busy={false} onNavigate={vi.fn()} />))
+      act(() => root.render(<MessageNavigationRail userMessageIndices={[0, 1]} startIndex={0} messages={messages} currentIndex={0} viewportRef={createRef()} busy={false} onNavigate={vi.fn()} />))
       const slider = host.querySelector<HTMLElement>('[role="slider"]')!
       act(() => slider.focus())
       act(() => slider.dispatchEvent(new FocusEvent('focusin', { bubbles: true })))
@@ -369,6 +368,16 @@ describe('Message navigation rail', () => {
       act(() => host.querySelector('[role="slider"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })))
       const mark = host.querySelector<HTMLElement>('[data-rail-neighbor]')!
       expect(4 + parseFloat(mark.style.left) + parseFloat(mark.style.width)).toBeLessThanOrEqual(58)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('shows no rail for a single user message, so no lone orange mark sits mid-transcript', () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<MessageNavigationRail userMessageIndices={[0]} startIndex={0} messages={[]} currentIndex={0} viewportRef={createRef()} busy={false} onNavigate={vi.fn()} />))
+      expect(host.children).toHaveLength(0)
     } finally { act(() => root.unmount()); host.remove() }
   })
 
@@ -495,7 +504,7 @@ describe('Message navigation rail', () => {
       expect(slider.getAttribute('aria-valuetext')).toBe(targetValue)
       expect(host.querySelector('[data-rail-target="0"]')).not.toBeNull()
       expect(host.querySelector('.conversation-rail-preview__label')?.textContent).toBe('User message 1 of 3')
-      expect(host.querySelector('.conversation-rail-preview__title')?.textContent).toBe('Not loaded yet')
+      expect(host.querySelector('.conversation-rail-preview__title')?.textContent).toBe('Not loaded. Scroll up or click to load.')
     } finally {
       act(() => root.unmount())
       host.remove()

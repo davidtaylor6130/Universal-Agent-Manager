@@ -20,7 +20,7 @@ import type {
 } from '../../store/useAppStore'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
 import { Button, Notice, Tooltip } from '../ui'
-import { Brain, ChevronRight, CircleAlert } from 'lucide-react'
+import { ArrowRight, Brain, Check, ChevronRight, Circle, CircleAlert, Loader, X } from 'lucide-react'
 import { ConversationWork, ConversationWorkRow, useWorkTraceDisclosure, useThoughtDisclosure, type WorkTraceDisclosureState } from './ConversationWork'
 import {
   PermissionInlineCard,
@@ -65,7 +65,7 @@ export function attachmentLabel(attachment: Attachment) {
 }
 
 function SubAgentHistory(props: { sourceChatId: string; tool: AcpToolCall }) {
-  if (isManagedSubagentTool(props.tool)) return <p className="text-xs text-muted">Open this managed run from the parent’s child catalogue to inspect the stored conversation.</p>
+  if (isManagedSubagentTool(props.tool)) return <p className="text-xs text-muted">Open this run from the parent's child list to view its transcript.</p>
   return <NativeSubAgentHistory {...props} />
 }
 
@@ -203,7 +203,7 @@ function NativeSubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; t
     return (
       <section aria-label="Provider sub-agent event" className="space-y-1 text-xs">
         <div className="font-semibold" style={{ color: 'var(--text-2)' }}>No separate transcript</div>
-        <div style={{ color: 'var(--text-3)' }}>{providerName} did not expose a child session ID, so UAM cannot show an internal conversation for this event.</div>
+        <div style={{ color: 'var(--text-3)' }}>No transcript: the provider did not expose a session for this event.</div>
       </section>
     )
   }
@@ -221,7 +221,6 @@ function NativeSubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; t
       {selectedTool && <ToolCallModal tool={selectedTool} chatId={chatId} messageIndex={messages.findIndex((message) => message.id === selectedToolRef?.messageId) + historyStartIndex} onClose={() => setSelectedToolRef(null)} />}
       <div>
         <div className="text-xs font-semibold" style={{ color: 'var(--blue)' }}>{session.name}</div>
-        <div className="text-[10px]" style={{ color: 'var(--text-3)' }}>{providerName} · Transcript available</div>
       </div>
       {messages.length === 0 && <div className="text-xs" style={{ color: 'var(--text-3)' }}>No messages recorded.</div>}
       {messages.map((message) => (
@@ -338,9 +337,16 @@ export function planStatusLabel(status: string) {
 }
 
 export function planStatusColor(status: string) {
-  if (status === 'completed') return 'var(--green)'
+  if (status === 'completed') return 'var(--success)'
   if (status === 'inProgress') return 'var(--blue)'
   return 'var(--text-3)'
+}
+
+function PlanStatusIcon({ status }: { status: string }) {
+  const label = planStatusLabel(status)
+  const color = planStatusColor(status)
+  const icon = status === 'completed' ? <Check size={14} aria-hidden /> : status === 'inProgress' ? <Loader size={14} aria-hidden /> : <Circle size={14} aria-hidden />
+  return <span role="img" aria-label={label} title={label} className="mt-px shrink-0" style={{ color }}>{icon}</span>
 }
 
 export function PlanBlock({
@@ -381,7 +387,6 @@ export function PlanBlock({
       }}
     >
       <div className="flex items-center gap-2 text-[11px] font-semibold" style={{ color: 'var(--text)' }}>
-        <span style={{ color: 'var(--blue)', fontSize: 9 }}>●</span>
         <span>Plan</span>
       </div>
       {planSummary && <MarkdownContent content={planSummary} />}
@@ -389,12 +394,9 @@ export function PlanBlock({
         <ol className="space-y-2">
           {planEntries.map((entry, index) => (
             <li key={`${entry.content}-${index}`} className="flex gap-2 text-xs" style={{ color: 'var(--text-2)' }}>
-              <span style={{ color: planStatusColor(entry.status), fontSize: 9, lineHeight: '20px' }}>●</span>
+              <PlanStatusIcon status={entry.status} />
               <div className="min-w-0 flex-1">
                 <div style={{ color: 'var(--text)' }}>{entry.content}</div>
-                <div className="text-[10px] uppercase" style={{ color: planStatusColor(entry.status) }}>
-                  {planStatusLabel(entry.status)}
-                </div>
               </div>
             </li>
           ))}
@@ -403,9 +405,9 @@ export function PlanBlock({
       {showActions && (
         <div className="flex flex-wrap gap-2 pt-1">
           <Tooltip label={actionsDisabled ? disabledTitle : 'Approve plan'}>
-            <button
-              type="button"
-              className="px-3 h-7 text-[11px] font-medium"
+            <Button
+              size="sm"
+              className="h-7 px-3 text-[11px] font-medium"
               disabled={actionsDisabled}
               // Radix tooltips don't fire on disabled buttons; native title carries the reason.
               title={actionsDisabled ? disabledTitle : undefined}
@@ -421,12 +423,12 @@ export function PlanBlock({
               }}
             >
               Approve
-            </button>
+            </Button>
           </Tooltip>
           <Tooltip label={actionsDisabled ? disabledTitle : 'Deny plan'}>
-            <button
-              type="button"
-              className="px-3 h-7 text-[11px] font-medium"
+            <Button
+              size="sm"
+              className="h-7 px-3 text-[11px] font-medium"
               disabled={actionsDisabled}
               title={actionsDisabled ? disabledTitle : undefined}
               style={{
@@ -441,7 +443,7 @@ export function PlanBlock({
               }}
             >
               Deny
-            </button>
+            </Button>
           </Tooltip>
         </div>
       )}
@@ -502,9 +504,9 @@ export function goalReviewForMessage(message: Message): GoalReviewDecision | nul
 }
 
 export function goalReviewDecisionStyle(decision: GoalReviewDecision['decision']) {
-  if (decision === 'complete') return { color: 'var(--green)', label: 'Complete' }
-  if (decision === 'blocked') return { color: 'var(--red)', label: 'Blocked' }
-  return { color: 'var(--purple)', label: 'Continue' }
+  if (decision === 'complete') return { color: 'var(--success)', label: 'Complete', icon: <Check size={12} aria-hidden /> }
+  if (decision === 'blocked') return { color: 'var(--error)', label: 'Blocked', icon: <X size={12} aria-hidden /> }
+  return { color: 'var(--purple)', label: 'Continue', icon: <ArrowRight size={12} aria-hidden /> }
 }
 
 export function GoalReviewBlock({ review }: { review: GoalReviewDecision }) {
@@ -525,16 +527,16 @@ export function GoalReviewBlock({ review }: { review: GoalReviewDecision }) {
       }}
     >
       <div className="flex items-center gap-2 text-[11px] font-semibold">
-        <span style={{ color: 'var(--purple)', fontSize: 9 }}>●</span>
         <span>Goal Review</span>
         <span
-          className="ml-auto rounded px-1.5 py-0.5 text-[10px] uppercase"
+          className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] uppercase"
           style={{
             border: `1px solid color-mix(in srgb, ${decision.color} 48%, var(--border))`,
             color: decision.color,
             background: 'color-mix(in srgb, var(--surface-up) 70%, transparent)',
           }}
         >
+          {decision.icon}
           {decision.label}
         </span>
       </div>
@@ -578,8 +580,11 @@ export function CompactionSeparator({ summary, tokensBefore, tokensAfter, interr
   const reduction = counts && tokensBefore! > 0 && tokensAfter! <= tokensBefore! ? ` (${Math.round((1 - tokensAfter! / tokensBefore!) * 100)}% reduced)` : ''
   const remaining = counts && tokensBefore! > 0 ? tokensAfter! / tokensBefore! : undefined
   return <details className="context-compaction">
-    <summary>{interrupted ? 'Context compaction interrupted' : 'Context compacted'}{counts && ` · ${counts}${reduction}`}{remaining !== undefined && <ContextMeter ratio={remaining} />}</summary>
-    <div>{summary.trim() ? <MarkdownContent content={summary} /> : 'The provider did not include a summary.'}</div>
+    <summary>{interrupted ? 'Context compaction interrupted' : 'Context compacted'}</summary>
+    <div>
+      {counts && <div className="text-xs" style={{ color: 'var(--text-3)' }}>{counts}{reduction}{remaining !== undefined && <ContextMeter ratio={remaining} />}</div>}
+      {summary.trim() ? <MarkdownContent content={summary} /> : 'The provider did not include a summary.'}
+    </div>
   </details>
 }
 
@@ -915,7 +920,7 @@ export function AttachmentList({ attachments, chatId, nativeMessageIndex, previe
               {external || attachment.source === 'native_inline_pending' ? 'Bytes unavailable' : 'Preview unavailable'}
             </span></span> : chip
             if (!previews) return <span key={attachment.id} className="inline-flex max-w-full flex-wrap items-center gap-2">{chip}
-              {isImageAttachment(attachment) && <span className="text-xs text-muted">Preview unavailable in this read-only view</span>}</span>
+              {isImageAttachment(attachment) && <span className="text-xs text-muted">Preview unavailable (read-only)</span>}</span>
             return <ImageAttachmentPreview key={attachment.id} chatId={chatId} messageIndex={nativeMessageIndex} attachment={attachment}
               fallback={chip} unavailableFallback={unavailable} />
           })}
