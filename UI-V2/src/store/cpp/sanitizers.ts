@@ -1897,6 +1897,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         customIcon: sanitizeCustomIcon(entry.customIcon),
         runnerDirectory: stringOr(entry.runnerDirectory),
         runnerProtocolVersion: finiteNumberOr(entry.runnerProtocolVersion, 0),
+        ...(/^[0-9a-f]{64}$/.test(stringOr(entry.runnerSha256)) ? { runnerSha256: stringOr(entry.runnerSha256) } : {}),
+        ...(/^[0-9a-f]{64}$/.test(stringOr(entry.bundledRunnerSha256)) ? { bundledRunnerSha256: stringOr(entry.bundledRunnerSha256) } : {}),
         instructionFile: stringOr(entry.instructionFile),
         instructionText: typeof entry.instructionText === 'string' ? entry.instructionText : undefined,
         startupEnabled: booleanOr(entry.startupEnabled, false),

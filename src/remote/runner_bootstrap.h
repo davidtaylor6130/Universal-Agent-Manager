@@ -74,6 +74,8 @@ namespace uam::remote
 	/// Acquisition never recovers or mutates the installed tuple.
 	BootstrapResult AcquireBootstrapPlan(const BootstrapPlan& plan, std::stop_token stop_token = {});
 	std::string BootstrapInstallIdentity(const BootstrapPlan& plan, const BootstrapResult& result);
+	/// SHA-256 of the plan artifact matching the installed platform and architecture; empty when none matches.
+	std::string InstalledArtifactSha256(const BootstrapPlan& plan, const BootstrapResult& result);
 	bool RecoverBootstrapInstallation(const BootstrapPlan& plan, BootstrapResult& acquired,
 	    std::string_view saved_nonce, std::string_view saved_identity, std::stop_token stop_token = {});
 	/// Call only after saving this exact nonce/identity fence through the owning settings store.

@@ -94,13 +94,26 @@ namespace uam::execution_hosts
 		else { host.runner_status = "ready"; host.runner_install_unresolved = false; host.runner_install_nonce.clear(); host.runner_install_identity.clear(); }
 	}
 
+	/// A confirmed rollback restores the prior host, including its recorded helper checksum, without a settled fence.
+	inline ExecutionHost RestoredPreviousInstallation(ExecutionHost previous)
+	{
+		if (HasInstallFence(previous))
+		{
+			previous.runner_install_unresolved = false;
+			previous.runner_install_nonce.clear();
+			previous.runner_install_identity.clear();
+			if (previous.runner_status == "installing") previous.runner_status = "error";
+		}
+		return previous;
+	}
+
 	/// <summary>Compares connection identity without incidental labels or health timestamps.</summary>
 	inline bool SameConnection(const ExecutionHost& left, const ExecutionHost& right)
 	{
 		return left.id == right.id && left.transport == right.transport &&
 		       left.ssh_alias == right.ssh_alias && left.platform == right.platform &&
 		       left.architecture == right.architecture && left.runner_version == right.runner_version &&
-		       left.runner_protocol_version == right.runner_protocol_version &&
+		       left.runner_protocol_version == right.runner_protocol_version && left.runner_sha256 == right.runner_sha256 &&
 		       left.runner_directory == right.runner_directory && left.runner_install_unresolved == right.runner_install_unresolved &&
 		       left.runner_install_nonce == right.runner_install_nonce && left.runner_install_identity == right.runner_install_identity &&
 		       left.instruction_file == right.instruction_file && left.instruction_text == right.instruction_text;
@@ -244,6 +257,9 @@ namespace uam::execution_hosts
 		host.architecture = Bounded(host.architecture, 64);
 		host.last_seen_at = Bounded(host.last_seen_at, 64);
 		host.runner_directory = Bounded(host.runner_directory, 240);
+		if (host.runner_sha256.size() != 64 || !std::ranges::all_of(host.runner_sha256, [](unsigned char character)
+		    { return std::isxdigit(character) != 0 && !std::isupper(character); }))
+			host.runner_sha256.clear(); // Unknown, so a packaged helper is offered as a reinstall.
 		if (!IsSafeRunnerDirectory(host.runner_directory))
 		{
 			if (error != nullptr)
@@ -310,6 +326,7 @@ namespace uam::execution_hosts
 			    {"architecture", host.architecture}, {"lastSeenAt", host.last_seen_at},
 			    {"runnerDirectory", host.runner_directory},
 			    {"runnerProtocolVersion", host.runner_protocol_version},
+			    {"runnerSha256", host.runner_sha256},
 			    {"runnerInstallUnresolved", host.runner_install_unresolved},
 			    {"runnerInstallNonce", host.runner_install_nonce}, {"runnerInstallIdentity", host.runner_install_identity},
 			    {"instructionFile", host.instruction_file},
@@ -357,6 +374,7 @@ namespace uam::execution_hosts
 					else if (entry.contains(key)) hosts.back().runner_install_unresolved = true;
 				}
 				if (!hosts.back().runner_install_nonce.empty() || !hosts.back().runner_install_identity.empty()) hosts.back().runner_install_unresolved = true;
+				if (entry.contains("runnerSha256") && entry["runnerSha256"].is_string()) hosts.back().runner_sha256 = entry["runnerSha256"].get<std::string>();
 			}
 		}
 		Normalize(hosts);
