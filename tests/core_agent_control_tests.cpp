@@ -1707,51 +1707,93 @@ UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
 
 UAM_TEST(CodexTurnCancelDeclinesPendingUamQuestion)
 {
-	TempDir temp("uam-control-codex-question-cancel");
-	uam::AppState app;
-	app.data_root = temp.root;
-	ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
-	chat.id = "chat-codex-question-cancel";
-	chat.uam_control_enabled = true;
-	chat.execution_host_id = "local";
-	const std::string chat_id = chat.id;
-	app.chats.push_back(std::move(chat));
-	auto session = std::make_unique<uam::AcpSessionState>();
-	session->chat_id = chat_id;
-	session->provider_id = "codex-cli";
-	session->protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
-	session->codex_thread_id = session->session_id = "thread";
-	session->codex_turn_id = "turn";
-	session->running = session->session_ready = session->processing = true;
-	uam::AcpSessionState* raw_session = session.get();
-	app.acp_sessions.push_back(std::move(session));
-	ManualCompactionWriter transport(*raw_session);
-	std::string error;
-	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
-	nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
-	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, *raw_session, app.chats.front(), "session/new", setup, &error));
-	const std::string capability_id = app.uam_control_capabilities.front().id;
-	const std::filesystem::path directory = app.uam_control_capabilities.front().directory;
-	const nlohmann::json request = {{"requestId", "codex-question"}, {"method", "user_question"},
-	                                {"arguments", {{"question", "Which branch?"}, {"options", {"main", "dev"}}}}};
-	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(
-	    app, capability_id, request, uam::time::SystemEpochMillisecondsNow()).value("pendingApproval", false));
-	const auto pending = uam::UamControlService::PendingApprovalForChat(app, chat_id);
-	UAM_ASSERT(pending.has_value());
+	struct Case { const char* method; nlohmann::json arguments; const char* question_id; std::string answer; bool timeout; };
+	const std::vector<Case> cases = {
+	    {"user_question", {{"question", "Which branch?"}, {"options", {"main", "dev"}}}, "userQuestion", "main", false},
+	    {"computer_use_request", {{"reason", "The task needs a visible browser."}}, "computerUse", "Allow", false},
+	    {"goal_create", {{"objective", "Finish the bounded task."}, {"idempotencyKey", "cancel-goal"}}, "goalCreate", "Allow", false},
+	    {"user_question", {{"question", "Which branch?"}}, "userQuestion", "main", true},
+	};
+	for (const Case& test_case : cases)
+	{
+		TempDir temp("uam-control-codex-question-cancel");
+		uam::AppState app;
+		app.data_root = temp.root;
+		auto add_chat = [&](const std::string& id, const std::string& provider) -> uam::AcpSessionState& {
+			ChatSession chat = ChatDomainService().CreateNewChat("", provider);
+			chat.id = id;
+			chat.uam_control_enabled = true;
+			chat.execution_host_id = "local";
+			chat.messages.push_back(Message{MessageRole::User, "Open Safari for my task."});
+			chat.messages.back().created_at = "owned-user-turn";
+			app.chats.push_back(std::move(chat));
+			auto session = std::make_unique<uam::AcpSessionState>();
+			session->chat_id = id;
+			session->provider_id = provider;
+			session->running = session->processing = true;
+			session->turn_serial = 1;
+			session->turn_first_user_message_index = session->turn_user_message_index = 0;
+			app.acp_sessions.push_back(std::move(session));
+			return *app.acp_sessions.back();
+		};
+		uam::AcpSessionState& codex = add_chat("chat-codex-question-cancel", "codex-cli");
+		codex.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
+		codex.codex_thread_id = codex.session_id = "thread";
+		codex.codex_turn_id = "turn";
+		codex.session_ready = true;
+		uam::AcpSessionState& other = add_chat("chat-other-question", "opencode-cli");
+		ManualCompactionWriter transport(codex);
+		std::string error;
+		UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+		auto issue = [&](uam::AcpSessionState& session, std::size_t chat_index) {
+			nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+			UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, session, app.chats[chat_index], "session/new", setup, &error));
+			return app.uam_control_capabilities.back();
+		};
+		const uam::UamControlCapability codex_capability = issue(codex, 0);
+		const uam::UamControlCapability other_capability = issue(other, 1);
+		const int64_t now = uam::time::SystemEpochMillisecondsNow();
+		UAM_ASSERT(uam::UamControlService::HandleRequestForTests(app, codex_capability.id,
+		    {{"requestId", "codex-request"}, {"method", test_case.method}, {"arguments", test_case.arguments}}, now)
+		               .value("pendingApproval", false));
+		UAM_ASSERT(uam::UamControlService::HandleRequestForTests(app, other_capability.id,
+		    {{"requestId", "other-request"}, {"method", "user_question"}, {"arguments", {{"question", "Still needed?"}}}}, now)
+		               .value("pendingApproval", false));
+		const auto pending = uam::UamControlService::PendingApprovalForChat(app, codex.chat_id);
+		UAM_ASSERT(pending.has_value());
+		UAM_ASSERT_EQ(pending->questions.front().id, std::string(test_case.question_id));
 
-	// Stop abandons the provider's tool call; the question must not stay answerable afterwards.
-	UAM_ASSERT(uam::CancelAcpTurn(app, chat_id, &error));
-	UAM_ASSERT(raw_session->stdin_writer->Flush(std::chrono::seconds(1)));
-	UAM_ASSERT(transport.captured.find("turn/interrupt") != std::string::npos);
-	UAM_ASSERT(!app.uam_control_capabilities.empty()); // The capability survives; only the question is declined.
-	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, chat_id).has_value());
-	std::string response_text;
-	UAM_ASSERT(uam::io::TryReadTextFile(directory / "responses" / "codex-question.json", response_text));
-	UAM_ASSERT(!nlohmann::json::parse(response_text).value("ok", true));
-	UAM_ASSERT(!uam::UamControlService::ResolveApproval(app, chat_id, pending->request_id_json, {{"userQuestion", {"main"}}}, &error));
-	UAM_ASSERT_EQ(app.chats.front().uam_control_audit.back().result, std::string("rejected"));
+		// A stop abandons the provider's tool call; its request must not stay answerable afterwards.
+		if (test_case.timeout)
+		{
+			app.settings.active_turn_inactivity_timeout_seconds = 1;
+			codex.turn_started_time_s = codex.last_runtime_activity_time_s = 1.0;
+			UAM_ASSERT(uam::HandleAcpTurnInactivityTimeout(app, codex, app.chats.front(), 600.0));
+		}
+		else UAM_ASSERT(uam::CancelAcpTurn(app, codex.chat_id, &error));
+		UAM_ASSERT(codex.stdin_writer->Flush(std::chrono::seconds(1)));
+		UAM_ASSERT(transport.captured.find("turn/interrupt") != std::string::npos);
+		UAM_ASSERT(std::ranges::find(app.uam_control_capabilities, codex_capability.id, &uam::UamControlCapability::id) !=
+		           app.uam_control_capabilities.end()); // The capability survives; only the request is declined.
+		UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, codex.chat_id).has_value());
+		std::string response_text;
+		UAM_ASSERT(uam::io::TryReadTextFile(codex_capability.directory / "responses" / "codex-request.json", response_text));
+		const nlohmann::json response = nlohmann::json::parse(response_text);
+		UAM_ASSERT(!response.value("ok", true));
+		UAM_ASSERT_EQ(response.value("error", ""), std::string(test_case.timeout ? uam::kAcpTimeoutDeclineReason : uam::kAcpUserStopDeclineReason));
+		UAM_ASSERT(!uam::UamControlService::ResolveApproval(app, codex.chat_id, pending->request_id_json,
+		                                                    {{test_case.question_id, {test_case.answer}}}, &error));
+		UAM_ASSERT_EQ(app.chats.front().uam_control_audit.back().result, std::string("rejected"));
+		UAM_ASSERT_EQ(app.chats.front().uam_control_audit.back().method, std::string(test_case.method));
+		UAM_ASSERT(!app.chats.front().computer_use_enabled);
+		UAM_ASSERT(uam::GoalService::FindActiveGoal(app, codex.chat_id) == nullptr);
+		// Another session's pending request is untouched.
+		UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, other.chat_id).has_value());
+		UAM_ASSERT(!std::filesystem::exists(other_capability.directory / "responses" / "other-request.json"));
 
-	uam::UamControlService::Shutdown(app);
+		transport.Detach();
+		uam::UamControlService::Shutdown(app);
+	}
 }
 
 UAM_TEST(CefEditShortcutsReachFocusedFrameCommands)

@@ -2236,13 +2236,13 @@ namespace uam
 		{ return capability.id == id; });
 	}
 
-	bool UamControlService::DeclinePendingApprovalForSession(AppState& app, const AcpSessionState& session)
+	bool UamControlService::DeclinePendingApprovalForSession(AppState& app, const AcpSessionState& session, std::string_view reason)
 	{
 		if (session.uam_control_capability_id.empty()) return false;
 		const auto capability = std::ranges::find(app.uam_control_capabilities, session.uam_control_capability_id,
 		                                          &UamControlCapability::id);
 		if (capability == app.uam_control_capabilities.end() || !capability->pending_approval.has_value()) return false;
-		const ToolResult cancelled{.error = "The user cancelled this turn before answering."};
+		const ToolResult cancelled{.error = std::string(reason)};
 		(void)AppendAuditAndSave(app, *capability, capability->pending_approval->request_id,
 		                         capability->pending_approval->method, cancelled);
 		(void)WriteResponse(capability->directory, capability->pending_approval->request_id,
