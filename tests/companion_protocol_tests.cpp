@@ -443,7 +443,7 @@ namespace
 		Require(PrepareSettingsDispatch("setMemorySettings", payload, state).Ok() && payload["workerBindings"]["codex-cli"]["workerModelId"] == "", "Changing worker provider clears an incompatible model as agreed");
 		payload = {{"workerBindings", {{"gemini-cli", {{"workerModelId", "new-model"}}}}}};
 		Require(PrepareSettingsDispatch("setMemorySettings", payload, state).status == 400, "A model edit cannot invent an unconfigured worker provider");
-		payload = {{"goalMaxLoopIterations", 200}, {"acpTurnOutputLimitMiB", 1024}, {"acpSetupInactivityTimeoutSeconds", 600}, {"permissionReviewerProviderId", "opencode-cli"}, {"permissionReviewerModelId", "example-provider/normal"}};
+		payload = {{"goalMaxLoopIterations", 200}, {"acpTurnOutputLimitMiB", 1024}, {"acpSetupInactivityTimeoutSeconds", 600}, {"activeTurnInactivityTimeoutSeconds", 2700}, {"permissionReviewerProviderId", "opencode-cli"}, {"permissionReviewerModelId", "example-provider/normal"}};
 		const auto original = payload;
 		Require(PrepareSettingsDispatch("setMemorySettings", payload, state).Ok() && payload == original, "Reviewer and runtime-limit changes must leave memory defaults untouched");
 	}
@@ -468,10 +468,11 @@ namespace
 		Json legacy = {{"idleDelaySeconds", 90}};
 		Require(PrepareRequest("setMemorySettings", legacy).Ok(), "Unstamped native clients retain their existing arrival semantics");
 		const Json source = {{"scope", "scope-a"}, {"revision", 8}, {"outcome", "committed"}, {"memoryRequestId", "request-a"}, {"primaryValidated", true},
-		    {"secret", "must-not-cross"}, {"values", {{"memoryIdleDelaySeconds", 90}, {"apiKey", "must-not-cross"},
+		    {"secret", "must-not-cross"}, {"values", {{"memoryIdleDelaySeconds", 90}, {"activeTurnInactivityTimeoutSeconds", 2700}, {"apiKey", "must-not-cross"},
 		        {"memoryWorkerBindings", {{"codex-cli", {{"workerProviderId", "opencode-cli"}, {"workerModelId", "model"}, {"token", "must-not-cross"}}}}}}}};
 		const auto projected = MemorySettingsOutcome(source);
 		Require(projected["scope"] == "scope-a" && projected["revision"] == 8 && projected["memoryRequestId"] == "request-a" && projected["outcome"] == "committed", "Outcome facts survive companion projection");
+		Require(projected["values"]["activeTurnInactivityTimeoutSeconds"] == 2700, "Projection keeps the provider turn timeout so phone clients parse complete values");
 		Require(projected["values"]["memoryIdleDelaySeconds"] == 90 && !projected.contains("secret") && !projected["values"].contains("apiKey") && !projected["values"]["memoryWorkerBindings"]["codex-cli"].contains("token"), "Projection exposes only covered memory fields");
 	}
 
@@ -513,6 +514,7 @@ namespace
 		         {"setProviderChatDefaults", {{"defaults", {{"codex-cli", {{"modelId", "--injected"}}}}}}},
 		         {"setMemorySettings", {{"enabledDefault", false}, {"levelDefault", "open"}}},
 		         {"setMemorySettings", {{"recallBudgetBytes", 8193}}},
+		         {"setMemorySettings", {{"activeTurnInactivityTimeoutSeconds", 30}}},
 		         {"setMemorySettings", {{"idleDelaySeconds", true}}},
 		         {"setMemorySettings", {{"goalMaxLoopIterations", std::uint64_t(1) << 63}}},
 		         {"setStorageSettings", {{"backupLogRetentionDays", 1.5}}},

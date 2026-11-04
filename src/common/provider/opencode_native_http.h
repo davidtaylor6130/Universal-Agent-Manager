@@ -17,6 +17,9 @@ namespace uam::opencode_native
 		int port = 0;
 		std::string token;
 	};
+	/// Query error for a slow answer (curl timeout or read deadline), as opposed to a refused or rejected request.
+	/// A busy server streaming from a slow model answers late; callers must not treat this alone as failure.
+	inline constexpr const char* kQueryTimedOutError = "The owned native OpenCode server did not answer in time.";
 	/// Only these typed routes can reach an owned OpenCode loopback server.
 	bool Query(IPlatformProcessService& service, const Endpoint& endpoint, const std::string& workspace,
 	    const nlohmann::json& operation, nlohmann::json& result, std::string& error, std::stop_token cancel = {});

@@ -524,6 +524,13 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
     std::function<void(bool, std::string)> completion = {});
 bool ScheduleTurnCheckpointPreflight(AppState& app, AcpSessionState& session, const ChatSession& chat);
 void ClearGoalReviewState(AcpSessionState& session);
+/// Present the current last_error as a timeout stop; any later error or a cleared error retires it.
+inline void MarkAcpTimeoutStop(AcpSessionState& session, std::string label, int seconds)
+{
+	session.timeout_stop_error = session.last_error;
+	session.timeout_stop_label = std::move(label);
+	session.timeout_stop_seconds = seconds;
+}
 void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
 	                      const std::string& message);
 void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat, bool ordinary_save_queued = false);

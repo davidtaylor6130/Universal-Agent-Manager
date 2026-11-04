@@ -94,7 +94,7 @@ UAM_TEST(MemorySettingsHandlerGetPrimaryOnlyAdvancesFenceWithoutSaving)
 	const auto first = fixture.Dispatch("getMemorySettings");
 	const auto second = fixture.Dispatch("getMemorySettings");
 	UAM_ASSERT(first->body.at("primaryValidated").get<bool>());
-	UAM_ASSERT_EQ(first->body.at("values").size(), std::size_t{10});
+	UAM_ASSERT_EQ(first->body.at("values").size(), std::size_t{11});
 	UAM_ASSERT_EQ(first->body.at("scope"), second->body.at("scope"));
 	UAM_ASSERT_EQ(second->body.at("revision").get<std::uint64_t>(), revision + 2);
 	UAM_ASSERT_EQ(ReadFile(path), before);
@@ -168,6 +168,19 @@ UAM_TEST(MemorySettingsHandlerCommittedCanonicalSurvivesPostSaveException)
 	UAM_ASSERT_EQ(response->body.at("values").at("memoryIdleDelaySeconds"), nlohmann::json(primary.memory_idle_delay_seconds));
 	UAM_ASSERT_EQ(fixture.app.settings.memory_idle_delay_seconds, primary.memory_idle_delay_seconds);
 	UAM_ASSERT(!fixture.app.memory_settings_uncertain);
+}
+
+UAM_TEST(MemorySettingsHandlerPersistsProviderTurnTimeout)
+{
+	MemorySettingsHandlerFixture fixture;
+	auto payload = fixture.Fence();
+	payload["activeTurnInactivityTimeoutSeconds"] = 2700;
+	payload["memoryRequestId"] = "turn-timeout-commit";
+	const auto response = fixture.Dispatch("setMemorySettings", payload);
+	UAM_ASSERT_EQ(response->body.at("outcome"), nlohmann::json("committed"));
+	UAM_ASSERT_EQ(response->body.at("values").at("activeTurnInactivityTimeoutSeconds"), nlohmann::json(2700));
+	UAM_ASSERT_EQ(fixture.app.settings.active_turn_inactivity_timeout_seconds, 2700);
+	UAM_ASSERT_EQ(fixture.Primary().active_turn_inactivity_timeout_seconds, 2700);
 }
 
 UAM_TEST(MemorySettingsHandlerBeforeReplaceRejectionPreservesPrimary)

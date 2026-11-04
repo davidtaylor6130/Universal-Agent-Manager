@@ -1,3 +1,4 @@
+#include "common/provider/provider_setup.h"
 #include "app/managed_parent_continuation_service.h"
 #include "common/platform/background_thread_priority.h"
 #include "common/platform/observed_process_stop.h"
@@ -1021,6 +1022,7 @@ namespace uam
 			    app, session.chat_id, &cancel_error, true, true);
 			session.inactivity_timeout_pending = cancel_sent && session.running;
 			session.last_error = message;
+			if (!codex_turn_start_pending && !maintenance_operation) MarkAcpTimeoutStop(session, "Provider turn timeout", timeout_seconds);
 			session.lifecycle_state = kAcpLifecycleError;
 			AppendAcpDiagnostic(session, "turn", "inactivity_cancel", "", "", false, 0, message, cancel_error);
 			if (!maintenance_operation) BlockActiveGoalForInactivityTimeout(app, session, chat, message);
@@ -2535,7 +2537,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 			const bool model_requires_restart = runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::RestartSession &&
 			    (turn_model_id.empty() ? !session.launch_model_options_captured || !session.launch_model_options_id.empty() : restart_model_id != turn_model_id);
 			// Restart before preparing the turn: setting changes must not stop its transport afterwards.
-			const bool settings_require_restart = session.running && session.session_ready && (model_requires_restart || (!chat.reasoning_effort.empty() && runtime.AcpLaunchOptionsNeedModelRestart(session, turn_model_id)) || (first.uam_agent_execution_capability != "opencode-native-agent-config" && (first.uam_agent_workspace_access == "read" || !uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) && !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier) && runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::RestartSession));
+			// OpenCode received the turn timeout as its provider request timeout at launch; a changed value needs a relaunch.
+			// Never interrupt an in-flight turn for it; the changed limit applies from the next idle turn.
+			// Only a change that alters what OpenCode receives (values above its 5-minute default) needs a relaunch.
+			const auto opencode_receives = [](int seconds) { return static_cast<std::int64_t>(seconds) * 1000 > provider_setup::kOpenCodeDefaultRequestTimeoutMilliseconds ? seconds : 0; };
+			const bool turn_timeout_changed = session.launch_turn_timeout_setting_seconds > 0 &&
+			    opencode_receives(session.launch_turn_timeout_setting_seconds) != opencode_receives(app.settings.active_turn_inactivity_timeout_seconds) &&
+			    !session.processing && session.prompt_request_id == 0;
+			const bool settings_require_restart = session.running && session.session_ready && (model_requires_restart || turn_timeout_changed || (!chat.reasoning_effort.empty() && runtime.AcpLaunchOptionsNeedModelRestart(session, turn_model_id)) || (first.uam_agent_execution_capability != "opencode-native-agent-config" && (first.uam_agent_workspace_access == "read" || !uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) && !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier) && runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::RestartSession));
 			const auto provider_native = [](std::string_view capability)
 			{
 				return capability == "uam-central-native-setup" ||
@@ -6207,11 +6216,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 	{
 		maintenance_operation = maintenance_operation || session.manual_compaction_pending;
 		const std::string message = uam::strings::NonEmptyOrFallback(session.last_error, std::string(RuntimeDisplayName(session)) + " turn stopped after provider inactivity.");
+		const bool marked = !session.timeout_stop_error.empty() && session.timeout_stop_error == session.last_error;
 		std::deque<AcpQueuedUserPromptState> queued = std::move(session.queued_user_prompts);
 		(void)StopAcpSession(app, session.chat_id);
 		session.queued_user_prompts = std::move(queued);
 		session.inactivity_timeout_pending = false;
 		session.last_error = message;
+		if (marked) session.timeout_stop_error = message;
 		session.lifecycle_state = kAcpLifecycleError;
 		if (!maintenance_operation) BlockActiveGoalForInactivityTimeout(app, session, chat, message);
 		chat.remote_turn_reconnect_pending = false;

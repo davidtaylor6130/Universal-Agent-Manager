@@ -1294,6 +1294,7 @@ namespace uam
 			acp_json["attentionKind"] = nullptr;
 			acp_json["lifecycleState"] = chat.claude_quota_continuation.state == "waiting" ? "waiting_quota" : chat.claude_quota_continuation.state == "held" ? "quota_held" : "stopped";
 			acp_json["lastError"] = "";
+			acp_json["timeoutStop"] = nullptr;
 			acp_json["recentStderr"] = "";
 			acp_json["lastExitCode"] = nullptr;
 			acp_json["diagnostics"] = nlohmann::json::array();
@@ -1366,6 +1367,8 @@ namespace uam
 			acp_json["attentionKind"] = uam::nlohmann_json::StringOrNull(attention_kind);
 			acp_json["lifecycleState"] = chat.claude_quota_continuation.state == "waiting" ? "waiting_quota" : chat.claude_quota_continuation.state == "held" ? "quota_held" : session->lifecycle_state;
 			acp_json["lastError"] = session->last_error;
+			acp_json["timeoutStop"] = !session->last_error.empty() && session->timeout_stop_error == session->last_error
+			    ? nlohmann::json{{"label", session->timeout_stop_label}, {"seconds", session->timeout_stop_seconds}} : nlohmann::json(nullptr);
 			acp_json["recentStderr"] = session->recent_stderr;
 			acp_json["lastExitCode"] = uam::nlohmann_json::IntOrNull(session->has_last_exit_code, session->last_exit_code);
 			acp_json["agentInfo"] = {

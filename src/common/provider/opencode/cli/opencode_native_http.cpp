@@ -216,9 +216,14 @@ namespace uam::opencode_native
 			if (exited && read == 0) break;
 			std::this_thread::sleep_for(std::chrono::milliseconds(5));
 		}
+		const bool deadline_passed = !exited && std::chrono::steady_clock::now() >= deadline;
 		const auto marker = output.rfind('\n');
 		if (!exited || exit != 0 || marker == std::string::npos || output.substr(marker + 1) != "200")
-		{ error = cancel.stop_requested() ? "Native OpenCode control was cancelled." : "The owned native OpenCode server did not confirm the request."; return false; }
+		{
+			// curl exit 28 is its own --max-time expiry; an unexited client hit the read deadline.
+			error = cancel.stop_requested() ? "Native OpenCode control was cancelled." : deadline_passed || (exited && exit == 28) ? kQueryTimedOutError : "The owned native OpenCode server did not confirm the request.";
+			return false;
+		}
 		result = nlohmann::json::parse(output.substr(0, marker), nullptr, false);
 		if (result.is_discarded()) { result = nullptr; error = "The native OpenCode server returned invalid JSON."; return false; }
 		return true;

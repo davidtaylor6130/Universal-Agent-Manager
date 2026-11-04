@@ -198,7 +198,7 @@ describe('SettingsModal memory settings', () => {
   it('shows exact unconfirmed settings fields as persistent warning drafts without a save or dismiss action', () => {
     useAppStore.setState({ memorySettingsUnconfirmedFields: [
       'memoryEnabledDefault', 'memoryLevelDefault', 'memoryIdleDelaySeconds', 'memoryRecallBudgetBytes',
-      'goalMaxLoopIterations', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB',
+      'goalMaxLoopIterations', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB', 'activeTurnInactivityTimeoutSeconds',
       'memoryWorkerBindings', 'permissionReviewerProviderId', 'permissionReviewerModelId',
     ] })
     const { host, root } = renderModal()
@@ -210,7 +210,7 @@ describe('SettingsModal memory settings', () => {
       const fields = notice.querySelector<HTMLUListElement>('ul[aria-label="Unconfirmed settings fields"]')!
       expect(Array.from(fields.querySelectorAll('li'), (item) => item.textContent)).toEqual([
         'Default memory enabled', 'Default memory policy', 'Memory idle delay', 'Memory recall budget',
-        'Goal loop limit', 'Provider setup timeout', 'Provider output limit', 'Memory worker selections',
+        'Goal loop limit', 'Provider setup timeout', 'Provider output limit', 'Provider turn timeout', 'Memory worker selections',
         'Permission reviewer provider', 'Permission reviewer model',
       ])
       // Notice is a single bar now: the title is text, not a collapse header, so no buttons remain.
@@ -1467,6 +1467,10 @@ describe('SettingsModal memory settings', () => {
     const fourGiB = Array.from(document.querySelectorAll<HTMLButtonElement>('button[role="option"]')).find((option) => option.textContent?.includes('4 GiB'))
     act(() => fourGiB?.click())
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ acpTurnOutputLimitMiB: 4096 })
+
+    expect(host.querySelector('output[aria-label="Provider turn timeout"]')?.textContent).toBe('30 min')
+    act(() => (host.querySelector('button[aria-label="Increase provider turn timeout by 15 minutes"]') as HTMLButtonElement).click())
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ activeTurnInactivityTimeoutSeconds: 2700 })
 
     act(() => root.unmount())
     host.remove()

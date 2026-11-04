@@ -2,6 +2,7 @@
 #include "common/platform/background_thread_priority.h"
 #include "common/provider/opencode/opencode_native_identity.h"
 #include "common/provider/opencode/opencode_permission_policy.h"
+#include "common/provider/opencode_native_http.h"
 #include "app/chat_domain_service.h"
 #include "common/config/approval_modes.h"
 #include "common/config/execution_host_config.h"
@@ -221,6 +222,13 @@ struct OpenCodeNativeCompanion::State
 	std::string error;
 	std::string failure_reason;
 	Clock::time_point next{};
+	// Late answers after the first complete snapshot: the gate holds new prompts while late is set. slow_since
+	// times consecutive late answers within one phase (slow_turn: an in-flight turn's serial, or kIdleSlowPhase)
+	// and restarts when the phase changes; success clears it.
+	bool late = false;
+	std::optional<Clock::time_point> slow_since;
+	int slow_turn = 0;
+	static constexpr int kIdleSlowPhase = -1;
 	std::map<std::string, Json> permissions;
 	std::set<std::string> published;
 	std::map<std::string, std::string> replies;
@@ -520,13 +528,18 @@ OpenCodeNativeGateState OpenCodeNativeActivityService::BeforeDispatch(AppState& 
 			state.error = "The native OpenCode delegation policy changed during an active turn.";
 		}
 		state.read_only = read_only;
-		state.ready = false;
+		state.ready = false; state.late = false; state.slow_since.reset();
 		state.next = {};
 	}
 	if (state.failed) { error = state.error; return OpenCodeNativeGateState::Failed; }
 	if (state.failures > 0)
 	{
 		error = "Native OpenCode permission observation is retrying; the next prompt has not been sent.";
+		return OpenCodeNativeGateState::Pending;
+	}
+	if (state.late)
+	{
+		error = "OpenCode is answering slowly; the next prompt waits until it responds.";
 		return OpenCodeNativeGateState::Pending;
 	}
 	return state.ready ? OpenCodeNativeGateState::Ready : OpenCodeNativeGateState::Pending;
@@ -591,7 +604,28 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 				// A missing snapshot is not evidence that the provider or a pending
 				// decision failed. Hold new prompts and retry the complete observation;
 				// queued decisions remain gated by fresh ownership proof before delivery.
-				if (result.authority_conflict || ++owner->failures >= kConsecutiveFailureLimit)
+				// A busy server streaming from a slow model answers late. After the first complete snapshot, late
+				// answers are not failures: the user-adjustable turn timeout bounds them during an in-flight turn,
+				// reported as a timeout; while idle the setup timeout bounds them, so a server that accepts but
+				// never answers cannot hold the next prompt indefinitely. Before it, the failure limit applies.
+				const bool late = owner->ready && !result.authority_conflict && result.error == opencode_native::kQueryTimedOutError;
+				const auto owning = std::ranges::find_if(app.acp_sessions, [&](const auto& candidate)
+				{ return candidate && candidate->opencode_native_companion && candidate->opencode_native_companion->state == owner; });
+				const AcpSessionState* turn = owning != app.acp_sessions.end() && ((*owning)->processing || (*owning)->prompt_request_id != 0) ? owning->get() : nullptr;
+				if (late)
+				{
+					owner->late = true;
+					const int phase = turn ? turn->turn_serial : OpenCodeNativeCompanion::State::kIdleSlowPhase;
+					if (owner->slow_turn != phase) owner->slow_since.reset();
+					if (!owner->slow_since) { owner->slow_since = Clock::now(); owner->slow_turn = phase; }
+				}
+				const int slow_limit = turn ? app.settings.active_turn_inactivity_timeout_seconds : app.settings.acp_setup_inactivity_timeout_seconds;
+				if (late && Clock::now() - *owner->slow_since >= std::chrono::seconds(slow_limit))
+				{
+					owner->failed = true;
+					owner->failure_reason = turn ? "turn_timeout" : "observation_failures";
+				}
+				else if (!late && (result.authority_conflict || ++owner->failures >= kConsecutiveFailureLimit))
 				{
 					owner->failed = true;
 					owner->failure_reason = result.authority_conflict ? "ownership_conflict" : "observation_failures";
@@ -599,6 +633,7 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 			}
 			else
 			{
+				owner->slow_since.reset(); owner->late = false;
 				owner->retry_recovered = owner->failures > 0;
 				owner->failures = 0; owner->ready = true;
 				if (ChatSession* chat = ChatDomainService().FindChatById(app, iterator->identity.chat); chat &&
@@ -684,7 +719,11 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 				acp_detail::AppendAcpDiagnostic(session, "native_companion", owner->failure_reason,
 				    "", "", false, 0, gate_error, "failures=" + std::to_string(owner->failures));
 				(void)StopAcpSession(app, session.chat_id, AcpStopPurpose::Interrupt, true);
-				acp_detail::FailAcpTurnOrSession(session, chat, gate_error + " UAM stopped sending approvals and requested the provider stop.");
+				const bool timed_out = owner->failure_reason == "turn_timeout";
+				acp_detail::FailAcpTurnOrSession(session, chat, timed_out
+				    ? "OpenCode stayed busy past the provider turn timeout, so UAM stopped the turn. Saved messages were kept."
+				    : gate_error + " UAM stopped sending approvals and requested the provider stop.");
+				if (timed_out) acp_detail::MarkAcpTimeoutStop(session, "Provider turn timeout", app.settings.active_turn_inactivity_timeout_seconds);
 				acp_detail::SaveChatQuietly(app, *chat);
 				changed = true;
 			}
@@ -744,7 +783,7 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 		const bool receipt_pending = CanRetireDecisions(app, *chat, owner->query, owner->identity.native, owner->identity.host, owner->identity.control) &&
 		    std::ranges::any_of(chat->remote_interaction_responses, [&](const AcpRemoteInteractionResponseState& saved)
 		    { return SavedDecisionId(saved).has_value() && !owner->unowned_decisions.contains(DecisionKey(saved)); });
-		const bool observe = !owner->ready || owner->failures > 0 || session.processing || session.prompt_request_id != 0 || session.recovering_remote_turn ||
+		const bool observe = !owner->ready || owner->failures > 0 || owner->late || session.processing || session.prompt_request_id != 0 || session.recovering_remote_turn ||
 		    session.waiting_for_permission || session.waiting_for_user_input || !owner->permissions.empty() || !owner->replies.empty() ||
 		    child_tool_pending || runtime.AcpBackgroundTaskCount(session) > 0 || receipt_pending;
 		if (!observe) continue;
