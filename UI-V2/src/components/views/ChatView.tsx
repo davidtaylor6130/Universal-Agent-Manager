@@ -3671,8 +3671,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 {currentErrorSource}: {currentAcpError}
               </Notice>
             )}
-            <ConfirmDialog
-              open={CLAUDE_ENABLED && claudePlanPrompt !== null}
+            {CLAUDE_ENABLED && <ConfirmDialog
+              open={claudePlanPrompt !== null}
               title="Claude Plan mode"
               confirmLabel="Accept edits and proceed"
               tone="primary"
@@ -3684,7 +3684,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
             >
               Claude Plan mode is read-only. Choose how to proceed with this prompt.
               {claudePlanPrompt && claudePlanPrompt.context.references.length > 0 && <> The prompt keeps the reference snapshots selected when you pressed Send; new selections belong to your next message.</>}
-            </ConfirmDialog>
+            </ConfirmDialog>}
             <InlinePromptQueue key={session.id}
               held={Boolean(acp?.queueHeld && acp.queuedPrompts?.length)} onResume={(expected) => resumeQueuedAcpPrompts(session.id, expected)} prompts={acp?.queuedPrompts ?? []} disabled={steering || session.importedReadOnly}
               onEdit={(id, revision, text, retainedAttachmentIds) => editQueuedAcpPrompt(session.id, id, revision, text, retainedAttachmentIds)}

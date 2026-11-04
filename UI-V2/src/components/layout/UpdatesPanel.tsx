@@ -133,6 +133,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
   }
 
   async function installHelper(update: UpdateItem) {
+    if (!__UAM_FEATURE_SSH__) return
     setInstallError('')
     clearOutcome(update.id)
     const result = await monitor.applyRemoteHelperUpdate(update.remoteHostId!)
@@ -250,10 +251,10 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
               const outcome = outcomes[update.id]
               const succeeded = outcome?.tone === 'success'
               const failed = outcome?.tone === 'error'
-              const installing = !failed && !succeeded && (Boolean(providerState?.running) || pendingInstallIds.has(update.id) || (helper && monitor.remoteHelperUpdatingId === update.remoteHostId))
+              const installing = !failed && !succeeded && (Boolean(providerState?.running) || pendingInstallIds.has(update.id) || (__UAM_FEATURE_SSH__ && helper && monitor.remoteHelperUpdatingId === update.remoteHostId))
               const waiting = providerState?.blockingChatIds?.length ?? 0
               const excerpt = update.releaseNotesExcerpt?.trim()
-              const install = helper ? () => installHelper(update) : () => installProvider(update)
+              const install = __UAM_FEATURE_SSH__ && helper ? () => installHelper(update) : () => installProvider(update)
               const leaving = rows.leaving.has(update.id)
               const dismiss = () => rows.leave([update.id], () => monitor.dismiss(update.id, update.latestVersion))
               const rowClass = cx('uam-update-row flex min-w-0 max-w-full items-center gap-1.5 rounded-lg px-2 py-1.5', failed && 'uam-update-row--error')
@@ -329,7 +330,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
                 leadingIcon={<Download size={14} aria-hidden />}
                 aria-label="Update everything"
                 loading={updatingAll}
-                disabled={installableUpdates.length === 0 || updatingAll || pendingInstallIds.size > 0 || monitor.providerTaskRunning || Boolean(monitor.remoteHelperUpdatingId)}
+                disabled={installableUpdates.length === 0 || updatingAll || pendingInstallIds.size > 0 || monitor.providerTaskRunning || (__UAM_FEATURE_SSH__ && Boolean(monitor.remoteHelperUpdatingId))}
                 onClick={async () => {
                   if (batchRef.current || pendingInstalls.current.size > 0) return
                   const batch = new AbortController()
@@ -341,7 +342,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
                     const helpers = __UAM_FEATURE_SSH__ ? installableUpdates.filter((update) => update.remoteHostId) : []
                     const results = await Promise.allSettled([
                       ...(providers.length ? [monitor.installProviderUpdates(providers)] : []),
-                      ...helpers.map((update) => monitor.applyRemoteHelperUpdate(update.remoteHostId!)),
+                      ...(__UAM_FEATURE_SSH__ ? helpers.map((update) => monitor.applyRemoteHelperUpdate(update.remoteHostId!)) : []),
                     ])
                     if (batch.signal.aborted) return
                     results.forEach((result, index) => {
