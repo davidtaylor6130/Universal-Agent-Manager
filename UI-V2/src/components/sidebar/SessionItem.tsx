@@ -388,6 +388,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     const source = state.sessions.find((candidate) => candidate.id === sessionId)
     return Boolean(source && !source.importedReadOnly && source.workspaceIsolationKind === 'gitWorktree' && source.workspaceWorktreeDirectory && source.folderId && (source.executionHostId || 'local') === 'local')
   })
+  // Workspace the chat belongs to; opens the same New chat dialog as the workspace header, which preselects its host.
+  const workspaceFolderId = useAppStore((state) => {
+    const folderId = state.sessions.find((candidate) => candidate.id === sessionId)?.folderId
+    return folderId && state.folders.some((folder) => folder.id === folderId) ? folderId : null
+  })
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   // Resting row text (wake time, age, status) gives way whenever the hover actions show, so they never overlap.
   const restingFade = menuPos ? 'transition-opacity duration-100 opacity-0' : HOVER_FADE
@@ -970,6 +975,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
               onDelete={() => chatSelection?.deleteSelected()}
             />
           ) : <>
+          {workspaceFolderId && <MenuItem className="uam-sb-menu-item" icon={<MessageSquarePlus size={13} aria-hidden />} label="New chat in this workspace"
+            onSelect={() => { setMenuPos(null); useAppStore.getState().setNewChatModalOpen(true, workspaceFolderId) }} />}
           <MenuItem className="uam-sb-menu-item" nativeDisabled disabled={!canReuseWorktree} icon={<MessageSquarePlus size={13} aria-hidden />} label="New chat in this worktree"
             onSelect={() => {
               const current = useAppStore.getState()
@@ -1061,6 +1068,7 @@ function ChatSelectionMenuItems({ ids, onClose, onIcon, onDelete }: { ids: strin
     void setChatsPinned(ids, pin)
   }
   return <>
+    <SingleOnlyMenuItem noun="chat" icon={<MessageSquarePlus size={13} aria-hidden />} label="New chat in this workspace" />
     <SingleOnlyMenuItem noun="chat" icon={<MessageSquarePlus size={13} aria-hidden />} label="New chat in this worktree" />
     <MenuDivider />
     <SingleOnlyMenuItem noun="chat" icon={<Pencil size={13} aria-hidden />} label="Rename" />

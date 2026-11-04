@@ -1091,13 +1091,17 @@ describe('SessionItem status icons', () => {
   })
 
   it('groups the chat menu into sections with dividers and submenus for copy, snooze and collections', () => {
-    useAppStore.setState({ resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [] }] })
+    useAppStore.setState({
+      resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [] }],
+      folders: [{ id: 'project', name: 'Project', directory: '/tmp/project', executionHostId: 'local', parentId: null, isExpanded: true, createdAt: now }],
+    })
     const { host, root } = renderSessionItem()
     try {
       act(() => host.querySelector('.cursor-pointer')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
       const menu = document.body.querySelector('[data-viewport-menu]')!
       const items = Array.from(menu.children).map((child) => child.getAttribute('role') === 'separator' ? '---' : child.textContent?.trim())
       expect(items).toEqual([
+        'New chat in this workspace',
         'New chat in this worktree',
         '---',
         'RenameF2',
@@ -1131,6 +1135,33 @@ describe('SessionItem status icons', () => {
     act(() => root.unmount())
     host.remove()
   })
+  it('opens the existing New chat dialog for the right-clicked chat workspace, including remote workspaces', () => {
+    const remoteFolder = { id: 'project', name: 'Remote project', directory: '/srv/project', executionHostId: 'build-box', parentId: null, isExpanded: true, createdAt: now }
+    useAppStore.setState({ sessions: [{ ...makeSession(), executionHostId: 'build-box' }], folders: [remoteFolder], activeSessionId: 'other-chat', isNewChatModalOpen: false, newChatFolderId: null, newChatWorktreeContext: null })
+    const { host, root } = renderSessionItem()
+    try {
+      act(() => host.querySelector('[data-testid="session-row-chat-1"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })))
+      const menu = document.body.querySelector<HTMLElement>('[role="menu"][aria-label="Actions for Chat 1"]')!
+      const worktree = Array.from(menu.querySelectorAll('button')).find((button) => button.textContent === 'New chat in this worktree')!
+      expect(worktree.disabled).toBe(true)
+      const create = Array.from(menu.querySelectorAll('button')).find((button) => button.textContent === 'New chat in this workspace')!
+      expect(create.disabled).toBe(false)
+      act(() => create.click())
+      expect(useAppStore.getState()).toMatchObject({ isNewChatModalOpen: true, newChatFolderId: 'project', newChatWorktreeContext: null })
+      expect(document.body.querySelector('[role="menu"][aria-label="Actions for Chat 1"]')).toBeNull()
+    } finally { act(() => useAppStore.getState().setNewChatModalOpen(false)); act(() => root.unmount()); host.remove() }
+  })
+
+  it('omits New chat in this workspace for a chat without a workspace', () => {
+    useAppStore.setState({ sessions: [{ ...makeSession(), folderId: null }], folders: [] })
+    const { host, root } = renderSessionItem()
+    try {
+      act(() => host.querySelector('[data-testid="session-row-chat-1"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })))
+      const menu = document.body.querySelector<HTMLElement>('[role="menu"][aria-label="Actions for Chat 1"]')!
+      expect(menu.textContent).not.toContain('New chat in this workspace')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('opens new chat from the right-clicked worktree even while another chat is active or processing', () => {
     const source = { ...makeSession(), workspaceIsolationKind: 'gitWorktree', workspaceWorktreeDirectory: '/tmp/selected-worktree', executionHostId: 'local' }
     useAppStore.setState({ sessions: [source], activeSessionId: 'other-chat', acpBindingBySessionId: { 'chat-1': makeAcpBinding({ processing: true }) }, newChatWorktreeContext: null })

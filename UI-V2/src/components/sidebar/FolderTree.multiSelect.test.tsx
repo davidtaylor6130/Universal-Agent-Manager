@@ -193,7 +193,7 @@ describe('chat multi-selection actions', () => {
   it('keeps single-chat actions visible but disabled with an explanation, and never applies them to one row', () => {
     selectChats('b', 'c')
     openChatMenu('b')
-    for (const label of ['New chat in this worktree', 'Rename']) {
+    for (const label of ['New chat in this workspace', 'New chat in this worktree', 'Rename']) {
       const element = item(label)
       expect(element.getAttribute('aria-disabled')).toBe('true')
       expect(document.getElementById(element.getAttribute('aria-describedby')!)?.textContent).toBe('Select one chat to use this')
