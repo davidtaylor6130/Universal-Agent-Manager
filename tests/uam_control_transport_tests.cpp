@@ -1027,7 +1027,8 @@ UAM_TEST(ManagedParentContinuationCapacityRefusalPreservesEveryEarlierReceipt)
 	const auto before_batch = root->managed_parent_result->batch_ids;
 	const int next_request = session.next_request_id;
 	(void)uam::ManagedParentContinuationService::Poll(fixture.app);
-	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	// Bounds a background save of a ~256 MiB primary, not UI work; slow or loaded hosted runners need headroom.
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
 	while (session.managed_parent_continuation->admission_pending && std::chrono::steady_clock::now() < deadline)
 	{
 		(void)uam::FlushPendingChatSaves(fixture.app);
