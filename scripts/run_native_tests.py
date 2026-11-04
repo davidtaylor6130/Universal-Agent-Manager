@@ -9,7 +9,7 @@ import sys
 import time
 
 
-def run_tests(binary, jobs, requested=(), retry_failed_once=False, quarantine=None, serial=frozenset()):
+def run_tests(binary, jobs, requested=(), retry_failed_once=False, quarantine=None, serial=frozenset(), shard=(1, 1)):
     environment = os.environ.copy()
     if sys.platform == 'darwin':
         environment['TMPDIR'] = '/tmp'
@@ -23,6 +23,10 @@ def run_tests(binary, jobs, requested=(), retry_failed_once=False, quarantine=No
     selected = list(requested) if requested else names
     if len(set(selected)) != len(selected) or set(selected) - set(names):
         raise ValueError('Requested tests contain unknown or duplicate names.')
+    if shard[1] > 1:
+        # Every Nth case in inventory order, so each shard gets a similar mix of areas and serial cases.
+        selected = selected[shard[0] - 1::shard[1]]
+        print(f'Shard {shard[0]}/{shard[1]}: {len(selected)} cases.')
     if serial - set(names):
         print(f'Serial cases not in this inventory: {" ".join(sorted(serial - set(names)))}')
     started = time.perf_counter()
@@ -94,9 +98,9 @@ def run_tests(binary, jobs, requested=(), retry_failed_once=False, quarantine=No
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, fromfile_prefix_chars='@')
     parser.add_argument('binary', type=Path)
-    parser.add_argument('names', nargs='*', help='Exact case names; omit to run the full inventory.')
+    parser.add_argument('names', nargs='*', help='Exact case names, or @file with one per line; omit to run the full inventory.')
     parser.add_argument('--jobs', type=int, default=2)
     parser.add_argument('--quarantine', type=Path,
                         help='CI-only list of "<case> #<issue>" lines whose failures are reported, not fatal.')
@@ -104,9 +108,17 @@ def main():
                         help='List of case names with tight wall-clock budgets; they run one at a time after the rest.')
     parser.add_argument('--retry-failed-once', action='store_true',
                         help='Rerun each failed case once in its own process; for CI timing flakes only.')
+    parser.add_argument('--shard', default='1/1', metavar='I/N',
+                        help='Run only shard I of N; together the N shards run every selected case exactly once.')
     args = parser.parse_intermixed_args()
     if args.jobs < 1:
         parser.error('--jobs must be at least 1')
+    try:
+        shard = tuple(int(part) for part in args.shard.split('/'))
+        if len(shard) != 2 or not 1 <= shard[0] <= shard[1]:
+            raise ValueError
+    except ValueError:
+        parser.error('--shard must be I/N with 1 <= I <= N')
     try:
         quarantine = None
         if args.quarantine:
@@ -119,7 +131,7 @@ def main():
         if args.serial:
             serial = frozenset(line.split()[0] for line in args.serial.read_text().splitlines()
                                if line.strip() and not line.strip().startswith('#'))
-        return run_tests(args.binary.resolve(strict=True), args.jobs, args.names, args.retry_failed_once, quarantine, serial)
+        return run_tests(args.binary.resolve(strict=True), args.jobs, args.names, args.retry_failed_once, quarantine, serial, shard)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f'Native tests could not run: {error}', file=sys.stderr)
         return 1
