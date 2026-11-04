@@ -99,7 +99,7 @@ describe('chat multi-selection actions', () => {
     expect(menu('Actions for 3 selected chats')).not.toBeNull()
     act(() => item('Delete 3 chats').click())
     const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Delete 3 selected chats"]')!
-    expect(dialog.textContent).toContain('3 chats and 1 related branches will be permanently deleted')
+    expect(dialog.textContent).toContain('3 chats and 1 related branch will be permanently deleted')
     await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Delete chats')!.click(); await flush() })
     expect(sent('deleteSessions')).toEqual([{ chatIds: ['a', 'a-branch', 'b', 'c'] }])
     await act(async () => { held[0].onSuccess(JSON.stringify({ deletedChatIds: ['a', 'a-branch', 'b', 'c'], rejected: [], selectedChatId: 'keep' })); await flush() })
@@ -245,7 +245,7 @@ describe('workspace multi-selection actions', () => {
   it('deletes accepted workspaces and reports each refused workspace by name', async () => {
     selectWorkspaces()
     act(() => item('Delete 2 workspaces').click())
-    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Delete selected workspaces"]')!
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Delete 2 selected workspaces"]')!
     await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Delete workspaces')!.click(); await flush() })
     expect(sent('deleteFolders')).toEqual([{ folderIds: ['w1', 'w2'] }])
     await act(async () => {
@@ -254,7 +254,7 @@ describe('workspace multi-selection actions', () => {
     })
     expect(useAppStore.getState().folders.map((folder) => folder.id)).toEqual(['project', 'w2'])
     expect(failures.map((failure) => [failure.message, failure.detail])).toEqual([['Could not delete 1 of 2 selected workspaces.', '“Workspace two”: Wait for the chat worktree operation to finish.']])
-    expect(document.body.querySelector('[role="alertdialog"][aria-label="Delete selected workspaces"]')).toBeNull()
+    expect(document.body.querySelector('[role="alertdialog"][aria-label="Delete 2 selected workspaces"]')).toBeNull()
   })
 })
 
