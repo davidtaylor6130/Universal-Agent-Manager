@@ -4,7 +4,18 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '17 4 * * 1'
+  # Pull requests run the Windows build only for computer-use changes; provider, ACP and shared test
+  # changes are covered after merge, as with the other Windows checks. The provider contract rows probe
+  # the latest published CLIs rather than this repository's code, so they run on those pushes and weekly.
   pull_request:
+    paths:
+      - '.github/workflows/computer-use-companion.yml'
+      - 'src/computer_use/**'
+      - 'tests/computer_use_tests.cpp'
+  push:
+    branches:
+      - main
+      - uam/v5-improvements
     paths:
       - '.github/workflows/computer-use-companion.yml'
       - 'CMakeLists.txt'
@@ -28,7 +39,8 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: UI-V2/package-lock.json
-      - uses: actions/cache@v4
+      # Pull requests restore only; the CI workflow prunes superseded copies after base pushes.
+      - uses: actions/cache/restore@v4
         with:
           path: Builds/companion/_deps
           key: Windows-uam-computer-use-${{ hashFiles('CMakeLists.txt') }}
@@ -37,6 +49,12 @@ jobs:
       - run: vcpkg install zlib:x64-windows-static
       - run: cmake -S . -B Builds/companion -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static
       - run: cmake --build Builds/companion --config Debug --target uam_core_tests
+      - uses: actions/cache/save@v4
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        with:
+          path: Builds/companion/_deps
+          key: Windows-uam-computer-use-${{ hashFiles('CMakeLists.txt') }}
       - name: Validate isolated external-window capture
         shell: pwsh
         run: |
@@ -46,6 +64,7 @@ jobs:
 
   provider-contract:
     name: Provider contract (${{ matrix.name }})
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
