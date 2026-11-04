@@ -8,6 +8,7 @@ import { NewChatBranchPicker } from './NewChatBranchPicker'
 
 vi.mock('../../ipc/cefBridge', async (importOriginal) => ({ ...await importOriginal<typeof import('../../ipc/cefBridge')>(), sendToCEF: vi.fn() }))
 
+vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
 const send = vi.mocked(sendToCEF)
 const context = {
   vcs: 'git', currentBranch: 'main', currentCommit: 'a'.repeat(40), detached: false,
@@ -107,7 +108,7 @@ describe('NewChatBranchPicker', () => {
     }
     root = createRoot(host)
     await act(async () => render({ defaultBranch: '' }))
-    expect(options()).toEqual(['Use default (HEAD)', 'feature/base', 'main'])
+    expect(options()).toEqual(['Use default branch', 'feature/base', 'main'])
   })
 
   it('labels the selector with its explanation and offers Refresh after a successful read', async () => {

@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TypographySettings } from './TypographySettings'
 import { applyTypography, DEFAULT_TYPOGRAPHY, normalizeTypography, useTypographyStore } from '../../store/typographyStore'
 
+vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const stored = new Map<string, string>()
@@ -57,7 +59,7 @@ describe('Typography preferences', () => {
     const root = createRoot(host)
     try {
       act(() => root.render(<TypographySettings />))
-      const font = host.querySelector<HTMLButtonElement>('[aria-label="Terminal font"]')!
+      const font = host.querySelector<HTMLButtonElement>('[aria-label="CLI fallback terminal font"]')!
       act(() => font.click())
       const option = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((item) => item.textContent?.includes('Consolas'))!
       act(() => option.click())
@@ -65,6 +67,8 @@ describe('Typography preferences', () => {
       act(() => {
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '18')
         input.dispatchEvent(new Event('input', { bubbles: true }))
+        input.focus()
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       })
       expect(useTypographyStore.getState().preferences).toMatchObject({ terminalFont: 'consolas', promptSize: 18 })
       expect(JSON.parse(window.localStorage.getItem('uam-typography-v1')!).state.preferences).toMatchObject({ terminalFont: 'consolas', promptSize: 18 })

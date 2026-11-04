@@ -1,9 +1,9 @@
-import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useAppStore } from '../../store/useAppStore'
 import { isSingleIconText, lucideIconName, lucideIconValue, resolveCustomIcon, type CustomIcon as Icon, type CustomIconInput, type CustomIconTarget } from '../../types/customIcon'
 import { rememberRecentLucideIcon } from '../../utils/lucideIconLibrary'
-import { Button } from '../ui'
+import { Button, Tab, Tabs } from '../ui'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 
 // The Lucide grid and per-icon loaders are a separate chunk; they load on first use only.
@@ -49,7 +49,6 @@ export function useCustomIconPicker() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const dialogRef = useRef<HTMLDialogElement>(null)
-  const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
   const generation = useRef(0)
   const close = () => { generation.current++; setTarget(null) }
   useEffect(() => {
@@ -84,16 +83,7 @@ export function useCustomIconPicker() {
       void save({ type: 'text', value: text })
     }
   }
-  const selectTab = (next: PickerTab, focus = false) => {
-    setTab(next); setError('')
-    if (focus) tabRefs.current[TABS.findIndex((entry) => entry.id === next)]?.focus()
-  }
-  const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
-    const step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0
-    if (!step) return
-    event.preventDefault()
-    selectTab(TABS[(index + step + TABS.length) % TABS.length].id, true)
-  }
+  const selectTab = (next: PickerTab) => { setTab(next); setError('') }
   const previewIcon: Icon | undefined = tab === 'library' && libraryName ? { type: 'text', value: lucideIconValue(libraryName) }
     : tab === 'emoji' && isSingleIconText(text) ? { type: 'text', value: text } : undefined
   const canSave = tab === 'library' ? Boolean(libraryName) : tab === 'emoji' && isSingleIconText(text)
@@ -111,15 +101,13 @@ export function useCustomIconPicker() {
       </span>
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold">Icon for {target.label}</div>
-        <div className="text-xs" style={{ color: 'var(--text-3)' }}>Pick a Lucide icon, or use an emoji or PNG.</div>
       </div>
     </div>
-    <div role="tablist" aria-label="Icon source" className="mb-3 flex gap-1 rounded-lg p-0.5" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
-      {TABS.map((entry, index) => (
-        <button key={entry.id} ref={(element) => { tabRefs.current[index] = element }} type="button" role="tab" id={`icon-tab-${entry.id}`} aria-selected={tab === entry.id} aria-controls={`icon-panel-${entry.id}`} tabIndex={tab === entry.id ? 0 : -1} disabled={busy} onClick={() => selectTab(entry.id)} onKeyDown={(event) => onTabKeyDown(event, index)}
-          className="flex-1 rounded-md px-2 py-1 text-xs font-medium disabled:opacity-50" style={{ background: tab === entry.id ? 'var(--surface-high)' : 'transparent', color: tab === entry.id ? 'var(--text)' : 'var(--text-2)' }}>{entry.label}</button>
+    <Tabs aria-label="Icon source" variant="pill" value={tab} onChange={selectTab} className="mb-3">
+      {TABS.map((entry) => (
+        <Tab key={entry.id} value={entry.id} id={`icon-tab-${entry.id}`} aria-controls={`icon-panel-${entry.id}`} disabled={busy}>{entry.label}</Tab>
       ))}
-    </div>
+    </Tabs>
     <div role="tabpanel" id={`icon-panel-${tab}`} aria-labelledby={`icon-tab-${tab}`}>
       {tab === 'library' && <Suspense fallback={<IconLibrarySkeleton />}><LazyLucideIconLibrary selected={libraryName} onSelect={setLibraryName} /></Suspense>}
       {tab === 'emoji' && <input aria-label="Icon character" maxLength={64} value={text} disabled={busy} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveSelection() }} placeholder="Emoji or character" className="w-full rounded-lg px-3 py-2 text-sm outline-none" style={{ background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)' }} />}
@@ -134,7 +122,7 @@ export function useCustomIconPicker() {
         reader.readAsDataURL(file)
       }} /></label>}
     </div>
-    {error && <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--red)' }}>{error}</p>}
+    {error && <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
     <div className="mt-4 flex items-center gap-2"><Button size="sm" variant="ghost" disabled={busy} onClick={() => void save(null)}>Reset to default</Button><span className="flex-1" /><Button size="sm" variant="secondary" disabled={busy} onClick={close}>Cancel</Button>{tab !== 'upload' && <Button size="sm" variant="primary" disabled={busy || !canSave} onClick={saveSelection}>Save</Button>}</div>
   </dialog>, document.body)
   return { dialog, open: (type: CustomIconTarget, id: string | BulkTarget[], label: string) => { generation.current++; setTab('library'); setLibraryName(null); setText(''); setError(''); setTarget({ type, ids: typeof id === 'string' ? [{ id, label }] : id, label }) } }

@@ -23,8 +23,19 @@ namespace uam::opencode
 	{
 		// Preserve the prior byte-equal contract, including its existing path admission elsewhere.
 		if (expected == actual) return true;
-		if ((platform != "windows" && platform != "Windows") || expected.size() != actual.size()) return false;
+		const bool windows = platform == "windows" || platform == "Windows";
 		const auto separator = [](char value) { return value == '/' || value == '\\'; };
+		if (!windows)
+		{
+			// POSIX: UAM may store a trailing '/' that OpenCode omits; never trim the root.
+			const auto trim = [](std::string_view value)
+			{
+				while (value.size() > 1 && value.back() == '/') value.remove_suffix(1);
+				return value;
+			};
+			return !expected.empty() && trim(expected) == trim(actual);
+		}
+		if (expected.size() != actual.size()) return false;
 		const auto ordinary_drive_path = [&separator](std::string_view value)
 		{
 			if (value.size() < 3 || value.size() > 4096 ||

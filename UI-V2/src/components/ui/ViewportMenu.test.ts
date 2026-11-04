@@ -194,4 +194,26 @@ describe('ViewportMenu exit motion', () => {
       delete (HTMLElement.prototype as Partial<HTMLElement>).getAnimations
     }
   })
+
+  it('stays mounted through a controlled close, then unmounts after the exit length', () => {
+    stubReducedMotion(false)
+    vi.useFakeTimers()
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const render = (open: boolean) => act(() => root.render(createElement(
+      ViewportMenu,
+      { open, point: { x: 10, y: 10 }, role: 'menu' },
+      createElement('div', null, 'Rename'),
+    )))
+    render(true)
+    expect(document.querySelector('[data-viewport-menu]')?.getAttribute('data-state')).toBe('open')
+    render(false)
+    expect(document.querySelector('[data-viewport-menu]')?.getAttribute('data-state')).toBe('closed')
+    act(() => { vi.advanceTimersByTime(170) })
+    expect(document.querySelector('[data-viewport-menu]')).toBeNull()
+    act(() => root.unmount())
+    host.remove()
+    vi.useRealTimers()
+  })
 })

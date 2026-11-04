@@ -2655,7 +2655,9 @@ UAM_TEST(AcpRepositoryBaselineHoldRetryIsOfferedOnlyForTheLoneMarkedReceipt)
 	};
 	UAM_ASSERT(retry_flags({marked}) == std::vector<bool>{true});
 	UAM_ASSERT(uam::AcpBaselineHoldRetryAllowed(app, app.chats.front(), nullptr));
-	UAM_ASSERT(retry_flags({unrelated}) == std::vector<bool>{false});
+	// A lone held row-less receipt has no Retry route, so it joins the resumable held queue (#682).
+	UAM_ASSERT(retry_flags({unrelated}).empty());
+	UAM_ASSERT_EQ(uam::StateSerializer::Serialize(app).at("chats").at(0).at("acpSession").at("queuedPrompts").size(), std::size_t{1});
 	UAM_ASSERT(retry_flags({marked, unrelated}) == (std::vector<bool>{false, false}));
 	UAM_ASSERT(!uam::AcpBaselineHoldRetryAllowed(app, app.chats.front(), nullptr));
 	std::string error;

@@ -45,39 +45,27 @@ afterEach(() => {
   document.body.replaceChildren()
 })
 
+/** Shared MenuItem rows carry their label as text, not aria-label. */
+function menuItem(label: string) {
+  return Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((item) => item.textContent === label) ?? null
+}
+
 describe('GoalBanner', () => {
-  it('isolates edit Save from an ancestor composer form', async () => {
-    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
-    const submitComposer = vi.fn((event: React.FormEvent) => event.preventDefault())
-    const save = vi.fn(async () => true)
-    act(() => root.render(<form onSubmit={submitComposer}><GoalBanner goal={goal} onComplete={() => {}} onRemove={() => {}} onEdit={save} /></form>))
+  it('edits in place with the goal details still visible, and Escape cancels the edit', () => {
+    const { host, root, onEdit } = renderGoal()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Goal actions"]')!.click())
-    act(() => document.querySelector<HTMLButtonElement>('[aria-label="Edit goal"]')!.click())
-    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Edit goal"] button[type="submit"]')!.click())
-    expect(save).toHaveBeenCalledWith(goal.objective)
-    expect(submitComposer).not.toHaveBeenCalled()
+    act(() => menuItem('Edit goal')!.click())
+    const textarea = host.querySelector<HTMLTextAreaElement>('textarea#goal-objective-edit')!
+    expect(document.activeElement).toBe(textarea)
+    expect(host.querySelector('[aria-label="Goal progress"]')).toBeTruthy()
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
+    expect(host.querySelector('textarea')).toBeNull()
+    expect(onEdit).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(host.querySelector('[aria-label="Goal actions"]'))
     act(() => root.unmount())
   })
 
-  it('traps edit-dialog Tab and owns Escape without closing a parent keyboard handler', () => {
-    const { host, root } = renderGoal()
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Goal actions"]')!.click())
-    act(() => document.querySelector<HTMLButtonElement>('button[aria-label="Edit goal"]')!.click())
-    const dialog = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Edit goal"]')!
-    const parentEscape = vi.fn()
-    const listener = (event: KeyboardEvent) => { if (event.key === 'Escape') parentEscape() }
-    document.addEventListener('keydown', listener)
-    try {
-      act(() => dialog.querySelector<HTMLButtonElement>('button[type="submit"]')!.focus())
-      act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })))
-      expect(dialog.contains(document.activeElement)).toBe(true)
-      expect(document.activeElement).toBe(dialog.querySelector('[aria-label="Close edit goal"]'))
-      act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
-      expect(document.querySelector('[role="dialog"][aria-label="Edit goal"]')).toBeNull()
-      expect(parentEscape).not.toHaveBeenCalled()
-      expect(document.activeElement).toBe(host.querySelector('[aria-label="Goal actions"]'))
-    } finally { document.removeEventListener('keydown', listener); act(() => root.unmount()) }
-  })
   it('offers restart while a turn runs and shows its pending continuation', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -95,10 +83,12 @@ describe('GoalBanner', () => {
     act(() => root.unmount())
   })
 
-  it('expands the full objective and exact completed and remaining steps', () => {
+  it('shows the full objective and exact completed and remaining steps as stacked rows', () => {
     const { host, root } = renderGoal()
 
-    expect(host.querySelector('details')).toBeTruthy()
+    expect(host.querySelector('details')).toBeNull()
+    expect(host.querySelector('.uam-goal-banner__objective')?.textContent).toBe(goal.objective)
+    expect(host.querySelector('.uam-goal-banner__footer [aria-label="Goal actions"]')).toBeTruthy()
     const scrollRegion = host.querySelector('[data-goal-details-scroll]') as HTMLElement
     expect(scrollRegion).toBeTruthy()
     expect(scrollRegion.className).toContain('uam-goal-banner__details')
@@ -113,21 +103,17 @@ describe('GoalBanner', () => {
     act(() => root.unmount())
   })
 
-  it('keeps truthful planned-step progress visible while details are collapsed', () => {
+  it('keeps truthful planned-step progress visible beside the details', () => {
     const { host, root } = renderGoal({
       completedItems: ['T01 Baseline'],
       remainingItems: ['T02 Fix regressions', 'T03: Verify the package'],
       currentStep: 'T02 Fix regressions',
     })
 
-    const summary = host.querySelector('summary') as HTMLElement
-    expect(summary.className).toContain('flex')
-    expect(summary.querySelector('[data-goal-disclosure-icon]')).toBeTruthy()
-    expect(summary.getAttribute('aria-label')).toBeNull()
     const progress = host.querySelector('progress[aria-label="Goal progress"]') as HTMLProgressElement
     expect(progress).toBeTruthy()
-    expect(progress.closest('details')).toBeNull()
-    expect(progress.closest('.uam-goal-banner__secondary')).toBeNull()
+    expect(progress.closest('.uam-goal-banner__progress')).toBeTruthy()
+    expect(progress.closest('[data-goal-details-scroll]')).toBeNull()
     expect(host.textContent).toContain('1 of 3 steps')
     expect(host.textContent).toContain('Current step: Fix regressions')
     expect(host.textContent).toContain('Completed steps')
@@ -157,7 +143,7 @@ describe('GoalBanner', () => {
     act(() => root.unmount())
   })
 
-	it('keeps the blocker category, cause, and next action visible while collapsed', () => {
+	it('keeps the blocker category, cause, and next action visible', () => {
 		const { host, root } = renderGoal({
 			status: 'blocked',
 			lastBlockerKind: 'user_permission_approval',
@@ -166,7 +152,7 @@ describe('GoalBanner', () => {
 			currentStep: 'Continue processing the files',
 		})
 
-		const alert = host.querySelector('summary [role="alert"]') as HTMLElement
+		const alert = host.querySelector('[role="alert"]') as HTMLElement
 		expect(alert).toBeTruthy()
 		expect(alert.textContent).toContain('Needs access')
 		expect(alert.textContent).toContain('The remote helper needs Documents access.')
@@ -203,42 +189,41 @@ describe('GoalBanner', () => {
 		act(() => root.unmount())
 	})
 
-  it('edits a UAM-managed goal in a screen-level modal and saves trimmed text', async () => {
+  it('saves trimmed text in place and keeps validation errors in the window', async () => {
     const { host, root, onEdit } = renderGoal()
-
     act(() => { (host.querySelector('[aria-label="Goal actions"]') as HTMLButtonElement).click() })
-    act(() => { (document.body.querySelector('button[aria-label="Edit goal"]') as HTMLButtonElement).click() })
-
-    const dialog = document.body.querySelector('[role="dialog"][aria-label="Edit goal"]') as HTMLElement
-    expect(dialog).toBeTruthy()
-    expect(dialog.parentElement?.parentElement).toBe(document.body)
-    const textarea = dialog.querySelector('textarea') as HTMLTextAreaElement
+    act(() => { menuItem('Edit goal')!.click() })
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
     expect(textarea.value).toBe(goal.objective)
-
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '  Updated objective  ')
+    const setValue = (value: string) => act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    await act(async () => { (dialog.querySelector('button[type="submit"]') as HTMLButtonElement).click() })
-
+    const save = () => Array.from(host.querySelectorAll('button')).find((b) => b.textContent === 'Save')!
+    setValue('   ')
+    await act(async () => { save().click() })
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe('Goal objective is required.')
+    expect(onEdit).not.toHaveBeenCalled()
+    setValue('  Updated objective  ')
+    await act(async () => { save().click() })
     expect(onEdit).toHaveBeenCalledWith('Updated objective')
-    expect(document.body.querySelector('[role="dialog"][aria-label="Edit goal"]')).toBeNull()
+    expect(host.querySelector('textarea')).toBeNull()
     act(() => root.unmount())
   })
 
   it('does not offer editing for provider-managed goals', () => {
     const { host, root } = renderGoal({ executionOwner: 'provider' })
     act(() => { (host.querySelector('[aria-label="Goal actions"]') as HTMLButtonElement).click() })
-    expect(document.body.querySelector('button[aria-label="Edit goal"]')).toBeNull()
+    expect(menuItem('Edit goal')).toBeNull()
     act(() => root.unmount())
   })
 
   it('keeps completed goals deletable but not editable or resumable', () => {
     const completed = renderGoal({ status: 'complete' })
     act(() => { (completed.host.querySelector('[aria-label="Goal actions"]') as HTMLButtonElement).click() })
-    expect(document.body.querySelector('button[aria-label="Edit goal"]')).toBeNull()
-    expect(document.body.querySelector('button[aria-label="Resume goal"]')).toBeNull()
-    expect(document.body.querySelector('button[aria-label="Delete goal"]')).toBeTruthy()
+    expect(menuItem('Edit goal')).toBeNull()
+    expect(menuItem('Resume goal')).toBeNull()
+    expect(menuItem('Delete goal')).toBeTruthy()
     act(() => completed.root.unmount())
   })
 

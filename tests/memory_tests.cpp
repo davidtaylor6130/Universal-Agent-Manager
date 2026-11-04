@@ -1110,6 +1110,69 @@ UAM_TEST(MemoryLibraryServiceListsCreatesAndDeletesEntries)
 	UAM_ASSERT_EQ(error, std::string("Folder not found: missing-folder"));
 }
 
+UAM_TEST(MemoryLibraryServiceReadsFullKnownEntryMemorySection)
+{
+	TempDir temp("uam-memory-library-read");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	MemoryLibraryService::Scope scope;
+	std::string error;
+	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "global", "", scope, &error));
+	MemoryLibraryService::Draft draft;
+	draft.category = "Lessons/User_Lessons";
+	draft.title = "Long memory entry";
+	draft.memory = std::string(500, 'M') + "\nsecond full line";
+	draft.evidence = "Evidence must not be returned.";
+	MemoryLibraryService::Entry entry;
+	UAM_ASSERT(MemoryLibraryService::CreateEntry(scope, draft, &entry, &error));
+	std::string content;
+	UAM_ASSERT(MemoryLibraryService::ReadEntryContent(scope, entry.id, content, &error));
+	UAM_ASSERT_EQ(content, draft.memory);
+	UAM_ASSERT(!MemoryLibraryService::ReadEntryContent(scope, entry.file_path.string(), content, &error));
+	UAM_ASSERT(error.find("not available") != std::string::npos);
+	UAM_ASSERT(content.empty());
+}
+
+UAM_TEST(MemoryLibraryServiceAllScopeReadRoutesByOwningScope)
+{
+	TempDir temp("uam-memory-library-all-read");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	MemoryLibraryService::Scope global;
+	std::string error;
+	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "global", "", global, &error));
+	MemoryLibraryService::Draft draft;
+	draft.category = "Lessons/User_Lessons";
+	draft.title = "Local entry";
+	draft.memory = "Local memory body.";
+	MemoryLibraryService::Entry entry;
+	UAM_ASSERT(MemoryLibraryService::CreateEntry(global, draft, &entry, &error));
+
+	MemoryLibraryService::Scope all;
+	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "all", "", all, &error));
+	const std::vector<MemoryLibraryService::Entry> local_entries = MemoryLibraryService::ListEntries(all, &error);
+	UAM_ASSERT_EQ(local_entries.size(), static_cast<std::size_t>(1));
+	const std::string all_id = local_entries.front().id;
+	MemoryLibraryService::Scope unreachable;
+	unreachable.scope_type = "folder";
+	ExecutionHost host;
+	host.id = "offline-host";
+	host.ssh_alias = "uam-unreachable.invalid";
+	host.platform = "linux";
+	unreachable.remote_host = host;
+	unreachable.remote_workspace = "/srv/offline";
+	all.remote_scopes = {unreachable};
+
+	// A local entry opens without listing the unreachable SSH host.
+	std::string content;
+	UAM_ASSERT(MemoryLibraryService::ReadEntryContent(all, all_id, content, &error));
+	UAM_ASSERT_EQ(content, draft.memory);
+	// A remote id is routed to its owning scope, never read as a local path.
+	UAM_ASSERT(!MemoryLibraryService::ReadEntryContent(all, "remote:unknown:" + all_id, content, &error));
+	UAM_ASSERT(error.find("SSH workspace") != std::string::npos);
+	UAM_ASSERT(content.empty());
+}
+
 UAM_TEST(MemoryLibraryServiceAllScopeAggregatesKnownRootsAndDedupes)
 {
 	TempDir temp("uam-memory-library-all");

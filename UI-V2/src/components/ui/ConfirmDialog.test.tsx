@@ -119,3 +119,20 @@ describe('ConfirmDialog keyboard ownership', () => {
   })
 
 })
+
+it('keeps the confirm action disabled while confirmDisabled is set', () => {
+  const onConfirm = vi.fn()
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  act(() => root.render(<ConfirmDialog open title="Switch?" confirmLabel="Switch" confirmDisabled onConfirm={onConfirm} onCancel={vi.fn()}>Blocked</ConfirmDialog>))
+  try {
+    const confirm = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Switch')!
+    expect(confirm.disabled).toBe(true)
+    act(() => confirm.click())
+    expect(onConfirm).not.toHaveBeenCalled()
+  } finally {
+    act(() => root.unmount())
+    host.remove()
+  }
+})

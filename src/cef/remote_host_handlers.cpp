@@ -180,11 +180,6 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 	const auto stop = std::make_shared<std::stop_source>();
 	std::erase_if(m_remoteInstallStops, [](const auto& install) { return install.second.expired(); });
 	m_remoteInstallStops.emplace_back(query, stop);
-	if (m_app.startup_native_import_service)
-	{
-		std::shared_ptr<void> pause = m_app.startup_native_import_service->PauseBackgroundScanOnHost(host.id);
-		if (pause) cb = new RemoteInstallScanPauseCallback(cb, std::move(pause));
-	}
 	uam::remote_install::HostRuntimeBlockReason block_reason = uam::remote_install::HostRuntimeBlockReason::None;
 	if (HostHasActiveRuntimeWork(m_app, host.id, true, &block_reason))
 	{
@@ -218,6 +213,12 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		plan.previous_protocol_version = previous_host->runner_protocol_version > 0
 		    ? previous_host->runner_protocol_version
 		    : 2;
+	}
+	// Pausing cancels a running background scan, so pause only after the busy-work and plan checks that can refuse this request.
+	if (m_app.startup_native_import_service)
+	{
+		std::shared_ptr<void> pause = m_app.startup_native_import_service->PauseBackgroundScanOnHost(host.id);
+		if (pause) cb = new RemoteInstallScanPauseCallback(cb, std::move(pause));
 	}
 	if (HostHasActiveRuntimeWork(m_app, host.id))
 	{

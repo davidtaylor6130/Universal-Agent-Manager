@@ -23,7 +23,7 @@ it('omits disabled feature controls and mobile settings requests', async () => {
     await act(async () => root.render(<SettingsModal />))
     expect(host.textContent).not.toContain('Computer Use')
     expect(host.textContent).not.toContain('Remote Hosts')
-    const defaults = [...host.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Chat Defaults')
+    const defaults = [...host.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Chat defaults')
     expect(defaults).toBeDefined()
     await act(async () => defaults!.click())
     expect(host.textContent).not.toContain('Enable phone access')

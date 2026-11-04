@@ -418,6 +418,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"browseFolderDirectory", &UamQueryHandler::HandleBrowseFolderDirectory},
 		{"searchChatMessages", &UamQueryHandler::HandleSearchChatMessages},
 		{"listMemoryEntries", &UamQueryHandler::HandleListMemoryEntries},
+		{"readMemoryEntry", &UamQueryHandler::HandleReadMemoryEntry},
 		{"createMemoryEntry", &UamQueryHandler::HandleCreateMemoryEntry},
 		{"deleteMemoryEntry", &UamQueryHandler::HandleDeleteMemoryEntry},
 		{"openMemoryRoot", &UamQueryHandler::HandleOpenMemoryRoot},
