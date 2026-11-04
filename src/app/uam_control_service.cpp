@@ -998,7 +998,7 @@ namespace uam
 			if (ChatSession* chat = ChatDomainService().FindChatById(app, std::string(target_chat_id)))
 			{
 				chat->interaction_at = uam::time::InteractionTimestampNow();
-				if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat))
+				if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat, false))
 					app.pending_chat_save_at_by_chat_id[chat->id] = 0.0;
 			}
 			return {.deferred = true};
