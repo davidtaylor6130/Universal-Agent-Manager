@@ -3,6 +3,7 @@
 
 #include "app/chat_domain_service.h"
 
+#include "common/config/custom_icon.h"
 #include "common/config/settings_frontend_json.h"
 #include "include/cef_browser.h"
 #include "include/cef_frame.h"
@@ -62,6 +63,8 @@ namespace
 	nlohmann::json g_last_pushed_chat_order_fingerprint;
 	// Digest of each chat's compact summary at its last push; a poll tick builds JSON only for chats whose digest moved.
 	std::unordered_map<std::string, std::uint64_t> g_last_pushed_chat_digests_by_chat_id;
+	// Tests observe every built statePatch message; nullptr in production.
+	void (*g_state_patch_observer)(const std::string& message) = nullptr;
 
 	std::string DumpFrontendJson(const nlohmann::json& value)
 	{
@@ -374,10 +377,18 @@ namespace
 		{
 			for (nlohmann::json& chat : *chats)
 			{
+				const ChatSession* source = ChatDomainService().FindChatById(app, chat.value("id", ""));
+				if (source == nullptr) continue;
 				const nlohmann::json::const_iterator acp = chat.find("acpSession");
-				if (acp == chat.end() || !acp->contains("catalogDigest")) continue;
-				if (const ChatSession* source = ChatDomainService().FindChatById(app, chat.value("id", "")); source != nullptr)
+				if (acp != chat.end() && acp->contains("catalogDigest"))
+				{
+					// Hydration rebuilds the session summary only; keep the scan's managed subagent count.
+					const nlohmann::json managed_subagent_count = chat.value("managedSubagentCount", nlohmann::json(0));
 					chat = uam::StateSerializer::SerializeChatSummary(app, *source);
+					chat["managedSubagentCount"] = managed_subagent_count;
+				}
+				// The frontend replaces the whole chat, so a patched PNG icon needs its data URL as in stateUpdate.
+				uam::icons::AddFrontendAsset(chat, app.data_root, source->custom_icon);
 			}
 		}
 		AddChangedJsonField(data, "chatOrder", ChatOrderForPatch(app), g_last_pushed_chat_order_fingerprint);
@@ -390,6 +401,7 @@ namespace
 		msg["data"] = std::move(data);
 		const std::string message = DumpFrontendJson(msg);
 		MaybeLogLargePatch(message, static_cast<int>(uam::nlohmann_json::ArrayFieldOrEmpty(msg["data"], "chats").size()), std::chrono::steady_clock::now() - started);
+		if (g_state_patch_observer != nullptr) g_state_patch_observer(message);
 		return message;
 	}
 
@@ -446,6 +458,11 @@ namespace uam
 		nlohmann::json fingerprint_state = StateSerializer::SerializeFingerprint(after, true, false);
 		StripVolatileAcpWaitTelemetry(fingerprint_state);
 		return BuildStatePatchMessage(after, fingerprint_state);
+	}
+
+	void SetStatePatchObserverForTests(void (*observer)(const std::string& message))
+	{
+		g_state_patch_observer = observer;
 	}
 
 	bool HasDeferredStatePush()

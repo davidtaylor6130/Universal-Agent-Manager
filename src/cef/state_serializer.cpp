@@ -334,9 +334,19 @@ namespace uam
 			std::uint64_t Digest() const { return m_hash; }
 
 		  private:
-			// Word-wise FNV step: for a fixed input word it is a bijection of the state, so a change to any single
-			// short field always changes the digest; long text contributes its library hash instead of every byte.
-			void Mix(std::uint64_t word) { m_hash = (m_hash ^ word) * uam::hashing::kFnv1a64Prime; }
+			// Each word passes through the reversible MurmurHash3 fmix64 finaliser so high-bit changes diffuse into
+			// every bit, then a word-wise FNV step. Both are bijections, so a change to any single short field always
+			// changes the digest; long text contributes its library hash instead of every byte.
+			static std::uint64_t Scramble(std::uint64_t word)
+			{
+				word ^= word >> 33;
+				word *= 0xff51afd7ed558ccdULL;
+				word ^= word >> 33;
+				word *= 0xc4ceb9fe1a85ec53ULL;
+				word ^= word >> 33;
+				return word;
+			}
+			void Mix(std::uint64_t word) { m_hash = (m_hash ^ Scramble(word)) * uam::hashing::kFnv1a64Prime; }
 			void Tag(unsigned char tag) { Mix(tag); }
 			template <class N> void Number(N value)
 			{

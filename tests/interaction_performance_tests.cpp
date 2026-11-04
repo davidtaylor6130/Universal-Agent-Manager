@@ -1,6 +1,8 @@
 #include "test_harness.h"
 #include "app/transcript_retention_service.h"
 #include "common/config/custom_icon.h"
+#include "common/memory/memory_levels.h"
+#include "common/memory/memory_policy.h"
 
 #include <algorithm>
 #include <array>
@@ -621,49 +623,127 @@ namespace
 	}
 }
 
+namespace
+{
+	std::string g_observed_state_patch;
+
+	/// <summary>Captures built statePatch messages and stops observing even when an assertion throws.</summary>
+	struct StatePatchObserver
+	{
+		StatePatchObserver() { uam::SetStatePatchObserverForTests([](const std::string& message) { g_observed_state_patch = message; }); }
+		~StatePatchObserver() { uam::SetStatePatchObserverForTests(nullptr); }
+	};
+
+	struct SummaryMutation
+	{
+		std::string label;
+		std::function<std::vector<std::size_t>()> mutate;
+		std::function<void(const nlohmann::json& chat)> check = {};
+	};
+}
+
 UAM_TEST(StatePushPublishesEverySummaryInputChange)
 {
-	// Poll ticks compare per-chat summary digests instead of summary JSON; every input a summary
-	// shows must still publish exactly that chat, and an unchanged tick must publish nothing.
+	// Poll ticks compare per-chat summary digests instead of summary JSON; each listed input a summary shows
+	// must publish exactly the affected chats once, and an unchanged tick must publish nothing.
 	FakeStatePushClock clock;
+	StatePatchObserver observer;
 	TempDir temp("uam-summary-digest-coverage");
 	uam::AppState app;
 	BuildLargeCatalogFixture(app, temp.root, 40);
+	// These two chats follow the global memory default, which a mutation below changes.
+	app.chats[1].memory_level = uam::memory_levels::kDefault;
+	app.chats[2].memory_level = uam::memory_levels::kDefault;
 	uam::PushStateUpdate(nullptr, app);
 	// The full update is the digest baseline, so an unchanged first tick publishes nothing.
 	clock.Advance(std::chrono::milliseconds(200));
 	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
 
+	const CustomIcon icon{"png", "00000000-0000-4000-8000-0000000000aa.png"};
+	fs::create_directories(temp.root / "icons");
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "icons" / icon.value, FixturePng(4096)));
 	const auto chat = [&app](std::size_t index) -> ChatSession& { return app.chats[index]; };
-	const std::vector<std::pair<std::string, std::function<std::vector<std::size_t>()>>> mutations = {
-	    {"title", [&] { chat(12).title = "Renamed"; return std::vector<std::size_t>{12}; }},
-	    {"folder", [&] { chat(13).folder_id = "folder-3"; return std::vector<std::size_t>{13}; }},
-	    {"pinned", [&] { chat(14).pinned = true; return std::vector<std::size_t>{14}; }},
-	    {"model", [&] { chat(15).model_id = "model-new"; return std::vector<std::size_t>{15}; }},
-	    {"provider", [&] { chat(16).provider_id = "gemini-cli"; return std::vector<std::size_t>{16}; }},
-	    {"updated at", [&] { chat(17).updated_at = "2026-10-26T10:00:00Z"; return std::vector<std::size_t>{17}; }},
-	    {"persisted digest", [&] { chat(18).persisted_messages_digest = "persisted-changed"; return std::vector<std::size_t>{18}; }},
-	    {"persisted count", [&] { chat(18).persisted_message_count = 121; return std::vector<std::size_t>{18}; }},
-	    {"approval mode", [&] { chat(19).approval_mode = "plan"; return std::vector<std::size_t>{19}; }},
-	    {"reasoning effort", [&] { chat(20).reasoning_effort = "high"; return std::vector<std::size_t>{20}; }},
-	    {"workspace", [&] { chat(21).workspace_directory = (temp.root / "elsewhere").generic_string(); return std::vector<std::size_t>{21}; }},
-	    {"memory level", [&] { chat(22).memory_level = "off"; return std::vector<std::size_t>{22}; }},
-	    {"pending branch", [&] { chat(23).pending_git_branch_name = "feature/x"; return std::vector<std::size_t>{23}; }},
-	    {"active goal", [&] { chat(24).active_goal_id = "goal-1"; return std::vector<std::size_t>{24}; }},
-	    {"goal", [&] { chat(24).goals.push_back({}); chat(24).goals.back().id = "goal-1"; return std::vector<std::size_t>{24}; }},
-	    {"goal progress", [&] { chat(24).goals.back().tokens_used = 42; return std::vector<std::size_t>{24}; }},
-	    {"stop reason", [&] { chat(25).last_stop_reason = "end_turn"; return std::vector<std::size_t>{25}; }},
-	    {"retained transcript append", [&] { chat(3).messages.push_back(Message{MessageRole::User, "new"}); return std::vector<std::size_t>{3}; }},
-	    {"retained transcript edit", [&] { chat(4).messages[10].content = "edited"; return std::vector<std::size_t>{4}; }},
-	    {"selected transcript append", [&] { chat(0).messages.push_back(Message{MessageRole::User, "next"}); return std::vector<std::size_t>{0}; }},
-	    {"unseen update", [&] { chat(26).last_opened_at.clear(); chat(26).attention_revision.clear(); app.chats_with_unseen_updates.insert(chat(26).id); return std::vector<std::size_t>{26}; }},
-	    {"routing wait", [&] { app.execution_routing_waits[chat(27).id] = "host busy"; return std::vector<std::size_t>{27}; }},
-	    {"native session", [&] { app.resolved_native_sessions_by_chat_id[chat(28).id] = "native-28"; return std::vector<std::size_t>{28}; }},
-	    {"managed run", [&] { AgentRun run; run.id = "run-29"; run.root_chat_id = chat(29).id; run.status = "running"; app.agent_runs.push_back(run); return std::vector<std::size_t>{29}; }},
+	const auto one = [](std::size_t index) { return std::vector<std::size_t>{index}; };
+	const std::vector<SummaryMutation> mutations = {
+	    {"title", [&] { chat(12).title = "Renamed"; return one(12); }},
+	    {"folder", [&] { chat(13).folder_id = "folder-3"; return one(13); }},
+	    {"pinned", [&] { chat(14).pinned = true; return one(14); }},
+	    {"model", [&] { chat(15).model_id = "model-new"; return one(15); }},
+	    {"provider", [&] { chat(16).provider_id = "gemini-cli"; return one(16); }},
+	    {"updated at", [&] { chat(17).updated_at = "2026-10-26T10:00:00Z"; return one(17); }},
+	    {"persisted digest", [&] { chat(18).persisted_messages_digest = "persisted-changed"; return one(18); }},
+	    {"persisted count", [&] { chat(18).persisted_message_count = 121; return one(18); }},
+	    {"approval mode", [&] { chat(19).approval_mode = "plan"; return one(19); }},
+	    {"reasoning effort", [&] { chat(20).reasoning_effort = "high"; return one(20); }},
+	    {"workspace", [&] { chat(21).workspace_directory = (temp.root / "elsewhere").generic_string(); return one(21); }},
+	    {"memory level", [&] { chat(22).memory_level = "off"; return one(22); }},
+	    {"pending branch", [&] { chat(23).pending_git_branch_name = "feature/x"; return one(23); }},
+	    {"active goal", [&] { chat(24).active_goal_id = "goal-1"; return one(24); }},
+	    {"goal", [&] { chat(24).goals.push_back({}); chat(24).goals.back().id = "goal-1"; return one(24); }},
+	    {"goal progress", [&] { chat(24).goals.back().tokens_used = 42; return one(24); }},
+	    {"stop reason", [&] { chat(25).last_stop_reason = "end_turn"; return one(25); }},
+	    {"retained transcript append", [&] { chat(3).messages.push_back(Message{MessageRole::User, "new"}); return one(3); }},
+	    {"retained transcript edit", [&] { chat(4).messages[10].content = "edited"; return one(4); }},
+	    {"selected transcript append", [&] { chat(0).messages.push_back(Message{MessageRole::User, "next"}); return one(0); }},
+	    {"discarded prompt", [&] { chat(5).messages[10].acp_prompt_discarded = true; return one(5); },
+	        [](const nlohmann::json& summary) { UAM_ASSERT_EQ(summary["acpSession"]["unsentMessageIndices"], nlohmann::json::array({10})); }},
+	    {"unseen update", [&] { chat(26).last_opened_at.clear(); chat(26).attention_revision.clear(); app.chats_with_unseen_updates.insert(chat(26).id); return one(26); }},
+	    {"routing wait", [&] { app.execution_routing_waits[chat(27).id] = "host busy"; return one(27); }},
+	    {"restored unresolved reservation", [&] { app.execution_routing_restored_unresolved_chat_ids.insert(chat(37).id); return one(37); },
+	        [](const nlohmann::json& summary) { UAM_ASSERT(summary["routingUnresolvedReservation"].get<bool>()); }},
+	    {"native session", [&] { app.resolved_native_sessions_by_chat_id[chat(28).id] = "native-28"; return one(28); }},
+	    {"managed run", [&] { AgentRun run; run.id = "run-29"; run.root_chat_id = chat(29).id; run.status = "running"; app.agent_runs.push_back(run); return one(29); },
+	        [](const nlohmann::json& summary)
+	        {
+	            // Catalog hydration rebuilds the summary; the scan's count must survive it.
+	            UAM_ASSERT(summary["acpSession"].contains("availableModels"));
+	            UAM_ASSERT_EQ(summary["managedSubagentCount"].get<std::size_t>(), std::size_t{1});
+	            UAM_ASSERT_EQ(summary["acpSession"]["backgroundTaskCount"].get<std::size_t>(), std::size_t{1});
+	        }},
 	    {"folder directory", [&] { app.folders[10].directory = (temp.root / "moved").generic_string(); return std::vector<std::size_t>{10, 30}; }},
-	    {"live session start", [&] { app.acp_sessions.push_back(StreamingSession(chat(31), 1, 16)); return std::vector<std::size_t>{31}; }},
-	    {"live turn text", [&] { app.acp_sessions.back()->turn_events.back().text += " more"; return std::vector<std::size_t>{31}; }},
-	    {"live session stop", [&] { app.acp_sessions.clear(); return std::vector<std::size_t>{31}; }},
+	    {"computer use runtime", [&] { app.computer_use_by_chat_id[chat(32).id].state = "running"; return one(32); },
+	        [](const nlohmann::json& summary) { UAM_ASSERT_EQ(summary["computerUse"]["state"], "running"); }},
+	    {"cli terminal", [&]
+	        {
+	            auto terminal = std::make_unique<uam::CliTerminalState>();
+	            terminal->terminal_id = "terminal-33";
+	            terminal->frontend_chat_id = chat(33).id;
+	            terminal->attached_chat_id = chat(33).id;
+	            terminal->running = true;
+	            terminal->lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	            app.cli_terminals.push_back(std::move(terminal));
+	            return one(33);
+	        },
+	        [](const nlohmann::json& summary) { UAM_ASSERT_EQ(summary["cliTerminal"]["terminalId"], "terminal-33"); UAM_ASSERT(summary["cliTerminal"]["running"].get<bool>()); }},
+	    {"cli terminal stop", [&] { app.cli_terminals.clear(); return one(33); }},
+	    {"queued prompt", [&] { chat(34).acp_queued_prompts.push_back({}); chat(34).acp_queued_prompts.back().text = "later"; return one(34); },
+	        [](const nlohmann::json& summary) { UAM_ASSERT_EQ(summary["acpSession"]["queuedPrompts"].size(), std::size_t{1}); }},
+	    {"direct prompt", [&] { chat(35).acp_queued_prompts.push_back({}); chat(35).acp_queued_prompts.back().text = "now"; chat(35).acp_queued_prompts.back().direct_admission = true; return one(35); }},
+	    {"quota continuation", [&] { chat(36).claude_quota_continuation.state = "waiting"; return one(36); },
+	        [](const nlohmann::json& summary) { UAM_ASSERT_EQ(summary["acpSession"]["lifecycleState"], "waiting_quota"); }},
+	    {"catalog refresh", [&]
+	        {
+	            const nlohmann::json models = nlohmann::json::array({{{"id", "fixture/refreshed"}, {"name", "Refreshed"}}});
+	            UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("claude-cli", models, (temp.root / "folder-6").generic_string()));
+	            return one(6);
+	        },
+	        [](const nlohmann::json& summary) { UAM_ASSERT_EQ(summary["acpSession"]["availableModels"].size(), std::size_t{1}); }},
+	    {"global memory default", [&]
+	        {
+	            std::vector<bool> before;
+	            for (const ChatSession& entry : app.chats) before.push_back(uam::memory_levels::IsEnabled(uam::memory_policy::Resolve(app.settings, entry)));
+	            app.settings.memory_level_default = "off";
+	            std::vector<std::size_t> changed;
+	            for (std::size_t index = 0; index < app.chats.size(); ++index)
+	                if (uam::memory_levels::IsEnabled(uam::memory_policy::Resolve(app.settings, app.chats[index])) != before[index]) changed.push_back(index);
+	            UAM_ASSERT_EQ(changed, (std::vector<std::size_t>{1, 2}));
+	            return changed;
+	        }},
+	    {"png icon", [&] { chat(38).custom_icon = icon; return one(38); },
+	        [](const nlohmann::json& summary) { UAM_ASSERT(summary["customIcon"].value("dataUrl", "").starts_with("data:image/png;base64,")); }},
+	    {"live session start", [&] { app.acp_sessions.push_back(StreamingSession(chat(31), 1, 16)); return one(31); }},
+	    {"live turn text", [&] { app.acp_sessions.back()->turn_events.back().text += " more"; return one(31); }},
+	    {"live session stop", [&] { app.acp_sessions.clear(); return one(31); }},
 	};
 	const auto digests = [&app]
 	{
@@ -672,22 +752,52 @@ UAM_TEST(StatePushPublishesEverySummaryInputChange)
 			values.push_back(entry.digest);
 		return values;
 	};
-	for (const auto& [label, mutate] : mutations)
+	const auto publish = [&](const std::string& label) -> nlohmann::json
+	{
+		clock.Advance(std::chrono::milliseconds(200));
+		if (!uam::PushStateUpdateIfChanged(nullptr, app)) throw TestFailure(label + " change did not publish");
+		const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+		clock.Advance(std::chrono::milliseconds(200));
+		if (uam::PushStateUpdateIfChanged(nullptr, app)) throw TestFailure(label + " published again without a change");
+		return patch;
+	};
+	for (const SummaryMutation& mutation : mutations)
 	{
 		const std::vector<std::uint64_t> before = digests();
-		const std::vector<std::size_t> changed = mutate();
+		const std::vector<std::size_t> changed = mutation.mutate();
 		const std::vector<std::uint64_t> after = digests();
 		UAM_ASSERT_EQ(after.size(), before.size());
 		for (std::size_t other = 0; other < after.size(); ++other)
 		{
-			// Exactly the mutated chat's digest moves; a digest that ignored the input would hide the change.
-			if ((after[other] != before[other]) != (std::ranges::find(changed, other) != changed.end())) throw TestFailure(label + ": digest of chat " + std::to_string(other) + " did not track the change");
+			// Exactly the affected chats' digests move; a digest that ignored the input would hide the change.
+			if ((after[other] != before[other]) != (std::ranges::find(changed, other) != changed.end()))
+				throw TestFailure(mutation.label + ": digest of chat " + std::to_string(other) + " did not track the change");
 		}
-		clock.Advance(std::chrono::milliseconds(200));
-		if (!uam::PushStateUpdateIfChanged(nullptr, app)) throw TestFailure(label + " change did not publish");
-		clock.Advance(std::chrono::milliseconds(200));
-		if (uam::PushStateUpdateIfChanged(nullptr, app)) throw TestFailure(label + " published again without a change");
+		const nlohmann::json patch = publish(mutation.label);
+		std::vector<std::string> expected_ids;
+		for (const std::size_t index : changed) expected_ids.push_back(app.chats[index].id);
+		std::vector<std::string> patched_ids;
+		for (const nlohmann::json& summary : patch.value("chats", nlohmann::json::array())) patched_ids.push_back(summary.value("id", ""));
+		std::ranges::sort(expected_ids);
+		std::ranges::sort(patched_ids);
+		if (patched_ids != expected_ids) throw TestFailure(mutation.label + ": patch carried " + std::to_string(patched_ids.size()) + " chats, expected " + std::to_string(expected_ids.size()));
+		if (mutation.check)
+			for (const nlohmann::json& summary : patch["chats"]) mutation.check(summary);
 	}
+
+	ChatSession added;
+	added.id = "catalog-chat-added";
+	added.title = added.id;
+	added.provider_id = "codex-cli";
+	added.messages_loaded = false;
+	app.chats.push_back(added);
+	nlohmann::json patch = publish("added chat");
+	UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(patch["chats"][0]["id"], added.id);
+	app.chats.pop_back();
+	patch = publish("removed chat");
+	UAM_ASSERT(!patch.contains("chats"));
+	UAM_ASSERT_EQ(patch["removedChatIds"], nlohmann::json::array({added.id}));
 }
 
 UAM_TEST(PerformanceLargeCatalogStateFingerprint)
