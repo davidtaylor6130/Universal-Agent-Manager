@@ -113,7 +113,7 @@ namespace
 
 	bool NativeChildDisplayIdentityMatches(const ChatSession& saved, const ChatSession& refreshed)
 	{
-		return saved.id == refreshed.id && saved.imported_read_only == refreshed.imported_read_only && saved.native_session_id == refreshed.native_session_id && uam::provider_ids::NormalizeCliProviderAliasOrSelf(saved.provider_id) == uam::provider_ids::NormalizeCliProviderAliasOrSelf(refreshed.provider_id) && uam::strings::NonEmptyOrFallback(saved.execution_host_id, "local") == uam::strings::NonEmptyOrFallback(refreshed.execution_host_id, "local") && uam::chat_identity::NativeWorkspaceForHistoryImport(saved) == uam::chat_identity::NativeWorkspaceForHistoryImport(refreshed) && (!saved.imported_read_only || saved.parent_chat_id == refreshed.parent_chat_id);
+		return saved.id == refreshed.id && saved.imported_read_only == refreshed.imported_read_only && saved.native_session_id == refreshed.native_session_id && uam::provider_ids::NormalizeCliProviderAliasOrSelf(saved.provider_id) == uam::provider_ids::NormalizeCliProviderAliasOrSelf(refreshed.provider_id) && uam::strings::NonEmptyOrFallback(saved.execution_host_id, "local") == uam::strings::NonEmptyOrFallback(refreshed.execution_host_id, "local") && uam::chat_identity::NativeProjectCheckoutsMatch(saved, refreshed) && (!saved.imported_read_only || saved.parent_chat_id == refreshed.parent_chat_id);
 	}
 
 	bool StopLaunchOptionTerminal(uam::AppState& app, const std::string& chat_id)
