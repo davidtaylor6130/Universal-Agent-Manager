@@ -4,7 +4,8 @@ import { captureContextReference, formatContextReferences } from '../../utils/co
 import { parseUamPushPayload } from '../../store/push/uamPush'
 import { act, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 import { buildUamAgentCycle, buildVisibleWorkSections, ChatView, matchesUamAgentCycleShortcut, projectUnsentPrompts, reviewAssistantLabel } from './ChatView'
 import { useAppStore, type VcsCommitStatus } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
@@ -20,6 +21,14 @@ const realSendAcpPrompt = useAppStore.getState().sendAcpPrompt
 
 // Outgoing presentation rows outlive ChatView by design; isolate them per test.
 beforeEach(() => resetOutgoingPresentation())
+// Success messages go to the shared notifications path (reportAppNotice); collect them here.
+const appNotices: string[] = []
+const appFailures: AppFailure[] = []
+const onAppNotice = (event: Event) => { const detail = (event as CustomEvent<AppFailure>).detail; appNotices.push(detail.message); appFailures.push(detail) }
+// Failures and completed feedback now reach the shared alert path, so their text is read from the reported events.
+const reportedText = () => appFailures.map((failure) => `${failure.message} ${failure.detail}`).join('\n')
+beforeEach(() => { appNotices.length = 0; appFailures.length = 0; window.addEventListener(APP_FAILURE_EVENT, onAppNotice) })
+afterEach(() => window.removeEventListener(APP_FAILURE_EVENT, onAppNotice))
 
 // Legacy ChatView fixtures have no managed-run server. The explicit integration case
 // below uses a strict launch result and owned root listing; panel/navigation contracts
@@ -38,6 +47,16 @@ function openComposerOptions(host: HTMLElement) {
     (host.querySelector('button[aria-label="Options"]') as HTMLButtonElement | null)
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
   })
+}
+// Composer tooltips replace native title=; read the label by focusing the trigger (Radix opens on focus).
+function tooltipText(trigger: HTMLElement): string {
+  act(() => { trigger.focus() })
+  const text = document.querySelector('[role="tooltip"]')?.textContent ?? ''
+  act(() => { trigger.blur() })
+  return text
+}
+function goalMenuItem(): HTMLInputElement | null {
+  return Array.from(document.body.querySelectorAll<HTMLInputElement>('input[role="menuitemcheckbox"]')).find((input) => input.getAttribute('aria-label')?.startsWith('Goal')) ?? null
 }
 
 function openComposerGoals(host: HTMLElement) {
@@ -87,12 +106,10 @@ describe('ChatView', () => {
     const root = createRoot(host)
     try {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-      const notice = host.querySelector<HTMLElement>('.uam-notice')!
-      expect(notice.getAttribute('role')).toBe('alert')
-      expect(notice.textContent).toContain(refresh ? 'History refresh failed' : 'Chat history unavailable')
-      expect(notice.textContent).toContain(guidance)
+      expect(reportedText()).toContain(refresh ? 'Chat history did not refresh' : 'Chat history did not load')
+      expect(reportedText()).toContain(guidance)
       const actionLabel = refresh ? 'Reload history' : 'Retry'
-      const action = Array.from(notice.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === actionLabel)!
+      const action = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === actionLabel)!
       expect(action).toBeTruthy()
       expect(host.textContent).toContain('Retained authored history')
       await act(async () => action.click())
@@ -133,7 +150,7 @@ describe('ChatView', () => {
       expect(host.textContent).toContain('What would you like to work on?')
       expect(host.querySelector('.uam-message-list')?.getAttribute('aria-busy')).toBe('false')
       act(() => useAppStore.setState({ chatHistoryErrorBySessionId: { 'chat-1': 'Could not read the saved transcript.' } }))
-      expect(host.textContent).toContain('Chat history unavailable')
+      expect(reportedText()).toContain('Chat history did not load')
       expect(host.textContent).not.toContain('What would you like to work on?')
       await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Retry')!.click())
       expect(loadSessionMessages).toHaveBeenCalledWith('chat-1', true)
@@ -162,7 +179,7 @@ describe('ChatView', () => {
       expect(host.querySelectorAll('[data-unsent-receipt-id="retained-input"]')).toHaveLength(1)
       expect(host.querySelector('[data-unsent-receipt-id="retained-input"] article')?.getAttribute('data-delivery')).toBe('unconfirmed')
       expect(host.textContent).not.toContain('What would you like to work on?')
-      expect(host.textContent?.includes('Chat history unavailable')).toBe(!pending)
+      expect(reportedText().includes('Chat history did not load')).toBe(!pending)
       expect(load).not.toHaveBeenCalled()
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ loadSessionMessages: originalLoad, chatHistoryReadBySessionId: {} }) }
   })
@@ -207,7 +224,7 @@ describe('ChatView', () => {
     try {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
       expect(host.querySelector('.conversation-skeleton')).toBeNull()
-      expect(host.textContent).toContain('Chat history unavailable')
+      expect(reportedText()).toContain('Chat history did not load')
       expect(host.textContent).not.toContain('What would you like to work on?')
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ chatHistoryReadBySessionId: {} }) }
   })
@@ -231,7 +248,7 @@ describe('ChatView', () => {
       act(() => { select('chat-1'); root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
       expect(finishSelection).toBeTypeOf('function')
       expect(requests.filter(action => action === 'getChatMessages')).toHaveLength(0)
-      expect(host.textContent).not.toContain('Chat history unavailable')
+      expect(reportedText()).not.toContain('Chat history did not load')
       expect(host.querySelector('.uam-message-list')?.getAttribute('aria-busy')).toBe('true')
       await act(async () => { finishSelection!(); await Promise.resolve() })
       expect(requests.filter(action => action === 'getChatMessages')).toHaveLength(1)
@@ -246,7 +263,7 @@ describe('ChatView', () => {
     const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
     try {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-      expect(host.textContent).not.toContain('Chat history unavailable')
+      expect(reportedText()).not.toContain('Chat history did not load')
       expect(host.textContent).not.toContain('What would you like to work on?')
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ chatSearchNavigation: null }) }
   })
@@ -316,7 +333,7 @@ describe('ChatView', () => {
       expect(create).toHaveBeenCalledTimes(2)
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ setGoal: originalCreate, sendAcpPrompt: originalSend }) }
   })
-  it('shows goals in a bounded composer popup and keeps edits separate from its unsent draft', async () => {
+  it('shows goals in a modal goal window and keeps edits separate from its unsent draft', async () => {
     const goal = { id: 'goal-popup', chatId: 'chat-1', objective: 'Ship the popup', status: 'active' as const, executionOwner: 'uam' as const, createdAt: new Date(), updatedAt: new Date() }
     const send = vi.fn(async () => true)
     const edit = vi.fn(async () => ({ ok: true }))
@@ -329,44 +346,108 @@ describe('ChatView', () => {
       expect(host.querySelector('.uam-goal-banner')).toBeNull()
       const trigger = host.querySelector<HTMLButtonElement>('button[aria-label="Goals"]')!
       expect(trigger.textContent).toContain('Ship the popup')
+      expect(trigger.classList.contains('uam-composer-goal-tab__body')).toBe(true)
+      expect(trigger.getAttribute('aria-haspopup')).toBe('dialog')
+      const tab = trigger.parentElement!
+      expect(tab.classList.contains('uam-composer-goal-tab')).toBe(true)
+      expect(tab.parentElement?.classList.contains('uam-composer-tabs')).toBe(true)
+      expect(tab.previousElementSibling?.classList.contains('uam-composer-workspace-tab')).toBe(true)
       const composer = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
       act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(composer, 'Unsent next prompt'); composer.dispatchEvent(new Event('input', { bubbles: true })) })
       openComposerGoals(host)
       let popup = document.querySelector<HTMLElement>('[aria-label="Chat goals"]')!
-      expect(popup).toBeTruthy()
+      expect(popup.getAttribute('role')).toBe('dialog')
+      expect(popup.getAttribute('aria-modal')).toBe('true')
       act(() => { composer.focus(); composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })) })
       expect(document.querySelector('[aria-label="Chat goals"]')).toBeNull()
       expect(composer.value).toBe('Unsent next prompt')
       openComposerGoals(host)
       popup = document.querySelector<HTMLElement>('[aria-label="Chat goals"]')!
       act(() => popup.querySelector<HTMLButtonElement>('[aria-label="Goal actions"]')!.click())
-      act(() => document.querySelector<HTMLButtonElement>('button[aria-label="Edit goal"]')!.click())
-      const input = document.querySelector<HTMLTextAreaElement>('[aria-label="Edit goal"] textarea')!
+      act(() => document.querySelector<HTMLButtonElement>('[role="menu"] button[aria-label="Edit goal"]')!.click())
+      const input = popup.querySelector<HTMLTextAreaElement>('textarea')!
       act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Updated goal'); input.dispatchEvent(new Event('input', { bubbles: true })) })
-      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Edit goal"] button[type="submit"]')!.click())
+      await act(async () => Array.from(document.querySelectorAll<HTMLButtonElement>('[aria-label="Chat goals"] button')).find((b) => b.textContent === 'Save')!.click())
       expect(edit).toHaveBeenCalledWith('chat-1', goal.id, 'Updated goal')
       expect(send).not.toHaveBeenCalled()
       expect(composer.value).toBe('Unsent next prompt')
       act(() => popup.querySelector<HTMLButtonElement>('[aria-label="Goal actions"]')!.click())
-      act(() => document.querySelector<HTMLButtonElement>('button[aria-label="Edit goal"]')!.click())
+      act(() => document.querySelector<HTMLButtonElement>('[role="menu"] button[aria-label="Edit goal"]')!.click())
       act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
       expect(document.querySelector('[aria-label="Chat goals"]')).toBeTruthy()
-      expect(document.querySelector('[role="dialog"][aria-label="Edit goal"]')).toBeNull()
+      expect(popup.querySelector('textarea')).toBeNull()
       expect(document.activeElement).toBe(popup.querySelector('[aria-label="Goal actions"]'))
-      expect(document.querySelector('[aria-modal="true"]')).toBeNull()
+      expect(document.querySelectorAll('[aria-modal="true"]')).toHaveLength(1)
       act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
       expect(document.querySelector('[aria-label="Chat goals"]')).toBeNull()
       expect(document.activeElement).toBe(trigger)
       act(() => trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })))
       const reopened = document.querySelector<HTMLElement>('[aria-label="Chat goals"]')!
       act(() => reopened.querySelector<HTMLButtonElement>('[aria-label="Goal actions"]')!.click())
-      act(() => document.querySelector<HTMLButtonElement>('button[aria-label="Edit goal"]')!.click())
+      act(() => document.querySelector<HTMLButtonElement>('[role="menu"] button[aria-label="Edit goal"]')!.click())
       act(() => useAppStore.setState({ goalsByChatId: { 'chat-1': [{ ...goal, id: 'replacement', objective: 'Replacement goal' }] }, activeGoalIdByChatId: { 'chat-1': 'replacement' } }))
-      expect(document.querySelector('[role="dialog"][aria-label="Edit goal"]')).toBeNull()
+      expect(document.querySelector('#goal-objective-edit')).toBeNull()
       expect(document.querySelector('[aria-label="Chat goals"]')).toBeNull()
       expect(trigger.textContent).toContain('Replacement goal')
       expect(composer.value).toBe('Unsent next prompt')
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ sendAcpPrompt: originalSend, updateGoalObjective: originalEdit }) }
+  })
+  it('edits and stops the goal from the composer goal tab', async () => {
+    const goal = { id: 'goal-tab', chatId: 'chat-1', objective: 'Tab goal', status: 'active' as const, executionOwner: 'uam' as const, createdAt: new Date(), updatedAt: new Date() }
+    const edit = vi.fn(async () => ({ ok: true }))
+    const pause = vi.fn(async () => ({ ok: true }))
+    const original = { updateGoalObjective: useAppStore.getState().updateGoalObjective, updateGoalStatus: useAppStore.getState().updateGoalStatus }
+    useAppStore.setState({ goalsByChatId: { 'chat-1': [goal] }, activeGoalIdByChatId: { 'chat-1': goal.id }, updateGoalObjective: edit, updateGoalStatus: pause })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const tab = host.querySelector<HTMLElement>('.uam-composer-goal-tab')!
+      const editButton = tab.querySelector<HTMLButtonElement>('button[aria-label="Edit goal"]')!
+      act(() => editButton.click())
+      const popup = document.querySelector<HTMLElement>('[aria-label="Chat goals"]')!
+      expect(popup.querySelector('[aria-label="Goal progress"]')).toBeTruthy()
+      const input = popup.querySelector<HTMLTextAreaElement>('textarea')!
+      expect(document.activeElement).toBe(input)
+      // Escape cancels the edit first, then closes the window.
+      act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
+      expect(popup.querySelector('textarea')).toBeNull()
+      expect(document.querySelector('[aria-label="Chat goals"]')).toBeTruthy()
+      act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
+      expect(document.querySelector('[aria-label="Chat goals"]')).toBeNull()
+      act(() => editButton.click())
+      const reopened = document.querySelector<HTMLElement>('[aria-label="Chat goals"]')!
+      const field = reopened.querySelector<HTMLTextAreaElement>('textarea')!
+      act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, 'Edited from tab'); field.dispatchEvent(new Event('input', { bubbles: true })) })
+      await act(async () => Array.from(reopened.querySelectorAll<HTMLButtonElement>('button')).find((b) => b.textContent === 'Save')!.click())
+      expect(edit).toHaveBeenCalledWith('chat-1', goal.id, 'Edited from tab')
+      expect(reopened.querySelector('textarea')).toBeNull()
+      await act(async () => tab.querySelector<HTMLButtonElement>('button[aria-label="Stop goal"]')!.click())
+      expect(pause).toHaveBeenCalledWith('chat-1', goal.id, 'paused')
+      act(() => useAppStore.setState({ goalsByChatId: { 'chat-1': [{ ...goal, status: 'complete' as const }] } }))
+      expect(tab.querySelector('button[aria-label="Edit goal"]')).toBeNull()
+      expect(tab.querySelector('button[aria-label="Stop goal"]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState(original) }
+  })
+  it('ignores Escape while a goal edit saves, so a failed save keeps the draft and its error', async () => {
+    const goal = { id: 'goal-save', chatId: 'chat-1', objective: 'Saved goal', status: 'active' as const, executionOwner: 'uam' as const, createdAt: new Date(), updatedAt: new Date() }
+    let finish!: (value: { ok: boolean; error?: string }) => void
+    const edit = vi.fn(() => new Promise<{ ok: boolean; error?: string }>((resolve) => { finish = resolve }))
+    const original = useAppStore.getState().updateGoalObjective
+    useAppStore.setState({ goalsByChatId: { 'chat-1': [goal] }, activeGoalIdByChatId: { 'chat-1': goal.id }, updateGoalObjective: edit })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      act(() => host.querySelector<HTMLButtonElement>('.uam-composer-goal-tab button[aria-label="Edit goal"]')!.click())
+      const popup = document.querySelector<HTMLElement>('[aria-label="Chat goals"]')!
+      const field = popup.querySelector<HTMLTextAreaElement>('textarea')!
+      act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, 'Draft goal'); field.dispatchEvent(new Event('input', { bubbles: true })) })
+      await act(async () => Array.from(popup.querySelectorAll<HTMLButtonElement>('button')).find((b) => b.textContent === 'Save')!.click())
+      act(() => field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
+      expect(popup.querySelector('textarea')).toBe(field)
+      await act(async () => finish({ ok: false, error: 'Save failed' }))
+      expect(popup.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Draft goal')
+      expect(popup.querySelector('[role="alert"]')?.textContent).toContain('Failed to update goal.')
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ updateGoalObjective: original }) }
   })
   it('isolates delayed goal edit failures after switching chats and leaves the new chat goal usable', async () => {
     const first = useAppStore.getState().sessions[0]
@@ -380,8 +461,8 @@ describe('ChatView', () => {
     const saveGoal = async () => {
       openComposerGoals(host)
       act(() => document.querySelector<HTMLButtonElement>('[aria-label="Chat goals"] [aria-label="Goal actions"]')!.click())
-      act(() => document.querySelector<HTMLButtonElement>('button[aria-label="Edit goal"]')!.click())
-      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Edit goal"] button[type="submit"]')!.click())
+      act(() => document.querySelector<HTMLButtonElement>('[role="menu"] button[aria-label="Edit goal"]')!.click())
+      await act(async () => Array.from(document.querySelectorAll<HTMLButtonElement>('[aria-label="Chat goals"] button')).find((b) => b.textContent === 'Save')!.click())
     }
     try {
       act(() => root.render(<ChatView session={first} />))
@@ -393,7 +474,7 @@ describe('ChatView', () => {
       act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(composer, 'Second chat draft'); composer.dispatchEvent(new Event('input', { bubbles: true })) })
       await act(async () => finish({ ok: false, error: 'Old chat failed' }))
       expect(composer.value).toBe('Second chat draft')
-      expect(document.querySelector('[role="dialog"][aria-label="Edit goal"]')).toBeNull()
+      expect(document.querySelector('#goal-objective-edit')).toBeNull()
       expect(host.textContent).not.toContain('Old chat failed')
       await saveGoal()
       expect(edit).toHaveBeenLastCalledWith(second.id, 'goal-b', 'Second goal')
@@ -447,7 +528,7 @@ describe('ChatView', () => {
     const submit = () => act(() => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
     try {
       act(() => root.render(<ChatView session={first} />))
-      if (kind === 'armed') { openComposerOptions(host); act(() => document.querySelector<HTMLButtonElement>('button[title="Use the next message as a goal"]')!.click()) }
+      if (kind === 'armed') { openComposerOptions(host); act(() => goalMenuItem()!.click()) }
       enter(kind === 'slash' ? '/goal Old objective' : kind === 'native' ? '/ralph Old objective' : 'Old objective')
       submit()
       expect(create).toHaveBeenCalledTimes(1)
@@ -562,7 +643,6 @@ describe('ChatView', () => {
       historyStartIndexBySessionId: {},
       goalsByChatId: {},
       activeGoalIdByChatId: {},
-      defaultGoalTokenBudgetByChatId: {},
       favoriteUamAgentIds: [],
       providerChatDefaults: {},
       uamAgentCycleShortcut: 'shift+tab',
@@ -773,12 +853,25 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Remote transcript could not be read.')
+    expect(reportedText()).toContain('Remote transcript could not be read.')
     act(() => (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Retry') as HTMLButtonElement).click())
     expect(retry).toHaveBeenCalledWith('chat-1', true)
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('alerts a stored chat-history failure once across ChatView remounts', () => {
+    useAppStore.setState({ chatHistoryErrorBySessionId: { 'chat-1': 'Remount history error.' } })
+    for (let mount = 0; mount < 2; mount++) {
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      const root = createRoot(host)
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      act(() => root.unmount())
+      host.remove()
+    }
+    expect(appFailures.filter((failure) => failure.detail.includes('Remount history error.'))).toHaveLength(1)
   })
 
   it('keeps retry loading isolated when switching chats before completion', async () => {
@@ -865,8 +958,9 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
     const expectStatus = (label: string, color: string) => {
       const trigger = host.querySelector<HTMLButtonElement>('.uam-provider-model-trigger')!
-      expect(trigger.title.endsWith(` · ${label}`)).toBe(true)
-      expect((trigger.lastElementChild as HTMLElement).style.background).toBe(color)
+      // Disabled triggers take no focus, so their Tooltip label is only checked while enabled.
+      if (!trigger.disabled) expect(tooltipText(trigger).endsWith(` · ${label}`)).toBe(true)
+      expect((trigger.querySelector('span[aria-hidden="true"].rounded-full') as HTMLElement).style.background).toBe(color)
     }
     expectStatus('Stopped', 'var(--text-3)')
     for (const processing of [false, true, false]) {
@@ -1444,7 +1538,7 @@ describe('ChatView', () => {
     })))
     await act(async () => root.render(<ChatView session={useAppStore.getState().sessions.find(session => session.id === 'chat-1')!} />))
     // No read was started by this fixture: missing rows must not pretend to be work.
-    expect(host.textContent).toContain('Chat history unavailable')
+    expect(reportedText()).toContain('Chat history did not load')
     expect(host.querySelector('.conversation-skeleton')).toBeNull()
     expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
     await act(async () => useAppStore.setState(state => ({ messages: { ...state.messages, 'chat-1': loadedMessages } })))
@@ -2658,7 +2752,7 @@ describe('ChatView', () => {
       expect(host.querySelector('[data-message-index="5"]')).not.toBeNull()
       expect(host.textContent?.split(row.content)).toHaveLength(2)
       expect(host.textContent).not.toContain('Message was not sent')
-      expect(host.querySelector<HTMLButtonElement>('[aria-label="Select provider and model"]')?.disabled).toBe(true)
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Select provider and model"]')?.getAttribute('aria-disabled')).toBe('true')
       act(() => useAppStore.setState({ messages: { 'chat-1': [] } }))
       expect(host.textContent?.split(row.content)).toHaveLength(2)
       expect(host.textContent).toContain('Sending')
@@ -2703,7 +2797,7 @@ describe('ChatView', () => {
       expect(host.querySelector('[data-queue-id]')).toBeNull()
       expect(host.textContent).not.toContain('Queue held')
       expect(host.querySelector<HTMLButtonElement>('[aria-label="Retry message"]')?.disabled).toBe(true)
-      expect(host.querySelector<HTMLButtonElement>('[aria-label="Select provider and model"]')?.disabled).toBe(true)
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Select provider and model"]')?.getAttribute('aria-disabled')).toBe('true')
       const removeButton = host.querySelector<HTMLButtonElement>('[aria-label="Remove unsent prompt"]')!
       expect(removeButton.disabled).toBe(false)
       await act(async () => removeButton.click())
@@ -2899,6 +2993,22 @@ describe('ChatView', () => {
     act(() => editButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     const editTextarea = host.querySelector('textarea[aria-label="Edit message"]') as HTMLTextAreaElement | null
     expect(editTextarea).toBe(composer)
+    // Edit tab sits in the composer tab row, left of the side-chat tab; the send button saves with a pencil.
+    const editTab = host.querySelector('.uam-composer-tabs__end > [role="group"][aria-label="Editing message"]')
+    expect(editTab?.classList.contains('uam-composer-side-controls')).toBe(true)
+    // Enters with the shared subagent disclosure motion.
+    expect(editTab?.classList.contains('uam-subagent-disclosure')).toBe(true)
+    expect(editTab?.getAttribute('data-state')).toBe('open')
+    expect(editTab?.textContent).toContain('Editing message')
+    expect(editTab?.querySelector('button[aria-label="Cancel edit"]')).toBeTruthy()
+    expect(host.textContent).not.toContain('Save changes')
+    const saveEdit = host.querySelector('button[aria-label="Save edit"][type="submit"]')
+    expect(saveEdit?.querySelector('svg.lucide-pencil')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Send prompt"]')).toBeNull()
+    act(() => root.render(<ChatView session={{ ...useAppStore.getState().sessions[0], temporaryParentChatId: 'parent' }} />))
+    const endTabs = Array.from(host.querySelector('.uam-composer-tabs__end')!.children).map((child) => child.getAttribute('aria-label'))
+    expect(endTabs).toEqual(['Editing message', 'Side chat'])
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
     expect(host.querySelectorAll('textarea')).toHaveLength(1)
     expect(editTextarea?.value).toBe('Please inspect the workspace')
     expect(document.activeElement).toBe(composer)
@@ -2909,7 +3019,7 @@ describe('ChatView', () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(editTextarea, 'Inspect only the tests')
       editTextarea?.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    const saveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save to new branch')
+    const saveButton = host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')
     if (historyOffset === 0) await act(async () => editTextarea?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     else await act(async () => saveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     expect(composer?.value).toBe('Unsent draft stays here')
@@ -2946,18 +3056,18 @@ describe('ChatView', () => {
       const edit = () => act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Edit message in new branch"]')!.click())
       edit()
       act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Remove photo.png from edited message"]')!.click())
-      const save = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save to new branch')!
+      const save = () => host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')!
       expect(save().disabled).toBe(false)
       await act(async () => save().click())
       expect(branch).toHaveBeenLastCalledWith('chat-1', 0, '', ['second'])
       expect(host.querySelector('textarea[aria-label="Edit message"]')).toBeTruthy()
-      expect(host.textContent).toContain('Source image no longer exists.')
+      expect(reportedText()).toContain('Source image no longer exists.')
       expect(useAppStore.getState().messages['chat-1'][0].attachments).toEqual(attachments)
       await act(async () => save().click())
       expect(host.querySelector('textarea[aria-label="Edit message"]')).toBeNull()
       edit()
       act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Remove photo.png from edited message"]')!.click())
-      act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Cancel')!.click())
+      act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.getAttribute('aria-label') === 'Cancel edit')!.click())
       edit()
       expect(host.querySelector('button[aria-label="Remove photo.png from edited message"]')).toBeTruthy()
       act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Remove photo.png from edited message"]')!.click())
@@ -2988,7 +3098,7 @@ describe('ChatView', () => {
       if (retry) act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Retry message"]')!.click())
       else {
         edit()
-        act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save to new branch')!.click())
+        act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')!.click())
       }
       act(() => root.render(<ChatView session={sessionB} />))
       act(() => root.render(<ChatView session={sessionA} />))
@@ -3024,12 +3134,12 @@ describe('ChatView', () => {
       Object.defineProperty(file, 'path', { value: '/tmp/new.png' })
       Object.defineProperty(input, 'files', { value: [file], configurable: true })
       await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })))
-      expect(host.textContent).toContain('New image could not be staged.')
+      expect(reportedText()).toContain('New image could not be staged.')
       await act(async () => {
         useAppStore.setState((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], promptActionError: { id: 'attempt', message: 'Provider rejected the old image.' } } } }))
         settle(false)
       })
-      expect(host.textContent).toContain('New image could not be staged.')
+      expect(reportedText()).toContain('New image could not be staged.')
       expect(host.textContent).toContain('Provider rejected the old image.')
       expect(host.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep my text')
       expect(host.textContent).toContain('old.png')
@@ -3223,7 +3333,7 @@ describe('ChatView', () => {
       editTextarea.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => {
-      Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save to new branch')?.click()
+      host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')?.click()
     })
     expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, 'Edited prompt', [])
     expect(retryFailedMessage).not.toHaveBeenCalled()
@@ -3320,10 +3430,11 @@ describe('ChatView', () => {
     expect(host.querySelector('.uam-tool-row__kind')?.textContent).toBe('Tool')
     expect(host.querySelector('.conversation-turn[data-streaming="true"]')).not.toBeNull()
     expect(host.querySelector('.uam-runtime-status')).toBeNull()
-    expect((host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).title).toContain('Permission')
+    // Disabled while the permission wait blocks changes; a disabled trigger cannot take focus to show its tooltip.
+    expect((host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).getAttribute('aria-disabled')).toBe('true')
 
     openComposerOptions(host)
-    expect(document.body.textContent).toContain('Token budget')
+    expect(document.body.textContent).not.toContain('Token budget')
     expect(host.textContent).not.toContain('Unavailable')
 
     const toolButton = Array.from(host.querySelectorAll('button')).find((button) =>
@@ -3504,11 +3615,11 @@ describe('ChatView', () => {
     })
 
     expect(host.querySelector('[data-testid="stale-wait-warning"]')).toBeTruthy()
-    expect(host.textContent).toContain('This approval has not had runtime activity for 143s.')
+    expect(host.textContent).toContain('This approval has had no activity for 143s.')
     expect(host.textContent).toContain('No runtime activity while waiting for command or tool approval.')
 
     const cancelButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Cancel turn')
-    const stopButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Stop runtime')
+    const stopButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Stop')
     expect(cancelButton).toBeTruthy()
     expect(stopButton).toBeTruthy()
 
@@ -3588,11 +3699,14 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    expect(host.querySelector('.uam-composer-region .qr-panel')).toBeTruthy()
+    // The turn waits on this question: it replaces the composer body and a Question tab joins the composer tab row.
     expect(host.querySelectorAll('.qr-panel')).toHaveLength(1)
-    expect(host.querySelector('.qr-panel')?.nextElementSibling?.classList.contains('uam-composer-surface')).toBe(true)
+    expect(host.querySelector('.uam-composer-surface > .qr-panel[data-variant="composer"]')).toBeTruthy()
+    expect(host.querySelector('.uam-composer-tabs__end [role="group"][aria-label="Question"]')?.textContent).toBe('Question')
+    expect(host.querySelector('.uam-composer-textarea')?.closest('[hidden]')).toBeTruthy()
     expect(document.querySelector('[aria-modal="true"]')).toBeNull()
     const dialog = document.body.querySelector<HTMLElement>('.qr-panel')!
+    const composerSend = () => host.querySelector<HTMLButtonElement>('button[type="submit"][aria-label="Submit answers"]')
     expect(dialog.textContent).toContain('Which scope?')
     expect(dialog.textContent).toContain('Focused')
     expect(dialog.textContent).not.toContain('Any extra detail?')
@@ -3604,14 +3718,18 @@ describe('ChatView', () => {
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(noteInput, 'Extra context')
       noteInput.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    const submitButton = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!
-    expect(submitButton.disabled).toBe(false)
-    await act(async () => { submitButton.click(); await Promise.resolve() })
+    // The composer's own send button submits; the question has no separate Submit button.
+    expect(Array.from(dialog.querySelectorAll('button')).some((button) => button.textContent === 'Submit answers')).toBe(false)
+    expect(composerSend()?.disabled).toBe(false)
+    await act(async () => { composerSend()!.click(); await Promise.resolve() })
 
     expect(resolveAcpUserInput).toHaveBeenCalledWith('chat-1', '11', {
       scope: ['Focused'],
       note: ['Extra context'],
     })
+    // Answering restores the normal composer before the native push clears the request.
+    expect(host.querySelector('.qr-panel')).toBeNull()
+    expect(host.querySelector('.uam-composer-textarea')?.closest('[hidden]')).toBeNull()
 
     act(() => {
       root.unmount()
@@ -3639,6 +3757,12 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
     let dialog = document.body.querySelector<HTMLElement>('.qr-panel')!
     expect(dialog.textContent).toContain('Which browser should I use?')
+    // UAM control questions do not block the turn: they float above a composer that stays usable, with no Question tab.
+    expect(dialog.dataset.variant).toBe('float')
+    expect(dialog.closest('.uam-composer-surface')).toBeNull()
+    expect(host.querySelector('.uam-composer-textarea')?.closest('[hidden]')).toBeNull()
+    expect(host.querySelector('[role="group"][aria-label="Question"]')).toBeNull()
+    expect(Boolean(dialog.compareDocumentPosition(host.querySelector('.uam-composer-surface')!) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
     act(() => dialog.querySelector<HTMLInputElement>('input[type="radio"]')!.click())
     await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!.click(); await Promise.resolve() })
     expect(resolveAcpUserInput).toHaveBeenCalledWith('chat-1', 'uam-control:question-1', { userQuestion: ['Firefox'] })
@@ -3688,24 +3812,152 @@ describe('ChatView', () => {
 
     const dialog = document.body.querySelector<HTMLElement>('.qr-panel')!
     const answerButton = dialog.querySelector<HTMLInputElement>('input[type="radio"]')!
+    const submitButton = () => host.querySelector<HTMLButtonElement>('button[type="submit"][aria-label="Submit answers"]')
+    // The running turn keeps its Cancel turn control beside Submit answers, before and after an answer is chosen.
+    expect(submitButton()?.disabled).toBe(true)
+    expect(host.querySelector('button[aria-label="Cancel turn"]')).toBeTruthy()
     act(() => answerButton.click())
-    const submitButton = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!
-    expect(submitButton.disabled).toBe(false)
+    expect(submitButton()?.disabled).toBe(false)
+    expect(host.querySelector('button[aria-label="Cancel turn"]')).toBeTruthy()
 
-    act(() => { submitButton.click(); submitButton.click() })
+    act(() => { submitButton()!.click(); submitButton()?.click() })
     expect(resolveAcpUserInput).toHaveBeenCalledTimes(1)
     expect(answerButton.closest('fieldset')?.disabled).toBe(true)
-    expect(submitButton.disabled).toBe(true)
+    // While the answer is in flight the send button stays put (disabled) and Cancel turn stays reachable.
+    expect(submitButton()?.disabled).toBe(true)
+    expect(host.querySelector('button[aria-label="Cancel turn"]')).toBeTruthy()
 
     await act(async () => { finishResponse?.(false); await Promise.resolve() })
     expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('did not accept')
-    expect(submitButton.disabled).toBe(false)
+    expect(submitButton()?.disabled).toBe(false)
 
     resolveAcpUserInput.mockResolvedValueOnce(true)
-    await act(async () => { submitButton.click(); await Promise.resolve() })
+    await act(async () => { submitButton()!.click(); await Promise.resolve() })
     expect(resolveAcpUserInput).toHaveBeenCalledTimes(2)
-    expect(document.body.querySelector('.qr-panel fieldset')).toBeNull()
-    expect(Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Answers submitted')?.disabled).toBe(true)
+    expect(document.body.querySelector('.qr-panel')).toBeNull()
+    expect(host.querySelector('.uam-composer-textarea')?.closest('[hidden]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps question answers and an in-flight submit while a permission moves the question out of the composer and back', async () => {
+    let finishResponse: ((accepted: boolean) => void) | undefined
+    const resolveAcpUserInput = vi.fn(() => new Promise<boolean>((resolve) => { finishResponse = resolve }))
+    const question = (id: string, text: string) => ({ id, header: id, question: text, isOther: false, isSecret: false, options: [{ label: 'Focused', description: '' }, { label: 'Broad', description: '' }] })
+    const setLifecycle = (lifecycleState: 'waitingUserInput' | 'waitingPermission') => act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState } },
+    })))
+    useAppStore.setState((state) => ({
+      resolveAcpUserInput,
+      acpBindingBySessionId: { ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true, lifecycleState: 'waitingUserInput', pendingPermission: null,
+          pendingUserInput: { requestId: 'flip-request', itemId: 'flip-item', status: 'pending', questions: [question('scope', 'Which scope?'), question('depth', 'How deep?')] } },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const panel = () => host.querySelector<HTMLElement>('.qr-panel')!
+    const radio = (label: string) => Array.from(panel().querySelectorAll<HTMLInputElement>('input[type="radio"]')).find((input) => input.closest('label')?.textContent?.includes(label))!
+    act(() => radio('Broad').click())
+    act(() => Array.from(panel().querySelectorAll('button')).find((button) => button.textContent === 'Next')!.click())
+    act(() => radio('Focused').click())
+
+    setLifecycle('waitingPermission')
+    expect(panel().dataset.variant).toBe('float')
+    expect(panel().textContent).toContain('How deep?')
+    expect(radio('Focused').checked).toBe(true)
+    setLifecycle('waitingUserInput')
+    expect(panel().dataset.variant).toBe('composer')
+    expect(radio('Focused').checked).toBe(true)
+    act(() => Array.from(panel().querySelectorAll('button')).find((button) => button.textContent === 'Back')!.click())
+    expect(radio('Broad').checked).toBe(true)
+    act(() => Array.from(panel().querySelectorAll('button')).find((button) => button.textContent === 'Next')!.click())
+
+    // A flip while the answers are in flight adopts that submit instead of offering a fresh card to answer again.
+    await act(async () => { host.querySelector<HTMLButtonElement>('button[type="submit"][aria-label="Submit answers"]')!.click(); await Promise.resolve() })
+    expect(resolveAcpUserInput).toHaveBeenCalledTimes(1)
+    setLifecycle('waitingPermission')
+    const floatSubmit = Array.from(panel().querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.startsWith('Submit'))!
+    expect(floatSubmit.disabled).toBe(true)
+    act(() => floatSubmit.click())
+    expect(resolveAcpUserInput).toHaveBeenCalledTimes(1)
+    await act(async () => { finishResponse?.(true); await Promise.resolve() })
+    expect(host.querySelector('.qr-panel')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('forgets a chat\'s question answers once no question is pending, so a reused request id opens fresh', async () => {
+    const resolveAcpUserInput = vi.fn().mockResolvedValue(true)
+    const ask = (text: string | null) => act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: { ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true, lifecycleState: text ? 'waitingUserInput' : 'processing', pendingPermission: null,
+          pendingUserInput: text ? { requestId: '7', itemId: '', status: 'pending', questions: [{ id: 'answer', header: 'answer', question: text, isOther: false, isSecret: false,
+            options: [{ label: 'Focused', description: '' }, { label: 'Broad', description: '' }] }] } : null } },
+    })))
+    useAppStore.setState({ resolveAcpUserInput })
+    ask('First question?')
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const panel = () => host.querySelector<HTMLElement>('.qr-panel')
+    const radios = () => Array.from(panel()!.querySelectorAll<HTMLInputElement>('input[type="radio"]'))
+    const submit = () => host.querySelector<HTMLButtonElement>('button[type="submit"][aria-label="Submit answers"]')!
+
+    // A draft left behind by a cancelled turn does not prefill the next question that reuses the id.
+    act(() => radios()[1].click())
+    ask(null)
+    ask('Second question?')
+    expect(panel()?.textContent).toContain('Second question?')
+    expect(radios().some((radio) => radio.checked)).toBe(false)
+
+    // An answered question does not hide or lock the next one with the same id.
+    act(() => radios()[0].click())
+    await act(async () => { submit().click(); await Promise.resolve() })
+    expect(panel()).toBeNull()
+    ask(null)
+    ask('Third question?')
+    expect(panel()?.dataset.variant).toBe('composer')
+    expect(radios().some((radio) => radio.checked)).toBe(false)
+    act(() => radios()[1].click())
+    expect(submit().disabled).toBe(false)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps a question answered from the floating card out of the composer until native clears it', async () => {
+    const resolveAcpUserInput = vi.fn().mockResolvedValue(true)
+    const setLifecycle = (lifecycleState: 'waitingUserInput' | 'waitingPermission') => act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState } },
+    })))
+    useAppStore.setState((state) => ({
+      resolveAcpUserInput,
+      acpBindingBySessionId: { ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true, lifecycleState: 'waitingPermission', pendingPermission: null,
+          pendingUserInput: { requestId: 'float-request', itemId: 'float-item', status: 'pending', questions: [{ id: 'scope', header: 'scope', question: 'Which scope?', isOther: false, isSecret: false,
+            options: [{ label: 'Focused', description: '' }, { label: 'Broad', description: '' }] }] } },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const panel = () => host.querySelector<HTMLElement>('.qr-panel')!
+    expect(panel().dataset.variant).toBe('float')
+    act(() => panel().querySelector<HTMLInputElement>('input[type="radio"]')!.click())
+    await act(async () => { Array.from(panel().querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!.click(); await Promise.resolve() })
+    expect(resolveAcpUserInput).toHaveBeenCalledTimes(1)
+
+    setLifecycle('waitingUserInput')
+    expect(panel().dataset.variant).toBe('float')
+    expect(panel().textContent).toContain('Answers submitted')
+    expect(host.querySelector('button[type="submit"][aria-label="Submit answers"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -4070,8 +4322,8 @@ describe('ChatView', () => {
     act(() => permission.click())
     const yolo = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('YOLO')) as HTMLButtonElement
     await act(async () => { yolo.click(); await Promise.resolve() })
-    expect(host.textContent).toContain('Enable YOLO?')
-    await act(async () => { (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
+    expect(document.body.textContent).toContain('Enable YOLO?')
+    await act(async () => { (Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'yolo')
 
     expect(host.querySelector('select')).toBeNull()
@@ -4151,8 +4403,8 @@ describe('ChatView', () => {
       setDraft('/permission yolo')
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
-    expect(host.textContent).toContain('Enable YOLO?')
-    await act(async () => { (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
+    expect(document.body.textContent).toContain('Enable YOLO?')
+    await act(async () => { (Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'yolo')
     expect(host.textContent).not.toContain('Permission mode changed')
 
@@ -4161,10 +4413,10 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
     expect(setSessionApprovalMode).not.toHaveBeenCalled()
-    expect(Array.from(host.querySelectorAll('[role="alert"]')).some((alert) => alert.textContent?.includes('Unsupported permission mode "unrestricted"'))).toBe(true)
-    const dismissFeedback = host.querySelector('button[aria-label="Dismiss command feedback"]') as HTMLButtonElement
-    act(() => dismissFeedback.click())
-    expect(host.textContent).not.toContain('Unsupported permission mode "unrestricted"')
+    expect(reportedText()).toContain('Unsupported permission mode "unrestricted"')
+    // Feedback now goes to the shared alert once; the inline dismiss control is gone.
+    expect(host.querySelector('button[aria-label="Dismiss command feedback"]')).toBeNull()
+    expect(appFailures.filter((failure) => failure.detail.includes('Unsupported permission mode "unrestricted"'))).toHaveLength(1)
 
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'keep /permission yo tail')
@@ -4173,7 +4425,7 @@ describe('ChatView', () => {
     })
     const middleYolo = Array.from(document.body.querySelectorAll('[aria-label="Permission modes"] [role="option"]')).find((option) => option.textContent?.includes('YOLO')) as HTMLButtonElement
     await act(async () => { middleYolo.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
-    await act(async () => { (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
+    await act(async () => { (Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
     expect(textarea.value).toBe('keep  tail')
     expect(setSessionCommandSafetyTier).toHaveBeenLastCalledWith('chat-1', 'yolo')
 
@@ -4204,7 +4456,7 @@ describe('ChatView', () => {
       await Promise.resolve()
     }
     const acceptYolo = async () => {
-      const button = Array.from(host.querySelectorAll('button')).find((candidate) => candidate.textContent === 'Enable YOLO') as HTMLButtonElement
+      const button = Array.from(document.body.querySelectorAll('button')).find((candidate) => candidate.textContent === 'Enable YOLO') as HTMLButtonElement
       expect(button).toBeTruthy()
       button.click()
       await Promise.resolve()
@@ -4212,9 +4464,9 @@ describe('ChatView', () => {
 
     await act(requestYolo)
     await act(acceptYolo)
-    expect(host.textContent).toContain('Native permission update was rejected.')
-    act(() => (host.querySelector('button[aria-label="Dismiss command feedback"]') as HTMLButtonElement).click())
-    expect(host.textContent).not.toContain('Native permission update was rejected.')
+    expect(reportedText()).toContain('Native permission update was rejected.')
+    expect(host.querySelector('button[aria-label="Dismiss command feedback"]')).toBeNull()
+    expect(appFailures.filter((failure) => failure.detail.includes('Native permission update was rejected.'))).toHaveLength(1)
 
     await act(requestYolo)
     await act(acceptYolo)
@@ -4245,7 +4497,7 @@ describe('ChatView', () => {
     expect(document.body.querySelector('[role="dialog"][aria-label="Computer use"]')).toBeNull()
 
     openComposerOptions(host)
-    const computerOption = Array.from(document.body.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent?.includes('Computer use')) as HTMLButtonElement
+    const computerOption = document.body.querySelector<HTMLInputElement>('input[role="menuitemcheckbox"][aria-label^="Computer use"]')!
     expect(computerOption).toBeTruthy()
     await act(async () => { computerOption.click(); await Promise.resolve() })
     expect(setSessionComputerUseEnabled).toHaveBeenCalledWith('chat-1', true)
@@ -4405,7 +4657,8 @@ describe('ChatView', () => {
     try {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
       expect((host.querySelector('textarea') as HTMLTextAreaElement).placeholder.endsWith('· keyboard mic for dictation')).toBe(true)
-      expect(host.querySelector('button[data-dictation-state="idle"]')?.getAttribute('title')).toContain('or use your keyboard microphone')
+      // Companion dictation is disabled here, so its Tooltip is unreachable; the placeholder carries the keyboard-mic hint.
+      expect((host.querySelector('button[data-dictation-state="idle"]') as HTMLButtonElement).getAttribute('aria-disabled')).toBe('true')
     } finally {
       act(() => root.unmount())
       host.remove()
@@ -4608,8 +4861,8 @@ describe('ChatView', () => {
     expect(readChatComposerDraft('chat-1').attachments).toHaveLength(1)
     expect(useAppStore.getState().markdownStoreAttachedBySessionId['chat-1']).toEqual([skill])
     expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
-    if (operation === 'failure') expect(host.textContent).toContain('This provider does not support manual compaction.')
-    if (operation === 'not-accepted') expect(host.textContent).toContain('Compaction failed: the request was not accepted.')
+    if (operation === 'failure') expect(reportedText()).toContain('This provider does not support manual compaction.')
+    if (operation === 'not-accepted') expect(reportedText()).toContain('Compaction failed: the request was not accepted.')
     act(() => root.unmount())
     host.remove()
     delete window.cefQuery
@@ -4878,7 +5131,7 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
     expect(setSessionCodexOptions).toHaveBeenNthCalledWith(3, 'chat-1', { reasoningEffort: 'xhigh' })
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Reasoning changed to Extra High.')
+    expect(appNotices.join('\n')).toContain('Reasoning changed to Extra High.')
 
     await act(async () => {
       setDraft('/speed flex')
@@ -4886,7 +5139,7 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
     expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex', serviceTierExplicit: true })
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Speed changed to Flex.')
+    expect(appNotices.join('\n')).toContain('Speed changed to Flex.')
 
     act(() => root.unmount())
     host.remove()
@@ -4986,7 +5239,7 @@ describe('ChatView', () => {
     })
 
     expect(setSessionCodexOptions).not.toHaveBeenCalled()
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Codex is still working.')
+    expect(reportedText()).toContain('Codex is still working.')
 
     act(() => root.unmount())
     host.remove()
@@ -5046,6 +5299,52 @@ describe('ChatView', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('switches message branches at once so rapid clicks step from the shown branch and a chat switch mid-swipe stays put', () => {
+    vi.useFakeTimers()
+    const originalMatchMedia = window.matchMedia
+    window.matchMedia = vi.fn().mockReturnValue({ matches: false, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {} }) as unknown as typeof window.matchMedia
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const show = (id: string) => root.render(<ChatView session={useAppStore.getState().sessions.find((session) => session.id === id)!} />)
+    const setActiveSession = vi.fn((id: string) => { useAppStore.setState({ activeSessionId: id }); show(id) })
+    useAppStore.setState((state) => {
+      const branch = (id: string, minute: number) => ({ ...state.sessions[0], id, parentChatId: 'chat-root', branchRootChatId: 'chat-root', branchFromMessageIndex: 0, createdAt: new Date(`2026-01-01T00:0${minute}:00.000Z`) })
+      return {
+        sessions: [{ ...state.sessions[0], id: 'chat-root', branchRootChatId: 'chat-root' }, branch('chat-branch', 1), branch('chat-branch-2', 2), { ...state.sessions[0], id: 'chat-other', name: 'Other chat' }],
+        messages: { 'chat-root': state.messages['chat-1'], 'chat-branch': state.messages['chat-1'], 'chat-branch-2': state.messages['chat-1'], 'chat-other': state.messages['chat-1'] },
+        activeSessionId: 'chat-branch',
+        setActiveSession,
+      }
+    })
+    const counter = () => host.querySelector('[aria-label="Message branches"]')
+    const press = (label: string) => act(() => counter()!.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click())
+    try {
+      act(() => show('chat-branch'))
+      expect(counter()?.textContent).toContain('2 / 3')
+      press('Next message branch')
+      press('Previous message branch')
+      expect(setActiveSession.mock.calls.map(([id]) => id)).toEqual(['chat-branch-2', 'chat-branch'])
+      expect(counter()?.textContent).toContain('2 / 3')
+      expect(host.querySelector('.uam-message-list')?.getAttribute('data-message-motion')).toBe('in-prev')
+      act(() => vi.advanceTimersByTime(1000))
+      expect(host.querySelector('.uam-message-list')?.hasAttribute('data-message-motion')).toBe(false)
+
+      // Picking another chat during the swipe neither animates it nor pulls the user back to the branch.
+      press('Next message branch')
+      act(() => { useAppStore.setState({ activeSessionId: 'chat-other' }); show('chat-other') })
+      expect(host.querySelector('.uam-message-list')?.hasAttribute('data-message-motion')).toBe(false)
+      act(() => vi.advanceTimersByTime(1000))
+      expect(setActiveSession).toHaveBeenCalledTimes(3)
+      expect(useAppStore.getState().activeSessionId).toBe('chat-other')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      window.matchMedia = originalMatchMedia
+      vi.useRealTimers()
+    }
   })
 
   it('renders Codex runtime model options without Gemini fallback labels', () => {
@@ -5681,7 +5980,7 @@ describe('ChatView', () => {
 
     const setSessionModel = vi.fn(() => Promise.resolve(true))
     act(() => useAppStore.setState({ setSessionModel }))
-    expect((host.querySelector('button[aria-label="Worker model is managed in Options"]') as HTMLButtonElement).disabled).toBe(true)
+    expect((host.querySelector('button[aria-label="Worker model is managed in Options"]') as HTMLButtonElement).getAttribute('aria-disabled')).toBe('true')
     openComposerOptions(host)
     const worker = document.body.querySelector('button[aria-label="Worker model"]') as HTMLButtonElement
     expect(worker.textContent).toContain('Auto 3')
@@ -5712,7 +6011,7 @@ describe('ChatView', () => {
 
     expect((document.body.querySelector('button[aria-label="Worker model"]') as HTMLButtonElement).disabled).toBe(true)
     expect((document.body.querySelector('button[aria-label="Reviewer model"]') as HTMLButtonElement).disabled).toBe(true)
-    expect((host.querySelector('button[aria-label="Worker model is managed in Options"]') as HTMLButtonElement).disabled).toBe(true)
+    expect((host.querySelector('button[aria-label="Worker model is managed in Options"]') as HTMLButtonElement).getAttribute('aria-disabled')).toBe('true')
     openComposerGoals(host)
     expect(document.body.textContent).toContain('Worker: Auto 3 · Reviewer: Gemini 3 Flash · locked')
 
@@ -5745,7 +6044,7 @@ describe('ChatView', () => {
 
     const modelButton = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement | null
     expect(modelButton).toBeTruthy()
-    expect(modelButton?.disabled).toBe(true)
+    expect(modelButton?.getAttribute('aria-disabled')).toBe('true')
     openComposerOptions(host)
 	expect((document.body.querySelector('button[aria-label="Next turn agent"]') as HTMLButtonElement | null)?.disabled).toBe(false)
     expect(document.body.querySelector('button[aria-label="Provider mode"]')).toBeNull()
@@ -5925,8 +6224,8 @@ describe('ChatView', () => {
     act(() => permissionButton.click())
     const yoloOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('YOLO')) as HTMLButtonElement
     await act(async () => { yoloOption.click(); await Promise.resolve() })
-    expect(host.textContent).toContain('Enable YOLO?')
-    await act(async () => { (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
+    expect(document.body.textContent).toContain('Enable YOLO?')
+    await act(async () => { (Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'yolo')
 
     act(() => {
@@ -6124,9 +6423,9 @@ describe('ChatView', () => {
     })
 
     expect(sendAcpPrompt).not.toHaveBeenCalled()
-    expect(host.textContent).toContain('Claude Plan mode is read-only')
+    expect(document.body.textContent).toContain('Claude Plan mode is read-only')
 
-    const acceptAndProceed = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Accept edits and proceed') as HTMLButtonElement | undefined
+    const acceptAndProceed = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Accept edits and proceed') as HTMLButtonElement | undefined
     expect(acceptAndProceed).toBeTruthy()
     await act(async () => {
       acceptAndProceed?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -6162,7 +6461,7 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => { (host.querySelector('form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
-    expect(host.textContent).toContain('Claude Plan mode is read-only')
+    expect(document.body.textContent).toContain('Claude Plan mode is read-only')
 
     const changed = { ...useAppStore.getState().sessions[0], providerId: 'gemini-cli', approvalMode: 'default' }
     act(() => root.render(<ChatView session={changed} />))
@@ -6180,7 +6479,7 @@ describe('ChatView', () => {
     useAppStore.setState((state) => ({
       setGoal,
       sendAcpPrompt,
-      defaultGoalTokenBudgetByChatId: { ...state.defaultGoalTokenBudgetByChatId, 'chat-1': 1234 },
+      goalTokenBudget: 1234,
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
         'chat-1': {
@@ -6203,7 +6502,7 @@ describe('ChatView', () => {
     })
 
     openComposerOptions(host)
-    const goalButton = document.body.querySelector('button[title="Use the next message as a goal"]') as HTMLButtonElement | null
+    const goalButton = goalMenuItem()
     expect(goalButton).toBeTruthy()
     act(() => {
       goalButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -6307,7 +6606,7 @@ describe('ChatView', () => {
     openComposerGoals(host)
     act(() => (document.body.querySelector('button[aria-label="Goal actions"]') as HTMLButtonElement).click())
     const deleteGoal = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Delete goal') as HTMLButtonElement
-    expect(deleteGoal.disabled).toBe(true)
+    expect(deleteGoal.getAttribute('aria-disabled')).toBe('true')
     act(() => deleteGoal.click())
     expect(removeGoal).not.toHaveBeenCalled()
 
@@ -6323,7 +6622,7 @@ describe('ChatView', () => {
 		setGoal,
 		sendAcpPrompt,
 		providerChatDefaults: { ...state.providerChatDefaults, 'codex-cli': { modelId: '', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, featurePreference: 'provider' } },
-		defaultGoalTokenBudgetByChatId: { ...state.defaultGoalTokenBudgetByChatId, 'chat-1': 0 },
+		goalTokenBudget: 0,
 		providers: state.providers.map((provider) => provider.id === 'codex-cli' ? { ...provider, nativeGoalCommand: '/ralph' } : provider),
 		sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'codex-cli' } : session),
 	  }))
@@ -6380,7 +6679,7 @@ describe('ChatView', () => {
 	  })
 
 	  expect(setGoal).toHaveBeenCalledTimes(1)
-	  expect(host.textContent).toContain('Failed to create goal.')
+	  expect(reportedText()).toContain('Failed to create goal.')
 	  expect(textarea.value).toBe('/ralph Keep this draft')
 	  expect(textarea.disabled).toBe(false)
 	  act(() => root.unmount())
@@ -6498,7 +6797,7 @@ describe('ChatView', () => {
       finishResume?.({ ok: false })
       await Promise.resolve()
     })
-    expect(host.textContent).toContain('Failed to resume goal.')
+    expect(reportedText()).toContain('Failed to resume goal.')
 
     act(() => {
       menuItem('Delete goal')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -6540,7 +6839,7 @@ describe('ChatView', () => {
     expect(removeGoal).toHaveBeenLastCalledWith('chat-1', 'goal-1')
 
     openComposerOptions(host)
-    const newGoalButton = document.body.querySelector('button[title="Use the next message as a goal"]') as HTMLButtonElement | null
+    const newGoalButton = goalMenuItem()
     expect(newGoalButton).toBeTruthy()
     act(() => {
       newGoalButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -7225,9 +7524,9 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('Update Codex support.')
     expect((host.textContent?.match(/Update Codex support\./g) ?? [])).toHaveLength(1)
     expect(host.textContent).toContain('Inspect protocol events')
-    expect(host.textContent).toContain('completed')
+    expect(host.querySelector('[role="img"][aria-label="completed"]')).not.toBeNull()
     expect(host.textContent).toContain('Patch rendering')
-    expect(host.textContent).toContain('pending')
+    expect(host.querySelector('[role="img"][aria-label="pending"]')).not.toBeNull()
     expect(host.querySelectorAll('[data-testid="plan-block"]')).toHaveLength(1)
 
     const approveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Approve')
@@ -7426,7 +7725,7 @@ describe('ChatView', () => {
 
     expect(host.textContent).toContain('Active plan.')
     expect(host.textContent).toContain('Working step')
-    expect(host.textContent).toContain('in progress')
+    expect(host.querySelector('[role="img"][aria-label="in progress"]')).not.toBeNull()
     const approveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Approve') as HTMLButtonElement | undefined
     const denyButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Deny') as HTMLButtonElement | undefined
     expect(approveButton).toBeTruthy()
@@ -7547,10 +7846,11 @@ describe('ChatView', () => {
 
     const error = host.querySelector('[aria-label="Dismiss composer error"]')!.closest('[role="alert"]') as HTMLElement
     expect(error.textContent).toContain('Provider failed to launch.')
-    expect(error.getAttribute('style')).toContain('var(--red) 42%')
-    expect(error.getAttribute('style')).toContain('var(--red) 9%')
+    expect(error.getAttribute('style')).toContain('var(--error) 42%')
+    expect(error.getAttribute('style')).toContain('var(--error) 9%')
+    // Notice is one bar: copy action + dismiss only, no disclosure toggle; the recovery actions stay absent.
     expect(error.querySelectorAll('button')).toHaveLength(2)
-    expect(error.querySelector('[aria-expanded]')).toBeNull()
+    expect(error.querySelectorAll('[aria-expanded]')).toHaveLength(0)
     expect(host.querySelector('[aria-label="Check provider CLI"]')).toBeNull()
     expect(host.querySelector('[aria-label="Open CLI settings"]')).toBeNull()
     expect(host.querySelector('[aria-label="Open fallback terminal"]')).toBeNull()
@@ -8348,7 +8648,7 @@ describe('ChatView', () => {
     expect(workspaceTab.lastElementChild?.querySelector('svg')).toBeNull()
 
     openWorkspaceActions(host)
-    const openButton = document.body.querySelector('button[role="menuitem"]') as HTMLButtonElement | null
+    const openButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')).find((button) => button.textContent?.includes('Open workspace')) ?? null
     expect(openButton).toBeTruthy()
     expect(openButton?.textContent).toContain('Open workspace')
 
@@ -8410,7 +8710,7 @@ describe('ChatView', () => {
     await act(async () => { Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Move chat')!.click() })
     expect(requests.filter((request) => request.action === 'moveChatWorkspace')).toMatchObject([{ action: 'moveChatWorkspace', payload: { chatId: 'chat-1', folderId: 'destination' } }])
     expect(useAppStore.getState().sessions[0]).toMatchObject({ folderId: 'original', nativeSessionId: 'parent-native', workspaceDirectory: '/srv/project' })
-    expect(host.textContent).toContain(confirmed ? 'Moved chat.' : 'Stop the chat before moving')
+    expect(confirmed ? appNotices.join('\n') : reportedText()).toContain(confirmed ? 'Moved chat.' : 'Stop the chat before moving')
     act(() => root.unmount())
     host.remove()
     window.cefQuery = previousCefQuery
@@ -8477,9 +8777,8 @@ describe('ChatView', () => {
       ;(Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')).find((button) => button.textContent?.includes('Open in editor')) as HTMLButtonElement).click()
       await Promise.resolve()
     })
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Opened workspace editor.')
-    expect(host.querySelector('button[aria-label="Dismiss workspace action message"]')).toBeTruthy()
-    act(() => vi.advanceTimersByTime(5000))
+    // Success goes to the shared notifications path, not an inline banner; its expiry is the alert's job.
+    expect(appNotices).toContain('Opened workspace editor.')
     expect(host.textContent).not.toContain('Opened workspace editor.')
 
     openWorkspaceActions(host)
@@ -8487,11 +8786,11 @@ describe('ChatView', () => {
       ;(Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')).find((button) => button.textContent?.includes('Open terminal')) as HTMLButtonElement).click()
       await Promise.resolve()
     })
-    expect(Array.from(host.querySelectorAll('[role="alert"]')).some((alert) => alert.textContent?.includes('Failed to open terminal.'))).toBe(true)
+    expect(reportedText()).toContain('Failed to open terminal.')
     act(() => vi.advanceTimersByTime(6000))
-    expect(host.textContent).toContain('Failed to open terminal.')
-    act(() => (host.querySelector('button[aria-label="Dismiss workspace action message"]') as HTMLButtonElement).click())
-    expect(host.textContent).not.toContain('Failed to open terminal.')
+    // The alert is reported once; the timer expiry of the success notice does not re-report or drop it.
+    expect(reportedText().split('Failed to open terminal.')).toHaveLength(2)
+    expect(host.querySelector('button[aria-label="Dismiss workspace action message"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -8532,7 +8831,7 @@ describe('ChatView', () => {
     expect(document.body.querySelector('[role="menu"][aria-label="Workspace actions"]')?.textContent).toContain('build/fix-login')
     const discard = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]'))
       .find((button) => button.textContent === 'Discard & return') as HTMLButtonElement
-    expect(discard.disabled).toBe(false)
+    expect(discard.getAttribute('aria-disabled')).toBeNull()
 
     act(() => {
       useAppStore.setState({
@@ -8551,7 +8850,7 @@ describe('ChatView', () => {
         },
       })
     })
-    expect(discard.disabled).toBe(true)
+    expect(discard.getAttribute('aria-disabled')).toBe('true')
 
     act(() => root.unmount())
     host.remove()
@@ -8604,7 +8903,7 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    const rollback = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+    const rollback = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent === 'Roll back turn')
     expect(rollback).toBeTruthy()
     await act(async () => {
@@ -8614,9 +8913,9 @@ describe('ChatView', () => {
     })
 
     expect(previewChatTurnRollback).toHaveBeenCalledWith('chat-1', 1)
-    expect(host.textContent).toContain('app.txt | 2 +-')
+    expect(document.body.textContent).toContain('app.txt | 2 +-')
     expect(rollbackChatTurn).not.toHaveBeenCalled()
-    const confirmRollback = Array.from(host.querySelectorAll<HTMLButtonElement>('.uam-notice button'))
+    const confirmRollback = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button'))
       .find((button) => button.textContent === 'Roll back turn')
     await act(async () => {
       confirmRollback?.click()
@@ -8624,7 +8923,7 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
     expect(rollbackChatTurn).toHaveBeenCalledWith('chat-1', 1)
-    expect(host.textContent).toContain('Rolled the isolated worktree back to before this turn.')
+    expect(appNotices).toContain('Rolled the isolated worktree back to before this turn.')
 
     act(() => root.unmount())
     host.remove()
@@ -8696,7 +8995,7 @@ describe('ChatView', () => {
     })
 
     expect(discardChatWorktreeChanges).toHaveBeenCalledWith('chat-1')
-    expect(host.textContent).toContain('Discarded changes in the chat worktree.')
+    expect(appNotices).toContain('Discarded changes in the chat worktree.')
 
     act(() => {
       root.render(<ChatView session={useAppStore.getState().sessions[1]} />)
@@ -8757,7 +9056,7 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
 
-    expect(host.textContent).toContain('Discarded changes in the chat worktree.')
+    expect(appNotices).toContain('Discarded changes in the chat worktree.')
 
     const returnedSession = {
       ...useAppStore.getState().sessions[0],
@@ -9498,9 +9797,9 @@ describe('ChatView', () => {
         openComposerOptions(host)
         act(() => document.body.querySelector<HTMLButtonElement>('button[aria-label="Permissions"]')!.click())
         await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.includes('YOLO'))!.click())
-        expect(host.textContent).toContain('Enable YOLO?')
-        await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('.uam-notice button')).find((button) => button.textContent === 'Cancel')!.click())
-        expect(host.textContent).not.toContain('Enable YOLO?')
+        expect(document.body.textContent).toContain('Enable YOLO?')
+        await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Cancel')!.click())
+        expect(document.body.textContent).not.toContain('Enable YOLO?')
       } else {
         await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.getAttribute('aria-label') === 'Return to main chat')!.click())
         expect(select).toHaveBeenCalledWith('main-chat')
@@ -9551,7 +9850,7 @@ describe('ChatView', () => {
       expect(send).not.toHaveBeenCalled()
       expect((host.querySelector('.uam-composer-textarea') as HTMLTextAreaElement).value).toBe('Unsent composer draft')
       expect(readChatComposerDraft('chat-1')?.text).toBe('Unsent composer draft')
-      expect(host.textContent).toContain('could not be resumed')
+      expect(reportedText()).toContain('could not be resumed')
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ resumeQueuedAcpPrompts: original, sendAcpPrompt: originalSend, editQueuedAcpPrompt: originalEdit }) }
   })
 
@@ -9709,7 +10008,7 @@ describe('ChatView', () => {
       expect(canonicalMarkup('native')).toBe(canonicalMarkup('main'))
       for (const surface of ['managed', 'native']) {
         const tool = [...body(surface).querySelectorAll<HTMLButtonElement>('button')].find(control =>
-          control.getAttribute('aria-label') === 'Inspect fixture, completed' || control.title === 'Open tool details')!
+          control.getAttribute('aria-label') === 'Inspect fixture, completed' || control.classList.contains('uam-tool-row'))!
         expect(tool).toBeTruthy()
         await act(async () => tool.click())
         expect(document.body.textContent).toContain('EMBEDDED CHILD OUTPUT')
@@ -9828,7 +10127,7 @@ describe('ChatView', () => {
         // Compact and verbose share the recorded tool action but expose its name differently.
         const detailsControls = [...list(name).querySelectorAll<HTMLButtonElement>('button')].filter(button =>
           button.getAttribute('aria-label') === 'Recorded inspection, completed' ||
-          (button.title === 'Open tool details' && button.textContent?.includes('Recorded inspection')))
+          (button.classList.contains('uam-tool-row') && button.textContent?.includes('Recorded inspection')))
         expect(detailsControls).toHaveLength(1)
         expect(detailsControls[0].disabled).toBe(false)
         await act(async () => detailsControls[0].click())
@@ -9942,7 +10241,7 @@ describe('ChatView', () => {
         if (route !== 'goal') {
           expect(f.sends()).toHaveLength(0)
           const label = route === 'claude-plan' ? 'Keep planning' : route === 'claude-proceed' ? 'Accept edits and proceed' : 'Review each edit'
-          const choice = [...f.host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === label)
+          const choice = [...document.body.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === label)
           expect(choice).toBeTruthy()
           await act(async () => choice!.click())
           if (route !== 'claude-plan') {
@@ -10008,7 +10307,7 @@ describe('ChatView', () => {
       })
       try {
         await f.send()
-        if (route !== 'goal') await act(async () => Array.from(f.host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Accept edits and proceed')!.click())
+        if (route !== 'goal') await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Accept edits and proceed')!.click())
         expect(finish).toBeTypeOf('function')
         act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id !== 'chat-1' ? session : { ...session,
           ...(change === 'birth' ? { createdAt: new Date(session.createdAt.getTime() + 1000) } : {}),
@@ -10024,12 +10323,11 @@ describe('ChatView', () => {
         if (route !== 'goal') {
           expect(f.host.textContent).not.toContain('Claude Plan mode is read-only')
           if (change !== 'birth') {
-            const refusal = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((notice) =>
-              notice.textContent?.includes("so this prompt wasn't sent. Review the selected references, then send again."))
+            const refusal = appFailures.find((failure) => failure.detail.includes("so this prompt wasn't sent. Review the selected references, then send again."))
             expect(refusal).toBeTruthy()
-            expect(refusal!.textContent).toContain('Message not sent')
+            expect(refusal!.message).toContain('Message not sent')
             // A prevented send asks for recovery; it must not use the green completion treatment.
-            expect(refusal!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--yellow)')
+            expect(refusal!.tone ?? 'failure').toBe('failure')
           }
         }
       } finally {
@@ -10048,10 +10346,9 @@ describe('ChatView', () => {
           ? { ...session, createdAt: new Date(session.createdAt.getTime() + 1000) } : session) })))
         f.renderCurrentSession()
         await act(async () => f.pending[0].ack())
-        const notice = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((item) => item.textContent?.includes('Check the earlier input before sending again.'))
-        expect(notice).toBeTruthy()
-        expect(notice!.textContent).toContain('Check earlier message')
-        expect(notice!.textContent).not.toContain('Message not sent')
+        expect(reportedText()).toContain('Check the earlier input before sending again.')
+        expect(appFailures.find((failure) => failure.detail.includes('Check the earlier input before sending again.'))?.message).toBe('Check earlier message')
+        expect(reportedText()).not.toContain('Message not sent')
       } finally {
         await act(async () => { for (const request of f.pending) request.ack() })
         f.cleanup()
@@ -10070,9 +10367,8 @@ describe('ChatView', () => {
         act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-1'
           ? { ...session, createdAt: new Date(session.createdAt.getTime() + 1000) } : session) })))
         f.renderCurrentSession()
-        const replacementNotice = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((notice) => notice.textContent?.includes('Check the earlier input before sending again.'))
-        expect(replacementNotice).toBeTruthy()
-        expect(replacementNotice!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--yellow)')
+        expect(reportedText()).toContain('Check the earlier input before sending again.')
+        expect(appFailures.find((failure) => failure.detail.includes('Check the earlier input before sending again.'))?.tone ?? 'failure').toBe('failure')
         const fresh = { ...reference, id: 'replacement-ordinary-reference', text: 'Replacement selected context' }
         act(() => writeChatComposerDraft('chat-1', { text, attachments: [attachment], references: [fresh] }))
         await f.send()
@@ -10116,7 +10412,7 @@ describe('ChatView', () => {
       })
       try {
         await f.send()
-        if (route !== 'goal') await act(async () => [...f.host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Accept edits and proceed')!.click())
+        if (route !== 'goal') await act(async () => [...document.body.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Accept edits and proceed')!.click())
         const finishOriginal = finish
         expect(finishOriginal).toBeTypeOf('function')
         act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-1'
@@ -10140,7 +10436,7 @@ describe('ChatView', () => {
         act(() => writeChatComposerDraft('chat-1', { text: freshDraft, attachments: [], references: [fresh] }))
         createGoal.mockResolvedValueOnce({ ok: true, goalId: 'new-birth-goal' })
         await f.send()
-        if (route !== 'goal') await act(async () => [...f.host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Keep planning')!.click())
+        if (route !== 'goal') await act(async () => [...document.body.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Keep planning')!.click())
         expect(f.sends()).toHaveLength(1)
         expect(f.sends()[0].payload.text).toBe(freshPrompt + '\n\n' + formatContextReferences([fresh]))
         expect(send().disabled).toBe(true)
@@ -10172,14 +10468,13 @@ describe('ChatView', () => {
       })))
       try {
         await f.send()
-        await act(async () => [...f.host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === choice)!.click())
+        await act(async () => [...document.body.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === choice)!.click())
         expect(f.sends()).toHaveLength(1)
         expect(f.sends()[0].payload.text).toBe(draft.text + '\n\n' + formatContextReferences([reference]))
         await act(async () => f.pending[0].reject('Synthetic acknowledgement failure'))
-        const recovery = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((notice) =>
-          notice.textContent?.includes('Could not confirm the prompt. Check its saved state before retrying.'))
+        const recovery = appFailures.find((failure) => failure.detail.includes('Could not confirm the prompt. Check its saved state before retrying.'))
         expect(recovery).toBeTruthy()
-        expect(recovery!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--yellow)')
+        expect(recovery!.tone ?? 'failure').toBe('failure')
         expect(readChatComposerDraft('chat-1')).toEqual(draft)
         expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(draft.text)
         expect(f.sends()).toHaveLength(1)
@@ -10781,8 +11076,8 @@ describe('ChatView', () => {
       expect(capture(managed.host.querySelector('.uam-message-list')!).assistant).toBe(capture(main.host.querySelector('.uam-message-list')!).assistant)
       // Opening a child tool shows embedded content with no parent/native mutation, preview or resume IPC.
       const before = requests.length
-      await act(async () => passive.host.querySelector<HTMLButtonElement>('button[title="Open tool details"]')?.click())
-      await act(async () => managed.host.querySelector<HTMLButtonElement>('button[title="Open tool details"]')?.click())
+      await act(async () => passive.host.querySelector<HTMLButtonElement>('button.uam-tool-row')?.click())
+      await act(async () => managed.host.querySelector<HTMLButtonElement>('button.uam-tool-row')?.click())
       expect(requests.slice(before)).toEqual([])
       expect(native).not.toHaveBeenCalled()
       expect(passive.host.querySelector('[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()
@@ -11036,8 +11331,8 @@ describe('ChatView committed unsent editing', () => {
     const f = fixture()
     try {
       await f.open()
-      expect(f.host.textContent).toContain('Editing unsent message. Saving updates this input.')
-      const save = Array.from(f.host.querySelectorAll('button')).find(button => button.textContent === 'Save changes')
+      expect(f.host.querySelector('[role="group"][aria-label="Editing message"] [title="Saving updates this unsent input"]')).not.toBeNull()
+      const save = f.host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')
       expect(save).toBeTruthy(); expect(save!.disabled).toBe(false)
       await f.enter()
       expect(f.requests.map(request => request.action)).toEqual(['getChatMessages', 'manageQueuedAcpPrompt'])
@@ -11082,7 +11377,7 @@ describe('ChatView committed unsent editing', () => {
       expect(f.host.querySelector('[aria-label="Remove drop.txt from edited message"]')).toBeNull()
       expect(f.host.querySelector('[aria-label="Remove keep.txt from edited message"]')).not.toBeNull()
       expect(f.host.querySelector('[aria-label="Remove original.md from edited message"]')).not.toBeNull()
-      expect(f.host.querySelector('[role="alert"]')?.textContent).toContain('The edited input could not be saved.')
+      expect(reportedText()).toContain('The edited input could not be saved.')
       expect(useAppStore.getState().messages['chat-1'][0]).toBe(f.row)
       expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
       await f.enter()
@@ -11101,7 +11396,7 @@ describe('ChatView committed unsent editing', () => {
       await f.enter()
       expect(f.requests).toHaveLength(0)
       expect(f.editor().value).toBe('Edited local input')
-      expect(f.host.querySelector('[role="alert"]')?.textContent).toContain('unsent message changed')
+      expect(reportedText()).toContain('unsent message changed')
       expect(useAppStore.getState().messages['chat-1'][0]).toBe(replacement)
       expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
       f.noExecution()
@@ -11119,7 +11414,7 @@ describe('ChatView committed unsent editing', () => {
       expect(useAppStore.getState().sessions[0].messagesDigest).toBe('aaaaaaaaaaaaaaaa')
       expect(f.editor().value).toBe('Edited local input')
       expect(f.editor().disabled).toBe(false)
-      expect(f.host.querySelector('[role="alert"]')?.textContent).toContain('unsent message changed')
+      expect(reportedText()).toContain('unsent message changed')
       expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
       f.noExecution()
     } finally { f.cleanup() }
@@ -11376,7 +11671,7 @@ describe('ChatView delivered edit skill selection', () => {
       expect(editor).toBe(composer)
       expect(editor!.disabled).toBe(false)
       expect(editor!.value).toBe(source.content)
-      expect(host.querySelector('.conversation-edit-strip')?.textContent).toContain('Saving creates a new branch.')
+      expect(host.querySelector('[role="group"][aria-label="Editing message"] [title="Saving creates a new branch"]')).not.toBeNull()
       for (const name of ['first.txt', 'second.txt', 'review.md']) {
         const remove = host.querySelector<HTMLButtonElement>(`button[aria-label="Remove ${name} from edited message"]`)
         expect(remove).not.toBeNull(); expect(remove!.disabled).toBe(false)
@@ -11390,7 +11685,7 @@ describe('ChatView delivered edit skill selection', () => {
       expect(editor!.value).toBe('Revised delivered request')
       for (const name of ['first.txt', 'second.txt']) expect(Boolean(host.querySelector(`[aria-label="Remove ${name} from edited message"]`))).toBe(name !== removedNativeName)
       expect(Boolean(host.querySelector('[aria-label="Remove review.md from edited message"]'))).toBe(!removedSkill)
-      const save = Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Save to new branch')
+      const save = host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')
       expect(save).toBeTruthy(); expect(save!.disabled).toBe(false)
       expect(useAppStore.getState().messages['chat-1']).toBe(rows)
       expect(source.attachments).toEqual(originalResources)
@@ -11417,7 +11712,7 @@ describe('ChatView delivered edit skill selection', () => {
       expect(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit message"]')).toBe(editor)
       expect(editor!.value).toBe('Revised delivered request')
       expect(editor!.disabled).toBe(false)
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not create the message branch.')
+      expect(reportedText()).toContain('Could not create the message branch.')
       for (const name of ['first.txt', 'second.txt']) expect(Boolean(host.querySelector(`[aria-label="Remove ${name} from edited message"]`))).toBe(name !== removedNativeName)
       expect(Boolean(host.querySelector('[aria-label="Remove review.md from edited message"]'))).toBe(!removedSkill)
     } finally {
@@ -11481,7 +11776,7 @@ describe('managed initial composer acknowledgement R83', () => {
       }, true)
       await act(async () => root.render(<ChatView key={chat.id} session={session} />))
       await act(async () => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
-      if (isPlan) await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep planning')!.click())
+      if (isPlan) await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep planning')!.click())
       expect(sends).toBe(1)
       if (scenario === 'newer-draft') enter('My newer draft')
       if (scenario === 'unmount-before-ack' || scenario === 'remount-before-ack' || scenario === 'remount-with-newer-draft' || isGoal || isPlan) { act(() => root.unmount()); mounted = false }

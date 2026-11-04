@@ -58,12 +58,11 @@
   font-size: var(--fs-base);
 }
 
-.uam-rv-field:focus-visible,
+.uam-rv-field:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 .uam-rv-segmented button:focus-visible,
 .uam-rv-tab:focus-visible,
 .uam-rv-file:focus-within {
-  outline: none;
-  box-shadow: var(--focus-ring);
+  outline: var(--focus-ring); outline-offset: var(--focus-offset);
 }
 
 /* Segmented control: split/unified and scope toggles. */
@@ -248,7 +247,7 @@
 }
 
 .uam-rv-check-btn:disabled { cursor: default; opacity: 0.5; }
-.uam-rv-check-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-rv-check-btn:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 /* Changed files list: fixed 28px rows. Columns: checkbox | status | name + muted dir | stats | chevron. */
 .uam-rv-file {
@@ -281,7 +280,7 @@
   cursor: pointer;
 }
 
-.uam-rv-file__open:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-rv-file__open:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 .uam-rv-file__status {
   width: 24px;
@@ -367,6 +366,7 @@
   align-items: center;
   gap: var(--sp-3);
   min-height: 30px;
+  white-space: nowrap;
   padding: 4px var(--sp-4);
   border-bottom: 1px solid var(--border);
   cursor: pointer;
@@ -390,6 +390,27 @@
 .uam-rv-row__provider {
   display: inline-flex;
   flex-shrink: 0;
+}
+
+/* Checkbox, provider, location and name share one line; the name takes the spare width. */
+.uam-rv-row__main {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  cursor: pointer;
+}
+
+.uam-rv-row__note {
+  flex-shrink: 1;
+  max-width: 40%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
 }
 
 .uam-rv-row__meta {
@@ -430,7 +451,7 @@
   cursor: pointer;
 }
 
-/* Importing: spinner plus a bar that is determinate when counts are known. */
+/* Importing: spinner plus the per-chat progress rows. */
 .uam-rv-importing {
   display: flex;
   align-items: center;
@@ -439,13 +460,6 @@
 }
 
 .uam-rv-spin { flex-shrink: 0; animation: uam-rv-spin 900ms linear infinite; }
-
-.uam-rv-progress--indeterminate > span {
-  width: 35%;
-  transform: none;
-  transition: none;
-  animation: uam-rv-slide 1.2s var(--ease) infinite;
-}
 
 .uam-rv-alert__count {
   margin-left: var(--sp-2);
@@ -481,21 +495,9 @@
   box-shadow: var(--elev-3);
 }
 
-/* Import progress: determinate when the batch size is known. */
-.uam-rv-progress {
-  height: 4px;
-  overflow: hidden;
-  background: var(--surface-up);
-  border-radius: 2px;
-}
-
-.uam-rv-progress > span {
-  display: block;
-  height: 100%;
-  background: var(--accent);
-  transform-origin: left center;
-  transition: transform var(--dur-base) var(--ease-out-soft);
-}
+/* Per-chat import state: the chat row is the progress track (ProgressFill). Failed rows tint the whole row. */
+.uam-rv-row--failed { background: var(--error-dim); }
+.uam-rv-row--done.uam-progress-fill::before { background: var(--success-dim); }
 
 @keyframes uam-rv-rise {
   from { opacity: 0; transform: translateY(4px); }
@@ -505,19 +507,12 @@
   to { transform: rotate(360deg); }
 }
 
-@keyframes uam-rv-slide {
-  from { transform: translateX(-100%); }
-  to { transform: translateX(290%); }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .uam-rv-bar__fill,
   .uam-rv-file,
   .uam-rv-row,
   .uam-rv-row-btn,
-  .uam-rv-progress > span,
-  .uam-rv-spin,
-  .uam-rv-progress--indeterminate > span {
+  .uam-rv-spin {
     animation: none;
     transition: none;
   }

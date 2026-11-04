@@ -153,7 +153,7 @@ describe('subagent transcript window', () => {
     expect(host.textContent).not.toContain('New activity')
     const edited = history.map((row, index) => index === 3 ? { ...row, content: 'Row 3!', toolCalls: [] } : row)
     act(() => root.render(transcript({ messages: edited, contentVersion: edited })))
-    expect(host.textContent).toContain('New activity · Show latest')
+    expect(host.textContent).toContain('Show latest')
   })
 
   it('does not flag a prepend that arrives with a new native start index', async () => {

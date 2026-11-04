@@ -171,6 +171,7 @@ namespace uam::settings
 
 	inline void ClampGoalSettings(AppSettings& settings)
 	{
+		settings.goal_token_budget = std::max(0, settings.goal_token_budget);
 		settings.goal_max_loop_iterations = settings.goal_max_loop_iterations <= 0
 		                                        ? kDefaultGoalMaxLoopIterations
 		                                        : std::clamp(settings.goal_max_loop_iterations,

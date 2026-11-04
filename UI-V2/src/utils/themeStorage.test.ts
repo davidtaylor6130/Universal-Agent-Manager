@@ -125,6 +125,10 @@ describe('themeStorage', () => {
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
     expect(document.documentElement.style.getPropertyValue('--bg')).toBe('#101820')
     expect(document.documentElement.style.getPropertyValue('--message-user-bg')).toBe('#173047')
+    // Saved before token-type colours existed: the base's defaults fill in and apply; an explicit value wins.
+    expect(theme?.colors.tokenInput).toBe('#dc7ba3')
+    expect(document.documentElement.style.getPropertyValue('--token-input')).toBe('#dc7ba3')
+    expect(normalizeCustomTheme({ ...theme, colors: { ...theme?.colors, tokenOutput: '#AABBCC' } })?.colors.tokenOutput).toBe('#aabbcc')
     expect(document.documentElement.style.getPropertyValue('--accent-dim')).toContain('#38bdf8')
     expect(document.documentElement.style.getPropertyValue('--text-2')).toContain('60%')
     expect(document.documentElement.style.getPropertyValue('--text-3')).toContain('90%')

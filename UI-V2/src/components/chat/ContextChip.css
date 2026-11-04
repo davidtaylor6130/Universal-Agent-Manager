@@ -34,7 +34,9 @@
 }
 button.uam-context-chip__body { cursor: pointer; align-self: stretch; }
 button.uam-context-chip__body:hover .uam-context-chip__name { color: var(--accent); }
-.uam-context-chip__body:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* The ring belongs to the visible chip shape, not the inner body button. */
+.uam-context-chip .uam-context-chip__body:focus-visible { outline: none; }
+.uam-context-chip:has(> .uam-context-chip__body:focus-visible) { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-context-chip__icon { display: inline-flex; flex-shrink: 0; color: var(--text-3); }
 .uam-context-chip.is-error .uam-context-chip__icon { color: var(--error); }
 .uam-context-chip .uam-context-chip__name {
@@ -48,13 +50,18 @@ button.uam-context-chip__body:hover .uam-context-chip__name { color: var(--accen
 .uam-context-chip__meta { flex-shrink: 0; color: var(--text-2); }
 .uam-context-chip.is-partial .uam-context-chip__meta { color: var(--text); font-weight: 600; }
 .uam-context-chip .uam-context-chip__remove.uam-iconbtn--sm { width: 18px; height: 18px; border-radius: var(--r-sm); }
-.uam-context-chip__remove:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-context-chip__remove:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 @keyframes uam-context-chip-in {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: none; }
 }
+/* Removal sinks back toward the composer line it rose from, then the parent drops it. */
+.uam-context-chip.is-leaving { animation: uam-context-chip-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+@keyframes uam-context-chip-out {
+  to { opacity: 0; transform: translateY(4px); }
+}
 @media (prefers-reduced-motion: reduce) {
-  .uam-context-chip { animation: none; }
+  .uam-context-chip, .uam-context-chip.is-leaving { animation: none; }
 }
 /* Chips inside assistant prose sit on the text line without growing it. */
 .prose-msg .uam-context-chip { vertical-align: middle; margin-block: -3px; }

@@ -1,8 +1,9 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
-import { Brain, ChevronRight, FileText, MessageSquare, Search, Terminal, Users, Wrench } from 'lucide-react'
+import { Brain, ChevronRight, Clock3, FileText, LoaderCircle, MessageSquare, Search, Terminal, Users, Wrench } from 'lucide-react'
 import type { AcpToolCall, AcpTurnEvent } from '../../store/useAppStore'
 import { useAppStore } from '../../store/useAppStore'
 import { MarkdownContent } from '../markdown/Markdown'
+import { RowButton, StatusDot } from '../ui'
 import { usePresence } from '../ui/Overlay'
 import { toolDisplayTitle } from './StatusHelpers'
 import './conversation.css'
@@ -98,7 +99,13 @@ function ConversationTool({ tool, onSelectTool, renderSubAgentHistory }: {
     <button type="button" className="conversation-work__tool" title={title} onClick={() => onSelectTool(tool.id)} aria-label={`${title}, ${status}`}>
       <Icon size={15} className="conversation-work__event-icon" aria-hidden />
       <span className="conversation-work__tool-title">{title}{tool.isSubAgent && tool.currentActivity && <span className="conversation-work__activity">{tool.currentActivity}</span>}</span>
-      <span className="conversation-work__status" data-failed={['failed', 'error'].includes(status) || undefined}>{status}</span>
+      <span className="conversation-work__status" data-failed={['failed', 'error'].includes(status) || undefined}>
+        {['failed', 'error'].includes(status) ? <StatusDot tone="error" />
+          : ['completed', 'complete'].includes(status) ? <StatusDot tone="success" />
+          : ['running', 'in progress', 'inprogress'].includes(status) ? <LoaderCircle size={12} aria-hidden style={{ color: 'var(--blue)' }} />
+          : <Clock3 size={12} aria-hidden />}
+        <span className="sr-only">{status}</span>
+      </span>
     </button>
     {tool.isSubAgent && renderSubAgentHistory && <details className="conversation-work__subagent" open={historyOpen}>
       <summary onClick={(event) => { event.preventDefault(); setHistoryOpen(!historyOpen) }}>Sub-agent transcript <ChevronRight size={12} aria-hidden /></summary>
@@ -153,10 +160,10 @@ export function ConversationWork({ events, tools, active, duration, onSelectTool
         <WorkingHeading active={active} duration={duration} startedAt={startedAt} />
       </span>
     ) : collapsible ? (
-      <button type="button" className="conversation-work__heading conversation-work__toggle" aria-expanded={open} aria-label={open ? 'Collapse work trace' : 'Expand work trace'} onClick={toggle}>
+      <RowButton className="conversation-work__heading conversation-work__toggle" aria-expanded={open} aria-label={open ? 'Collapse work trace' : 'Expand work trace'} onClick={toggle}>
         <WorkingHeading active={active} duration={duration} startedAt={startedAt} />
         <ChevronRight size={14} className="conversation-work__chevron" aria-hidden />
-      </button>
+      </RowButton>
     ) : (
       <span className="conversation-work__heading">
         <WorkingHeading active={active} duration={duration} startedAt={startedAt} />

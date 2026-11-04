@@ -262,7 +262,7 @@ describe('post143 scoped model refresh boundary', () => {
     useModelPickerStore.setState({ favorites: [{ providerId: 'codex-cli', modelId: 'model-0' }, { providerId: 'claude-cli', modelId: 'remote-only' }] })
     const f = picker(); f.render('ssh-lab', '/project', true)
     const refresh = button(f.host, 'Refresh models for Claude'); const provider = button(f.host, 'Claude')
-    expect(refresh.disabled).toBe(true); expect(provider.disabled).toBe(true)
+    expect(refresh.disabled).toBe(true); expect(provider.getAttribute('aria-disabled')).toBe('true')
     act(() => { refresh.click(); provider.click() }); expect(discover).not.toHaveBeenCalled()
     act(() => button(f.host, 'Favorites').click())
     expect(f.host.querySelector('[aria-label^="Refresh models for"],[aria-label^="Retry models for"]')).toBeNull()

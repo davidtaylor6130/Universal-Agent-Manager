@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
-import { ArrowLeft, RefreshCw } from 'lucide-react'
-import { Button, IconButton } from '../ui'
+import { ArrowDown, ArrowLeft, RefreshCw } from 'lucide-react'
+import { Button, IconButton, Tooltip, usePresence } from '../ui'
+import './SubagentDisclosure.css'
 import { FileInspectionContext } from '../shared/fileInspectionContext'
 import type { Message } from '../../types/message'
 import { MessageNavigationRail } from './MessageNavigationRail'
@@ -228,9 +229,12 @@ export function SubagentHeader({ title, parentName, detail, onBack, onClose, onR
   return <nav aria-label="Subagent lineage" className="uam-chat-pane__header uam-subagent-header flex h-11 shrink-0 items-center gap-3 px-4"
     style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}>
     <Button variant="ghost" size="sm" disabled={!onReturn} leadingIcon={<ArrowLeft size={14} aria-hidden />} onClick={onReturn}>{returnLabel}</Button>
-    <div className="flex min-w-0 flex-1 flex-col justify-center leading-tight" title={`${title}\n${lineage}`}>
+    <div className="flex min-w-0 flex-1 flex-col justify-center leading-tight">
       <h3 ref={headingRef} tabIndex={-1} className="uam-subagent-header__title truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{title}</h3>
-      <span className="truncate text-[10px]" style={{ color: 'var(--text-3)' }}>{detail ? `${lineage} · ${detail}` : lineage}</span>
+      {/* Tooltip sits on the non-focusable lineage so focusing the heading does not open it. */}
+      <Tooltip label={`${title}\n${lineage}`}>
+        <span className="truncate text-[10px]" style={{ color: 'var(--text-3)' }}>{detail ? `${lineage} · ${detail}` : lineage}</span>
+      </Tooltip>
     </div>
     {children}
     {onRefresh && <IconButton size="sm" label="Refresh conversation" tooltipSide="bottom" disabled={refreshDisabled} aria-busy={refreshing || undefined} onClick={onRefresh}
@@ -287,6 +291,7 @@ function TranscriptSurface({ messages, nativeStartIndex = 0, userMessageIndices,
   // Unloaded marks are only offered when this view can actually read toward them.
   const marks = userMessageIndices && (loadOlder || scopedView) ? userMessageIndices : undefined
   const navigable = marks ? marks.length > 0 : messages.some(message => message.role === 'user')
+  const latest = usePresence(Boolean(view.newContent || view.awayFromLatest))
   return <FileInspectionContext.Provider value={null}>
     <div className="uam-chat-viewport relative min-h-0 flex-1" data-message-navigation={navigable || undefined}>
       <div ref={view.scrollRef} className="uam-chat-transcript uam-subagent-transcript relative z-0 h-full overflow-auto" role="region" tabIndex={0} aria-label={label} onScroll={view.onScroll}>
@@ -310,8 +315,13 @@ function TranscriptSurface({ messages, nativeStartIndex = 0, userMessageIndices,
       </div>
       <MessageNavigationRail userMessageIndices={marks} startIndex={nativeStartIndex} messages={messages} currentIndex={Math.max(0, nativeStartIndex + messages.length - 1)}
         viewportRef={view.scrollRef} busy={view.busy || view.older === 'loading'} onNavigate={view.revealIndex} />
-      {(view.newContent || view.awayFromLatest) && <div className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2">
-        <Button variant="secondary" size="sm" onClick={view.showLatest}>{view.awayFromLatest ? 'Show latest' : 'New activity · Show latest'}</Button>
+      {latest.mounted && <div className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2">
+        <div className="uam-subagent-disclosure" data-state={latest.closing ? 'closed' : 'open'}>
+          <Button variant="secondary" size="sm" leadingIcon={<ArrowDown size={14} aria-hidden />} onClick={view.showLatest}>
+            Show latest{view.newContent && <span className="uam-subagent-transcript__dot" aria-hidden />}
+          </Button>
+          {view.newContent && <span className="sr-only">New activity</span>}
+        </div>
       </div>}
     </div>
   </FileInspectionContext.Provider>
