@@ -1669,6 +1669,42 @@ describe('useAppStore Gemini CLI slice', () => {
       expect(cefStore.getState()).toMatchObject({ bootstrapStateLoading: false, bootstrapStateError: '' })
     })
 
+    it('caps a chain of rising stale replies and leaves no timers', async () => {
+      const testWindow = ensureTestWindow()
+      vi.resetModules()
+      const pending = holdBootstrapPulls(testWindow)
+      const { useAppStore: cefStore } = await import('./useAppStore')
+      testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 100, settings: makeCppState(100).settings } })
+      let pulls = 0
+      for (let revision = 1; pending.length > 0; revision += 1) {
+        pulls += 1
+        pending.shift()?.(makeCppState(revision))
+        await flush()
+        await vi.advanceTimersByTimeAsync(100)
+      }
+      expect(pulls).toBe(8)
+      expect(cefStore.getState().bootstrapStateError).toContain('behind live updates')
+      cefStore.getState().retryBootstrapState()
+      expect(pending).toHaveLength(1)
+      pending.shift()?.(makeCppState(100))
+      await flush()
+      expect(cefStore.getState().bootstrapStateError).toBe('')
+    })
+
+    it('surfaces a throw while applying the startup state instead of staying busy', async () => {
+      const testWindow = ensureTestWindow()
+      vi.resetModules()
+      const pending = holdBootstrapPulls(testWindow)
+      const { useAppStore: cefStore } = await import('./useAppStore')
+      pending.shift()?.('down', false)
+      await flush()
+      cefStore.getState().retryBootstrapState()
+      cefStore.setState({ reconcileMemorySettingsProjection: () => { throw new Error('boom') } })
+      pending.shift()?.(makeCppState(1))
+      await flush()
+      expect(cefStore.getState()).toMatchObject({ bootstrapStateLoading: false, bootstrapStateError: expect.stringContaining('boom') })
+    })
+
     it('shows the native error when the pull fails, and an invalid-reply error', async () => {
       const testWindow = ensureTestWindow()
       vi.resetModules()

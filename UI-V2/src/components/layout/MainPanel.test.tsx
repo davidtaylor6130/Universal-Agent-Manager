@@ -130,6 +130,12 @@ describe('MainPanel', () => {
     expect(document.activeElement).toBe(button())
     act(() => { button().click() })
     expect(retry).toHaveBeenCalledTimes(1)
+    // A Retry that fails the same way still changes the alert text so it is announced.
+    act(() => { useAppStore.setState({ bootstrapStateLoading: false }) })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Retry failed (attempt 1).')
+    act(() => { button().click() })
+    act(() => { useAppStore.setState({ bootstrapStateLoading: false }) })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Retry failed (attempt 2).')
     act(() => { useAppStore.setState({ bootstrapStateError: '', bootstrapStateLoading: false }) })
     expect(host.querySelector('[role="alert"]')).toBeNull()
     act(() => root.unmount())

@@ -635,6 +635,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
 // ---------------------------------------------------------------------------
 
 const BOOTSTRAP_STATE_BACKOFF_MS = [100, 300, 900]
+const BOOTSTRAP_STATE_MAX_PULLS = 8
 
 export const useAppStore = create<AppState>((set, get) => {
   const flushPendingCliTranscriptChunks = () => {
@@ -768,12 +769,14 @@ export const useAppStore = create<AppState>((set, get) => {
   const failBootstrap = (bootstrapStateError: string) => {
     if (!bootstrapHydrated) set({ bootstrapStateError, bootstrapStateLoading: false })
   }
-  // ponytail: a stale reply with a newer revision than the last stale one resets the budget,
-  // so a startup that keeps advancing keeps re-pulling; cap total pulls if that ever spins.
+  // A stale reply newer than the previous stale one resets the backoff step, but every chain is
+  // capped at BOOTSTRAP_STATE_MAX_PULLS so a steady patch stream cannot re-serialise forever.
+  let bootstrapPulls = 0
   const pullInitialState = (attempt = 0, lastStaleRevision = -1) => {
     bootstrapRetryTimer = null
     // Companion pages bootstrap through CompanionShell, never this desktop pull.
     if (isCompanionContext()) return
+    bootstrapPulls += 1
     sendToCEF<CppAppState>({ action: 'getInitialState', payload: { summaryOnly: true } }).then((resp) => {
       // resp.data is the raw CppAppState object. Sanitize before deserializing.
       const sanitized = resp.ok ? sanitizeCppAppState(resp.data) : null
@@ -873,10 +876,11 @@ export const useAppStore = create<AppState>((set, get) => {
           shellActionNotification: current.shellActionNotification,
           statusLine: current.statusLine,
         })
+        set({ ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), bootstrapStateError: '', bootstrapStateLoading: false })
+        // Only after the state applied: a throw above must still reach failBootstrap.
         bootstrapHydrated = true
         if (bootstrapRetryTimer !== null) clearTimeout(bootstrapRetryTimer)
         bootstrapRetryTimer = null
-        set({ ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), bootstrapStateError: '', bootstrapStateLoading: false })
         // Sync theme to DOM
         if (deserialized.theme) {
           persistTheme(deserialized.theme, get().customThemes)
@@ -895,13 +899,13 @@ export const useAppStore = create<AppState>((set, get) => {
         // Never apply an older snapshot over newer patch data; ask for a fresh one.
         if (bootstrapHydrated) return
         const nextAttempt = nextRevision > lastStaleRevision ? 0 : attempt + 1
-        if (nextAttempt < BOOTSTRAP_STATE_BACKOFF_MS.length) {
+        if (nextAttempt < BOOTSTRAP_STATE_BACKOFF_MS.length && bootstrapPulls < BOOTSTRAP_STATE_MAX_PULLS) {
           bootstrapRetryTimer = setTimeout(() => { if (window.uamPush === ownedUamPush) pullInitialState(nextAttempt, nextRevision) }, BOOTSTRAP_STATE_BACKOFF_MS[nextAttempt])
         } else {
           failBootstrap('Startup state stayed behind live updates, so collections, workspaces and provider details may be incomplete.')
         }
       }
-    })
+    }).catch((error: unknown) => failBootstrap(`Startup state could not be applied: ${error instanceof Error ? error.message : String(error)}`))
   }
   if (isCefContext() && !isCompanionContext()) pullInitialState()
 
@@ -1139,6 +1143,7 @@ export const useAppStore = create<AppState>((set, get) => {
       if (bootstrapRetryTimer !== null) clearTimeout(bootstrapRetryTimer)
       // Keep the error (and its Notice) mounted while the retry runs so focus stays on Retry.
       set({ bootstrapStateLoading: true })
+      bootstrapPulls = 0
       pullInitialState()
     },
     startupNativeImports: EMPTY_STARTUP_NATIVE_IMPORT_STATUS,

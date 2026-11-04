@@ -70,6 +70,13 @@ export function BootstrapStateNotice() {
   const error = useAppStore((s) => s.bootstrapStateError)
   const loading = useAppStore((s) => s.bootstrapStateLoading)
   const retry = useAppStore((s) => s.retryBootstrapState)
+  // Count Retries that ended in an error so the alert text changes and is announced again.
+  const [failedRetries, setFailedRetries] = useState(0)
+  const wasLoading = useRef(false)
+  useEffect(() => {
+    if (wasLoading.current && !loading) setFailedRetries((count) => (error ? count + 1 : 0))
+    wasLoading.current = loading
+  }, [loading, error])
   if (!error) return null
   return (
     <div className="px-2 pt-2">
@@ -82,7 +89,7 @@ export function BootstrapStateNotice() {
         leadingIcon={loading ? <Loader2 className="uam-btn__spinner" size={13} aria-hidden /> : undefined}
         onClick={() => { if (!loading) retry() }}
       >Retry</Button>}>
-        {error}
+        {error}{failedRetries > 0 && ` Retry failed (attempt ${failedRetries}).`}
       </Notice>
     </div>
   )
