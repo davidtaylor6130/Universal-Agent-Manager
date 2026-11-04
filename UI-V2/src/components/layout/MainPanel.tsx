@@ -475,9 +475,10 @@ export function MainPanel() {
   }, [activeSessionId])
   const visibleAcpSignatures = useAppStore(useShallow((s) => visibleIds.map((id) => {
     const binding = id ? s.acpBindingBySessionId[id] : undefined
-    return `${binding?.processing ? 1 : 0}:${binding?.turnSerial ?? 0}`
+    const messageCount = id ? s.sessions.find((session) => session.id === id)?.messageCount ?? 0 : 0
+    return `${binding?.processing ? 1 : 0}:${binding?.turnSerial ?? 0}:${messageCount}`
   })))
-  const previousVisibleAcp = useRef(new Map<string, { processing: boolean; turnSerial: number }>())
+  const previousVisibleAcp = useRef(new Map<string, { processing: boolean; turnSerial: number; messageCount: number }>())
   const previousVisibleIds = useRef(new Set(visibleIds.filter(Boolean)))
   const pendingEvictionIds = useRef(new Set<string>())
   const pendingNativeReleaseIds = useRef(new Set<string>())
@@ -592,13 +593,15 @@ export function MainPanel() {
 
   useEffect(() => {
     const previous = previousVisibleAcp.current
-    const current = new Map<string, { processing: boolean; turnSerial: number }>()
+    const current = new Map<string, { processing: boolean; turnSerial: number; messageCount: number }>()
     for (const id of visibleIds) {
       if (!id) continue
-      const binding = useAppStore.getState().acpBindingBySessionId[id]
+      const state = useAppStore.getState()
+      const binding = state.acpBindingBySessionId[id]
       const snapshot = {
         processing: Boolean(binding?.processing),
         turnSerial: binding?.turnSerial ?? 0,
+        messageCount: state.sessions.find((session) => session.id === id)?.messageCount ?? 0,
       }
       const prior = previous.get(id)
       if (id !== activeSessionId && prior?.processing && useAppStore.getState().chatSearchNavigation?.chatId !== id) {
@@ -606,6 +609,9 @@ export function MainPanel() {
           loadSessionMessages(id, true)
         } else if (snapshot.turnSerial > prior.turnSerial) {
           loadSessionMessages(id)
+        } else if (snapshot.messageCount > prior.messageCount) {
+          // Mirrors the active chat's appendedTurnMessages refresh so a long background turn keeps committing.
+          loadSessionMessages(id, true)
         }
       }
       current.set(id, snapshot)
