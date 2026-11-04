@@ -20577,6 +20577,73 @@ namespace
 		}
 	};
 
+	UAM_TEST(SettledRemoteTurnMarkerClearsWithRawInputQueued)
+	{
+		// Issue #682 follow-up: input queued behind a remote turn must not keep its marker forever,
+		// because queue drain waits for the marker to clear.
+		TempDir temp("uam-remote-marker-queued");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat = ChatDomainService().CreateNewChat({}, "claude-cli", false);
+		chat.id = "remote-marker-queued";
+		chat.execution_host_id = "ssh-fixture";
+		chat.remote_turn_reconnect_pending = true;
+		app.chats.push_back(chat);
+		auto& session = uam::acp_detail::EnsureAcpSessionForChat(app, app.chats.front());
+		uam::AcpQueuedUserPromptState prompt;
+		prompt.id = "queued-after-turn";
+		prompt.revision = 1;
+		prompt.text = "Next input.";
+		session.queued_user_prompts.push_back(prompt);
+
+		session.processing = true; // An undelivered raw prompt must not matter while the turn runs.
+		(void)uam::acp_detail::SaveChatQuietly(app, app.chats.front());
+		UAM_ASSERT(app.chats.front().remote_turn_reconnect_pending);
+
+		session.processing = false;
+		app.chats.front().remote_prompt_delivery_id = "unacknowledged"; // Possibly delivered input keeps it.
+		(void)uam::acp_detail::SaveChatQuietly(app, app.chats.front());
+		UAM_ASSERT(app.chats.front().remote_turn_reconnect_pending);
+
+		app.chats.front().remote_prompt_delivery_id.clear();
+		(void)uam::acp_detail::SaveChatQuietly(app, app.chats.front());
+		UAM_ASSERT(!app.chats.front().remote_turn_reconnect_pending);
+	}
+
+	UAM_TEST(HeldDirectAdmissionReceiptsProjectAsResumableQueue)
+	{
+		// Issue #682 follow-up: a restored held queue of direct receipts needs the Resume control.
+		uam::AppState app;
+		ChatSession chat = ChatDomainService().CreateNewChat({}, "claude-cli", false);
+		chat.id = "held-direct-receipts";
+		uam::AcpQueuedUserPromptState prompt;
+		prompt.id = "held-direct";
+		prompt.revision = 1;
+		prompt.text = "Queued while the remote restart was pending.";
+		prompt.direct_admission = true;
+		prompt.append_user_message = true;
+		chat.acp_queued_prompts = {prompt};
+		chat.acp_queue_held = true;
+		app.chats.push_back(chat);
+		auto projection = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		UAM_ASSERT(projection.at("queueHeld").get<bool>());
+		UAM_ASSERT_EQ(projection.at("queuedPrompts").size(), std::size_t{1});
+		UAM_ASSERT_EQ(projection.at("queuedPrompts")[0].at("id"), nlohmann::json("held-direct"));
+		UAM_ASSERT(projection.at("pendingDirectPrompts").empty() && projection.at("unsentDirectPrompts").empty());
+
+		// Possibly delivered input must never gain Resume, which could replay it.
+		app.chats.front().remote_prompt_delivery_id = "maybe-delivered";
+		projection = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		UAM_ASSERT(!projection.at("queueHeld").get<bool>() && projection.at("queuedPrompts").empty());
+		UAM_ASSERT_EQ(projection.at("pendingDirectPrompts").size(), std::size_t{1});
+		app.chats.front().remote_prompt_delivery_id.clear();
+
+		// Unheld direct receipts keep their existing receipt presentation.
+		app.chats.front().acp_queue_held = false;
+		projection = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		UAM_ASSERT(!projection.at("queueHeld").get<bool>() && projection.at("queuedPrompts").empty());
+	}
+
 	struct WorkspacePendingDirectFixture
 	{
 		TempDir temp{"uam-public-send-workspace-direct"};

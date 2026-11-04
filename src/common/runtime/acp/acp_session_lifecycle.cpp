@@ -4539,8 +4539,13 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat, AcpChatSavePurpose 
 	if (persisted != nullptr && persisted->remote_turn_reconnect_pending && !preserve_remote_delivery_authority && !persisted->remote_manual_compaction_pending)
 	{
 		const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+		// Raw FIFO input has not reached the provider, so it cannot keep a settled turn's marker (#682):
+		// queue drain waits for this marker to clear, which deadlocked every input queued behind a remote turn.
 		if (session == nullptr ||
-		    (!uam::AcpSessionHasActiveTurn(*session) && !session->reconnect_pending))
+		    (!session->processing && !AcpSessionIsWaitingForInput(*session) && session->queued_prompt.empty() &&
+		     session->prompt_request_id == 0 && !session->reconnect_pending && !session->pending_prompt_delivery &&
+		     persisted->remote_prompt_delivery_id.empty() && persisted->remote_prompt_delivery_payload.empty() &&
+		     std::ranges::none_of(session->queued_user_prompts, [](const AcpQueuedUserPromptState& prompt) { return prompt.prepared_for_delivery; })))
 		{
 			persisted->remote_turn_reconnect_pending = false;
 			if (!persisted->remote_process_exists)

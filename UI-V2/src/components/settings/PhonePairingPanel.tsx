@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { QrCode } from 'lucide-react'
 import { isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
-import { Button } from '../ui'
+import { reportAppFailure } from '../../utils/appFailure'
+import { Button, usePresence } from '../ui'
 import { SettingRow } from './SettingsPrimitives'
 
 interface PhonePairingPanelProps {
@@ -14,8 +15,11 @@ interface PhonePairingPanelProps {
 export function PhonePairingPanel({ url, enabled }: PhonePairingPanelProps) {
   const [payload, setPayload] = useState('')
   const [busy, setBusy] = useState(false)
-  const [message, setMessage] = useState('')
   const generation = useRef(0)
+  /** Keeps the last code during the exit fade, after payload clears. */
+  const shownPayload = useRef('')
+  if (payload) shownPayload.current = payload
+  const qrPresence = usePresence(!!payload)
   const nativePhoneUrl = (() => {
     try {
       const parsed = new URL(url)
@@ -28,7 +32,6 @@ export function PhonePairingPanel({ url, enabled }: PhonePairingPanelProps) {
     generation.current += 1
     setPayload('')
     setBusy(false)
-    setMessage('')
     return () => { generation.current += 1 }
   }, [url, enabled])
 
@@ -54,20 +57,19 @@ export function PhonePairingPanel({ url, enabled }: PhonePairingPanelProps) {
     if (!enabled || !nativePhoneUrl || busy || isCompanionContext()) return
     const request = ++generation.current
     setBusy(true)
-    setMessage('')
     try {
       const response = await sendToCEF<{ token?: string; url?: string; certificate?: string }>({ action: 'getCompanionToken' })
       if (generation.current !== request) return
       if (!response.ok || !/^[a-fA-F0-9]{64}$/.test(response.data?.token ?? '')) {
-        setMessage('Pairing code unavailable. Check Phone Access configuration.')
+        reportAppFailure('Pairing code unavailable.', 'Check Phone Access configuration.')
         return
       }
-      if (response.data?.url !== url) { setMessage('The phone address changed. Wait for phone access to become ready, then try again.'); return }
+      if (response.data?.url !== url) { reportAppFailure('The phone address changed.', 'Wait for phone access to become ready, then try again.'); return }
       const certificate = response.data.certificate
-      if (certificate !== undefined && (certificate.length > 11000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(certificate))) { setMessage('Pairing certificate unavailable. Retry phone access.'); return }
+      if (certificate !== undefined && (certificate.length > 11000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(certificate))) { reportAppFailure('Pairing certificate unavailable.', 'Retry phone access.'); return }
       setPayload(JSON.stringify({ ...(certificate ? { certificate } : {}), type: 'uam-companion', version: 1, url, token: response.data!.token, name: 'Main Universal Agent Manager computer' }))
     } catch {
-      if (generation.current === request) setMessage('Could not load the pairing code. Try again.')
+      if (generation.current === request) reportAppFailure('Could not load the pairing code.', 'Try again.')
     } finally {
       if (generation.current === request) setBusy(false)
     }
@@ -82,10 +84,9 @@ export function PhonePairingPanel({ url, enabled }: PhonePairingPanelProps) {
       {busy ? 'Loading…' : payload ? 'Hide pairing code' : 'Show pairing code'}
     </Button>}
   >
-    {payload && <div className="flex flex-col items-start gap-2 py-2">
-      <QRCodeSVG value={payload} size={232} level="M" marginSize={4} title="Universal Agent Manager iPhone pairing code" style={{ maxWidth: '100%', height: 'auto' }} />
+    {qrPresence.mounted && <div className="flex flex-col items-start gap-2 py-2 uam-presence" data-state={qrPresence.closing ? 'closed' : 'open'}>
+      <QRCodeSVG value={shownPayload.current} size={232} level="M" marginSize={4} title="Universal Agent Manager iPhone pairing code" style={{ maxWidth: '100%', height: 'auto' }} />
       <p className="text-xs" style={{ color: 'var(--text-2)' }}>This code grants access to Universal Agent Manager. It hides after two minutes; hiding does not revoke existing connections.</p>
     </div>}
-    {message && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{message}</p>}
   </SettingRow>
 }

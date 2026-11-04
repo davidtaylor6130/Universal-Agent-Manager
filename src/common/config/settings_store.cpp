@@ -82,6 +82,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kMemoryIdleDelaySecondsKey = "memory_idle_delay_seconds";
 	constexpr std::string_view kMemoryRecallBudgetBytesKey = "memory_recall_budget_bytes";
 	constexpr std::string_view kGoalMaxLoopIterationsKey = "goal_max_loop_iterations";
+	constexpr std::string_view kGoalTokenBudgetKey = "goal_token_budget";
 	constexpr std::string_view kAcpTurnOutputLimitMiBKey = "acp_turn_output_limit_mib";
 	constexpr std::string_view kUpdateChecksEnabledKey = "update_checks_enabled";
 	constexpr std::string_view kUpdateLastCheckedAtKey = "update_last_checked_at";
@@ -703,6 +704,7 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteSettingValue(lines, kMemoryIdleDelaySecondsKey, normalized.memory_idle_delay_seconds);
 		WriteSettingValue(lines, kMemoryRecallBudgetBytesKey, normalized.memory_recall_budget_bytes);
 		WriteSettingValue(lines, kGoalMaxLoopIterationsKey, normalized.goal_max_loop_iterations);
+		WriteSettingValue(lines, kGoalTokenBudgetKey, normalized.goal_token_budget);
 		WriteSettingValue(lines, kAcpTurnOutputLimitMiBKey, normalized.acp_turn_output_limit_mib);
 		WriteBoolSetting(lines, kUpdateChecksEnabledKey, normalized.update_checks_enabled);
 		WriteBoolSetting(lines, "automatic_provider_updates", normalized.automatic_provider_updates);
@@ -781,6 +783,7 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		    normalized.memory_idle_delay_seconds,
 		    normalized.memory_recall_budget_bytes,
 		    normalized.goal_max_loop_iterations,
+		    normalized.goal_token_budget,
 		    normalized.acp_setup_inactivity_timeout_seconds,
 		    normalized.acp_turn_output_limit_mib,
 		    normalized.memory_worker_bindings,
@@ -1073,6 +1076,10 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		else if (key == kGoalMaxLoopIterationsKey)
 		{
 			settings.goal_max_loop_iterations = uam::parse::IntOr(value, settings.goal_max_loop_iterations);
+		}
+		else if (key == kGoalTokenBudgetKey)
+		{
+			settings.goal_token_budget = uam::parse::IntOr(value, settings.goal_token_budget);
 		}
 		else if (key == kAcpTurnOutputLimitMiBKey)
 		{

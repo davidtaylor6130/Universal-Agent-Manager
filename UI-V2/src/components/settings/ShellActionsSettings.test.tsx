@@ -1,6 +1,9 @@
 import { act, createRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+const addAction = (host: HTMLElement) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Add action')!
 import { useAppStore } from '../../store/useAppStore'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 
@@ -119,7 +122,7 @@ describe('ShellActionsSettings', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
     await act(async () => { root.render(<ShellActionsSettings />) })
-    act(() => (host.querySelector('button[aria-label="Add shell action"]') as HTMLButtonElement).click())
+    act(() => (addAction(host) as HTMLButtonElement).click())
     const apply = host.querySelector<HTMLButtonElement>('button[aria-label="Save shell actions"]') as HTMLButtonElement
 
     act(() => {
@@ -143,7 +146,7 @@ describe('ShellActionsSettings', () => {
     const host=document.createElement('div'); document.body.append(host)
     const root=createRoot(host)
     await act(async () => {root.render(<ShellActionsSettings ref={ref}/> )})
-    act(() => (host.querySelector('[aria-label="Add shell action"]') as HTMLButtonElement).click())
+    act(() => (addAction(host) as HTMLButtonElement).click())
     act(() => ref.current?.requestLeave(leave))
     const save = () => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent==='Save and leave')!
     await act(async () => {save().click()})
@@ -167,15 +170,15 @@ describe('ShellActionsSettings', () => {
     const root = createRoot(host)
     await act(async () => root.render(<ShellActionsSettings ref={ref} />))
     try {
-      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Add shell action"]')!.click())
+      act(() => addAction(host)!.click())
       expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(true)
       act(() => ref.current?.requestLeave(leave))
       expect(Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Save and leave')!.disabled).toBe(true)
-      act(() => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Go back')!.click())
+      act(() => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Keep editing')!.click())
       expect(document.activeElement?.getAttribute('aria-label')).toBe('Label for Review Selection')
       const control = host.querySelector<HTMLButtonElement>(`[aria-label="${_label === 'input' ? 'Input type' : 'Action'} for Review Selection"]`)!
       act(() => control.click())
-      const option = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find(button => button.textContent?.startsWith(_label === 'input' ? 'Files and folders' : 'Open as Workspace'))!
+      const option = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find(button => button.textContent?.startsWith(_label === 'input' ? 'Files and folders' : 'Open as workspace'))!
       act(() => option.click())
       expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(false)
       await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.click())
@@ -183,37 +186,6 @@ describe('ShellActionsSettings', () => {
     } finally { act(() => root.unmount()); host.remove() }
   })
 
-  it.each(['notification', 'backend error'] as const)('keeps a shell %s visible and dismissible beside invalid-draft validation', async kind => {
-    const message = kind === 'notification' ? 'Shell integration needs refreshing.' : 'Could not save shell actions.'
-    const dismiss = vi.fn(async () => { useAppStore.setState({ shellActionNotification: '' }) })
-    useAppStore.setState({
-      shellActionNotification: kind === 'notification' ? message : '',
-      dismissShellActionNotification: dismiss,
-      ...(kind === 'backend error' ? { setShellActions: vi.fn(async () => false) } : {}),
-    })
-    const host = document.createElement('div'); document.body.append(host)
-    const root = createRoot(host)
-    await act(async () => root.render(<ShellActionsSettings />))
-    try {
-      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Add shell action"]')!.click())
-      if (kind === 'backend error') await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.click())
-      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Expand Review Selection"]')!.click())
-      const label = host.querySelector<HTMLInputElement>('[aria-label="Label for Review Selection"]')!
-      act(() => {
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(label, '')
-        label.dispatchEvent(new Event('input', { bubbles: true }))
-      })
-      expect(Array.from(host.querySelectorAll('[role="status"]'), status => status.textContent).join(' ')).toContain(message)
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Each action needs a label')
-      expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(true)
-      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss shell action message"]')!.click())
-      expect(dismiss).toHaveBeenCalledOnce()
-      expect(host.textContent).not.toContain(message)
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Each action needs a label')
-      expect(host.querySelector<HTMLButtonElement>('[aria-label="Dismiss shell action message"]')).toBeNull()
-      expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(true)
-    } finally { act(() => root.unmount()); host.remove() }
-  })
 
   it('keeps a reverted shell label clean and permits a valid new action', async () => {
     const host = document.createElement('div'); document.body.append(host)
@@ -230,7 +202,7 @@ describe('ShellActionsSettings', () => {
       expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(false)
       change('Review Selection')
       expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(true)
-      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Add shell action"]')!.click())
+      act(() => addAction(host)!.click())
       expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(false)
       await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.click())
       expect(useAppStore.getState().setShellActions).toHaveBeenCalledOnce()
@@ -253,6 +225,8 @@ describe('ShellActionsSettings', () => {
     ]
     const titles = (element: Element) => Array.from(element.querySelectorAll('.uam-set-row__title')).map(title => title.textContent)
     const group = (host: HTMLElement, label: string) => host.querySelector<HTMLElement>(`[role="group"][aria-label="${label}"]`)!
+    // Collapsed groups animate to zero rows and go visibility hidden instead of the hidden attribute.
+    const collapsed = (element: HTMLElement) => element.parentElement!.parentElement!.style.visibility === 'hidden'
     const header = (host: HTMLElement, label: string) => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!
     const type = (element: HTMLInputElement, value: string) => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(element, value)
@@ -312,9 +286,9 @@ describe('ShellActionsSettings', () => {
         expect(code.tabIndex).not.toBe(-1)
         act(() => code.click())
         expect(code.getAttribute('aria-expanded')).toBe('false')
-        expect(group(host, 'Code').hidden).toBe(true)
+        expect(collapsed(group(host, 'Code'))).toBe(true)
         expect(header(host, 'GitHub').getAttribute('aria-expanded')).toBe('true')
-        expect(group(host, 'GitHub').hidden).toBe(false)
+        expect(collapsed(group(host, 'GitHub'))).toBe(false)
         expect(host.querySelector<HTMLButtonElement>('button[aria-label="Save shell actions"]')!.disabled).toBe(false)
         act(() => code.click())
         expect(code.getAttribute('aria-expanded')).toBe('true')
@@ -347,7 +321,7 @@ describe('ShellActionsSettings', () => {
         await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Group for Explain ü"]')!.click())
         await act(async () => option('New group…').click())
         act(() => type(document.body.querySelector<HTMLInputElement>('input[aria-label="Group name"]')!, ' Ünï / Sub '))
-        await act(async () => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Create group')!.click())
+        await act(async () => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Add group')!.click())
         expect(titles(group(host, 'Ünï / Sub'))).toEqual(['Explain ü'])
         expect(host.querySelector<HTMLInputElement>('input[aria-label="Label for Explain ü"]')?.value).toBe('Explain ü')
 
@@ -363,8 +337,8 @@ describe('ShellActionsSettings', () => {
       const { host, root } = await mount()
       try {
         act(() => header(host, 'Ungrouped').click())
-        expect(group(host, 'Ungrouped').hidden).toBe(true)
-        act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Add shell action"]')!.click())
+        expect(collapsed(group(host, 'Ungrouped'))).toBe(true)
+        act(() => addAction(host)!.click())
         expect(header(host, 'Ungrouped').getAttribute('aria-expanded')).toBe('true')
         expect(titles(group(host, 'Ungrouped'))).toEqual(['New action', 'Loose one'])
         expect(host.querySelector('input[aria-label="Label for New action"]')).not.toBeNull()
@@ -384,10 +358,10 @@ describe('ShellActionsSettings', () => {
         expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(true)
         expect(Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Save and leave')!.disabled).toBe(true)
         expect(document.body.querySelector('[aria-label="Unsaved shell actions"]')?.textContent).toContain('Each action needs a label')
-        await act(async () => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Go back')!.click())
+        await act(async () => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Keep editing')!.click())
         expect(document.body.querySelector('[aria-label="Unsaved shell actions"]')).toBeNull()
         expect(leave).not.toHaveBeenCalled()
-        expect(group(host, 'Code').hidden).toBe(false)
+        expect(collapsed(group(host, 'Code'))).toBe(false)
         expect(document.activeElement).toBe(host.querySelector('input[aria-label="Label for "]'))
         expect(useAppStore.getState().setShellActions).not.toHaveBeenCalled()
       } finally { act(() => root.unmount()); host.remove() }

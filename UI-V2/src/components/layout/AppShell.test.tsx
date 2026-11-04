@@ -24,10 +24,10 @@ vi.mock('./MainPanel', () => ({
   },
 }))
 
-import { AppShell } from './AppShell'
+import { AppShell, pushStackedAlert, updateNoticeText } from './AppShell'
 import { moveResourceToCollection } from '../sidebar/CollectionMenuItems'
 import { FILE_MANAGER_NAME } from '../../utils/shortcuts'
-import { APP_FAILURE_EVENT, reportAppFailure } from '../../utils/appFailure'
+import { APP_FAILURE_EVENT, reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { retainUnconfirmedFolderChoice, retainUnconfirmedFolderRestart } from '../settings/dataFolderSettings'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -282,7 +282,7 @@ describe('AppShell', () => {
       draft.value = 'Unsent chat'
       const settings = host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!
       await act(async () => { settings.click(); await import('../settings/SettingsModal') })
-      act(() => host.querySelector<HTMLButtonElement>('[aria-label="MCP Servers"]')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="MCP servers"]')!.click())
       act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'JSON')!.click())
       const editor = host.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!
       act(() => {
@@ -361,7 +361,7 @@ describe('AppShell', () => {
     await act(async () => root.render(<AppShell/>))
     const settings = host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!
     await act(async () => { settings.click(); await import('../settings/SettingsModal') })
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="MCP Servers"]')!.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="MCP servers"]')!.click())
     act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'JSON')!.click())
     const editor = host.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!
     act(() => {
@@ -432,8 +432,8 @@ describe('AppShell', () => {
       act(() => useAppStore.setState({ cliTranscriptBySessionId: { other: { terminalId: 'other', content: String(index) } } }))
     }
     expect(onRender).not.toHaveBeenCalled()
-    const relink = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Relink')
-    const remove = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Remove')
+    const relink = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.getAttribute('aria-label') === 'Relink')
+    const remove = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.getAttribute('aria-label') === 'Remove')
     expect(relink).toBeTruthy()
     expect(remove).toBeTruthy()
 
@@ -443,12 +443,12 @@ describe('AppShell', () => {
 
     renameFolder.mockResolvedValueOnce(false)
     await act(async () => relink?.click())
-    expect(panel?.textContent).toContain('workspace could not be relinked')
+    expect(panel?.textContent).toContain('The workspace could not be relinked.')
 
     await act(async () => remove?.click())
-    expect(panel?.textContent).toContain('delete 2 chats')
+    expect(document.body.textContent).toContain('delete 2 chats')
     expect(deleteFolder).not.toHaveBeenCalled()
-    const confirmRemoval = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Confirm removal')
+    const confirmRemoval = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === 'Confirm removal')
     await act(async () => confirmRemoval?.click())
     expect(deleteFolder).toHaveBeenCalledWith('missing')
 
@@ -507,8 +507,8 @@ describe('AppShell', () => {
       const panel = () => host.querySelector('[data-testid="notifications-panel"]')!
       const time = () => panel().querySelector('time')!
       expect(time().dateTime).toBe(firstObserved.toISOString())
-      expect(time().textContent).toBe('2 minutes ago')
-      expect(time().getAttribute('aria-label')).toBe('2 minutes ago')
+      expect(time().textContent).toBe('2m')
+      expect(time().getAttribute('aria-label')).toBe('2m')
 
       act(() => useAppStore.setState({ sidebarCollapsed: true }))
       expect(time().dateTime).toBe(firstObserved.toISOString())
@@ -518,7 +518,7 @@ describe('AppShell', () => {
       vi.setSystemTime(new Date(2026, 9, 23, 10))
       act(() => (host.querySelector('[aria-label="1 alert"]') as HTMLButtonElement).click())
       expect(time().dateTime).toBe(firstObserved.toISOString())
-      expect(time().textContent).toBe('1 hour ago')
+      expect(time().textContent).toBe('1h')
 
       act(() => (panel().querySelector('[aria-label="Mark all notifications as read"]') as HTMLButtonElement).click())
       act(() => vi.advanceTimersByTime(60_000))
@@ -533,7 +533,7 @@ describe('AppShell', () => {
       act(() => useAppStore.setState({ statusLine: 'Settings saved.' }))
       expect(host.querySelector('[aria-label="1 alert"]')).toBeTruthy()
       expect(time().dateTime).toBe(returnedAt.toISOString())
-      expect(time().textContent).toBe('Just now')
+      expect(time().textContent).toBe('now')
     } finally {
       act(() => root.unmount())
       host.remove()
@@ -564,7 +564,7 @@ describe('AppShell', () => {
       expect(times.map((time) => time.dateTime)).toEqual([
         new Date(2026, 9, 23, 23, 59).toISOString(), new Date(2026, 9, 23, 23, 58).toISOString(), new Date(2026, 9, 22, 23, 59).toISOString(),
       ])
-      expect(times[0].textContent).toBe('Just now')
+      expect(times[0].textContent).toBe('now')
       const announcer = host.querySelector('[data-testid="transient-alert-announcer"]')!
       const announcement = announcer.innerHTML
       const transcriptRenders = mainPanelRenderCount.value
@@ -572,7 +572,7 @@ describe('AppShell', () => {
       act(() => focusedDismiss.focus())
       act(() => vi.advanceTimersByTime(60_000))
       expect(groups()).toEqual(['Earlier'])
-      expect(panel.querySelector('time')?.textContent).toBe('1 minute ago')
+      expect(panel.querySelector('time')?.textContent).toBe('1m')
       expect(announcer.innerHTML).toBe(announcement)
       expect(mainPanelRenderCount.value).toBe(transcriptRenders)
       expect(document.activeElement).toBe(focusedDismiss)
@@ -603,13 +603,13 @@ describe('AppShell', () => {
       const tooltip = document.body.querySelector('[role="tooltip"]')!
       expect(tooltip.textContent).toBe(observedAt.toLocaleString())
       expect(time.getAttribute('aria-describedby')).toBe(tooltip.id)
-      expect(time.getAttribute('aria-label')).toBe('Just now')
+      expect(time.getAttribute('aria-label')).toBe('now')
       const spokenTime = () => `${time.getAttribute('aria-label')} ${tooltip.textContent}`
       expect(spokenTime().split(observedAt.toLocaleString())).toHaveLength(2)
       await act(async () => { vi.advanceTimersByTime(60_000); await Promise.resolve() })
-      expect(time.textContent).toBe('1 minute ago')
+      expect(time.textContent).toBe('1m')
       expect(time.dateTime).toBe(observedAt.toISOString())
-      expect(time.getAttribute('aria-label')).toBe('1 minute ago')
+      expect(time.getAttribute('aria-label')).toBe('1m')
       expect(spokenTime().split(observedAt.toLocaleString())).toHaveLength(2)
       expect(tooltip.textContent).toBe(observedAt.toLocaleString())
       expect(document.activeElement).toBe(time)
@@ -646,7 +646,7 @@ describe('AppShell', () => {
       expect(panel.textContent).toContain('1 update available')
       expect(panel.textContent).toContain('Codex update completed')
       expect(Array.from(panel.querySelectorAll('time'), (time) => [time.dateTime, time.textContent])).toEqual([
-        [observedAt.toISOString(), '2 minutes ago'], [observedAt.toISOString(), '2 minutes ago'],
+        [observedAt.toISOString(), '2m'], [observedAt.toISOString(), '2m'],
       ])
       act(() => useAppStore.setState((state) => ({ cliVersionManager: {
         providers: state.cliVersionManager.providers.map((provider) => ({ ...provider, lastOutput: 'Unrelated diagnostic detail' })),
@@ -681,7 +681,7 @@ describe('AppShell', () => {
     expect(host.querySelector('button[aria-label="1 alert"]')).toBeTruthy()
     act(() => (host.querySelector('button[aria-label="1 alert"]') as HTMLButtonElement).click())
     expect(host.textContent).toContain('Homelab connection issue')
-    expect(host.textContent).toContain('Codex app-server process exited during an active turn.')
+    expect(host.textContent).toContain('Containers: connection lost')
     expect(host.querySelectorAll('[data-testid="notifications-panel"] time')).toHaveLength(1)
 
     await act(async () => useAppStore.setState((state) => ({
@@ -1258,6 +1258,63 @@ describe('AppShell', () => {
     act(() => root.unmount())
     host.remove()
   })
+  it('moves a repeated notice to the bottom of the stack with its raised count', () => {
+    const notice = (id: string, message: string) => ({ id, tone: 'info' as const, message, actionLabel: 'View', action: 'notifications' as const })
+    let stack = pushStackedAlert([], notice('a', 'One'))
+    stack = pushStackedAlert(stack, notice('b', 'Two'))
+    stack = pushStackedAlert(stack, notice('c', 'One'))
+    expect(stack.map((item) => [item.id, item.message, item.count])).toEqual([['b', 'Two', 1], ['a', 'One', 2]])
+  })
+  it('gives a notice re-raised during its predecessor exit a distinct id', () => {
+    const notice = { id: 'updates-1', tone: 'info' as const, message: 'Update ready', actionLabel: 'View', action: 'updates' as const }
+    const stack = pushStackedAlert([{ ...notice, count: 1, leaving: true }], notice)
+    expect(stack).toHaveLength(2)
+    expect(stack[1].id).not.toBe('updates-1')
+    expect(stack[1].count).toBe(1)
+  })
+  it('stacks distinct notices newest at the bottom, counts identical repeats and collapses overflow', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
+    useAppStore.setState({ updateChecksEnabled: false })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    const messages = () => [...host.querySelectorAll('.uam-transient-alert-slot:not([hidden]) [aria-label="Notification message"]')].map((node) => node.firstChild?.textContent)
+    try {
+      await act(async () => root.render(<AppShell />))
+      act(() => reportAppFailure('Subagent conversation unavailable.', 'one'))
+      act(() => reportAppFailure('Subagent conversation unavailable.', 'two'))
+      act(() => reportAppFailure('Subagent conversation unavailable.', 'three'))
+      // Rapid identical failures stay one notice with a visible count instead of silently restarting.
+      expect(messages()).toEqual(['Subagent conversation unavailable.'])
+      expect(host.querySelector('[data-testid="transient-alert-count"]')?.textContent).toBe('×3')
+      act(() => vi.advanceTimersByTime(4000))
+      for (const n of [1, 2, 3, 4]) act(() => reportAppNotice(`Notice ${n}`))
+      // 30% of 768px holds 4 rows: the toggle plus the 4 newest; the oldest collapses behind it.
+      expect(messages()).toEqual(['Notice 1', 'Notice 2', 'Notice 3', 'Notice 4'])
+      const toggle = () => [...host.querySelectorAll('button')].find((button) => /^Show/.test(button.textContent ?? ''))!
+      expect(toggle().textContent).toBe('Show 1 more')
+      act(() => toggle().click())
+      expect(messages()).toEqual(['Subagent conversation unavailable.', 'Notice 1', 'Notice 2', 'Notice 3', 'Notice 4'])
+      expect(toggle().getAttribute('aria-expanded')).toBe('true')
+      act(() => toggle().click())
+      expect(messages()).toHaveLength(4)
+      // Focusing the stack's toggle holds no notice; only a hovered or focused notice holds its own countdown.
+      act(() => toggle().focus())
+      // The oldest expires on its own timer; the rest keep theirs.
+      act(() => vi.advanceTimersByTime(1000)); act(() => vi.advanceTimersByTime(200))
+      expect(messages()).toEqual(['Notice 1', 'Notice 2', 'Notice 3', 'Notice 4'])
+      expect(toggle()).toBeUndefined()
+      // Dismiss (button or Escape) removes only that notice.
+      act(() => host.querySelectorAll<HTMLButtonElement>('[aria-label="Dismiss alert"]')[3].click())
+      act(() => host.querySelector('.uam-transient-alert-slot:not([hidden]) [data-testid="transient-alert-item"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+      act(() => vi.advanceTimersByTime(200))
+      expect(messages()).toEqual(['Notice 2', 'Notice 3'])
+      act(() => vi.advanceTimersByTime(5200))
+      expect(host.querySelector('[data-testid="transient-alert"]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove(); vi.useRealTimers() }
+  })
+
   it('keeps failed moves in notifications after the transient alert is dismissed', async () => {
     vi.useFakeTimers()
     const originalMove = useAppStore.getState().moveResourceToCollection
@@ -1280,7 +1337,7 @@ describe('AppShell', () => {
       act(() => vi.advanceTimersByTime(200))
       expect(host.querySelector('[data-testid="transient-alert"]')).toBeNull()
       await act(async () => { await moveResourceToCollection('destination', 'workspace-folder', 'folder', 'Workspace') })
-      act(() => vi.advanceTimersByTime(8000))
+      act(() => vi.advanceTimersByTime(5000))
       act(() => vi.advanceTimersByTime(200))
       expect(host.querySelector('[data-testid="transient-alert"]')).toBeNull()
       act(() => (host.querySelector('[aria-label="2 alerts"]') as HTMLButtonElement).click())
@@ -1326,7 +1383,7 @@ describe('AppShell', () => {
           window.innerHeight - (Number.parseFloat(this.style.bottom) || 0) - height, width, height)
       }
       if (this.closest('[data-testid="transient-alert"]') && this.tagName === 'BUTTON')
-        return new DOMRect(0, 0, this.getAttribute('aria-label') === 'Dismiss alert' ? 26 : 140, 26)
+        return new DOMRect(0, 0, ['Dismiss alert', 'Copy message'].includes(this.getAttribute('aria-label') ?? '') ? 26 : 140, 26)
       return nativeRect.call(this)
     })
     const host = document.createElement('div')
@@ -1365,7 +1422,7 @@ describe('AppShell', () => {
       const publish = (id = failure.id) => window.dispatchEvent(new CustomEvent(APP_FAILURE_EVENT, { detail: { ...failure, id } }))
       await act(async () => { publish(); await Promise.resolve() })
       expect(host.querySelector('[data-testid="transient-alert-announcer"]')).toBe(announcer)
-      expect(announcer.textContent).toBe(`${failure.message} Saved in Notifications. Use the Notifications button to read it.`)
+      expect(announcer.textContent).toBe(`${failure.message} Saved in Notifications.`)
       expect(announcer.closest('[aria-hidden="true"]')).toBeNull()
       expect(alertSurface()!.hasAttribute('aria-live')).toBe(false)
       expect(alertSurface()!.getAttribute('role')).not.toBe('status')
@@ -1382,7 +1439,7 @@ describe('AppShell', () => {
       expect(changes).toEqual([])
       // Distinct actual notifications with identical words still produce a live-region child update.
       await act(async () => { publish('fixture-announcement-b'); await Promise.resolve() })
-      expect(announcer.textContent).toBe(`${failure.message} Saved in Notifications. Use the Notifications button to read it.`)
+      expect(announcer.textContent).toBe(`${failure.message} Saved in Notifications.`)
       expect(announcer.firstChild).not.toBe(firstAnnouncement)
       expect(changes.length).toBeGreaterThan(0)
       changes.length = 0
@@ -1424,7 +1481,7 @@ describe('AppShell', () => {
       await act(async () => { reportAppFailure('No-fit private fixture', 'Retained detail'); await Promise.resolve() })
       expect(alertSurface()!.getAttribute('aria-hidden')).toBe('true')
       expect(document.getElementById(bell().getAttribute('aria-describedby')!)).toBe(announcer)
-      expect(announcer.textContent).toBe('No-fit private fixture Saved in Notifications. Use the Notifications button to read it.')
+      expect(announcer.textContent).toBe('No-fit private fixture Saved in Notifications.')
       expect(host.querySelectorAll('[role="status"][aria-live="polite"]')).toHaveLength(1)
       expect(announcer.getAttribute('aria-atomic')).toBe('true')
       expect(announcer.closest('[aria-hidden="true"]')).toBeNull()
@@ -1482,9 +1539,9 @@ describe('AppShell', () => {
       expect(announcer.getAttribute('aria-live')).toBe('polite')
       expect(announcer.getAttribute('aria-atomic')).toBe('true')
       expect(surface.hasAttribute('aria-live')).toBe(false)
-      expect(surface.style.right).toBe('52px')
-      expect(surface.style.bottom).toBe('0px')
-      expect(surface.getBoundingClientRect().bottom).toBe(window.innerHeight)
+      expect(surface.style.right).toBe('60px')
+      expect(surface.style.bottom).toBe('16px')
+      expect(surface.getBoundingClientRect().bottom).toBe(window.innerHeight - 16)
       expect(surface.style.left).toBe('')
       expect(surface.getBoundingClientRect().right).toBeLessThan(bell().getBoundingClientRect().left)
       expect(surface.getAttribute('aria-hidden')).toBeNull()
@@ -1510,11 +1567,12 @@ describe('AppShell', () => {
     const { host, alertSurface, bell, settle, cleanup } = await mountShell()
     try {
       act(() => reportAppFailure('Could not save.', 'Disk full'))
-      act(() => { alertSurface()!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
+      const item = () => alertSurface()!.querySelector('[data-testid="transient-alert-item"]')!
+      act(() => { item().dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
       settle(20000)
       expect(alertSurface()).toBeTruthy()
-      act(() => { alertSurface()!.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })) })
-      settle(8000)
+      act(() => { item().dispatchEvent(new MouseEvent('mouseout', { bubbles: true })) })
+      settle(5000)
       settle(200)
       expect(alertSurface()).toBeNull()
 
@@ -1545,6 +1603,143 @@ describe('AppShell', () => {
     }
   })
 
+  it('pauses only the hovered or focused notice while the others keep counting down', async () => {
+    vi.useFakeTimers()
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { alertSurface, settle, cleanup } = await mountShell()
+    const items = () => [...alertSurface()?.querySelectorAll<HTMLElement>('[data-testid="transient-alert-item"]') ?? []]
+    const messages = () => items().map((item) => item.querySelector('[aria-label="Notification message"]')?.firstChild?.textContent)
+    try {
+      act(() => reportAppFailure('First failure.', 'one'))
+      act(() => reportAppFailure('Second failure.', 'two'))
+      act(() => { items()[0].dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
+      expect(items()[0].dataset.held).toBe('true')
+      expect(items()[1].dataset.held).toBeUndefined()
+      expect((items()[1].querySelector('.uam-transient-alert__countdown') as HTMLElement).style.animationPlayState).toBe('running')
+      settle(5200)
+      expect(messages()).toEqual(['First failure.'])
+      act(() => { items()[0].dispatchEvent(new MouseEvent('mouseout', { bubbles: true })) })
+
+      act(() => reportAppFailure('Third failure.', 'three'))
+      const focusTarget = items()[1].querySelector<HTMLElement>('[aria-label="Notification message"]')!
+      act(() => focusTarget.focus())
+      settle(5200)
+      expect(messages()).toEqual(['Third failure.'])
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps a hovered notice held when an identical repeat remounts it', async () => {
+    vi.useFakeTimers()
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { alertSurface, settle, cleanup } = await mountShell()
+    const item = () => alertSurface()!.querySelector<HTMLElement>('[data-testid="transient-alert-item"]')!
+    try {
+      act(() => reportAppFailure('Repeated failure.', 'one'))
+      act(() => { item().dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
+      act(() => reportAppFailure('Repeated failure.', 'two'))
+      expect(alertSurface()!.querySelector('[data-testid="transient-alert-count"]')?.textContent).toBe('×2')
+      expect(item().dataset.held).toBe('true')
+      settle(20000)
+      expect(alertSurface()).toBeTruthy()
+      act(() => { item().dispatchEvent(new MouseEvent('mouseout', { bubbles: true })) })
+      settle(5200)
+      expect(alertSurface()).toBeNull()
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('never holds a collapsed notice, even while it keeps focus', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { alertSurface, settle, cleanup } = await mountShell()
+    const messages = () => [...alertSurface()?.querySelectorAll('.uam-transient-alert-slot:not([hidden]) [aria-label="Notification message"]') ?? []].map((node) => node.firstChild?.textContent)
+    try {
+      act(() => reportAppFailure('Focused failure.', 'one'))
+      act(() => alertSurface()!.querySelector<HTMLElement>('[aria-label="Notification message"]')!.focus())
+      settle(1000)
+      for (const n of [1, 2, 3, 4]) act(() => reportAppNotice(`Notice ${n}`))
+      // 30% of 768px holds 4 rows; the focused oldest notice collapses and its countdown resumes.
+      expect(messages()).toEqual(['Notice 1', 'Notice 2', 'Notice 3', 'Notice 4'])
+      // Focus leaves the now-hidden notice for the toggle that reveals it.
+      expect(document.activeElement?.textContent).toBe('Show 1 more')
+      expect(alertSurface()!.querySelector<HTMLElement>('.uam-transient-alert-slot[hidden] [data-testid="transient-alert-item"]')!.dataset.held).toBeUndefined()
+      // Focus paused it with its full 5 seconds left; once collapsed it counts down again and expires on its own.
+      settle(4800)
+      expect(alertSurface()!.querySelector('.uam-transient-alert-slot[hidden]')).not.toBeNull()
+      settle(400); settle(200)
+      expect([...alertSurface()?.querySelectorAll('[aria-label="Notification message"]') ?? []].map((node) => node.firstChild?.textContent)).not.toContain('Focused failure.')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('counts a multi-line notice at its content height, even while its slot is still sliding in, when deciding how many fit', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
+    useAppStore.setState({ updateChecksEnabled: false })
+    // The slot stays 0 tall, as during its 0fr slide-in; only the notice's content height is known.
+    const offsetHeight = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(0)
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === 'transient-alert-item' ? (this.textContent?.includes('Tall') ? 118 : 30) : 0
+    })
+    const { alertSurface, cleanup } = await mountShell()
+    const toggle = () => [...alertSurface()!.querySelectorAll('button')].find((button) => /^Show/.test(button.textContent ?? ''))
+    try {
+      act(() => reportAppNotice('Tall notice\nsecond line\nthird line'))
+      for (const n of [1, 2, 3]) act(() => reportAppNotice(`Notice ${n}`))
+      // Four single-line rows would fit; the tall one takes the room of three, so it collapses behind the toggle.
+      expect(toggle()?.textContent).toBe('Show 1 more')
+    } finally {
+      cleanup()
+      offsetHeight.mockRestore()
+      scrollHeight.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('copies the full notice text from the toast and the bell panel', async () => {
+    vi.useFakeTimers()
+    useAppStore.setState({ updateChecksEnabled: false })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const { host, alertSurface, bell, cleanup } = await mountShell()
+    try {
+      act(() => reportAppNotice('Saved.', 'success'))
+      expect(alertSurface()!.querySelector('[aria-label="Copy message"]')).toBeNull()
+      act(() => reportAppFailure('Chat history did not load.', 'Disk read failed'))
+      const copy = alertSurface()!.querySelectorAll<HTMLButtonElement>('[aria-label="Copy message"]')
+      expect(copy).toHaveLength(1)
+      await act(async () => copy[0].click())
+      expect(writeText).toHaveBeenLastCalledWith('Chat history did not load.\nDisk read failed')
+
+      act(() => bell().click())
+      const panelCopy = host.querySelector('[data-testid="notifications-panel"]')!.querySelectorAll<HTMLButtonElement>('[aria-label="Copy message"]')
+      expect(panelCopy).toHaveLength(1)
+      await act(async () => panelCopy[0].click())
+      expect(writeText).toHaveBeenLastCalledWith('Change not saved\nChat history did not load. · Disk read failed')
+    } finally {
+      cleanup()
+      Reflect.deleteProperty(navigator, 'clipboard')
+      vi.useRealTimers()
+    }
+  })
+
+  it('writes update notice copy for one update and lists several', () => {
+    const update = (name: string, latestVersion: string) => ({ id: name, name, currentVersion: '1', latestVersion, url: '', installable: true })
+    expect(updateNoticeText([update('Codex', '0.130.0')])).toBe('Update available: Codex 0.130.0')
+    expect(updateNoticeText([update('Gaming AI Desktop SSH helper', '5.0.0 · helper protocol 3'), update('Homelab Main PC SSH helper', '5.0.0 · helper protocol 3')]))
+      .toBe('2 updates available\nGaming AI Desktop SSH helper 5.0.0\nHomelab Main PC SSH helper 5.0.0')
+    expect(updateNoticeText(['A', 'B', 'C', 'D', 'E'].map((name) => update(name, '2.0.0'))))
+      .toBe('5 updates available\nA 2.0.0\nB 2.0.0\nC 2.0.0\nand 2 more')
+  })
+
   // David explicitly superseded composer-clearance on 2026-10-21: bottom edge, allow covering Send.
   // Prior R3 collision/R4 clearance receipts and the original test preimage remain immutable evidence.
   it('stays at the GUI bottom edge as composers grow and permits covering Send while keeping the rail alignment', async () => {
@@ -1567,9 +1762,9 @@ describe('AppShell', () => {
       const send = new DOMRect(1068, 750, 32, 32) // Prior collision is now intentionally permitted.
       const rect = surface.getBoundingClientRect()
       expect(surface.getAttribute('aria-hidden')).toBeNull()
-      expect(surface.style.bottom).toBe('0px')
-      expect(rect.bottom).toBe(800)
-      expect(rect.right).toBe(1228)
+      expect(surface.style.bottom).toBe('16px')
+      expect(rect.bottom).toBe(784)
+      expect(rect.right).toBe(1220)
       expect(rect.width).toBe(360)
       expect(Math.min(rect.right, send.right) - Math.max(rect.left, send.left)).toBeGreaterThan(0)
       expect(Math.min(rect.bottom, send.bottom) - Math.max(rect.top, send.top)).toBeGreaterThan(0)
@@ -1581,9 +1776,9 @@ describe('AppShell', () => {
       // Horizontal placement still follows the real rail at a narrower viewport.
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: 480 })
       notifyResize()
-      expect(surface.getBoundingClientRect().right).toBe(428)
+      expect(surface.getBoundingClientRect().right).toBe(420)
       expect(surface.getBoundingClientRect().width).toBe(360)
-      expect(surface.getBoundingClientRect().bottom).toBe(800)
+      expect(surface.getBoundingClientRect().bottom).toBe(784)
     } finally {
       cleanup()
       expect(fixture.activeObserverCount()).toBe(0)
@@ -1611,13 +1806,13 @@ describe('AppShell', () => {
       act(() => reportAppFailure('Notice during the first turn', 'Retained detail'))
       const surface = alertSurface()!
       const initial = surface.getBoundingClientRect()
-      expect(initial.bottom).toBe(800)
-      expect(initial.right).toBe(1228)
+      expect(initial.bottom).toBe(784)
+      expect(initial.right).toBe(1220)
       for (const top of [250, 500, 703]) {
         layoutRects.set(form, new DOMRect(172, top, 936, 85))
         transition(top === 250 ? 'transitionrun' : top === 703 ? 'transitionend' : 'transitioncancel')
         notifyResize()
-        expect(surface.style.bottom).toBe('0px')
+        expect(surface.style.bottom).toBe('16px')
         expect(surface.getBoundingClientRect()).toEqual(initial)
       }
     } finally { cleanup(); vi.useRealTimers() }
@@ -1643,10 +1838,11 @@ describe('AppShell', () => {
       const surface = alertSurface()!
       const text = surface.querySelector<HTMLElement>('[aria-label="Notification message"]')!
       expect(surface.getAttribute('aria-hidden')).toBeNull()
-      expect(surface.style.bottom).toBe('0px')
-      expect(surface.getBoundingClientRect().bottom).toBe(300)
+      expect(surface.style.bottom).toBe('16px')
+      expect(surface.getBoundingClientRect().bottom).toBe(284)
       expect(surface.getBoundingClientRect().top).toBeGreaterThanOrEqual(96)
-      expect(Number.parseFloat(text.style.maxHeight)).toBe(194)
+      // The stack (and so one long notice) is capped at 30% of the 300px window, less padding.
+      expect(Number.parseFloat(text.style.maxHeight)).toBe(80)
       expect(text.style.overflowY).toBe('auto')
       expect(text.tabIndex).toBe(0)
       expect(text.textContent).toBe(message)
@@ -1659,7 +1855,7 @@ describe('AppShell', () => {
       layoutRects.set(dock, new DOMRect(44, 110, 632, 190))
       notifyResize()
       expect(surface.getAttribute('aria-hidden')).toBeNull()
-      expect(surface.getBoundingClientRect().bottom).toBe(300)
+      expect(surface.getBoundingClientRect().bottom).toBe(284)
       expect(document.activeElement).toBe(text)
       // An actually short viewport leaves insufficient room below the header for accessible actions.
       Object.defineProperty(window, 'innerHeight', { configurable: true, value: 120 })
@@ -1682,7 +1878,7 @@ describe('AppShell', () => {
         layoutRects.set(bell(), new DOMRect(width - 37, 222, 30, 30))
         notifyResize()
         expect(surface.getAttribute('aria-hidden')).toBe('true')
-        expect(surface.style.bottom).toBe('0px')
+        expect(surface.style.bottom).toBe('16px')
         expect(bell().getAttribute('aria-label')).toBe('1 alert')
       }
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: 720 })
@@ -1690,7 +1886,7 @@ describe('AppShell', () => {
       layoutRects.set(bell(), new DOMRect(683, 222, 30, 30))
       notifyResize()
       expect(surface.getAttribute('aria-hidden')).toBeNull()
-      expect(surface.getBoundingClientRect().bottom).toBe(300)
+      expect(surface.getBoundingClientRect().bottom).toBe(284)
       expect(bell().hasAttribute('aria-describedby')).toBe(false)
       act(() => bell().click()); settle(200)
       expect(alertSurface()).toBeNull()
@@ -1786,7 +1982,7 @@ describe('AppShell', () => {
         expect(host.querySelector('[data-testid="transient-alert-announcer"]')).toBe(announcer)
         expect(host.querySelectorAll('[data-testid="transient-alert-announcer"]')).toHaveLength(1)
         expect(announcer.closest('[aria-hidden="true"]')).toBeNull()
-        const expectedAnnouncement = `${failure.message} Saved in Notifications. Use the Notifications button to read it.`
+        const expectedAnnouncement = `${failure.message} Saved in Notifications.`
         expectedAnnouncements.push(expectedAnnouncement)
         expect(announcer.textContent).toBe(expectedAnnouncement)
         expect(announcementUpdates).toEqual(expectedAnnouncements)

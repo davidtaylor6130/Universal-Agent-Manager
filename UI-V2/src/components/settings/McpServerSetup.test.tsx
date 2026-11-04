@@ -4,10 +4,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { McpServerSetup, fromJsonText, toJsonText, mergeMcpImport } from './McpServerSetup'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 
 const buildFeatures = vi.hoisted(() => ({ COMPUTER_USE_ENABLED: true }))
 vi.mock('../../config/buildFeatures', async importOriginal => Object.assign(buildFeatures, { ...await importOriginal<typeof import('../../config/buildFeatures')>(), COMPUTER_USE_ENABLED: true }))
 vi.mock('../../ipc/cefBridge', async importOriginal => ({ ...await importOriginal<typeof import('../../ipc/cefBridge')>(), sendToCEF: vi.fn() }));
+vi.mock('../../utils/appFailure', async importOriginal => ({ ...await importOriginal() as Record<string, unknown>, reportAppFailure: vi.fn(), reportAppNotice: vi.fn() }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 let host: HTMLDivElement
@@ -17,13 +19,13 @@ const saveServers = vi.fn(async (servers: McpServerConfiguration[]) => { useAppS
 const saveCentral = vi.fn(async (configuration: ReturnType<typeof useAppStore.getState>['centralProviderConfiguration']) => { useAppStore.setState({ centralProviderConfiguration: configuration }); return { ok: true } })
 beforeEach(async () => {
   useAppStore.setState({ computerUseSettingsError: '' })
-  saveServers.mockClear(); saveCentral.mockClear(); vi.mocked(sendToCEF).mockReset(); buildFeatures.COMPUTER_USE_ENABLED = true
+  saveServers.mockClear(); saveCentral.mockClear(); vi.mocked(reportAppFailure).mockClear(); vi.mocked(reportAppNotice).mockClear(); vi.mocked(sendToCEF).mockReset(); buildFeatures.COMPUTER_USE_ENABLED = true
   useAppStore.setState({ computerUseEnabled: undefined, computerUseRevocationPending: undefined, mcpServers: [server], sessions: [], activeSessionId: null, executionHosts: [], centralProviderConfiguration: { enabled: true, instructions: '', instructionFiles: [], skillDirectories: [], defaultAgentId: 'build', uamControlEnabled: true }, setMcpServers: saveServers, setCentralProviderConfiguration: saveCentral })
   host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host)
   await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
 })
 afterEach(async () => { await act(async () => root.unmount()); host.remove() })
-const button = (text: string) => [...document.querySelectorAll('button')].find(item => item.textContent?.trim() === text || item.getAttribute('aria-label') === text)!
+const button = (text: string) => [...document.querySelectorAll('button')].find(item => item.textContent?.trim() === text || item.querySelector('.uam-btn__label')?.textContent === text || item.getAttribute('aria-label') === text)!
 async function click(text: string) { await act(async () => button(text).click()) }
 async function type(field: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => {
@@ -59,8 +61,11 @@ it('adds a server through the form and blocks a relative program path', async ()
   await type(inputs()[1], 'docs-server')
   await click('Save')
   expect(document.body.textContent).toContain('program path must be a full path')
+  // The problem is the docs row's own status line, not a line floating under the card.
+  const issue = [...document.querySelectorAll('p[role="status"]')].find(node => node.textContent?.includes('program path must be a full path'))
+  expect(issue?.closest('.uam-set-row')?.querySelector('.uam-set-row__title')?.textContent).toContain('docs')
   await type(inputs()[1], '/opt/docs/server')
-  await click('+ Add argument')
+  await click('Add argument')
   await type(document.querySelector('input[aria-label="Argument 1"]') as HTMLInputElement, '--stdio')
   await click('Save')
   expect(saveServers.mock.calls[0][0][1]).toMatchObject({ name: 'docs', transport: 'stdio', command: '/opt/docs/server', args: ['--stdio'] })
@@ -95,7 +100,7 @@ it('previews an import without saving or disabling the built-in UAM service', as
   await type(document.querySelector('textarea[aria-label="Import MCP configuration"]') as HTMLTextAreaElement, '{"mcp":{"docs":{"type":"remote","url":"https://example.com/mcp"},"uam-mcp":{"type":"builtin","enabled":false}}}')
   await click('Review import')
   expect(saveServers).not.toHaveBeenCalled()
-  expect(document.body.textContent).toContain('Imported into the draft')
+  expect(reportAppNotice).toHaveBeenCalledWith('Imported into the draft. Review the servers, then Save.', 'success')
   await click('Save')
   expect(saveServers.mock.calls[0][0]).toHaveLength(2)
   expect(saveCentral).not.toHaveBeenCalled()
@@ -106,7 +111,7 @@ it('starts guided setup with a named connection and saves only after completing 
   await click('Step by step')
   await type(document.querySelector('input[placeholder="playwright"]') as HTMLInputElement, 'docs')
   await click('Next: connection details')
-  expect(document.body.textContent).toContain('Step 2 of 2')
+  expect(document.body.textContent).toContain('Enter the connection details, then Save.')
   expect(saveServers).not.toHaveBeenCalled()
   await type(document.querySelector('input[placeholder="/usr/local/bin/npx"]') as HTMLInputElement, '/opt/docs/server')
   await click('Save')
@@ -149,7 +154,7 @@ it.each(['import', 'json', 'manual'] as const)('preserves intentional empty argu
     const inputs = [...document.querySelectorAll<HTMLInputElement>('input:not([type=checkbox])')]
     await type(inputs[0], 'empty'); await type(inputs[1], '/opt/mcp/tool')
     for (const [index, arg] of args.entries()) {
-      await click('+ Add argument')
+      await click('Add argument')
       await type(document.querySelector<HTMLInputElement>(`[aria-label="Argument ${index + 1}"]`)!, arg)
     }
   }
@@ -213,9 +218,10 @@ it.each(['import', 'json'] as const)('keeps the draft and secrets unchanged afte
     await type(document.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!, text)
     await click('Save')
   }
-  const feedback = document.querySelector('p[role="status"]')
-  expect(feedback?.textContent).toContain('OAuth settings need manual configuration')
-  expect(feedback?.textContent).not.toContain('private-secret-value')
+  // Import failures are events (reported); JSON-view validation stays inline next to Save.
+  if (mode === 'import') expect(reportAppFailure).toHaveBeenLastCalledWith('Could not import configuration.', expect.stringContaining('OAuth settings need manual configuration'))
+  else expect(document.querySelector('p[role="status"]')?.textContent).toContain('OAuth settings need manual configuration')
+  expect(JSON.stringify([...vi.mocked(reportAppFailure).mock.calls, ...document.querySelectorAll('p[role="status"]')].map(item => typeof item === 'string' ? item : item.textContent ?? ''))).not.toContain('private-secret-value')
   expect(useAppStore.getState().mcpServers).toEqual([server])
   expect(saveServers).not.toHaveBeenCalled()
   expect(saveCentral).not.toHaveBeenCalled()
@@ -228,21 +234,21 @@ it('shows native source paths and warnings beside import controls and accepts a 
   const section = document.querySelector('[aria-label="MCP setup"]')!
   expect(section.textContent).toContain('file or directory')
   await type(section.querySelector<HTMLInputElement>('input')!, '/config/opencode')
-  await click("Read this computer's OpenCode configuration")
+  await click("Read OpenCode config")
   expect(sendToCEF).toHaveBeenCalledWith({ action: 'previewOpenCodeMcpImport', payload: { executionHostId: 'local', sourcePath: '/config/opencode' } })
   expect(section.textContent).toContain('/config/opencode/opencode.jsonc')
   expect(section.textContent).toContain('OAuth settings need manual configuration')
-  expect(section.querySelector('[role="status"]')?.textContent).toContain('Loaded 1 server.')
+  expect(reportAppNotice).toHaveBeenCalledWith(expect.stringContaining('Loaded 1 server.'))
   expect(button('Review import').disabled).toBe(false)
 })
 
 it('clears a previous native preview on read failure and blocks stale review', async () => {
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [{ ...server, name: 'docs' }], sources: ['/config/opencode.jsonc'], warnings: [] } }).mockResolvedValueOnce({ ok: false, error: 'No configuration exists in the selected directory.' })
-  await click('Add server'); await click('Import configuration'); await click("Read this computer's OpenCode configuration")
+  await click('Add server'); await click('Import configuration'); await click("Read OpenCode config")
   expect(document.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!.value).toContain('docs')
-  await click("Read this computer's OpenCode configuration")
+  await click("Read OpenCode config")
   const section = document.querySelector('[aria-label="MCP setup"]')!
-  expect(section.querySelector('[role="status"]')?.textContent).toContain('No configuration exists')
+  expect(reportAppFailure).toHaveBeenLastCalledWith('Could not read OpenCode configuration.', expect.stringContaining('No configuration exists'))
   expect(section.textContent).not.toContain('/config/opencode.jsonc')
   expect(section.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('')
   expect(button('Review import').disabled).toBe(true)
@@ -251,9 +257,9 @@ it('clears a previous native preview on read failure and blocks stale review', a
 
 it('distinguishes zero external servers and keeps warnings and source visible without a UAM-only preview', async () => {
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [], sources: ['/config/opencode.jsonc'], warnings: ['legacy: executable unavailable'], requiresReview: true } })
-  await click('Add server'); await click('Import configuration'); await click("Read this computer's OpenCode configuration")
+  await click('Add server'); await click('Import configuration'); await click("Read OpenCode config")
   const section = document.querySelector('[aria-label="MCP setup"]')!
-  expect(section.querySelector('[role="status"]')?.textContent).toContain('No external MCP servers found')
+  expect(reportAppNotice).toHaveBeenCalledWith('No external MCP servers found in the configuration.')
   expect(section.textContent).toContain('executable unavailable')
   expect(section.textContent).toContain('/config/opencode.jsonc')
   expect(section.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('')
@@ -283,11 +289,11 @@ it('switches Computer Use from the built-in row, disables it in flight and repor
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { computerUseGloballyEnabled: true, computerUseRevocationPending: false } })
   await act(async () => finish({ ok: false, error: 'Computer Use could not be turned off.' }))
   expect(toggle.disabled).toBe(false)
-  expect(document.querySelector('[role="alert"]')?.textContent).toBe('Computer Use could not be turned off.')
+  expect(reportAppFailure).toHaveBeenLastCalledWith('Computer Use could not be turned off.', expect.any(String))
   useAppStore.setState({ computerUseEnabled: false, computerUseRevocationPending: false })
   await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
-  expect(document.body.textContent).toContain('Off')
-  expect(document.body.textContent).toContain('Off. UAM grants cleared.')
+  expect(document.querySelector<HTMLInputElement>('input[aria-label="UAM Computer Use"]')?.checked).toBe(false)
+  expect(document.body.textContent).toContain('Chat access cleared.')
 })
 
 it('keeps provider override identity when a server is renamed in the JSON editor', async () => {
@@ -339,7 +345,7 @@ it('keeps skipped-server warnings through editing, review and save', async () =>
   const warning = 'legacy: OAuth settings need manual configuration'
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [{ ...server, id: 'docs', name: 'docs' }], sources: ['/config/opencode.jsonc'], warnings: [warning] } })
   await click('Add server'); await click('Import configuration')
-  await click("Read this computer's OpenCode configuration")
+  await click("Read OpenCode config")
   const area = document.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!
   await type(area, `${area.value}\n`)
   expect(document.querySelector('[aria-label="Import warnings"]')?.textContent).toContain(warning)
@@ -354,26 +360,26 @@ it('clears earlier read warnings only on a new read or Cancel setup', async () =
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [], sources: ['/config/opencode.jsonc'], warnings: ['first: manual setup required'] } })
     .mockResolvedValueOnce({ ok: true, data: { servers: [], sources: ['/config/opencode.jsonc'], warnings: ['second: executable unavailable'] } })
   await click('Add server'); await click('Import configuration')
-  await click("Read this computer's OpenCode configuration")
+  await click("Read OpenCode config")
   expect(document.body.textContent).toContain('first: manual setup required')
-  await click("Read this computer's OpenCode configuration")
+  await click("Read OpenCode config")
   expect(document.body.textContent).not.toContain('first: manual setup required')
   expect(document.body.textContent).toContain('second: executable unavailable')
-  await click('Cancel setup')
+  await click('Back')
   expect(document.querySelector('[aria-label="Import warnings"]')).toBeNull()
 })
 
 it('explains why Save is disabled while server setup is incomplete', async () => {
   await click('Add server'); await click('Import configuration')
-  expect(button('Save').disabled).toBe(true)
-  expect(button('Save').title).toBe('Finish or cancel setup before saving.')
+  const saveButton = [...document.querySelectorAll('button')].find(item => item.querySelector('.uam-btn__label')?.textContent === 'Save')!
+  expect(saveButton.getAttribute('aria-disabled')).toBe('true') // Button disabledReason: stays focusable so the reason is reachable
   expect(document.body.textContent).toContain('Finish or cancel setup before saving.')
 })
 
 
 it('identifies the OpenCode read action as local to this computer', async () => {
   await click('Add server'); await click('Import configuration')
-  expect(button("Read this computer's OpenCode configuration")).toBeDefined()
+  expect(button("Read OpenCode config")).toBeDefined()
 })
 
 it('uses host effective MCP servers and keeps global built-in controls out of host saves', async () => {
@@ -437,7 +443,7 @@ it.each([
   const area = document.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!
   const original = area.value
   await type(area, invalid)
-  expect(button('Save').disabled).toBe(true)
+  expect(button('Save').getAttribute('aria-disabled')).toBe('true')
   expect(document.body.textContent).toContain(detail)
   await click('Save')
   expect(saveServers).not.toHaveBeenCalled()
@@ -454,7 +460,7 @@ it('disables same-scope duplicate names until the new server is corrected', asyn
   const inputs = [...document.querySelectorAll<HTMLInputElement>('input:not([type=checkbox])')]
   await type(inputs[0], 'playwright')
   await type(inputs[1], '/opt/docs/server')
-  expect(button('Save').disabled).toBe(true)
+  expect(button('Save').getAttribute('aria-disabled')).toBe('true')
   expect(document.body.textContent).toContain('Two servers share the same name')
   await type(inputs[0], 'docs')
   expect(button('Save').disabled).toBe(false)

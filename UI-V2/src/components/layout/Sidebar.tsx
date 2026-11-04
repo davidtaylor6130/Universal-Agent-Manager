@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import { FolderTree } from '../sidebar/FolderTree'
 import { ChatSearchBar } from '../sidebar/ChatSearchBar'
-import { Button } from '../ui'
+import { Button, Notice, RowButton } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
 import { createRequestId, sendToCEF } from '../../ipc/cefBridge'
 import type { ChatSearchFilters, ChatStatusFilterId } from '../sidebar/chatSearch'
@@ -123,17 +123,16 @@ export function Sidebar() {
       />
       {deepSearchLoading && <div role="status" className="uam-sb-search-status px-3 pb-2 text-xs">Searching message contents…</div>}
       {deepSearchError && (
-        <div role="alert" className="uam-sb-search-error flex items-center justify-between gap-2 px-3 pb-2 text-xs">
-          <span>{deepSearchError}</span>
-          <Button size="sm" variant="ghost" onClick={() => setDeepSearchRetry((value) => value + 1)}>Retry</Button>
-        </div>
+        <Notice tone="error" title="Message search failed" dismissible={false} dismissLabel="Dismiss" actions={<Button size="sm" variant="ghost" onClick={() => setDeepSearchRetry((value) => value + 1)}>Retry</Button>}>
+          {deepSearchError}
+        </Notice>
       )}
-      {deepSearchHits.length > 0 && <div aria-label="Message matches" className="uam-sb-hits max-h-40 overflow-y-auto px-3 pb-2">
-        <div className="uam-sb-hits__label" aria-hidden>Message matches</div>
+      {deepSearchHits.length > 0 && <div role="group" aria-label="Message matches" className="uam-sb-hits max-h-40 overflow-y-auto px-3 pb-2">
+        <div className="uam-sb-hits__label">Message matches</div>
         {deepSearchHits.filter((hit) => sessions.some((session) => session.id === hit.chatId)).map((hit) => {
           const session = sessions.find((candidate) => candidate.id === hit.chatId)!
           const source = hit.field === 'thoughts' ? 'Thoughts' : hit.field === 'planSummary' ? 'Plan' : 'Message'
-          return <button key={`${hit.chatId}:${hit.messageIndex}:${hit.field}`} type="button"
+          return <RowButton key={`${hit.chatId}:${hit.messageIndex}:${hit.field}`} type="button"
             className="uam-sb-hit block w-full rounded-md px-2 py-1 text-left text-xs" 
             disabled={searchNavigation?.phase === 'loading'}
             onClick={() => {
@@ -143,7 +142,7 @@ export function Sidebar() {
             }}>
             <span className="block truncate"><span className="font-medium">{session.name}</span><span style={{ color: 'var(--text-3)' }}> · {source} {hit.messageIndex + 1}</span></span>
             <span className="uam-sb-hit__excerpt block line-clamp-2">{hit.excerpt}</span>
-          </button>
+          </RowButton>
         })}
       </div>}
       <div
@@ -168,7 +167,7 @@ export function Sidebar() {
           title={`New chat (${shortcutLabel('newChat')})`}
           onClick={() => setNewChatModalOpen(true)}
         >
-          New Chat
+          New chat
           <kbd className="uam-btn__kbd" aria-hidden>{shortcutLabel('newChat')}</kbd>
         </Button>
       </div>

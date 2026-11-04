@@ -37,7 +37,7 @@ describe('atomic collection moves', () => {
       expect(events[0].message).toContain('Workspace')
       expect(Number.isFinite(Date.parse(events[0].time))).toBe(true)
       if (failure === 'transport') expect(events[0].detail).toContain('Connection closed')
-      else expect(events[0].detail).toContain('could not be saved')
+      else expect(events[0].detail).toContain('Could not save the change')
     } finally { window.removeEventListener(APP_FAILURE_EVENT, listener) }
   })
 

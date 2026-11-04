@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import { ChevronRight } from 'lucide-react'
-import { ViewportMenu, scaledMs } from '../ui'
+import { MenuItem, ViewportMenu, scaledMs } from '../ui'
 
 const HOVER_OPEN_DELAY = 150 // hover intent: sweeping across rows must not flash submenus
 const HOVER_CLOSE_DELAY = 120
@@ -49,22 +49,19 @@ export function RowSubmenu({ label, ariaLabel, icon, children }: { label: string
 
   return (
     <>
-      <button
+      <MenuItem
         ref={triggerRef}
-        type="button"
-        role="menuitem"
         aria-haspopup="menu"
         aria-expanded={phase === 'open'}
         className="uam-sb-menu-item"
+        icon={icon}
+        label={label}
+        trailing={<ChevronRight size={13} aria-hidden />}
         onClick={open}
         onKeyDown={onTriggerKeyDown}
         onMouseEnter={() => { if (phase === 'open') clearTimer(); else later(HOVER_OPEN_DELAY, open) }}
         onMouseLeave={() => { if (phase === 'closed') clearTimer(); else scheduleClose() }}
-      >
-        {icon}
-        <span className="flex-1">{label}</span>
-        <ChevronRight size={13} aria-hidden />
-      </button>
+      />
       {phase !== 'closed' && (
         <ViewportMenu
           anchorRef={triggerRef}

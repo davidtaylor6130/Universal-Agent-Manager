@@ -5,7 +5,7 @@ import { DataFolderSettingsSection, type DataFolderSettingsHandle } from './Data
 import { TypographySettings } from './TypographySettings'
 import { AppearanceDisplaySettings } from './AppearanceDisplaySettings'
 import { PermissionsSettings } from './PermissionsSettings'
-import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsSection, StatusMark } from './SettingsPrimitives'
 import { SettingsScopeBar } from './SettingsScopeBar'
 import { PhonePairingPanel } from './PhonePairingPanel'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
@@ -18,7 +18,7 @@ import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { NumberField } from './NumberField'
 import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, MOBILE_COMPANION_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   MAX_MEMORY_IDLE_DELAY_SECONDS,
   MAX_MEMORY_RECALL_BUDGET_BYTES,
@@ -29,7 +29,7 @@ import {
   type AcpModel,
   type EditorFileAssociation,
   type MemoryWorkerBinding,
-    type ProviderChatDefaults,
+  type ProviderChatDefaults,
   type ProviderAgentImportPreview,
   type UamAgentCycleShortcut,
   type ComputerUseAllowedApplication,
@@ -56,8 +56,8 @@ import { formatTimeoutDuration, TIMEOUT_RESTART_STEP_SECONDS } from '../chat/Tim
 import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
-import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
-import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, StatusDot, Switch, ViewportMenu, motionAllowed } from '../ui'
+import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, TriangleAlert, X, type LucideIcon } from 'lucide-react'
+import { Button, Card, ConfirmDialog, Disclosure, EXIT_MS, IconButton, MenuItem, MenuSelect, Notice, Overlay, Presence, ProgressFill, RowButton, SegmentedControl, StatusDot, Swap, Switch, ViewportMenu, cx, motionAllowed, scaledMs, Reveal } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
@@ -80,6 +80,7 @@ import { buildProviderReasoningOptions, buildCodexSpeedOptions, buildModelOption
 import './settings-motion.css'
 import './settings-shell.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 
 const MEMORY_SETTINGS_FIELD_LABELS: Record<string, string> = {
   memoryEnabledDefault: 'Default memory enabled',
@@ -98,20 +99,23 @@ const MEMORY_SETTINGS_FIELD_LABELS: Record<string, string> = {
 const MEMORY_POLICY_CHOICES: Array<{ id: MemoryLevel; label: string; detail: string }> = [
   { id: 'default', label: 'Default', detail: 'Inherit the current default.' },
   { id: 'off', label: 'Off', detail: 'Do not recall or create memories.' },
-  { id: 'readOnly', label: 'Read Only', detail: 'Recall existing memories without creating new ones.' },
-  { id: 'strict', label: 'Strict Creation', detail: 'Save only critical, high-confidence memories.' },
-  { id: 'balanced', label: 'Balanced Creation', detail: 'Save useful medium- and high-confidence memories.' },
-  { id: 'open', label: 'Remember Everything', detail: 'Save every valid, non-sensitive memory candidate.' },
+  { id: 'readOnly', label: 'Read only', detail: 'Recall existing memories without creating new ones.' },
+  { id: 'strict', label: 'Strict creation', detail: 'Save only critical, high-confidence memories.' },
+  { id: 'balanced', label: 'Balanced creation', detail: 'Save useful medium- and high-confidence memories.' },
+  { id: 'open', label: 'Remember everything', detail: 'Save every valid, non-sensitive memory candidate.' },
 ]
 
-function selectPolicyWithArrowKeys(event: ReactKeyboardEvent<HTMLDivElement>) {
-  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
-  const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="radio"]:not(:disabled)'))
-  if (!buttons.length) return
-  const index = Math.max(0, buttons.indexOf(document.activeElement as HTMLButtonElement))
-  const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
-    : (index + (event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length
-  event.preventDefault(); buttons[next].focus(); buttons[next].click()
+interface StatusMessage { tone: 'success' | 'error' | 'info'; text: string }
+
+/** Status text whose tone is stored with the message, shown with a tick or cross for success and failure. */
+function StatusMessage({ message, className = 'text-xs' }: { message: StatusMessage | null; className?: string }) {
+  if (!message) return null
+  const color = message.tone === 'error' ? 'var(--error)' : message.tone === 'success' ? 'var(--success)' : 'var(--text-2)'
+  return <div role="status" className={cx('inline-flex items-center gap-1', className)} style={{ color }}>
+    {message.tone === 'success' && <StatusDot tone="success" />}
+    {message.tone === 'error' && <StatusDot tone="error" />}
+    {message.text}
+  </div>
 }
 
 interface SettingsDraftHandle { requestLeave: (next: () => void) => void }
@@ -126,7 +130,6 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
   const saveSettings = useAppStore((state) => state.setVoiceInputSettings)
   const [draft, setDraft] = useState<VoiceInputSettingsRequest>(saved)
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
   const [exit, setExit] = useState<(() => void) | null>(null)
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved)
   const draftRef = useRef(draft)
@@ -135,7 +138,7 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
     if (JSON.stringify(draftRef.current) === JSON.stringify(savedRef.current)) { setDraft(saved); draftRef.current = saved }
     savedRef.current = saved
   }, [saved])
-  const edit = (next: VoiceInputSettingsRequest) => { draftRef.current = next; setDraft(next); setError('') }
+  const edit = (next: VoiceInputSettingsRequest) => { draftRef.current = next; setDraft(next) }
   useEffect(() => {
     if (!dirty) return
     const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
@@ -153,51 +156,55 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
     : valid.voiceInputApiKeyEnv === undefined ? 'Enter an environment variable name, or leave it empty.' : ''
   const save = async (next?: () => void) => {
     if (saving || !supported || validationError) return
-    setSaving(true); setError('')
+    setSaving(true)
     try {
       // Server configuration remains a draft until the native save succeeds.
       const payload = draft.mode === 'server' ? draft : { mode: draft.mode }
-      if (!await saveSettings(payload)) { setError('Could not save voice settings. Try again.'); return }
+      if (!await saveSettings(payload)) { reportAppFailure('Could not save voice settings.', 'Try again.'); return }
       const current = useAppStore.getState()
       edit({ mode: current.voiceInputMode ?? draft.mode, serverBaseUrl: current.voiceInputServerBaseUrl ?? '', serverEndpoint: current.voiceInputServerEndpoint ?? '/v1/audio/transcriptions', serverModel: current.voiceInputServerModel ?? 'whisper-1', apiKeyEnv: current.voiceInputApiKeyEnv ?? 'OPENAI_API_KEY' })
       if (next) { setExit(null); next() }
-    } catch { setError('Could not save voice settings. Try again.') }
+    } catch { reportAppFailure('Could not save voice settings.', 'Try again.') }
     finally { setSaving(false) }
   }
+  const voiceModes = [{ id: 'system', label: 'System' }, { id: 'server', label: 'Server' }, { id: 'local', label: 'Local AI' }] as const
+  const unavailableVoiceReasons = voiceModes
+    .filter((option) => capabilities?.[option.id]?.supported !== true)
+    .map((option) => capabilities?.[option.id]?.reason || (capabilities?.[option.id] ? undefined : 'Support has not been reported.'))
+    .filter((reason): reason is string => Boolean(reason))
   return <>
-    <SettingsSection title="Dictation">
-      <SettingRow title="Transcription service" status={draft.mode === 'server' ? (supported ? 'Recording is sent to your server.' : capabilities?.server?.reason || 'Server support has not been reported.') : 'Start dictation with the microphone button in the message box.'} control={
-        <div role="radiogroup" aria-label="Transcription service" className="flex gap-1" onKeyDown={selectPolicyWithArrowKeys}>
-          {([{ id: 'system', label: 'System' }, { id: 'server', label: 'Server' }, { id: 'local', label: 'Local AI' }] as const).map((option) =>
-            <Button key={option.id} size="sm" variant={draft.mode === option.id ? 'primary' : 'secondary'} role="radio" aria-checked={draft.mode === option.id}
-              disabled={saving || capabilities?.[option.id]?.supported !== true} title={capabilities?.[option.id]?.reason || (capabilities?.[option.id] ? undefined : 'Support has not been reported.')}
-              onClick={() => edit({ ...draft, mode: option.id })}>{option.label}</Button>)}
-        </div>
-      } />
-      {draft.mode === 'server' && <div className="grid gap-3 p-3">
-        {([{ key: 'serverBaseUrl', label: 'Server URL' }, { key: 'serverEndpoint', label: 'Endpoint' }, { key: 'serverModel', label: 'Model' }, { key: 'apiKeyEnv', label: 'API key environment variable' }] as const).map((field) =>
-          <SettingsField key={field.key} label={field.label} htmlFor={`voice-${field.key}`} hint={field.key === 'apiKeyEnv' ? 'Read from this environment variable.' : undefined}>
-            <input id={`voice-${field.key}`} aria-label={field.label} className="uam-field w-full" value={draft[field.key] ?? ''} disabled={saving} autoComplete="off" spellCheck={false} onChange={(event) => edit({ ...draft, [field.key]: event.currentTarget.value })} />
-          </SettingsField>)}
-      </div>}
-      {(error || validationError) && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{error || validationError}</p>}
-      <div className="flex justify-end gap-2 p-3">
+    <SettingsSection title="Dictation" actions={<>
         <Button size="sm" disabled={saving || !dirty} onClick={() => edit(saved)}>Discard</Button>
         <SaveButton saving={saving} disabled={saving || !dirty || !supported || Boolean(validationError)} onClick={() => void save()}>Save voice settings</SaveButton>
-      </div>
+      </>}>
+      <SettingRow title="Transcription service" status={draft.mode === 'server' ? (supported ? 'Recording is sent to your server.' : capabilities?.server?.reason || 'Server support has not been reported.') : 'Start dictation with the microphone button in the message box.'} control={
+        <div className="grid justify-items-end gap-1">
+          <SegmentedControl aria-label="Transcription service" value={draft.mode} disabled={saving}
+            options={voiceModes.map((option) => ({ value: option.id, label: option.label, disabled: capabilities?.[option.id]?.supported !== true }))}
+            onChange={(mode) => edit({ ...draft, mode })} />
+          {/* Visible reasons: a disabled radio cannot show its own tooltip. */}
+          <Reveal open={unavailableVoiceReasons.length > 0}>{unavailableVoiceReasons.map((reason, index) => <p key={index} className="text-xs" style={{ color: 'var(--text-3)' }}>{reason}</p>)}</Reveal>
+        </div>
+      } />
+      <Reveal open={draft.mode === 'server'} className="grid gap-3 p-3">
+        {([{ key: 'serverBaseUrl', label: 'Server URL' }, { key: 'serverEndpoint', label: 'Endpoint' }, { key: 'serverModel', label: 'Model' }, { key: 'apiKeyEnv', label: 'API key environment variable' }] as const).map((field) =>
+          <SettingsField key={field.key} label={field.label} htmlFor={`voice-${field.key}`}>
+            <input id={`voice-${field.key}`} aria-label={field.label} className="uam-field w-full" value={draft[field.key] ?? ''} disabled={saving} autoComplete="off" spellCheck={false} onChange={(event) => edit({ ...draft, [field.key]: event.currentTarget.value })} />
+          </SettingsField>)}
+      </Reveal>
+      <Reveal open={Boolean(validationError)} className="px-3"><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{validationError}</Notice></Reveal>
     </SettingsSection>
-    {exit && <UnsavedChangesDialog title="Unsaved voice settings" busy={saving} error={error || validationError} onStay={() => setExit(null)}
-      onDiscard={() => { const next = exit; edit(saved); setExit(null); next() }} onSave={supported && !validationError ? () => void save(exit) : undefined} />}
+    <Presence open={Boolean(exit)}>{exit && <UnsavedChangesDialog title="Unsaved voice settings" busy={saving} error={validationError} onStay={() => setExit(null)}
+      onDiscard={() => { const next = exit; edit(saved); setExit(null); next() }} onSave={supported && !validationError ? () => void save(exit) : undefined} />}</Presence>
   </>
 })
 
-const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers: Provider[]; hostId: string; hostLabel: string }>(function ProviderAvailabilityControls({ providers, hostId, hostLabel }, ref) {
+const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { title: string; providers: Provider[]; hostId: string }>(function ProviderAvailabilityControls({ title, providers, hostId }, ref) {
   const overrides = useAppStore((state) => state.providerAvailability)
   const saveSettings = useAppStore((state) => state.setProviderAvailability)
   const saved = Object.fromEntries(providers.map((provider) => [provider.id, overrides.find((entry) => entry.providerId === provider.id && entry.executionHostId === hostId)?.enabled ?? true]))
   const [draft, setDraft] = useState(saved)
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
   const [exit, setExit] = useState<(() => void) | null>(null)
   const dirty = providers.some((provider) => draft[provider.id] !== saved[provider.id])
   const previousSaved = useRef(saved)
@@ -214,25 +221,26 @@ const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers
   useImperativeHandle(ref, () => ({ requestLeave: (next) => { if (saving) return; if (dirty) setExit(() => next); else next() } }))
   const save = async (next?: () => void) => {
     if (saving) return
-    setSaving(true); setError('')
+    setSaving(true)
     try {
       const results = await Promise.all(providers.filter((provider) => draft[provider.id] !== saved[provider.id]).map((provider) => saveSettings({ providerId: provider.id, executionHostId: hostId, enabled: draft[provider.id] })))
-      if (results.some((ok) => !ok)) { setError('Could not save provider settings. Try again.'); return }
+      if (results.some((ok) => !ok)) { reportAppFailure('Could not save provider settings.', 'Try again.'); return }
       const currentOverrides = useAppStore.getState().providerAvailability
       setDraft(Object.fromEntries(providers.map((provider) => [provider.id, currentOverrides.find((entry) => entry.providerId === provider.id && entry.executionHostId === hostId)?.enabled ?? true])))
       if (next) { setExit(null); next() }
-    } catch { setError('Could not save provider settings. Try again.') }
+    } catch { reportAppFailure('Could not save provider settings.', 'Try again.') }
     finally { setSaving(false) }
   }
   return <>
-    {providers.map((provider) => <SettingRow key={provider.id} title={providerShortName(provider, provider.id)}
-        control={<MenuSelect label={`${providerShortName(provider, provider.id)} availability`} value={draft[provider.id] ? 'enabled' : 'disabled'} disabled={saving}
-          options={[{ value: 'enabled', label: 'Enabled' }, { value: 'disabled', label: 'Disabled' }]}
-          onChange={(value) => { setDraft((current) => ({ ...current, [provider.id]: value === 'enabled' })); setError('') }} />} />)}
-      {error && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
-      <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setError('') }}>Discard</Button>
-        <SaveButton saving={saving} disabled={saving || !dirty} onClick={() => void save()}>Save provider settings</SaveButton></div>
-    {exit && <UnsavedChangesDialog title="Unsaved provider settings" busy={saving} error={error} onStay={() => setExit(null)} onDiscard={() => { const next = exit; setExit(null); next() }} onSave={() => void save(exit)} />}
+    <SettingsSection title={title} actions={<>
+        <Button size="sm" disabled={saving || !dirty} onClick={() => setDraft(saved)}>Discard</Button>
+        <SaveButton saving={saving} disabled={saving || !dirty} onClick={() => void save()}>Save provider settings</SaveButton>
+      </>}>
+      {providers.map((provider) => <SettingRow key={provider.id} title={providerShortName(provider, provider.id)}
+        control={<Switch hideLabel label={`${providerShortName(provider, provider.id)} available`} checked={draft[provider.id]} disabled={saving}
+          onChange={(event) => { const enabled = event.currentTarget.checked; setDraft((current) => ({ ...current, [provider.id]: enabled })) }} />} />)}
+    </SettingsSection>
+    <Presence open={Boolean(exit)}>{exit && <UnsavedChangesDialog title="Unsaved provider settings" busy={saving} onStay={() => setExit(null)} onDiscard={() => { const next = exit; setExit(null); next() }} onSave={() => void save(exit)} />}</Presence>
   </>
 })
 
@@ -246,7 +254,7 @@ interface MemoryModelOption {
 const PERMISSION_DEFAULT_OPTIONS: MemoryModelOption[] = [
   { id: 'off', label: 'Ask every time', detail: 'Leave every permission request for you.' },
   { id: 'acceptEdits', label: 'Accept edits', detail: 'Approve workspace file edits; ask for everything else.' },
-  { id: 'aiReview', label: 'AI Review', detail: 'Use the configured isolated reviewer; failures and uncertainty return to you.' },
+  { id: 'aiReview', label: 'AI review', detail: 'An AI reviewer decides. Failures and doubts return to you.' },
   { id: 'yolo', label: 'YOLO', detail: 'Approve every permission request once.' },
 ]
 
@@ -260,10 +268,6 @@ function latestLocalProviderSession(sessions: Session[], providerId: string, exe
     if (!latest || session.updatedAt.getTime() > latest.updatedAt.getTime()) return session
     return latest
   }, undefined)
-}
-
-function cliActionErrorKey(providerId: string, executionHostId: string) {
-  return `${executionHostId || 'local'}:${providerId}`
 }
 
 // Mirrors the backend rule: the host instruction file is empty or an absolute path on that host.
@@ -303,13 +307,13 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
   const startupStatus = applied ? (
     <span className="inline-flex flex-wrap items-center gap-1.5">
       <StatusDot tone={applied === 'enabled' ? 'success' : applied === 'failed' ? 'error' : applied === 'pending' ? 'info' : 'neutral'} pulse={applied === 'pending'} />
-      {applied === 'enabled' && <span>Starts automatically</span>}
-      {applied === 'disabled' && <span>Doesn't start automatically</span>}
-      {applied === 'pending' && <span>Applying…</span>}
-      {applied === 'failed' && <span style={{ color: 'var(--error)' }}>{`Couldn't apply${host.runnerStartupError ? `: ${host.runnerStartupError}` : '.'}`}</span>}
-      {startupMismatch && <span style={{ color: 'var(--text-3)' }}>· Saved setting doesn't match what is applied.</span>}
+      <Reveal as="span" open={applied === 'enabled'}><span>Starts automatically</span></Reveal>
+      <Reveal as="span" open={applied === 'disabled'}><span>Doesn't start automatically</span></Reveal>
+      <Reveal as="span" open={applied === 'pending'}><span>Applying…</span></Reveal>
+      <Reveal as="span" open={applied === 'failed'}><span className="inline-flex items-center gap-1" style={{ color: 'var(--error)' }}><StatusDot tone="error" />{`Couldn't apply${host.runnerStartupError ? `: ${host.runnerStartupError}` : '.'}`}</span></Reveal>
+      <Reveal as="span" open={startupMismatch}><span style={{ color: 'var(--text-3)' }}>· Saved setting doesn't match what is applied.</span></Reveal>
     </span>
-  ) : `Currently ${!host.startupStatus || host.startupStatus === 'disabled' ? 'off' : host.startupStatus} · uses login or systemd user session`
+  ) : `Currently ${!host.startupStatus || host.startupStatus === 'disabled' ? 'off' : host.startupStatus} · starts with your login session`
   const textHint = inlineText === null
     ? 'Not set. The instruction file below is read on this host.'
     : inlineText === ''
@@ -321,30 +325,30 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
       if (!busy && dirty && !instructionError && !textError) onSave({ instructionFile, instructionText: textDirty ? inlineText : undefined, startupEnabled, cliUpdatesAsAdmin })
     }}>
       <SettingRow
-        title="Start runner at login"
-        description="Starts the helper when you sign in."
+        title="Start helper at login"
         status={startupStatus}
-        control={<Switch hideLabel name="startupEnabled" label="Start runner at login" checked={startupEnabled} disabled={busy} onChange={(event) => setStartupEnabled(event.currentTarget.checked)} />}
+        control={<Switch hideLabel name="startupEnabled" label="Start helper at login" checked={startupEnabled} disabled={busy} onChange={(event) => setStartupEnabled(event.currentTarget.checked)} />}
       />
-      {host.platform === 'linux' && (
+      <Reveal open={host.platform === 'linux'}>
         <SettingRow
           title="Run CLI updates with sudo"
           description="Needs passwordless sudo for npm. Chats still run as you."
           control={<Switch hideLabel name="cliUpdatesAsAdmin" label="Run CLI updates with sudo" checked={cliUpdatesAsAdmin} disabled={busy} onChange={(event) => setCliUpdatesAsAdmin(event.currentTarget.checked)} />}
         />
-      )}
+      </Reveal>
       <SettingsField label="Host instructions" htmlFor={`remote-host-instructions-${host.id}`} hint={textHint}>
-        <textarea id={`remote-host-instructions-${host.id}`} name="instructionText" aria-label={`Host instructions on ${host.label}`} aria-invalid={Boolean(textError) || undefined} value={inlineText ?? ''} onChange={(event) => changeText(event.currentTarget.value)} disabled={busy} rows={5} spellCheck={false} placeholder="Describe how agents should work on this host." className="uam-field w-full font-mono" style={{ minHeight: 96, height: 'auto', resize: 'vertical' }} />
-        {textError && <span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{textError}</span>}
-        {inlineText !== null && <div><Button size="sm" variant="ghost" type="button" disabled={busy} onClick={() => setInlineText(null)}>Use instruction file instead</Button></div>}
+        <textarea id={`remote-host-instructions-${host.id}`} name="instructionText" aria-label={`Host instructions on ${host.label}`} aria-invalid={Boolean(textError) || undefined} value={inlineText ?? ''} onChange={(event) => changeText(event.currentTarget.value)} disabled={busy} rows={5} spellCheck={false} placeholder="Describe how agents should work on this host." className="uam-field w-full" style={{ minHeight: 96, height: 'auto', resize: 'vertical' }} />
+        <Reveal open={Boolean(textError)}><span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{textError}</span></Reveal>
+        <Reveal open={inlineText !== null}><div><Button size="sm" variant="ghost" type="button" disabled={busy} onClick={() => setInlineText(null)}>Use instruction file instead</Button></div></Reveal>
       </SettingsField>
-      <SettingsField label="Legacy instruction file" htmlFor={`remote-host-instruction-${host.id}`} hint="Used only while the host instructions above are not set. Empty skips it.">
+      <SettingsField label="Instruction file (fallback)" htmlFor={`remote-host-instruction-${host.id}`} hint="Used only while the host instructions above are not set. Empty skips it.">
         <input id={`remote-host-instruction-${host.id}`} name="instructionFile" aria-label={`Instruction file on ${host.label}`} aria-invalid={Boolean(instructionError) || undefined} value={instructionFile} onChange={(event) => setInstructionFile(event.currentTarget.value)} disabled={busy} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="uam-field w-full font-mono" />
-        {instructionError && <span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{instructionError}</span>}
+        <Reveal open={Boolean(instructionError)}><span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{instructionError}</span></Reveal>
       </SettingsField>
-      <div className="flex justify-end gap-2">
+      <div className="flex items-center justify-end gap-2">
+        <Reveal as="span" open={Boolean(textError || instructionError)} className="mr-auto"><span id={`remote-host-save-reason-${host.id}`} className="text-xs" style={{ color: 'var(--text-3)' }}>{saveReason}</span></Reveal>
         <Button size="sm" variant="secondary" type="button" disabled={busy || !instructionFile.trim() || Boolean(instructionError)} onClick={() => onCheck(instructionFile)}>Check file</Button>
-        <Button size="sm" variant="primary" type="submit" disabled={busy || !dirty || Boolean(instructionError) || Boolean(textError)} title={saveReason}>Save host options</Button>
+        <Button size="sm" variant="primary" type="submit" disabled={busy || !dirty || Boolean(instructionError) || Boolean(textError)} aria-describedby={textError || instructionError ? `remote-host-save-reason-${host.id}` : undefined}>Save host options</Button>
       </div>
     </form>
   )
@@ -395,10 +399,6 @@ function memoryModelOptions(provider?: Provider, providerId = '', selectedModelI
   ]
 }
 
-function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string) {
-  return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
-}
-
 type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'typography' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'routing' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'vcs' | 'editors' | 'shell-actions' | 'chat-data' | 'storage-cleanup' | 'computer-use' | 'about'
 
 interface LocalChatBundleResult {
@@ -423,26 +423,26 @@ interface SettingsSection {
 const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'permissions', label: 'Permissions', icon: Check },
   { id: 'appearance', label: 'Appearance', icon: Palette },
-  { id: 'defaults', label: 'Chat Defaults', icon: MessageSquare },
+  { id: 'defaults', label: 'Chat defaults', icon: MessageSquare },
   { id: 'agents', label: 'Agents', icon: ClipboardList },
   { id: 'provider-summary', label: 'Overview', icon: TerminalSquare },
   ...SUPPORTED_CLI_PROVIDER_IDS.map(id => ({ id: `provider:${id}` as SettingsSectionId, label: providerMetadataForId(id).shortName, icon: TerminalSquare })),
-  ...(SSH_ENABLED ? [{ id: 'remote-hosts', label: 'Remote Hosts', icon: Server }, { id: 'routing', label: 'SSH Routing', icon: Route }] as SettingsSection[] : []),
+  ...(SSH_ENABLED ? [{ id: 'remote-hosts', label: 'Remote hosts', icon: Server }, { id: 'routing', label: 'SSH routing', icon: Route }] as SettingsSection[] : []),
   ...(MOBILE_COMPANION_ENABLED ? [{ id: 'phone', label: 'Phone', icon: Smartphone }] as SettingsSection[] : []),
-  { id: 'voice-input', label: 'Voice Input', icon: Mic },
-  { id: 'memory-settings', label: 'Memory Settings', icon: Brain },
-  { id: 'memory-store', label: 'Memory Store', icon: MemoryStick },
+  { id: 'voice-input', label: 'Voice input', icon: Mic },
+  { id: 'memory-settings', label: 'Memory settings', icon: Brain },
+  { id: 'memory-store', label: 'Memory store', icon: MemoryStick },
   { id: 'markdown-store', label: 'Skills', icon: BookOpen },
-  { id: 'goal-loops', label: 'Goal Loops', icon: Target },
-  { id: 'central-configuration', label: 'Central Setup', icon: Server },
-  { id: 'mcp-servers', label: 'MCP Servers', icon: TerminalSquare },
-  ...(COMPUTER_USE_ENABLED ? [{ id: 'computer-use', label: 'Computer Use', icon: MousePointerClick }] as SettingsSection[] : []),
-  { id: 'vcs', label: 'Version Control', icon: FolderOpen },
+  { id: 'goal-loops', label: 'Goal loops', icon: Target },
+  { id: 'central-configuration', label: 'Central setup', icon: Server },
+  { id: 'mcp-servers', label: 'MCP servers', icon: TerminalSquare },
+  ...(COMPUTER_USE_ENABLED ? [{ id: 'computer-use', label: 'Computer use', icon: MousePointerClick }] as SettingsSection[] : []),
+  { id: 'vcs', label: 'Version control', icon: FolderOpen },
   { id: 'editors', label: 'Editors', icon: Pencil },
-  { id: 'shell-actions', label: 'Shell Actions', icon: MousePointerClick },
-  { id: 'chat-data', label: 'Chat Data', icon: Download },
+  { id: 'shell-actions', label: 'Shell actions', icon: MousePointerClick },
+  { id: 'chat-data', label: 'Chat data', icon: Download },
   { id: 'storage-cleanup', label: 'Storage', icon: Trash2 },
-    { id: 'about', label: 'About', icon: Info },
+  { id: 'about', label: 'About', icon: Info },
 ]
 
 // Retired pages that now live inside another page; old ids still resolve (search, deep links).
@@ -457,17 +457,6 @@ const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
   { label: 'Workspace', sections: ['vcs', 'editors'] },
   { label: 'App', sections: ['chat-data', 'storage-cleanup', 'about'] },
 ]
-const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
-  appearance: 'Theme, sidebar, how agent activity is shown, and fonts.',
-  defaults: 'Default provider and permission reviewer for new chats.',
-  'voice-input': 'Dictation for the message box.',
-  'cli-version': 'Installed provider CLIs and their versions.',
-  ...(SSH_ENABLED ? { 'remote-hosts': 'Computers that can run workspaces over SSH.', routing: 'Which computers run new chats and which remote folders they use.' } : {}),
-  'mcp-servers': 'Model Context Protocol servers available to agents.',
-  ...(MOBILE_COMPANION_ENABLED ? { phone: 'Use Universal Agent Manager from your phone on the same network.' } : {}),
-}
-
-
 const PROVIDER_SEARCH_TERMS = [CODEX_ENABLED && 'codex', GEMINI_ENABLED && 'gemini', CLAUDE_ENABLED && 'claude', COPILOT_ENABLED && 'copilot', OPENCODE_ENABLED && 'opencode'].filter(Boolean).join(' ')
 /** Native agent files UAM can import, in menu order; only providers in this build. */
 const AGENT_IMPORT_PROVIDER_OPTIONS = [
@@ -544,11 +533,17 @@ const THEME_COLOR_FIELDS: Array<{ key: keyof ThemeColors; label: string }> = [
   { key: 'success', label: 'Success' },
   { key: 'warning', label: 'Warning' },
   { key: 'error', label: 'Error' },
+  { key: 'tokenInput', label: 'Input tokens' },
+  { key: 'tokenCacheRead', label: 'Cache read tokens' },
+  { key: 'tokenCacheWrite', label: 'Cache write tokens' },
+  { key: 'tokenOutput', label: 'Output tokens' },
+  { key: 'tokenReasoning', label: 'Reasoning tokens' },
 ]
 const THEME_COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/
 // Shared surface for settings dialogs: title, body, then actions right-aligned with the primary last.
 const SETTINGS_DIALOG_STYLE = { background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }
 
+// ponytail: matches the 120ms leave animation in settings-shell.css; scaled by Motion speed at use.
 const PAGE_EXIT_MS = 120
 /**
  * Cross-fades settings pages. The previous page stays mounted for its 120ms fade-out
@@ -565,7 +560,7 @@ function SettingsPageSwap({ pageKey, className, children }: { pageKey: string; c
   useEffect(() => { committed.current = { key: pageKey, node: children } })
   useEffect(() => {
     if (!leaving) return
-    const timer = window.setTimeout(() => setLeaving(null), PAGE_EXIT_MS)
+    const timer = window.setTimeout(() => setLeaving(null), scaledMs(PAGE_EXIT_MS))
     return () => window.clearTimeout(timer)
   }, [leaving])
   return (
@@ -626,61 +621,66 @@ function versionStatusText(manager: CliVersionProviderState) {
   if (manager.status === 'verified') return `Verified by UAM${manager.verifiedAt ? ` on ${manager.verifiedAt}` : ''}`
   if (manager.status === 'untested-newer') return 'Newer than UAM’s last verified build'
   if (manager.status === 'untested') return 'Not yet verified by this UAM build'
-  if (manager.status === 'known-incompatible') return 'Known incompatible. Update before structured use.'
+  if (manager.status === 'known-incompatible') return 'Known incompatible. Update before using it in chats.'
   if (manager.status === 'unavailable') return 'Not installed or unavailable on PATH'
   if (manager.status === 'provider-managed') return 'Compatibility is managed by the provider'
   return 'Version has not been checked'
 }
 
-function SectionCard({ title, description, children, hideTitle = false, flat = false, actions }: { title: string; description?: string; children: ReactNode; hideTitle?: boolean; flat?: boolean; actions?: ReactNode }) {
-  // Legacy page sections render in the shared settings language (SettingsPrimitives); bodies keep their own grid content.
-  return (
-    <section aria-label={title} className="uam-set-section">
-      {(!hideTitle || description || actions) && <header className="uam-set-section__head">
-        <div className="min-w-0">
-          {!hideTitle && <h3 className="uam-set-section__title">{title}</h3>}
-          {description && <p className="uam-set-section__desc">{description}</p>}
-        </div>
-        {actions && <div className="uam-set-section__actions">{actions}</div>}
-      </header>}
-      <div className={flat ? 'uam-set-body uam-set-body--flat' : 'uam-set-card uam-set-body'}>{children}</div>
-    </section>
-  )
-}
+/**
+ * Keyed list rows: added rows slide in (uam-presence), removed rows hold their last content for the exit length
+ * while they slide out, and reordered rows glide to their new place (FLIP). Reduced motion and Motion Off change at once.
+ */
+export function AnimatedRows<T>({ items, keyOf, render }: { items: T[]; keyOf: (item: T) => string; render: (item: T) => ReactNode }) {
+  const [held, setHeld] = useState<{ key: string; item: T; exiting: boolean }[]>(() => items.map((item) => ({ key: keyOf(item), item, exiting: false })))
+  const keys = items.map(keyOf)
+  const order = keys.join('\n')
+  const exitingKeys = held.filter((row) => row.exiting).map((row) => row.key).join('\n')
+  const current = new Map(items.map((item) => [keyOf(item), item]))
+  const nodes = useRef(new Map<string, HTMLDivElement>())
+  const tops = useRef(new Map<string, number>())
 
-function ProviderDisclosureCard({ panelId, providerId, leadingIcon, title, expanded, onToggle, toggleLabel, children, actions, progress, togglePosition = 'left', alwaysOpen = false }: {
-  /** Provider pages show their single provider flat: no disclosure, content always visible. */
-  alwaysOpen?: boolean
-  panelId: string
-  /** Shown under the header while work runs, so it stays visible when collapsed. */
-  progress?: ReactNode
-  providerId?: string
-  leadingIcon?: ReactNode
-  title: string
-  expanded: boolean
-  onToggle: () => void
-  toggleLabel: string
-  children: ReactNode
-  actions?: ReactNode
-  togglePosition?: 'left' | 'right'
-}) {
-  if (alwaysOpen) return <>
-    {actions && <div className="flex justify-end">{actions}</div>}
-    <div id={panelId} className="uam-provider-flat__body">{progress}{children}</div>
-  </>
-  const chevron = <IconButton size="sm" className="uam-disclosure-row__toggle" icon={<ChevronRight size={14}/>} label={toggleLabel} aria-expanded={expanded} aria-controls={panelId} onClick={onToggle}/>
-  return <div className="uam-disclosure-row" data-expanded={expanded}>
-    <div className="uam-disclosure-row__header">
-      {togglePosition === 'left' && chevron}
-      {leadingIcon ?? (providerId ? <ProviderLogo providerId={providerId}/> : null)}
-      {/* Clicking the name also toggles; the chevron stays the keyboard control. */}
-      <span className="min-w-0 flex-1 cursor-pointer select-none truncate text-sm" onClick={onToggle}>{title}</span>
-      {actions && <span className="uam-disclosure-row__actions">{actions}</span>}
-      {togglePosition === 'right' && chevron}
-    </div>
-    {progress}
-    {expanded && <div id={panelId} className="uam-disclosure-row__panel uam-reveal">{children}</div>}
-  </div>
+  useEffect(() => {
+    setHeld((prev) => {
+      const animate = motionAllowed()
+      const next = prev.map((row) => ({ ...row, exiting: !keys.includes(row.key) })).filter((row) => animate || !row.exiting)
+      keys.forEach((key, index) => {
+        if (!next.some((row) => row.key === key)) next.splice(index, 0, { key, item: items[index], exiting: false })
+      })
+      return next
+    })
+    // ponytail: keys-only dependency; item content is read live from `current` at render.
+  }, [order])
+
+  useEffect(() => {
+    if (!exitingKeys) return
+    const timer = window.setTimeout(() => setHeld((prev) => prev.filter((row) => !row.exiting)), scaledMs(EXIT_MS))
+    return () => window.clearTimeout(timer)
+  }, [exitingKeys])
+
+  useLayoutEffect(() => {
+    const before = tops.current
+    const animate = motionAllowed()
+    nodes.current.forEach((node, key) => {
+      const previous = before.get(key)
+      if (previous === undefined || !animate || typeof node.animate !== 'function') return
+      const delta = previous - node.offsetTop
+      const style = getComputedStyle(node)
+      // --dur-base is `calc(180ms * var(--motion-scale, 1))`; the first literal is the base, scaledMs applies the scale.
+      const base = /([\d.]+)(ms|s)\b/.exec(style.getPropertyValue('--dur-base'))
+      const durMs = base ? parseFloat(base[1]) * (base[2] === 's' ? 1000 : 1) : 180
+      if (delta) node.animate([{ transform: `translateY(${delta}px)` }, { transform: 'translateY(0)' }], { duration: scaledMs(durMs), easing: style.getPropertyValue('--ease').trim() || 'ease' })
+    })
+    tops.current = new Map([...nodes.current].map(([key, node]) => [key, node.offsetTop]))
+  })
+
+  return <>{held.map((row) => <div
+    key={row.key}
+    ref={(node) => { if (node) nodes.current.set(row.key, node); else nodes.current.delete(row.key) }}
+    className="uam-presence"
+    data-state={row.exiting ? 'closed' : 'open'}
+    aria-hidden={row.exiting || undefined}
+  >{render(current.get(row.key) ?? row.item)}</div>)}</>
 }
 
 function cliVersionIssues(manager: CliVersionProviderState): string[] {
@@ -731,21 +731,20 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     Object.prototype.hasOwnProperty.call(MEMORY_SETTINGS_FIELD_LABELS, field) ? [MEMORY_SETTINGS_FIELD_LABELS[field]] : [])
   const setSessionMemoryLevel = useAppStore((s) => s.setSessionMemoryLevel)
   const [memoryPolicySaving, setMemoryPolicySaving] = useState<Record<string, boolean>>({})
-  const [memoryPolicyError, setMemoryPolicyError] = useState<Record<string, string>>({})
   const saveMemoryPolicy = async (key: string, save: () => Promise<boolean>) => {
     if (memoryPolicySaving[key]) return
     const capturedScope = useAppStore.getState().settingsScopeHostId
     const ownsFeedback = () => useAppStore.getState().settingsScopeHostId === capturedScope
     setMemoryPolicySaving((current) => ({ ...current, [key]: true }))
-    setMemoryPolicyError((current) => ({ ...current, [key]: '' }))
     try {
-      if (!await save() && ownsFeedback()) setMemoryPolicyError((current) => ({ ...current, [key]: 'Could not save the memory policy. Try again.' }))
-    } catch { if (ownsFeedback()) setMemoryPolicyError((current) => ({ ...current, [key]: 'Could not save the memory policy. Try again.' })) }
+      if (!await save() && ownsFeedback()) reportAppFailure('Could not save the memory policy.', 'Try again.')
+    } catch { if (ownsFeedback()) reportAppFailure('Could not save the memory policy.', 'Try again.') }
     finally { if (ownsFeedback()) setMemoryPolicySaving((current) => ({ ...current, [key]: false })) }
   }
   const memoryIdleDelaySeconds = useAppStore((s) => s.memoryIdleDelaySeconds)
   const memoryRecallBudgetBytes = useAppStore((s) => s.memoryRecallBudgetBytes)
   const goalMaxLoopIterations = useAppStore((s) => s.goalMaxLoopIterations)
+  const goalTokenBudget = useAppStore((s) => s.goalTokenBudget)
   const acpSetupInactivityTimeoutSeconds = useAppStore((s) => s.acpSetupInactivityTimeoutSeconds)
   const activeTurnInactivityTimeoutSeconds = useAppStore((s) => s.activeTurnInactivityTimeoutSeconds)
   const acpTurnOutputLimitMiB = useAppStore((s) => s.acpTurnOutputLimitMiB)
@@ -763,6 +762,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const showWorktreePathInSidebar = useAppStore((s) => s.showWorktreePathInSidebar)
   const setSidebarSettings = useAppStore((s) => s.setSidebarSettings)
   const updateChecksEnabled = useAppStore((s) => s.updateChecksEnabled)
+  const automaticProviderUpdates = useAppStore((s) => s.automaticProviderUpdates)
   const setUpdateSettings = useAppStore((s) => s.setUpdateSettings)
   const customThemes = useAppStore(useShallow((s) => s.customThemes))
   const saveCustomTheme = useAppStore((s) => s.saveCustomTheme)
@@ -817,13 +817,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     return searchTerms.every(term => searchable.includes(term))
   })})).filter(group => group.sections.length > 0)
   const [openMemoryMenu, setOpenMemoryMenu] = useState<string | null>(null)
-  const [openEditorMenu, setOpenEditorMenu] = useState<string | null>(null)
   const [openCliVersionMenu, setOpenCliVersionMenu] = useState<string | null>(null)
   const [pendingCliInstall, setPendingCliInstall] = useState<{ providerId: string; providerName: string; version: string } | null>(null)
   const [pendingDefaultYolo, setPendingDefaultYolo] = useState<{ providerId: string; providerName: string; defaults: ProviderChatDefaults } | null>(null)
-  const [expandedDefaultProviders, setExpandedDefaultProviders] = useState<Record<string, boolean>>({})
   const [expandedEditorGroups, setExpandedEditorGroups] = useState<Record<string, boolean>>({})
-  const [markdownStoreDraftDirectory, setMarkdownStoreDraftDirectory] = useState(markdownStoreDirectory)
   const [editorAssociationsDraft, setEditorAssociationsDraft] = useState(editorFileAssociations)
   const [defaultEditorDraft, setDefaultEditorDraft] = useState(defaultEditorPresetId)
   const [mcpDraftDirty, setMcpDraftDirty] = useState(false)
@@ -832,15 +829,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [mcpSaving, setMcpSaving] = useState(false)
   const [computerUseStatus, setComputerUseStatus] = useState<{ screenRecording: { available: boolean; error: string }; accessibility: { available: boolean; error: string } } | null>(null)
   const [computerUseApps, setComputerUseApps] = useState<Array<{ identityKind: ComputerUseAllowedApplication['identityKind']; identity: string; name: string }>>([])
-  const [computerUseMessage, setComputerUseMessage] = useState('')
   const [computerUseBusy, setComputerUseBusy] = useState(false)
   const [computerUseSaveBusy, setComputerUseSaveBusy] = useState(false)
   const [companionSettings, setCompanionSettings] = useState<PhoneAccessStatus | null>(null)
   const [companionBusy, setCompanionBusy] = useState(false)
   const companionInFlight = useRef(false)
-  const [companionMessage, setCompanionMessage] = useState('')
   const [companionLoadError, setCompanionLoadError] = useState('')
-  const [companionNotice, setCompanionNotice] = useState('')
   const [companionBusyAction, setCompanionBusyAction] = useState('')
   const [companionCopy, setCompanionCopy] = useState<{ kind: 'token' | 'url'; ok: boolean } | null>(null)
   const companionCopyTimer = useRef<number | undefined>(undefined)
@@ -853,7 +847,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const remoteBusy = remoteBusyHostIds.length > 0
   const isRemoteHostBusy = (hostId: string) => remoteBusyHostIds.includes(hostId)
   const setRemoteHostBusy = (hostId: string, busy: boolean) => setRemoteBusyHostIds(current => busy ? [...current.filter(id => id !== hostId), hostId] : current.filter(id => id !== hostId))
-  const [remoteMessage, setRemoteMessage] = useState('')
+  const [remoteMessage, setRemoteMessage] = useState<StatusMessage | null>(null)
   const [remotePreview, setRemotePreview] = useState<{ host: ExecutionHost; preview: string } | null>(null)
   const [remoteCustomDirectory, setRemoteCustomDirectory] = useState(false)
   const [remoteDirectory, setRemoteDirectory] = useState('uam-helper')
@@ -867,19 +861,16 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [agentImportAcknowledged, setAgentImportAcknowledged] = useState(false)
   const [agentImportPreview, setAgentImportPreview] = useState<ProviderAgentImportPreview | null>(null)
   const [agentImportBusy, setAgentImportBusy] = useState(false)
-  const [agentImportMessage, setAgentImportMessage] = useState('')
   const agentImportRequest = useRef(0)
   const invalidateAgentImport = () => {
     agentImportRequest.current += 1
     setAgentImportPreview(null)
     setAgentImportAcknowledged(false)
-    setAgentImportMessage('')
     setAgentImportBusy(false)
   }
   useEffect(() => () => { agentImportRequest.current += 1 }, [])
   const [chatDataBusy, setChatDataBusy] = useState<'export' | 'import' | null>(null)
   const [chatDataFolder, setChatDataFolder] = useState('')
-  const [chatDataMessage, setChatDataMessage] = useState<{ tone: 'success' | 'warning' | 'error' | 'info'; text: string } | null>(null)
   const [selectedSection, setSelectedSection] = useState<SettingsSectionId>('appearance')
   // Measure the active nav item so one indicator (tint + line) can glide between items.
   useLayoutEffect(() => {
@@ -907,8 +898,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [rawEditorNames, setRawEditorNames] = useState<Record<string, string>>({})
   const [rawExtensions, setRawExtensions] = useState<Record<string, string>>({})
   const [editorExit, setEditorExit] = useState<(() => void) | null>(null)
-  const [editorError, setEditorError] = useState('')
-  const [openWithError, setOpenWithError] = useState('')
+  // True when leaving also drops unsaved MCP changes; the editor dialog then covers both in one prompt.
+  const [editorExitMcp, setEditorExitMcp] = useState(false)
   const editorSavePending = useRef(false)
   const [editorSaving, setEditorSaving] = useState(false)
   const [themeStep, setThemeStep] = useState(0)
@@ -916,9 +907,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [themeExit, setThemeExit] = useState<(() => void) | null>(null)
   const [discardExit, setDiscardExit] = useState<(() => void) | null>(null)
   const [pendingHostRemoval, setPendingHostRemoval] = useState<ExecutionHost | null>(null)
-  const [cliActionError, setCliActionError] = useState<Record<string, string>>({})
   const [themeDraft, setThemeDraft] = useState<CustomTheme | null>(null)
-  const [themeMessage, setThemeMessage] = useState('')
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'theme' | 'editor'; id: string; name: string } | null>(null)
   const memoryMenuRef = useRef<HTMLDivElement>(null)
   const editorMenuRef = useRef<HTMLDivElement>(null)
@@ -961,15 +950,15 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   useEffect(() => {
     if (!themeDirty && !mcpDraftDirty && !editorDirty && !importFiltersDirty) return
     const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
-    window.addEventListener('beforeunload',guard)
-    return () => window.removeEventListener('beforeunload',guard)
-  }, [themeDirty,mcpDraftDirty,editorDirty,importFiltersDirty])
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [themeDirty, mcpDraftDirty, editorDirty, importFiltersDirty])
   const requestClose = () => {
     if (mcpSaving || editorSavePending.current || remoteBusy) return
     requestThemeExit(() => requestSectionExit(() => {
       // MCP edits were already confirmed by requestSectionExit while on the MCP page.
       const mcpPending = mcpDraftDirty && selectedSection !== 'mcp-servers'
-      if (editorDirty) { setEditorExit(() => () => { setRawEditorNames({}); setRawExtensions({}); if (mcpPending) { setDiscardExit(() => () => setSettingsOpen(false)); setConfirmDiscard(true) } else setSettingsOpen(false) }); return }
+      if (editorDirty) { setEditorExitMcp(mcpPending); setEditorExit(() => () => { setRawEditorNames({}); setRawExtensions({}); setSettingsOpen(false) }); return }
       if (mcpPending) { setDiscardExit(() => () => setSettingsOpen(false)); setConfirmDiscard(true) }
       else setSettingsOpen(false)
     }))
@@ -981,7 +970,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       setThemeDraft(null)
       setSelectedSection(section)
       setOpenMemoryMenu(null)
-      setOpenEditorMenu(null)
       setOpenCliVersionMenu(null)
     }))
   }
@@ -991,19 +979,18 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const runChatDataAction = async (operation: 'export' | 'import') => {
     if (chatDataBusy) return
     setChatDataBusy(operation)
-    setChatDataMessage(null)
     const response = await sendToCEF<LocalChatBundleResult>({
       action: operation === 'export' ? 'exportLocalChats' : 'importLocalChats',
       payload: { currentValue: chatDataFolder },
     })
     setChatDataBusy(null)
     if (!response.ok || !response.data) {
-      setChatDataMessage({ tone: 'error', text: response.error || `Chat ${operation} failed.` })
+      reportAppFailure(response.error || `Chat ${operation} failed.`, 'Check the chat data folder and try again.')
       return
     }
     const result = response.data
     if (result.cancelled) {
-      setChatDataMessage({ tone: 'info', text: 'No folder selected.' })
+      reportAppNotice('No folder selected.')
       return
     }
     setChatDataFolder(result.folder)
@@ -1012,13 +999,15 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       const text = result.status === 'complete'
         ? `Exported ${result.exportedCount ?? 0} chats to ${result.folder}.`
         : `Exported ${result.exportedCount ?? 0} of ${result.totalCount} chats. ${detail || 'The bundle is incomplete.'}`
-      setChatDataMessage({ tone: result.status === 'complete' ? 'success' : result.status === 'degraded' ? 'warning' : 'error', text })
+      if (result.status === 'complete') reportAppNotice(text, 'success')
+      else reportAppFailure(text, 'Check the chat data folder and try again.')
       return
     }
     const text = result.status === 'complete'
-      ? `Imported ${result.importedCount ?? 0} chats${result.renamedCount ? `; ${result.renamedCount} received new local IDs` : ''}.`
-      : `Imported ${result.importedCount ?? 0} of ${result.totalCount} chats${result.renamedCount ? `; ${result.renamedCount} received new local IDs` : ''}. ${detail || 'Some chats could not be imported.'}`
-    setChatDataMessage({ tone: result.status === 'complete' ? 'success' : result.status === 'degraded' ? 'warning' : 'error', text })
+      ? `Imported ${result.importedCount ?? 0} chats${result.renamedCount ? `; ${result.renamedCount} were given new IDs` : ''}.`
+      : `Imported ${result.importedCount ?? 0} of ${result.totalCount} chats${result.renamedCount ? `; ${result.renamedCount} were given new IDs` : ''}. ${detail || 'Some chats could not be imported.'}`
+    if (result.status === 'complete') reportAppNotice(text, 'success')
+    else reportAppFailure(text, 'Check the chat data folder and try again.')
   }
 
   const previewRemoteHost = async (existing?: ExecutionHost) => {
@@ -1032,17 +1021,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       runnerDirectory: existing?.runnerDirectory ?? '',
     }
     if (!portableAlias || !sshAlias) {
-      setRemoteMessage('Enter one exact host alias from ~/.ssh/config.')
+      reportAppFailure('Enter one exact host alias from ~/.ssh/config.', 'Check the SSH alias and try again.')
       return
     }
     setRemoteHostBusy(host.id, true)
-    setRemoteMessage('')
-	setRemoteCustomDirectory(Boolean(host.runnerDirectory))
-	setRemoteDirectory(host.runnerDirectory || 'uam-helper')
+    setRemoteMessage(null)
+    setRemoteCustomDirectory(Boolean(host.runnerDirectory))
+    setRemoteDirectory(host.runnerDirectory || 'uam-helper')
     const response = await sendToCEF<{ host: ExecutionHost; preview: string }>({ action: 'previewRemoteHost', payload: host })
     setRemoteHostBusy(host.id, false)
     if (!response.ok || !response.data) {
-      setRemoteMessage(response.error || 'The remote setup preview could not be created.')
+      reportAppFailure(response.error || 'The remote setup preview could not be created.', 'Check the SSH alias and try again.')
       return
     }
     setRemotePreview(response.data)
@@ -1050,18 +1039,18 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
   const installRemoteHost = async () => {
     if (!remotePreview || isRemoteHostBusy(remotePreview.host.id)) return
-	const runnerDirectory = remoteCustomDirectory ? remoteDirectory.trim() : ''
-	if (remoteCustomDirectory && runnerDirectoryError(remoteDirectory)) return
+    const runnerDirectory = remoteCustomDirectory ? remoteDirectory.trim() : ''
+    if (remoteCustomDirectory && runnerDirectoryError(remoteDirectory)) return
     setRemoteHostBusy(remotePreview.host.id, true)
-    setRemoteMessage('Connecting, verifying the copied helper, and starting the runner…')
     const response = await sendToCEF({ action: 'installRemoteHost', payload: { ...remotePreview.host, runnerDirectory } })
     setRemoteHostBusy(remotePreview.host.id, false)
+    setRemoteMessage(null)
     if (!response.ok) {
       setRemotePreview(null)
-      setRemoteMessage(response.error || 'Remote helper setup failed.')
+      reportAppFailure(response.error || 'Remote helper setup failed.', 'Check the SSH connection and try again.')
       return
     }
-    setRemoteMessage(`${remotePreview.host.label} is ready.`)
+    reportAppNotice(`${remotePreview.host.label} is ready.`, 'success')
     setRemotePreview(null)
     setRemoteAlias('')
     setRemoteLabel('')
@@ -1073,7 +1062,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     // instructionText is omitted unless changed, so the backend keeps the saved text.
     const response = await sendToCEF({ action: 'saveRemoteHostOptions', payload: { id: host.id, ...draft } })
     setRemoteHostBusy(host.id, false)
-    setRemoteMessage(response.ok ? `${host.label} options saved.` : response.error || 'SSH host options could not be saved.')
+    if (response.ok) reportAppNotice(`${host.label} options saved.`, 'success')
+    else reportAppFailure(response.error || 'SSH host options could not be saved.', 'Try again.')
   }
 
   const checkRemoteHostInstruction = (host: ExecutionHost, instructionFile: string) => {
@@ -1081,17 +1071,19 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setRemoteHostBusy(host.id, true)
     void sendToCEF<{ bytes: number }>({ action: 'checkRemoteHostInstruction', payload: { id: host.id, instructionFile } }).then((response) => {
       setRemoteHostBusy(host.id, false)
-      setRemoteMessage(response.ok ? `Readable on ${host.label}: ${response.data?.bytes ?? 0} bytes.` : response.error || 'Host instruction file could not be read.')
+      if (response.ok) reportAppNotice(`Readable on ${host.label}: ${response.data?.bytes ?? 0} bytes.`, 'success')
+      else reportAppFailure(response.error || 'Host instruction file could not be read.', 'Check the instruction file path and try again.')
     })
   }
 
   const removeRemoteHost = async (host: ExecutionHost) => {
     if (isRemoteHostBusy(host.id)) return
     setRemoteHostBusy(host.id, true)
-    setRemoteMessage('')
+    setRemoteMessage(null)
     const response = await sendToCEF({ action: 'removeRemoteHost', payload: { id: host.id } })
     setRemoteHostBusy(host.id, false)
-    setRemoteMessage(response.ok ? `${host.label} was removed from UAM. Any helper files on that machine were left untouched.` : response.error || 'Remote host removal failed.')
+    if (response.ok) reportAppNotice(`${host.label} was removed from UAM. Any helper files on that machine were left untouched.`, 'success')
+    else reportAppFailure(response.error || 'Remote host removal failed.', 'Try again.')
   }
 
   useEffect(() => {
@@ -1129,24 +1121,20 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         setOpenMemoryMenu(null)
         return
       }
-      if (openEditorMenu) {
-        setOpenEditorMenu(null)
-        return
-      }
       if (openCliVersionMenu) {
         setOpenCliVersionMenu(null)
         return
       }
-	  if (remotePreview) {
-		if (!remoteBusy) setRemotePreview(null)
-		return
-	  }
+      if (remotePreview) {
+        if (!remoteBusy) setRemotePreview(null)
+        return
+      }
       if (themeDraft) { requestThemeExit(() => setThemeDraft(null)); return }
       requestClose()
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [isMarkdownStoreOpen, mcpDraftDirty, openCliVersionMenu, openEditorMenu, openMemoryMenu, remotePreview, remoteBusy, selectedSection, themeDraft, themeDirty, themeSaving, themeExit, pendingDelete, editorSaving, editorExit, editorDirty, confirmDiscard, setSettingsOpen])
+  }, [isMarkdownStoreOpen, mcpDraftDirty, openCliVersionMenu, openMemoryMenu, remotePreview, remoteBusy, selectedSection, themeDraft, themeDirty, themeSaving, themeExit, pendingDelete, editorSaving, editorExit, editorDirty, confirmDiscard, setSettingsOpen])
 
   useEffect(() => {
     const handler = (event: MouseEvent) => {
@@ -1154,16 +1142,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       if (!(target instanceof Node)) return
       if (target instanceof Element && target.closest('[data-viewport-menu]')) return
       if (!memoryMenuRef.current?.contains(target)) setOpenMemoryMenu(null)
-      if (!editorMenuRef.current?.contains(target)) setOpenEditorMenu(null)
       if (!cliVersionMenuRef.current?.contains(target)) setOpenCliVersionMenu(null)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
-
-  useEffect(() => {
-    setMarkdownStoreDraftDirectory(markdownStoreDirectory)
-  }, [markdownStoreDirectory])
 
   useEffect(() => {
     setEditorAssociationsDraft(editorFileAssociations)
@@ -1172,7 +1155,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   useEffect(() => {
     setDefaultEditorDraft(defaultEditorPresetId)
   }, [defaultEditorPresetId])
-
 
   useEffect(() => {
     if (activeSessionId) void refreshUamAgents(activeSessionId)
@@ -1213,15 +1195,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }, settingsScope)
   }
 
-  const toggleDefaultProvider = (providerId: string) => {
-    setExpandedDefaultProviders((current) => ({
-      ...current,
-      [providerId]: !(current[providerId] ?? false),
-    }))
-  }
-
   const toggleEditorGroup = (groupId: string) => {
-    setOpenEditorMenu(null)
     setExpandedEditorGroups((current) => ({
       ...current,
       [groupId]: !(current[groupId] ?? false),
@@ -1255,38 +1229,37 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const saveExplorer = async (path: string) => {
     if (editorSavePending.current) return
     editorSavePending.current = true
-    setEditorSaving(true); setOpenWithError('')
+    setEditorSaving(true)
     try {
-      if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, fileExplorerApplication: path })) setOpenWithError('File explorer could not be saved.')
-    } catch { setOpenWithError('File explorer could not be saved.') }
+      if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, fileExplorerApplication: path })) reportAppFailure('File explorer could not be saved.', 'Try again.')
+    } catch { reportAppFailure('File explorer could not be saved.', 'Try again.') }
     finally { editorSavePending.current = false; setEditorSaving(false) }
   }
   const saveWindowsPowerShell = async (value: WindowsPowerShellPreference) => {
     if (editorSavePending.current) return
     editorSavePending.current = true
-    setEditorSaving(true); setOpenWithError('')
+    setEditorSaving(true)
     try {
-      if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, windowsPowerShell: value })) setOpenWithError('Terminal shell could not be saved.')
-    } catch { setOpenWithError('Terminal shell could not be saved.') }
+      if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, windowsPowerShell: value })) reportAppFailure('Terminal shell could not be saved.', 'Try again.')
+    } catch { reportAppFailure('Terminal shell could not be saved.', 'Try again.') }
     finally { editorSavePending.current = false; setEditorSaving(false) }
   }
   const saveEditorSettings = async (nextAssociations = editorAssociationsDraft, nextDefaultEditor = defaultEditorDraft) => {
     if (editorSavePending.current) return false
     if (nextAssociations.some(item => !item.name.trim() || !item.extensions.length)) {
-      setEditorError('Each group needs a name and at least one extension.')
+      reportAppFailure('Each group needs a name and at least one extension.', 'Fix the file type group before saving.')
       return false
     }
     editorSavePending.current = true
     setEditorSaving(true)
     setEditorAssociationsDraft(nextAssociations)
     setDefaultEditorDraft(nextDefaultEditor)
-    setEditorError('')
     try {
       const saved = await setEditorSettings({defaultEditorPresetId:nextDefaultEditor,editorFileAssociations:nextAssociations})
-      if (!saved) setEditorError('Editor settings could not be saved. Try again.')
+      if (!saved) reportAppFailure('Editor settings could not be saved.', 'Try again.')
       return saved
     } catch {
-      setEditorError('Editor settings could not be saved. Try again.')
+      reportAppFailure('Editor settings could not be saved.', 'Try again.')
       return false
     } finally { editorSavePending.current = false; setEditorSaving(false) }
   }
@@ -1294,75 +1267,16 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const raw = field === 'name' ? rawEditorNames[id] : rawExtensions[id]
     if (raw === undefined) return
     const value = field === 'name' ? raw.trim() : parseExtensions(raw)
-    if (!value.length) { setEditorError(field === 'name' ? 'Enter a group name.' : 'Enter at least one extension.'); return }
+    if (!value.length) { reportAppFailure(field === 'name' ? 'Enter a group name.' : 'Enter at least one extension.', 'The change was not saved.'); return }
     void saveEditorSettings(editorAssociationsDraft.map(item => item.id === id ? {...item,[field]:value} : item))
   }
 
   const renderEditorPresetMenu = (
-    menuId: string,
     value: string,
     label: string,
     onSelect: (presetId: string) => void
   ) => (
-    <div className="relative">
-      <button
-        ref={(element) => { if (element) popupAnchorsRef.current.set(menuId, element) }}
-        type="button"
-        title={label}
-        aria-haspopup="listbox"
-        aria-expanded={openEditorMenu === menuId}
-        onClick={() => setOpenEditorMenu(openEditorMenu === menuId ? null : menuId)}
-        className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 text-left"
-        style={{
-          color: 'var(--text)',
-          borderRadius: 8,
-          padding: '8px 10px',
-        }}
-      >
-        <span className="truncate">{editorPresetLabel(value)}</span>
-        <ChevronDown className={openEditorMenu === menuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
-      </button>
-      {openEditorMenu === menuId && (
-        <ViewportMenu
-          anchorRef={{ current: popupAnchorsRef.current.get(menuId) ?? null }}
-          role="listbox"
-          aria-label={label}
-          className="animate-fade-in"
-          style={{
-            width: popupAnchorsRef.current.get(menuId)?.getBoundingClientRect().width,
-            border: '1px solid var(--border-bright)',
-            borderRadius: 10,
-            background: 'var(--surface)',
-            boxShadow: 'var(--elev-3)',
-            padding: 6,
-          }}
-        >
-          {EDITOR_PRESETS.map((preset) => {
-            const selected = preset.id === value
-            return (
-              <button
-                key={preset.id}
-                type="button"
-                role="option"
-                aria-selected={selected}
-                onClick={() => {
-                  onSelect(preset.id)
-                  setOpenEditorMenu(null)
-                }}
-                className={`uam-menu-select__option w-full flex items-center gap-2 text-left px-2 py-2${selected ? ' is-selected' : ''}`}
-                style={{
-                  borderRadius: 6,
-                  color: selected ? 'var(--text)' : 'var(--text-2)',
-                }}
-              >
-                <span className="flex-1">{preset.label}</span>
-                {selected && <Check size={13} style={{ color: 'var(--success)' }} aria-hidden />}
-              </button>
-            )
-          })}
-        </ViewportMenu>
-      )}
-    </div>
+    <MenuSelect label={label} value={value} options={EDITOR_PRESETS.map((preset) => ({ value: preset.id, label: preset.label }))} onChange={onSelect} />
   )
 
   const workerLogText = [
@@ -1386,7 +1300,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const themeSaveInFlightRef = useRef(false)
   const startNewTheme = (source?: CustomTheme) => {
     const base = source?.base ?? (theme === 'light' ? 'light' : 'dark')
-    const name = source ? `${source.name} Copy` : 'Custom Theme'
+    const name = source ? `${source.name} copy` : 'Custom theme'
     setThemeDraft({
       version: 1,
       id: customThemeId(name, customThemes),
@@ -1395,7 +1309,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       colors: { ...(source?.colors ?? BUILT_IN_THEME_COLORS[base]) },
     })
     setThemeStep(0)
-    setThemeMessage('')
   }
   const cloneCurrentTheme = () => {
     if (selectedCustomTheme) {
@@ -1412,15 +1325,15 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     try {
       const saved = await saveCustomTheme(themeDraft)
       if (!saved) {
-        setThemeMessage('Theme could not be saved. Check its name and colors.')
+        reportAppFailure('Theme could not be saved.', 'Check its name and colors.')
         return false
       }
       setThemeDraft(null)
       setTheme(saved.id)
-      setThemeMessage('Theme saved.')
+      reportAppNotice('Theme saved.', 'success')
       return true
     } catch {
-      setThemeMessage('Theme could not be saved. Try again.')
+      reportAppFailure('Theme could not be saved.', 'Try again.')
       return false
     } finally {
       themeSaveInFlightRef.current = false
@@ -1433,10 +1346,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setThemeSaving(true)
     try {
       const deleted = await deleteCustomTheme(selectedCustomTheme.id)
-      setThemeMessage(deleted ? 'Theme deleted.' : 'Theme could not be deleted.')
+      if (deleted) reportAppNotice('Theme deleted.', 'success')
+      else reportAppFailure('Theme could not be deleted.', 'Try again.')
       if (deleted) setThemeDraft(null)
       return deleted
-    } catch { setThemeMessage('Theme could not be deleted. Try again.'); return false }
+    } catch { reportAppFailure('Theme could not be deleted.', 'Try again.'); return false }
     finally { themeSaveInFlightRef.current = false; setThemeSaving(false) }
   }
   const importThemeFile = async (file?: File) => {
@@ -1448,9 +1362,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       if (!saved) throw new Error('save')
       setTheme(saved.id)
       setThemeDraft(null)
-      setThemeMessage('Theme imported.')
+      reportAppNotice('Theme imported.', 'success')
     } catch {
-      setThemeMessage('Theme import failed. Choose a valid UAM theme JSON file.')
+      reportAppFailure('Theme import failed.', 'Choose a valid UAM theme JSON file.')
     }
   }
   const exportSelectedTheme = () => {
@@ -1461,150 +1375,131 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     anchor.download = `${selectedCustomTheme.id.slice('custom:'.length)}.json`
     anchor.click()
     URL.revokeObjectURL(url)
-    setThemeMessage('Theme exported.')
+    reportAppNotice('Theme exported.', 'success')
   }
 
   const renderAddEditor = () => (
-              <Button
-                leadingIcon={<Plus size={14} />}
-                aria-label="Add editor group"
-                size="sm"
-                disabled={editorSaving}
-                onClick={() => {
-                  const id = `editor-group-${Date.now()}`
-                  const nextAssociations = [
-                    ...editorAssociationsDraft,
-                    {
-                      id,
-                      name: 'Files',
-                      extensions: ['.txt'],
-                      editorPresetId: defaultEditorDraft,
-                    },
-                  ]
-                  setExpandedEditorGroups((current) => ({ ...current, [id]: true }))
-                  saveEditorSettings(nextAssociations)
-                }}
-              >Add group</Button>
+    <Button
+      leadingIcon={<Plus size={14} />}
+      size="sm"
+      disabled={editorSaving}
+      onClick={() => {
+        const id = `editor-group-${Date.now()}`
+        const nextAssociations = [
+          ...editorAssociationsDraft,
+          {
+            id,
+            name: 'Files',
+            extensions: ['.txt'],
+            editorPresetId: defaultEditorDraft,
+          },
+        ]
+        setExpandedEditorGroups((current) => ({ ...current, [id]: true }))
+        saveEditorSettings(nextAssociations)
+      }}
+    >Add group</Button>
   )
 
   const renderThemeEditor = () => themeDraft ? (
-<div className="grid gap-4 rounded-lg p-3" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>
-                  {themeStep === 0 && <div className="grid gap-3 sm:grid-cols-2">
-                    <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                      <span>Name</span>
-                      <input
-                        aria-label="Theme name"
-                        value={themeDraft.name}
-                        maxLength={64}
-                        onChange={(event) => setThemeDraft({ ...themeDraft, name: event.target.value })}
-                        className="uam-field w-full"
-                      />
-                    </label>
-                    <fieldset className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                      <legend>Base</legend>
-                      <div role="radiogroup" aria-label="Theme base" className="grid grid-cols-2 gap-1 rounded-md p-1" style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}>
-                        {(['dark', 'light'] as const).map((base) => {
-                          const selected = themeDraft.base === base
-                          return (
-                            <button
-                              key={base}
-                              type="button"
-                              role="radio"
-                              aria-checked={selected}
-                              onClick={() => setThemeDraft({ ...themeDraft, base })}
-                              className="rounded px-2 py-1 capitalize transition-colors duration-150"
-                              style={{ background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--text)' : 'var(--text-2)' }}
-                            >
-                              {base}
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </fieldset>
-                  </div>}
-                  {themeStep === 1 && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                    {/* CEF native popup controls crash on macOS 26; keep theme editing in-app. */}
-                    {THEME_COLOR_FIELDS.map(({ key, label }) => (
-                      <label key={key} className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs" style={{ border: '1px solid var(--border)', color: 'var(--text-2)' }}>
-                        <span>{label}</span>
-                        <span className="flex items-center gap-2">
-                          <span
-                            aria-hidden="true"
-                            className="h-5 w-5 rounded-full transition-transform duration-150 hover:scale-110"
-                            style={{ background: themeDraft.colors[key], border: '1px solid var(--border)' }}
-                          />
-                          <input
-                            type="text"
-                            inputMode="text"
-                            aria-label={`${label} color`}
-                            value={themeDraft.colors[key]}
-                            maxLength={7}
-                            pattern="#[0-9A-Fa-f]{6}"
-                            spellCheck={false}
-                            aria-invalid={!THEME_COLOR_PATTERN.test(themeDraft.colors[key])}
-                            aria-describedby={!THEME_COLOR_PATTERN.test(themeDraft.colors[key]) ? 'theme-color-format-error' : undefined}
-                            onChange={(event) => setThemeDraft({ ...themeDraft, colors: { ...themeDraft.colors, [key]: event.target.value } })}
-                            className="uam-field w-24 font-mono uppercase"
-                          />
-                        </span>
-                      </label>
-                    ))}
-                  </div>}
-                  {!themeDraftValid && (
-                    <p id="theme-color-format-error" role="alert" className="text-xs" style={{ color: 'var(--error)' }}>
-                      Every color must use #RRGGBB format.
-                    </p>
-                  )}
-                  {themeStep === 2 && <div className="grid gap-3">
-                    <div className="text-sm">{themeDraft.name} · {themeDraft.base}</div>
-                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{THEME_COLOR_FIELDS.map(({key,label}) => <div key={key} className="flex items-center gap-2 text-xs"><span aria-hidden className="w-4 h-4 border" style={{background:themeDraft.colors[key]}}/>{label}<code>{themeDraft.colors[key]}</code></div>)}</div>
-                  </div>}
-                  <div className="flex gap-2">
-                    {themeStep > 0 && <Button size="sm" disabled={themeSaving} onClick={() => setThemeStep(themeStep - 1)}>Back</Button>}
-                    {themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <SaveButton saving={themeSaving} disabled={!themeDirty || !themeDraftValid || themeSaving} onClick={() => void saveThemeDraft()}>Save theme</SaveButton>}
-                    <Button size="sm" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}>Cancel</Button>
-                  </div>
-                </div>
+    <Card elevation={0} className="grid gap-4 p-3">
+      <Swap swapKey={String(themeStep)}>
+      {themeStep === 0 && <div className="grid gap-3 sm:grid-cols-2">
+        <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+          <span>Name</span>
+          <input
+            aria-label="Theme name"
+            value={themeDraft.name}
+            maxLength={64}
+            onChange={(event) => setThemeDraft({ ...themeDraft, name: event.target.value })}
+            className="uam-field w-full"
+          />
+        </label>
+        <fieldset className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+          <legend>Base</legend>
+          <SegmentedControl aria-label="Theme base" value={themeDraft.base} disabled={themeSaving}
+            options={[{ value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }]}
+            onChange={(base) => setThemeDraft({ ...themeDraft, base })} />
+        </fieldset>
+      </div>}
+      {themeStep === 1 && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {/* CEF native popup controls crash on macOS 26; keep theme editing in-app. */}
+        {THEME_COLOR_FIELDS.map(({ key, label }) => (
+          <label key={key} className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs" style={{ border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+            <span>{label}</span>
+            <span className="flex items-center gap-2">
+              <span
+                aria-hidden="true"
+                className="h-5 w-5 rounded-full"
+                style={{ background: themeDraft.colors[key], border: '1px solid var(--border)' }}
+              />
+              <input
+                type="text"
+                inputMode="text"
+                aria-label={`${label} color`}
+                value={themeDraft.colors[key]}
+                maxLength={7}
+                pattern="#[0-9A-Fa-f]{6}"
+                spellCheck={false}
+                aria-invalid={!THEME_COLOR_PATTERN.test(themeDraft.colors[key])}
+                aria-describedby={!THEME_COLOR_PATTERN.test(themeDraft.colors[key]) ? 'theme-color-format-error' : undefined}
+                onChange={(event) => setThemeDraft({ ...themeDraft, colors: { ...themeDraft.colors, [key]: event.target.value } })}
+                className="uam-field w-24 font-mono uppercase"
+              />
+            </span>
+          </label>
+        ))}
+      </div>}
+      <Reveal open={!themeDraftValid}>
+        <Notice tone="error" dismissible={false} dismissLabel="Dismiss"><span id="theme-color-format-error">Every color must use #RRGGBB format.</span></Notice>
+      </Reveal>
+      {themeStep === 2 && <div className="grid gap-3">
+        <div className="text-sm">{themeDraft.name} · {themeDraft.base}</div>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{THEME_COLOR_FIELDS.map(({key,label}) => <div key={key} className="flex items-center gap-2 text-xs"><span aria-hidden className="w-4 h-4 border" style={{background:themeDraft.colors[key]}}/>{label}</div>)}</div>
+      </div>}
+      </Swap>
+      <div className="flex gap-2">
+        <Reveal open={themeStep > 0}><Button size="sm" disabled={themeSaving} onClick={() => setThemeStep(themeStep - 1)}>Back</Button></Reveal>
+        <Swap swapKey={themeStep < 2 ? 'next' : 'save'}>{themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <SaveButton saving={themeSaving} disabled={!themeDirty || !themeDraftValid || themeSaving} onClick={() => void saveThemeDraft()}>Save theme</SaveButton>}</Swap>
+        <Button size="sm" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}>Cancel</Button>
+      </div>
+    </Card>
   ) : null
 
   const checkComputerUsePermissions = async () => {
     setComputerUseBusy(true)
-    setComputerUseMessage(`Checking ${computerUseOsLabel} permissions…`)
     const response = await sendToCEF<{ screenRecording?: { available?: boolean; error?: string }; accessibility?: { available?: boolean; error?: string } }>({ action: 'checkComputerUsePermissions' })
     setComputerUseBusy(false)
-    if (!response.ok) { setComputerUseMessage(response.error || `Could not check ${computerUseOsLabel} permissions.`); return }
+    if (!response.ok) { reportAppFailure(response.error || `Could not check ${computerUseOsLabel} permissions.`, 'Try again.'); return }
     setComputerUseStatus({
       screenRecording: { available: Boolean(response.data?.screenRecording?.available), error: response.data?.screenRecording?.error || '' },
       accessibility: { available: Boolean(response.data?.accessibility?.available), error: response.data?.accessibility?.error || '' },
     })
-    setComputerUseMessage('Permission check complete.')
   }
   const requestComputerUsePermission = async (permission: 'screenRecording' | 'accessibility') => {
     setComputerUseBusy(true)
     const response = await sendToCEF<{ granted?: boolean; openSettingsRequired?: boolean }>({ action: 'requestComputerUsePermission', payload: { permission } })
     if (!response.ok) {
       setComputerUseBusy(false)
-      setComputerUseMessage(response.error || 'Could not request this permission.')
+      reportAppFailure(response.error || 'Could not request this permission.', 'Try again.')
       return
     }
     if (response.data?.granted) {
       setComputerUseBusy(false)
-      setComputerUseMessage(`${permission === 'screenRecording' ? 'Screen Recording' : 'Accessibility'} permission is already granted.`)
+      reportAppNotice(`${permission === 'screenRecording' ? 'Screen Recording' : 'Accessibility'} permission is already granted.`, 'success')
       return
     }
     const settingsResponse = await sendToCEF<{ opened?: boolean; error?: string }>({ action: 'openComputerUseSystemSettings', payload: { permission } })
     setComputerUseBusy(false)
-    setComputerUseMessage(settingsResponse.ok && settingsResponse.data?.opened !== false
-      ? `Permission is not granted. Opened ${computerUseOsLabel} settings; enable it, then re-check.`
-      : settingsResponse.error || settingsResponse.data?.error || `Permission is not granted. Could not open ${computerUseOsLabel} settings.`)
+    if (settingsResponse.ok && settingsResponse.data?.opened !== false) reportAppNotice(`Permission is not granted. Opened ${computerUseOsLabel} settings; enable it, then re-check.`)
+    else reportAppFailure(settingsResponse.error || settingsResponse.data?.error || `Permission is not granted. Could not open ${computerUseOsLabel} settings.`, 'Open the settings manually, then re-check.')
   }
   const openComputerUseSystemSettings = async (permission: 'screenRecording' | 'accessibility') => {
     const response = await sendToCEF({ action: 'openComputerUseSystemSettings', payload: { permission } })
-    if (!response.ok) setComputerUseMessage(response.error || `Could not open ${computerUseOsLabel} settings.`)
+    if (!response.ok) reportAppFailure(response.error || `Could not open ${computerUseOsLabel} settings.`, 'Try again.')
   }
   const loadComputerUseApplications = async () => {
     const response = await sendToCEF<{ applications?: Array<{ identityKind?: string; identity?: string; name?: string }> }>({ action: 'listComputerUseApplications' })
-    if (!response.ok) { setComputerUseMessage(response.error || 'Could not list applications.'); return }
+    if (!response.ok) { reportAppFailure(response.error || 'Could not list applications.', 'Try again.'); return }
     setComputerUseApps((response.data?.applications ?? []).flatMap((app) => app.identity && app.name && (app.identityKind === 'bundleId' || app.identityKind === 'executablePath') ? [{ identityKind: app.identityKind, identity: app.identity, name: app.name }] : []))
   }
   const adoptCompanionStatus = (next: PhoneAccessStatus) => {
@@ -1632,13 +1527,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     companionInFlight.current = true
     setCompanionBusy(true)
     setCompanionBusyAction(action === 'repairCompanionLanAddress' ? `${action}:${payload.address}` : action)
-    setCompanionMessage('')
-    setCompanionNotice('')
     try {
       const response = await sendToCEF<PhoneAccessStatus>({ action, payload })
-      if (!response.ok || !response.data) { setCompanionMessage(response.error || 'Could not update phone access.'); return }
+      if (!response.ok || !response.data) { reportAppFailure(response.error || 'Could not update phone access.', 'Try again.'); return }
       adoptCompanionStatus(response.data)
-    } catch { setCompanionMessage('Could not update phone access. Try again.') }
+    } catch { reportAppFailure('Could not update phone access.', 'Try again.') }
     finally { companionInFlight.current = false; setCompanionBusy(false); setCompanionBusyAction('') }
   }
   const setCompanionEnabled = (enabled: boolean) => changeCompanion('setCompanionEnabled', { enabled })
@@ -1647,13 +1540,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     companionInFlight.current = true
     setCompanionBusy(true)
     setCompanionBusyAction('restartApplication')
-    setCompanionMessage('')
-    setCompanionNotice('')
     try {
       const response = await sendToCEF({ action: 'restartApplication' })
-      if (!response.ok) setCompanionMessage(response.error || 'Could not restart Universal Agent Manager. Close and open it again.')
-      else setCompanionNotice('Restarting Universal Agent Manager…')
-    } catch { setCompanionMessage('Could not restart Universal Agent Manager. Close and open it again.') }
+      if (!response.ok) reportAppFailure(response.error || 'Could not restart Universal Agent Manager.', 'Close and open it again.')
+      else reportAppNotice('Restarting Universal Agent Manager…')
+    } catch { reportAppFailure('Could not restart Universal Agent Manager.', 'Close and open it again.') }
     finally { companionInFlight.current = false; setCompanionBusy(false); setCompanionBusyAction('') }
   }
   const copyCompanion = async (kind: 'token' | 'url') => {
@@ -1661,23 +1552,21 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     companionInFlight.current = true
     setCompanionBusy(true)
     setCompanionBusyAction(`copy:${kind}`)
-    setCompanionMessage('')
-    setCompanionNotice('')
     let ok = false
     try {
       let text = companionSettings?.effectiveUrl ?? ''
       if (kind === 'token') {
         const response = await sendToCEF<{ token?: string }>({ action: 'getCompanionToken' })
         if (!response.ok || !response.data?.token) {
-          setCompanionMessage(response.error || 'Phone access token is unavailable.')
+          reportAppFailure(response.error || 'Phone access token is unavailable.', 'Try again.')
           return
         }
         text = response.data.token
       }
       // CEF blocks navigator.clipboard here; route through the native bridge helper.
       ok = await copyTextToClipboard(text, document)
-      if (!ok) setCompanionMessage(`Could not copy the phone access ${kind}.`)
-    } catch { setCompanionMessage(`Could not copy the phone access ${kind}. Try again.`) }
+      if (!ok) reportAppFailure(`Could not copy the phone access ${kind}.`, 'Try again.')
+    } catch { reportAppFailure(`Could not copy the phone access ${kind}.`, 'Try again.') }
     finally {
       companionInFlight.current = false
       setCompanionBusy(false)
@@ -1689,8 +1578,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
   useEffect(() => {
     if (!MOBILE_COMPANION_ENABLED || selectedSection !== 'phone') return
-    setCompanionMessage('')
-    setCompanionNotice('')
     setCompanionCopy(null)
     let disposed = false
     let timer: number | undefined
@@ -1711,7 +1598,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       const response = await sendToCEF({ action: 'setComputerUseSettings', payload: { allowlistEnabled, allowedApplications } })
       if (!response.ok) {
         useAppStore.setState(previous)
-        setComputerUseMessage(response.error || 'Could not save Computer Use settings.')
+        reportAppFailure(response.error || 'Could not save Computer Use settings.', 'Try again.')
       }
     } finally {
       computerUseSaveInFlight.current = false
@@ -1730,13 +1617,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     let configuredHost = ''
     try { configuredHost = new URL(address).hostname } catch { /* No configured address. */ }
     const repairAddresses = configuredHost && configuredHost !== '127.0.0.1' && /^\d+\.\d+\.\d+\.\d+$/.test(configuredHost) && !currentAddresses.includes(configuredHost) ? currentAddresses : []
-    const phoneFeedback = (companionLoadError || companionMessage || companionNotice) ? <>
-      {companionLoadError && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{companionLoadError}</p>}
-      {companionMessage && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{companionMessage}</p>}
-      {companionNotice && <p role="status" className="text-xs" style={{ color: 'var(--text-2)' }}>{companionNotice}</p>}
-    </> : null
+    // Load failures persist until a retry succeeds; action results are reported as app events.
+    const phoneFeedback = <Reveal open={Boolean(companionLoadError)}><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{companionLoadError}</Notice></Reveal>
     return <div className="grid gap-0">
-      <SettingsSection title="Phone access">
+      <div className="uam-set-card">
         <SettingRow
           title="Enable phone access"
           description={companionSettings?.configured ? 'Connect your phone to this computer. Changes apply automatically.' : 'Not configured on this computer.'}
@@ -1744,31 +1628,31 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             disabled={!companionSettings?.configured || companionBusy} onChange={(event) => void setCompanionEnabled(event.target.checked)} />}
         />
         <SettingRow
-          title={companionLoadError ? 'Phone access needs attention' : !companionSettings ? 'Checking phone access…' : ready ? 'Ready to connect' : companionSettings.state === 'starting' ? 'Updating phone access…' : failed ? 'Phone access needs attention' : 'Phone access is off'}
-          description={companionLoadError ? 'Retry to check phone access on this computer.' : repairAddresses.length > 0 ? 'Choose a current network address below to repair the connection.' : companionSettings?.reason?.replace(/\bLAN\b/g, 'network') || (ready ? 'Scan the pairing code in the Universal Agent Manager iPhone app.' : 'Enable phone access to connect your iPhone.')}
-          status={<span role="status" aria-live="polite" style={{ color: failed ? 'var(--error)' : 'var(--text-2)' }}>{companionSettings?.restartRequired ? 'Restart Universal Agent Manager to apply this change.' : companionBusyAction === 'setCompanionEnabled' ? 'Updating phone access…' : undefined}</span>}
+          title="Connection"
+          description={companionLoadError ? undefined : repairAddresses.length > 0 ? 'Choose a current network address below to repair the connection.' : companionSettings?.reason?.replace(/\bLAN\b/g, 'network')}
+          status={!companionSettings?.enabled && !failed && !companionLoadError && !companionSettings?.restartRequired && companionBusyAction !== 'setCompanionEnabled' && companionSettings ? undefined : <span role="status" aria-live="polite" className="inline-flex items-center gap-1" style={{ color: failed || companionLoadError ? 'var(--error)' : 'var(--text-2)' }}>{failed || companionLoadError ? <StatusDot tone="error" /> : null}{companionSettings?.restartRequired ? 'Restart Universal Agent Manager to apply this change.' : companionBusyAction === 'setCompanionEnabled' ? 'Updating…' : companionLoadError ? <span className="sr-only">Needs attention</span> : !companionSettings ? 'Checking…' : ready ? 'Ready to connect' : companionSettings.state === 'starting' ? 'Updating…' : failed ? <span className="sr-only">Needs attention</span> : 'Off'}</span>}
           control={<div className="flex flex-wrap gap-2">
-            {(failed || companionLoadError) && <Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => { if (failed) void changeCompanion('restartCompanion'); else void loadCompanionSettings(true) }}>{['restartCompanion', 'reloadCompanion'].includes(companionBusyAction) ? 'Retrying…' : 'Retry phone access'}</Button>}
-            {(failed || companionSettings?.restartRequired) && <Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => void restartApplication()}>{companionBusyAction === 'restartApplication' ? 'Restarting Universal Agent Manager…' : 'Restart Universal Agent Manager'}</Button>}
+            <Reveal open={Boolean(failed || companionLoadError)}><Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => { if (failed) void changeCompanion('restartCompanion'); else void loadCompanionSettings(true) }}>{['restartCompanion', 'reloadCompanion'].includes(companionBusyAction) ? 'Retrying…' : 'Retry phone access'}</Button></Reveal>
+            <Reveal open={Boolean(failed || companionSettings?.restartRequired)}><Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => void restartApplication()}>{companionBusyAction === 'restartApplication' ? 'Restarting Universal Agent Manager…' : 'Restart Universal Agent Manager'}</Button></Reveal>
           </div>}
         >{phoneFeedback}</SettingRow>
-        {repairAddresses.length > 0 && <SettingRow title="Network address changed" description={`${configuredHost} is no longer on this computer.`}
-          control={<div className="flex flex-wrap gap-2">{repairAddresses.map(localAddress => <Button key={localAddress} size="sm" variant="secondary" disabled={companionBusy} onClick={() => void changeCompanion('repairCompanionLanAddress', { address: localAddress })}>{companionBusyAction === `repairCompanionLanAddress:${localAddress}` ? 'Repairing…' : `Use ${localAddress}`}</Button>)}</div>} />}
-        {address && <SettingRow title={ready ? 'Phone address' : 'Configured phone address'} description={!ready ? 'Available when phone access is ready.' : undefined}
+        <Reveal open={repairAddresses.length > 0}>{repairAddresses.length > 0 && <SettingRow title="Network address changed" description={`${configuredHost} is no longer on this computer.`}
+          control={<div className="flex flex-wrap gap-2">{repairAddresses.map(localAddress => <Button key={localAddress} size="sm" variant="secondary" disabled={companionBusy} onClick={() => void changeCompanion('repairCompanionLanAddress', { address: localAddress })}>{companionBusyAction === `repairCompanionLanAddress:${localAddress}` ? 'Repairing…' : `Use ${localAddress}`}</Button>)}</div>} />}</Reveal>
+        <Reveal open={Boolean(address)}><SettingRow title={ready ? 'Phone address' : 'Configured phone address'} description={!ready ? 'Available when phone access is ready.' : undefined}
           control={<Button size="sm" variant="ghost" leadingIcon={copyIcon('url')} aria-label="Copy phone URL" disabled={!ready || companionBusy} onClick={() => void copyCompanion('url')}>{copyLabel('url', 'Copy URL')}</Button>}>
           <code className="block truncate font-mono text-xs" title={address} style={{ color: 'var(--text-2)' }}>{ready ? companionSettings?.effectiveUrl : address}</code>
-        </SettingRow>}
-        {typeof companionSettings?.allowKeychainPrompts === 'boolean' && <SettingRow
+        </SettingRow></Reveal>
+        <Reveal open={typeof companionSettings?.allowKeychainPrompts === 'boolean'}><SettingRow
           title="Allow Keychain prompts from phone"
-          description="When on, refreshing allowances from your phone can show the macOS Keychain dialog on this computer. When off, phone refreshes never show it."
+          description="When on, phone refreshes can show the macOS Keychain dialog on this computer. When off, they never do."
           status={companionBusyAction === 'setCompanionKeychainPrompts' ? <span role="status" aria-live="polite" style={{ color: 'var(--text-2)' }}>Saving…</span> : undefined}
-          control={<Switch hideLabel label="Allow Keychain prompts from phone" checked={companionSettings.allowKeychainPrompts}
-            disabled={!companionSettings.configured || companionBusy} onChange={(event) => void changeCompanion('setCompanionKeychainPrompts', { allowed: event.target.checked })} />}
-        />}
-        <SettingRow title="Access token" description="For manual entry in the iPhone app. Pairing by QR code also configures secure certificate trust."
+          control={<Switch hideLabel label="Allow Keychain prompts from phone" checked={companionSettings?.allowKeychainPrompts === true}
+            disabled={!companionSettings?.configured || companionBusy} onChange={(event) => void changeCompanion('setCompanionKeychainPrompts', { allowed: event.target.checked })} />}
+        /></Reveal>
+        <SettingRow title="Access token" description="For manual entry in the iPhone app. QR pairing also sets up certificate trust."
           control={<Button size="sm" variant="secondary" leadingIcon={copyIcon('token')} aria-label="Copy token" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanion('token')}>{copyLabel('token', 'Copy token')}</Button>} />
-        {address && <PhonePairingPanel url={companionSettings?.effectiveUrl || address} enabled={Boolean(ready)} />}
-      </SettingsSection>
+        <Reveal open={Boolean(address)}><PhonePairingPanel url={companionSettings?.effectiveUrl || address} enabled={Boolean(ready)} /></Reveal>
+      </div>
     </div>
   }
 
@@ -1791,8 +1675,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     return <div className="grid gap-0">
       <SettingsSection title="Control method">
         <ComputerUseSettingRow />
+        {SSH_ENABLED && <SettingRow title="Remote hosts" description="Remote Computer Use is off. Remote chats can't see or control the screen." />}
         <SettingRow
-          title="Computer Use backend"
+          title="Computer use backend"
           description={activeSession
             ? activeSession.computerUseEnabled
               ? 'Turn Computer Use off in this chat first.'
@@ -1812,9 +1697,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 onChange={(value) => {
                   if (!activeSession) return
                   setComputerUseBusy(true)
-                  setComputerUseMessage('')
                   void setSessionComputerUseBackend(activeSession.id, value as ComputerUseBackend).then((result) => {
-                    if (!result.ok) setComputerUseMessage(result.error || 'Could not change the Computer Use backend.')
+                    if (!result.ok) reportAppFailure(result.error || 'Could not change the Computer Use backend.', 'Try again.')
                   }).finally(() => setComputerUseBusy(false))
                 }}
               />
@@ -1825,21 +1709,19 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           title="Allow UAM Control requests"
           description={activeUamControlSupported
             ? 'Agent requests appear in the chat for approval.'
-            : 'Supported local structured chats only.'}
+            : 'Available only for supported local chats.'}
           control={
             <Switch
               hideLabel
-              className="uam-switch--accent"
               label="Allow UAM Control requests"
               checked={Boolean(activeSession?.uamControlEnabled)}
               disabled={!activeUamControlSupported || computerUseBusy}
               onChange={(event) => {
                 if (!activeSession) return
                 setComputerUseBusy(true)
-                setComputerUseMessage('')
                 void setSessionUamControlEnabled(activeSession.id, event.target.checked)
                   .then((result) => {
-                    if (!result) setComputerUseMessage('Could not change UAM Control. Stop the active session first, then try again.')
+                    if (!result) reportAppFailure('Could not change UAM Control.', 'Stop the active session first, then try again.')
                   })
                   .finally(() => setComputerUseBusy(false))
               }}
@@ -1855,15 +1737,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           key={permission}
           title={label}
           status={<span className="inline-flex items-center gap-1.5" style={{ color: state ? (state.available ? 'var(--success)' : 'var(--error)') : 'var(--text-3)' }}>
-            <StatusDot tone={state ? (state.available ? 'success' : 'error') : 'neutral'} />
-            {state ? (state.available ? 'Available' : state.error || 'Not available') : 'Not checked'}
+            {state ? (state.available ? <StatusMark tone="success" label="Available" /> : <><StatusMark tone="error" label="Not available" />{state.error}</>) : <StatusMark tone="neutral" label="Not checked" />}
           </span>}
           control={<div className="flex flex-wrap justify-end gap-1">
             <Button size="sm" variant="ghost" disabled={computerUseBusy} onClick={() => void openComputerUseSystemSettings(permission)}>Open settings</Button>
             <Button size="sm" variant="secondary" disabled={computerUseBusy} onClick={() => void requestComputerUsePermission(permission)}>{state?.available ? 'Re-request' : 'Request'} {label}</Button>
           </div>}
         />)}
-        {computerUseMessage && <p role="status" className="px-0 py-2 text-xs" style={{ color: 'var(--text-2)' }}>{computerUseMessage}</p>}
       </SettingsSection>
       <SettingsSection
         title="Allowed targets"
@@ -1871,19 +1751,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       >
         <SettingRow
           title="Only listed apps"
-          description={computerUseAllowlistEnabled ? 'Only listed apps can be targeted.' : 'Each chat asks before targeting an app.'}
+          description={computerUseAllowlistEnabled ? 'Chats can target only the apps checked below.' :'Each chat asks before targeting an app.'}
           control={<Switch hideLabel label="Restrict Computer Use to allowed applications" checked={computerUseAllowlistEnabled} disabled={computerUseSaveBusy} onChange={(event) => void saveComputerUseSettings(event.target.checked, computerUseAllowedApplications)} />}
         />
-        {computerUseApps.length === 0 && <SettingRow title="No applications loaded" description="Refresh to list apps UAM can target." />}
-        {computerUseApps.map((app) => {
+        <Reveal open={computerUseApps.length === 0}><SettingRow title={<span style={{ color: 'var(--text-3)' }}>Refresh to list apps UAM can target.</span>} /></Reveal>
+        <AnimatedRows items={computerUseApps} keyOf={(app) => `${app.identityKind}:${app.identity}`} render={(app) => {
           const allowed = computerUseAllowedApplications.some((item) => item.identityKind === app.identityKind && item.identity === app.identity)
           return <SettingRow
-            key={`${app.identityKind}:${app.identity}`}
-            title={app.name}
-            description={<span className="font-mono">{app.identity}</span>}
+            title={<span title={app.identity}>{app.name}</span>}
             control={<Switch hideLabel label={app.name} checked={allowed} disabled={computerUseSaveBusy} onChange={() => void saveComputerUseSettings(computerUseAllowlistEnabled, allowed ? computerUseAllowedApplications.filter((item) => item.identity !== app.identity || item.identityKind !== app.identityKind) : [...computerUseAllowedApplications, { identityKind: app.identityKind, identity: app.identity }])} />}
           />
-        })}
+        }} />
       </SettingsSection>
     </div>
   }
@@ -1901,21 +1779,20 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const scopeValue = onProviderPage || hostScopedSettings ? storedScopeHostId : SETTINGS_ALL_ENVIRONMENTS
   const settingsScope = hostScopedSettings ? storedScopeHostId : SETTINGS_ALL_ENVIRONMENTS
   const effectiveProviderSettingsHostId = scopeValue === SETTINGS_ALL_ENVIRONMENTS ? 'local' : scopeValue
-  const scopeBar = scopeBarVisible ? <SettingsScopeBar hosts={executionHosts} value={scopeValue} selectorEnabled={onProviderPage || hostScopedSettings} supported={hostScopedSettings} onChange={(hostId) => { if (!mcpSaving) requestSectionExit(() => setSettingsScopeHostId(hostId)) }} /> : null
+  const scopeBar = <Reveal open={scopeBarVisible}><SettingsScopeBar hosts={executionHosts} value={scopeValue} selectorEnabled={onProviderPage || hostScopedSettings} supported={hostScopedSettings} onChange={(hostId) => { if (!mcpSaving) requestSectionExit(() => setSettingsScopeHostId(hostId)) }} /></Reveal>
   // A pending CLI install or open version menu belongs to the computer it was started for.
   useEffect(() => {
     setPendingCliInstall(null)
     setOpenCliVersionMenu(null)
-    setMemoryPolicyError({})
     setMemoryPolicySaving({})
   }, [settingsScopeHostId])
   const renderSectionContent = (sectionOverride?: SettingsSectionId, scopedProviderId?: string): ReactNode => {
     const selectedSection = sectionOverride ?? selectedSettingsSection
-    const availability = (ids?: string[]) => <ProviderAvailabilityControls key={`${effectiveProviderSettingsHostId}:${ids?.join(',') || 'all'}`} ref={providerAvailabilityRef} providers={providers.filter((provider) => !ids || ids.includes(provider.id))} hostId={effectiveProviderSettingsHostId} hostLabel={effectiveProviderSettingsHostId === 'local' ? 'this computer' : executionHosts.find((host) => host.id === effectiveProviderSettingsHostId)?.label || effectiveProviderSettingsHostId} />
-    if (selectedSection === 'provider-summary') return <div className="grid"><SettingsSection title="Provider availability">{availability()}</SettingsSection><ProviderConnections selectedHostId={effectiveProviderSettingsHostId} onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
+    const availability = (title: string, ids?: string[]) => <ProviderAvailabilityControls key={`${effectiveProviderSettingsHostId}:${ids?.join(',') || 'all'}`} ref={providerAvailabilityRef} title={title} providers={providers.filter((provider) => !ids || ids.includes(provider.id))} hostId={effectiveProviderSettingsHostId} />
+    if (selectedSection === 'provider-summary') return <div className="grid">{availability('Provider availability')}<ProviderConnections selectedHostId={effectiveProviderSettingsHostId} onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
     if (selectedSection.startsWith('provider:')) {
       const providerId = selectedSection.slice('provider:'.length)
-      return <div className="grid"><SettingsSection title="CLI and availability">{availability([providerId])}{renderSectionContent('cli-version', providerId)}</SettingsSection>{renderSectionContent('defaults', providerId)}<ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
+      return <div className="grid">{availability('Availability', [providerId])}{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}<ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
     }
     if (selectedSection === 'permissions') return <PermissionsSettings />
     if (COMPUTER_USE_ENABLED && selectedSection === 'computer-use') return renderComputerUse()
@@ -1945,6 +1822,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 tiles[(index + step + tiles.length) % tiles.length]?.focus()
               }}>
                 {themeChoices.map((choice) => {
+                  // ui: raw button kept — role=radio theme tile with a swatch preview; no primitive has that shape.
                   const selected = choice.value === theme
                   return (
                     <button
@@ -1958,7 +1836,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       onClick={() => {
                         setThemeDraft(null)
                         setTheme(choice.value)
-                        setThemeMessage('')
                       }}
                       className="uam-theme-tile"
                     >
@@ -1980,7 +1857,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 <div className="flex flex-wrap justify-end gap-1">
                   <IconButton icon={<Plus size={15}/>} label="Add theme" onClick={() => startNewTheme()}/>
                   <IconButton icon={<Copy size={15}/>} label="Copy theme" onClick={cloneCurrentTheme}/>
-                  <IconButton icon={<Pencil size={15}/>} label={selectedCustomTheme ? 'Edit theme' : 'Clone built-in theme to edit'} onClick={() => { if (selectedCustomTheme) { setThemeDraft({...selectedCustomTheme,colors:{...selectedCustomTheme.colors}}); setThemeStep(0); setThemeMessage('') } else cloneCurrentTheme() }}/>
+                  <IconButton icon={<Pencil size={15}/>} label={selectedCustomTheme ? 'Edit theme' : 'Clone built-in theme to edit'} onClick={() => { if (selectedCustomTheme) { setThemeDraft({...selectedCustomTheme,colors:{...selectedCustomTheme.colors}}); setThemeStep(0) } else cloneCurrentTheme() }}/>
                   <IconButton icon={<Trash2 size={15}/>} label="Delete theme" variant="danger" disabled={!selectedCustomTheme} onClick={() => selectedCustomTheme && setPendingDelete({kind:'theme',id:selectedCustomTheme.id,name:selectedCustomTheme.name})}/>
                   <IconButton icon={<Upload size={15}/>} label="Import theme" onClick={() => themeImportRef.current?.click()}/>
                   <IconButton icon={<Download size={15}/>} label="Export theme" disabled={!selectedCustomTheme} onClick={exportSelectedTheme}/>
@@ -1998,9 +1875,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   />
                 </div>
               }
-            >
-              {themeMessage && <div role="status" className="text-xs" style={{ color: themeMessage.includes('failed') || themeMessage.includes('could not') ? 'var(--error)' : 'var(--text-2)' }}>{themeMessage}</div>}
-            </SettingRow>
+            />
           </SettingsSection>
           <SettingsSection title="Chats">
             <SettingRow
@@ -2048,7 +1923,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
 
     if (selectedSection === 'vcs') return <VcsSettingsSection ref={vcsRef} />
-    if (selectedSection === 'storage-cleanup') return <div className="grid gap-6"><DataFolderSettingsSection ref={dataFolderRef} /><StorageCleanupSettingsSection ref={cleanupRef} /></div>
+    if (selectedSection === 'storage-cleanup') return <div className="grid gap-0"><DataFolderSettingsSection ref={dataFolderRef} /><StorageCleanupSettingsSection ref={cleanupRef} /></div>
 
     if (selectedSection === 'defaults') {
       const reviewerProvider = providers.find((provider) => provider.id === permissionReviewerProviderId)
@@ -2062,8 +1937,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         ? memoryModelOptions(reviewerProvider, reviewerProvider.id, permissionReviewerModelId, reviewerAcp?.availableModels)
         : []
       return (
-        <div className="space-y-4">
-          {!scopedProviderId && <SettingsSection title="Chats">
+        <div className="grid gap-0">
+          {!scopedProviderId && <div className="uam-set-card">
             <SettingRow title="Default provider" description="Preselected in the New chat dialog." control={renderDefaultsMenu(
                   'default-provider',
                   defaultNewChatProviderId || providers[0]?.id || DEFAULT_PROVIDER_ID,
@@ -2076,7 +1951,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   (providerId) => void setProviderChatDefaults({ defaultNewChatProviderId: providerId }, settingsScope),
                   (option) => <ProviderLogo providerId={option.id} />
                 )} />
-            {settingsScope === SETTINGS_ALL_ENVIRONMENTS && <>
+            <Reveal open={settingsScope === SETTINGS_ALL_ENVIRONMENTS}>
               <SettingRow title="Reviewer provider" description="AI approves routine requests; unsure ones come to you." control={renderDefaultsMenu(
                     'permission-reviewer-provider',
                     permissionReviewerProviderId,
@@ -2095,11 +1970,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     reviewerModels.length > 0 ? reviewerModels : [{ id: '', label: 'Provider default', detail: reviewerProvider ? 'Use the provider default model.' : 'Choose a reviewer provider first.' }],
                     (modelId) => void setMemorySettings({ permissionReviewerModelId: modelId })
                   )} />
-            </>}
-          </SettingsSection>}
-          {scopedProviderId && <SettingsSection title="Chat defaults">
-            <div className="grid gap-4">
-              <div className="space-y-3">
+            </Reveal>
+          </div>}
+          {scopedProviderId && <div>
+            <div className="grid gap-0">
                 {providers.filter(provider => provider.id === scopedProviderId).map((provider) => {
                   const defaults = defaultsForProvider(provider)
                   const caps = providerCapabilities(provider.id, provider)
@@ -2111,6 +1985,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   const hasDiscoveredModels = Boolean(providerAcp?.availableModels?.some((model) => model.id.trim()) || providerAcp?.configOptions?.find((option) => option.category === 'model' || option.id === 'model')?.options.some((choice) => choice.value.trim()))
                   const modelsLoading = providerAcp?.modelsLoading ?? false
                   const modelRefreshError = providerAcp?.modelRefreshError ?? ''
+                  const refreshFailed = Boolean(modelRefreshError && !modelsLoading)
                   const modelOptions = buildModelOptions(providerAcp, defaults.modelId, provider, provider.id, true)
                   const reviewerModelOptions = buildModelOptions(providerAcp, defaults.reviewerModelId || defaults.modelId, provider, provider.id, true)
                   const liveReasoningOptions = buildProviderReasoningOptions(provider.id, providerAcp, defaults.modelId, defaults.reasoningEffort)
@@ -2126,208 +2001,134 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     const hidden = defaults[key] ?? []
                     updateProviderDefaults(provider.id, { ...defaults, [key]: hidden.includes(id) ? hidden.filter((value) => value !== id) : [...hidden, id] })
                   }
-                  const expanded = expandedDefaultProviders[provider.id] ?? false
                   const modeOptions = [
                     { id: 'default', label: 'Default', detail: 'Use the provider default mode' },
                     { id: 'plan', label: 'Plan', detail: 'Ask the provider to plan first' },
                   ]
                   return (
-                    <ProviderDisclosureCard
+                    <SettingsSection
                       key={provider.id}
-                      alwaysOpen={Boolean(scopedProviderId)}
-                      panelId={`${provider.id}-defaults-panel`}
-                      providerId={provider.id}
-                      title={scopedProviderId ? 'Model catalogue' : providerName}
-                      expanded={expanded}
-                      toggleLabel={`${expanded ? 'Hide' : 'Show'} ${providerName} chat defaults`}
-                      onToggle={() => toggleDefaultProvider(provider.id)}
+                      title="Defaults"
                       actions={provider.supportsStructured === false ? undefined : <IconButton icon={<RefreshCw size={14}/>} label={`Refresh ${providerName} models`} disabled={!providerWorkspace || modelsLoading} onClick={() => void (effectiveProviderSettingsHostId === 'local' ? discoverProviderModels(providerSession?.id ?? '', provider.id, providerWorkspace) : discoverProviderModels(providerSession?.id ?? '', provider.id, providerWorkspace, effectiveProviderSettingsHostId))} />}
                     >
-                      <div className="grid gap-3 text-xs" style={{ color: 'var(--text-2)' }}>
-                        {provider.supportsStructured === false && <p>Terminal only. Models are managed in the CLI.</p>}
-                        {!modelOptions.some(option => option.id) && provider.supportsStructured !== false && <p>Visibility appears once models are discovered.</p>}
-                        {modelOptions.some((option) => option.id) && (
-                          <details className="rounded-lg" style={{ border: '1px solid var(--border)' }}>
-                            <summary className="flex cursor-pointer items-center justify-between px-3 py-2" style={{ color: 'var(--text)' }}>
-                              <span>Model visibility</span>
-                              <span style={{ color: 'var(--text-3)' }}>{(defaults.hiddenProviderIds?.length ?? 0) + (defaults.hiddenModelIds?.length ?? 0) ? [visibilityGroups.length && defaults.hiddenProviderIds?.length ? `${defaults.hiddenProviderIds.length} providers` : '', defaults.hiddenModelIds?.length ? `${defaults.hiddenModelIds.length} models` : ''].filter(Boolean).join(', ') + ' hidden' : 'All shown'}</span>
-                            </summary>
-                            <div className="grid gap-1 px-2 pb-2">
+                      <div id={`${provider.id}-defaults-panel`} className="grid gap-0 text-xs" style={{ color: 'var(--text-2)' }}>
+                        <Reveal open={provider.supportsStructured === false}><SettingRow title="Terminal only. Models are managed in the CLI." /></Reveal>
+                        <Reveal open={!modelOptions.some(option => option.id) && provider.supportsStructured !== false}><SettingRow title="Model visibility" description="Appears once models are discovered." /></Reveal>
+                        <Reveal open={modelOptions.some((option) => option.id)}>
+                          <Disclosure summary={<span className="flex min-w-0 flex-1 items-center justify-between gap-2"><span>Model visibility</span><span style={{ color: 'var(--text-3)' }}>{(defaults.hiddenProviderIds?.length ?? 0) + (defaults.hiddenModelIds?.length ?? 0) ? [visibilityGroups.length && defaults.hiddenProviderIds?.length ? `${defaults.hiddenProviderIds.length} providers` : '', defaults.hiddenModelIds?.length ? `${defaults.hiddenModelIds.length} models` : ''].filter(Boolean).join(', ') + ' hidden' : 'All shown'}</span></span>}>
+                            <div className="grid gap-1">
                               {!visibilityGroups.length && modelOptions.filter((option) => option.id).map((option) => (
-                                <label key={option.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5" style={{ background: 'var(--bg)' }}>
-                                  <input type="checkbox" checked={!defaults.hiddenModelIds?.includes(option.id)} onChange={() => toggleVisibility('hiddenModelIds', option.id)} />
+                                <div key={option.id} className="flex items-center justify-between gap-2 py-1.5" style={{ borderTop: '1px solid var(--border)' }}>
                                   <span className="truncate" style={{ color: defaults.hiddenModelIds?.includes(option.id) ? 'var(--text-3)' : 'var(--text)' }}>{option.label}</span>
-                                </label>
+                                  <Switch hideLabel label={option.label} checked={!defaults.hiddenModelIds?.includes(option.id)} onChange={() => toggleVisibility('hiddenModelIds', option.id)} />
+                                </div>
                               ))}
                               {visibilityGroups.map((group) => {
                                 const groupModels = modelOptions.filter((option) => option.id && option.id.split('/')[0] === group)
                                 const groupShown = !defaults.hiddenProviderIds?.includes(group)
                                 const shownCount = groupModels.filter((option) => !defaults.hiddenModelIds?.includes(option.id)).length
                                 return (
-                                  <details key={group} className="rounded-md" style={{ background: 'var(--bg)' }}>
-                                    <summary className="flex cursor-pointer items-center gap-2 px-2 py-1.5">
-                                      <input type="checkbox" aria-label={`Show ${group}`} checked={groupShown} onClick={(event) => event.stopPropagation()} onChange={() => toggleVisibility('hiddenProviderIds', group)} />
-                                      <span className="min-w-0 flex-1 truncate font-medium" style={{ color: groupShown ? 'var(--text)' : 'var(--text-3)' }}>{group}</span>
-                                      <span style={{ color: 'var(--text-3)' }}>{groupShown ? `${shownCount}/${groupModels.length}` : 'hidden'}</span>
-                                    </summary>
-                                    <div className="grid gap-0.5 pb-1.5 pl-8 pr-2" style={{ opacity: groupShown ? 1 : 0.5 }}>
-                                      {groupModels.map((option) => (
-                                        <label key={option.id} className="flex cursor-pointer items-center gap-2 py-1">
-                                          <input type="checkbox" disabled={!groupShown} checked={!defaults.hiddenModelIds?.includes(option.id)} onChange={() => toggleVisibility('hiddenModelIds', option.id)} />
-                                          <span className="truncate">{option.label}</span>
-                                        </label>
-                                      ))}
-                                    </div>
-                                  </details>
+                                  // ui: the group switch cannot sit inside the disclosure button, so it is a sibling of the Disclosure.
+                                  <div key={group} className="flex items-center gap-2 py-1.5" style={{ borderTop: '1px solid var(--border)' }}>
+                                    <Switch hideLabel label={`Show ${group}`} checked={groupShown} onChange={() => toggleVisibility('hiddenProviderIds', group)} />
+                                    <Disclosure className="min-w-0 flex-1" summary={<span className="flex min-w-0 flex-1 items-center gap-2"><span className="min-w-0 flex-1 truncate font-medium" style={{ color: groupShown ? 'var(--text)' : 'var(--text-3)' }}>{group}</span><span style={{ color: 'var(--text-3)' }}>{groupShown ? `${shownCount}/${groupModels.length}` : 'hidden'}</span></span>}>
+                                      <div className="grid gap-0.5 pb-1.5 pl-6 pr-2" style={{ opacity: groupShown ? 1 : 0.5 }}>
+                                        {groupModels.map((option) => (
+                                          <div key={option.id} className="flex items-center justify-between gap-2 py-1">
+                                            <span className="truncate">{option.label}</span>
+                                            <Switch hideLabel label={option.label} disabled={!groupShown} checked={!defaults.hiddenModelIds?.includes(option.id)} onChange={() => toggleVisibility('hiddenModelIds', option.id)} />
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </Disclosure>
+                                  </div>
                                 )
                               })}
-                              <div className="px-1 pt-1" style={{ color: 'var(--text-3)' }}>Hidden models stay available in existing chats.</div>
+                              <div className="py-3" style={{ color: 'var(--text-3)' }}>Hidden models stay available in existing chats.</div>
                             </div>
-                          </details>
-                        )}
-                        <div className="grid gap-2" style={{gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))"}}>
-                          <div className="grid gap-1">
-                            <div>Model</div>
-                            {renderDefaultsMenu(
-                              `${provider.id}:model`,
-                              defaults.modelId,
-                              `${providerName} default model`,
-                              modelOptions,
-                              (modelId) => updateProviderDefaults(provider.id, {
-                                ...defaults,
-                                modelId,
-                                reasoningEffort: reasoningEffortForModel(providerAcp, modelId, defaults.reasoningEffort),
-                              })
-                            )}
+                          </Disclosure>
+                        </Reveal>
+                        <SettingRow title="Model"control={renderDefaultsMenu(
+                          `${provider.id}:model`,
+                          defaults.modelId,
+                          `${providerName} default model`,
+                          modelOptions,
+                          (modelId) => updateProviderDefaults(provider.id, {
+                            ...defaults,
+                            modelId,
+                            reasoningEffort: reasoningEffortForModel(providerAcp, modelId, defaults.reasoningEffort),
+                          })
+                        )} />
+                        <Reveal open={reasoningOptions.length > 0}><SettingRow title="Reasoning" control={renderDefaultsMenu(
+                          `${provider.id}:reasoning`,
+                          defaults.reasoningEffort,
+                          `${providerName} default reasoning`,
+                          reasoningOptions,
+                          (reasoningEffort) => updateProviderDefaults(provider.id, { ...defaults, reasoningEffort })
+                        )} /></Reveal>
+                        <Reveal open={caps.hasServiceTier && speedOptions.length > 0}><SettingRow title="Speed" control={renderDefaultsMenu(
+                          `${provider.id}:speed`,
+                          defaults.serviceTier,
+                          `${providerName} default speed`,
+                          speedOptions,
+                          (serviceTier) => updateProviderDefaults(provider.id, { ...defaults, serviceTier })
+                        )} /></Reveal>
+                        <SettingRow title="Provider mode" control={renderDefaultsMenu(
+                          `${provider.id}:mode`,
+                          defaults.approvalMode,
+                          `${providerName} default provider mode`,
+                          modeOptions,
+                          (approvalMode) => updateProviderDefaults(provider.id, { ...defaults, approvalMode })
+                        )} />
+                        <SettingRow title="Permissions" control={caps.structuredPermissionControl === 'uam'
+                          ? renderDefaultsMenu(
+                              `${provider.id}:permissions`,
+                              defaults.commandSafetyTier,
+                              `${providerName} default permissions`,
+                              PERMISSION_DEFAULT_OPTIONS.filter((option) => option.id !== 'acceptEdits' || caps.hasAcceptEditsMode),
+                              (commandSafetyTier) => {
+                                const nextDefaults = { ...defaults, commandSafetyTier: commandSafetyTier as ProviderChatDefaults['commandSafetyTier'] }
+                                if (commandSafetyTier === 'yolo' && defaults.commandSafetyTier !== 'yolo') {
+                                  setPendingDefaultYolo({ providerId: provider.id, providerName, defaults: nextDefaults })
+                                  return
+                                }
+                                updateProviderDefaults(provider.id, nextDefaults)
+                              }
+                            )
+                          : <span style={{ color: 'var(--text-3)' }}>Provider managed</span>} />
+                        <SettingRow title="Memory" control={<MenuSelect label={`${providerName} default memory level`} value={defaults.memoryLevel ?? 'default'} disabled={memoryPolicySaving[provider.id]}
+                          options={MEMORY_POLICY_CHOICES.map((option) => ({ value: option.id, label: option.label, description: option.id === 'default' ? 'Use the current app default.' : option.detail }))}
+                          onChange={(memoryLevel) => void saveMemoryPolicy(provider.id, () => setProviderChatDefaults({ providerChatDefaults: {
+                            [provider.id]: { ...defaults, memoryLevel: memoryLevel as MemoryLevel,
+                              memoryEnabled: memoryLevel === 'default' ? memoryEnabledDefault : memoryLevel !== 'off' },
+                          } }, settingsScope))} />} />
+                        <Disclosure summary="Advanced">
+                          <div className="grid">
+                            <SettingRow title="Feature preference" control={renderDefaultsMenu(
+                              `${provider.id}:feature-preference`,
+                              defaults.featurePreference ?? 'uam',
+                              `${providerName} feature preference`,
+                              [
+                                { id: 'uam', label: 'Prefer UAM', detail: 'Use UAM agents, reviewed goals, and approvals.' },
+                                { id: 'provider', label: `Prefer ${providerName}`, detail: 'Use provider-native features when available.' },
+                              ],
+                              (featurePreference) => updateProviderDefaults(provider.id, { ...defaults, featurePreference: featurePreference === 'provider' ? 'provider' : 'uam' })
+                            )} />
+                            <SettingRow title="Goal reviewer model" description="Used for architecture and read-only review." control={renderDefaultsMenu(
+                              `${provider.id}:goal-reviewer`,
+                              defaults.reviewerModelId || defaults.modelId,
+                              `${providerName} goal reviewer model`,
+                              reviewerModelOptions,
+                              (reviewerModelId) => updateProviderDefaults(provider.id, { ...defaults, reviewerModelId })
+                            )} />
+                            <SettingRow
+                              title="Architect + worker"
+                              description="Reviewer plans and checks each step; the model implements it."
+                              control={<Switch hideLabel label="Architect + worker" checked={Boolean(defaults.smallModelMode)} onChange={() => updateProviderDefaults(provider.id, { ...defaults, smallModelMode: !defaults.smallModelMode })} />}
+                            />
                           </div>
-                          {reasoningOptions.length > 0 && (
-                            <div className="grid gap-1">
-                              <div>Reasoning</div>
-                              {renderDefaultsMenu(
-                                `${provider.id}:reasoning`,
-                                defaults.reasoningEffort,
-                                `${providerName} default reasoning`,
-                                reasoningOptions,
-                                (reasoningEffort) => updateProviderDefaults(provider.id, { ...defaults, reasoningEffort })
-                              )}
-                            </div>
-                          )}
-                          {caps.hasServiceTier && speedOptions.length > 0 && (
-                            <div className="grid gap-1">
-                              <div>Speed</div>
-                              {renderDefaultsMenu(
-                                `${provider.id}:speed`,
-                                defaults.serviceTier,
-                                `${providerName} default speed`,
-                                speedOptions,
-                                (serviceTier) => updateProviderDefaults(provider.id, { ...defaults, serviceTier })
-                              )}
-                            </div>
-                          )}
-                        </div>
-                        <div className="grid gap-2" style={{gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))"}}>
-                          <div className="grid gap-1">
-							<div>Provider mode</div>
-                            {renderDefaultsMenu(
-                              `${provider.id}:mode`,
-                              defaults.approvalMode,
-							  `${providerName} default provider mode`,
-                              modeOptions,
-                              (approvalMode) => updateProviderDefaults(provider.id, { ...defaults, approvalMode })
-                            )}
-                          </div>
-
-                          <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                            <div>Permissions</div>
-                            {caps.structuredPermissionControl === 'uam'
-                              ? renderDefaultsMenu(
-                                  `${provider.id}:permissions`,
-                                  defaults.commandSafetyTier,
-                                  `${providerName} default permissions`,
-                                  PERMISSION_DEFAULT_OPTIONS.filter((option) => option.id !== 'acceptEdits' || caps.hasAcceptEditsMode),
-                                  (commandSafetyTier) => {
-                                    const nextDefaults = { ...defaults, commandSafetyTier: commandSafetyTier as ProviderChatDefaults['commandSafetyTier'] }
-                                    if (commandSafetyTier === 'yolo' && defaults.commandSafetyTier !== 'yolo') {
-                                      setPendingDefaultYolo({ providerId: provider.id, providerName, defaults: nextDefaults })
-                                      return
-                                    }
-                                    updateProviderDefaults(provider.id, nextDefaults)
-                                  }
-                                )
-                              : <div className="rounded-md border px-2 py-2" style={{ borderColor: 'var(--border)' }}>Provider managed</div>}
-                          </div>
-                          <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                            <div>Memory</div>
-                            <MenuSelect label={`${providerName} default memory level`} value={defaults.memoryLevel ?? 'default'} disabled={memoryPolicySaving[provider.id]}
-                              options={MEMORY_POLICY_CHOICES.map((option) => ({ value: option.id, label: option.label, description: option.id === 'default' ? 'Use the current app default.' : option.detail }))}
-                              onChange={(memoryLevel) => void saveMemoryPolicy(provider.id, () => setProviderChatDefaults({ providerChatDefaults: {
-                                [provider.id]: { ...defaults, memoryLevel: memoryLevel as MemoryLevel,
-                                  memoryEnabled: memoryLevel === 'default' ? memoryEnabledDefault : memoryLevel !== 'off' },
-                              } }, settingsScope))} />
-                            {memoryPolicyError[provider.id] && <p role="alert" style={{ color: 'var(--error)' }}>{memoryPolicyError[provider.id]}</p>}
-                          </div>
-                        </div>
-                        {pendingDefaultYolo?.providerId === provider.id && (
-                          <Notice
-                            tone="warning"
-                            title="Use YOLO by default?"
-                            dismissLabel={`Dismiss ${providerName} default YOLO warning`}
-                            onDismiss={() => setPendingDefaultYolo(null)}
-                            actions={(
-                              <>
-                                <Button size="sm" onClick={() => setPendingDefaultYolo(null)}>Cancel</Button>
-                                <Button size="sm" variant="danger" onClick={() => {
-                                  const pending = pendingDefaultYolo
-                                  setPendingDefaultYolo(null)
-                                  updateProviderDefaults(pending.providerId, pending.defaults)
-                                }}>Use YOLO</Button>
-                              </>
-                            )}
-                          >
-                            New {pendingDefaultYolo.providerName} chats will automatically approve {COMPUTER_USE_ENABLED ? 'computer use, commands' : 'commands'}, file changes, and every other permission request.
-                          </Notice>
-                        )}
-                        <details className="uam-skill-folder">
-                          <summary className="uam-skill-folder__summary" style={{ fontSize: 'var(--fs-sm)' }}><ChevronRight size={13} aria-hidden className="uam-skill-folder__chevron" />Advanced</summary>
-                          <div className="grid gap-3">
-                        <div className="grid gap-1">
-                          <div>Feature preference</div>
-                          {renderDefaultsMenu(
-                            `${provider.id}:feature-preference`,
-                            defaults.featurePreference ?? 'uam',
-                            `${providerName} feature preference`,
-                            [
-                              { id: 'uam', label: 'Prefer UAM', detail: 'Use UAM agents, reviewed goals, and permission mediation.' },
-                              { id: 'provider', label: `Prefer ${providerName}`, detail: 'Use provider-native features when available.' },
-                            ],
-                            (featurePreference) => updateProviderDefaults(provider.id, { ...defaults, featurePreference: featurePreference === 'provider' ? 'provider' : 'uam' })
-                          )}
-                        </div>
-                        <div className="grid gap-1">
-                          <div>Goal reviewer model</div>
-                          {renderDefaultsMenu(
-                            `${provider.id}:goal-reviewer`,
-                            defaults.reviewerModelId || defaults.modelId,
-                            `${providerName} goal reviewer model`,
-                            reviewerModelOptions,
-                            (reviewerModelId) => updateProviderDefaults(provider.id, { ...defaults, reviewerModelId })
-                          )}
-                          <span style={{ color: 'var(--text-3)' }}>Used for architecture and read-only review.</span>
-                        </div>
-                        <div className="grid gap-1">
-                          <Button
-                            variant={defaults.smallModelMode ? 'primary' : 'secondary'}
-                            size="sm"
-                            aria-pressed={defaults.smallModelMode}
-                            onClick={() => updateProviderDefaults(provider.id, { ...defaults, smallModelMode: !defaults.smallModelMode })}
-                          >
-                            {defaults.smallModelMode ? 'Architect + worker on' : 'Architect + worker off'}
-                          </Button>
-                          <span style={{ color: 'var(--text-3)' }}>Reviewer plans and checks each step; the model implements it.</span>
-                        </div>
-                          </div>
-                        </details>
-                        {modelRefreshError && !modelsLoading ? (
+                        </Disclosure>
+                        <Reveal open={refreshFailed}>
                           <Notice
                             key={`${provider.id}:${providerWorkspace}:${modelRefreshError}`}
                             tone="error"
@@ -2336,23 +2137,25 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           >
                             {modelRefreshError}
                           </Notice>
-                        ) : (
-                          <span role="status" className="text-xs" style={{ color: 'var(--text-3)' }}>
-                            {modelsLoading ? 'Refreshing models…' : !providerWorkspace ? 'Add a workspace to refresh models' : hasDiscoveredModels ? 'Model catalog available' : 'Using provider defaults; refresh to discover models'}
-                          </span>
-                        )}
+                        </Reveal>
+                        <Reveal open={!refreshFailed}>
+                          <SettingRow title="Models" status={
+                            <span role="status" className="text-xs" style={{ color: 'var(--text-3)' }}>
+                              <ProgressFill label={`Refreshing ${providerName} models`} indeterminate active={modelsLoading}>{modelsLoading ? 'Refreshing models…' : !providerWorkspace ? 'Add a workspace to refresh models' : hasDiscoveredModels ? <StatusMark tone="success" label="Model catalog available" /> :'Using provider defaults; refresh to discover models'}</ProgressFill>
+                            </span>
+                          } />
+                        </Reveal>
                       </div>
-                    </ProviderDisclosureCard>
+                    </SettingsSection>
                   )
                 })}
-              </div>
             </div>
-          </SettingsSection>}
+          </div>}
         </div>
       )
     }
 
-    if (MOBILE_COMPANION_ENABLED && selectedSection === 'phone') return <div className="space-y-4">{renderPhoneAccess()}</div>
+    if (MOBILE_COMPANION_ENABLED && selectedSection === 'phone') return <div className="grid gap-0">{renderPhoneAccess()}</div>
 
     if (selectedSection === 'agents') {
       const selectableCustomAgents = activeUamAgents
@@ -2376,13 +2179,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         const requestId = ++agentImportRequest.current
         setAgentImportPreview(null)
         setAgentImportBusy(true)
-        setAgentImportMessage('')
         const preview = await previewProviderAgentImport(agentImportProvider, agentImportPath.trim())
         if (requestId !== agentImportRequest.current) return
         setAgentImportPreview(preview)
         setAgentImportId(preview?.suggestedId ?? '')
         setAgentImportAcknowledged(false)
-        setAgentImportMessage(preview ? '' : 'Preview failed.')
+        if (!preview) reportAppFailure('Preview failed.', agentImportPath.trim())
         setAgentImportBusy(false)
       }
       // Only a workspace-scoped import needs a chat; a global import is admitted without one.
@@ -2401,32 +2203,31 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           acknowledgeIgnoredFields: agentImportAcknowledged,
         })
         if (requestId !== agentImportRequest.current) return
-        setAgentImportMessage(imported ? `Imported ${agentImportId.trim()}.` : 'Import failed. The source or target may have changed; preview it again.')
+        if (imported) reportAppNotice(`Imported ${agentImportId.trim()}.`, 'success')
+        else reportAppFailure('Import failed.', 'The source or target may have changed; preview it again.')
         if (imported) setAgentImportPreview(null)
         setAgentImportBusy(false)
       }
       return (
-        <div className="space-y-4">
+        <div className="grid gap-0">
           <SettingsSection
             title="Agent cycle"
             actions={
               <>
-                <div className="w-[220px] max-w-full">
+                {selectableCustomAgents.length > 0 && <div className="w-[220px] max-w-full">
                   <MenuSelect
                     label="Favourite agent"
                     value={selectedCandidate}
-                    options={selectableCustomAgents.length > 0
-                      ? selectableCustomAgents.map((agent) => ({ value: agent.id, label: agent.id, description: agent.description }))
-                      : [{ value: '', label: activeSessionId ? 'No more selectable custom agents' : 'Open a chat to list workspace agents' }]}
+                    options={selectableCustomAgents.map((agent) => ({ value: agent.id, label: agent.id, description: agent.description }))}
                     onChange={setFavoriteAgentCandidate}
-                    disabled={selectableCustomAgents.length === 0}
                   />
-                </div>
+                </div>}
                 <Button
                   size="sm"
                   variant="secondary"
                   leadingIcon={<Plus size={14} />}
                   disabled={!selectedCandidate}
+                  disabledReason={selectedCandidate ? undefined : activeSessionId ? 'All custom agents are already favourites' : 'Open a chat to list workspace agents'}
                   onClick={() => {
                     updatePreferences([...favoriteUamAgentIds, selectedCandidate])
                     setFavoriteAgentCandidate('')
@@ -2437,7 +2238,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           >
             <SettingRow
               title="Cycle shortcut"
-              description="Moves to the next agent in the composer."
+              description={favoriteUamAgentIds.length === 0 ? 'Moves to the next agent: Build, then Plan.' : 'Moves to the next agent in the composer.'}
               htmlFor="agent-cycle-shortcut"
               control={
                 <MenuSelect
@@ -2455,20 +2256,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 />
               }
             />
-            {favoriteUamAgentIds.length === 0 && (
-              <SettingRow title="No custom favourites" description="The cycle is Build, then Plan." />
-            )}
-            {favoriteUamAgentIds.map((agentId, index) => {
+            <AnimatedRows items={favoriteUamAgentIds} keyOf={(agentId) => agentId} render={(agentId) => {
+              const index = favoriteUamAgentIds.indexOf(agentId)
               const available = activeUamAgents.some((agent) => agent.id === agentId)
               return (
                 <SettingRow
-                  key={agentId}
                   icon={<GripVertical size={14} aria-hidden />}
                   title={<span className="font-mono">{agentId}</span>}
-                  description={`Position ${index + 1} in the cycle`}
                   status={available ? undefined : <><StatusDot tone="warning" /> Unavailable in this workspace</>}
                   control={
                     <div className="flex items-center gap-1">
+                      <span className="mr-2 text-xs" style={{ color: 'var(--text-3)' }}>{index + 1}</span>
                       <IconButton icon={<ArrowUp size={14} />} label={`Move ${agentId} up`} disabled={index === 0} onClick={() => moveFavorite(index, -1)} />
                       <IconButton icon={<ArrowDown size={14} />} label={`Move ${agentId} down`} disabled={index === favoriteUamAgentIds.length - 1} onClick={() => moveFavorite(index, 1)} />
                       <IconButton icon={<X size={14} />} label={`Remove ${agentId}`} variant="danger" onClick={() => updatePreferences(favoriteUamAgentIds.filter((id) => id !== agentId))} />
@@ -2476,7 +2274,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   }
                 />
               )
-            })}
+            }} />
           </SettingsSection>
 
           {AGENT_IMPORT_PROVIDER_OPTIONS.length > 0 && <SettingsSection title="Import from a provider">
@@ -2496,9 +2294,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 />
               }
             />
-            <div className="grid gap-3">
-              <SettingsField label="Native Markdown file" htmlFor="agent-import-path">
-                <div className="flex gap-2">
+            <div className="grid gap-0">
+              <SettingRow title="Native Markdown file" htmlFor="agent-import-path" control={
+                <div className="flex gap-2" style={{ width: 440, maxWidth: '100%' }}>
                   <input
                     id="agent-import-path"
                     aria-label="Native agent Markdown file"
@@ -2519,22 +2317,23 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   }}>Browse</Button>
                   <Button size="sm" variant={agentImportPath.trim() ? 'primary' : 'secondary'} aria-busy={agentImportBusy || undefined} disabled={agentImportBusy || !agentImportPath.trim()} onClick={() => void previewImport()}>Preview</Button>
                 </div>
-              </SettingsField>
+              } />
 
-              {agentImportPreview && (
-                <div className="grid gap-3 rounded-md p-3 text-xs" style={{ border: '1px solid var(--border)', background: 'var(--surface-up)', color: 'var(--text-2)' }}>
-                  <div className="text-sm font-medium" style={{ color: 'var(--text)' }}>
-                    {agentImportPreview.description || agentImportPreview.suggestedId || 'Provider agent'}
-                    <span className="font-normal" style={{ color: 'var(--text-3)' }}> · {agentImportPreview.mode || 'unknown mode'}</span>
-                  </div>
-                  {agentImportPreview.securityFields.length > 0 && (
-                    <div role="alert" style={{ color: 'var(--error)' }}>Blocked security/tool fields: {agentImportPreview.securityFields.join(', ')}</div>
-                  )}
-                  {agentImportPreview.ignoredFields.length > 0 && (
-                    <div>Provider-only fields that will be omitted: {agentImportPreview.ignoredFields.join(', ')}</div>
-                  )}
-                  {agentImportPreview.error && <div role="alert" style={{ color: 'var(--error)' }}>{agentImportPreview.error}</div>}
-                  {agentImportPreview.supported && (
+              <Reveal open={Boolean(agentImportPreview)} className="grid gap-3">
+                {agentImportPreview && (
+                <>
+                  <SettingRow
+                    title={agentImportPreview.description || agentImportPreview.suggestedId || 'Provider agent'}
+                    description={agentImportPreview.mode || 'Unknown mode'}
+                  />
+                  <Reveal open={agentImportPreview.securityFields.length > 0}>
+                    <Notice tone="error" dismissible={false} dismissLabel="Dismiss">Blocked security/tool fields: {agentImportPreview.securityFields.join(', ')}</Notice>
+                  </Reveal>
+                  <Reveal open={agentImportPreview.ignoredFields.length > 0}>
+                    <Notice tone="warning" dismissible={false} dismissLabel="Dismiss">Provider-only fields that will be omitted: {agentImportPreview.ignoredFields.join(', ')}</Notice>
+                  </Reveal>
+                  <Reveal open={Boolean(agentImportPreview.error)}><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{agentImportPreview.error}</Notice></Reveal>
+                  <Reveal open={agentImportPreview.supported}>
                     <>
                       <SettingsField label="UAM agent ID" htmlFor="agent-import-id">
                         <input
@@ -2545,7 +2344,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           className="uam-field font-mono"
                         />
                       </SettingsField>
-                      <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="uam-set-fields grid gap-3 sm:grid-cols-2">
                         <SettingsField label="Workspace access" htmlFor="agent-import-access">
                           <MenuSelect
                             id="agent-import-access"
@@ -2571,18 +2370,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           />
                         </SettingsField>
                       </div>
-                      {agentImportPreview.ignoredFields.length > 0 && (
-                        <label className="flex items-start gap-2" style={{ color: 'var(--text-2)' }}>
-                          <input
-                            type="checkbox"
-                            aria-label="Acknowledge omitted provider fields"
-                            checked={agentImportAcknowledged}
-                            onChange={(event) => setAgentImportAcknowledged(event.target.checked)}
-                          />
-                          <span>I understand the listed provider-only fields will not be copied.</span>
-                        </label>
-                      )}
-                      <div className="flex justify-end">
+                      <Reveal open={agentImportPreview.ignoredFields.length > 0}>
+                        <SettingRow
+                          title="Omit listed fields"
+                          description="Copies the rest of the agent. Listed fields are not copied."
+                          control={<Switch hideLabel label="Acknowledge omitted provider fields" checked={agentImportAcknowledged} onChange={(event) => setAgentImportAcknowledged(event.target.checked)} />}
+                        />
+                      </Reveal>
+                      <div className="uam-set-actions">
                         <Button
                           size="sm"
                           variant="primary"
@@ -2592,11 +2387,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                         >Import agent</Button>
                       </div>
                     </>
-                  )}
-                </div>
+                  </Reveal>
+                </>
               )}
-              {agentImportMessage && <div role="status" className="text-xs" style={{ color: agentImportMessage.startsWith('Imported') ? 'var(--success)' : 'var(--error)' }}>{agentImportMessage}</div>}
-              {importNeedsChat && <div className="text-xs" style={{ color: 'var(--text-3)' }}>Open a workspace chat to import into this workspace, or choose All workspaces.</div>}
+              </Reveal>
+              <Reveal open={importNeedsChat}><Notice tone="info" dismissible={false} dismissLabel="Dismiss">Open a workspace chat to import into this workspace, or choose All workspaces.</Notice></Reveal>
             </div>
           </SettingsSection>}
         </div>
@@ -2606,148 +2401,155 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'cli-version') {
       const managers = (effectiveProviderSettingsHostId === 'local' ? cliVersionManager.providers : (cliVersionManager.remoteProviders ?? []).filter(manager => manager.executionHostId === effectiveProviderSettingsHostId)).filter(manager => !scopedProviderId || manager.providerId === scopedProviderId)
       return (
-        <div ref={cliVersionMenuRef} className="grid gap-3">
-          {scopedProviderId && hasSshHosts && scopeValue === SETTINGS_ALL_ENVIRONMENTS && <p className="text-xs" style={{ color: 'var(--text-3)' }}>Choose a computer above to manage its CLI version.</p>}
-          {managers.length === 0 && <p className="text-xs" style={{ color: 'var(--text-3)' }}>No CLI installation information is available. Check the provider on this host.</p>}
+        <div ref={cliVersionMenuRef} className="grid gap-0">
+          <Reveal open={Boolean(scopedProviderId && hasSshHosts && scopeValue === SETTINGS_ALL_ENVIRONMENTS)}><Notice tone="info" dismissible={false} dismissLabel="Dismiss">Choose a computer above to manage its CLI version.</Notice></Reveal>
+          <Reveal open={managers.length === 0}><Notice tone="info" dismissible={false} dismissLabel="Dismiss">No CLI installation information is available. Check the provider on this host.</Notice></Reveal>
           {managers.map((manager) => {
             const cliVersionProvider = providers.find((provider) => provider.id === manager.providerId)
             const providerName = providerDisplayName(cliVersionProvider, manager.providerId)
-            const actionErrorKey = cliActionErrorKey(manager.providerId, manager.executionHostId || effectiveProviderSettingsHostId)
             const installHostName = manager.executionHostId && manager.executionHostId !== 'local'
               ? manager.executionHostName || executionHosts.find((host) => host.id === manager.executionHostId)?.label || manager.executionHostId
               : 'this computer'
-            const issues = [...cliVersionIssues(manager), ...(cliActionError[actionErrorKey] ? [cliActionError[actionErrorKey]] : [])]
+            const issues = cliVersionIssues(manager)
             const requestInstall = (version: string) => {
               setOpenCliVersionMenu(null)
               setPendingCliInstall({providerId:manager.providerId,providerName,version})
             }
+            const rows = (
+              <>
+                <Reveal open={issues.length > 0}>{issues.map(issue => <SettingRow key={issue} title="Version" status={<span className="inline-flex items-center gap-1.5"><TriangleAlert size={13} aria-hidden style={{ color: 'var(--warning)' }} />{issue}</span>} />)}</Reveal>
+                {/* The installed-version row is what the running task changes, so it alone is the progress track. */}
+                <ProgressFill label={`${providerName} CLI task running`} indeterminate active={manager.running}><SettingRow title="Installed" control={<span>{manager.installedVersion || 'Not detected'}</span>} /></ProgressFill>
+                <SettingRow title="Recommended" control={<span>{manager.preferredVersion || 'Unavailable'}</span>} />
+                <Reveal open={pendingCliInstall?.providerId === manager.providerId}>{pendingCliInstall?.providerId === manager.providerId && <div role="group" aria-label="Confirm CLI installation">
+                  <SettingRow
+                    title={`Install ${pendingCliInstall.providerName} ${pendingCliInstall.version} on ${installHostName} using ${manager.installMethod || 'npm'}?`}
+                    control={
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" onClick={() => setPendingCliInstall(null)}>Cancel</Button>
+                        <Button size="sm" disabled={manager.running} onClick={async () => {
+                          const pending = pendingCliInstall
+                          setPendingCliInstall(null)
+                          try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? applyCliProviderVersion(pending.providerId,pending.version,manager.executionHostId) : applyCliProviderVersion(pending.providerId,pending.version))) reportAppFailure('Installation could not start.', 'Check provider output.') }
+                          catch { reportAppFailure('Installation could not start.', 'Check provider output.') }
+                        }}>Install version</Button>
+                      </div>
+                    }
+                  />
+                </div>}
+                </Reveal>
+                <Reveal open={Boolean(manager.lastCommand || manager.lastOutput)}>
+                  <Disclosure summary="Last command output">
+                    <div className="grid gap-2 py-3">
+                      <Reveal open={Boolean(manager.lastCommand)}>
+                        <code className="text-xs rounded-md px-2 py-1" style={{ background: 'var(--surface-up)', color: 'var(--text)' }}>
+                          {manager.lastCommand}
+                        </code>
+                      </Reveal>
+                      <pre
+                        className="leading-5 overflow-auto rounded-lg px-3 py-2"
+                        style={{
+                          fontSize: 'var(--fs-xs)',
+                          maxHeight: 180,
+                          background: 'var(--surface-up)',
+                          color: 'var(--text-2)',
+                          border: '1px solid var(--border)',
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {manager.lastOutput || 'No output captured yet.'}
+                      </pre>
+                    </div>
+                  </Disclosure>
+                </Reveal>
+              </>
+            )
             return (
-              <div key={manager.providerId} className="grid gap-3">
-                {manager.running && <div role="progressbar" aria-label={`${providerName} CLI task running`} className="uam-settings-progress" />}
-                <div className="flex items-start justify-between gap-3">
-                  <div className="grid gap-1 text-xs" style={{color:'var(--warning)'}}>{issues.map(issue => <div key={issue}>{issue}</div>)}</div>
-                  <div className="flex items-center gap-1">
+              <SettingsSection
+                key={manager.providerId}
+                title={scopedProviderId ? 'CLI version' : providerName}
+                actions={
+                  <>
                     <StatusIndicator issues={issues} okLabel={manager.status === 'provider-managed' ? 'Provider managed' : 'CLI verified'}/>
                     <IconButton icon={<RefreshCw size={15}/>} label={`Refresh ${providerName} CLI version`} disabled={manager.running} onClick={async () => {
-                      setCliActionError(current => ({...current,[actionErrorKey]:''}))
-                      try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? refreshCliProviderVersion(manager.providerId, manager.executionHostId) : refreshCliProviderVersion(manager.providerId))) setCliActionError(current => ({...current,[actionErrorKey]:'Version check could not start.'})) }
-                      catch { setCliActionError(current => ({...current,[actionErrorKey]:'Version check could not start.'})) }
+                      try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? refreshCliProviderVersion(manager.providerId, manager.executionHostId) : refreshCliProviderVersion(manager.providerId))) reportAppFailure('Version check could not start.', 'Try again.') }
+                      catch { reportAppFailure('Version check could not start.', 'Try again.') }
                     }}/>
-                    {manager.canInstall !== false && <IconButton ref={element => { if (element) popupAnchorsRef.current.set(`${manager.providerId}:download`,element) }} icon={<Download size={15}/>} label={`Download ${providerName} CLI`} aria-haspopup="menu" aria-expanded={openCliVersionMenu === `${manager.providerId}:download`} disabled={manager.running} onClick={() => setOpenCliVersionMenu(current => current === `${manager.providerId}:download` ? null : `${manager.providerId}:download`)}/>}
-                    {openCliVersionMenu === `${manager.providerId}:download` && <ViewportMenu anchorRef={{current:popupAnchorsRef.current.get(`${manager.providerId}:download`) ?? null}} role="menu" aria-label={`${providerName} download choices`} className="grid gap-1 p-2" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:8}}>
-                      <Button size="sm" role="menuitem" disabled={!manager.preferredVersion} onClick={() => requestInstall(manager.preferredVersion)}>Download recommended{manager.preferredVersion ? ` ${manager.preferredVersion}` : ''}</Button>
-                      <Button size="sm" role="menuitem" onClick={() => requestInstall('latest')}>Download latest</Button>
+                    <Reveal open={manager.canInstall !== false}><IconButton ref={element => { if (element) popupAnchorsRef.current.set(`${manager.providerId}:download`,element) }} icon={<Download size={15}/>} label={`Download ${providerName} CLI`} aria-haspopup="menu" aria-expanded={openCliVersionMenu === `${manager.providerId}:download`} disabled={manager.running} onClick={() => setOpenCliVersionMenu(current => current === `${manager.providerId}:download` ? null : `${manager.providerId}:download`)}/></Reveal>
+                    {openCliVersionMenu === `${manager.providerId}:download` && <ViewportMenu anchorRef={{current:popupAnchorsRef.current.get(`${manager.providerId}:download`) ?? null}} role="menu" aria-label={`${providerName} download choices`} className="uam-settings-scope grid gap-1 p-2" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'var(--r-md)'}}>
+                      <MenuItem label={`Download recommended${manager.preferredVersion ? ` ${manager.preferredVersion}` : ''}`} disabled={!manager.preferredVersion} onSelect={() => requestInstall(manager.preferredVersion)} />
+                      <MenuItem label="Download latest" onSelect={() => requestInstall('latest')} />
                     </ViewportMenu>}
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  <div><div className="text-xs" style={{color:'var(--text-3)'}}>Installed</div>{manager.installedVersion || 'Not detected'}</div>
-                  <div><div className="text-xs" style={{color:'var(--text-3)'}}>Recommended</div>{manager.preferredVersion || 'Unavailable'}</div>
-                </div>
-                {pendingCliInstall?.providerId === manager.providerId && <div className="flex flex-wrap items-center gap-3 text-xs" role="group" aria-label="Confirm CLI installation">
-                  <span>Install {pendingCliInstall.providerName} {pendingCliInstall.version} on {installHostName} using {manager.installMethod || 'npm'}?</span>
-                  <Button size="sm" onClick={() => setPendingCliInstall(null)}>Cancel</Button>
-                  <Button size="sm" disabled={manager.running} onClick={async () => {
-                    const pending = pendingCliInstall
-                    setPendingCliInstall(null)
-                    setCliActionError(current => ({...current,[actionErrorKey]:''}))
-                    try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? applyCliProviderVersion(pending.providerId,pending.version,manager.executionHostId) : applyCliProviderVersion(pending.providerId,pending.version))) setCliActionError(current => ({...current,[actionErrorKey]:'Installation could not start. Check provider output.'})) }
-                    catch { setCliActionError(current => ({...current,[actionErrorKey]:'Installation could not start. Check provider output.'})) }
-                  }}>Install version</Button>
-                </div>}
-                {(manager.lastCommand || manager.lastOutput) && (
-                  <div className="grid gap-2">
-                    {manager.lastCommand && (
-                      <code className="text-xs rounded-md px-2 py-1" style={{ background: 'var(--surface-up)', color: 'var(--text)' }}>
-                        {manager.lastCommand}
-                      </code>
-                    )}
-                    <pre
-                      className="text-[11px] leading-5 overflow-auto rounded-lg px-3 py-2"
-                      style={{
-                        maxHeight: 180,
-                        background: 'var(--surface-up)',
-                        color: 'var(--text-2)',
-                        border: '1px solid var(--border)',
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                        fontFamily: 'var(--font-mono)',
-                      }}
-                    >
-                      {manager.lastOutput || 'No output captured yet.'}
-                    </pre>
-                  </div>
-                )}
-              </div>
+                  </>
+                }
+              >
+                {rows}
+              </SettingsSection>
             )
           })}
+          {!scopedProviderId && <SettingRow title="Install provider updates automatically" description="Active sessions delay installation." control={<Switch hideLabel label="Install provider updates automatically" checked={automaticProviderUpdates} onChange={(event) => { void setUpdateSettings({ automaticProviderUpdates: event.target.checked }) }} />} />}
         </div>
       )
     }
 
-    if (SSH_ENABLED && selectedSection === 'routing') return <ExecutionRoutingSettings ref={routingRef} variant="page" />
+    if (SSH_ENABLED && selectedSection === 'routing') return <ExecutionRoutingSettings ref={routingRef} variant="page" onAddComputer={() => changeSection('remote-hosts')} />
 
     if (SSH_ENABLED && selectedSection === 'remote-hosts') {
       const remoteHosts = executionHosts.filter((host) => host.id !== 'local')
-      const statusColor = (status?: string) => status === 'ready' ? 'var(--green)' : status === 'error' ? 'var(--red)' : 'var(--text-3)'
+      const addHostSection = (
+            <SettingsSection
+              title="Add a host"
+            >
+              <div className="uam-set-fields grid gap-3 sm:grid-cols-2">
+                <SettingsField label="Display name" htmlFor="remote-host-name">
+                  <input
+                    id="remote-host-name"
+                    aria-label="Remote host display name"
+                    value={remoteLabel}
+                    maxLength={128}
+                    placeholder="AI desktop"
+                    className="uam-field"
+                    onChange={(event) => { setRemoteLabel(event.target.value); setRemotePreview(null); setRemoteMessage(null) }}
+                  />
+                </SettingsField>
+                <SettingsField label="SSH config alias" htmlFor="remote-host-alias" hint="The Host name from your ~/.ssh/config.">
+                  <input
+                    id="remote-host-alias"
+                    aria-label="SSH config alias"
+                    value={remoteAlias}
+                    maxLength={255}
+                    placeholder="ai-desktop"
+                    spellCheck={false}
+                    className="uam-field font-mono"
+                    onChange={(event) => { setRemoteAlias(event.target.value); setRemotePreview(null); setRemoteMessage(null) }}
+                  />
+                </SettingsField>
+              </div>
+              <Reveal open={Boolean(remoteMessage)}><StatusMessage message={remoteMessage} className="text-xs py-3" /></Reveal>
+              {/* The action row doing the work is the progress track, not the whole section. */}
+              <ProgressFill label="Remote host setup running" indeterminate active={remoteBusy} className="uam-set-actions">
+                <Button size="sm" variant="primary" leadingIcon={<Server size={14} />} aria-busy={remoteBusy || undefined} disabled={remoteBusy || !remoteAlias.trim()} onClick={() => void previewRemoteHost()}>
+                  Preview setup
+                </Button>
+              </ProgressFill>
+            </SettingsSection>
+      )
       return (
-        <div className="space-y-4">
-          {COMPUTER_USE_ENABLED && <details className="text-xs" style={{ color: 'var(--text-3)' }}>
-            <summary className="flex cursor-pointer items-center gap-2" style={{ color: 'var(--text-2)' }}>
-              <Info size={14} aria-hidden />Remote Computer Use is off
-            </summary>
-            <p className="mt-1.5 pl-[22px]">Remote chats can't see or control the screen.</p>
-          </details>}
-
-          <SettingsSection
-            title="Add a host"
-            actions={
-              <Button size="sm" variant="primary" leadingIcon={<Server size={14} />} aria-busy={remoteBusy || undefined} disabled={remoteBusy || !remoteAlias.trim()} onClick={() => void previewRemoteHost()}>
-                Preview setup
-              </Button>
-            }
-          >
-            <div className="grid gap-3 sm:grid-cols-2">
-              <SettingsField label="Display name" htmlFor="remote-host-name">
-                <input
-                  id="remote-host-name"
-                  aria-label="Remote host display name"
-                  value={remoteLabel}
-                  maxLength={128}
-                  placeholder="AI desktop"
-                  className="uam-field"
-                  onChange={(event) => { setRemoteLabel(event.target.value); setRemotePreview(null); setRemoteMessage('') }}
-                />
-              </SettingsField>
-              <SettingsField label="SSH config alias" htmlFor="remote-host-alias" hint="The Host name from your ~/.ssh/config.">
-                <input
-                  id="remote-host-alias"
-                  aria-label="SSH config alias"
-                  value={remoteAlias}
-                  maxLength={255}
-                  placeholder="ai-desktop"
-                  spellCheck={false}
-                  className="uam-field font-mono"
-                  onChange={(event) => { setRemoteAlias(event.target.value); setRemotePreview(null); setRemoteMessage('') }}
-                />
-              </SettingsField>
-            </div>
-            {remoteMessage && <div role="status" className="text-xs" style={{ color: remoteMessage.endsWith('ready.') || remoteMessage.includes('removed') ? 'var(--success)' : 'var(--text-2)' }}>{remoteMessage}</div>}
-          </SettingsSection>
-
+        <div className="grid gap-0">
+          {addHostSection}
           <SettingsSection title="Configured hosts">
-            {remoteHosts.length === 0 && <SettingRow title="No remote hosts yet" />}
-            {remoteHosts.map((host) => (
+            <Reveal open={remoteHosts.length === 0}><SettingRow title="No remote hosts yet" /></Reveal>
+            <AnimatedRows items={remoteHosts} keyOf={(host) => host.id} render={(host) => (
               <SettingRow
-                key={host.id}
                 icon={<Server size={15} aria-hidden />}
                 title={host.label}
                 description={<span className="font-mono">{host.sshAlias}</span>}
                 status={(
                   <span className="inline-flex flex-wrap items-center gap-1.5">
-                    <StatusDot tone={host.runnerStatus === 'ready' ? 'success' : host.runnerStatus === 'error' ? 'error' : 'neutral'} />
-                    <span>{host.runnerStatus}</span>
-                    {(host.runnerVersion || host.platform) && <span style={{ color: 'var(--text-3)' }}>· {[host.runnerVersion ? `runner ${host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span>}
+                    <StatusMark tone={host.runnerStatus === 'ready' ? 'success' : host.runnerStatus === 'error' ? 'error' : 'neutral'} label={host.runnerStatus === 'ready' ? 'Ready' : host.runnerStatus === 'error' ? 'Error' : host.runnerStatus} />
+                    <Reveal as="span" open={Boolean(host.runnerVersion || host.platform)}><span style={{ color: 'var(--text-3)' }}>· {[host.runnerVersion ? `helper ${host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span></Reveal>
                   </span>
                 )}
                 control={(
@@ -2757,21 +2559,24 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   </div>
                 )}
               >
-                <div className="grid gap-3">
-                  {isRemoteHostBusy(host.id) && <div role="progressbar" aria-label={`Remote host task running on ${host.label}`} className="uam-settings-progress" />}
-                  <div className="font-mono text-xs" style={{ color: 'var(--text-3)' }}>Helper: home / {host.runnerDirectory || (host.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</div>
-                  <details>
-                    <summary className="cursor-pointer text-xs font-medium" style={{ color: 'var(--text)' }}>Host options</summary>
-                    <RemoteHostOptionsForm
-                      host={host}
-                      busy={isRemoteHostBusy(host.id)}
-                      onSave={(draft) => void saveRemoteHostOptions(host, draft)}
-                      onCheck={(instructionFile) => checkRemoteHostInstruction(host, instructionFile)}
-                    />
-                  </details>
-                </div>
+                {(() => {
+                  const options = (
+                    <Disclosure summary="Host options">
+                      <div className="grid gap-3">
+                        <div className="font-mono text-xs" style={{ color: 'var(--text-3)' }}>Helper: home / {host.runnerDirectory || (host.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</div>
+                        <RemoteHostOptionsForm
+                          host={host}
+                          busy={isRemoteHostBusy(host.id)}
+                          onSave={(draft) => void saveRemoteHostOptions(host, draft)}
+                          onCheck={(instructionFile) => checkRemoteHostInstruction(host, instructionFile)}
+                        />
+                      </div>
+                    </Disclosure>
+                  )
+                  return <ProgressFill label={`Remote host task running on ${host.label}`} indeterminate active={isRemoteHostBusy(host.id)}>{options}</ProgressFill>
+                })()}
               </SettingRow>
-            ))}
+            )} />
           </SettingsSection>
         </div>
       )
@@ -2785,55 +2590,37 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               title="Default memory level"
               description={MEMORY_POLICY_CHOICES.find((option) => option.id === memoryLevelDefault)?.detail}
               control={
-                <div role="radiogroup" aria-label="Default memory level" className="flex flex-wrap gap-1" onKeyDown={selectPolicyWithArrowKeys}>
-                  {MEMORY_POLICY_CHOICES.filter((option) => option.id !== 'default').map((option) => {
-                    const selected = option.id === memoryLevelDefault
-                    return <button key={option.id} type="button" role="radio" aria-checked={selected} disabled={memoryPolicySaving.app} onClick={() => void saveMemoryPolicy('app', () => setMemorySettings({ memoryLevelDefault: option.id }))} className="uam-segment-button rounded-md px-3 py-2 text-xs" style={{ border: '1px solid var(--border)', background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--accent)' : 'var(--text-2)' }}>{option.label}</button>
-                  })}
-                </div>
+                <MenuSelect
+                  label="Default memory level"
+                  value={memoryLevelDefault}
+                  disabled={memoryPolicySaving.app}
+                  options={MEMORY_POLICY_CHOICES.filter((option) => option.id !== 'default').map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                  onChange={(level) => void saveMemoryPolicy('app', () => setMemorySettings({ memoryLevelDefault: level as MemoryLevel }))}
+                />
               }
             />
-            {memoryPolicyError.app && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{memoryPolicyError.app}</p>}
-            {sessions.find((session) => session.id === activeSessionId) && <SettingRow title="Current chat memory" description="Default follows the provider policy."
+            
+            <Reveal open={Boolean(sessions.find((session) => session.id === activeSessionId))}><SettingRow title="Current chat memory" description="Default follows the provider policy."
               status={memoryPolicySaving.chat ? 'Saving…' : undefined}
               control={<MenuSelect label="Current chat memory policy" value={sessions.find((session) => session.id === activeSessionId)?.memoryLevel ?? 'default'} disabled={memoryPolicySaving.chat}
                 options={MEMORY_POLICY_CHOICES.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
                 onChange={(level) => { if (activeSessionId) void saveMemoryPolicy('chat', () => setSessionMemoryLevel(activeSessionId, level as MemoryLevel)) }} />}>
-              {memoryPolicyError.chat && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{memoryPolicyError.chat}</p>}
-            </SettingRow>}
+
+            </SettingRow></Reveal>
             <SettingRow
-              title="Idle delay (seconds)"
+              title="Idle delay"
               description="Idle time before a chat's memory is processed."
-              htmlFor="memory-idle-delay"
               control={
-                <input
-                  id="memory-idle-delay"
-                  type="number"
-                  className="uam-field"
-                  style={{ width: 120 }}
-                  min={MIN_MEMORY_IDLE_DELAY_SECONDS}
-                  max={MAX_MEMORY_IDLE_DELAY_SECONDS}
-                  value={memoryIdleDelaySeconds}
-                  onChange={(event) => void setMemorySettings({ memoryIdleDelaySeconds: Number(event.currentTarget.value) })}
-                />
+                <NumberField label="Idle delay (seconds)" value={memoryIdleDelaySeconds} min={MIN_MEMORY_IDLE_DELAY_SECONDS} max={MAX_MEMORY_IDLE_DELAY_SECONDS} unit="seconds"
+                  onCommit={(value) => void setMemorySettings({ memoryIdleDelaySeconds: value })} />
               }
             />
             <SettingRow
-              title="Recall budget (bytes)"
+              title="Recall budget"
               description="Most saved memory added to each prompt."
-              htmlFor="memory-recall-budget"
               control={
-                <input
-                  id="memory-recall-budget"
-                  type="number"
-                  className="uam-field"
-                  style={{ width: 120 }}
-                  min={MIN_MEMORY_RECALL_BUDGET_BYTES}
-                  max={MAX_MEMORY_RECALL_BUDGET_BYTES}
-                  step={256}
-                  value={memoryRecallBudgetBytes}
-                  onChange={(event) => void setMemorySettings({ memoryRecallBudgetBytes: Number(event.currentTarget.value) })}
-                />
+                <NumberField label="Recall budget (bytes)" value={memoryRecallBudgetBytes} min={MIN_MEMORY_RECALL_BUDGET_BYTES} max={MAX_MEMORY_RECALL_BUDGET_BYTES} step={256} unit="bytes"
+                  onCommit={(value) => void setMemorySettings({ memoryRecallBudgetBytes: value })} />
               }
             />
           </SettingsSection>
@@ -2847,8 +2634,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 const workerWorkspace = workerSession?.workspaceDirectory || localWorkspace
                 const workerAcp = (workerSession ? acpBindings[workerSession.id] : undefined)
                   ?? providerModelCatalogs.find((catalog) => (catalog.executionHostId || 'local') === 'local' && catalog.providerId === binding.workerProviderId && workspaceKey(catalog.workspaceDirectory) === workspaceKey(workerWorkspace))
-                const providerMenuId = `${provider.id}:provider`
-                const modelMenuId = `${provider.id}:model`
                 const modelOptions = memoryModelOptions(workerProvider, binding.workerProviderId, binding.workerModelId, workerAcp?.availableModels)
                 return (
                   <SettingRow
@@ -2857,144 +2642,36 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     title={`${providerDisplayName(provider, provider.id)} chats`}
                     control={
                     <div className="grid grid-cols-2 gap-2" style={{ width: 380 }}>
-                      <div className="relative">
-                        <button
-                          ref={(element) => { if (element) popupAnchorsRef.current.set(providerMenuId, element) }}
-                          type="button"
-                          title={`${providerDisplayName(provider, provider.id)} memory worker provider`}
-                          aria-haspopup="listbox"
-                          aria-expanded={openMemoryMenu === providerMenuId}
-                          onClick={() => setOpenMemoryMenu(openMemoryMenu === providerMenuId ? null : providerMenuId)}
-                          className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm"
-                        >
-                          <span className="flex min-w-0 items-center gap-2 truncate">
-                            <ProviderLogo providerId={binding.workerProviderId} />
-                            <span className="truncate">{providerDisplayName(workerProvider, binding.workerProviderId)}</span>
-                          </span>
-                          <ChevronDown className={openMemoryMenu === providerMenuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
-                        </button>
-                        {openMemoryMenu === providerMenuId && (
-                          <ViewportMenu
-                            anchorRef={{ current: popupAnchorsRef.current.get(providerMenuId) ?? null }}
-                            role="listbox"
-                            aria-label={`${providerDisplayName(provider, provider.id)} memory worker provider`}
-                            style={{
-                              width: popupAnchorsRef.current.get(providerMenuId)?.getBoundingClientRect().width,
-                              border: '1px solid var(--border-bright)',
-                              borderRadius: 10,
-                              background: 'var(--surface)',
-                              boxShadow: 'var(--elev-3)',
-                              padding: 6,
-                            }}
-                          >
-                            {providers.filter((candidate) => providerSupportsTextWorkers(candidate.id)).map((candidate) => {
-                              const selected = candidate.id === binding.workerProviderId
-                              return (
-                                <button
-                                  key={candidate.id}
-                                  type="button"
-                                  role="option"
-                                  aria-selected={selected}
-                                  onClick={() => {
-                                    updateMemoryBinding(provider.id, {
-                                      workerProviderId: candidate.id,
-                                      workerModelId: '',
-                                    })
-                                    setOpenMemoryMenu(null)
-                                  }}
-                                  className="w-full flex items-center gap-2 text-left px-2 py-2"
-                                  style={{
-                                    borderRadius: 6,
-                                    background: selected ? 'var(--accent-dim)' : 'transparent',
-                                    color: selected ? 'var(--text)' : 'var(--text-2)',
-                                  }}
-                                >
-                                  <ProviderLogo providerId={candidate.id} />
-                                  <span className="flex-1">{providerDisplayName(candidate, candidate.id)}</span>
-                                  {selected && <Check size={13} style={{ color: 'var(--success)' }} aria-hidden />}
-                                </button>
-                              )
-                            })}
-                          </ViewportMenu>
-                        )}
-                      </div>
-
-                      <div className="relative">
-                        <button
-                          ref={(element) => { if (element) popupAnchorsRef.current.set(modelMenuId, element) }}
-                          type="button"
-                          title={`${providerDisplayName(provider, provider.id)} memory worker model`}
-                          aria-haspopup="listbox"
-                          aria-expanded={openMemoryMenu === modelMenuId}
-                          onClick={() => setOpenMemoryMenu(openMemoryMenu === modelMenuId ? null : modelMenuId)}
-                          className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm"
-                        >
-                          <span className="truncate">{selectedMemoryModelLabel(modelOptions, binding.workerModelId)}</span>
-                          <ChevronDown className={openMemoryMenu === modelMenuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
-                        </button>
-                        {openMemoryMenu === modelMenuId && (
-                          <ViewportMenu
-                            anchorRef={{ current: popupAnchorsRef.current.get(modelMenuId) ?? null }}
-                            role="listbox"
-                            aria-label={`${providerDisplayName(provider, provider.id)} memory worker model`}
-                            style={{
-                              width: popupAnchorsRef.current.get(modelMenuId)?.getBoundingClientRect().width,
-                              border: '1px solid var(--border-bright)',
-                              borderRadius: 10,
-                              background: 'var(--surface)',
-                              boxShadow: 'var(--elev-3)',
-                              padding: 6,
-                            }}
-                          >
-                            {modelOptions.map((option) => {
-                              const selected = option.id === binding.workerModelId
-                              return (
-                                <button
-                                  key={option.id || 'default'}
-                                  type="button"
-                                  role="option"
-                                  aria-selected={selected}
-                                  onClick={() => {
-                                    updateMemoryBinding(provider.id, {
-                                      ...binding,
-                                      workerModelId: option.id,
-                                    })
-                                    setOpenMemoryMenu(null)
-                                  }}
-                                  className="w-full grid gap-0.5 text-left px-2 py-2"
-                                  style={{
-                                    borderRadius: 6,
-                                    background: selected ? 'var(--accent-dim)' : 'transparent',
-                                    color: selected ? 'var(--text)' : 'var(--text-2)',
-                                  }}
-                                >
-                                  <span className="flex items-center gap-2">
-                                    <span className="flex-1">{option.label}</span>
-                                    {selected && <Check size={13} style={{ color: 'var(--success)' }} aria-hidden />}
-                                  </span>
-                                  <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>
-                                </button>
-                              )
-                            })}
-                          </ViewportMenu>
-                        )}
-                      </div>
+                      <MenuSelect label={`${providerDisplayName(provider, provider.id)} memory worker provider`} value={binding.workerProviderId}
+                        options={providers.filter((candidate) => providerSupportsTextWorkers(candidate.id)).map((candidate) => ({ value: candidate.id, label: providerDisplayName(candidate, candidate.id), icon: <ProviderLogo providerId={candidate.id} /> }))}
+                        onChange={(workerProviderId) => updateMemoryBinding(provider.id, { workerProviderId, workerModelId: '' })} />
+                      <MenuSelect label={`${providerDisplayName(provider, provider.id)} memory worker model`} value={binding.workerModelId}
+                        options={modelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                        onChange={(workerModelId) => updateMemoryBinding(provider.id, { ...binding, workerModelId })} />
                     </div>
                     }
                   />
                 )
               })}
             </div>
-            {memoryLastStatus && <SettingRow title="Last run" description={memoryLastStatus} />}
+          </SettingsSection>
 
-            {hasWorkerLog && (
-              <details className="mt-3 text-xs" style={{ color: 'var(--text-2)' }}>
-                <summary className="cursor-pointer" style={{ color: workerLogIsFailure ? 'var(--error)' : 'var(--text)' }}>Last worker log</summary>
-                {memoryActivity.lastWorkerStatus && <p className="mt-2 text-[11px]" style={{ color: 'var(--text-3)' }}>{memoryActivity.lastWorkerStatus}</p>}
-                {workerLogMeta && <p className="mt-0.5 text-[11px]" style={{ color: 'var(--text-3)' }}>{workerLogMeta}</p>}
+          {/* The last run and its log are their own card after the workers, so a failure is a row status, not inline text. */}
+          <Reveal open={Boolean(memoryLastStatus) || hasWorkerLog}><SettingsSection title="Last worker log">
+            <SettingRow
+              title="Last run"
+              description={memoryLastStatus || memoryActivity.lastWorkerStatus || undefined}
+              status={workerLogMeta || undefined}
+              control={hasWorkerLog ? <StatusMark tone={workerLogIsFailure ? 'error' : 'success'} label={workerLogIsFailure ? 'Failed' : 'Completed'} /> : undefined}
+            />
+            <Reveal open={hasWorkerLog}>
+              <Disclosure summary="Worker output">
+                <div className="py-3" style={{ color: 'var(--text-2)' }}>
+                <Reveal open={Boolean(memoryLastStatus && memoryActivity.lastWorkerStatus && memoryActivity.lastWorkerStatus !== memoryLastStatus)}><p className="mb-2" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{memoryActivity.lastWorkerStatus}</p></Reveal>
                 <pre
-                  className="mt-2 rounded-lg px-3 py-2 text-[11px] leading-5 overflow-auto"
+                  className="rounded-lg px-3 py-2 leading-5 overflow-auto"
                   style={{
+                    fontSize: 'var(--fs-xs)',
                     background: 'var(--bg)',
                     border: '1px solid var(--border)',
                     color: 'var(--text-2)',
@@ -3006,9 +2683,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 >
                   {workerLogText || 'No worker output was captured.'}
                 </pre>
-              </details>
-            )}
-          </SettingsSection>
+                </div>
+              </Disclosure>
+            </Reveal>
+          </SettingsSection></Reveal>
 
         </div>
       )
@@ -3018,43 +2696,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'voice-input') return <VoiceInputControls ref={voiceRef} />
 
     if (selectedSection === 'memory-store') return <MemoryLibraryModal embedded ref={memoryRef}/>
-    if (selectedSection === 'markdown-store' && !markdownStoreDirectory) return <div className="mx-auto w-full" style={{maxWidth:800}}>
-      <SettingsSection title="Skills folder">
-        <div className="grid gap-3 p-3 text-xs" style={{color:'var(--text-2)'}}>
-          <p>Skills are Markdown files in one folder.</p>
-          <div><Button size="sm" variant="primary" leadingIcon={<FolderOpen size={14} aria-hidden/>} onClick={() => void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then(selected => { if (selected) void setMarkdownStoreDirectory(selected) })}>Choose folder…</Button></div>
-          <div className="flex items-center gap-2">
-            <input aria-label="Skills directory" value={markdownStoreDraftDirectory} onChange={event => setMarkdownStoreDraftDirectory(event.target.value)} placeholder="Or type a folder path" className="uam-field min-w-0 flex-1"/>
-            <Button size="sm" disabled={!markdownStoreDraftDirectory.trim()} onClick={() => void setMarkdownStoreDirectory(markdownStoreDraftDirectory)}>Use path</Button>
-          </div>
-        </div>
-      </SettingsSection>
-    </div>
-    if (selectedSection === 'markdown-store') return <div className="h-full min-h-0 flex flex-col gap-3">
-      <details className="uam-skill-folder shrink-0 order-last">
-        <summary className="uam-skill-folder__summary" style={{fontSize:'var(--fs-xs)',color:'var(--text-3)'}}><ChevronRight size={12} className="uam-skill-folder__chevron" aria-hidden/><span>Enter folder path manually</span></summary>
-        <div className="flex items-center gap-2 pt-2 pl-6">
-          <input aria-label="Skills directory" value={markdownStoreDraftDirectory} onChange={event => setMarkdownStoreDraftDirectory(event.target.value)} placeholder="Skills directory" className="uam-field min-w-0 flex-1"/>
-          <IconButton icon={<FolderOpen size={15}/>} label="Browse for Skills directory" onClick={() => void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then(selected => { if (selected) setMarkdownStoreDraftDirectory(selected) })}/>
-          <IconButton icon={<Save size={15}/>} label="Save Skills directory" disabled={!markdownStoreDraftDirectory.trim() || markdownStoreDraftDirectory.trim() === markdownStoreDirectory} onClick={() => void setMarkdownStoreDirectory(markdownStoreDraftDirectory)}/>
-        </div>
-      </details>
-      <MarkdownStoreModal embedded/>
-    </div>
+    // The folder setting (choose or type a path) lives inside the Skills card, so the page is just the library.
+    if (selectedSection === 'markdown-store') return <MarkdownStoreModal embedded/>
 
     if (selectedSection === 'goal-loops') {
       return (
-        <SettingsSection title="Goal loop safety">
+        <SettingsSection title="Goal limits">
+          <SettingRow title="Goal token budget" description="Maximum tokens for a new goal; 0 is unlimited." control={<MenuSelect label="Goal token budget" value={String(goalTokenBudget)} options={[{ value: '0', label: 'Unlimited' }, ...[...new Set([10000, 25000, 50000, 100000, 200000, 500000, goalTokenBudget])].filter(Boolean).sort((a, b) => a - b).map((value) => ({ value: String(value), label: value.toLocaleString() }))]} onChange={(value) => void setMemorySettings({ goalTokenBudget: Number(value) })} />} />
           <SettingRow
             title="Maximum iterations"
-            description="Loops a goal may run before it stops (1–200)."
-            control={
-              <div className="flex w-fit items-center overflow-hidden rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                <IconButton icon={<Minus size={14} />} label="Decrease maximum goal loop iterations" size="sm" disabled={goalMaxLoopIterations <= 1} onClick={() => void setMemorySettings({ goalMaxLoopIterations: Math.max(1, goalMaxLoopIterations - 1) })} />
-                <output aria-label="Maximum goal loop iterations" className="min-w-16 px-3 text-center tabular-nums" style={{ color: 'var(--text)' }}>{goalMaxLoopIterations}</output>
-                <IconButton icon={<Plus size={14} />} label="Increase maximum goal loop iterations" size="sm" disabled={goalMaxLoopIterations >= 200} onClick={() => void setMemorySettings({ goalMaxLoopIterations: Math.min(200, goalMaxLoopIterations + 1) })} />
-              </div>
-            }
+            description="Loops a goal may run before it stops."
+            control={<MenuSelect label="Maximum goal loop iterations" value={String(goalMaxLoopIterations)} options={Array.from({ length: 200 }, (_, index) => ({ value: String(index + 1), label: String(index + 1) }))} onChange={(value) => void setMemorySettings({ goalMaxLoopIterations: Number(value) })} />}
           />
           <SettingRow
             title="Provider setup timeout"
@@ -3113,28 +2765,23 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'editors') {
       return (
         <div className="grid gap-0">
-          <SettingsSection title="Open with">
+          <SettingsSection title="File types" actions={renderAddEditor()}>
             <SettingRow
               title="Default editor"
               description="Opens files outside every file type group."
               control={renderEditorPresetMenu(
-                'default-editor',
                 defaultEditorDraft,
                 'Default editor',
                 (presetId) => saveEditorSettings(editorAssociationsDraft, presetId)
               )}
             />
-          </SettingsSection>
-
-          <SettingsSection title="File types" actions={renderAddEditor()}>
             <div ref={editorMenuRef}>
-              {editorAssociationsDraft.map((association) => {
+              <AnimatedRows items={editorAssociationsDraft} keyOf={(association) => association.id} render={(association) => {
                 const groupName = association.name.trim() || 'File group'
                 const expanded = expandedEditorGroups[association.id] ?? false
                 const panelId = `${association.id}-editor-group-panel`
                 return (
                   <SettingRow
-                    key={association.id}
                     icon={<IconButton size="sm" icon={<ChevronRight size={14} style={{ transform: expanded ? 'rotate(90deg)' : undefined, transition: 'transform var(--dur-fast) var(--ease)' }} />} label={`${expanded ? 'Hide' : 'Show'} ${groupName} editor group`} aria-expanded={expanded} aria-controls={panelId} onClick={() => toggleEditorGroup(association.id)} />}
                     title={groupName}
                     description={<span className="font-mono">{extensionsText(association) || 'No extensions set'}</span>}
@@ -3143,7 +2790,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       <IconButton icon={<Trash2 size={14}/>} label={`Delete ${groupName} editor group`} variant="danger" size="sm" disabled={editorSaving || editorAssociationsDraft.length <= 1} onClick={() => setPendingDelete({kind:'editor',id:association.id,name:groupName})}/>
                     </div>}
                   >
-                    {expanded && <div id={panelId} className="uam-reveal grid grid-cols-3 gap-2">
+                    <Reveal open={expanded} id={panelId} className="grid grid-cols-3 gap-2">
                       <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                         Name
                         <input
@@ -3175,7 +2822,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                         Editor
                         {renderEditorPresetMenu(
-                          `${association.id}:editor`,
                           association.editorPresetId,
                           `${groupName} editor`,
                           (presetId) => {
@@ -3186,33 +2832,31 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           }
                         )}
                       </div>
-                    </div>}
+                    </Reveal>
                   </SettingRow>
                 )
-              })}
-              {editorAssociationsDraft.length === 0 && <SettingRow title="No file types" description="Add a group to choose an editor for a set of extensions." />}
+              }} />
+              <Reveal open={editorAssociationsDraft.length === 0}><SettingRow title={<span style={{ color: 'var(--text-3)' }}>No file types. Add a group to choose an editor for a set of extensions.</span>} control={renderAddEditor()} /></Reveal>
             </div>
-            {editorError && <p role="alert" className="pt-2 text-xs" style={{color:'var(--error)'}}>{editorError}</p>}
           </SettingsSection>
 
-          <SettingsSection title="Open with">
+          <SettingsSection title="Folders and terminal">
             <SettingRow
               title="File explorer"
               description={customExplorer ? 'A custom application opens folders.' : 'Your system file manager opens folders.'}
               control={<MenuSelect label="File explorer" disabled={editorSaving} value={customExplorer ? 'custom' : 'system'} options={[{ value: 'system', label: 'System default' }, { value: 'custom', label: 'Custom application' }]} onChange={(value) => { setCustomExplorer(value === 'custom'); if (value === 'system') void saveExplorer('') }} />}
             >
-              {customExplorer && <div className="flex gap-2">
+              <Reveal open={customExplorer}><div className="flex gap-2">
                 <input aria-label="File explorer application path" value={explorerDraft} onChange={(event) => setExplorerDraft(event.target.value)} className="uam-field min-w-0 flex-1 font-mono" placeholder="/Applications/Path Finder.app" />
-                <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) setOpenWithError(response.error || 'Application picker could not be opened.'); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
+                <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) reportAppFailure(response.error || 'Application picker could not be opened.', 'Try again.'); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
                 <Button size="sm" variant="primary" disabled={!explorerDraft.trim() || explorerDraft.trim() === fileExplorerApplication || editorSaving} onClick={() => void saveExplorer(explorerDraft.trim())}>Save</Button>
-              </div>}
+              </div></Reveal>
             </SettingRow>
             {isWindows && <SettingRow
               title="Terminal shell"
               description={WINDOWS_POWERSHELL_DESCRIPTIONS[windowsPowerShell]}
               control={<MenuSelect label="Terminal shell" disabled={editorSaving} value={windowsPowerShell} options={WINDOWS_POWERSHELL_OPTIONS} onChange={(value) => void saveWindowsPowerShell(value as WindowsPowerShellPreference)} />}
             />}
-            {openWithError && <p role="alert" className="pt-2 text-xs" style={{color:'var(--error)'}}>{openWithError}</p>}
           </SettingsSection>
         </div>
       )
@@ -3232,7 +2876,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           <NativeHistorySettings onFiltersDirtyChange={setImportFiltersDirty} />
           <SettingsSection title="Chat bundle">
             <SettingRow
-              title="Export all chats"
+              title="Export"
               description="Writes to a new or empty folder."
               status={chatDataFolder ? <span className="break-all font-mono">Last folder: {chatDataFolder}</span> : undefined}
               control={
@@ -3248,7 +2892,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               }
             />
             <SettingRow
-              title="Import a chat bundle"
+              title="Import"
               description="Clashing chats are copied with new IDs."
               control={
                 <Button
@@ -3264,18 +2908,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               }
             />
           </SettingsSection>
-          {chatDataMessage && (
-            <div className="pt-1">
-              <Notice
-                tone={chatDataMessage.tone}
-                title="Chat data"
-                dismissLabel="Dismiss chat data result"
-                onDismiss={() => setChatDataMessage(null)}
-              >
-                {chatDataMessage.text}
-              </Notice>
-            </div>
-          )}
         </div>
       )
     }
@@ -3294,101 +2926,80 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
 
   return (
-    <div className="uam-settings-motion flex h-full min-h-0 min-w-0" style={{background:'var(--bg)',color:'var(--text)'}}>
+    <div className="uam-settings-motion uam-settings-scope flex h-full min-h-0 min-w-0" style={{background:'var(--bg)',color:'var(--text)'}}>
       <div ref={dialogRef} role="region" aria-label="Settings" tabIndex={-1} className="w-full h-full min-h-0 flex flex-col overflow-hidden">
         <div className="grid flex-1 min-h-0" style={{gridTemplateColumns:'200px minmax(0,1fr)'}}>
           <aside className="min-h-0 flex flex-col px-3 py-3" style={{borderRight:'1px solid var(--border)',background:'var(--sidebar-bg)'}}>
-            <Button size="sm" variant="ghost" className="self-start mb-5" style={{paddingInline:8}} aria-label="Back to chats" leadingIcon={<ArrowLeft size={15} aria-hidden/>} disabled={mcpSaving || editorSaving || remoteBusy || themeSaving} onClick={requestClose}>Back to chats</Button>
+            <Button size="sm" variant="ghost" className="self-start mb-5" style={{paddingInline:'var(--sp-2)'}} aria-label="Back to chats" leadingIcon={<ArrowLeft size={15} aria-hidden/>} disabled={mcpSaving || editorSaving || remoteBusy || themeSaving} onClick={requestClose}>Back to chats</Button>
             <h1 className="text-lg font-semibold px-2 mb-3">Settings</h1>
             <div className="uam-search-field flex items-center gap-2 px-2 rounded-md mb-5" style={{border:'1px solid var(--border)',background:'var(--surface)'}}>
               <Search size={14} aria-hidden style={{color:'var(--text-3)',flexShrink:0}}/>
               <input type="text" role="searchbox" aria-label="Search settings" placeholder="Search settings" value={settingsSearch} onChange={event => setSettingsSearch(event.target.value)} className="min-w-0 w-full py-2 text-xs" style={{background:'transparent',border:0,color:'var(--text)'}}/>
-              {settingsSearch && <IconButton size="sm" icon={<X size={12}/>} label="Clear settings search" onClick={() => setSettingsSearch('')}/>}
+              <Reveal open={Boolean(settingsSearch)}><IconButton size="sm" icon={<X size={12}/>} label="Clear settings search" onClick={() => setSettingsSearch('')}/></Reveal>
             </div>
             <nav ref={navRef} aria-label="Settings pages" className="uam-settings-nav min-h-0 overflow-y-auto flex-1">
               {navIndicator && <span aria-hidden className="uam-settings-nav__indicator" style={{ transform: `translateY(${navIndicator.top}px)`, height: navIndicator.height }} />}
-              {visibleSettingsGroups.length === 0 && <p role="status" className="px-2 text-xs" style={{color:'var(--text-3)'}}>No settings found.</p>}
+              <Reveal open={visibleSettingsGroups.length === 0}><p role="status" className="px-2 text-xs" style={{color:'var(--text-3)'}}>No settings found.</p></Reveal>
               {visibleSettingsGroups.map(group => <div key={group.label} className="mb-5 last:mb-0">
-                <h2 className="px-2 mb-1 text-xs font-medium" style={{color:'var(--text-3)'}}>{group.label}</h2>
+                <h2 className="px-2 mb-1 text-[length:var(--fs-xs)] font-semibold uppercase tracking-[0.08em]" style={{color:'var(--text-3)'}}>{group.label}</h2>
                 {group.sections.map(id => {
                   const section = SETTINGS_SECTIONS.find(item => item.id === id)!
                   const active = selectedSection === section.id
                   const SectionIcon = section.icon
-                  return <button key={section.id} type="button" aria-pressed={active} aria-label={section.label} onClick={() => changeSection(section.id)} className="uam-settings-nav-item" data-active={active}>{section.id.startsWith('provider:') ? <ProviderLogo providerId={section.id.slice('provider:'.length)} size={15}/> : <SectionIcon size={15} className="shrink-0" aria-hidden/>}<span className="text-sm">{section.label}</span></button>
+                  return <RowButton key={section.id} type="button" aria-pressed={active} aria-label={section.label} onClick={() => changeSection(section.id)} className="uam-settings-nav-item" data-active={active}>{section.id.startsWith('provider:') ? <ProviderLogo providerId={section.id.slice('provider:'.length)} size={15}/> : <SectionIcon size={15} className="shrink-0" aria-hidden/>}<span className="text-sm">{section.label}</span></RowButton>
                 })}
               </div>)}
             </nav>
           </aside>
           <div className="min-w-0 min-h-0 flex flex-col overflow-hidden">
-            {unconfirmedSettingsLabels.length > 0 && <div data-memory-settings-unconfirmed className="shrink-0 px-6 pt-6">
+            <Reveal open={unconfirmedSettingsLabels.length > 0} className="shrink-0 px-6 pt-6"><div data-memory-settings-unconfirmed>
               <Notice tone="warning" title="Unconfirmed settings changes" dismissible={false} dismissLabel="Unconfirmed settings changes cannot be dismissed">
                 <p>Displayed choices are unconfirmed drafts and may differ from the running app.</p>
                 <ul aria-label="Unconfirmed settings fields" className="list-disc pl-4">
                   {unconfirmedSettingsLabels.map((label) => <li key={label}>{label}</li>)}
                 </ul>
               </Notice>
-            </div>}
+            </div></Reveal>
             <div className="w-full min-h-0 flex-1 flex flex-col">
-              {themeDraft ? <div className="overflow-y-auto">
+              <Swap swapKey={themeDraft ? 'theme' : 'page'} className="flex-1 min-h-0 flex flex-col">{themeDraft ? <div className="overflow-y-auto">
                 <div className="shrink-0 flex items-center justify-between gap-3 mb-5"><h2 tabIndex={-1} data-theme-step className="text-lg font-semibold">{['Theme name and base','Theme palette','Review theme'][themeStep]}</h2><IconButton icon={<X size={16}/>} label="Close theme editor" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}/></div>
                 {renderThemeEditor()}
-                {themeMessage && <p role="status" className="text-xs mt-3">{themeMessage}</p>}
               </div> : <>
                 {(() => {
                   const fullHeight = selectedSection === 'memory-store' || selectedSection === 'markdown-store'
                   const header = <div className="uam-settings-page-header w-full">
                   <div key={selectedSection} className="uam-reveal min-w-0">
                     <h2 className="uam-settings-page-header__title">{selectedSection === 'cli-version' ? 'CLI version control' : SETTINGS_SECTIONS.find(section => section.id === selectedSection)?.label}</h2>
-                    {SETTINGS_SECTION_DESCRIPTIONS[selectedSection] && <p className="uam-settings-page-header__description">{SETTINGS_SECTION_DESCRIPTIONS[selectedSection]}</p>}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div id="settings-page-actions" className="flex items-center gap-2"/>
                   </div>
                 </div>
-                  if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-6">{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden mt-5">{renderSectionContent()}</SettingsPageSwap></div>
+                  if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-3"><div className="uam-settings-frame uam-settings-frame--full flex-1 min-h-0 flex flex-col">{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden">{renderSectionContent()}</SettingsPageSwap></div></div>
                   return <div className="uam-settings-scroll"><div className="uam-settings-frame" style={selectedSection === 'phone' ? { margin: '0 auto' } : undefined}>{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
                 })()}
-              </>}
+              </>}</Swap>
             </div>
           </div>
         </div>
       </div>
-      <Presence open={Boolean(editorExit)}>
-        {editorExit && <Overlay open zIndex={80}>
-          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved editor changes" className="w-full max-w-md rounded-xl" style={SETTINGS_DIALOG_STYLE}>
-            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Save editor changes?</div>
-            <div className="grid gap-3 px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
-              <p>Your file type changes have not been saved.</p>
-              {editorError && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{editorError}</p>}
-            </div>
-            <div className="flex justify-end gap-2 px-5 pb-5">
-              <Button size="sm" disabled={editorSaving} onClick={() => { const next=editorExit; setEditorExit(null); next() }}>Discard</Button>
-              <Button size="sm" autoFocus disabled={editorSaving} onClick={() => setEditorExit(null)}>Stay</Button>
-              <Button size="sm" variant="primary" disabled={editorSaving} onClick={async () => {
-                const next = editorAssociationsDraft.map(item => ({...item,name:rawEditorNames[item.id]?.trim() ?? item.name,extensions:rawExtensions[item.id] === undefined ? item.extensions : parseExtensions(rawExtensions[item.id])}))
-                if (await saveEditorSettings(next)) { const leave=editorExit; setEditorExit(null); leave() }
-              }}>Save</Button>
-            </div>
-          </div>
-        </Overlay>}
-      </Presence>
-      <Presence open={Boolean(themeExit)}>
-        {themeExit && <Overlay open zIndex={80}>
-          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved theme changes" className="w-full max-w-md rounded-xl" style={SETTINGS_DIALOG_STYLE}>
-            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Save theme changes?</div>
-            <div className="grid gap-3 px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
-              <p>Your theme edits have not been saved.</p>
-              {themeMessage && <p role="status" className="text-xs">{themeMessage}</p>}
-            </div>
-            <div className="flex justify-end gap-2 px-5 pb-5">
-              <Button size="sm" disabled={themeSaving} onClick={() => { const next=themeExit; setThemeDraft(null); setThemeExit(null); next() }}>Discard</Button>
-              <Button size="sm" autoFocus disabled={themeSaving} onClick={() => setThemeExit(null)}>Stay</Button>
-              <Button size="sm" variant="primary" disabled={!themeDirty || !themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={async () => { if (await saveThemeDraft()) { const next=themeExit; setThemeExit(null); next() } }}>Save theme</Button>
-            </div>
-          </div>
-        </Overlay>}
-      </Presence>
+      <ConfirmDialog open={Boolean(editorExit)} tone="primary" title="Save editor changes?" label="Unsaved editor changes" confirmLabel="Save" cancelLabel="Stay" busy={editorSaving}
+        secondaryAction={{ label: 'Discard', onClick: () => { const next = editorExit; setEditorExit(null); next?.() } }}
+        onCancel={() => setEditorExit(null)}
+        onConfirm={async () => {
+          const next = editorAssociationsDraft.map(item => ({...item,name:rawEditorNames[item.id]?.trim() ?? item.name,extensions:rawExtensions[item.id] === undefined ? item.extensions : parseExtensions(rawExtensions[item.id])}))
+          // With MCP changes also unsaved, saving keeps Settings open; the MCP changes are then offered on the next close.
+          if (await saveEditorSettings(next)) { const leave=editorExit; setEditorExit(null); if (!editorExitMcp) leave?.() }
+        }}>
+        <p>Your file type changes have not been saved.</p>
+        {editorExitMcp && <p>MCP server changes have not been saved either. Discard drops both; Save keeps Settings open.</p>}
+      </ConfirmDialog>
+      <ConfirmDialog open={Boolean(themeExit)} tone="primary" title="Save theme changes?" label="Unsaved theme changes" settingsOwned
+        confirmLabel="Save theme" cancelLabel="Stay" busy={themeSaving} confirmDisabled={!themeDirty || !themeDraftValid}
+        secondaryAction={{ label: 'Discard', onClick: () => { const next = themeExit; setThemeDraft(null); setThemeExit(null); next?.() } }}
+        onCancel={() => setThemeExit(null)}
+        onConfirm={async () => { if (await saveThemeDraft()) { const next = themeExit; setThemeExit(null); next?.() } }}>
+        <p>Your theme edits have not been saved.</p>
+      </ConfirmDialog>
       {SSH_ENABLED && <Presence open={Boolean(remotePreview)}>
+        {/* ponytail: accepted exception (audit 3071). This dialog keeps its own panel: the SSH helper preview needs a wider body and a scrollable pre block that the shared ConfirmDialog surface does not provide. */}
         {remotePreview && <Overlay open zIndex={70} onBackdropMouseDown={() => { if (!remoteBusy) setRemotePreview(null) }}>
           <div role="dialog" aria-modal="true" data-settings-owned-overlay aria-label="Remote helper setup" className="w-full max-w-lg rounded-xl" style={SETTINGS_DIALOG_STYLE}>
             <div className="px-5 pt-5">
@@ -3396,27 +3007,25 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               <div className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>SSH alias: <code>{remotePreview.host.sshAlias}</code></div>
             </div>
             <div className="grid gap-4 px-5 pt-4 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
-  			  <p>UAM uses your existing OpenSSH authentication, detects Ubuntu/Linux or Windows, copies the matching helper, verifies its SHA-256 checksum, and starts it. Unsupported systems stop before anything is copied.</p>
+  			  <p>Uses your existing SSH login, copies the matching helper, checks its SHA-256, and starts it. Unsupported systems stop before copying.</p>
   			  <fieldset className="grid gap-2">
   				<legend className="mb-1 text-xs font-medium" style={{ color: 'var(--text)' }}>Install location</legend>
-  				<label className="flex cursor-pointer items-start gap-2 rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--border)' : 'var(--accent)'}` }}>
-  				  <input type="radio" name="remote-helper-location" checked={!remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(false)} />
-  				  <span><span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Recommended private location</span><span className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Linux: ~/.local/share/uam/runner/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\.uam\runner\{appVersion.replace(/^v/i, '')}</span></span>
-  				</label>
-  				<div className="rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--accent)' : 'var(--border)'}` }}>
-  				  <label className="flex cursor-pointer items-start gap-2">
-  					<input type="radio" name="remote-helper-location" checked={remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(true)} />
-  					<span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Custom folder under the remote home directory</span>
-  				  </label>
-  				  <div className="ml-6">
-  					<input aria-label="Remote helper folder" aria-invalid={remoteCustomDirectory && Boolean(remoteDirectoryValidation)} aria-describedby={remoteDirectoryValidation ? 'remote-helper-folder-help remote-helper-folder-error' : 'remote-helper-folder-help'} value={remoteDirectory} disabled={!remoteCustomDirectory} onChange={(event) => setRemoteDirectory(event.currentTarget.value)} placeholder="uam-helper" spellCheck={false} className="uam-field mt-2 w-full font-mono" style={remoteDirectoryValidation ? { borderColor: 'var(--error)' } : undefined} />
-  					<span id="remote-helper-folder-help" className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Relative path only. Use letters, numbers, dots, dashes, underscores, and /.</span>
-  					{remoteDirectoryValidation && <span id="remote-helper-folder-error" role="alert" className="mt-1 block text-[11px]" style={{ color: 'var(--error)' }}>{remoteDirectoryValidation}</span>}
-  					{remoteCustomDirectory && !remoteDirectoryValidation && <span className="mt-1 block break-all font-mono text-[11px]" style={{ color: 'var(--accent)' }}>Linux: ~/{remoteDirectory.trim()}/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\{remoteDirectory.trim().replace(/\//g, '\\')}\{appVersion.replace(/^v/i, '')}</span>}
-  				  </div>
-  				</div>
+  				<SegmentedControl
+  				  aria-label="Install location"
+  				  value={remoteCustomDirectory ? 'custom' : 'private'}
+  				  disabled={remoteBusy}
+  				  onChange={(value) => setRemoteCustomDirectory(value === 'custom')}
+  				  options={[{ value: 'private', label: 'Recommended location' }, { value: 'custom', label: 'Custom folder' }]}
+  				/>
+  				<Reveal open={!remoteCustomDirectory}><span className="block text-[length:var(--fs-xs)]" style={{ color: 'var(--text-3)' }}>Linux: ~/.local/share/uam/runner/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\.uam\runner\{appVersion.replace(/^v/i, '')}</span></Reveal>
+  				<Reveal open={remoteCustomDirectory} className="grid gap-1">
+  				  <input aria-label="Remote helper folder" aria-invalid={Boolean(remoteDirectoryValidation)} aria-describedby={remoteDirectoryValidation ? 'remote-helper-folder-help remote-helper-folder-error' : 'remote-helper-folder-help'} value={remoteDirectory} onChange={(event) => setRemoteDirectory(event.currentTarget.value)} placeholder="uam-helper" spellCheck={false} className="uam-field w-full font-mono" style={remoteDirectoryValidation ? { borderColor: 'var(--error)' } : undefined} />
+  				  <span id="remote-helper-folder-help" className="block text-[length:var(--fs-xs)]" style={{ color: 'var(--text-3)' }}>Relative path only. Use letters, numbers, dots, dashes, underscores, and /.</span>
+  				  <Reveal open={Boolean(remoteDirectoryValidation)}><span id="remote-helper-folder-error" role="alert" className="block text-[length:var(--fs-xs)]" style={{ color: 'var(--error)' }}>{remoteDirectoryValidation}</span></Reveal>
+  				  <Reveal open={!remoteDirectoryValidation}><span className="block break-all font-mono text-[length:var(--fs-xs)]" style={{ color: 'var(--accent)' }}>Linux: ~/{remoteDirectory.trim()}/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\{remoteDirectory.trim().replace(/\//g, '\\')}\{appVersion.replace(/^v/i, '')}</span></Reveal>
+  				</Reveal>
   			  </fieldset>
-  			  <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded p-2 text-[11px]" style={{ background: 'var(--bg)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>{remotePreview.preview.split('\n').filter((line) => !line.startsWith('Install UAM runner')).join('\n')}</pre>
+  			  <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded p-2 text-[length:var(--fs-xs)]" style={{ background: 'var(--bg)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>{remotePreview.preview.split('\n').filter((line) => !line.startsWith('Install UAM runner')).join('\n')}</pre>
             </div>
             <div className="flex justify-end gap-2 px-5 pb-5">
               <Button size="sm" disabled={remoteBusy} onClick={() => setRemotePreview(null)}>Cancel</Button>
@@ -3425,36 +3034,26 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           </div>
         </Overlay>}
       </Presence>}
-      <Presence open={confirmDiscard}>
-        {confirmDiscard && <Overlay open zIndex={70}>
-          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label={selectedSection === 'chat-data' ? 'Discard unsaved import filters' : 'Discard unsaved MCP changes'} className="w-full max-w-sm rounded-xl" style={SETTINGS_DIALOG_STYLE}>
-            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>{selectedSection === 'chat-data' ? 'Discard import filter changes?' : 'Discard MCP changes?'}</div>
-            <p className="px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>{selectedSection === 'chat-data' ? 'The import filters have unsaved changes.' : 'The MCP server configuration has unsaved changes.'}</p>
-            <div className="flex justify-end gap-2 px-5 pb-5">
-              <Button size="sm" onClick={() => { setConfirmDiscard(false); dialogRef.current?.focus() }}>Keep editing</Button>
-              <Button size="sm" variant="danger" onClick={() => { setMcpDraftDirty(false); setImportFiltersDirty(false); setConfirmDiscard(false); discardExit?.(); setDiscardExit(null) }}>Discard changes</Button>
-            </div>
-          </div>
-        </Overlay>}
-      </Presence>
-      <Presence open={Boolean(pendingDelete)}>
-        {pendingDelete && <Overlay open zIndex={60} onBackdropMouseDown={() => setPendingDelete(null)}>
-          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label={`Delete ${pendingDelete.name}`} className="w-full max-w-md rounded-xl" style={SETTINGS_DIALOG_STYLE}>
-            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Delete {pendingDelete.kind === 'theme' ? 'theme' : 'editor group'}?</div>
-            <div className="grid gap-3 px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
-              <p>“{pendingDelete.name}” will be permanently deleted. This cannot be undone or restored.</p>
-              {(pendingDelete.kind === 'theme' ? themeMessage : editorError) && <p role="status" className="text-xs">{pendingDelete.kind === 'theme' ? themeMessage : editorError}</p>}
-            </div>
-            <div className="flex justify-end gap-2 px-5 pb-5">
-              <Button size="sm" disabled={themeSaving || editorSaving} onClick={() => setPendingDelete(null)}>Cancel</Button>
-              <Button size="sm" variant="danger" disabled={themeSaving || editorSaving} onClick={async () => {
-                const deleted = pendingDelete.kind === 'theme' ? await removeSelectedTheme() : await saveEditorSettings(editorAssociationsDraft.filter(item => item.id !== pendingDelete.id))
-                if (deleted) setPendingDelete(null)
-              }}>Delete permanently</Button>
-            </div>
-          </div>
-        </Overlay>}
-      </Presence>
+      <ConfirmDialog open={confirmDiscard} tone="danger" title={selectedSection === 'chat-data' ? 'Discard import filter changes?' : 'Discard MCP changes?'} label={selectedSection === 'chat-data' ? 'Discard unsaved import filters' : 'Discard unsaved MCP changes'}
+        cancelLabel="Keep editing" confirmLabel="Discard changes"
+        onCancel={() => { setConfirmDiscard(false); dialogRef.current?.focus() }}
+        onConfirm={() => { setMcpDraftDirty(false); setImportFiltersDirty(false); setConfirmDiscard(false); discardExit?.(); setDiscardExit(null) }}>
+        <p>{selectedSection === 'chat-data' ? 'The import filters have unsaved changes.' : 'The MCP server configuration has unsaved changes.'}</p>
+      </ConfirmDialog>
+      <ConfirmDialog open={Boolean(pendingDelete)} title={`Delete ${pendingDelete?.kind === 'theme' ? 'theme' : 'editor group'}?`} label={pendingDelete ? `Delete ${pendingDelete.name}` : undefined}
+        confirmLabel="Delete permanently" busy={themeSaving || editorSaving}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={async () => {
+          if (!pendingDelete) return
+          const deleted = pendingDelete.kind === 'theme' ? await removeSelectedTheme() : await saveEditorSettings(editorAssociationsDraft.filter(item => item.id !== pendingDelete.id))
+          if (deleted) setPendingDelete(null)
+        }}>
+        <p>“{pendingDelete?.name}” will be permanently deleted. This cannot be undone or restored.</p>
+      </ConfirmDialog>
+      <Presence open={Boolean(pendingDefaultYolo)}>{pendingDefaultYolo && <ConfirmDialog open title="Use YOLO by default?" confirmLabel="Use YOLO"
+        onCancel={() => setPendingDefaultYolo(null)} onConfirm={() => { const pending = pendingDefaultYolo; setPendingDefaultYolo(null); updateProviderDefaults(pending.providerId, pending.defaults) }}>
+        New {pendingDefaultYolo.providerName} chats will automatically approve {COMPUTER_USE_ENABLED ? 'computer use, commands' : 'commands'}, file changes, and every other permission request.
+      </ConfirmDialog>}</Presence>
       {SSH_ENABLED && <ConfirmDialog open={pendingHostRemoval !== null} title={`Remove ${pendingHostRemoval?.label ?? 'host'}?`} confirmLabel="Remove host" busy={isRemoteHostBusy(pendingHostRemoval?.id ?? '')}
         onCancel={() => setPendingHostRemoval(null)} onConfirm={() => { const host = pendingHostRemoval; if (host) void removeRemoteHost(host).then(() => setPendingHostRemoval(null)) }}>
         This removes the saved host configuration. Any helper files on that machine are left untouched.

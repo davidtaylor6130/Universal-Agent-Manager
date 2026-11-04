@@ -22,6 +22,7 @@ namespace
 		UAM_ASSERT_EQ(canonical.memory_idle_delay_seconds, settings.memory_idle_delay_seconds);
 		UAM_ASSERT_EQ(canonical.memory_recall_budget_bytes, settings.memory_recall_budget_bytes);
 		UAM_ASSERT_EQ(canonical.goal_max_loop_iterations, settings.goal_max_loop_iterations);
+		UAM_ASSERT_EQ(canonical.goal_token_budget, settings.goal_token_budget);
 		UAM_ASSERT_EQ(canonical.acp_setup_inactivity_timeout_seconds, settings.acp_setup_inactivity_timeout_seconds);
 		UAM_ASSERT_EQ(canonical.acp_turn_output_limit_mib, settings.acp_turn_output_limit_mib);
 		UAM_ASSERT_EQ(canonical.active_turn_inactivity_timeout_seconds, settings.active_turn_inactivity_timeout_seconds);
@@ -124,7 +125,7 @@ UAM_TEST(MemoryWriteReceiptCommittedCanonicalMatchesReloadWithoutMutatingInput)
 	UAM_ASSERT_EQ(worker->second.worker_provider_id, std::string(uam::provider_ids::kClaudeCli));
 	UAM_ASSERT_EQ(worker->second.worker_model_id, std::string("private-worker-model"));
 	SameCoveredValues(SettingsMemoryCanonicalValues{input.memory_enabled_default, input.memory_level_default,
-	    input.memory_idle_delay_seconds, input.memory_recall_budget_bytes, input.goal_max_loop_iterations,
+	    input.memory_idle_delay_seconds, input.memory_recall_budget_bytes, input.goal_max_loop_iterations, input.goal_token_budget,
 	    input.acp_setup_inactivity_timeout_seconds, input.acp_turn_output_limit_mib, input.memory_worker_bindings,
 	    input.permission_reviewer_provider_id, input.permission_reviewer_model_id, input.active_turn_inactivity_timeout_seconds}, UnnormalizedMemorySettings());
 	UAM_ASSERT(SettingsStore::Save(temp.root / "input-after.txt", input));
@@ -432,7 +433,7 @@ UAM_TEST(SettingsPrimaryLoadUsesExistingParserAndNormalization)
 	UAM_ASSERT(loaded.loaded && !loaded.recovered_from_backup && !loaded.unrecovered_error);
 	const AppSettings legacy = ReloadPrimary(path);
 	SameCoveredValues(SettingsMemoryCanonicalValues{primary.memory_enabled_default, primary.memory_level_default,
-	    primary.memory_idle_delay_seconds, primary.memory_recall_budget_bytes, primary.goal_max_loop_iterations,
+	    primary.memory_idle_delay_seconds, primary.memory_recall_budget_bytes, primary.goal_max_loop_iterations, primary.goal_token_budget,
 	    primary.acp_setup_inactivity_timeout_seconds, primary.acp_turn_output_limit_mib, primary.memory_worker_bindings,
 	    primary.permission_reviewer_provider_id, primary.permission_reviewer_model_id, primary.active_turn_inactivity_timeout_seconds}, legacy);
 	UAM_ASSERT(primary.memory_idle_delay_seconds != input.memory_idle_delay_seconds);

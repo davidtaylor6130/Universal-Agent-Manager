@@ -107,6 +107,7 @@ function deserializeState(
     memoryIdleDelaySeconds: number
     memoryRecallBudgetBytes: number
     goalMaxLoopIterations: number
+    goalTokenBudget: number
     acpSetupInactivityTimeoutSeconds: number
     activeTurnInactivityTimeoutSeconds: number
     acpTurnOutputLimitMiB: number
@@ -320,6 +321,7 @@ function deserializeState(
     memoryIdleDelaySeconds: cpp.settings.memoryIdleDelaySeconds,
     memoryRecallBudgetBytes: cpp.settings.memoryRecallBudgetBytes,
     goalMaxLoopIterations: cpp.settings.goalMaxLoopIterations,
+    goalTokenBudget: cpp.settings.goalTokenBudget ?? 0,
     acpSetupInactivityTimeoutSeconds: cpp.settings.acpSetupInactivityTimeoutSeconds ?? 600,
     activeTurnInactivityTimeoutSeconds: cpp.settings.activeTurnInactivityTimeoutSeconds ?? 1800,
     acpTurnOutputLimitMiB: cpp.settings.acpTurnOutputLimitMiB ?? 1024,
@@ -528,7 +530,6 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
 
   const sessionsWithPendingCodexOptions = applyPendingCodexOptions(sessions)
   const goalModeByChatId = withoutDeletedKeys(current.goalModeByChatId, removedChatIds)
-  const defaultGoalTokenBudgetByChatId = withoutDeletedKeys(current.defaultGoalTokenBudgetByChatId, removedChatIds)
   const markdownStoreAttachedBySessionId = withoutDeletedKeys(current.markdownStoreAttachedBySessionId, removedChatIds)
   const repositoryReviewBySessionId = withoutDeletedKeys(current.repositoryReviewBySessionId, removedChatIds)
   const uamAgentsBySessionId = withoutDeletedKeys(current.uamAgentsBySessionId, removedChatIds)
@@ -543,7 +544,6 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     goalsByChatId: sameRecordEntries(current.goalsByChatId, goalsByChatId) ? current.goalsByChatId : goalsByChatId,
     activeGoalIdByChatId: sameRecordEntries(current.activeGoalIdByChatId, activeGoalIdByChatId) ? current.activeGoalIdByChatId : activeGoalIdByChatId,
     goalModeByChatId: sameRecordEntries(current.goalModeByChatId, goalModeByChatId) ? current.goalModeByChatId : goalModeByChatId,
-    defaultGoalTokenBudgetByChatId: sameRecordEntries(current.defaultGoalTokenBudgetByChatId, defaultGoalTokenBudgetByChatId) ? current.defaultGoalTokenBudgetByChatId : defaultGoalTokenBudgetByChatId,
     markdownStoreAttachedBySessionId: sameRecordEntries(current.markdownStoreAttachedBySessionId, markdownStoreAttachedBySessionId) ? current.markdownStoreAttachedBySessionId : markdownStoreAttachedBySessionId,
     repositoryReviewBySessionId: sameRecordEntries(current.repositoryReviewBySessionId, repositoryReviewBySessionId) ? current.repositoryReviewBySessionId : repositoryReviewBySessionId,
     providers,
@@ -560,6 +560,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     memoryIdleDelaySeconds: patch.settings?.memoryIdleDelaySeconds ?? current.memoryIdleDelaySeconds,
     memoryRecallBudgetBytes: patch.settings?.memoryRecallBudgetBytes ?? current.memoryRecallBudgetBytes,
     goalMaxLoopIterations: patch.settings?.goalMaxLoopIterations ?? current.goalMaxLoopIterations,
+    goalTokenBudget: patch.settings?.goalTokenBudget ?? current.goalTokenBudget,
     acpSetupInactivityTimeoutSeconds: patch.settings?.acpSetupInactivityTimeoutSeconds ?? current.acpSetupInactivityTimeoutSeconds,
     activeTurnInactivityTimeoutSeconds: patch.settings?.activeTurnInactivityTimeoutSeconds ?? current.activeTurnInactivityTimeoutSeconds,
     acpTurnOutputLimitMiB: patch.settings?.acpTurnOutputLimitMiB ?? current.acpTurnOutputLimitMiB,
@@ -779,6 +780,7 @@ export const useAppStore = create<AppState>((set, get) => {
             memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
             memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
             goalMaxLoopIterations: current.goalMaxLoopIterations,
+            goalTokenBudget: current.goalTokenBudget,
             acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
             activeTurnInactivityTimeoutSeconds: current.activeTurnInactivityTimeoutSeconds,
             acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
@@ -1129,6 +1131,7 @@ export const useAppStore = create<AppState>((set, get) => {
         memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
         memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
         goalMaxLoopIterations: current.goalMaxLoopIterations,
+        goalTokenBudget: current.goalTokenBudget,
         acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
         activeTurnInactivityTimeoutSeconds: current.activeTurnInactivityTimeoutSeconds,
         acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,

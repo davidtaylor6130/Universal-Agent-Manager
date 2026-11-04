@@ -2,12 +2,13 @@
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_native_context.h"
 #include "common/usage/account_allowance_fetcher.h"
-#include "common/usage/account_credentials_macos.h"
+#include "common/usage/account_credentials.h"
 #include "common/usage/claude_account_allowance.h"
 #include "common/usage/google_account_allowance.h"
 #include "common/utils/base64.h"
 #include "remote/runner_bootstrap.h"
 
+#include <array>
 #include <cstring>
 #include <functional>
 
@@ -175,4 +176,47 @@ UAM_TEST(ProcessExitDrainBootstrapStepKeepsRealFastExitChildOutput)
 		    PlatformServicesFactory::Instance().process_service, output, error));
 		UAM_ASSERT(error.empty());
 	}
+}
+
+UAM_TEST(StdioProcessOutputPipesHoldABurstWithoutAReader)
+{
+	// Bounded stop and exit drains read between polls, so a child must be able to finish a 12 KiB burst on each
+	// output pipe and exit while the parent is not reading. The Windows default pipe (about 4 KiB) blocked it; 12 KiB
+	// fits the macOS 16 KiB default without relying on on-demand pipe growth.
+	TempDir temp("uam-stdio-pipe-capacity");
+	const std::string burst(12 * 1024, 'x');
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "burst.txt", burst));
+#if defined(_WIN32)
+	const std::vector<std::string> argv{"cmd.exe", "/d", "/s", "/c", "type burst.txt & type burst.txt 1>&2"};
+#else
+	const std::vector<std::string> argv{"/bin/sh", "-c", "cat burst.txt; cat burst.txt >&2"};
+#endif
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields process;
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcess(process, temp.root, argv, &error));
+	int exit_code = -1;
+	bool exited = false;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (!(exited = service.PollStdioProcessExited(process, &exit_code)) && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	std::string out, err;
+	std::array<char, 16384> buffer{};
+	const auto read_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	for (bool open_out = true, open_err = true; exited && (open_out || open_err) && std::chrono::steady_clock::now() < read_deadline;)
+	{
+		const std::ptrdiff_t out_count = open_out ? service.ReadStdioProcessStdout(process, buffer.data(), buffer.size()) : 0;
+		if (out_count > 0) out.append(buffer.data(), static_cast<std::size_t>(out_count));
+		const std::ptrdiff_t err_count = open_err ? service.ReadStdioProcessStderr(process, buffer.data(), buffer.size()) : 0;
+		if (err_count > 0) err.append(buffer.data(), static_cast<std::size_t>(err_count));
+		open_out = out_count != 0 && out_count != -1;
+		open_err = err_count != 0 && err_count != -1;
+		if (out_count <= 0 && err_count <= 0) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	if (!exited) service.TerminateStdioProcess(process, true);
+	service.CloseStdioProcessHandles(process);
+	UAM_ASSERT(exited);
+	UAM_ASSERT_EQ(exit_code, 0);
+	UAM_ASSERT_EQ(out.size(), burst.size());
+	UAM_ASSERT_EQ(err.size(), burst.size());
 }

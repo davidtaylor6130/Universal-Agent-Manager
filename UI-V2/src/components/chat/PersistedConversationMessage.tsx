@@ -11,6 +11,7 @@ import type { ConversationDelivery } from './ConversationTurn'
 import { ConversationWork, WorkSectionContext, type WorkTraceDisclosureState } from './ConversationWork'
 import { AttachmentList, CompactionSeparator, InterruptedDivider, PersistedMessageContent, formatWorkedDuration, goalReviewForMessage, isImageAttachment, stoppedResponseLabel, type WorkingDisplayMode } from './MessageBlocks'
 import { MessageFrame, ToolCallModal } from './ToolCallViews'
+import { Tooltip } from '../ui'
 import { ALWAYS_OPEN_WORK_SECTION, buildVisibleWorkSections, dayDividerLabel, previousAssistantMessage, responseFlags, reviewAssistantLabel, turnTimestampLabel } from './conversationHistoryModel'
 
 /** Settled turn metadata must not reformat dates on composer or stream updates. */
@@ -72,7 +73,7 @@ export const PersistedConversationMessage = memo(function PersistedConversationM
   retryInPlace?: boolean
   onBeginEdit?: (index: number, content: string) => void
   onCreateBranch?: (index: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[]) => void | Promise<void>
-  onSelectBranch?: (parentId: string, index: number, sessionId: string) => void
+  onSelectBranch?: (parentId: string, index: number, sessionId: string, direction?: 'next' | 'prev') => void
   onSelectTool: (messageId: string, toolId: string) => void
   /** Read-only history: no branch/edit/revert actions, chat-scoped reads, previews or subagent refresh. */
   passive?: boolean
@@ -84,7 +85,7 @@ export const PersistedConversationMessage = memo(function PersistedConversationM
   const isUserMessage = message.role === 'user'
   const historicalInputUnknown = delivery === undefined && hasUnconfirmedNativeInput(message)
   const effectiveDelivery = delivery ?? (historicalInputUnknown ? { state: 'unconfirmed' as const,
-    label: 'UAM has no confirmed write receipt for this input. It is retained here and is never resent automatically.' } : undefined)
+    label: 'Delivery not confirmed. Kept here and not sent again automatically.' } : undefined)
   const branchParentId = sessionParentChatId && sessionBranchFromMessageIndex === index
     ? sessionParentChatId
     : sessionId
@@ -115,8 +116,8 @@ export const PersistedConversationMessage = memo(function PersistedConversationM
       branchNavigation={isBranchPoint ? {
         current: messageBranchIndex + 1,
         total: messageBranchSessions.length,
-        onPrevious: () => onSelectBranch!(branchParentId, index, messageBranchSessions[messageBranchIndex - 1].id),
-        onNext: () => onSelectBranch!(branchParentId, index, messageBranchSessions[messageBranchIndex + 1].id),
+        onPrevious: () => onSelectBranch!(branchParentId, index, messageBranchSessions[messageBranchIndex - 1].id, 'prev'),
+        onNext: () => onSelectBranch!(branchParentId, index, messageBranchSessions[messageBranchIndex + 1].id, 'next'),
       } : undefined}
       goalReview={Boolean(goalReview)}
       actionsDisabled={(actionsDisabled ?? false) || historicalInputUnknown}
@@ -207,7 +208,7 @@ export function PersistedConversationHistory({ messages, start, end, nativeStart
       const dayChanged = Boolean(turnStart) && (!priorMessage || !Number.isFinite(priorMessage.createdAt.getTime()) || priorMessage.createdAt.toDateString() !== sectionStart.createdAt.toDateString())
       const messageProviderId = message.providerId?.trim() || followingResponse?.providerId?.trim() || fallbackProviderId
       return <WorkSectionContext.Provider key={message.id} value={sectionControl}>
-        <div className="space-y-1" data-message-index={index + nativeStartIndex} title={turnStart ? turnTimestampLabel(turnStart.createdAt) : undefined}>
+        <Tooltip label={turnStart ? turnTimestampLabel(turnStart.createdAt) : undefined}><div className="space-y-1" data-message-index={index + nativeStartIndex}>
           {dayChanged && turnStart && <div className="conversation-day-divider"><span>{dayDividerLabel(turnStart.createdAt)}</span></div>}
           {turnStart && <TurnStartTime timestamp={turnStart.createdAt.getTime()} timezoneOffset={turnStart.createdAt.getTimezoneOffset()} identity={turnIdentity}
             showIdentity={Boolean(turnIdentity && (!previousAssistant || turnIdentity !== previousIdentity))} />}
@@ -217,7 +218,7 @@ export function PersistedConversationHistory({ messages, start, end, nativeStart
             assistantLabel={reviewAssistantLabel(providerName(messageProviderId), message)} sessionId={sessionId}
             workingMode={workingMode} onSelectTool={selectTool} />
           {message.role === 'user' && heading}
-        </div>
+        </div></Tooltip>
       </WorkSectionContext.Provider>
     })}
     {selectedTool && <ToolCallModal tool={selectedTool} onClose={() => setSelectedTool(null)} />}

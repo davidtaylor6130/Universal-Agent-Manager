@@ -1,6 +1,7 @@
 import { browserDictationAvailable } from '../../ipc/companionPlatform'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import type { AcpBinding, AcpQueuedPrompt, ManualCompactionAvailability } from '../../store/cpp/types'
 import { attachmentsEquivalent } from '../../store/cpp/reconcile'
 import { MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, messageAttachments, sanitizeManualCompaction, sanitizeNativeInputId, sanitizeOriginRequestId, sanitizeManagedOriginRunId } from '../../store/cpp/sanitizers'
@@ -25,7 +26,7 @@ import { ALWAYS_OPEN_WORK_SECTION, buildVisibleWorkSections, findWorkSectionStar
 import { addOutgoingAttempt, nextOutgoingKey, outgoingScope, readOutgoingAttempts, subscribeOutgoingAttempts, updateOutgoingAttempts, type OutgoingAttempt } from '../../utils/outgoingMessagePresentation'
 import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
-import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactElement, type ReactNode, cloneElement, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import type { ComputerUseActionResult, Session } from '../../types/session'
@@ -42,16 +43,19 @@ import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, st
 import { formatTimeoutDuration, TIMEOUT_RESTART_STEP_SECONDS, TimeoutStopNotice, type TimeoutRestartOutcome } from '../chat/TimeoutStopNotice'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
+import { createQuestionMemory, type QuestionMemory, type QuestionSubmitState } from '../chat/QuestionInput'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { attachmentChipKind, AttachmentList, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
-import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
-import { Notice, ViewportMenu, type NoticeTone } from '../ui'
+import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerSendButton, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
+import { MenuItem, Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { CustomIcon } from '../shared/CustomIcon'
 import { ChatBranchPicker } from '../chat/ChatBranchPicker'
 import { composerWorkspaceName } from '../../utils/workspacePresentation'
-import { AlertTriangle, ArrowDown, AtSign, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, AtSign, CircleAlert, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquare, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Square, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
-import { Button, IconButton, Tooltip } from '../ui'
+import { Button, ConfirmDialog, IconButton, Overlay, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
+import { messageMotionPhase, type MessageMotionPhase } from '../chat/messageMotion'
+import '../chat/SubagentDisclosure.css'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
 import { setPreferredBranch } from '../../utils/branchPreferenceStorage'
 import { ContextChip } from '../chat/ContextChip'
@@ -59,7 +63,7 @@ import { ComposerReferenceChips, useComposerReferences } from '../chat/ComposerC
 import { draftFileMentions } from '../../utils/fileContextReferences'
 import { mentionActionToken, replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
 import { acknowledgeChatComposerDraft, readChatComposerDraft, subscribeComposerDraftAcknowledgements, withoutAcknowledgedComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
-import { getTopmostModal } from '../../utils/modalFocus'
+import { fromViewportMenu, getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 
 // Confirmed pre-send refusals only; a replaced chat's in-flight outcome is unknown and keeps its own notice.
 const UNSENT_PROMPT_NOTICE = /this prompt wasn't sent/i
@@ -99,6 +103,10 @@ function sameManualCompactionTarget(left: ManualCompactionAvailability, right: M
 }
 
 type ComposerNoticeTone = NoticeTone
+type SlashNotice = { message: string; tone: NoticeTone }
+const noticeFor = (message: string, tone: NoticeTone): SlashNotice | null => message ? { message, tone } : null
+// Last chat-history failure alerted; module-level so remounting ChatView does not re-alert the same stored error.
+let reportedHistoryFailure = ''
 type PermissionChangeResult = { ok: boolean; cancelled?: boolean; error?: string }
 
 function normalizePermissionChangeResult(result: boolean | PermissionChangeResult): PermissionChangeResult {
@@ -284,23 +292,8 @@ function ProviderHandoffDialog({
   onCancel: () => void
   onConfirm: () => Promise<boolean>
 }) {
-  const dialogRef = useRef<HTMLElement>(null)
   const [switching, setSwitching] = useState(false)
   const [error, setError] = useState('')
-
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null
-    dialogRef.current?.focus()
-    return () => previouslyFocused?.focus?.()
-  }, [])
-
-  useEffect(() => {
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape' && !switching) onCancel()
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [onCancel, switching])
 
   const confirm = async () => {
     if (switching || blockedReason) return
@@ -311,58 +304,40 @@ function ProviderHandoffDialog({
     setError('The provider or model could not be changed. Finish any active work and try again.')
   }
 
-  return createPortal(
-    <div
-      className="uam-overlay fixed inset-0 z-[1000] flex items-center justify-center p-4"
-      style={{ background: 'rgba(0, 0, 0, 0.52)', backdropFilter: 'blur(3px)' }}
-      onMouseDown={() => { if (!switching) onCancel() }}
+  return (
+    <ConfirmDialog
+      open
+      tone="primary"
+      title={`Switch this chat to ${targetName}?`}
+      label={`Switch from ${sourceName} to ${targetName}`}
+      confirmLabel={`Switch to ${targetName}`}
+      confirmDisabled={Boolean(blockedReason)}
+      busy={switching}
+      error={error || undefined}
+      onConfirm={() => void confirm()}
+      onCancel={onCancel}
     >
-      <section
-        ref={dialogRef}
-        role="alertdialog"
-        aria-modal="true"
-        aria-label={`Switch from ${sourceName} to ${targetName}`}
-        aria-describedby="provider-handoff-description"
-        tabIndex={-1}
-        className="w-full max-w-lg overflow-hidden rounded-xl"
-        style={{ border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header className="flex items-center gap-3 px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
-          <CornerUpRight size={18} aria-hidden style={{ color: 'var(--accent)' }} />
-          <div>
-            <h2 className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Switch this chat to {targetName}?</h2>
-            <p className="mt-0.5 text-xs" style={{ color: 'var(--text-3)' }}>{sourceName} → {targetName}</p>
-          </div>
-        </header>
-        <div id="provider-handoff-description" className="space-y-4 px-5 py-4 text-sm" style={{ color: 'var(--text-2)' }}>
-          <p>UAM keeps the recorded conversation, but provider-native state cannot move between providers.</p>
-          <div>
-            <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--green)' }}>Kept</div>
-            <ul className="list-disc space-y-1 pl-5">
-              <li>Chat messages and recorded tool results</li>
-              <li>Chat title and workspace</li>
-              <li>Selected UAM agent and goals</li>
-            </ul>
-          </div>
-          <div>
-            <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--yellow)' }}>Reset for {targetName}</div>
-            <ul className="list-disc space-y-1 pl-5">
-              <li>Native session and provider-specific live tool state</li>
-              <li>Model, reasoning or speed, permission, safety, and memory defaults</li>
-            </ul>
-          </div>
-          <p className="text-xs" style={{ color: 'var(--text-3)' }}>Anything the current provider did not record in UAM will not transfer.</p>
-          {blockedReason && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--yellow)', color: 'var(--yellow)' }}>{blockedReason}</div>}
-          {error && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--red)', color: 'var(--red)' }}>{error}</div>}
+      <div className="space-y-4">
+        <p>UAM keeps the recorded conversation, but provider-native state cannot move between providers.</p>
+        <div>
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--green)' }}>Kept</div>
+          <ul className="list-disc space-y-1 pl-5">
+            <li>Chat messages and recorded tool results</li>
+            <li>Chat title and workspace</li>
+            <li>Selected UAM agent and goals</li>
+          </ul>
         </div>
-        <footer className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-          <Button type="button" size="sm" variant="secondary" disabled={switching} onClick={onCancel}>Cancel</Button>
-          <Button type="button" size="sm" loading={switching} disabled={Boolean(blockedReason)} onClick={() => void confirm()}>Switch to {targetName}</Button>
-        </footer>
-      </section>
-    </div>,
-    document.body
+        <div>
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--yellow)' }}>Reset for {targetName}</div>
+          <ul className="list-disc space-y-1 pl-5">
+            <li>Native session and provider-specific live tool state</li>
+            <li>Model, reasoning or speed, permission, safety, and memory defaults</li>
+          </ul>
+        </div>
+        <p className="text-xs" style={{ color: 'var(--text-3)' }}>Anything the current provider did not record in UAM will not transfer.</p>
+        {blockedReason && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--yellow)', color: 'var(--yellow)' }}>{blockedReason}</div>}
+      </div>
+    </ConfirmDialog>
   )
 }
 
@@ -375,6 +350,16 @@ type ParentViewportDetails = {
 const parentViewportVisits = new Map<string, ParentViewportDetails & { top: number; nearBottom: boolean; renderedCount: number }>()
 
 const receiptRetryAvailable = (prompt: AcpQueuedPrompt) => prompt.retryAllowed === true || (prompt.retryAllowed !== false && Number.isSafeInteger(prompt.existingUserMessageIndex) && prompt.existingUserMessageIndex! >= 0)
+
+/** Composer tab that enters and leaves with the shared subagent disclosure motion; reduced motion skips the exit wait. */
+function ComposerTab({ open, children }: { open: boolean; children: ReactElement<{ className?: string; 'data-state'?: string }> }) {
+  const { mounted, closing } = usePresence(open)
+  const last = useRef(children)
+  if (open) last.current = children
+  if (!mounted) return null
+  const tab = open ? children : last.current
+  return cloneElement(tab, { className: `${tab.props.className ?? ''} uam-subagent-disclosure`, 'data-state': closing ? 'closed' : 'open' })
+}
 
 export const ChatView = memo(function ChatView({ session, accentColor, navigationKey = '', showSubagentLineage = true, showComposer = true }: ChatViewProps) {
   const sessionBirth = session.createdAt.getTime()
@@ -389,6 +374,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const workspaceMenuId = useId()
   const goalsPopupId = useId()
   const [goalsPopupOwner, setGoalsPopupOwner] = useState<string | null>(null)
+  const [goalEditing, setGoalEditing] = useState(false)
+  const goalEditingRef = useRef(goalEditing); goalEditingRef.current = goalEditing
   const goalsTriggerRef = useRef<HTMLButtonElement>(null)
   const goalsPopupRef = useRef<HTMLDivElement>(null)
   const goalMutationGenerationRef = useRef(0)
@@ -406,6 +393,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [dictationState, setDictationState] = useState<DictationState>('idle')
   const [dictationElapsedSeconds, setDictationElapsedSeconds] = useState(0)
   const [dictationError, setDictationError] = useState('')
+  const reportedDictationError = useRef('')
   const [selectedToolCallRef, setSelectedToolCallRef] = useState<SelectedToolCallRef | null>(null)
   const [modelOpen, setModelOpen] = useState(false)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
@@ -419,7 +407,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [goalSubmitting, setGoalSubmitting] = useState(false)
   const [goalArmNextMessage, setGoalArmNextMessage] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
-  const [slashMessage, setSlashMessage] = useState('')
+  const [slashNotice, setSlashNotice] = useState<SlashNotice | null>(null)
+  const slashMessage = slashNotice?.message ?? ''
   const [slashGroup, setSlashGroup] = useState('')
   const [slashGroupIndex, setSlashGroupIndex] = useState(0)
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
@@ -732,7 +721,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }, [messages, historyStartIndex, session.userMessageIndices, unsentProjection])
   // Mirrors MessageNavigationRail's own presence rule so the gutter exists exactly when the rail does.
   const messageNavigationVisible = Boolean(session.messagesDigest) &&
-    (navigableUserMessageIndices ?? messages.filter((message) => message.role === 'user')).length > 0
+    (navigableUserMessageIndices ?? messages.filter((message) => message.role === 'user')).length > 1
   // Queue-held and discarded inputs do not turn an otherwise empty chat into history; outgoing rows do.
   const composerCentred = showComposer && historyStartIndex === 0 && messages.length === unsentProjection.hiddenIndices.size &&
     outgoingReceipts.length === 0 && outgoingPresentation.tail.length === 0 && !chatHistoryError && !historyIncomplete
@@ -848,7 +837,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       acknowledgeComposerReferences(submission)
       // A newer admitted send resolves earlier not-sent guidance, but only for the chat this view still shows.
       if (mountedRef.current && currentSessionIdRef.current === submission.chatId && composerReferenceSubmissionIsCurrent(submission)) {
-        setSlashMessage((message) => UNSENT_PROMPT_NOTICE.test(message) ? '' : message)
+        setSlashNotice((notice) => notice && UNSENT_PROMPT_NOTICE.test(notice.message) ? null : notice)
       }
     }
     return accepted
@@ -963,8 +952,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const updateGoalObjective = useAppStore((s) => s.updateGoalObjective)
   const removeGoal = useAppStore((s) => s.removeGoal)
   const resumeGoal = useAppStore((s) => s.resumeGoal)
-  const defaultGoalTokenBudget = useAppStore((s) => s.defaultGoalTokenBudgetByChatId[session.id] ?? 0)
-  const setDefaultGoalTokenBudget = useAppStore((s) => s.setDefaultGoalTokenBudget)
+  const goalTokenBudget = useAppStore((s) => s.goalTokenBudget)
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const transcriptContentRef = useRef<HTMLDivElement>(null)
@@ -1281,7 +1269,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setWorkspaceActionBusy(false)
     setWorkspaceMenuOpen(false)
     setGoalArmNextMessage(false)
-    setSlashMessage(abandonedBirthSubmission ? 'The chat was replaced. Check the earlier input before sending again.' : '')
+    setSlashNotice(noticeFor(abandonedBirthSubmission ? 'The chat was replaced. Check the earlier input before sending again.' : '', 'warning'))
     setPermissionMenuOpen(false)
     messageBranchGenerationRef.current += 1
     setEditingMessageIndex(null)
@@ -1315,11 +1303,49 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
   }, [session.workspaceIsolationKind])
 
+  // Workspace success is a completed system action: it goes to the shared notifications path, not an inline banner.
   useEffect(() => {
     if (workspaceFeedback?.tone !== 'success') return
-    const timeout = window.setTimeout(() => setWorkspaceFeedback(null), 5000)
-    return () => window.clearTimeout(timeout)
+    reportAppNotice(workspaceFeedback.message, 'success')
+    setWorkspaceFeedback(null)
   }, [workspaceFeedback])
+  // Failures and completed actions reach the shared alert path instead of inline banners; error state is cleared once reported.
+  useEffect(() => {
+    if (!workspaceFeedback || workspaceFeedback.tone === 'success') return
+    reportAppFailure('Workspace action failed', workspaceFeedback.message)
+    setWorkspaceFeedback(null)
+  }, [workspaceFeedback])
+  useEffect(() => {
+    if (!goalError) return
+    reportAppFailure('Goal update failed', goalError)
+    setGoalError('')
+  }, [goalError])
+  useEffect(() => {
+    if (!messageBranchError) return
+    reportAppFailure(editingMessageSource.kind === 'unsent' ? 'Message edit failed' : 'Message branch failed', messageBranchError)
+    setMessageBranchError('')
+  }, [messageBranchError])
+  useEffect(() => {
+    if (!attachmentError) return
+    reportAppFailure('Attachment failed', attachmentError)
+    setAttachmentError('')
+  }, [attachmentError])
+  // Toggling showComposer re-runs this effect; the reported ref keeps one alert per distinct dictation error.
+  useEffect(() => {
+    if (!dictationError) reportedDictationError.current = ''
+    if (!dictationError || showComposer || reportedDictationError.current === dictationError) return
+    reportedDictationError.current = dictationError
+    reportAppFailure('Dictation failed', dictationError)
+  }, [dictationError, showComposer])
+  // The history error lives in the store, so a remount would re-report it; alert once per distinct failure.
+  useEffect(() => {
+    if (!chatHistoryError) { reportedHistoryFailure = ''; return }
+    const title = historyRefreshFailed ? 'Chat history did not refresh' : 'Chat history did not load'
+    const key = `${session.id}\u0000${title}\u0000${chatHistoryError}`
+    if (key === reportedHistoryFailure) return
+    reportedHistoryFailure = key
+    reportAppFailure(title, `${chatHistoryError} Use Retry at the top of the transcript to try again.`)
+  }, [chatHistoryError, historyRefreshFailed, session.id])
 
   const runtimeBlocksControlChanges = acpRuntimeBlocksControlChanges(acp)
 
@@ -1555,7 +1581,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (!goalMatch) return false
     const objective = goalMatch[1].trim()
     if (!objective) { setGoalError('Goal objective is required.'); return true }
-    const tokenBudget = goalMatch[2] ? parseInt(goalMatch[2], 10) : defaultGoalTokenBudget
+    const tokenBudget = goalMatch[2] ? parseInt(goalMatch[2], 10) : goalTokenBudget
     const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
     const providerManaged = featurePreference === 'provider' && Boolean(nativeGoalCommand)
     await createGoalAndSend({ objective, tokenBudget, executionOwner: providerManaged ? 'provider' : 'uam',
@@ -1568,7 +1594,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const runCompact = async (commandDraft = draft, closePalette = false) => {
     if (!mountedRef.current || currentSessionIdRef.current !== session.id || submitInFlightRef.current || goalSubmitting) return
     if (!isCefContext()) {
-      setSlashMessage('Manual compaction is unavailable without a connected native runtime.')
+      setSlashNotice(noticeFor('Manual compaction is unavailable without a connected native runtime.', 'warning'))
       return
     }
     const state = useAppStore.getState()
@@ -1579,7 +1605,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (!mountedRef.current || currentSessionIdRef.current !== session.id || !renderedTarget || !target
       || !sameManualCompactionTarget(renderedTarget, target) || state.cliBindingBySessionId[session.id]?.running
       || !state.providers.some(provider => provider.id === target.providerId && provider.supportsStructured)) {
-      setSlashMessage('Manual compaction is unavailable for this chat.')
+      setSlashNotice(noticeFor('Manual compaction is unavailable for this chat.', 'warning'))
       return
     }
     // Revalidate before clearing a palette token; an old option cannot erase a newer draft.
@@ -1604,7 +1630,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     submitInFlightRef.current = true
     setSubmitting(true)
     setCompacting(true)
-    setSlashMessage('')
+    setSlashNotice(null)
     try {
       const response = await sendToCEF<{ accepted?: boolean }>({
         action: 'compactAcpSession',
@@ -1614,13 +1640,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       if (!ownsFeedback()) return
       if (!response.ok || response.data?.accepted !== true) {
         // "failed" keeps this on the error tone; a plain message would show green.
-        setSlashMessage(`Compaction failed: ${response.error || 'the request was not accepted.'}`)
+        setSlashNotice(noticeFor(`Compaction failed: ${response.error || 'the request was not accepted.'}`, 'error'))
         return
       }
       // Acceptance is not completion; the "Compacting context" strip and the transcript show progress.
       setDraft((current) => current === commandDraft && current.trim() === '/compact' ? '' : current)
     } catch {
-      if (ownsFeedback()) setSlashMessage('Failed to request compaction.')
+      if (ownsFeedback()) setSlashNotice(noticeFor('Failed to request compaction.', 'error'))
     } finally {
       if (ownsRequest()) {
         compactRequestIdRef.current = null
@@ -1668,13 +1694,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (nativeGoalCommand && (prompt === nativeGoalCommand || prompt.startsWith(`${nativeGoalCommand} `))) {
       const objective = prompt.slice(nativeGoalCommand.length).trim()
       if (!objective) { setGoalError('Goal objective is required.'); return }
-      await createGoalAndSend({ objective, tokenBudget: defaultGoalTokenBudget, executionOwner: 'provider',
+      await createGoalAndSend({ objective, tokenBudget: goalTokenBudget, executionOwner: 'provider',
         prompt, attachments: readyAttachments, sendFailure: 'Goal was created, but the provider command failed to send.' })
       return
     }
     if (goalArmNextMessage) {
       const providerGoalCommand = featurePreference === 'provider' ? currentProvider.nativeGoalCommand?.trim() ?? '' : ''
-      await createGoalAndSend({ objective: prompt, tokenBudget: defaultGoalTokenBudget, executionOwner: providerGoalCommand ? 'provider' : 'uam',
+      await createGoalAndSend({ objective: prompt, tokenBudget: goalTokenBudget, executionOwner: providerGoalCommand ? 'provider' : 'uam',
         prompt: providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, attachments: readyAttachments,
         sendFailure: 'Goal was created, but the first prompt failed to send.', steerNow: steerNow || undefined, disarm: true })
       return
@@ -1682,7 +1708,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
 
     if (!steerNow && isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
       const context = captureComposerReferenceSubmission(session.id)
-      if (!context) { setSlashMessage(UNSENT_PROMPT_MESSAGE); return }
+      if (!context) { setSlashNotice(noticeFor(UNSENT_PROMPT_MESSAGE, 'warning')); return }
       setClaudePlanPrompt({ prompt, draft, attachments: readyAttachments, context })
       return
     }
@@ -1788,7 +1814,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     try {
       const dismiss = action === 'dismiss'
       const response = await sendToCEF<{ chatId?: string; parentChatId?: string }>({ action: dismiss ? 'dismissSideChat' : 'createSideChat', payload: { chatId: session.id }, requestId: createRequestId('side') })
-      if (!response.ok) { setSlashMessage(response.error || 'Side chat could not be changed.'); return }
+      if (!response.ok) { setSlashNotice(noticeFor(response.error || 'Side chat could not be changed.', 'error')); return }
       const id = dismiss ? response.data?.parentChatId : response.data?.chatId
       if (id) showChatInPane(id)
     } finally { sideBusyRef.current = false; setSideBusy(false) }
@@ -1797,6 +1823,37 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const subagentParent = useAppStore(state => subagentParentFor(session, state.sessions))
   const startedBy = useAppStore(state => session.createdByChatId ? state.sessions.find(candidate => candidate.id === session.createdByChatId) : undefined)
   const showSideChatControls = !isCompanionContext() && Boolean(session.temporaryParentChatId || liveSideChatId)
+  // Keeps the tab row mounted while the Editing tab plays its exit.
+  const editTabMounted = usePresence(editingMessageIndex !== null).mounted
+  // A question the running turn waits on replaces the composer body; any other pending question (UAM control, or one
+  // arriving while editing or without a composer) floats above the composer so it stays usable.
+  const questionKey = pendingUserInput ? `${session.id}:${pendingUserInput.requestId}:${pendingUserInput.itemId}` : ''
+  const [answeredQuestionKey, setAnsweredQuestionKey] = useState('')
+  // Both card forms share one answer state per question, so a lifecycle flip (permission, message edit) never resets it.
+  const [questionMemories] = useState(() => new Map<string, QuestionMemory>())
+  if (questionKey && !questionMemories.has(questionKey)) questionMemories.set(questionKey, createQuestionMemory())
+  const questionMemory = questionMemories.get(questionKey)
+  // Once the chat has no pending question its answer state is dropped, so a provider that reuses a request id
+  // (Copilot's JSON-RPC ids restart with the runtime) opens a fresh, answerable question.
+  useEffect(() => {
+    if (pendingUserInput) return
+    const prefix = `${session.id}:`
+    for (const key of questionMemories.keys()) if (key.startsWith(prefix)) questionMemories.delete(key)
+    setAnsweredQuestionKey((key) => key.startsWith(prefix) ? '' : key)
+  }, [pendingUserInput, questionMemories, session.id])
+  const showQuestion = Boolean(pendingUserInput && !session.importedReadOnly)
+  // An answer accepted from the floating card keeps that card's "Answers submitted" until native clears the question.
+  const questionInComposer = showQuestion && questionKey !== answeredQuestionKey && !questionMemory?.accepted && showComposer && editingMessageIndex === null &&
+    acp?.lifecycleState === 'waitingUserInput' && !pendingUserInput?.requestId.startsWith('uam-control:')
+  const questionTabMounted = usePresence(questionInComposer).mounted
+  const questionSubmitRef = useRef<(() => void) | null>(null)
+  const [questionSubmitState, setQuestionSubmitState] = useState<QuestionSubmitState>('incomplete')
+  const questionWasInComposer = useRef(false)
+  useEffect(() => {
+    if (questionInComposer) { questionWasInComposer.current = true; return }
+    // Answering removes the focused question; give focus back to the restored composer.
+    if (questionWasInComposer.current && (!document.activeElement || document.activeElement === document.body)) composerTextareaRef.current?.focus({ preventScroll: true })
+  }, [questionInComposer])
   const isGitWorktree = session.workspaceIsolationKind === 'gitWorktree'
   const workspaceActionsDisabled = remoteComputerUseDisabled || workspaceActionBusy || Boolean(
     acp?.processing ||
@@ -1961,18 +2018,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     // Live dividers sit at the end of the transcript; bring them into view as a new message would.
     if (liveDividerOpen && isNearBottomRef.current) bottomRef.current?.scrollIntoView?.({ block: 'end' })
   }, [liveDividerOpen])
-  const slashNoticeTone: ComposerNoticeTone = /failed|unsupported/i.test(slashMessage)
-    ? 'error'
-    : /working|unavailable|provider-managed|send the prompt again|send again|wasn't sent|could not confirm the prompt|chat was replaced/i.test(slashMessage)
-      ? 'warning'
-      : 'success'
+  const slashNoticeTone: ComposerNoticeTone = slashNotice?.tone ?? 'success'
   const slashNoticeTitle = UNSENT_PROMPT_NOTICE.test(slashMessage) ? 'Message not sent' : /chat was replaced/i.test(slashMessage) ? 'Check earlier message' : 'Command'
+  useEffect(() => {
+    if (!slashNotice) return
+    if (slashNotice.tone === 'error' || slashNotice.tone === 'warning') reportAppFailure(slashNoticeTitle, slashNotice.message)
+    else reportAppNotice(slashNotice.message, slashNotice.tone === 'info' ? 'info' : 'success')
+  }, [slashNotice])
   const unsupportedProviderMessage = providerSupported
     ? ''
-    : `${currentProviderName} is not supported in this build. Switch this chat to ${providerMetadataForId(DEFAULT_PROVIDER_ID).name} to continue.`
+    : `${currentProviderName} is not available in this app. Switch this chat to ${providerMetadataForId(DEFAULT_PROVIDER_ID).name} to continue.`
   const canDeleteUnsentReceipt = !acp?.processing && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy' && ['ready', 'stopped', 'error'].includes(acp?.lifecycleState ?? 'stopped')
   const canManageUnsent = !acp?.processing && !(acp?.queuedPrompts?.length) && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
   const canChangeProvider = canManageUnsent && !(acp?.unsentDirectPrompts?.length)
+  const canSaveEdit = branchingMessageIndex === null && canChangeProvider && (editingMessageText.trim().length > 0 || editingMessageAttachments.length > 0)
   const unsentActionsDisabled = session.importedReadOnly || !canManageUnsent || branchingMessageIndex !== null || editingMessageIndex !== null
   const unsentReceiptDeleteDisabled = session.importedReadOnly || !canDeleteUnsentReceipt || branchingMessageIndex !== null || editingMessageIndex !== null
   const removeUnsent = async (index: number, receipt?: { id: string; revision: number }) => {
@@ -2154,10 +2213,24 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setEditingMessageIndex(null)
     setBranchingMessageIndex(null)
   }, [])
-  const selectMessageBranch = useCallback((parentId: string, messageIndex: number, branchId: string) => {
+  const [branchMotion, setBranchMotion] = useState<{ phase: MessageMotionPhase; anchor: number; sessionId: string } | null>(null)
+  const branchMotionTimer = useRef(0)
+  useEffect(() => () => window.clearTimeout(branchMotionTimer.current), [])
+  const selectMessageBranch = useCallback((parentId: string, messageIndex: number, branchId: string, direction: 'next' | 'prev' = 'next') => {
+    // Switch at once so each click steps from the branch on screen; the swipe only decorates the arriving rows.
     setPreferredBranch(parentId, messageIndex, branchId)
     setActiveSession(branchId)
+    window.clearTimeout(branchMotionTimer.current)
+    if (!motionAllowed()) { setBranchMotion(null); return }
+    setBranchMotion({ phase: `in-${direction}`, anchor: messageIndex, sessionId: branchId })
+    branchMotionTimer.current = window.setTimeout(() => setBranchMotion(null), scaledMs(180))
   }, [setActiveSession])
+  const messageListRef = useRef<HTMLDivElement>(null)
+  // A swipe belongs to the branch it switched to; picking another chat mid-swipe does not animate that chat.
+  const activeBranchMotion = branchMotion?.sessionId === session.id ? branchMotion : null
+  const messageMotion = messageMotionPhase({ branch: activeBranchMotion?.phase ?? null, editing: editingMessageIndex !== null && editingMessageSource.kind === 'branch',
+    saving: branchingMessageIndex !== null && branchingMessageIndex === editingMessageIndex })
+  const messageMotionAnchor = activeBranchMotion?.anchor ?? (messageMotion ? editingMessageIndex : null)
   const selectPersistedTool = useCallback((messageId: string, toolId: string) => {
     setSelectedToolCallRef({ id: toolId, messageId })
   }, [])
@@ -2333,7 +2406,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (!isClaudeProvider(currentProvider, currentProviderId) || currentModeId !== 'plan') {
       setClaudePlanPrompt(null)
     }
-    setSlashMessage('')
+    setSlashNotice(null)
   }, [currentModeId, currentProvider, currentProviderCapabilities.structuredPermissionControl, currentProviderId])
   const permissionControlsDisabled = runtimeBlocksControlChanges && !providerAcp?.pendingPermission
   const permissionModes = useMemo(
@@ -2359,7 +2432,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     return applyPermissionMode(modeId)
   }
   const showPermissionResult = (result: PermissionChangeResult, fallback: string) => {
-    setSlashMessage(result.ok || result.cancelled ? '' : result.error || fallback)
+    setSlashNotice(noticeFor(result.ok || result.cancelled ? '' : result.error || fallback, 'error'))
   }
   const selectPermissionMode = async (modeId: string) => {
     const mode = permissionModes.find((candidate) => candidate.id === modeId)
@@ -2371,11 +2444,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setSlashIndex(0)
     setPermissionMenuOpen(false)
     if (!providerSupported || !currentProvider.supportsStructured || !permissionsManagedByUam) {
-      setSlashMessage(`${currentProviderName} permissions are provider-managed; respond in the provider interface.`)
+      setSlashNotice(noticeFor(`${currentProviderName} permissions are provider-managed; respond in the provider interface.`, 'warning'))
       return
     }
     if (permissionControlsDisabled) {
-      setSlashMessage(`${currentProviderName} is still working; permissions can be changed when the current operation stops.`)
+      setSlashNotice(noticeFor(`${currentProviderName} is still working; permissions can be changed when the current operation stops.`, 'warning'))
       return
     }
 
@@ -2389,7 +2462,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       mode.id.toLowerCase() === normalized || mode.name.toLowerCase().replace(/\s+/g, '-') === normalized
     )
     if (!requested) {
-      setSlashMessage(`Unsupported permission mode "${rawMode}". Supported: ${permissionModes.map((mode) => mode.id).join(', ')}.`)
+      setSlashNotice(noticeFor(`Unsupported permission mode "${rawMode}". Supported: ${permissionModes.map((mode) => mode.id).join(', ')}.`, 'error'))
       return
     }
 
@@ -2399,13 +2472,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const runCodexOptionCommand = async (kind: 'reasoning' | 'speed', rawValue?: string) => {
     setSlashIndex(0)
     if (runtimeBlocksControlChanges) {
-      setSlashMessage(`${currentProviderName} is still working.`)
+      setSlashNotice(noticeFor(`${currentProviderName} is still working.`, 'warning'))
       return
     }
     const options = kind === 'reasoning' ? reasoningOptions : speedOptions
     const label = kind === 'reasoning' ? 'Reasoning' : 'Speed'
     if (options.length === 0) {
-      setSlashMessage(`${label} changes are unavailable for ${currentProviderName}.`)
+      setSlashNotice(noticeFor(`${label} changes are unavailable for ${currentProviderName}.`, 'warning'))
       return
     }
     if (!rawValue) {
@@ -2418,22 +2491,22 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       option.label.toLowerCase().replace(/\s+/g, '-') === normalized
     )
     if (!requested) {
-      setSlashMessage(`Unsupported ${kind} "${rawValue}". Supported: ${options.map((option) => option.id || 'default').join(', ')}.`)
+      setSlashNotice(noticeFor(`Unsupported ${kind} "${rawValue}". Supported: ${options.map((option) => option.id || 'default').join(', ')}.`, 'error'))
       return
     }
     const changed = kind === 'reasoning'
       ? await setSessionCodexOptions(session.id, { reasoningEffort: requested.id })
       : await setSessionCodexOptions(session.id, { serviceTier: requested.id === CODEX_SPEED_INHERIT_ID ? '' : requested.id, serviceTierExplicit: requested.id !== CODEX_SPEED_INHERIT_ID })
-    setSlashMessage(changed ? `${label} changed to ${requested.label}.` : `Failed to change ${kind} to ${requested.label}.`)
+    setSlashNotice(noticeFor(changed ? `${label} changed to ${requested.label}.` : `Failed to change ${kind} to ${requested.label}.`, changed ? 'success' : 'error'))
   }
   const runVariantCommand = async (configId: string, value: string, label: string) => {
     setSlashIndex(0)
     if (runtimeBlocksControlChanges) {
-      setSlashMessage(`${currentProviderName} is still working.`)
+      setSlashNotice(noticeFor(`${currentProviderName} is still working.`, 'warning'))
       return
     }
     const changed = await setAcpConfigOption(session.id, configId, value)
-    setSlashMessage(changed ? `${label} requested.` : `Failed to change ${label}.`)
+    setSlashNotice(noticeFor(changed ? `${label} requested.` : `Failed to change ${label}.`, changed ? 'success' : 'error'))
   }
   const supportsPlanActions = isCodexProvider(currentProvider, currentProviderId) && currentModeId === 'plan'
   const latestPlanMessageIndex = useMemo(() => supportsPlanActions ? messages.reduce((latest, message, index) => {
@@ -2468,6 +2541,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const goalsPopupOpen = Boolean(goalOwner && goalsPopupOwner === goalOwner)
   useEffect(() => {
     setGoalsPopupOwner(null)
+    setGoalEditing(false)
     if (goalMutationOwnerRef.current !== null && goalMutationOwnerRef.current !== goalOwner) {
       goalMutationGenerationRef.current += 1
       goalMutationOwnerRef.current = null
@@ -2477,7 +2551,25 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
   }, [goalOwner])
   useEffect(() => {
-    if (goalsPopupOpen) goalsPopupRef.current?.querySelector<HTMLElement>('summary')?.focus()
+    if (!goalsPopupOpen) return
+    const dialog = goalsPopupRef.current
+    // Edit mode has already focused the objective field.
+    if (!dialog?.contains(document.activeElement)) dialog?.focus()
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || fromViewportMenu(event) || getTopmostModal() !== dialog) return
+      if (event.key === 'Escape') {
+        event.preventDefault(); event.stopPropagation()
+        // Escape cancels an in-place edit first (never while it saves, so a failed save keeps its draft), then closes the window.
+        if (goalEditingRef.current) { if (!goalMutationInFlightRef.current) setGoalEditing(false) }
+        else setGoalsPopupOwner(null)
+      }
+      else trapModalTab(event)
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      if (!document.activeElement || document.activeElement === document.body || dialog?.contains(document.activeElement)) goalsTriggerRef.current?.focus()
+    }
   }, [goalsPopupOpen])
   const displayedGoalWorkerLabel = session.smallModelMode && displayedGoal?.workerModelId
     ? modelOptionFor(buildModelOptions(providerAcp, displayedGoal.workerModelId, currentProvider, currentProviderId), displayedGoal.workerModelId).label
@@ -2571,7 +2663,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const setComputerUseActive = async (active: boolean): Promise<ComputerUseActionResult> => {
     if (!COMPUTER_USE_ENABLED) return { ok: false }
     const result = await setSessionComputerUseEnabled(session.id, active)
-    if (!result.ok) setSlashMessage(result.error || 'Computer use could not be changed.')
+    if (!result.ok) setSlashNotice(noticeFor(result.error || 'Computer use could not be changed.', 'error'))
     return result
   }
 
@@ -2760,7 +2852,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     : slashQuery !== null
       ? slashCommands.filter((command) => command.label.slice(1).toLowerCase().startsWith(slashQuery))
       : mentionMatches
-  const slashOpen = showComposer && editingMessageIndex === null && !appModalOpen && slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined || mentionQuery !== undefined)
+  const slashOpen = showComposer && editingMessageIndex === null && !questionInComposer && !appModalOpen && slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined || mentionQuery !== undefined)
   const slashPaletteVisible = showComposer && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined || mentionQuery !== undefined)
   const commandPaletteVisible = slashPaletteVisible && mentionQuery === undefined
   useEffect(() => {
@@ -2939,7 +3031,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       useAppStore.getState().sessions.find((chat) => chat.id === submittedSessionId)?.createdAt.getTime() === submission.context.birth
     const refuseStaleSubmission = () => {
       if (mountedRef.current) setClaudePlanPrompt((current) => current === submission ? null : current)
-      if (ownsFeedback()) setSlashMessage(UNSENT_PROMPT_MESSAGE)
+      if (ownsFeedback()) setSlashNotice(noticeFor(UNSENT_PROMPT_MESSAGE, 'warning'))
     }
     if (!composerReferenceSubmissionIsCurrent(submission.context)) {
       refuseStaleSubmission()
@@ -2950,7 +3042,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setSubmitting(true)
     try {
       const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(submittedSessionId, 'default')
-      if (!modeOk) { if (ownsFeedback()) setSlashMessage('Failed to change provider mode.'); return }
+      if (!modeOk) { if (ownsFeedback()) setSlashNotice(noticeFor('Failed to change provider mode.', 'error')); return }
       if (!composerReferenceSubmissionIsCurrent(submission.context)) {
         refuseStaleSubmission()
         return
@@ -2959,7 +3051,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         ? normalizePermissionChangeResult(await setSessionCommandSafetyTier(submittedSessionId, 'acceptEdits'))
         : { ok: true }
       if (!permissionResult.ok) {
-        if (ownsFeedback() && !permissionResult.cancelled) setSlashMessage(permissionResult.error || 'Failed to change permission mode to Accept Edits.')
+        if (ownsFeedback() && !permissionResult.cancelled) setSlashNotice(noticeFor(permissionResult.error || 'Failed to change permission mode to Accept Edits.', 'error'))
         return
       }
       if (!composerReferenceSubmissionIsCurrent(submission.context)) {
@@ -2973,13 +3065,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         acknowledgeChatComposerDraft(submittedSessionId, submission.context.birth, { text: submission.draft, attachments: readyAttachments })
       }
       if (!ownsFeedback()) return
-      if (!ok) { setSlashMessage('Could not confirm the prompt. Check its saved state before retrying.'); return }
+      if (!ok) { setSlashNotice(noticeFor('Could not confirm the prompt. Check its saved state before retrying.', 'warning')); return }
       setDraft((current) => current === submission.draft ? '' : current)
       setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => attachmentsEquivalent([attachment], [sentAttachment]))))
       setAttachmentError('')
       setClaudePlanPrompt(null)
     } catch {
-      if (ownsFeedback()) setSlashMessage('Could not confirm the prompt. Check its saved state before retrying.')
+      if (ownsFeedback()) setSlashNotice(noticeFor('Could not confirm the prompt. Check its saved state before retrying.', 'warning'))
     } finally {
       if (claudePlanResolvingRef.current === submission) {
         if (ownsFeedback()) { submitInFlightRef.current = false; setSubmitting(false) }
@@ -3258,6 +3350,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 const trailingRows = outgoingRows.filter((_, sourceIndex) => !placed.has(sourceIndex))
                 return [...rows, ...trailingRows.map(({ attempt, node }) => attempt ? anchoredRows[nextAnchor++].node : node)]
   }, [acp, activePlanActions, activeWorkSectionFirstIndex, beginEditingMessage, beginEditingUnsentMessage, branchSessions, branchingMessageIndex, canChangeProvider, cancelLiveTurn, collapsibleWorkSections, createMessageBranch, currentProviderId, currentProviderName, earliestRenderedMessageIndex, historyStartIndex, latestPlanMessageIndex, livePlanEntries, liveTools, liveWorkDisclosure, messages, outgoingAttempts, outgoingPresentation, outgoingReceipts, pendingPermission, pendingUserInput, providers, redundantStreamingMessageIndex, renderTimelineAfterUser, renderTimelineAtAssistant, resolveLivePermission, retryInPlaceMessageIndex, savedWorkDisclosures, searchNavigation, sectionControls, selectLiveTool, selectMessageBranch, selectPersistedTool, session, stopLiveRuntime, turnAssistantMessageIndex, turnAssistantMessageMatches, turnClockStart, turnEvents, turnSerial, turnUserMessageIndex, turnWorkedDisplaySeconds, unsentActionsDisabled, unsentByLoadedIndex, unsentProjection, unsentReceiptDeleteDisabled, visibleMessages, transcriptDay, transcriptTimezoneOffset, workSections, workingDisplayMode])
+  // The fork/edited row is marked so CSS can move or dim only the rows after it (`[data-motion-anchor] ~ *`).
+  useLayoutEffect(() => {
+    const list = messageListRef.current
+    if (!list) return
+    const target = messageMotionAnchor === null ? null : list.querySelector(`:scope > [data-message-index="${messageMotionAnchor}"]`)
+    list.querySelectorAll(':scope > [data-motion-anchor]').forEach((row) => { if (row !== target) row.removeAttribute('data-motion-anchor') })
+    target?.setAttribute('data-motion-anchor', '')
+  }, [messageMotionAnchor, transcriptRows])
 
   return (
     <FileInspectionProvider chatId={session.id}>
@@ -3311,9 +3411,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       <div className="relative flex-1 flex flex-col min-w-0"
         style={showComposer ? undefined : { '--composer-dock-h': '0px' } as React.CSSProperties}>
         {showSubagentLineage && subagentParent && <nav aria-label="Subagent lineage" className="px-4 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)' }}>
-          <button type="button" className="uam-btn uam-btn--ghost uam-btn--sm" onClick={() => showChatInPane(subagentParent.id)}>
-            <CornerUpLeft size={14} aria-hidden /><span>Subagent of {subagentParent.name}</span>
-          </button>
+          <Button type="button" variant="ghost" size="sm" leadingIcon={<CornerUpLeft size={14} aria-hidden />} onClick={() => showChatInPane(subagentParent.id)}>
+            Subagent of {subagentParent.name}
+          </Button>
         </nav>}
         {showSubagentLineage && session.createdByChatId && <nav aria-label="Chat provenance" className="px-4 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)' }}>
           {startedBy
@@ -3324,19 +3424,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
             <div ref={transcriptContentRef} className="uam-chat-content w-full py-4" style={{ paddingBottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
               {chatHistoryError && (
-                <Notice
-                  key={`chat-history:${session.id}:${historyRefreshFailed ? 'refresh' : 'load'}:${chatHistoryError}`}
-                  tone="error"
-                  title={historyRefreshFailed ? 'History refresh failed' : 'Chat history unavailable'}
-                  dismissLabel="Dismiss chat history error"
-                  actions={(
-                    <Button size="sm" variant="secondary" loading={chatHistoryRetryingIds.has(session.id)} onClick={() => void retryChatHistory(session.id)}>
-                      {historyRefreshFailed ? 'Reload history' : 'Retry'}
-                    </Button>
-                  )}
-                >
-                  {chatHistoryError}
-                </Notice>
+                <div className="mb-2 flex justify-end px-4">
+                  <Button size="sm" variant="secondary" loading={chatHistoryRetryingIds.has(session.id)} onClick={() => void retryChatHistory(session.id)}>
+                    {historyRefreshFailed ? 'Reload history' : 'Retry'}
+                  </Button>
+                </div>
               )}
               <InlineSubagentProvider key={session.id} sourceChatId={session.id} onOpenManagedRun={runId => {
                 const parent = useAppStore.getState().sessions.find(candidate => candidate.id === session.id)
@@ -3346,7 +3438,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 }
               }}>
               <SubAgentDisclosureProvider expandedTools={subagentDisclosures}>
-              <div className="uam-message-list space-y-1.5" aria-busy={historyLoading}>
+              <div ref={messageListRef} className="uam-message-list space-y-1.5" aria-busy={historyLoading} data-message-motion={messageMotion}>
               {historyLoading && <div role="status" className="conversation-empty">
                 <div className="conversation-skeleton" aria-hidden>
                   <span className="conversation-skeleton__bubble" />
@@ -3525,91 +3617,70 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         </div>
 
         <div ref={showComposer ? composerDockRef : undefined} className={showComposer ? `uam-composer-dock${composerCentred ? ' uam-composer-dock--centred' : ''}` : 'contents'}>
-        {displayedGoal && goalsPopupOpen && (
-          <ViewportMenu ref={goalsPopupRef} anchorRef={goalsTriggerRef} side="top" role="region" aria-label="Chat goals" id={goalsPopupId} manageFocus={false}
-            onKeyDownCapture={(event) => {
-              if (event.key !== 'Escape' || getTopmostModal() || !event.currentTarget.contains(event.target as Node)) return
-              event.preventDefault(); event.stopPropagation()
-              setGoalsPopupOwner(null)
-              goalsTriggerRef.current?.focus()
-            }}
-            className="conversation-goals-popup"
-            style={{ width: 560, maxHeight: 'min(360px, calc(100vh - 16px))' }}>
-          <GoalBanner key={goalOwner}
-            goal={displayedGoal}
-            onComplete={handleCompleteGoal}
-            onPause={handlePauseGoal}
+        <Overlay open={Boolean(displayedGoal && goalsPopupOpen)} zIndex={1000} onBackdropMouseDown={() => setGoalsPopupOwner(null)}>
+          {displayedGoal && <div ref={goalsPopupRef} id={goalsPopupId} role="dialog" aria-modal="true" aria-label="Chat goals" tabIndex={-1}
+            className="w-full max-w-xl rounded-xl p-4"
+            style={{ maxHeight: 'min(640px, calc(100dvh - 32px))', overflowY: 'auto', background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)', color: 'var(--text)' }}
+            onMouseDown={(event) => event.stopPropagation()}>
+            <div className="mb-3 flex items-center gap-3">
+              <h2 className="flex-1 text-base font-semibold" style={{ color: 'var(--text)' }}>Goal</h2>
+              <IconButton icon={<X size={17} aria-hidden />} label="Close goal" onClick={() => setGoalsPopupOwner(null)} />
+            </div>
+            <GoalBanner key={goalOwner}
+              goal={displayedGoal}
+              onComplete={handleCompleteGoal}
+              onPause={handlePauseGoal}
 			onResume={session.importedReadOnly ? undefined : () => void handleResumeGoal()}
-            onRestart={session.importedReadOnly ? undefined : () => void runGoalMutation(
-              () => resumeGoal(session.id, displayedGoal.id, true), 'Failed to restart goal.',
-            )}
-            turnRunning={Boolean(acp?.processing || cli?.processing)}
-            resumePending={goalSubmitting}
-            onRemove={handleRemoveGoal}
-            onEdit={displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' ? handleEditGoal : undefined}
-            workerModelLabel={displayedGoalWorkerLabel}
-            reviewerModelLabel={displayedGoalReviewerLabel}
-          />
-          </ViewportMenu>
-        )}
+              onRestart={session.importedReadOnly ? undefined : () => void runGoalMutation(
+                () => resumeGoal(session.id, displayedGoal.id, true), 'Failed to restart goal.',
+              )}
+              turnRunning={Boolean(acp?.processing || cli?.processing)}
+              resumePending={goalSubmitting}
+              onRemove={handleRemoveGoal}
+              onEdit={displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' ? handleEditGoal : undefined}
+              workerModelLabel={displayedGoalWorkerLabel}
+              reviewerModelLabel={displayedGoalReviewerLabel}
+              editing={goalEditing}
+              onEditingChange={setGoalEditing}
+            />
+          </div>}
+        </Overlay>
 
         {composerCentred && <div className="uam-composer-region uam-composer-centre-heading">What would you like to work on?</div>}
         <form
           ref={composerFormRef}
-          onSubmit={submit}
+          onSubmit={(event) => {
+            if (!questionInComposer) return submit(event)
+            event.preventDefault()
+            questionSubmitRef.current?.()
+          }}
           className={showComposer ? "flex-shrink-0" : "contents"}
         >
             <div className={showComposer ? "uam-chat-content uam-composer-region flex flex-col p-3" : "uam-chat-content flex shrink-0 flex-col"}>
-            {confirmYolo && (
-              <Notice
-                tone="warning"
-                title="Enable YOLO?"
-                dismissLabel="Dismiss YOLO warning"
-                onDismiss={() => setConfirmYolo(false)}
-                actions={(
-                  <>
-                    <Button type="button" size="sm" variant="secondary" onClick={() => setConfirmYolo(false)}>Cancel</Button>
-                    <Button type="button" size="sm" variant="danger" onClick={() => {
-                      setConfirmYolo(false)
-                      void applyPermissionMode('yolo').then((result) => showPermissionResult(result, 'Failed to change permission mode to YOLO.'))
-                    }}>Enable YOLO</Button>
-                  </>
-                )}
-              >
-                {COMPUTER_USE_ENABLED ? 'YOLO automatically approves every permission in this chat, including computer use, commands, and file changes.' : 'YOLO automatically approves every permission in this chat, including commands and file changes.'}
-              </Notice>
-            )}
-            {rollbackConfirmation && (
-              <Notice
-                tone="warning"
-                title="Roll back workspace?"
-                dismissLabel="Dismiss workspace rollback warning"
-                onDismiss={() => setRollbackConfirmation(null)}
-                actions={(
-                  <>
-                    <Button type="button" size="sm" variant="secondary" onClick={() => setRollbackConfirmation(null)}>Cancel</Button>
-                    <Button type="button" size="sm" variant="danger" loading={workspaceActionBusy} onClick={() => void confirmLatestTurnRollback()}>Roll back turn</Button>
-                  </>
-                )}
-              >
-                This returns the isolated workspace to before the selected turn. {rollbackConfirmation.diff}
-              </Notice>
-            )}
-            {messageBranchError && (
-              <Notice key={`branch:${messageBranchError}`} tone="error" title={editingMessageSource.kind === 'unsent' ? 'Message edit failed' : 'Message branch failed'} dismissLabel={editingMessageSource.kind === 'unsent' ? 'Dismiss message edit error' : 'Dismiss message branch error'} onDismiss={() => setMessageBranchError('')}>
-                {messageBranchError}
-              </Notice>
-            )}
-            {goalError && (
-              <Notice key={`goal:${goalError}`} tone="error" title="Goal update failed" dismissLabel="Dismiss goal error" onDismiss={() => setGoalError('')}>
-                {goalError}
-              </Notice>
-            )}
-            {workspaceFeedback && (
-              <Notice key={`workspace:${workspaceFeedback.tone}:${workspaceFeedback.message}`} tone={workspaceFeedback.tone} title="Workspace" dismissLabel="Dismiss workspace action message" onDismiss={() => setWorkspaceFeedback(null)}>
-                {workspaceFeedback.message}
-              </Notice>
-            )}
+            <ConfirmDialog
+              open={confirmYolo}
+              title="Enable YOLO?"
+              confirmLabel="Enable YOLO"
+              tone="danger"
+              onCancel={() => setConfirmYolo(false)}
+              onConfirm={() => {
+                setConfirmYolo(false)
+                void applyPermissionMode('yolo').then((result) => showPermissionResult(result, 'Failed to change permission mode to YOLO.'))
+              }}
+            >
+              {COMPUTER_USE_ENABLED ? 'YOLO automatically approves every permission in this chat, including computer use, commands, and file changes.' : 'YOLO automatically approves every permission in this chat, including commands and file changes.'}
+            </ConfirmDialog>
+            <ConfirmDialog
+              open={rollbackConfirmation !== null}
+              title="Roll back workspace?"
+              confirmLabel="Roll back turn"
+              tone="danger"
+              busy={workspaceActionBusy}
+              onCancel={() => setRollbackConfirmation(null)}
+              onConfirm={() => void confirmLatestTurnRollback()}
+            >
+              This returns the isolated workspace to before the selected turn. {rollbackConfirmation?.diff}
+            </ConfirmDialog>
             {!providerSupported && (
               <Notice key={`unsupported:${currentProviderId}`} tone="warning" title="Provider unavailable" dismissLabel="Dismiss unsupported provider warning">
                 {unsupportedProviderMessage}
@@ -3621,72 +3692,30 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               </Notice>
             )}
             {acp && currentAcpError && currentAcpErrorKey !== dismissedAcpErrorKey && !timeoutStop && (
-              <div
-                role="alert"
-                className="uam-notice mb-2 flex items-start gap-2 rounded-md px-2 py-1.5 text-xs"
-                style={{
-                  border: '1px solid color-mix(in srgb, var(--red) 42%, var(--border))',
-                  background: 'color-mix(in srgb, var(--red) 9%, var(--surface))',
-                  color: 'var(--red)',
-                }}
-              >
-                <span className="min-w-0 flex-1" style={{ overflowWrap: 'anywhere' }}>{currentErrorSource}: {currentAcpError}</span>
-                <span className="flex shrink-0 items-center gap-1">
-                  <CopyTextButton text={buildAcpErrorCopyText({ ...acp, lastError: currentAcpError }, currentErrorTitle)} label="Copy error" title="Copy error details" />
-                  <IconButton icon={<X size={13} />} size="sm" label="Dismiss composer error" onClick={() => setDismissedAcpErrorKey(currentAcpErrorKey)} />
-                </span>
-              </div>
-            )}
-            {CLAUDE_ENABLED && claudePlanPrompt !== null && (
               <Notice
-                tone="warning"
-                title="Claude Plan mode"
-                dismissLabel="Dismiss Claude Plan mode warning"
-                onDismiss={() => setClaudePlanPrompt(null)}
-                actions={(
-                  <>
-                  <Button type="button"
-                    size="sm"
-                    variant="primary"
-                    disabled={submitting}
-                    onClick={() => void resolveClaudePlanPrompt('acceptEdits')}
-                  >
-                    Accept edits and proceed
-                  </Button>
-                  <Button type="button"
-                    size="sm"
-                    variant="secondary"
-                    disabled={submitting}
-                    onClick={() => void resolveClaudePlanPrompt('default')}
-                  >
-                    Review each edit
-                  </Button>
-                  <Button type="button"
-                    size="sm"
-                    variant="secondary"
-                    disabled={submitting}
-                    onClick={() => void resolveClaudePlanPrompt('plan')}
-                  >
-                    Keep planning
-                  </Button>
-                  </>
-                )}
+                tone="error"
+                title={currentErrorTitle}
+                dismissLabel="Dismiss composer error"
+                onDismiss={() => setDismissedAcpErrorKey(currentAcpErrorKey)}
+                actions={<CopyTextButton text={buildAcpErrorCopyText({ ...acp, lastError: currentAcpError }, currentErrorTitle)} label="Copy error" title="Copy error details" />}
               >
-                Claude Plan mode is read-only. Choose how to proceed with this prompt.
-                {claudePlanPrompt.context.references.length > 0 && <> The prompt keeps the reference snapshots selected when you pressed Send; new selections belong to your next message.</>}
+                {currentErrorSource}: {currentAcpError}
               </Notice>
             )}
-            {slashMessage && (
-              <Notice key={`command:${slashMessage}`} tone={slashNoticeTone} title={slashNoticeTitle} dismissLabel={`Dismiss ${slashNoticeTitle.toLowerCase()} feedback`} onDismiss={() => setSlashMessage('')}>
-                {slashMessage}
-              </Notice>
-            )}
-            {attachmentError && (
-              <Notice key={`attachment:${attachmentError}`} tone="error" title="Attachment failed" dismissLabel="Dismiss attachment error" onDismiss={() => setAttachmentError('')}>
-                {attachmentError}
-              </Notice>
-            )}
-            {!showComposer && dictationError && <Notice tone="error" title="Dictation failed" dismissLabel="Dismiss dictation error" onDismiss={dismissDictationError}>{dictationError}</Notice>}
+            {CLAUDE_ENABLED && <ConfirmDialog
+              open={claudePlanPrompt !== null}
+              title="Claude Plan mode"
+              confirmLabel="Accept edits and proceed"
+              tone="primary"
+              busy={submitting}
+              cancelLabel="Keep planning"
+              secondaryAction={{ label: 'Review each edit', onClick: () => void resolveClaudePlanPrompt('default') }}
+              onCancel={() => void resolveClaudePlanPrompt('plan')}
+              onConfirm={() => void resolveClaudePlanPrompt('acceptEdits')}
+            >
+              Claude Plan mode is read-only. Choose how to proceed with this prompt.
+              {claudePlanPrompt && claudePlanPrompt.context.references.length > 0 && <> The prompt keeps the reference snapshots selected when you pressed Send; new selections belong to your next message.</>}
+            </ConfirmDialog>}
             <InlinePromptQueue key={session.id}
               held={Boolean(acp?.queueHeld && acp.queuedPrompts?.length)} onResume={(expected) => resumeQueuedAcpPrompts(session.id, expected)} prompts={acp?.queuedPrompts ?? []} disabled={steering || session.importedReadOnly}
               onEdit={(id, revision, text, retainedAttachmentIds) => editQueuedAcpPrompt(session.id, id, revision, text, retainedAttachmentIds)}
@@ -3699,9 +3728,21 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 finally { if (currentSessionIdRef.current === submittedSessionId) setSteering(false) }
               }}
             />
-            {showComposer && (!isCompanionContext() || displayedGoal || showSideChatControls) && <div className="uam-composer-tabs" data-workspace={(!isCompanionContext() || displayedGoal) ? 'true' : undefined}>
-            {(!isCompanionContext() || displayedGoal) && <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
-            {!isCompanionContext() && (
+            {showQuestion && !questionInComposer && questionKey !== answeredQuestionKey && pendingUserInput && (
+              <UserInputInlineCard
+                key={questionKey}
+                memory={questionMemory}
+                input={pendingUserInput}
+                onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
+                waitIsStale={acp?.waitIsStale}
+                waitStaleReason={acp?.waitStaleReason}
+                waitSeconds={acp?.waitSeconds}
+                onCancelTurn={cancelLiveTurn}
+                onStopRuntime={stopLiveRuntime}
+              />
+            )}
+            {((showComposer && (!isCompanionContext() || displayedGoal || showSideChatControls)) || editTabMounted || questionTabMounted) && <div className="uam-composer-tabs" data-workspace={showComposer && (!isCompanionContext() || displayedGoal) ? 'true' : undefined}>
+            {showComposer && !isCompanionContext() && <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
               <>
                 <div ref={workspaceMenuRef} className="relative shrink-0">
                   <IconButton
@@ -3747,8 +3788,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                       {remoteComputerUseDisabled ? (
                         <div className="px-2 py-2 text-xs" style={{ color: 'var(--text-2)' }}>
                           This directory lives on the remote computer. Use this chat or its CLI view for target-side work.
-                          <button type="button" role="menuitem" className="uam-menu-select__option mt-2 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }}><ComposerIcon name="terminal" size={14} /><span>Open terminal</span></button>
-                          <button type="button" role="menuitem" disabled={!recoveryHost || recoveryHost.runnerStatus !== 'ready' || workspaceActionBusy} className="uam-menu-select__option flex w-full items-center gap-2 px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); setRemoteBrowseKey(remoteContextKey) }}><ComposerIcon name="folder" size={14} /><span>Attach remote directory</span></button>
+                          <MenuItem className="mt-2" icon={<ComposerIcon name="terminal" size={14} />} label="Open terminal" onSelect={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }} />
+                          <MenuItem icon={<ComposerIcon name="folder" size={14} />} label="Attach remote directory" disabled={!recoveryHost || recoveryHost.runnerStatus !== 'ready' || workspaceActionBusy} onSelect={() => { setWorkspaceMenuOpen(false); setRemoteBrowseKey(remoteContextKey) }} />
                           <label className="mt-2 grid gap-1">
                             Move this chat to
                             <select aria-label="Move chat workspace" value={remoteMoveFolderId} disabled={remoteMoveDisabled} onChange={(event) => setRemoteMoveFolderId(event.target.value)} className="px-2 py-1" style={{ background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)' }}>
@@ -3756,7 +3797,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                               {workspaceFolders.filter((folder) => folder.executionHostId === session.executionHostId && folder.id !== session.folderId).map((folder) => <option key={folder.id} value={folder.id}>{folder.name} · {folder.directory}</option>)}
                             </select>
                           </label>
-                          <button type="button" role="menuitem" disabled={remoteMoveDisabled || !remoteMoveFolderId} aria-busy={workspaceActionBusy || undefined} className="uam-menu-select__option mt-1 w-full px-2 py-2 text-left" onClick={() => void moveRemoteWorkspace()}>{workspaceActionBusy ? 'Moving chat…' : 'Move chat'}</button>
+                          <MenuItem nativeDisabled disabled={remoteMoveDisabled || !remoteMoveFolderId} aria-busy={workspaceActionBusy || undefined} className="uam-menu-select__option mt-1 w-full px-2 py-2 text-left" label={workspaceActionBusy ? 'Moving chat…' : 'Move chat'} onClick={() => void moveRemoteWorkspace()} />
                           <div className="mt-1">History and goals stay with this chat. A new provider session starts in the selected workspace.</div>
                           {Boolean(acp?.running || cli?.running) && <div className="mt-1">Stop the chat before moving its workspace.</div>}
                           <label className="mt-2 flex items-center gap-2">
@@ -3772,16 +3813,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                         </div>
                       ) : (
                         <>
-                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspace() }}><ComposerIcon name="folder" size={14} /><span>Open workspace</span></button>
-                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceEditor() }}><ComposerIcon name="editor" size={14} /><span>Open in editor</span></button>
-                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }}><ComposerIcon name="terminal" size={14} /><span>Open terminal</span></button>
+                          <MenuItem icon={<ComposerIcon name="folder" size={14} />} label="Open workspace" onSelect={() => { setWorkspaceMenuOpen(false); void openWorkspace() }} />
+                          <MenuItem icon={<ComposerIcon name="editor" size={14} />} label="Open in editor" onSelect={() => { setWorkspaceMenuOpen(false); void openWorkspaceEditor() }} />
+                          <MenuItem icon={<ComposerIcon name="terminal" size={14} />} label="Open terminal" onSelect={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }} />
                           <div className="my-1 border-t" style={{ borderColor: 'var(--border)' }} />
                           {!isGitWorktree ? (
-                            <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('create') }}><ComposerIcon name="git-tree" size={14} /><span>Create worktree</span></button>
+                            <MenuItem icon={<ComposerIcon name="git-tree" size={14} />} label="Create worktree" disabled={workspaceActionsDisabled} onSelect={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('create') }} />
                           ) : (
                             <>
-                              <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('discard') }}><span>Discard &amp; return</span></button>
-                              <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('port') }}><span>Port back</span></button>
+                              <MenuItem label={'Discard & return'} disabled={workspaceActionsDisabled} onSelect={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('discard') }} />
+                              <MenuItem label={'Port back'} disabled={workspaceActionsDisabled} onSelect={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('port') }} />
                             </>
                           )}
                         </>
@@ -3794,27 +3835,50 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   {composerBranch && (canSwitchComposerBranch
                     ? <ChatBranchPicker key={`${composerBranchScope}:${composerVcsType}`} chatId={session.id} branch={composerBranch} vcsType={composerVcsType} disabled={workspaceActionsDisabled} pendingBranch={session.pendingGitBranch} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
                     : <Tooltip label={composerVcsType === 'svn' ? 'SVN folder switching needs a local working copy outside imported, temporary or isolated chats.' : composerBranch}>
-                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm focus-visible:ring-1 focus-visible:ring-[var(--accent)]" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : `Branch ${composerBranch}`}>
+                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : `Branch ${composerBranch}`}>
                         {composerVcsType !== 'svn' && <GitBranch size={12} aria-hidden />}<span className="truncate font-mono">{composerVcsType === 'svn' ? `SVN r${composerBranch}` : composerBranch}</span>
                       </span>
                     </Tooltip>)}
                   {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
                 </span>
               </>
-            )}
-            {displayedGoal && <button ref={goalsTriggerRef} type="button" aria-label="Goals" aria-expanded={goalsPopupOpen}
-              aria-controls={goalsPopupOpen ? goalsPopupId : undefined} aria-haspopup="true"
-              className="conversation-goal-chip" title={displayedGoal.objective}
-              onClick={() => { setGoalsPopupOwner(goalsPopupOpen ? null : goalOwner); setWorkspaceMenuOpen(false); setModelOpen(false) }}
-              onKeyDown={(event) => {
-                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setGoalsPopupOwner(goalOwner) }
-                else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setGoalsPopupOwner(null) }
-              }}>
-              <Target size={13} aria-hidden /><span className="conversation-goal-chip__status">{displayedGoal.status}</span><span className="conversation-goal-chip__title">{displayedGoal.objective}</span>
-            </button>}
+            </div>}
+            {/* ui: raw button kept — goal tab look (its own status and objective layout); Chip would add the uam-chip look */}
+            {showComposer && displayedGoal && <div className="uam-composer-goal-tab" role="group" aria-label="Goal">
+              {/* ui: raw button kept — tab body look; Chip would add the uam-chip look */}
+              <button ref={goalsTriggerRef} type="button" aria-label="Goals" aria-expanded={goalsPopupOpen}
+                aria-controls={goalsPopupOpen ? goalsPopupId : undefined} aria-haspopup="dialog"
+                className="uam-composer-goal-tab__body" title={displayedGoal.objective}
+                onClick={() => { setGoalsPopupOwner(goalsPopupOpen ? null : goalOwner); setGoalEditing(false); setWorkspaceMenuOpen(false); setModelOpen(false) }}
+                onKeyDown={(event) => {
+                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setGoalEditing(false); setGoalsPopupOwner(goalOwner) }
+                }}>
+                <Target size={13} aria-hidden /><span className="uam-composer-goal-tab__objective">{displayedGoal.objective}</span>
+              </button>
+              {displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' && !session.importedReadOnly &&
+                <IconButton size="sm" icon={<Pencil size={12} aria-hidden />} label="Edit goal" disabled={goalSubmitting} onClick={() => { setGoalEditing(true); setGoalsPopupOwner(goalOwner); setWorkspaceMenuOpen(false); setModelOpen(false) }} />}
+              {displayedGoal.status === 'active' &&
+                <IconButton size="sm" icon={<Square size={11} aria-hidden />} label="Stop goal" disabled={goalSubmitting} onClick={handlePauseGoal} />}
             </div>}
             <div className="uam-composer-tabs__end">
-              {showSideChatControls && (session.temporaryParentChatId ? (
+              <ComposerTab open={questionInComposer}>
+                <div className="uam-composer-side-controls" role="group" aria-label="Question">
+                  <span className="uam-composer-side-controls__pill" title="The agent is waiting for your answer">
+                    <MessageSquare size={12} aria-hidden />
+                    Question
+                  </span>
+                </div>
+              </ComposerTab>
+              <ComposerTab open={editingMessageIndex !== null}>
+                <div className="uam-composer-side-controls" role="group" aria-label="Editing message">
+                  <span className="uam-composer-side-controls__pill" title={editingMessageSource.kind === 'unsent' ? 'Saving updates this unsent input' : 'Saving creates a new branch'}>
+                    <Pencil size={12} aria-hidden />
+                    Editing message
+                  </span>
+                  <IconButton size="sm" icon={<X size={14} aria-hidden />} label="Cancel edit" tooltip="Cancel edit (Esc)" disabled={branchingMessageIndex !== null} onClick={cancelEditingMessage} />
+                </div>
+              </ComposerTab>
+              <ComposerTab open={showComposer && showSideChatControls}>{session.temporaryParentChatId ? (
                 <div className="uam-composer-side-controls" role="group" aria-label="Side chat">
                   <span className="uam-composer-side-controls__pill" title="Main chat context is reference only">
                     <MessageSquareDashed size={12} aria-hidden />
@@ -3827,31 +3891,31 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 <div className="uam-composer-side-controls">
                   <Button type="button" size="sm" variant="ghost" leadingIcon={<MessageSquareDashed size={13} aria-hidden />} title="Resume the side chat (/side)" onClick={() => void navigateSide()}>Resume side chat</Button>
                 </div>
-              ))}
+              )}</ComposerTab>
             </div>
-            </div>}
-            {pendingUserInput && !session.importedReadOnly && (
-              <UserInputInlineCard
-                key={`${session.id}:${pendingUserInput.requestId}:${pendingUserInput.itemId}`}
-                input={pendingUserInput}
-                onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
-                waitIsStale={acp?.waitIsStale}
-                waitStaleReason={acp?.waitStaleReason}
-                waitSeconds={acp?.waitSeconds}
-                onCancelTurn={cancelLiveTurn}
-                onStopRuntime={stopLiveRuntime}
-              />
-            )}
-            {editingMessageIndex !== null && <div className="conversation-edit-strip" role="status">
-              <Pencil size={13} aria-hidden />
-              <span className="min-w-0 flex-1 truncate">{editingMessageSource.kind === 'unsent' ? 'Editing unsent message. Saving updates this input.' : 'Editing message. Saving creates a new branch.'}</span>
-              <Button type="button" size="sm" variant="ghost" disabled={branchingMessageIndex !== null} onClick={cancelEditingMessage}>Cancel</Button>
             </div>}
             {(showComposer || editingMessageIndex !== null) && <div
               className="uam-composer-surface"
               onDragOver={(event) => event.preventDefault()}
               onDrop={onComposerDrop}
             >
+            {questionInComposer && pendingUserInput && <UserInputInlineCard
+              key={questionKey}
+              memory={questionMemory}
+              variant="composer"
+              input={pendingUserInput}
+              onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
+              submitRef={questionSubmitRef}
+              onSubmitStateChange={setQuestionSubmitState}
+              onAnswered={() => setAnsweredQuestionKey(questionKey)}
+              waitIsStale={acp?.waitIsStale}
+              waitStaleReason={acp?.waitStaleReason}
+              waitSeconds={acp?.waitSeconds}
+              onCancelTurn={cancelLiveTurn}
+              onStopRuntime={stopLiveRuntime}
+            />}
+            {/* The composer body stays mounted under a question so its draft, refs and menus survive; it swaps back in on answer. */}
+            <div className={!questionInComposer && questionWasInComposer.current ? 'uam-swap__in' : undefined} hidden={questionInComposer}>
             {editingMessageIndex === null && <ComposerReferenceChips key={`${session.id}:${session.createdAt.getTime()}`} references={composerReferences} />}
             {editingMessageIndex === null && (markdownStoreAttachments.length > 0 || composerAttachments.length > 0) && (
               <div className="flex flex-wrap gap-2 px-3 pt-3">
@@ -3901,6 +3965,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   {slashMatches.map((command, index) => {
                     const active = index === activeSlashIndex
                     return (
+                      // ui: raw button kept — role="option" in a listbox (aria-selected, active descendant); MenuItem is role="menuitem"
                       <button
                         key={command.id}
                         id={`${slashListboxId}-option-${index}`}
@@ -3941,7 +4006,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 {group.groupEntries.map((command, index) => {
                   const childPath = command.id.startsWith('md-group:') ? command.id.slice('md-group:'.length) : path
                   const active = group === activeSlashGroup && index === Math.min(slashGroupIndex, group.groupEntries!.length - 1)
-                  return <button key={command.id} id={`${slashListboxId}-group-${groupIndex}-option-${index}`} type="button" role="menuitem" aria-haspopup={command.groupEntries ? 'menu' : undefined} aria-expanded={command.groupEntries ? slashGroup === childPath : undefined} onMouseEnter={() => { setSlashGroupIndex(command.groupEntries ? 0 : index); setSlashGroup(childPath) }} onMouseDown={(event) => { event.preventDefault(); runSlashCommand(command) }} className={`uam-menu-select__option w-full flex items-start gap-2 px-2 py-2 text-left${active ? ' is-selected' : ''}`} style={{ borderRadius: 6, color: active ? 'var(--text)' : 'var(--text-2)' }}>{command.groupEntries ? <BookOpen size={15} className="mt-0.5 shrink-0" aria-hidden /> : <FileText size={15} className="mt-0.5 shrink-0" aria-hidden />}<span className="min-w-0 flex-1"><span className="block font-mono text-sm" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[childPath] = element }}><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span><span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span></span></button>
+                  return <MenuItem key={command.id} id={`${slashListboxId}-group-${groupIndex}-option-${index}`} aria-haspopup={command.groupEntries ? 'menu' : undefined} aria-expanded={command.groupEntries ? slashGroup === childPath : undefined} onMouseEnter={() => { setSlashGroupIndex(command.groupEntries ? 0 : index); setSlashGroup(childPath) }} onMouseDown={(event) => { event.preventDefault(); runSlashCommand(command) }} className={`uam-menu-select__option w-full${active ? ' is-selected' : ''}`} style={{ borderRadius: 6, color: active ? 'var(--text)' : 'var(--text-2)' }} icon={command.groupEntries ? <BookOpen size={15} aria-hidden /> : <FileText size={15} aria-hidden />} detailLayout="stacked" label={<span className="font-mono text-sm" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[childPath] = element }}><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span>} detail={command.hint} />
                 })}
               </ViewportMenu>
             })}
@@ -3954,6 +4019,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 className="flex items-center gap-2 px-3 pt-2 text-[11px]"
                 style={{ color: dictationError ? 'var(--red)' : 'var(--accent)' }}
               >
+                {dictationError && <CircleAlert size={13} aria-hidden className="shrink-0" />}
                 <span className="min-w-0 flex-1">
                   {dictationError || (
                     dictationState === 'starting'
@@ -4021,9 +4087,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                     <IconButton icon={<X size={14} />} label={`Remove ${attachment.name} from edited message`} disabled={branchingMessageIndex !== null} onClick={() => removeEditingAttachment(attachment.id, attachment.type === 'markdown-store')} />
                   </div>
                 ))}
-                <Button type="button" size="sm" variant="primary" loading={branchingMessageIndex !== null} disabled={(!editingMessageText.trim() && editingMessageAttachments.length === 0) || !canChangeProvider} onClick={() => void submit()}>{editingMessageSource.kind === 'unsent' ? 'Save changes' : 'Save to new branch'}</Button>
+                {!showComposer && <ComposerSendButton canSend={canSaveEdit} editing />}
               </div>
             )}
+            </div>
             {showComposer && <>
             <input
               ref={fileInputRef}
@@ -4043,7 +4110,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               providers={composerProviders}
               providerId={currentProviderId}
               canChangeProvider={canChangeProvider}
-              canSend={canSend}
+              canSend={questionInComposer ? questionSubmitState === 'ready' : editingMessageIndex !== null ? canSaveEdit : canSend}
+              editing={editingMessageIndex !== null}
+              sendLabel={questionInComposer ? 'Submit answers' : undefined}
+              holdSend={questionInComposer}
               runtimeStatusLabel={statusLabel(providerRuntime)}
               runtimeStatusColor={statusColor(providerRuntime)}
               modelId={session.smallModelMode ? activeGoal?.workerModelId || currentModelId : currentModelId}
@@ -4106,9 +4176,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               goalArmed={goalArmNextMessage}
               goalActive={Boolean(activeGoal)}
               goalPaused={Boolean(goalPaused)}
-              defaultGoalTokenBudget={defaultGoalTokenBudget}
               onToggleGoal={handleToggleGoal}
-              onSetDefaultGoalTokenBudget={(value) => setDefaultGoalTokenBudget(session.id, value)}
               onCancelTurn={cancelLiveTurn}
               onAttachFile={() => fileInputRef.current?.click()}
               onOpenMarkdownStore={() => void openMarkdownStore()}

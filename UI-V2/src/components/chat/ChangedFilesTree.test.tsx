@@ -6,6 +6,7 @@ import type { VcsChangedFile } from '../../store/useAppStore'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
 const file = (path: string, status = 'M'): VcsChangedFile => ({ path, status, staged: false, additions: 2, deletions: 1, binary: false })
 
 it('browses changed files with the keyboard and opens the focused file on Enter', async () => {
