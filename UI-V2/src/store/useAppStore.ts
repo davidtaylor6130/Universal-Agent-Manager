@@ -634,6 +634,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
 // Store
 // ---------------------------------------------------------------------------
 
+const BOOTSTRAP_STATE_RETRIES = 3
+
 export const useAppStore = create<AppState>((set, get) => {
   const flushPendingCliTranscriptChunks = () => {
     pushFlushTimers.cliTranscript = null
@@ -756,11 +758,19 @@ export const useAppStore = create<AppState>((set, get) => {
 
   // CompanionShell bootstraps after authentication and preserves phone-local selection.
   // Desktop state arrives via uamPush later too.
-  if (isCefContext() && !isCompanionContext()) {
+  // Native stamps statePatch at revision + 1 without bumping on getInitialState, and the
+  // reply and pushes travel separate IPC paths, so a diff-only patch can overtake the
+  // snapshot. Until a full state hydrates, re-pull a stale snapshot (#622).
+  let bootstrapHydrated = false
+  const pullInitialState = (retriesLeft = BOOTSTRAP_STATE_RETRIES) => {
     sendToCEF<CppAppState>({ action: 'getInitialState', payload: { summaryOnly: true } }).then((resp) => {
       // resp.data is the raw CppAppState object. Sanitize before deserializing.
       const sanitized = resp.ok ? sanitizeCppAppState(resp.data) : null
-      if (sanitized) {
+      if (!sanitized) {
+        set({ bootstrapStateError: resp.ok ? 'The backend returned an invalid startup state.' : (resp.error || 'The backend did not return the startup state.') })
+        return
+      }
+      {
         const current = get()
         const nextRevision = cppStateRevision(sanitized)
         // The bootstrap pull is a one-shot authoritative full state. Apply it when
@@ -853,24 +863,32 @@ export const useAppStore = create<AppState>((set, get) => {
             shellActionNotification: current.shellActionNotification,
             statusLine: current.statusLine,
           })
+          bootstrapHydrated = true
           set(current.reconcileMemorySettingsProjection(deserialized, sanitized.settings))
           // Sync theme to DOM
           if (deserialized.theme) {
             persistTheme(deserialized.theme, get().customThemes)
           }
-        } else if (
-          (sanitized.appVersion && sanitized.appVersion !== current.appVersion) ||
-          (sanitized.runnerProtocolVersion && sanitized.runnerProtocolVersion !== current.runnerProtocolVersion)
-        ) {
-          // A state patch can overtake bootstrap; its revision must win, but it lacks runtime metadata.
-          set({
-            appVersion: sanitized.appVersion || current.appVersion,
-            runnerProtocolVersion: sanitized.runnerProtocolVersion || current.runnerProtocolVersion,
-          })
+        } else {
+          if (
+            (sanitized.appVersion && sanitized.appVersion !== current.appVersion) ||
+            (sanitized.runnerProtocolVersion && sanitized.runnerProtocolVersion !== current.runnerProtocolVersion)
+          ) {
+            // A state patch can overtake bootstrap; its revision must win, but it lacks runtime metadata.
+            set({
+              appVersion: sanitized.appVersion || current.appVersion,
+              runnerProtocolVersion: sanitized.runnerProtocolVersion || current.runnerProtocolVersion,
+            })
+          }
+          // Never apply an older snapshot over newer patch data; ask for a fresh one.
+          if (bootstrapHydrated) return
+          if (retriesLeft > 0) pullInitialState(retriesLeft - 1)
+          else set({ bootstrapStateError: 'Startup state stayed behind live updates, so collections, workspaces and provider details may be incomplete.' })
         }
       }
     })
   }
+  if (isCefContext() && !isCompanionContext()) pullInitialState()
 
   // Register window.uamPush SYNCHRONOUSLY at module load time (before React mounts)
   // so that C++'s OnLoadEnd push is never missed.  Using getState() avoids stale closures.
@@ -1100,6 +1118,8 @@ export const useAppStore = create<AppState>((set, get) => {
   const inCef = isCefContext()
 
   return {
+    bootstrapStateError: '',
+    retryBootstrapState: () => { set({ bootstrapStateError: '' }); pullInitialState() },
     startupNativeImports: EMPTY_STARTUP_NATIVE_IMPORT_STATUS,
     startupNativeImportReviewSequence: 0,
     startupNativeImportFolderId: null,

@@ -1574,6 +1574,59 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().sessions.find((session) => session.id === 'chat-1')?.providerId).toBe('gemini-cli')
   })
 
+  it('re-pulls a bootstrap snapshot that a newer patch overtook, then hydrates (#622)', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    const stale = makeCppState(1)
+    const fresh = makeCppState(2)
+    fresh.resourceCollections = [{ id: 'col-1', name: 'Docs', resources: [] } as unknown as CppAppState['resourceCollections'][number]]
+    const replies = [stale, fresh]
+    const pending: Array<() => void> = []
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).action === 'getInitialState') {
+        const reply = replies.shift()
+        pending.push(() => onSuccess(JSON.stringify(reply)))
+      } else onSuccess('{}')
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, settings: fresh.settings } })
+    pending.shift()?.()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cefStore.getState().resourceCollections).toEqual([])
+    expect(pending).toHaveLength(1)
+    pending.shift()?.()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cefStore.getState().resourceCollections.map((collection) => collection.id)).toEqual(['col-1'])
+    expect(cefStore.getState().lastAppliedStateRevision).toBe(2)
+    expect(cefStore.getState().bootstrapStateError).toBe('')
+  })
+
+  it('surfaces a retryable error when every bootstrap re-pull stays stale (#622)', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    let pulls = 0
+    let patched = false
+    const held: Array<() => void> = []
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).action === 'getInitialState') {
+        pulls += 1
+        const reply = () => onSuccess(JSON.stringify(makeCppState(1)))
+        if (patched) reply()
+        else held.push(reply)
+      } else onSuccess('{}')
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, settings: makeCppState(2).settings } })
+    patched = true
+    held.shift()?.()
+    await vi.waitFor(() => expect(cefStore.getState().bootstrapStateError).not.toBe(''))
+    expect(pulls).toBe(4)
+    expect(cefStore.getState().lastAppliedStateRevision).toBe(2)
+    cefStore.getState().retryBootstrapState()
+    expect(cefStore.getState().bootstrapStateError).toBe('')
+    await vi.waitFor(() => expect(pulls).toBe(8))
+  })
+
   it('does not associate an edited pre-existing queue entry with a newer acknowledged input', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()

@@ -10,7 +10,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
 import { isCefContext, isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
-import { Button, IconButton, SegmentedControl, Tooltip } from '../ui'
+import { Button, IconButton, Notice, SegmentedControl, Tooltip } from '../ui'
 import { shortcutLabel } from '../../utils/shortcuts'
 import { reportAppFailure } from '../../utils/appFailure'
 import type { Session } from '../../types/session'
@@ -65,6 +65,19 @@ const PushStatusDot = memo(function PushStatusDot() {
     </Tooltip>
   )
 })
+
+function BootstrapStateNotice() {
+  const error = useAppStore((s) => s.bootstrapStateError)
+  const retry = useAppStore((s) => s.retryBootstrapState)
+  if (!error) return null
+  return (
+    <div className="px-2 pt-2">
+      <Notice tone="error" title="Startup state not loaded" dismissible={false} dismissLabel="Dismiss startup state error" actions={<Button size="sm" onClick={retry}>Retry</Button>}>
+        {error}
+      </Notice>
+    </div>
+  )
+}
 
 function hasNonBlankChatContent(messages: Message[] | undefined) {
   return Boolean(messages?.some((message) =>
@@ -762,6 +775,7 @@ export function MainPanel() {
         {isCefContext() && <PushStatusDot />}
       </div>
 
+      {isCefContext() && <BootstrapStateNotice />}
       <div className="min-h-0 flex-1" data-testid={`chat-grid-${leaves.length}`}>
         {renderNode(layout.root)}
       </div>

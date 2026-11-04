@@ -217,6 +217,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   streamingMessageId: string | null
   pushChannelStatus: PushChannelStatus
   pushChannelError: string
+  bootstrapStateError: string
+  retryBootstrapState: () => void
   lastPushAtMs: number | null
   uiBuildId: string
   repositoryReviewBySessionId: Record<string, VcsCommitStatus>
