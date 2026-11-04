@@ -16,6 +16,11 @@ namespace uam
 	/// browser's main frame.  Safe to call from any thread — marshals to the UI thread internally.
 	/// </summary>
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app);
+	/// <summary>
+	/// Poll-tick variant: rebuilds the fingerprint at most once per 100 ms summary window and defers
+	/// changes inside it. Request handlers keep calling PushStateUpdateIfChanged for immediate feedback.
+	/// </summary>
+	bool PushRuntimeStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app);
 	void PushStateUpdate(CefRefPtr<CefBrowser> browser, AppState& app);
 
 	/// <summary>

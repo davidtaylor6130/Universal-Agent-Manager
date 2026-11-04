@@ -464,14 +464,15 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 			if (streamed || uam::DeferredStatePushDue())
 			{
 				const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
-				run_pushes += uam::PushStateUpdateIfChanged(nullptr, app) ? 1 : 0;
+				run_pushes += uam::PushRuntimeStateUpdateIfChanged(nullptr, app) ? 1 : 0;
 				run_calls.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
 			}
 			clock.Advance(kTick);
 		}
 
 		// The three streaming chats share one 100 ms window: pushes land on ticks 0, 7, 14 ... 56 (every 112 ms),
-		// so 9 pushes; rebuilds are the 31 streamed ticks plus the quiet ticks 7, 21, 35 and 49 that are due.
+		// so 9 pushes; calls are the 31 streamed ticks plus the quiet ticks 7, 21, 35 and 49 that are due.
+		// Only the 9 due calls rebuild the fingerprint; before the runtime rebuild window all 35 rebuilt (~265 ms/s).
 		// Without the background-chat throttle pushes rise to ~31; rebuilding every deferred quiet tick gives ~58.
 		UAM_ASSERT_EQ(run_pushes, 9);
 		UAM_ASSERT_EQ(run_calls.size(), std::size_t{35});
@@ -480,7 +481,7 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 		for (int tick = 0; tick < 20 && uam::HasDeferredStatePush(); ++tick)
 		{
 			clock.Advance(kTick);
-			if (uam::DeferredStatePushDue()) uam::PushStateUpdateIfChanged(nullptr, app);
+			if (uam::DeferredStatePushDue()) uam::PushRuntimeStateUpdateIfChanged(nullptr, app);
 		}
 		UAM_ASSERT(!uam::HasDeferredStatePush());
 		clock.Advance(std::chrono::milliseconds(120));
@@ -495,6 +496,8 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 		}
 	}
 
+	// Skipped calls inside the rebuild window cost microseconds; rebuilding every call put the median at ~3 ms.
+	UAM_ASSERT(Median(calls) < 1.0);
 	std::cout << "[TIMING] streaming push fixture: fingerprint p50=" << Median(fingerprints) << " ms; ticks=62 rebuilds="
 	          << calls.size() << " pushes=" << pushes << " per-rebuild p50=" << Median(calls) << " ms; UI-thread push cost="
 	          << per_second << " ms/s, cheapest of 3 windows\n";

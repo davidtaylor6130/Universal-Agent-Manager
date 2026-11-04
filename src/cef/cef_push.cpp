@@ -43,6 +43,9 @@ namespace
 	std::chrono::steady_clock::time_point g_deferred_state_push_due_at{};
 	// Throttle decisions read this clock so unit tests can step time deterministically.
 	std::chrono::steady_clock::time_point (*g_state_push_clock)() = &std::chrono::steady_clock::now;
+	// Poll ticks run every 16 ms while a turn streams; rebuilding the full fingerprint on each one cost
+	// ~26% of the UI thread even though throttled summaries publish at most every 100 ms.
+	std::chrono::steady_clock::time_point g_last_runtime_state_rebuild_at{};
 	std::unordered_map<std::string, nlohmann::json> g_last_pushed_chat_summaries_by_chat_id;
 	nlohmann::json g_last_pushed_folders_fingerprint;
 	nlohmann::json g_last_pushed_resource_collections_fingerprint;
@@ -112,6 +115,7 @@ namespace
 		g_last_pushed_chat_order_fingerprint = ChatOrderForPatch(app);
 		g_last_pushed_chat_summaries_by_chat_id.clear();
 		g_last_summary_push_time_by_chat_id.clear();
+		g_last_runtime_state_rebuild_at = {};
 		g_state_push_deferred = false;
 
 		const nlohmann::json& chats = fingerprint_state.at("chats");
@@ -464,6 +468,22 @@ namespace uam
 		BumpStateRevision(app);
 		PostPush(browser, message);
 		return true;
+	}
+
+	bool PushRuntimeStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app)
+	{
+		const auto now = g_state_push_clock();
+		if (g_last_runtime_state_rebuild_at != std::chrono::steady_clock::time_point{} &&
+		    now - g_last_runtime_state_rebuild_at < kChatSummaryMinPushInterval)
+		{
+			// Defer instead of dropping: the poll scheduler wakes when the window ends.
+			const auto due = g_last_runtime_state_rebuild_at + kChatSummaryMinPushInterval;
+			if (!g_state_push_deferred || due < g_deferred_state_push_due_at) g_deferred_state_push_due_at = due;
+			g_state_push_deferred = true;
+			return false;
+		}
+		g_last_runtime_state_rebuild_at = now;
+		return PushStateUpdateIfChanged(browser, app);
 	}
 
 	void PushStateUpdate(CefRefPtr<CefBrowser> browser, AppState& app)

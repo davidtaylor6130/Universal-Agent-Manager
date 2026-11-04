@@ -578,7 +578,7 @@ void Application::PollTick()
 	// Push only when the serialized app state actually changed.
 	if (m_browser && ui_relevant_state_changed)
 	{
-		uam::PushStateUpdateIfChanged(m_browser, m_app);
+		uam::PushRuntimeStateUpdateIfChanged(m_browser, m_app);
 	}
 
 	const std::chrono::steady_clock::time_point push_finished = std::chrono::steady_clock::now();
