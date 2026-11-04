@@ -175,6 +175,8 @@ class ChatHistorySyncService
 	LocalHistoryDiscovery DiscoverProviderChatsForFolder(const ChatFolder& folder, const ProviderProfile* open_code_profile = nullptr, std::stop_token stop_token = {}, std::size_t open_code_scan_offset = 0, bool open_code_only = false, std::optional<std::size_t> open_code_remaining = {}, const std::string& open_code_list_fingerprint = {}, const std::string& provider_filter = {}, const std::string& native_session_filter = {}, const std::filesystem::path& native_history_root = {}) const;
 	/// <summary>Resolves existing workspace ownership without creating folders.</summary>
 	const ChatFolder* StartupImportWorkspaceOwner(const uam::AppState& app, const ChatSession& chat) const;
+	/// <summary>Finds or plans (unsaved, in plan.folders) a workspace for an unmatched local history whose absolute directory exists; remote and other paths return null.</summary>
+	const ChatFolder* PlanImportWorkspace(uam::AppState& plan, const ChatSession& chat) const;
 	/// <summary>Removes owned, declined and duplicate candidates; explicit local review may retain unmatched absolute workspaces.</summary>
 	bool FilterStartupImportCandidates(const uam::AppState& app, LocalHistoryDiscovery& discovery, std::string* error_out = nullptr, bool include_unregistered_local = false) const;
 	/// Revalidate and merge a completed scan on the app thread.
