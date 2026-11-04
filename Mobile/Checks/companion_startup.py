@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check saved companion startup, restart and proxy cleanup with an isolated data root."""
 import argparse
+import atexit
 import base64
 import gzip
 from html.parser import HTMLParser
@@ -16,6 +17,10 @@ import time
 import urllib.error
 import urllib.request
 from urllib.parse import urljoin
+import sys
+
+# macOS keeps a ~0.5 GB code_sign_clone copy of each launched bundle (#684).
+atexit.register(subprocess.run, [sys.executable, str(Path(__file__).resolve().parents[2] / 'scripts/prune_code_sign_clones.py')])
 
 
 class PwaLinks(HTMLParser):

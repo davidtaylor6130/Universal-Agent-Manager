@@ -1,6 +1,8 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <cstdint>
 #include <string>
@@ -44,6 +46,14 @@ namespace uam::remote
 	    const std::string& context_directory = {},
 	    const std::string& configuration_provider = {}, const std::string& configuration_directory = {}, const nlohmann::json& session_mcp_servers = nlohmann::json::array(), bool transient_process = false);
 	std::filesystem::path PackagedRunnerPath();
+	using PackagedRunnerChecksums = std::map<std::string, std::string, std::less<>>;
+	/// Reads `<root>/<platform>-<architecture>/uam-runner.sha256` for each packaged helper target.
+	PackagedRunnerChecksums ReadPackagedRunnerChecksums(const std::filesystem::path& root);
+	/// Packaged helper SHA-256 for a host platform and architecture, read once; empty when none is packaged.
+	/// Installation plans and update offers both use this cache, so they agree.
+	std::string PackagedRunnerSha256(std::string_view platform, std::string_view architecture);
+	/// Test seam: replaces the process-wide cache and returns the previous values.
+	PackagedRunnerChecksums SetPackagedRunnerChecksumsForTesting(PackagedRunnerChecksums checksums);
 	std::vector<std::string> BuildRemoteTerminalSshArgv(
 	    const std::string& ssh_alias, const std::string& platform,
 	    const std::string& version, const std::filesystem::path& working_directory,

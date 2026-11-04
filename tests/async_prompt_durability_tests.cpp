@@ -1518,7 +1518,7 @@ UAM_TEST(AcpSmallModelLargeUnsavedHistoryKeepsAdmissionPollWithinInputBudget)
 	UAM_ASSERT(fixture.session->prompt_request_id != 0);
 }
 
-static void CheckColdLocalConfigurationAdmission(std::string_view variation, bool scope_override = false, bool scope_disabled = false)
+static void CheckColdLocalConfigurationAdmission(std::string_view variation, bool scope_override = false, bool scope_disabled = false, bool slow_durable_writes = false)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	// No test-side priority boost: on Windows same-priority save and setup workers can starve this
@@ -1736,6 +1736,14 @@ done
 		uam::AppState& app;
 		~Cleanup() { uam::FastStopAcpSessionsForExit(app); }
 	} cleanup{app};
+	// From admission on, a durable write made on this (poll) thread costs 300 ms, beyond every per-poll
+	// budget; background save workers are unaffected.
+	struct SlowDurableWritesOnThisThread
+	{
+		bool enabled;
+		explicit SlowDurableWritesOnThisThread(bool on) : enabled(on) { if (enabled) uam::io::t_durable_write_delay_ms_for_tests = 300; }
+		~SlowDurableWritesOnThisThread() { if (enabled) uam::io::t_durable_write_delay_ms_for_tests = 0; }
+	} slow_writes{slow_durable_writes};
 	std::string error;
 	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
 	const bool accepted = uam::SendAcpPrompt(app, app.chats.front().id, "Launch with the private cold configuration", &error);
@@ -1743,11 +1751,12 @@ done
 	UAM_ASSERT(accepted);
 	UAM_ASSERT(feedback <= input_budget);
 	UAM_ASSERT(!app.acp_sessions.empty() && (app.acp_sessions.front()->pending_agent_input || app.acp_sessions.front()->pending_local_launch));
-	// A staged cold launch also uses pending_local_launch; only a non-cold task is the configuration worker.
+	// A staged cold launch and provider process creation also use pending_local_launch; neither is the configuration worker.
 	const auto configuration_worker_pending = [&app]
 	{
 		const uam::AcpSessionState& session = *app.acp_sessions.front();
-		return session.pending_local_launch != nullptr && !uam::acp_detail::HasPendingAcpColdLaunch(session);
+		return session.pending_local_launch != nullptr && !uam::acp_detail::HasPendingAcpColdLaunch(session) &&
+		    !uam::acp_detail::AcpProcessCreationPending(session);
 	};
 	bool configuration_worker_used = configuration_worker_pending();
 	bool session_receipt_used = false;
@@ -1796,7 +1805,7 @@ done
 		UAM_ASSERT(uam::io::WriteTextFile(source, replacement));
 		fs::last_write_time(source, stamp);
 	}
-	if (!variation.empty() && variation != "catalog" && variation != "default" && variation != "prepare" && variation != "receiptstop" && variation != "receiptfailure" && variation != "completionnext" && variation != "receiptroot" && variation != "receiptrecreation" && variation != "receiptqueue" && variation != "receiptexit" && variation != "warm" && !variation.starts_with("busy"))
+	if (!variation.empty() && variation != "catalog" && variation != "default" && variation != "prepare" && variation != "receiptstop" && variation != "receiptfailure" && variation != "completionnext" && variation != "receiptroot" && variation != "receiptrecreation" && variation != "receiptqueue" && variation != "receiptexit" && variation != "creationstop" && variation != "warm" && !variation.starts_with("busy"))
 	{
 		if (variation == "cancel") UAM_ASSERT(uam::CancelAcpTurn(app, app.chats.front().id));
 		else if (variation == "stop") UAM_ASSERT(uam::StopAcpSession(app, app.chats.front().id));
@@ -1856,9 +1865,41 @@ done
 	bool completion_guard_exercised = false;
 	const fs::path blocked_chats = app.data_root / "chats";
 	const fs::path saved_chats = app.data_root / "fixture-saved-chats";
-	const std::chrono::steady_clock::time_point deadline = started + completion_limit;
+	std::chrono::steady_clock::time_point deadline = started + completion_limit;
+	bool receiptexit_restart_seen = false;
 	while (std::chrono::steady_clock::now() < deadline)
 	{
+		if (variation == "creationstop" && uam::acp_detail::AcpProcessCreationPending(*app.acp_sessions.front()))
+		{
+			// Stop while the provider process is still being created: the never-published process must be
+			// stopped, and the chat counts as stopping (no relaunch, worktree or branch work) until it is.
+			UAM_ASSERT(uam::StopAcpSession(app, app.chats.front().id));
+			UAM_ASSERT(uam::AcpStopInProgress(app, app.chats.front().id));
+			bool stop_queued = false;
+			while (std::chrono::steady_clock::now() < deadline &&
+			    (uam::AcpStopInProgress(app, app.chats.front().id) || !app.local_acp_launch_tasks.empty()))
+			{
+				const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
+				(void)uam::PollAllAcpSessions(app);
+				UAM_ASSERT(std::chrono::steady_clock::now() - tick <= input_budget);
+				stop_queued = stop_queued || !app.acp_process_stop_tasks.empty();
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			}
+			UAM_ASSERT(stop_queued);
+			UAM_ASSERT(!uam::AcpStopInProgress(app, app.chats.front().id) && app.local_acp_launch_tasks.empty());
+			UAM_ASSERT(!app.acp_sessions.front()->running && !app.acp_sessions.front()->pending_local_launch);
+			UAM_ASSERT(!fs::exists(prompt_log));
+			return;
+		}
+		if (variation == "receiptexit" && !receiptexit_restart_seen && app.acp_sessions.front()->crash_restart_attempts > 0)
+		{
+			// The exit case needs a second configuration and launch after the first provider exits. Its tiny
+			// chat leaves the save calibration near zero, while hosted Windows spends 3-6 s per launch (#526),
+			// so allow twice the time until this restart was observed; the poll budgets are unchanged.
+			receiptexit_restart_seen = true;
+			const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+			deadline = std::max(deadline, now + 2 * (now - started));
+		}
 		const std::chrono::steady_clock::time_point poll_started = std::chrono::steady_clock::now();
 		(void)uam::PollAllAcpSessions(app);
 		if (std::chrono::steady_clock::now() - poll_started > input_budget)
@@ -2293,6 +2334,8 @@ done
 	}
 	if (variation.empty() && !app.acp_sessions.front()->last_error.empty())
 		throw std::runtime_error("Cold configuration launch failed: " + app.acp_sessions.front()->last_error);
+	// The stop case returns from inside the loop; reaching here means it never observed process creation.
+	UAM_ASSERT(variation != "creationstop");
 	UAM_ASSERT(completed);
 	UAM_ASSERT(!app.acp_sessions.front()->opencode_native_companion);
 	if (scope_override) UAM_ASSERT(configuration_worker_used);
@@ -2452,6 +2495,40 @@ UAM_TEST(AcpColdSelectedAgentAdmissionKeepsInputAndPollBudgets)
 UAM_TEST(AcpColdDefaultAgentAdmissionKeepsInputAndPollBudgets)
 {
 	CheckColdLocalConfigurationAdmission("default");
+}
+
+UAM_TEST(AcpColdLaunchProcessStartStaysOffPoll)
+{
+	// A slow provider process start (hosted Windows process creation, the macOS parent-death watchdog)
+	// must stay on the launch worker: every poll keeps the unchanged per-poll budget.
+	struct DelayedProcessStart
+	{
+		DelayedProcessStart() { uam::acp_detail::g_acp_process_start_delay_ms_for_tests.store(300); }
+		~DelayedProcessStart() { uam::acp_detail::g_acp_process_start_delay_ms_for_tests.store(0); }
+	} delayed;
+	CheckColdLocalConfigurationAdmission("default");
+}
+
+UAM_TEST(AcpStopDuringProcessCreationStopsUnpublishedProcess)
+{
+	struct DelayedProcessStart
+	{
+		DelayedProcessStart() { uam::acp_detail::g_acp_process_start_delay_ms_for_tests.store(300); }
+		~DelayedProcessStart() { uam::acp_detail::g_acp_process_start_delay_ms_for_tests.store(0); }
+	} delayed;
+	CheckColdLocalConfigurationAdmission("creationstop");
+}
+
+UAM_TEST(AcpColdTurnCompletionKeepsDurableWritesOffPoll)
+{
+	// Turn completion marks the chat for attention; its durable metadata write must not run in the poll.
+	CheckColdLocalConfigurationAdmission("default", false, false, true);
+}
+
+UAM_TEST(AcpLocalProviderExitKeepsDurableWritesOffPoll)
+{
+	// A local provider exit during a turn queues its transcript save instead of saving in the poll.
+	CheckColdLocalConfigurationAdmission("receiptexit", false, false, true);
 }
 
 UAM_TEST(AcpPreparingAgentRetainsUnboundDurableIntentAndRejectsAdditionalInput)

@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { Gauge } from 'lucide-react'
+import { Coins, History, Infinity as InfinityIcon } from 'lucide-react'
 import type { AcpRateLimits } from '../../store/cpp/types'
-import { Tooltip } from '../ui'
+import { Tooltip, UsageGauge } from '../ui'
 import { providerShortName } from '../../utils/providerMetadata'
 import { formatCreditBalance } from '../../utils/providerAllowanceFormatting'
 
@@ -34,12 +34,14 @@ export function ProviderAllowanceIndicator({ providerId, sourceProviderId, rateL
   const creditOnly = limits?.credits?.unlimited ? 'Unlimited' : limits?.credits?.hasCredits ? 'Credits available' : null
   const value = percent === null ? creditOnly : `${percent}% remaining`
   const label = limits && timestampValid && value ? `${cached ? 'Cached ' : ''}${value}` : 'Unavailable'
-  // Mini meter shows the most-used window; colour follows the same thresholds as the usage page.
+  // The gauge needle shows the most-used window; unknown, unavailable and credit-only (including unlimited) stay neutral.
   const usedPercent = percent === null || label === 'Unavailable' ? null : 100 - percent
-  const tone = usedPercent === null ? 'var(--text-3)' : usedPercent >= 95 ? 'var(--error)' : usedPercent >= 80 ? 'var(--warning)' : 'var(--success)'
+  // Visible, non-colour cues for states the label carries: a history mark for cached snapshots and the credit kind for credit-only.
+  const cachedMark = label.startsWith('Cached ')
+  const creditMark = label === 'Unavailable' || percent !== null ? null : limits?.credits?.unlimited ? 'unlimited' : creditOnly ? 'credits' : null
   const detail = limits ? <div className="flex flex-col gap-1">
     <span>{providerShortName(undefined, providerId)} session-reported account allowance</span>
-    <span>{running ? 'Current session snapshot' : 'Last session snapshot'}</span>
+    <span>{running ? 'Live' : 'Last checked'}</span>
     <span>{timestampValid ? ageMinutes ? `Updated ${ageMinutes} min ago${ageMinutes >= 5 ? ' (stale)' : ''}` : 'Updated just now' : 'Update time unavailable'}</span>
     {resetPassed && <span>Reset time passed; awaiting a new snapshot</span>}
     {windows.map(([name, window]) => window && <span key={name}>{name}: {validPercent(window.usedPercent) ? `${Math.floor(100 - window.usedPercent)}% remaining` : 'Usage unavailable'}. {resetLabel(window.resetsAt)}</span>)}
@@ -49,9 +51,12 @@ export function ProviderAllowanceIndicator({ providerId, sourceProviderId, rateL
     {limits.planType && <span>Plan: {limits.planType}</span>}
   </div> : <span>{providerShortName(undefined, providerId)} has not reported an account allowance for this session.</span>
   return <Tooltip label={detail}>
-    <button type="button" onFocus={() => setInteractionTime(Date.now())} onMouseEnter={() => setInteractionTime(Date.now())} aria-label={`Account allowance: ${label}`} className="inline-flex shrink-0 items-center gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-      {usedPercent === null ? <Gauge size={13} aria-hidden /> : <span aria-hidden className="inline-block h-1 w-7 overflow-hidden rounded-full" style={{ background: 'var(--surface-up)' }}><span className="block h-full" style={{ width: `${Math.min(100, usedPercent)}%`, background: tone, transition: 'width var(--dur-base) var(--ease-out-soft)' }} /></span>}
-      {label !== 'Unavailable' && <span>{label}</span>}
+    {/* ui: raw button kept — inline meter-plus-label trigger, neither icon-only nor a button or row shape any primitive covers */}
+    <button type="button" onFocus={() => setInteractionTime(Date.now())} onMouseEnter={() => setInteractionTime(Date.now())} aria-label={`Account allowance: ${label}`} data-cached={cachedMark || undefined} data-credit={creditMark ?? undefined} className="uam-composer-action inline-flex h-[26px] shrink-0 items-center gap-1 px-1.5" style={{ color: 'var(--text-2)', border: '1px solid transparent', borderRadius: 'var(--r-sm)', background: 'transparent' }}>
+      <UsageGauge usedPercent={usedPercent} decorative />
+      {cachedMark && <History size={12} aria-hidden />}
+      {creditMark === 'unlimited' && <InfinityIcon size={12} aria-hidden />}
+      {creditMark === 'credits' && <Coins size={12} aria-hidden />}
     </button>
   </Tooltip>
 }

@@ -539,7 +539,11 @@ class WindowsProcessService final : public IPlatformProcessService
 			return false;
 		}
 
-		if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0) || (!merge_output && !CreatePipe(&stderr_read, &stderr_write, &sa, 0)))
+		// The default anonymous pipe holds about 4 KiB, so a child writing a large burst blocks once per 4 KiB until the
+		// parent's next poll; bounded stop and exit drains then expire before its final output. Match the 64 KiB macOS/Linux pipe.
+		constexpr DWORD kOutputPipeBytes = 64 * 1024;
+		if (!CreatePipe(&stdout_read, &stdout_write, &sa, kOutputPipeBytes) ||
+		    (!merge_output && !CreatePipe(&stderr_read, &stderr_write, &sa, kOutputPipeBytes)))
 		{
 			if (error_out != nullptr)
 			{

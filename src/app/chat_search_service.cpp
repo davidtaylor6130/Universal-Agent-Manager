@@ -110,4 +110,12 @@ namespace uam
 	{
 		return !digest.empty() && chat.messages_loaded && message_index < chat.messages.size() && !chat.messages[message_index].acp_prompt_discarded && StateSerializer::MessageDigest(chat, reuse_selected_history) == digest;
 	}
+
+	bool ChatSearchTargetMatchesPageOrLive(const ChatSession& chat, const std::string& digest, std::size_t message_index,
+	    const std::string& page_digest, std::size_t page_message_count, bool reuse_selected_history)
+	{
+		if (chat.messages_loaded)
+			return ChatSearchTargetMatches(chat, digest, message_index, reuse_selected_history);
+		return !digest.empty() && digest == page_digest && message_index < page_message_count;
+	}
 }

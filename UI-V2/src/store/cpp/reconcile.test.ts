@@ -527,6 +527,12 @@ describe('remote host startup applied state sanitization', () => {
     expect(entry.runnerStartupError!.length).toBe(300)
   })
 
+  it('keeps only well-formed installed and bundled helper checksums', () => {
+    const [entry] = sanitizeCppSettings({ executionHosts: [{ ...host, runnerSha256: 'a'.repeat(64), bundledRunnerSha256: 'not-a-checksum' }] }).executionHosts!.slice(1)
+    expect(entry.runnerSha256).toBe('a'.repeat(64))
+    expect(entry).not.toHaveProperty('bundledRunnerSha256')
+  })
+
   it('drops unknown applied states', () => {
     const [entry] = sanitizeCppSettings({ executionHosts: [{ ...host, runnerStartupApplied: 'exploded' }] }).executionHosts!.slice(1)
     expect(entry).not.toHaveProperty('runnerStartupApplied')

@@ -2,20 +2,22 @@ import type { MemoryLevel } from '../types/memory'
 import type { MemoryWorkerBinding } from './cpp/types'
 import {
   clampedFiniteNumberOr, normalizeMemoryLevel, normalizeGoalMaxLoopIterations,
-  normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB,
+  normalizeAcpSetupInactivityTimeoutSeconds, normalizeActiveTurnInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB,
   MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS,
   MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES,
 } from './cpp/sanitizers'
 
-/** Only this action's ten canonical fields; never an export of all settings. */
+/** Only this action's eleven canonical fields; never an export of all settings. */
 export interface MemorySettingsValues {
   memoryEnabledDefault: boolean
   memoryLevelDefault: MemoryLevel
   memoryIdleDelaySeconds: number
   memoryRecallBudgetBytes: number
   goalMaxLoopIterations: number
+  goalTokenBudget: number
   acpSetupInactivityTimeoutSeconds: number
   acpTurnOutputLimitMiB: number
+  activeTurnInactivityTimeoutSeconds: number
   memoryWorkerBindings: Record<string, MemoryWorkerBinding>
   permissionReviewerProviderId: string
   permissionReviewerModelId: string
@@ -44,14 +46,14 @@ export interface MemorySettingsWriteDependencies {
 }
 const fields = [
   'memoryEnabledDefault', 'memoryLevelDefault', 'memoryIdleDelaySeconds', 'memoryRecallBudgetBytes',
-  'goalMaxLoopIterations', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB',
+  'goalMaxLoopIterations', 'goalTokenBudget', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB', 'activeTurnInactivityTimeoutSeconds',
   'memoryWorkerBindings', 'permissionReviewerProviderId', 'permissionReviewerModelId',
 ] as const
 const wireNames: Record<keyof MemorySettingsValues, string> = {
   memoryEnabledDefault: 'enabledDefault', memoryLevelDefault: 'levelDefault',
   memoryIdleDelaySeconds: 'idleDelaySeconds', memoryRecallBudgetBytes: 'recallBudgetBytes',
-  goalMaxLoopIterations: 'goalMaxLoopIterations', acpSetupInactivityTimeoutSeconds: 'acpSetupInactivityTimeoutSeconds',
-  acpTurnOutputLimitMiB: 'acpTurnOutputLimitMiB', memoryWorkerBindings: 'workerBindings',
+  goalMaxLoopIterations: 'goalMaxLoopIterations', goalTokenBudget: 'goalTokenBudget', acpSetupInactivityTimeoutSeconds: 'acpSetupInactivityTimeoutSeconds',
+  acpTurnOutputLimitMiB: 'acpTurnOutputLimitMiB', activeTurnInactivityTimeoutSeconds: 'activeTurnInactivityTimeoutSeconds', memoryWorkerBindings: 'workerBindings',
   permissionReviewerProviderId: 'permissionReviewerProviderId', permissionReviewerModelId: 'permissionReviewerModelId',
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -62,15 +64,19 @@ const within = (value: unknown, min: number, max: number) => integer(value) && v
 const bindingEqual = (a: MemoryWorkerBinding | undefined, b: MemoryWorkerBinding | undefined) => a?.workerProviderId === b?.workerProviderId && a?.workerModelId === b?.workerModelId
 
 /** Reject malformed canonical receipts rather than manufacturing values with defaults. */
-export function parseMemorySettingsValues(value: unknown): MemorySettingsValues | null {
+export function parseMemorySettingsValues(raw: unknown): MemorySettingsValues | null {
+  // ponytail: older native payloads predate goalTokenBudget; default it to 0 instead of rejecting.
+  const value = record(raw) && !Object.prototype.hasOwnProperty.call(raw, 'goalTokenBudget') ? { ...raw, goalTokenBudget: 0 } : raw
   if (!record(value) || Object.keys(value).length !== fields.length || !fields.every((key) => Object.prototype.hasOwnProperty.call(value, key))) return null
   if (typeof value.memoryEnabledDefault !== 'boolean' || (typeof value.memoryLevelDefault !== 'string' || !['off', 'readOnly', 'strict', 'balanced', 'open'].includes(value.memoryLevelDefault)) ||
     value.memoryEnabledDefault !== (value.memoryLevelDefault !== 'off') ||
     !within(value.memoryIdleDelaySeconds, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS) ||
     !within(value.memoryRecallBudgetBytes, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES) ||
     !integer(value.goalMaxLoopIterations) || value.goalMaxLoopIterations !== normalizeGoalMaxLoopIterations(value.goalMaxLoopIterations) ||
+    !integer(value.goalTokenBudget) || value.goalTokenBudget < 0 ||
     !integer(value.acpSetupInactivityTimeoutSeconds) || value.acpSetupInactivityTimeoutSeconds !== normalizeAcpSetupInactivityTimeoutSeconds(value.acpSetupInactivityTimeoutSeconds) ||
     !integer(value.acpTurnOutputLimitMiB) || value.acpTurnOutputLimitMiB !== normalizeAcpTurnOutputLimitMiB(value.acpTurnOutputLimitMiB) ||
+    !integer(value.activeTurnInactivityTimeoutSeconds) || value.activeTurnInactivityTimeoutSeconds !== normalizeActiveTurnInactivityTimeoutSeconds(value.activeTurnInactivityTimeoutSeconds) ||
     !text(value.permissionReviewerProviderId) || !text(value.permissionReviewerModelId) || !record(value.memoryWorkerBindings)) return null
   const bindings: Record<string, unknown> = value.memoryWorkerBindings
   for (const [key, entry] of Object.entries(bindings)) {
@@ -106,8 +112,10 @@ function normalizeRequested(partial: Partial<MemorySettingsValues>, previous: Me
   if (partial.memoryIdleDelaySeconds !== undefined) next.memoryIdleDelaySeconds = clampedFiniteNumberOr(partial.memoryIdleDelaySeconds, previous.memoryIdleDelaySeconds, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS)
   if (partial.memoryRecallBudgetBytes !== undefined) next.memoryRecallBudgetBytes = clampedFiniteNumberOr(partial.memoryRecallBudgetBytes, previous.memoryRecallBudgetBytes, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES)
   if (partial.goalMaxLoopIterations !== undefined) next.goalMaxLoopIterations = normalizeGoalMaxLoopIterations(partial.goalMaxLoopIterations)
+  if (partial.goalTokenBudget !== undefined) next.goalTokenBudget = Math.max(0, Math.floor(Number.isFinite(partial.goalTokenBudget) ? partial.goalTokenBudget : 0))
   if (partial.acpSetupInactivityTimeoutSeconds !== undefined) next.acpSetupInactivityTimeoutSeconds = normalizeAcpSetupInactivityTimeoutSeconds(partial.acpSetupInactivityTimeoutSeconds)
   if (partial.acpTurnOutputLimitMiB !== undefined) next.acpTurnOutputLimitMiB = normalizeAcpTurnOutputLimitMiB(partial.acpTurnOutputLimitMiB)
+  if (partial.activeTurnInactivityTimeoutSeconds !== undefined) next.activeTurnInactivityTimeoutSeconds = normalizeActiveTurnInactivityTimeoutSeconds(partial.activeTurnInactivityTimeoutSeconds)
   if (partial.permissionReviewerProviderId !== undefined) next.permissionReviewerProviderId = partial.permissionReviewerProviderId
   if (partial.permissionReviewerModelId !== undefined) next.permissionReviewerModelId = partial.permissionReviewerModelId
   if (partial.memoryWorkerBindings !== undefined) {

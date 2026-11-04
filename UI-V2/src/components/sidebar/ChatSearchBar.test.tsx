@@ -44,3 +44,10 @@ describe('ChatSearchBar', () => {
     host.remove()
   })
 })
+
+describe('providerGridColumns', () => {
+  it('splits provider icons evenly between 3 and 6 columns', async () => {
+    const { providerGridColumns } = await import('./ChatSearchBar')
+    expect([1, 3, 4, 5, 6, 7, 8, 9, 12, 13].map(providerGridColumns)).toEqual([3, 3, 4, 5, 6, 4, 4, 5, 6, 5])
+  })
+})

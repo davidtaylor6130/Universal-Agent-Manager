@@ -132,8 +132,8 @@ export function MenuSelect({
         </span>
         <ChevronDown className={open ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
       </button>
-      {open && (
-        <ViewportMenu
+      <ViewportMenu
+          open={open}
           ref={listRef}
           anchorRef={triggerRef}
           id={listId}
@@ -169,7 +169,6 @@ export function MenuSelect({
             </button>,
           ])}
         </ViewportMenu>
-      )}
     </div>
   )
 }

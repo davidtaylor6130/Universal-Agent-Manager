@@ -123,7 +123,7 @@ export function useUpdateMonitor() {
         // Native completion can race the pushed state patch; reconcile the card immediately.
         useAppStore.setState((state) => ({
           executionHosts: state.executionHosts.map((candidate) => candidate.id === hostId
-            ? { ...candidate, runnerStatus: 'ready', runnerVersion: appVersion, runnerProtocolVersion }
+            ? { ...candidate, runnerStatus: 'ready', runnerVersion: appVersion, runnerProtocolVersion, runnerSha256: candidate.bundledRunnerSha256 }
             : candidate),
         }))
       }

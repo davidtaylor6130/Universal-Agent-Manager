@@ -104,7 +104,7 @@
   resize: vertical;
   transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
-.uam-queue-edit__input:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--focus-ring); }
+.uam-queue-edit__input:focus-visible { border-color: var(--accent); outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-queue-edit__input:disabled { opacity: 0.6; }
 .uam-queue-edit__actions { display: flex; align-items: center; gap: var(--sp-1); }
 .uam-queue-error { font-size: var(--fs-xs); color: var(--error); padding: var(--sp-1) 0; }

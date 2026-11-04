@@ -659,7 +659,18 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		if (method == uam::acp_methods::kSessionPrompt || session.processing || session.waiting_for_permission || session.waiting_for_user_input || !session.queued_prompt.empty())
 		{
 			(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
+			const double turn_elapsed_s = session.turn_started_time_s != 0.0 ? GetAppTimeSeconds() - session.turn_started_time_s : 0.0;
 			FailAcpTurnOrSession(session, &chat, formatted_error);
+			// An aborted OpenCode fetch is the request timeout UAM gave it only when the turn lasted that long;
+			// an earlier abort came from another limit, so it is shown without a value or Restart action.
+			// ponytail: compares whole-turn time with OpenCode's per-request limit, so a long multi-request turn whose
+			// abort came from a different, shorter limit is still labelled as this one. Needs per-request timing.
+			if (method == uam::acp_methods::kSessionPrompt && provider_ids::IsCliProviderAliasOf(session.provider_id, provider_ids::kOpenCodeCli) &&
+			    formatted_error.find("The operation timed out") != std::string::npos)
+			{
+				const bool own_limit = session.launch_turn_timeout_seconds > 0 && turn_elapsed_s >= session.launch_turn_timeout_seconds;
+				MarkAcpTimeoutStop(session, own_limit ? "OpenCode request timeout" : "An OpenCode provider timeout", own_limit ? session.launch_turn_timeout_seconds : 0);
+			}
 			SaveChatQuietly(app, chat);
 			MarkAcpChatUnseenIfBackground(app, chat);
 		}
@@ -794,7 +805,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, nullptr);
 		if (defer_completion) ScheduleChatSave(app, chat, 0.0);
 		else SaveChatQuietly(app, chat);
-		MarkAcpChatUnseenIfBackground(app, chat);
+		MarkAcpChatUnseenIfBackground(app, chat, defer_completion);
 		return;
 	}
 

@@ -1,12 +1,20 @@
 import { createRequestId } from '../ipc/cefBridge'
 
-/** Failures of app-wide actions. AppShell routes them to the notifications panel and the shared transient alert. */
+/** App-wide failures and notices. AppShell routes them to the notifications panel and the shared transient alert. */
 export const APP_FAILURE_EVENT = 'uam-app-failure'
-export type AppFailure = { id: string; time: string; message: string; detail: string }
+/** Absent tone means a failure; info and success notices reuse the same channel. */
+export type AppFailure = { id: string; time: string; message: string; detail: string; tone?: 'info' | 'success' }
 
 export function reportAppFailure(message: string, detail: string) {
   window.dispatchEvent(new CustomEvent<AppFailure>(APP_FAILURE_EVENT, {
     detail: { id: createRequestId('app-failure'), time: new Date().toISOString(), message, detail },
+  }))
+}
+
+/** Completed or informational app-wide messages; same panel and alert as failures. */
+export function reportAppNotice(message: string, tone: 'info' | 'success' = 'info') {
+  window.dispatchEvent(new CustomEvent<AppFailure>(APP_FAILURE_EVENT, {
+    detail: { id: createRequestId('app-notice'), time: new Date().toISOString(), message, detail: '', tone },
   }))
 }
 

@@ -8081,6 +8081,41 @@ UAM_TEST(AcpRemoteNativeMarkerFailurePreservesUnrelatedRpcRequest)
 }
 #endif
 
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI && (defined(__APPLE__) || defined(__linux__))
+UAM_TEST(AcpRemoteClaudeResolvedModelReportDoesNotRestartAliasLaunch)
+{
+	// Issue #682: Claude reports the resolved model, so it never equals the launched alias.
+	for (const std::string launched : {"opus", "sonnet"})
+	{
+		RemoteAdmissionFixture fixture;
+		auto& app = fixture.app;
+		auto& session = *fixture.session;
+		auto& chat = app.chats.front();
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		chat.provider_id = session.provider_id = "claude-cli";
+		session.protocol_kind = "claude-code-stream-json";
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = fixture.token;
+		chat.model_id = "opus";
+		session.launch_model_options_id = launched;
+		session.launch_model_options_captured = true;
+		session.current_model_id = "claude-" + launched + "-5-5";
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Deliver the queued prompt.", &error));
+		const bool restarted = std::ranges::any_of(session.diagnostics, [&](const uam::AcpDiagnosticEntryState& entry)
+		{
+			return entry.event == "restart" && entry.reason == "model_changed" &&
+			       entry.detail == "running_model=" + launched + " turn_model=opus";
+		});
+		// Only a real alias change restarts, and its diagnostic names the reason.
+		UAM_ASSERT_EQ(restarted, launched != "opus");
+		UAM_ASSERT_EQ(chat.remote_restart_pending, launched != "opus");
+		if (!restarted) fixture.AwaitSave();
+	}
+}
+#endif
+
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI && (defined(__APPLE__) || defined(__linux__))
 UAM_TEST(AcpRemoteRpcMarkerRequiresActualPendingRequestWitness)
 {

@@ -2703,6 +2703,77 @@ UAM_TEST(OpenCodeUamControlDeadlineRejectsMalformedHintWithoutChangingOtherLaunc
 	UAM_ASSERT_EQ(actual["permission"], native["permission"]);
 }
 
+UAM_TEST(OpenCodeProviderRequestTimeoutFollowsTurnTimeout)
+{
+	// OpenCode's own provider request timeout (5 minutes in the reported configuration) must not end a turn
+	// before UAM's adjustable turn timeout; the launch model's provider receives the same value.
+	TempDir temp("uam-opencode-request-timeout");
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = false;
+	settings.active_turn_inactivity_timeout_seconds = 2700;
+	ChatSession chat;
+	chat.provider_id = "opencode-cli";
+	chat.model_id = "ollama/qwen3:32b";
+	for (const bool remote : {false, true})
+	{
+		ExecutionHost host = uam::execution_hosts::LocalHost();
+		if (remote) { host.id = "private-timeout-host"; host.transport = "ssh"; host.ssh_alias = "private-fixture"; }
+		chat.execution_host_id = host.id;
+		uam::ProviderConfigurationBundle bundle;
+		std::string error;
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error, nullptr, "1.18.35"));
+		UAM_ASSERT_EQ(bundle.manifest["openCodeRequestTimeout"], (nlohmann::json{{"provider", "ollama"}, {"milliseconds", 2700000}}));
+		UAM_ASSERT(uam::provider_setup::ValidateManifest(bundle.manifest, error));
+		std::vector<std::string> argv{"opencode", "acp"};
+		const nlohmann::json native{{"provider", {{"ollama", {{"options", {{"baseURL", "http://private-fixture:11434/v1"}, {"timeout", 300000}}}}}}}};
+		uam::provider_setup::Environment environment{{"OPENCODE_CONFIG_CONTENT", native.dump()}};
+		UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+		const auto actual = nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT"));
+		UAM_ASSERT_EQ(actual["provider"]["ollama"]["options"]["timeout"], nlohmann::json(2700000));
+		UAM_ASSERT_EQ(actual["provider"]["ollama"]["options"]["baseURL"], native["provider"]["ollama"]["options"]["baseURL"]);
+	}
+	{
+		// Only ever raise OpenCode's limit: a larger inline value, an inline `false` and a UAM value at or below
+		// OpenCode's 5-minute default leave the inline configuration unchanged.
+		uam::ProviderConfigurationBundle bundle;
+		std::string error;
+		chat.execution_host_id = "local";
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, uam::execution_hosts::LocalHost(), temp.root, bundle, error, nullptr, "1.18.35"));
+		for (const nlohmann::json kept : {nlohmann::json(false), nlohmann::json(5400000)})
+		{
+			std::vector<std::string> argv{"opencode", "acp"};
+			const nlohmann::json native{{"provider", {{"ollama", {{"options", {{"timeout", kept}}}}}}}};
+			uam::provider_setup::Environment environment{{"OPENCODE_CONFIG_CONTENT", native.dump()}};
+			UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+			UAM_ASSERT_EQ(nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT"))["provider"]["ollama"]["options"]["timeout"], kept);
+		}
+		// The launch records only what OpenCode actually received.
+		std::vector<std::string> argv{"opencode", "acp"};
+		uam::provider_setup::Environment written;
+		UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, written, error));
+		UAM_ASSERT_EQ(uam::provider_setup::AppliedOpenCodeRequestTimeoutSeconds(bundle.manifest, &written), 2700);
+		uam::provider_setup::Environment kept{{"OPENCODE_CONFIG_CONTENT", R"({"provider":{"ollama":{"options":{"timeout":false}}}})"}};
+		UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, kept, error));
+		UAM_ASSERT_EQ(uam::provider_setup::AppliedOpenCodeRequestTimeoutSeconds(bundle.manifest, &kept), 0);
+		UAM_ASSERT_EQ(uam::provider_setup::AppliedOpenCodeRequestTimeoutSeconds(bundle.manifest, nullptr), 2700);
+		// A value at or below OpenCode's 5-minute default is never sent, so nothing is recorded or restarted for it.
+		AppSettings short_limit = settings;
+		short_limit.active_turn_inactivity_timeout_seconds = 240;
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", short_limit, chat, uam::execution_hosts::LocalHost(), temp.root, bundle, error, nullptr, "1.18.35"));
+		UAM_ASSERT(!bundle.manifest.contains("openCodeRequestTimeout"));
+		UAM_ASSERT_EQ(uam::provider_setup::AppliedOpenCodeRequestTimeoutSeconds(bundle.manifest, nullptr), 0);
+	}
+	// No provider prefix means no known provider to configure; nothing is invented.
+	chat.execution_host_id = "local";
+	chat.model_id.clear();
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, uam::execution_hosts::LocalHost(), temp.root, bundle, error, nullptr, "1.18.35"));
+	UAM_ASSERT(!bundle.manifest.contains("openCodeRequestTimeout"));
+	for (const nlohmann::json hint : {nlohmann::json(true), nlohmann::json{{"provider", "ollama"}, {"milliseconds", 1000}}, nlohmann::json{{"provider", "../x"}, {"milliseconds", 60000}}})
+		UAM_ASSERT(!uam::provider_setup::ValidateManifest(nlohmann::json{{"format", 1}, {"files", nlohmann::json::object()}, {"openCodeRequestTimeout", hint}}, error));
+}
+
 UAM_TEST(LocalSessionReceiptOwnershipIgnoresForeignHostHealthPublication)
 {
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
@@ -2821,7 +2892,8 @@ UAM_TEST(LocalCodexDeferredConfigurationSurvivesForeignVersionHealthPublication)
 		error.clear();
 		accepted = uam::acp_detail::StartAcpProcessForChat(app, session, chat, &error);
 		if (!accepted || session.running) break;
-		UAM_ASSERT(session.pending_local_launch == packet);
+		// After configuration the provider process is created on the launch worker, in its own task.
+		UAM_ASSERT(session.pending_local_launch == packet || uam::acp_detail::AcpProcessCreationPending(session));
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	} while (std::chrono::steady_clock::now() < deadline);
 	UAM_ASSERT(accepted && error.empty());
@@ -2831,8 +2903,10 @@ UAM_TEST(LocalCodexDeferredConfigurationSurvivesForeignVersionHealthPublication)
 	UAM_ASSERT_EQ(chat.native_session_id, native_id);
 	UAM_ASSERT(!session.pending_local_launch && session.running && !session.session_ready);
 	UAM_ASSERT(session.child_pid > 0 && session.watchdog_pid > 0);
+	// The fixture's shell redirection creates the marker before printf writes it,
+	// so wait for the expected content rather than only for the file to exist.
 	const auto marker_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-	while (!fs::exists(launch_marker) && std::chrono::steady_clock::now() < marker_deadline)
+	while ((!fs::exists(launch_marker) || ReadFile(launch_marker) != "private-codex-fixture") && std::chrono::steady_clock::now() < marker_deadline)
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	UAM_ASSERT_EQ(ReadFile(launch_marker), std::string("private-codex-fixture"));
 	UAM_ASSERT_EQ(ReadFile(private_codex), script);

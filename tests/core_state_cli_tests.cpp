@@ -416,6 +416,7 @@ UAM_TEST(StatePatchSettingsIncludeChatDefaults)
 	app.settings.memory_recall_budget_bytes = 100000;
 	app.settings.memory_level_default = "balanced";
 	app.settings.goal_max_loop_iterations = -1;
+	app.settings.goal_token_budget = 50000;
 	app.settings.update_checks_enabled = false;
 	app.settings.update_last_checked_at = "2026-07-13T20:00:00.000Z";
 	app.settings.dismissed_update_versions["uam"] = "4.2.0";
@@ -438,6 +439,7 @@ UAM_TEST(StatePatchSettingsIncludeChatDefaults)
 	UAM_ASSERT_EQ(settings.value("memoryLevelDefault", ""), std::string("balanced"));
 	UAM_ASSERT(settings.value("memoryEnabledDefault", false));
 	UAM_ASSERT_EQ(settings.value("goalMaxLoopIterations", -1), 200);
+	UAM_ASSERT_EQ(settings.value("goalTokenBudget", -1), 50000);
 	UAM_ASSERT(!settings.value("updateChecksEnabled", true));
 	UAM_ASSERT_EQ(settings.value("updateLastCheckedAt", ""), std::string("2026-07-13T20:00:00.000Z"));
 	UAM_ASSERT_EQ(settings["dismissedUpdateVersions"].value("uam", ""), std::string("4.2.0"));
@@ -1363,6 +1365,102 @@ UAM_TEST(RemoteCliElevationSettingSurvivesSerializationAndDefaultsOff)
 	saved.back().erase("cliUpdatesAsAdmin");
 	loaded = uam::execution_hosts::Parse(saved);
 	UAM_ASSERT(!loaded.back().cli_updates_as_admin);
+}
+
+UAM_TEST(RemoteHelperChecksumSurvivesSerializationAndMalformedIsUnknown)
+{
+	ExecutionHost host;
+	host.id = "homelab";
+	host.transport = "ssh";
+	host.ssh_alias = "uam-homelab";
+	host.platform = "linux";
+	host.runner_sha256 = std::string(64, 'a');
+	nlohmann::json saved = uam::execution_hosts::Serialize({host});
+	UAM_ASSERT_EQ(uam::execution_hosts::Parse(saved).back().runner_sha256, host.runner_sha256);
+	for (const nlohmann::json& malformed : {nlohmann::json(std::string(64, 'A')), nlohmann::json("abc"), nlohmann::json(42)})
+	{
+		saved.back()["runnerSha256"] = malformed;
+		UAM_ASSERT(uam::execution_hosts::Parse(saved).back().runner_sha256.empty());
+	}
+}
+
+UAM_TEST(RemoteHelperInstalledChecksumMatchesInstalledPlatformArtifact)
+{
+	uam::remote::BootstrapPlan plan;
+	plan.artifacts = {{"linux", "arm64", {}, std::string(64, '1'), {}},
+	                  {"linux", "x86_64", {}, std::string(64, '2'), {}},
+	                  {"windows", "x86_64", {}, std::string(64, '3'), {}}};
+	const auto installed = [&](std::string platform, std::string architecture)
+	{
+		uam::remote::BootstrapResult result;
+		result.platform = std::move(platform);
+		result.architecture = std::move(architecture);
+		return uam::remote::InstalledArtifactSha256(plan, result);
+	};
+	UAM_ASSERT_EQ(installed("linux", "arm64"), std::string(64, '1'));
+	UAM_ASSERT_EQ(installed("linux", "x86_64"), std::string(64, '2'));
+	UAM_ASSERT_EQ(installed("windows", "x86_64"), std::string(64, '3'));
+	UAM_ASSERT(installed("windows", "arm64").empty());
+}
+
+UAM_TEST(RemoteHelperRollbackRestoresPreviousChecksumAndConnectionIdentity)
+{
+	ExecutionHost previous;
+	previous.id = "homelab";
+	previous.transport = "ssh";
+	previous.ssh_alias = "uam-homelab";
+	previous.runner_status = "installing";
+	previous.runner_sha256 = std::string(64, 'a');
+	previous.runner_install_nonce = "earlier";
+	const ExecutionHost restored = uam::execution_hosts::RestoredPreviousInstallation(previous);
+	UAM_ASSERT_EQ(restored.runner_sha256, previous.runner_sha256);
+	UAM_ASSERT(!uam::execution_hosts::HasInstallFence(restored));
+	UAM_ASSERT_EQ(restored.runner_status, "error");
+
+	ExecutionHost reinstalled = restored;
+	UAM_ASSERT(uam::execution_hosts::SameConnection(restored, reinstalled));
+	reinstalled.runner_sha256 = std::string(64, 'b');
+	UAM_ASSERT(!uam::execution_hosts::SameConnection(restored, reinstalled));
+}
+
+UAM_TEST(StateSerializerProjectsBundledHelperChecksumForSshHostsOnly)
+{
+	TempDir packaged{"uam-packaged-runner-checksums"};
+	fs::create_directories(packaged.root / "windows-x86_64");
+	UAM_ASSERT(uam::io::WriteTextFile(packaged.root / "windows-x86_64" / "uam-runner.sha256", std::string(64, 'c') + "\n"));
+	const auto checksums = uam::remote::ReadPackagedRunnerChecksums(packaged.root);
+	UAM_ASSERT_EQ(checksums.size(), 1u);
+	struct Restore
+	{
+		uam::remote::PackagedRunnerChecksums previous;
+		~Restore() { uam::remote::SetPackagedRunnerChecksumsForTesting(std::move(previous)); }
+	} restore{uam::remote::SetPackagedRunnerChecksumsForTesting(checksums)};
+
+	uam::AppState app;
+	ExecutionHost local = uam::execution_hosts::LocalHost();
+	local.platform = "windows";
+	local.architecture = "x86_64";
+	ExecutionHost windows;
+	windows.id = "win";
+	windows.transport = "ssh";
+	windows.ssh_alias = "uam-win";
+	windows.runner_status = "ready";
+	windows.platform = "windows";
+	windows.architecture = "x86_64";
+	ExecutionHost linux_host = windows;
+	linux_host.id = "lab";
+	linux_host.ssh_alias = "uam-lab";
+	linux_host.platform = "linux";
+	app.settings.execution_hosts = {local, windows, linux_host};
+	const nlohmann::json hosts = uam::StateSerializer::Serialize(app)["settings"]["executionHosts"];
+	UAM_ASSERT_EQ(hosts.size(), 3u);
+	for (const nlohmann::json& host : hosts)
+	{
+		const std::string id = host.value("id", "");
+		if (id == "local") UAM_ASSERT(!host.contains("bundledRunnerSha256"));
+		else if (id == "win") UAM_ASSERT_EQ(host.value("bundledRunnerSha256", ""), std::string(64, 'c'));
+		else UAM_ASSERT_EQ(host.value("bundledRunnerSha256", "missing"), "");
+	}
 }
 
 UAM_TEST(ConfiguredRemoteCliRowsExposeUnknownScopedPoliciesBeforeAnyProbe)

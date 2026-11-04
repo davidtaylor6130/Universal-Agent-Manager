@@ -567,6 +567,43 @@ UAM_TEST(ChatAttentionRequiresMatchingInteractionAndSurvivesRestart)
 	UAM_ASSERT(loaded->attention_revision.empty());
 }
 
+UAM_TEST(ChatAttentionWithStaleSummaryDefersTheFullSaveToTheBackground)
+{
+	// Provider output marks attention on the poll thread. A stale summary used to fall back to a
+	// synchronous full transcript save there, about one save of a 26 MB chat per completed turn (#526).
+	TempDir temp("uam-attention-stale-summary");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+	chat.id = "attention-stale-summary";
+	chat.messages.push_back({.role = MessageRole::User, .content = "Durable history"});
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	const fs::path primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const std::string saved = uam::io::ReadTextFile(primary);
+	fs::remove(AppPaths::UamChatSummaryFilePath(app.data_root, chat.id));
+	app.chats.front().messages.push_back({.role = MessageRole::Assistant, .content = "Unsaved completion"});
+	UAM_ASSERT(!ChatRepository::SaveLastOpenedAt(app.data_root, app.chats.front(), false));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(primary), saved);
+	ChatDomainService().MarkChatNeedsAttention(app, chat.id);
+	const std::string revision = app.chats.front().attention_revision;
+	UAM_ASSERT(!revision.empty());
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(primary), saved);
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(chat.id));
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (!app.pending_chat_save_at_by_chat_id.empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::FlushPendingChatSaves(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->attention_revision, revision);
+	UAM_ASSERT_EQ(loaded->messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(loaded->messages.back().content, std::string("Unsaved completion"));
+}
+
 UAM_TEST(LegacyChatAttentionCanBeAcknowledgedWithoutClearingANewerCompletion)
 {
 	TempDir temp("uam-legacy-attention");
@@ -587,6 +624,106 @@ UAM_TEST(LegacyChatAttentionCanBeAcknowledgedWithoutClearingANewerCompletion)
 	const std::string fresh = app.chats.front().attention_revision;
 	UAM_ASSERT(domain.AcknowledgeChatAttention(app, chat.id, legacy));
 	UAM_ASSERT_EQ(app.chats.front().attention_revision, fresh);
+}
+
+namespace
+{
+	// Pins the controller zone so local "YYYY-MM-DD HH:MM:SS" stamps have a fixed instant.
+	struct PinnedAttentionTimeZone
+	{
+		std::unique_ptr<ScopedEnvVar> zone;
+		static void Reload()
+		{
+#if defined(_WIN32)
+			_tzset();
+#else
+			tzset();
+#endif
+		}
+		explicit PinnedAttentionTimeZone(const char* tz) : zone(std::make_unique<ScopedEnvVar>("TZ", tz)) { Reload(); }
+		~PinnedAttentionTimeZone()
+		{
+			zone.reset();
+			Reload();
+		}
+	};
+
+	bool LegacyAttentionFor(const std::string& updated_at, const std::string& last_opened_at)
+	{
+		uam::AppState app;
+		ChatSession chat;
+		chat.id = "imported-iso";
+		chat.updated_at = updated_at;
+		chat.last_opened_at = last_opened_at;
+		app.chats.push_back(chat);
+		return !ChatDomainService().AttentionRevision(app, app.chats.front()).empty();
+	}
+}
+
+UAM_TEST(OpeningImportedIsoChatDoesNotCreateLegacyAttention)
+{
+	// Native imports keep ISO UTC updated_at; selection stamps local "YYYY-MM-DD HH:MM:SS".
+	// Same-date strings compare 'T' > ' ', which used to mark every first open as new work (#629).
+	UAM_ASSERT(!LegacyAttentionFor("2026-10-01T00:00:01.000Z", "2026-10-01 23:59:59"));
+}
+
+UAM_TEST(ImportedIsoUpdateAfterLocalOpenStillCreatesLegacyAttention)
+{
+	// UTC+9: the local open is 2026-10-01T23:00:00Z, so the ISO update is later even
+	// though its text sorts first.
+	PinnedAttentionTimeZone zone("JST-9");
+	UAM_ASSERT(LegacyAttentionFor("2026-10-01T23:30:00.000Z", "2026-10-02 08:00:00"));
+	UAM_ASSERT(!LegacyAttentionFor("2026-10-01T22:30:00.000Z", "2026-10-02 08:00:00"));
+}
+
+UAM_TEST(UnparseableAttentionStampsOnlyTextCompareWithinOneShape)
+{
+	UAM_ASSERT(LegacyAttentionFor("opened-b", "opened-a"));
+	UAM_ASSERT(!LegacyAttentionFor("opened-a", "opened-b"));
+	// Mixed shapes that do not parse (invalid month, DST folds) never count as newer.
+	UAM_ASSERT(!LegacyAttentionFor("2026-13-01T00:00:00.000Z", "2026-13-01 00:00:00"));
+}
+
+UAM_TEST(AcknowledgingImportedAttentionKeepsTheLaterOpenStamp)
+{
+	PinnedAttentionTimeZone zone("UTC0");
+	TempDir temp("uam-imported-attention-ack");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "imported-ack";
+	// Today's UTC midnight is earlier than now, but its text sorts after today's local stamp.
+	chat.updated_at = uam::time::TimestampNow().substr(0, 10) + "T00:00:00.000Z";
+	chat.last_opened_at = "2026-01-01 00:00:00";
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	ChatDomainService domain;
+	const std::string revision = domain.AttentionRevision(app, app.chats.front());
+	UAM_ASSERT(!revision.empty());
+	UAM_ASSERT(domain.AcknowledgeChatAttention(app, chat.id, revision));
+	UAM_ASSERT_EQ(app.chats.front().last_opened_at.size(), std::size_t{19});
+	UAM_ASSERT_EQ(app.chats.front().last_opened_at[10], ' ');
+	UAM_ASSERT(domain.AttentionRevision(app, app.chats.front()).empty());
+}
+
+UAM_TEST(ReloadKeepsNewerLocalOpenOverOlderIsoOpen)
+{
+	PinnedAttentionTimeZone zone("UTC0");
+	TempDir temp("uam-imported-open-reload");
+	ChatSession chat;
+	chat.id = "imported-reload";
+	chat.created_at = "2026-10-01T08:00:00.000Z";
+	chat.updated_at = "2026-10-01T09:00:00.000Z";
+	chat.last_opened_at = "2026-10-01T09:00:00.000Z";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.last_opened_at = "2026-10-01 23:59:59";
+	UAM_ASSERT(ChatRepository::SaveLastOpenedAt(temp.root, chat));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChatBounded(temp.root, chat.id, 1 << 20);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->last_opened_at, chat.last_opened_at);
+	uam::AppState app;
+	app.chats.push_back(*loaded);
+	UAM_ASSERT(ChatDomainService().AttentionRevision(app, app.chats.front()).empty());
 }
 
 #if defined(__APPLE__)
@@ -2518,7 +2655,9 @@ UAM_TEST(AcpRepositoryBaselineHoldRetryIsOfferedOnlyForTheLoneMarkedReceipt)
 	};
 	UAM_ASSERT(retry_flags({marked}) == std::vector<bool>{true});
 	UAM_ASSERT(uam::AcpBaselineHoldRetryAllowed(app, app.chats.front(), nullptr));
-	UAM_ASSERT(retry_flags({unrelated}) == std::vector<bool>{false});
+	// A lone held row-less receipt has no Retry route, so it joins the resumable held queue (#682).
+	UAM_ASSERT(retry_flags({unrelated}).empty());
+	UAM_ASSERT_EQ(uam::StateSerializer::Serialize(app).at("chats").at(0).at("acpSession").at("queuedPrompts").size(), std::size_t{1});
 	UAM_ASSERT(retry_flags({marked, unrelated}) == (std::vector<bool>{false, false}));
 	UAM_ASSERT(!uam::AcpBaselineHoldRetryAllowed(app, app.chats.front(), nullptr));
 	std::string error;

@@ -2107,6 +2107,29 @@ namespace
 		    uam::execution_hosts::RemotePathsMatch(host->platform, source.workspace_directory, candidate.workspace_directory);
 	}
 
+	// A chat (or its in-memory record) that already carries this source's subagent display link.
+	bool IsKnownSubagentChildOf(const uam::AppState& app, const ChatSession& source, const ChatSession& candidate)
+	{
+		const auto linked = [&](const ChatSession& chat)
+		{
+			return !source.id.empty() && chat.subagent_parent_chat_id == source.id && chat.subagent_parent_created_at == source.created_at;
+		};
+		if (linked(candidate)) return true;
+		const std::string native_id = uam::strings::Trim(candidate.native_session_id);
+		return std::ranges::any_of(app.chats, [&](const ChatSession& chat)
+		{
+			return linked(chat) && (chat.id == candidate.id || (!native_id.empty() && uam::strings::Trim(chat.native_session_id) == native_id));
+		});
+	}
+
+	// Only a known subagent child also accepts its own worktree of the parent's checkout (#675);
+	// every other native open still requires the exact workspace.
+	bool NativeOpenWorkspacesMatch(const uam::AppState& app, const ChatSession& source, const ChatSession& candidate)
+	{
+		return NativeHistoryWorkspacesMatch(app, source, candidate) ||
+		    (IsKnownSubagentChildOf(app, source, candidate) && chat_identity::NativeProjectCheckoutsMatch(source, candidate));
+	}
+
 	struct LocalChatOverlayIndex
 	{
 		std::unordered_map<std::string, ChatSession*> by_id;
@@ -4036,6 +4059,20 @@ const ChatFolder* ChatHistorySyncService::StartupImportWorkspaceOwner(const uam:
 	for (const ChatFolder& folder : app.folders)
 		if (folder.execution_host_id == chat.execution_host_id && uam::execution_hosts::RemotePathsMatch(host->platform, folder.directory, chat.workspace_directory)) return &folder;
 	return nullptr;
+}
+
+const ChatFolder* ChatHistorySyncService::PlanImportWorkspace(uam::AppState& plan, const ChatSession& chat) const
+{
+	if (const ChatFolder* owner = StartupImportWorkspaceOwner(plan, chat)) return owner;
+	// ponytail: remote histories are discovered only inside registered host workspaces, so a missing remote owner was removed and stays removed.
+	if (!uam::paths::IsControllerLocalWorkspace(chat) || chat.workspace_directory.size() > 32768 || chat.workspace_directory.find('\0') != std::string::npos) return nullptr;
+	const fs::path workspace = uam::paths::PathFromUtf8(chat.workspace_directory);
+	// ponytail: existence and git-root checks run on the app thread, one stat walk per unmatched history; move planning into the scan worker if large discoveries stall the UI.
+	if (!workspace.is_absolute() || !uam::paths::IsDirectoryNoThrow(workspace)) return nullptr;
+	ProviderChatSource source;
+	source.folder_directory = chat.workspace_directory;
+	source.folder_title = uam::strings::NonEmptyOrFallback(uam::paths::Utf8PathString(workspace.filename()), chat.workspace_directory);
+	return ChatDomainService().FindFolderById(plan, ResolvePersistedImportFolderIdForSource(plan, source, false));
 }
 
 ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverRemoteProviderChatsForFolder(
@@ -6600,7 +6637,7 @@ ChatSession* ChatHistorySyncService::FindInMemoryNativeSessionChatForOpen(uam::A
 
 	for (ChatSession& chat : app.chats)
 	{
-		if (!NativeHistoryWorkspacesMatch(app, source_chat, chat)) continue;
+		if (!NativeOpenWorkspacesMatch(app, source_chat, chat)) continue;
 		const std::string chat_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id);
 		if (!chat_provider_id.empty() && chat_provider_id != source_provider_id)
 		{
@@ -6678,7 +6715,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 		// A parent-owned agent journal is a read-only UAM transcript, never a
 		// resumable native session. Keep its reference out of native UUID mappings.
 		const auto reference = uam::native_agents::ParseHistoryId(target_native_session_id);
-		if (!reference || reference->provider_id != source_provider_id || reference->parent_session_id != source_chat.native_session_id || reference->execution_host_id != uam::strings::NonEmptyOrFallback(source_chat.execution_host_id, "local") || native_snapshot->id != target_native_session_id || native_snapshot->parent_chat_id != reference->parent_session_id || uam::provider_ids::NormalizeCliProviderAliasOrSelf(native_snapshot->provider_id) != source_provider_id || !NativeHistoryWorkspacesMatch(app, source_chat, *native_snapshot))
+		if (!reference || reference->provider_id != source_provider_id || reference->parent_session_id != source_chat.native_session_id || reference->execution_host_id != uam::strings::NonEmptyOrFallback(source_chat.execution_host_id, "local") || native_snapshot->id != target_native_session_id || native_snapshot->parent_chat_id != reference->parent_session_id || uam::provider_ids::NormalizeCliProviderAliasOrSelf(native_snapshot->provider_id) != source_provider_id || !NativeOpenWorkspacesMatch(app, source_chat, *native_snapshot))
 			return nullptr;
 		const NativeImportTombstones tombstones = LoadNativeImportTombstones(app.data_root);
 		if (!tombstones.available || tombstones.keys.contains(chat_identity::NativeIdentityKeyForHistoryImport(*native_snapshot)))
@@ -6687,7 +6724,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 		{
 			if (existing.id != target_native_session_id)
 				continue;
-			if (!existing.imported_read_only || !existing.native_session_id.empty() || existing.provider_id != source_provider_id || existing.parent_chat_id != reference->parent_session_id || !NativeHistoryWorkspacesMatch(app, source_chat, existing) || ChatNeedsTranscriptPreserved(app, existing) || uam::ChatHasActiveCliTerminal(app, existing.id))
+			if (!existing.imported_read_only || !existing.native_session_id.empty() || existing.provider_id != source_provider_id || existing.parent_chat_id != reference->parent_session_id || !NativeOpenWorkspacesMatch(app, source_chat, existing) || ChatNeedsTranscriptPreserved(app, existing) || uam::ChatHasActiveCliTerminal(app, existing.id))
 				return nullptr;
 			const auto incarnation = existing.metadata_incarnation;
 			existing = *native_snapshot;
@@ -6700,13 +6737,13 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 		return &app.chats.back();
 	}
 	auto existing_matches_source_workspace = [&](const ChatSession& chat) {
-		return NativeHistoryWorkspacesMatch(app, source_chat, chat);
+		return NativeOpenWorkspacesMatch(app, source_chat, chat);
 	};
 
 	std::vector<ChatSession> candidate_chats;
 	if (native_snapshot != nullptr)
 	{
-		if (!NativeHistoryWorkspacesMatch(app, source_chat, *native_snapshot) ||
+		if (!NativeOpenWorkspacesMatch(app, source_chat, *native_snapshot) ||
 		    native_snapshot->native_session_id != target_native_session_id ||
 		    uam::provider_ids::NormalizeCliProviderAliasOrSelf(native_snapshot->provider_id) != source_provider_id) return nullptr;
 		const NativeImportTombstones tombstones = LoadNativeImportTombstones(app.data_root);
@@ -6764,7 +6801,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 	{
 		std::erase_if(candidate_chats, [&](const ChatSession& chat)
 		{
-			return !NativeHistoryWorkspacesMatch(app, source_chat, chat);
+			return !NativeOpenWorkspacesMatch(app, source_chat, chat);
 		});
 	}
 
@@ -6811,7 +6848,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 
 		for (ChatSession& chat : app.chats)
 		{
-			if (!NativeHistoryWorkspacesMatch(app, source_chat, chat)) continue;
+			if (!NativeOpenWorkspacesMatch(app, source_chat, chat)) continue;
 			const std::string chat_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id);
 			if (!chat_provider_id.empty() && chat_provider_id != source_provider_id)
 			{

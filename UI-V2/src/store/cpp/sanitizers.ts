@@ -91,6 +91,9 @@ export const MAX_GOAL_MAX_LOOP_ITERATIONS = 200
 export const DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 600
 export const MIN_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 60
 export const MAX_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 3600
+export const DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS = 1800
+export const MIN_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS = 60
+export const MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS = 86400
 export const DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB = 1024
 export const MIN_ACP_TURN_OUTPUT_LIMIT_MIB = 256
 export const MAX_ACP_TURN_OUTPUT_LIMIT_MIB = 4096
@@ -109,6 +112,10 @@ export function normalizeAcpTurnOutputLimitMiB(value: unknown): number {
 
 export function normalizeAcpSetupInactivityTimeoutSeconds(value: unknown): number {
   return clampedFiniteNumberOr(value, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, MIN_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, MAX_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS)
+}
+
+export function normalizeActiveTurnInactivityTimeoutSeconds(value: unknown): number {
+  return Math.floor(clampedFiniteNumberOr(value, DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, MIN_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS))
 }
 
 export function normalizeMemoryLevel(value: unknown, legacyEnabled = true, allowDefault = true): MemoryLevel {
@@ -919,6 +926,9 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     lastError: isString(value.lastError) ? value.lastError : undefined,
     recentStderr: isString(value.recentStderr) ? value.recentStderr : undefined,
     lastStopReason: isString(value.lastStopReason) ? value.lastStopReason : undefined,
+    timeoutStop: isRecord(value.timeoutStop) && isString(value.timeoutStop.label) && value.timeoutStop.label
+      ? { label: value.timeoutStop.label, seconds: nonNegativeInteger(value.timeoutStop.seconds) ?? 0 }
+      : undefined,
     lastExitCode: typeof value.lastExitCode === 'number' && Number.isFinite(value.lastExitCode) ? value.lastExitCode : null,
     diagnostics: Array.isArray(value.diagnostics)
       ? value.diagnostics.flatMap((entry) => {
@@ -1737,7 +1747,9 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
       memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
       goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
+      goalTokenBudget: 0,
       acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
+      activeTurnInactivityTimeoutSeconds: DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS,
       acpTurnOutputLimitMiB: DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
       updateChecksEnabled: true,
       automaticProviderUpdates: false,
@@ -1864,6 +1876,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         customIcon: sanitizeCustomIcon(entry.customIcon),
         runnerDirectory: stringOr(entry.runnerDirectory),
         runnerProtocolVersion: finiteNumberOr(entry.runnerProtocolVersion, 0),
+        ...(/^[0-9a-f]{64}$/.test(stringOr(entry.runnerSha256)) ? { runnerSha256: stringOr(entry.runnerSha256) } : {}),
+        ...(/^[0-9a-f]{64}$/.test(stringOr(entry.bundledRunnerSha256)) ? { bundledRunnerSha256: stringOr(entry.bundledRunnerSha256) } : {}),
         instructionFile: stringOr(entry.instructionFile),
         instructionText: typeof entry.instructionText === 'string' ? entry.instructionText : undefined,
         startupEnabled: booleanOr(entry.startupEnabled, false),
@@ -1893,7 +1907,9 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     memoryIdleDelaySeconds: clampedFiniteNumberOr(value.memoryIdleDelaySeconds, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS),
     memoryRecallBudgetBytes: clampedFiniteNumberOr(value.memoryRecallBudgetBytes, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES),
     goalMaxLoopIterations: normalizeGoalMaxLoopIterations(value.goalMaxLoopIterations),
+    goalTokenBudget: Math.max(0, Math.floor(typeof value.goalTokenBudget === 'number' && Number.isFinite(value.goalTokenBudget) ? value.goalTokenBudget : 0)),
     acpSetupInactivityTimeoutSeconds: normalizeAcpSetupInactivityTimeoutSeconds(value.acpSetupInactivityTimeoutSeconds),
+    activeTurnInactivityTimeoutSeconds: normalizeActiveTurnInactivityTimeoutSeconds(value.activeTurnInactivityTimeoutSeconds),
     acpTurnOutputLimitMiB: normalizeAcpTurnOutputLimitMiB(value.acpTurnOutputLimitMiB),
     updateChecksEnabled: booleanOr(value.updateChecksEnabled, true),
     automaticProviderUpdates: booleanOr(value.automaticProviderUpdates, false),
