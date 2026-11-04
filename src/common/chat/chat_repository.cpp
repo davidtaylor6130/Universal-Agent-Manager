@@ -33,6 +33,7 @@
 #include "common/utils/parse_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "common/utils/history_timestamp_order.h"
 #include "common/utils/uuid.h"
 #include "computer_use/computer_use_mcp_config.h"
 #include "core/chat_import_utils.h"
@@ -5408,7 +5409,7 @@ namespace
 			hydrated.managed_followup_input_unavailable = true;
 		}
 		hydrated.interaction_at = summary.interaction_at;
-		if (summary.last_opened_at > hydrated.last_opened_at)
+		if (uam::time::HistoryTimestampIsAfter(summary.last_opened_at, hydrated.last_opened_at))
 			hydrated.last_opened_at = summary.last_opened_at;
 		hydrated.attention_revision = summary.attention_revision;
 		hydrated.settled_at = summary.settled_at;
@@ -5532,7 +5533,7 @@ namespace
 		const LoadChatResult summary = ParseLocalChatFile(summary_path, false, source_size, false, max_read_bytes);
 		if (summary.chat && summary.chat->id == chat.id)
 		{
-			if (summary.chat->last_opened_at > chat.last_opened_at) chat.last_opened_at = summary.chat->last_opened_at;
+			if (uam::time::HistoryTimestampIsAfter(summary.chat->last_opened_at, chat.last_opened_at)) chat.last_opened_at = summary.chat->last_opened_at;
 			chat.attention_revision = summary.chat->attention_revision;
 			chat.interaction_at = summary.chat->interaction_at;
 			chat.settled_at = summary.chat->settled_at;
