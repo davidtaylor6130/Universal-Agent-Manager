@@ -1143,6 +1143,12 @@ namespace uam
 			    chat.imported_read_only ||
 			    chat.execution_host_id == uam::execution_hosts::kLocalHostId)
 				continue;
+			// Each remote recovery candidate names its markers so a skipped restart is diagnosable (#682).
+			diagnostics::Write("[remote-restore] chat_id=" + chat.id + " initial=" + std::to_string(initial_restore) +
+			    " session_exists=" + std::to_string(FindAcpSessionForChat(app, chat.id) != nullptr) +
+			    " reconnect=" + std::to_string(chat.remote_turn_reconnect_pending) + " process_exists=" + std::to_string(chat.remote_process_exists) +
+			    " restart=" + std::to_string(chat.remote_restart_pending) + " stop_cleanup=" + std::to_string(chat.remote_stop_cleanup_pending) +
+			    " held=" + std::to_string(chat.acp_queue_held) + " queued=" + std::to_string(chat.acp_queued_prompts.size()));
 			if (FindAcpSessionForChat(app, chat.id) != nullptr)
 			{
 				app.remote_recovery_hydration_retry_not_before_by_chat_id.erase(chat.id);
@@ -1201,6 +1207,7 @@ namespace uam
 				}
 				else
 				{
+					diagnostics::Write("[remote-restore] chat_id=" + chat.id + " start_failed error=" + session.last_error);
 					session.reconnect_pending = true;
 					session.reconnect_not_before_time_s = GetAppTimeSeconds() +
 					                                          kAcpReconnectBaseDelaySeconds;
@@ -1265,6 +1272,7 @@ namespace uam
 				session.recovering_remote_process = true;
 				if (!acp_detail::StartAcpProcessForChat(app, session, chat))
 				{
+					diagnostics::Write("[remote-restore] chat_id=" + chat.id + " start_failed error=" + session.last_error);
 					session.reconnect_pending = true;
 					session.reconnect_not_before_time_s = GetAppTimeSeconds() +
 					    kAcpReconnectBaseDelaySeconds;
@@ -1280,6 +1288,7 @@ namespace uam
 				// repaired. Keep the write-ahead turn marker so a later restart can
 				// still reattach instead of silently abandoning the helper-owned turn.
 				app.status_line = "Remote turn recovery is waiting for chat history repair.";
+				diagnostics::Write("[remote-restore] chat_id=" + chat.id + " skipped=history_unavailable warning=" + warning);
 				app.remote_recovery_hydration_retry_not_before_by_chat_id[chat.id] =
 				    GetAppTimeSeconds() + kRemoteRecoveryHydrationRetryDelaySeconds;
 				continue;
@@ -1327,6 +1336,7 @@ namespace uam
 					}
 					else
 					{
+						diagnostics::Write("[remote-restore] chat_id=" + chat.id + " start_failed error=" + session.last_error);
 						session.reconnect_pending = true;
 						session.reconnect_not_before_time_s = GetAppTimeSeconds() +
 						                                          kAcpReconnectBaseDelaySeconds;
@@ -1338,6 +1348,10 @@ namespace uam
 			session.last_runtime_activity_time_s = session.turn_started_time_s;
 			if (acp_detail::StartAcpProcessForChat(app, session, chat))
 			{
+				diagnostics::Write("[remote-restore] chat_id=" + chat.id + " start_returned lifecycle=" + session.lifecycle_state +
+				    " running=" + std::to_string(session.running) + " pending_local_launch=" + std::to_string(static_cast<bool>(session.pending_local_launch)) +
+				    " worktree_pending=" + std::to_string(session.worktree_launch_pending) + " cold_binding=" + std::to_string(static_cast<bool>(session.cold_retry_binding)) +
+				    " reconnect_pending=" + std::to_string(session.reconnect_pending) + " error=" + session.last_error);
 				++restored;
 			}
 			else
@@ -2543,6 +2557,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 			// Reject stale transport ownership before admitting input or publishing restart authority.
 			if ((native_adapter_changed || settings_require_restart) && !ValidateAcpRestartOwnership(app, session, chat, error_out))
 				return false;
+			if (native_adapter_changed || settings_require_restart)
+				AppendAcpDiagnostic(session, "restart", native_adapter_changed ? "agent_adapter_changed" : model_requires_restart ? "model_changed" : "settings_changed",
+				    "", "", false, 0, "Restarting the structured runtime to apply the turn's settings.",
+				    "running_model=" + restart_model_id + " turn_model=" + turn_model_id);
 			if ((native_adapter_changed || settings_require_restart) && !app.claude_quota_dispatch_id.empty())
 			{
 				// Keep the durable future outbox intact even if Stop or this process fails mid-restart.
@@ -7357,7 +7375,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				ChatSession* workspace_chat = FindAcpRuntimeChatById(app, session.chat_id);
 				if (!workspace_chat) continue;
-				if (session.queue_held) continue;
+				// A held queue pauses new input, not recovery of an already-admitted remote turn (#682):
+				// skipping its workspace left restart recovery waiting forever with no Resume control.
+				if (session.queue_held && !session.recovering_remote_turn && !session.recovering_remote_process) continue;
 				if (!ValidateQueuedReplayBeforeLaunch(app, session, *workspace_chat))
 				{
 					changed = true;
