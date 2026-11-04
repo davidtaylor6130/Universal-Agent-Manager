@@ -14,6 +14,7 @@ export interface MemorySettingsValues {
   memoryIdleDelaySeconds: number
   memoryRecallBudgetBytes: number
   goalMaxLoopIterations: number
+  goalTokenBudget: number
   acpSetupInactivityTimeoutSeconds: number
   acpTurnOutputLimitMiB: number
   activeTurnInactivityTimeoutSeconds: number
@@ -46,13 +47,13 @@ export interface MemorySettingsWriteDependencies {
 }
 const fields = [
   'memoryEnabledDefault', 'memoryLevelDefault', 'memoryIdleDelaySeconds', 'memoryRecallBudgetBytes',
-  'goalMaxLoopIterations', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB', 'activeTurnInactivityTimeoutSeconds', 'streamLoopRepeatLimit',
+  'goalMaxLoopIterations', 'goalTokenBudget', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB', 'activeTurnInactivityTimeoutSeconds', 'streamLoopRepeatLimit',
   'memoryWorkerBindings', 'permissionReviewerProviderId', 'permissionReviewerModelId',
 ] as const
 const wireNames: Record<keyof MemorySettingsValues, string> = {
   memoryEnabledDefault: 'enabledDefault', memoryLevelDefault: 'levelDefault',
   memoryIdleDelaySeconds: 'idleDelaySeconds', memoryRecallBudgetBytes: 'recallBudgetBytes',
-  goalMaxLoopIterations: 'goalMaxLoopIterations', acpSetupInactivityTimeoutSeconds: 'acpSetupInactivityTimeoutSeconds',
+  goalMaxLoopIterations: 'goalMaxLoopIterations', goalTokenBudget: 'goalTokenBudget', acpSetupInactivityTimeoutSeconds: 'acpSetupInactivityTimeoutSeconds',
   acpTurnOutputLimitMiB: 'acpTurnOutputLimitMiB', activeTurnInactivityTimeoutSeconds: 'activeTurnInactivityTimeoutSeconds', streamLoopRepeatLimit: 'streamLoopRepeatLimit', memoryWorkerBindings: 'workerBindings',
   permissionReviewerProviderId: 'permissionReviewerProviderId', permissionReviewerModelId: 'permissionReviewerModelId',
 }
@@ -64,13 +65,16 @@ const within = (value: unknown, min: number, max: number) => integer(value) && v
 const bindingEqual = (a: MemoryWorkerBinding | undefined, b: MemoryWorkerBinding | undefined) => a?.workerProviderId === b?.workerProviderId && a?.workerModelId === b?.workerModelId
 
 /** Reject malformed canonical receipts rather than manufacturing values with defaults. */
-export function parseMemorySettingsValues(value: unknown): MemorySettingsValues | null {
+export function parseMemorySettingsValues(raw: unknown): MemorySettingsValues | null {
+  // ponytail: older native payloads predate goalTokenBudget; default it to 0 instead of rejecting.
+  const value = record(raw) && !Object.prototype.hasOwnProperty.call(raw, 'goalTokenBudget') ? { ...raw, goalTokenBudget: 0 } : raw
   if (!record(value) || Object.keys(value).length !== fields.length || !fields.every((key) => Object.prototype.hasOwnProperty.call(value, key))) return null
   if (typeof value.memoryEnabledDefault !== 'boolean' || (typeof value.memoryLevelDefault !== 'string' || !['off', 'readOnly', 'strict', 'balanced', 'open'].includes(value.memoryLevelDefault)) ||
     value.memoryEnabledDefault !== (value.memoryLevelDefault !== 'off') ||
     !within(value.memoryIdleDelaySeconds, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS) ||
     !within(value.memoryRecallBudgetBytes, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES) ||
     !integer(value.goalMaxLoopIterations) || value.goalMaxLoopIterations !== normalizeGoalMaxLoopIterations(value.goalMaxLoopIterations) ||
+    !integer(value.goalTokenBudget) || value.goalTokenBudget < 0 ||
     !integer(value.acpSetupInactivityTimeoutSeconds) || value.acpSetupInactivityTimeoutSeconds !== normalizeAcpSetupInactivityTimeoutSeconds(value.acpSetupInactivityTimeoutSeconds) ||
     !integer(value.acpTurnOutputLimitMiB) || value.acpTurnOutputLimitMiB !== normalizeAcpTurnOutputLimitMiB(value.acpTurnOutputLimitMiB) ||
     !integer(value.streamLoopRepeatLimit) || value.streamLoopRepeatLimit !== normalizeStreamLoopRepeatLimit(value.streamLoopRepeatLimit) ||
@@ -110,6 +114,7 @@ function normalizeRequested(partial: Partial<MemorySettingsValues>, previous: Me
   if (partial.memoryIdleDelaySeconds !== undefined) next.memoryIdleDelaySeconds = clampedFiniteNumberOr(partial.memoryIdleDelaySeconds, previous.memoryIdleDelaySeconds, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS)
   if (partial.memoryRecallBudgetBytes !== undefined) next.memoryRecallBudgetBytes = clampedFiniteNumberOr(partial.memoryRecallBudgetBytes, previous.memoryRecallBudgetBytes, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES)
   if (partial.goalMaxLoopIterations !== undefined) next.goalMaxLoopIterations = normalizeGoalMaxLoopIterations(partial.goalMaxLoopIterations)
+  if (partial.goalTokenBudget !== undefined) next.goalTokenBudget = Math.max(0, Math.floor(Number.isFinite(partial.goalTokenBudget) ? partial.goalTokenBudget : 0))
   if (partial.acpSetupInactivityTimeoutSeconds !== undefined) next.acpSetupInactivityTimeoutSeconds = normalizeAcpSetupInactivityTimeoutSeconds(partial.acpSetupInactivityTimeoutSeconds)
   if (partial.acpTurnOutputLimitMiB !== undefined) next.acpTurnOutputLimitMiB = normalizeAcpTurnOutputLimitMiB(partial.acpTurnOutputLimitMiB)
   if (partial.streamLoopRepeatLimit !== undefined) next.streamLoopRepeatLimit = normalizeStreamLoopRepeatLimit(partial.streamLoopRepeatLimit)

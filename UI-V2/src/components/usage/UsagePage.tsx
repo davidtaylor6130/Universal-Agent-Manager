@@ -1,13 +1,14 @@
-import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
-import { ArrowLeft, Info, RefreshCw, SlidersHorizontal } from 'lucide-react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
+import { ArrowLeft, Check, ChevronRight, Info, RefreshCw, SlidersHorizontal, X } from 'lucide-react'
 import { useUsageHistory } from '../../hooks/useUsageHistory'
 import { ALL_MACHINES_HOST_ID, EMPTY_USAGE_TOTALS, sumProviderUsage, USAGE_PROVIDERS, USAGE_WINDOWS, formatUsageCost, formatUsageCount, usageCost, usageCostBasis, usageWindow, type UsageCostBasis, type UsageProvider, type UsageProviderId, type UsageMetric, type UsageModel, type UsagePriceOverride, type UsageTotals, type UsageWindowDays } from '../../services/usageHistory'
 import { useAppStore } from '../../store/useAppStore'
 import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED } from '../../config/buildFeatures'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, IconButton, MenuSelect, Tooltip, cx } from '../ui'
-import { UsageLimits } from './UsageLimits'
+import { Button, Card, Disclosure, IconButton, MenuSelect, Notice, RowButton, SegmentedControl, StatusDot, Tooltip, ViewportMenu, cx, usePresence, Reveal } from '../ui'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
+import { PERIOD_PHRASE, UsageLimits } from './UsageLimits'
 import './usage.css'
 
 const PRICE_KEY = 'uam-usage-prices-v1'
@@ -69,6 +70,8 @@ function CostBasis({ totals, focusable = false, pending = false }: { totals: Usa
 }
 
 const money = (value: number) => new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: value > 0 && value < 0.01 ? 4 : 2 }).format(value)
+/** Axis amounts: whole dollars compact ($0, $2, $1.5K); fractional ticks keep their cents ($2.50, $0.05). */
+const axisMoney = (value: number) => Number.isInteger(value) ? new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', notation: 'compact', minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(value) : money(value)
 const percentOf = (part: number, whole: number) => whole > 0 ? `${Math.round(part / whole * 100)}%` : '0%'
 /** Token segments are disjoint: input + cache read + cache write + output (reasoning is a part of output). */
 const TOKEN_SEGMENTS = [
@@ -76,52 +79,63 @@ const TOKEN_SEGMENTS = [
   { key: 'cache', label: 'Cache read', color: 'var(--token-cache-read)', value: (total: UsageTotals) => total.cachedInputTokens },
   { key: 'cache-write', label: 'Cache write', color: 'var(--token-cache-write)', value: (total: UsageTotals) => total.cacheWriteTokens },
   { key: 'output', label: 'Output', color: 'var(--token-output)', value: (total: UsageTotals) => total.outputTokens - total.reasoningTokens },
-  { key: 'reasoning', label: 'Reasoning, included in output', color: 'var(--token-reasoning)', value: (total: UsageTotals) => total.reasoningTokens },
+  { key: 'reasoning', label: 'Reasoning', color: 'var(--token-reasoning)', value: (total: UsageTotals) => total.reasoningTokens },
 ] as const
 
-/** Token composition as one proportional bar. Labels sit inside wide segments; every segment keeps an exact tooltip. */
-function TokenStack({ total, height = 14, labels = false }: { total: UsageTotals; height?: number; labels?: boolean }) {
-  const parts = TOKEN_SEGMENTS.map(segment => ({ segment, value: segment.value(total) }))
-  const sum = parts.reduce((acc, part) => acc + Math.max(0, part.value), 0)
-  return <span className="uam-usage-stack" aria-hidden style={{ height }}>
-    {parts.map(({ segment, value }) => {
-      if (value <= 0) return null
-      const share = value / sum
-      return <span key={segment.key} title={`${segment.label} · ${value.toLocaleString()}`} style={{ flexGrow: value, '--c': segment.color } as CSSProperties}>
-        {labels && share >= 0.12 && <span className="uam-usage-stack-label">{share >= 0.3 ? `${segment.key === 'reasoning' ? 'Reasoning' : segment.label} ` : ''}{formatUsageCount(value)}</span>}
-      </span>
-    })}
+/** One segment of a split bar, legend or tooltip: `text` is shown, `exact` is its hover title, `share` its percentage ('' where unknown). */
+type Part = { key: string; label: string; color: string; value: number; text: string; exact: string; share: string }
+const tokenParts = (total: UsageTotals): Part[] => TOKEN_SEGMENTS.map(segment => {
+  const value = segment.value(total)
+  return { key: segment.key, label: segment.label, color: segment.color, value, text: formatUsageCount(value), exact: value.toLocaleString(), share: percentOf(value, total.totalTokens) }
+})
+
+/**
+ * Composition as one gapped bar (hairline gaps, rounded ends): token types on Tokens, cost by provider on Cost.
+ * `width` (0-1) scales it to a shared maximum; every segment keeps an exact hover title.
+ */
+function SplitBar({ parts, width, describe = false, empty = 'No tokens' }: { parts: Part[]; width?: number; describe?: boolean; empty?: string }) {
+  const shown = parts.filter(part => part.value > 0)
+  // A described bar stands alone (headline, Daily table) and names its mix; inside a labelled row it stays hidden.
+  const a11y = describe ? { role: 'img', 'aria-label': shown.map(part => `${part.label} ${part.text}`).join(', ') || empty } : { 'aria-hidden': true }
+  return <span className="uam-usage-stack" {...a11y} style={{ height: 8, width: width === undefined ? undefined : `${Math.min(100, Math.max(0, width) * 100)}%` }}>
+    {shown.map(part => <span key={part.key} title={`${part.label} · ${part.exact}`} style={{ flexGrow: part.value, '--c': part.color } as CSSProperties} />)}
   </span>
 }
 
-function TokenLegend({ total }: { total: UsageTotals }) {
+function SplitLegend({ parts }: { parts: Part[] }) {
   return <ul className="uam-usage-key text-xs">
-    {TOKEN_SEGMENTS.map(segment => { const value = segment.value(total); return <li key={segment.key} className="uam-usage-key-item">
-      <i className="uam-usage-swatch" style={{ '--c': segment.color } as CSSProperties} aria-hidden />{segment.label}
-      <span className="tabular-nums uam-usage-muted" title={value.toLocaleString()}>{formatUsageCount(value)} · {percentOf(value, total.totalTokens)}</span>
-    </li> })}
+    {parts.map(part => <li key={part.key} className="uam-usage-key-item">
+      <i className="uam-usage-swatch" style={{ '--c': part.color } as CSSProperties} aria-hidden />{part.label}{part.key === 'reasoning' && <span className="uam-usage-muted">(part of output)</span>}
+      <span className="tabular-nums uam-usage-muted" title={part.exact}>{part.text}{part.share && ` · ${part.share}`}</span>
+    </li>)}
   </ul>
 }
 
-/** Cost share as one solid bar in the provider colour; width is relative to the largest row. */
-function CostBar({ cost, max, color }: { cost: number; max: number; color: string }) {
-  return <span className="uam-usage-stack" aria-hidden style={{ width: max > 0 ? `${Math.min(100, cost / max * 100)}%` : '0%' }}>
-    <span style={{ flexGrow: 1, '--c': color } as CSSProperties} />
-  </span>
+/** Axis ticks at 1, 2, 2.5 or 5 × 10ⁿ, at most three intervals, with about a quarter of headroom over the peak. */
+export function niceTicks(peak: number): number[] {
+  if (!(peak > 0)) return [0]
+  const top = peak * 1.25, raw = top / 3, power = 10 ** Math.floor(Math.log10(raw))
+  const step = [1, 2, 2.5, 5, 10].map(multiple => multiple * power).find(value => value >= raw) ?? raw
+  return Array.from({ length: Math.ceil(top / step - 1e-9) + 1 }, (_, index) => index * step)
 }
 
-function StatTile({ label, value, sub, title }: { label: string; value: string; sub?: string; title?: string }) {
+function StatTile({ label, value, detail, sub, title }: { label: string; value: string; detail?: string; sub?: string; title?: string }) {
   return <div className="uam-usage-tile">
     <span className="uam-usage-label">{label}</span>
-    <span className="uam-usage-tile-value tabular-nums" title={title}>{value}</span>
-    {sub && <span className="uam-usage-muted text-xs">{sub}</span>}
+    <span className="uam-usage-tile-value tabular-nums" title={title}>{value}{detail && <small>{detail}</small>}</span>
+    <Reveal open={!!(sub)}><span className="uam-usage-muted text-xs">{sub}</span></Reveal>
   </div>
 }
+
+const count = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`
 
 function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; prices: UsagePriceOverride[]; onSave: (prices: UsagePriceOverride[]) => void; onClose: () => void }) {
   const existing = prices.find(price => modelKey(price) === modelKey(model))
   const [fields, setFields] = useState(() => priceFields.map(([key]) => (existing ? existing[key] : model.priceReference?.[key])?.toString() ?? ''))
   const [error, setError] = useState('')
+  const errorNote = usePresence(Boolean(error))
+  const shownError = useRef(error)
+  if (error) shownError.current = error
   const save = (remove = false) => {
     const next = prices.filter(price => modelKey(price) !== modelKey(model))
     if (!remove) {
@@ -130,41 +144,77 @@ function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; pr
       if (next.length >= 200) { setError('Up to 200 model prices can be saved. Remove an unused override first.'); return }
       next.push({ providerId: model.providerId, modelId: model.modelId, speed: model.speed, inputPerMillion: values[0], cachedInputPerMillion: values[1], cacheWritePerMillion: values[2], outputPerMillion: values[3] })
     }
-    try { window.localStorage.setItem(PRICE_KEY, JSON.stringify(next)); onSave(next); onClose() } catch { setError('Could not save prices on this device. Your previous prices were kept.') }
+    try { window.localStorage.setItem(PRICE_KEY, JSON.stringify(next)); onSave(next); onClose(); reportAppNotice(remove ? 'Price override removed.' : 'Model prices saved.', 'success') } catch { reportAppFailure('Could not save prices on this device.', 'Your previous prices were kept.') }
   }
   return <form className="grid gap-3 py-4" aria-label={`Prices for ${model.modelId}`} onSubmit={event => { event.preventDefault(); save() }}>
     <p className="text-xs">USD per million tokens. Blank rates stay unknown. These estimates do not change provider billing.</p>
     {model.priceReference?.kind === 'reference' && <div className="grid gap-1 text-xs">
       <p>Reference: {model.priceReference.referenceModel} · <a href={model.priceReference.source} target="_blank" rel="noreferrer" className="underline">Rate source</a>{model.priceReference.verifiedDate && ` · Verified ${model.priceReference.verifiedDate}`}</p>
-      {model.priceReference.cacheFallback && <p>Unpublished cache rates use the input rate.</p>}
-      {model.priceReference.speedFallback && <p>This speed uses the standard rate because a separate rate is unavailable.</p>}
+      <Reveal open={model.priceReference.cacheFallback}><p>Unpublished cache rates use the input rate.</p></Reveal>
+      <Reveal open={model.priceReference.speedFallback}><p>This speed uses the standard rate because a separate rate is unavailable.</p></Reveal>
     </div>}
     <div className="grid gap-3 sm:grid-cols-4">{priceFields.map(([key, label], index) => <label className="grid gap-1 text-xs" key={key}>{label}
-      <input type="number" min="0" step="any" className="uam-usage-price-input w-full" value={fields[index]} onChange={event => setFields(previous => previous.map((value, i) => i === index ? event.target.value : value))} />
+      <input type="number" min="0" step="any" className="uam-field w-full" value={fields[index]} onChange={event => setFields(previous => previous.map((value, i) => i === index ? event.target.value : value))} />
     </label>)}</div>
-    {error && <p role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{error}</p>}
-    <div className="flex gap-2"><Button size="sm" variant="primary" type="submit">Save prices</Button><Button size="sm" type="button" onClick={onClose}>Cancel</Button>{existing && <Button size="sm" type="button" onClick={() => save(true)}>Remove override</Button>}</div>
+    <Reveal open={errorNote.mounted}><p role="alert" className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--error)' }}><StatusDot tone="error" />{shownError.current}</p></Reveal>
+    <div className="flex gap-2"><Button size="sm" variant="primary" type="submit">Save prices</Button><Button size="sm" type="button" onClick={onClose}>Cancel</Button><Reveal as="span" open={!!existing}><Button size="sm" type="button" onClick={() => save(true)}>Remove override</Button></Reveal></div>
   </form>
 }
 
-/** T3-inspired usage workspace. Native readers supply counts; unknown prices and scan gaps remain visible. */
+/**
+ * T3-inspired usage workspace. Cost and Tokens share one layout (History row, chips, headline, chart, provider cards); only
+ * the figures differ, so switching metric keeps the frame still. Native readers supply counts; unknown prices and scan gaps remain visible.
+ */
+/** Keeps each column tooltip inside its chart card and the viewport, 8px in: shifts it sideways (--tip-dx) and drops it to the plot top when it would cross the card top. The column highlight stays on its column. */
+export function fitColumnTooltips(plot: HTMLElement) {
+  const card = plot.closest<HTMLElement>('.uam-tokens-chart') ?? plot
+  const tips = [...plot.querySelectorAll<HTMLElement>('.uam-usage-col-tip')]
+  tips.forEach(tip => { tip.style.setProperty('--tip-dx', '0px'); delete tip.dataset.flip })
+  const box = card.getBoundingClientRect()
+  const left = Math.max(box.left, 0) + TIP_INSET, right = Math.min(box.right, window.innerWidth) - TIP_INSET, top = Math.max(box.top, 0) + TIP_INSET
+  const tipBoxes = tips.map(tip => tip.getBoundingClientRect())
+  tips.forEach((tip, index) => {
+    const tipBox = tipBoxes[index]
+    // ponytail: a tooltip wider than the card keeps its left edge; no width-aware flip to the other side.
+    const dx = tipBox.left < left ? left - tipBox.left : tipBox.right > right ? right - tipBox.right : 0
+    tip.style.setProperty('--tip-dx', `${dx}px`)
+    if (tipBox.top < top) tip.dataset.flip = ''
+  })
+}
+const TIP_INSET = 8
+
 export function UsagePage({ onClose }: { onClose: () => void }) {
   const hosts = useAppStore(state => state.executionHosts)
   const [hostId, setHostId] = useState(ALL_MACHINES_HOST_ID)
   const [metric, setMetric] = useState<UsageMetric>('cost')
   const [days, setDays] = useState<UsageWindowDays>(7)
   const [range, setRange] = useState(() => usageWindow(7))
-  const [breakdown, setBreakdown] = useState<'model' | 'time'>('model')
   const [prices, setPrices] = useState(readPrices)
   const [selectedModel, setSelectedModel] = useState<string | null>(null)
   const [editingPrice, setEditingPrice] = useState(false)
   const [modelLimit, setModelLimit] = useState(100)
   const [hiddenProviders, setHiddenProviders] = useState<ReadonlySet<UsageProviderId>>(() => new Set())
   const includedPrices = useMemo(() => includedUsagePrices(prices), [prices])
-  const history = useUsageHistory(hostId, range, includedPrices, metric !== 'limits')
+  // Limits shows each provider's period tokens beside its allowance, so history stays live on every tab.
+  const history = useUsageHistory(hostId, range, includedPrices)
   const headingRef = useRef<HTMLHeadingElement>(null)
-  const providerHeadingId = useId()
+  // While Limits shows, the history view keeps the last of Cost or Tokens for its exit.
+  const lastView = useRef<'cost' | 'tokens'>('cost')
+  if (metric !== 'limits') lastView.current = metric
+  const view = lastView.current, cost = view === 'cost'
+  // "About these figures": coverage, notes and diagnostics live behind the header info control, not on the page.
+  const [infoOpen, setInfoOpen] = useState(false)
+  const infoRef = useRef<HTMLButtonElement>(null), infoPanelRef = useRef<HTMLDivElement>(null), infoId = useId()
   useEffect(() => { headingRef.current?.focus() }, [])
+  useEffect(() => {
+    if (!infoOpen) return
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (!infoPanelRef.current?.contains(target) && !infoRef.current?.contains(target)) setInfoOpen(false)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    return () => document.removeEventListener('mousedown', onPointerDown)
+  }, [infoOpen])
   useEffect(() => {
     if (hostId !== ALL_MACHINES_HOST_ID && hostId !== 'local' && !hosts.some(host => host.id === hostId)) {
       setHostId(ALL_MACHINES_HOST_ID); setSelectedModel(null); setEditingPrice(false)
@@ -172,11 +222,12 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   }, [hosts, hostId])
   const data = history.data
   const totals = useMemo(() => sumProviderUsage((data?.providers ?? []).filter(provider => !hiddenProviders.has(provider.providerId))), [data, hiddenProviders])
-  const models = useMemo(() => (data?.models ?? []).filter(model => !hiddenProviders.has(model.providerId)).sort((a, b) => metric === 'cost' ? (usageCost(b) ?? -1) - (usageCost(a) ?? -1) : b.totalTokens - a.totalTokens), [data, metric, hiddenProviders])
+  const models = useMemo(() => (data?.models ?? []).filter(model => !hiddenProviders.has(model.providerId)).sort((a, b) => cost ? (usageCost(b) ?? -1) - (usageCost(a) ?? -1) : b.totalTokens - a.totalTokens), [data, cost, hiddenProviders])
   const hourly = data ? data.endMs - data.startMs <= 86400000 : days === 1
+  const bucketMs = hourly ? 3600000 : data?.chartBucketMs ?? 86400000
   const periods = useMemo(() => {
     if (!data) return []
-    const width = hourly ? 3600000 : data.chartBucketMs ?? 86400000
+    const width = bucketMs
     const present = new Map<number, typeof data.providerDays>()
     for (const row of hourly ? data.providerHours : data.providerDays) {
       if (hiddenProviders.has(row.providerId)) continue
@@ -190,13 +241,14 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
       result.push({ ...EMPTY_USAGE_TOTALS, ...sumProviderUsage(bands), startMs, bands })
     }
     return result
-  }, [data, hourly, hiddenProviders])
+  }, [data, hourly, bucketMs, hiddenProviders])
   const providerValue = (provider: UsageProvider) => { const state = providerState(provider, data?.collecting); return state === 'used' ? amount(provider) : EMPTY_CHIP[state] }
   // While history or reference prices are still loading, an unpriced amount is pending rather than unknown.
   const pricingPending = Boolean(data && (data.collecting || data.pricing?.refreshing))
   const costText = (total: UsageTotals) => pricingPending && usageCostBasis(total) === 'unpriced' ? 'Pricing…' : formatUsageCost(total)
-  const amount = (total: UsageTotals) => metric === 'cost' ? costText(total) : formatUsageCount(total.totalTokens)
-  const numeric = (total: UsageTotals) => metric === 'cost' ? usageCost(total) ?? 0 : total.totalTokens
+  // The metric's figure for any row: its amount as text, and the number bars and axes scale by (known cost only on Cost).
+  const amount = (total: UsageTotals) => cost ? costText(total) : formatUsageCount(total.totalTokens)
+  const numeric = (total: UsageTotals) => cost ? usageCost(total) ?? 0 : total.totalTokens
   const peak = Math.max(0, ...periods.map(numeric))
   const maxModel = Math.max(0, ...models.map(numeric))
   const currentModel = data?.models.find(model => modelKey(model) === selectedModel)
@@ -206,18 +258,21 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   // Fully read providers with nothing in the range fold into one line; rows that need a reason (reading, incomplete, unavailable) stay.
   const providerStates = visibleProviders.map(provider => ({ provider, state: providerState(provider, data?.collecting) }) as const)
   const providerRows = providerStates.filter(row => row.state !== 'idle'), idleProviders = providerStates.filter(row => row.state === 'idle').map(row => row.provider)
+  const usedCards = providerRows.filter(row => row.state === 'used'), offCards = providerRows.filter(row => row.state !== 'used')
   const warnings = data?.providers.filter(provider => provider.errors || provider.invalidLines || provider.oversizedLines || provider.pendingLines) ?? []
   // Re-keying the plot replays the grow-in animation when the metric, period or provider filter changes.
-  const plotKey = [metric, days, hostId, [...hiddenProviders].sort().join(',')].join('|')
-  const axisValue = (value: number) => metric === 'cost' ? money(value) : formatUsageCount(value)
-  // Tokens stack by token type (per-day split from the provider rows); cost stacks by provider.
-  type Band = { key: string; label: string; color: string; value: number; text: string }
-  const providerBands = (period: (typeof periods)[number]): Band[] => period.bands.map(band => ({ key: band.providerId, label: providerLabel(band.providerId), color: providerColor[band.providerId], value: numeric(band), text: amount(band) }))
-  const tokenBands = (period: (typeof periods)[number]): Band[] => TOKEN_SEGMENTS.map(segment => { const value = segment.value(period); return { key: segment.key, label: segment.label, color: segment.color, value, text: `${formatUsageCount(value)} · ${percentOf(value, period.totalTokens)}` } })
+  const plotKey = [view, days, hostId, [...hiddenProviders].sort().join(',')].join('|')
+  const axisValue = (value: number) => cost ? axisMoney(value) : formatUsageCount(value)
+  /** Provider segments of a total: cost on Cost (an unpriced provider has no share and no segment), tokens on Tokens. */
+  const providerParts = (rows: readonly (UsageTotals & { providerId: UsageProviderId })[], whole: UsageTotals): Part[] => rows.map(row => ({
+    key: row.providerId, label: providerLabel(row.providerId), color: providerColor[row.providerId], value: numeric(row), text: amount(row),
+    exact: cost ? amount(row) : row.totalTokens.toLocaleString(), share: !cost || usageCost(row) !== null ? percentOf(numeric(row), numeric(whole)) : '',
+  }))
+  const periodProviders = (period: (typeof periods)[number]) => providerParts(period.bands.filter(band => band.totalTokens > 0), period)
   const columnSummary = (period: (typeof periods)[number]) => {
-    const providers = providerBands(period).filter(band => band.value > 0).map(band => `${band.label} ${band.text}`)
-    const tokens = metric === 'tokens' ? tokenBands(period).filter(band => band.value > 0).map(band => `${band.label} ${formatUsageCount(band.value)}`) : []
-    return [`${tipLabel(period.startMs)}: ${amount(period)}`, providers.length ? providers.join(', ') : 'No usage', tokens.length ? tokens.join(', ') : ''].filter(Boolean).join('. ')
+    const providers = periodProviders(period).map(part => `${part.label} ${part.text}`)
+    const types = tokenParts(period).filter(part => part.value > 0).map(part => `${part.label} ${part.text}`)
+    return [`${tipLabel(period.startMs)}: ${amount(period)}`, providers.length ? providers.join(', ') : 'No usage', types.join(', ')].filter(Boolean).join('. ')
   }
   /** Arrow keys (and Home/End) move focus between daily columns; each column shows the same tooltip on focus. */
   const moveColumnFocus = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -244,9 +299,9 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
     metric === 'cost' && data.pricing?.error,
     metric === 'cost' && data.pricing?.aliasError,
     !data.complete && 'Partial history. Totals include available and cached records.',
-    data.historyCoverage?.previouslyPrunedReceiptsMayBeMissing && 'All Time includes recorded and available history. Previously deleted receipts may be missing.',
+    data.historyCoverage?.previouslyPrunedReceiptsMayBeMissing && 'All time includes recorded and available history. Previously deleted records may be missing.',
     data.listingLimited && 'Some history is outside the scan limit. These totals are incomplete.',
-    noCostData && 'No cost data for this range. Tokens were recorded, but no prices are known. Add model prices under Breakdown, or switch to Tokens.',
+    noCostData && 'No cost data for this range. Tokens were recorded, but no prices are known. Add model prices from a model row, or switch to Tokens.',
     metric === 'cost' && pricingPending && totals.unpricedTokens > 0 && `${totals.unpricedTokens.toLocaleString()} tokens are still awaiting prices.`,
     metric === 'cost' && !pricingPending && partialCost && `${totals.unpricedTokens.toLocaleString()} tokens have no known price and are excluded from costs.`,
     COPILOT_ENABLED && !hiddenProviders.has(COPILOT_CLI_PROVIDER_ID) && data.providers.some(provider => provider.providerId === COPILOT_CLI_PROVIDER_ID && provider.records > 0) && 'Copilot history is grouped by saved checkpoint time.',
@@ -254,113 +309,254 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   ].filter((line): line is string => Boolean(line)) : []
   const attention = Boolean(data && (!data.complete || data.listingLimited || data.historyCoverage?.previouslyPrunedReceiptsMayBeMissing || warnings.length > 0 || noCostData || metric === 'cost' && !pricingPending && partialCost || data.coverage?.some(machine => machine.status !== 'ready')))
   const statusLines = [...notes, ...coverage]
+  const errorNote = usePresence(Boolean(history.error))
+  const readingPct = data && data.collecting && data.filesTotal > 0 ? Math.min(100, data.filesChecked / data.filesTotal * 100) : undefined
+  const shownError = useRef(history.error)
+  if (history.error) shownError.current = history.error
+  const remoteHosts = hosts.some(host => host.id !== 'local')
+  const forkCopies = data ? data.providers.reduce((sum, provider) => sum + provider.suppressedForkRecords, 0) : 0
+  // Everything behind the header info control: status notes, machine coverage, the cost caveat and history diagnostics.
+  const infoLines = [
+    ...statusLines,
+    data && metric === 'tokens' && 'Costs are estimates from API list prices unless marked Reported; they are not a bill. Cost has the details.',
+    data && (data.duplicates > 0 || data.unidentifiedRecords > 0 || forkCopies > 0) && `History diagnostics: ${count(data.duplicates, 'duplicate record')}, ${count(data.unidentifiedRecords, 'unidentified record')} and ${count(forkCopies, 'forked copy', 'forked copies')} were skipped.`,
+  ].filter((line): line is string => Boolean(line))
+  const closeInfo = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Escape' || !infoOpen) return
+    event.preventDefault(); event.stopPropagation(); setInfoOpen(false); infoRef.current?.focus()
+  }
+
+  // Chart: nice axis ticks, the open (still filling) bucket, the busiest bucket and the average over complete buckets.
+  const ticks = niceTicks(peak)
+  const scaleMax = ticks[ticks.length - 1] || 1
+  const openBucket = (startMs: number) => data !== null && startMs + bucketMs > data.endMs
+  const closedPeriods = periods.filter(period => !openBucket(period.startMs))
+  const averaged = closedPeriods.length ? closedPeriods : periods
+  const average = averaged.reduce((sum, period) => sum + numeric(period), 0) / Math.max(1, averaged.length)
+  const busiest = periods.reduce<(typeof periods)[number] | null>((best, period) => numeric(period) > (best ? numeric(best) : 0) ? period : best, null)
+  const multiDay = !hourly && bucketMs > 86400000
+  const labelEvery = Math.ceil(periods.length / 8)
+  const utcPart = (startMs: number, options: Intl.DateTimeFormatOptions) => new Date(startMs).toLocaleString(undefined, { ...options, timeZone: 'UTC' })
+  /** Column label: weekday and day, the month on the first column and where it changes, Today on the open day; long ranges label every few columns. */
+  const xLabel = (startMs: number, index: number) => {
+    if ((periods.length - 1 - index) % labelEvery) return ''
+    if (hourly) return new Date(startMs).toLocaleString(undefined, { hour: 'numeric' })
+    if (!multiDay && openBucket(startMs)) return 'Today'
+    if (periods.length > 10) return tipLabel(startMs)
+    const previous = periods[index - 1]
+    const month = !previous || new Date(previous.startMs).getUTCMonth() !== new Date(startMs).getUTCMonth()
+    return `${utcPart(startMs, { weekday: 'short' })} ${new Date(startMs).getUTCDate()}${month ? ` ${utcPart(startMs, { month: 'short' })}` : ''}`
+  }
+  const rangeTime = (ms: number) => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZone: hourly ? undefined : 'UTC' })
+  const rangeText = data ? `${rangeTime(data.chartStartMs ?? data.startMs)} to ${rangeTime(data.endMs)}${hourly ? '' : multiDay ? ` · ${bucketMs / 86400000}-day buckets use UTC` : ' · days in UTC'}` : ''
+  const machineName = hostId === ALL_MACHINES_HOST_ID ? remoteHosts ? 'all machines' : 'this computer' : hostId === 'local' ? 'this computer' : hosts.find(host => host.id === hostId)?.label ?? hostId
+  const machineIssue = data?.coverage?.find(machine => machine.status !== 'ready')
+  // One short line at most; the info control holds the detail.
+  const attentionSummary = !attention ? '' : machineIssue ? `Partial · ${machineIssue.label || machineIssue.executionHostId} ${machineIssue.status === 'cached' ? 'shows cached figures' : machineIssue.status === 'loading' ? 'is still loading' : 'is unavailable'}`
+    : warnings.length ? 'Partial · some history could not be read' : !data?.complete || data.listingLimited ? 'Partial history' : 'Older records may be missing'
+  const updatedAt = data?.asOfMs ? new Date(data.asOfMs) : null
+  const updatedText = updatedAt ? `Updated ${updatedAt.toDateString() === new Date().toDateString() ? updatedAt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : shownAt}` : ''
+  // Background refresh never hides or shifts the page: cached figures stay in place and the History row reports progress.
+  const progressText = history.loading ? data && !history.kept && data.collecting && data.filesTotal > 0 ? `Reading history · ${data.filesChecked.toLocaleString()} of ${data.filesTotal.toLocaleString()} files` : `Updating…${shownAt && !history.kept ? ` Showing ${shownAt}` : ''}` : ''
+  const showFigures = totals.totalTokens > 0 || Boolean(data?.collecting)
+  const selectModel = (model: UsageModel) => { setSelectedModel(previous => previous === modelKey(model) ? null : modelKey(model)); setEditingPrice(false) }
+  const tipRow = (row: Part, dot = false) => <span key={row.key} className="uam-usage-tip-row"><i className={cx('uam-usage-swatch', dot && 'is-dot')} style={{ '--c': row.color } as CSSProperties} />{row.label}<span className="tabular-nums">{row.text}</span></span>
+  const offNote = (provider: UsageProvider, state: string) => state === 'reading' ? 'Figures appear as its history is read.'
+    : state === 'unavailable' ? 'No figures. This is missing history, not zero use.'
+    : `${([[provider.errors, 'read error'], [provider.invalidLines, 'invalid record'], [provider.oversizedLines, 'oversized record'], [provider.pendingLines, 'unfinished line']] as [number, string][]).filter(([value]) => value > 0).map(([value, one]) => count(value, one)).join(', ')}.`
+  const chartTitle = `${hourly ? 'Hourly' : 'Daily'} ${cost ? 'cost' : 'tokens'}`
+  // Cost has no per-token-type price split (reported charges are totals), so its bars and columns stack by provider.
+  const costMix = providerParts(usedCards.map(row => row.provider), totals)
+
+  /** One model inside its provider card: id | bar on the shared scale | amount and share of the provider (plus basis on Cost) | chevron. */
+  const modelRow = (model: UsageModel, provider: UsageProvider) => {
+    const open = currentModel === model, value = numeric(model)
+    return <div key={modelKey(model)} className="uam-tokens-model">
+      <RowButton className="uam-tokens-model__row" aria-label={`Inspect ${providerLabel(model.providerId)} ${model.modelId} ${model.speed}`} aria-expanded={open} onClick={() => selectModel(model)}>
+        <span className="uam-tokens-model__name"><Tooltip label={model.modelId}><span className="uam-tokens-model__id">{model.modelId}</span></Tooltip>{model.speed !== 'standard' && <span className="uam-tokens-tier">{model.speed}</span>}</span>
+        <span className="uam-usage-model-bar"><SplitBar parts={cost ? providerParts([model], provider) : tokenParts(model)} width={maxModel ? value / maxModel : 0} /></span>
+        {cost ? <span className="uam-tokens-model__value uam-usage-cost-cell tabular-nums"><span>{amount(model)}<small>{usageCost(model) === null ? '' : percentOf(value, numeric(provider))}</small></span><CostBasis totals={model} pending={pricingPending} /></span>
+          : <span className="uam-tokens-model__value tabular-nums">{amount(model)}<small>{percentOf(value, numeric(provider))}</small></span>}
+        <ChevronRight size={14} aria-hidden className="uam-tokens-model__chev" />
+      </RowButton>
+      <Reveal open={open} className="uam-tokens-inspect"><SplitLegend parts={tokenParts(model)} />
+        <div className="uam-tokens-inspect__foot"><span>{count(model.sessions, 'session')} · {count(model.records, 'usage record')} · {formatUsageCount(model.unpricedTokens)} unpriced tokens</span>
+          <Button size="sm" leadingIcon={<SlidersHorizontal size={13} />} onClick={() => setEditingPrice(value => !value)}>Model prices</Button></div>
+        <Reveal open={editingPrice}><PriceEditor model={model} prices={prices} onSave={setPrices} onClose={() => setEditingPrice(false)} /></Reveal>
+      </Reveal>
+    </div>
+  }
+  /** One card per provider. Used: share, tokens and cost with its basis, models, then a facts footer. Otherwise the greyed card says why. */
+  const providerCard = ({ provider, state }: (typeof providerRows)[number]) => {
+    const name = providerLabel(provider.providerId)
+    const title = <h3 className="uam-limit-card__name"><ProviderLogo providerId={provider.providerId} size={18} className="uam-limit-card__logo inline-flex shrink-0" /><span className="truncate">{name}</span></h3>
+    if (state !== 'used') return <Card key={provider.providerId} role="group" aria-label={name} elevation={0} data-state={state} className="uam-limit-card uam-limit-card--off uam-tokens-card">
+      <header className="uam-limit-card__head">{title}<span className="uam-limit-card__meta"><span className="uam-limit-card__reason">{EMPTY_TEXT[state]}</span></span></header>
+      <p className="uam-tokens-card__note">{offNote(provider, state)}</p>
+    </Card>
+    const rows = models.filter(model => model.providerId === provider.providerId)
+    // An unpriced provider has no share of cost to claim, so it shows no chip rather than 0%.
+    const share = !cost ? `${percentOf(provider.totalTokens, totals.totalTokens)} of tokens` : usageCost(provider) === null ? '' : `${percentOf(numeric(provider), numeric(totals))} of cost`
+    return <Card key={provider.providerId} role="group" aria-label={name} data-state={state} className="uam-limit-card uam-tokens-card">
+      <header className="uam-limit-card__head">{title}{share && <span className="uam-limits-chip">{share}</span>}
+        <span className="uam-limit-card__meta"><Tooltip label={provider.totalTokens.toLocaleString()}><span>{formatUsageCount(provider.totalTokens)} tokens{data?.collecting ? ' so far' : ''}</span></Tooltip>
+          <span className="uam-tokens-cost"><span className="tabular-nums">{costText(provider)}</span><CostBasis totals={provider} focusable pending={pricingPending} /></span></span>
+      </header>
+      {rows.slice(0, modelLimit).map(model => modelRow(model, provider))}
+      <Reveal open={rows.length > modelLimit}><Button size="sm" className="my-2" onClick={() => setModelLimit(value => value + 100)}>Show more models ({rows.length - modelLimit} remaining)</Button></Reveal>
+      <footer className="uam-limit-card__foot"><div className="uam-limit-card__facts">
+        {cost ? <>
+          {(provider.reportedCostTokens > 0 || provider.reportedCostUsd > 0) && <span>Reported <b>{money(provider.reportedCostUsd)}</b></span>}
+          {provider.estimatedCostTokens > 0 && <span>Estimated <b>{money(provider.estimatedCostUsd)}</b></span>}
+          {provider.estimatedCacheSavingsUsd > 0 && <span>Cache savings <b>{money(provider.estimatedCacheSavingsUsd)}</b></span>}
+        </> : <>
+          <span>Cache read <b>{percentOf(provider.cachedInputTokens, provider.totalTokens)}</b></span>
+          <span>Output <b>{formatUsageCount(provider.outputTokens)}</b>{provider.reasoningTokens > 0 ? ` · ${percentOf(provider.reasoningTokens, provider.outputTokens)} reasoning` : ''}</span>
+          {provider.cacheWriteTokens > 0 && <span>Cache write <b>{formatUsageCount(provider.cacheWriteTokens)}</b></span>}
+        </>}
+        <span><b>{provider.sessions.toLocaleString()}</b> {provider.sessions === 1 ? 'session' : 'sessions'}</span>
+        {usageCostBasis(provider) === 'partial' && <span className={cx('uam-usage-reason uam-tokens-card__aside', !pricingPending && 'is-warn')}>{formatUsageCount(provider.unpricedTokens)} tokens {pricingPending ? 'are still awaiting prices' : 'have no known price and are excluded from its cost'}</span>}
+        {COPILOT_ENABLED && provider.providerId === COPILOT_CLI_PROVIDER_ID && <span className="uam-usage-reason uam-tokens-card__aside">Grouped by saved checkpoint time</span>}
+      </div></footer>
+    </Card>
+  }
+  const historyRow = <div className={cx('uam-limits-group uam-tokens-group', history.loading && 'uam-progress-fill')} aria-busy={history.loading || undefined}
+    data-indeterminate={readingPct === undefined && history.loading ? '' : undefined} style={history.loading && readingPct !== undefined ? { '--progress': readingPct / 100 } as CSSProperties : undefined}>
+    <h2 className="uam-usage-label">History · {machineName}</h2>
+    {attentionSummary && <span className="uam-usage-reason is-warn">{attentionSummary}</span>}
+    {progressText ? <span aria-hidden className="uam-limits-updated uam-tokens-group__end tabular-nums">{progressText}</span>
+      : updatedText && <Tooltip label={shownAt}><span className="uam-limits-updated uam-tokens-group__end">{updatedText}</span></Tooltip>}
+    <Button size="sm" variant="secondary" leadingIcon={<RefreshCw size={13} aria-hidden />} className={cx('uam-tokens-group__end uam-usage-refresh', history.loading && 'is-busy')} aria-busy={history.loading} onClick={refresh}>Refresh usage</Button>
+  </div>
+  const busiestLabel = hourly ? 'Busiest hour' : multiDay ? 'Busiest period' : 'Busiest day'
+  const averageText = `${cost ? money(average) : formatUsageCount(average)} ${hourly ? 'an hour' : multiDay ? `per ${bucketMs / 86400000} days` : 'a day'} on average`
+  const sessionsText = `${count(totals.sessions, 'session')} ${PERIOD_PHRASE[days]}${data?.collecting ? ' · so far' : ''}`
+  const costLabel = partialCost ? 'Known cost' : totalBasis === 'reported' ? 'Reported cost' : totalBasis === 'mixed' ? 'Reported + estimated' : totalBasis === 'unpriced' ? 'Cost' : 'Estimated cost'
+  const costSource = totalBasis === 'reported' ? 'Provider charges' : totalBasis === 'unpriced' ? pricingPending ? 'Prices still loading' : 'No known price' : hasReported ? 'Provider charges and API list-price estimates' : 'API list-price estimate, not a bill'
+  const headline = <Card className="uam-tokens-head">
+    <div className="uam-tokens-stats">
+      {cost ? <>
+        <StatTile label={costLabel} value={amount(totals)} sub={`${costSource} · ${sessionsText}`} />
+        {hasReported && <StatTile label="Provider-reported" value={money(totals.reportedCostUsd)} sub={totals.estimatedCostTokens ? `plus ${money(totals.estimatedCostUsd)} estimated` : 'charged by the provider'} />}
+        {(!hasReported || totals.unpricedTokens > 0) && !(pricingPending && totalBasis === 'unpriced') && <StatTile label="Unpriced tokens" value={formatUsageCount(totals.unpricedTokens)} title={totals.unpricedTokens.toLocaleString()} sub={pricingPending && totals.unpricedTokens > 0 ? 'Awaiting prices' : 'No known price'} />}
+      </> : <>
+        <StatTile label="Total tokens" value={formatUsageCount(totals.totalTokens)} title={totals.totalTokens.toLocaleString()} sub={sessionsText} />
+        <StatTile label="Cache read" value={percentOf(totals.cachedInputTokens, totals.totalTokens)} detail={formatUsageCount(totals.cachedInputTokens)} sub="of all tokens" />
+        <StatTile label="Reasoning" value={percentOf(totals.reasoningTokens, totals.totalTokens)} detail={formatUsageCount(totals.reasoningTokens)} sub={`part of ${formatUsageCount(totals.outputTokens)} output`} />
+      </>}
+      {busiest && <StatTile label={busiestLabel} value={amount(busiest)} detail={tipLabel(busiest.startMs)} sub={averageText} />}
+    </div>
+    <div className="uam-tokens-mix">{cost ? <>
+      <SplitBar parts={costMix} describe empty="No priced usage" /><SplitLegend parts={costMix} />
+      <p className="text-xs uam-usage-muted">Estimated cache savings: {totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCacheSavingsUsd) : pricingPending ? 'Pricing…' : 'Unknown'}</p>
+    </> : <><SplitBar parts={tokenParts(totals)} describe /><SplitLegend parts={tokenParts(totals)} /></>}</div>
+  </Card>
+  // The table is the chart's exact equivalent, newest first; bars share the chart's peak.
+  const dailyTable = <table className="uam-tokens-days text-xs">
+    <thead className="sr-only"><tr><th scope="col">{hourly ? 'Hour' : 'Day'}</th><th scope="col">{cost ? 'Cost by provider' : 'Token mix'}</th><th scope="col">{cost ? 'Cost' : 'Tokens'}</th></tr></thead>
+    <tbody>{[...periods].reverse().map(period => <tr key={period.startMs}>
+      <th scope="row">{tipLabel(period.startMs)}{openBucket(period.startMs) ? ' · so far' : ''}</th>
+      <td><SplitBar parts={cost ? periodProviders(period) : tokenParts(period)} width={peak ? numeric(period) / peak : 0} describe empty={cost && period.totalTokens > 0 ? 'No priced usage' : 'No tokens'} /></td>
+      <td className="tabular-nums">{amount(period)}</td>
+    </tr>)}</tbody>
+  </table>
+  const chartKey = cost ? costMix : tokenParts(totals)
+  const plotRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const plot = plotRef.current
+    if (!plot) return
+    const refit = () => fitColumnTooltips(plot)
+    refit()
+    window.addEventListener('resize', refit)
+    return () => window.removeEventListener('resize', refit)
+  }, [plotKey, periods, scaleMax])
+  const chart = <Card className="uam-tokens-chart">
+    <div className="uam-tokens-chart__head"><h2>{chartTitle}</h2><span className="uam-usage-muted">{cost ? 'by provider' : 'by token type'}</span>
+      <ul className="uam-usage-key text-xs" aria-hidden>{chartKey.map(part => <li key={part.key} className="uam-usage-key-item"><i className="uam-usage-swatch" style={{ '--c': part.color } as CSSProperties} />{part.label}</li>)}</ul></div>
+    <div className="uam-usage-chart">
+      <div className="uam-usage-axis text-xs tabular-nums" aria-hidden>{[...ticks].reverse().map(tick => <span key={tick}>{axisValue(tick)}</span>)}</div>
+      <div key={plotKey} ref={plotRef} role="group" aria-label={`${chartTitle} ${cost ? 'by provider, unpriced tokens excluded,' : 'by type'} from loaded history. Use arrow keys to move between columns; the ${hourly ? 'Hourly' : 'Daily'} table below lists the same figures.`}
+        className="uam-usage-plot uam-tokens-plot" style={{ gap: periods.length > 31 ? 1 : 4, '--n': Math.max(1, ticks.length - 1) } as CSSProperties} onKeyDown={moveColumnFocus}>
+        <Reveal open={cost && peak === 0 && totals.unpricedTokens > 0}><span className="absolute inset-0 flex items-center justify-center text-xs uam-usage-muted">{pricingPending ? 'Prices still loading.' : 'No priced usage in this range.'}</span></Reveal>
+        {periods.map((period, index) => {
+          const value = numeric(period), pct = value / scaleMax * 100
+          const edge = index < periods.length * 0.2 ? 'is-start' : index >= periods.length * 0.8 ? 'is-end' : ''
+          const types = tokenParts(period).filter(part => part.value > 0), byProvider = periodProviders(period)
+          const open = openBucket(period.startMs)
+          // Tokens stack by type with providers beside; Cost stacks by provider with types beside.
+          const [stack, beside] = cost ? [byProvider, types] : [types, byProvider]
+          return <div key={period.startMs} role="img" tabIndex={index === periods.length - 1 ? 0 : -1} aria-label={`${columnSummary(period)}${open ? '. So far' : ''}`} className={cx('uam-usage-col', edge, pct > 55 && 'is-high')} style={{ '--i': Math.min(index, 40), '--h': `${pct}%` } as CSSProperties}>
+            <div className="uam-usage-col-stack" style={{ height: `${pct}%`, minHeight: value > 0 ? 2 : 0 }}>{stack.filter(band => band.value > 0).map(band => <div key={band.key} className="uam-usage-band" data-seg={band.key} style={{ height: `${band.value / value * 100}%`, '--c': band.color } as CSSProperties} />)}</div>
+            {/* ponytail: totals sit above columns only while each label fits (two weeks); longer ranges keep them in the tooltip and table. */}
+            {periods.length <= 14 && value > 0 && <span className="uam-usage-col-total tabular-nums" aria-hidden>{amount(period)}</span>}
+            <span className="uam-usage-col-tip uam-usage-col-tip--split" aria-hidden>
+              <span className="uam-usage-tip-head"><span>{tipLabel(period.startMs)}{open ? ' · so far' : ''}</span><b>{amount(period)}{cost ? '' : ' tokens'}</b></span>
+              {types.length ? <span className="uam-usage-tip-cols"><span>{stack.map(row => tipRow(row, cost))}</span><span>{beside.map(row => tipRow(row, !cost))}</span></span> : <span className="uam-usage-muted">No usage</span>}
+            </span>
+          </div>
+        })}
+      </div>
+    </div>
+    <div className="uam-tokens-xaxis" aria-hidden style={{ gap: periods.length > 31 ? 1 : 4 }}>{periods.map((period, index) => {
+      const label = xLabel(period.startMs, index), open = openBucket(period.startMs)
+      return <span key={period.startMs} className={cx(open && 'is-open')}>{label}{label && open ? <small>so far</small> : null}</span>
+    })}</div>
+    <footer className="uam-limit-card__foot"><div className="uam-limit-card__facts"><span>{rangeText}</span></div>
+      <Disclosure className="uam-tokens-table" summary={`${hourly ? 'Hourly' : 'Daily'} table`}>{dailyTable}</Disclosure></footer>
+  </Card>
+  const chips = <div role="group" aria-label="Providers" className="uam-usage-chips">{(data?.providers ?? []).map(provider => {
+    const off = hiddenProviders.has(provider.providerId)
+    // ui: raw button kept — usage provider chip with colour dot, logo and value tooltip; Chip would apply the choice-button look.
+    return <button key={provider.providerId} type="button" aria-label={`Include ${providerLabel(provider.providerId)} usage`} aria-pressed={!off} className={cx('uam-usage-chip', off && 'is-off')} style={{ '--c': providerColor[provider.providerId] } as CSSProperties} onClick={() => { setHiddenProviders(previous => { const next = new Set(previous); if (next.has(provider.providerId)) next.delete(provider.providerId); else next.add(provider.providerId); return next }); setSelectedModel(null); setEditingPrice(false) }}>
+      <span className="uam-usage-chip-dot" aria-hidden />
+      <ProviderLogo providerId={provider.providerId} size={14} />
+      <span className="uam-usage-chip-name">{providerLabel(provider.providerId)}</span>
+      {off ? <X size={12} aria-hidden /> : <Check size={12} aria-hidden />}
+      <Tooltip label={provider.available ? `${provider.files} history files` : 'Usage history unavailable'}><span className="uam-usage-chip-value tabular-nums">{providerValue(provider)}</span></Tooltip>
+    </button>
+  })}</div>
   return <main aria-label="Usage workspace" className="uam-usage flex h-full min-h-0 min-w-0 flex-1 flex-col" style={{ background: 'var(--bg)', color: 'var(--text)' }} onKeyDown={event => {
     if (event.key === 'Escape' && !event.defaultPrevented && !document.querySelector('[aria-modal="true"]') && !editingPrice) { event.preventDefault(); onClose() }
   }}>
-    <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border)' }}>
+    <header className="flex shrink-0 items-center gap-3 overflow-x-auto border-b px-4" style={{ height: 'var(--pane-header-h)', borderColor: 'var(--border)' }}>
       <IconButton icon={<ArrowLeft size={16} />} label="Back from usage" onClick={onClose} />
       <h1 ref={headingRef} tabIndex={-1} className="text-sm font-semibold">Usage</h1>
-      {statusLines.length > 0 && <Tooltip side="bottom" align="start" label={<span className="uam-usage-status-tip">{statusLines.map((line, index) => <span key={index} className="block">{line}</span>)}</span>}>
-        <button type="button" aria-label="Usage status" className={cx('uam-usage-status', attention && 'is-attention')}><Info size={14} aria-hidden /></button>
-      </Tooltip>}
-      <div className="max-w-48"><MenuSelect label="Usage host" value={hostId} options={[{ value: ALL_MACHINES_HOST_ID, label: 'All machines' }, ...(!hosts.some(host => host.id === 'local') ? [{ value: 'local', label: 'This computer' }] : []), ...hosts.map(host => ({ value: host.id, label: host.label }))]} onChange={value => { setHostId(value); setSelectedModel(null); setEditingPrice(false) }} /></div>
-      <div role="group" aria-label="Usage metric" className="uam-usage-seg">{(['cost', 'tokens', 'limits'] as const).map(value => <Button key={value} size="sm" variant={metric === value ? 'secondary' : 'ghost'} aria-pressed={metric === value} onClick={() => setMetric(value)}>{value[0].toUpperCase() + value.slice(1)}</Button>)}</div>
-      <div role="group" aria-label="Usage period" className="uam-usage-seg">{USAGE_WINDOWS.map(option => <Button size="sm" key={option.days} disabled={metric === 'limits'} variant={days === option.days ? 'secondary' : 'ghost'} aria-pressed={days === option.days} onClick={() => { setDays(option.days); setRange(usageWindow(option.days)); setSelectedModel(null); setEditingPrice(false) }}>{option.label}</Button>)}</div>
-      {metric !== 'limits' && <IconButton icon={<RefreshCw size={15} />} label="Refresh usage" aria-busy={history.loading} className={cx('uam-usage-refresh', history.loading && 'is-busy')} onClick={refresh} />}
-      {/* Background refresh never hides or shifts the page: cached figures stay in place and this line reports progress. */}
-      {metric !== 'limits' && <span aria-hidden className="uam-usage-progress text-xs uam-usage-muted tabular-nums">{history.loading ? data && !history.kept && data.collecting && data.filesTotal > 0 ? `Reading history · ${data.filesChecked.toLocaleString()} of ${data.filesTotal.toLocaleString()} files` : `Updating…${shownAt && !history.kept ? ` Showing ${shownAt}` : ''}` : ''}</span>}
+      {/* ui: raw button kept — opens the About these figures panel with the bespoke status icon and attention look; IconButton would restyle it. */}
+      <Reveal as="span" open={infoLines.length > 0}><button ref={infoRef} type="button" aria-label="Usage status" aria-haspopup="dialog" aria-expanded={infoOpen} aria-controls={infoOpen ? infoId : undefined}
+        className={cx('uam-usage-status', attention && 'is-attention', infoOpen && 'is-open')} onClick={() => setInfoOpen(open => !open)} onKeyDown={closeInfo}><Info size={14} aria-hidden /></button></Reveal>
+      <ViewportMenu ref={infoPanelRef} open={infoOpen && infoLines.length > 0} anchorRef={infoRef} id={infoId} role="dialog" aria-label="About these figures" className="uam-usage-info" onKeyDown={closeInfo}>
+        <h2 className="uam-usage-label">About these figures</h2>
+        <ul>{infoLines.map((line, index) => <li key={index} className="uam-usage-reason">{line}</li>)}</ul>
+      </ViewportMenu>
+      {/* Only remote hosts make the machine choice meaningful; with this computer alone, "All machines" and "This computer" are the same data. */}
+      {remoteHosts && <div className="max-w-48"><MenuSelect label="Usage host" value={hostId} options={[{ value: ALL_MACHINES_HOST_ID, label: 'All machines' }, ...(!hosts.some(host => host.id === 'local') ? [{ value: 'local', label: 'This computer' }] : []), ...hosts.map(host => ({ value: host.id, label: host.label }))]} onChange={value => { setHostId(value); setSelectedModel(null); setEditingPrice(false) }} /></div>}
+      <SegmentedControl aria-label="Usage metric" value={metric} options={(['cost', 'tokens', 'limits'] as const).map(value => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} onChange={setMetric} />
+      <SegmentedControl aria-label="Usage period" value={days} options={USAGE_WINDOWS.map(option => ({ value: option.days, label: option.label }))} onChange={value => { setDays(value); setRange(usageWindow(value)); setSelectedModel(null); setEditingPrice(false) }} />
       {metric !== 'limits' && <span role="status" className="sr-only">{history.loading ? 'Updating usage' : history.error ? '' : data ? 'Usage updated' : ''}</span>}
     </header>
     <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
-      {metric === 'limits' ? <UsageLimits executionHostId={hostId} /> : <div className="mx-auto grid max-w-6xl gap-6" aria-busy={history.loading && !data}>
-        {history.error && <div role="alert" className="flex flex-wrap items-center gap-3 text-xs" style={{ color: 'var(--error)' }}>{history.error}{shownAt && !history.kept && ` Showing figures from ${shownAt}.`}<Button size="sm" onClick={refresh}>Retry</Button></div>}
+      <Reveal open={metric === 'limits'}><UsageLimits executionHostId={hostId} usage={{ providers: history.data?.providers ?? null, loading: history.loading, collecting: Boolean(history.data?.collecting), error: history.error, days }} /></Reveal>
+      <Reveal open={metric !== 'limits'}><div className="mx-auto grid max-w-6xl gap-6" aria-busy={history.loading && !data}>
+        {errorNote.mounted && <div className="uam-presence" data-state={errorNote.closing ? 'closed' : 'open'}><Notice tone="error" title={shownError.current} dismissLabel="Dismiss usage error" dismissible={false} actions={<Button size="sm" onClick={refresh}>Retry</Button>}>{shownAt && !history.kept ? `Showing figures from ${shownAt}.` : null}</Notice></div>}
         {!data && history.loading && !history.error && <div className="uam-usage-skeleton" aria-hidden><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-chart" /></div>}
-        {data && <div className="uam-usage-body grid gap-6" data-kept={history.kept || undefined}>
+        <Reveal open={!!data}>{data ? <div className="uam-usage-body grid gap-6" data-kept={history.kept || undefined}>
           <ul className="sr-only" aria-label="Usage status details">{notes.map((line, index) => <li key={index}>{line}</li>)}</ul>
           {coverage.length > 0 && <ul aria-label="Usage machine coverage" className="sr-only">{coverage.map((line, index) => <li key={index}>{line}</li>)}</ul>}
-          <div role="group" aria-label="Providers" className="uam-usage-chips">{data.providers.map(provider => {
-            const off = hiddenProviders.has(provider.providerId)
-            return <button key={provider.providerId} type="button" aria-label={`Include ${providerLabel(provider.providerId)} usage`} aria-pressed={!off} className={cx('uam-usage-chip', off && 'is-off')} style={{ '--c': providerColor[provider.providerId] } as CSSProperties} onClick={() => { setHiddenProviders(previous => { const next = new Set(previous); if (next.has(provider.providerId)) next.delete(provider.providerId); else next.add(provider.providerId); return next }); setSelectedModel(null); setEditingPrice(false) }}>
-              <span className="uam-usage-chip-dot" aria-hidden />
-              <ProviderLogo providerId={provider.providerId} size={14} />
-              <span className="uam-usage-chip-name">{providerLabel(provider.providerId)}</span>
-              <span className="uam-usage-chip-value tabular-nums" title={provider.available ? `${provider.files} history files` : 'Historical usage reader unavailable'}>{providerValue(provider)}</span>
-            </button>
-          })}</div>
-          {totals.totalTokens === 0 && !history.loading && <p className="uam-usage-empty">No usage recorded in this range.</p>}
-          <section className="grid gap-6 lg:grid-cols-[18rem_minmax(0,1fr)]">
-            <div className="grid content-start gap-4">
-              <div className="uam-usage-tiles">
-                {metric === 'cost' ? <>
-                  <StatTile label={partialCost ? 'Known cost' : totalBasis === 'reported' ? 'Reported cost' : totalBasis === 'mixed' ? 'Reported + estimated' : totalBasis === 'unpriced' ? 'Cost' : 'Estimated cost'} value={amount(totals)} title={totals.totalTokens.toLocaleString()} sub={`${totalBasis === 'reported' ? 'Provider charges' : totalBasis === 'unpriced' ? pricingPending ? 'Prices still loading' : 'No known price' : hasReported ? 'Provider charges and API list-price estimates' : 'API list-price estimate, not a bill'} · ${totals.sessions.toLocaleString()} sessions${data.collecting ? ' · so far' : ''}`} />
-                  {hasReported && <StatTile label="Reported" value={money(totals.reportedCostUsd)} sub="Provider-reported" />}
-                  {hasReported && <StatTile label="Estimated" value={totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCostUsd) : 'Unknown'} sub="API list prices" />}
-                  {(!hasReported || totals.unpricedTokens > 0) && !(pricingPending && totalBasis === 'unpriced') && <StatTile label="Unpriced tokens" value={formatUsageCount(totals.unpricedTokens)} sub={pricingPending && totals.unpricedTokens > 0 ? 'Awaiting prices' : 'No known price'} />}
-                </> : <>
-                  <StatTile label="Total tokens" value={amount(totals)} title={totals.totalTokens.toLocaleString()} sub={`${totals.sessions.toLocaleString()} sessions`} />
-                  <StatTile label="Cache read" value={percentOf(totals.cachedInputTokens, totals.totalTokens)} sub={`${formatUsageCount(totals.cachedInputTokens)} tokens`} />
-                  <StatTile label="Reasoning" value={percentOf(totals.reasoningTokens, totals.totalTokens)} sub={`${formatUsageCount(totals.reasoningTokens)} tokens`} />
-                </>}
-              </div>
-            </div>
-            <div className="grid content-start gap-3">
-              <h2 className="text-sm font-medium">{hourly ? 'Hourly' : 'Daily'} {metric === 'cost' ? 'cost' : 'tokens'}</h2>
-              <div className="uam-usage-chart">
-                <div className="uam-usage-axis text-xs tabular-nums" aria-hidden><span>{axisValue(peak)}</span><span>{axisValue(peak / 2)}</span><span>0</span></div>
-                <div key={plotKey} role="group" aria-label={`${hourly ? 'Hourly' : 'Daily'} ${metric === 'cost' ? 'costs, unpriced tokens excluded' : 'tokens'} from loaded history. Use arrow keys to move between columns.`} className="uam-usage-plot" style={{ gap: periods.length > 31 ? 1 : 4 }} onKeyDown={moveColumnFocus}>
-                  {metric === 'cost' && peak === 0 && totals.unpricedTokens > 0 && <span className="absolute inset-0 flex items-center justify-center text-xs">{pricingPending ? 'Prices still loading.' : 'No priced usage in this range.'}</span>}
-                  {periods.map((period, index) => {
-                    const total = numeric(period)
-                    const pct = peak ? total / peak * 100 : 0
-                    const edge = index < periods.length * 0.2 ? 'is-start' : index >= periods.length * 0.8 ? 'is-end' : ''
-                    const bands = (metric === 'tokens' ? tokenBands(period) : providerBands(period)).filter(band => band.value > 0)
-                    const tipRows = metric === 'tokens' ? [...bands, ...providerBands(period).filter(band => band.value > 0).map(band => ({ ...band, text: `${formatUsageCount(band.value)} tokens` }))] : bands
-                    return <div key={period.startMs} role="img" tabIndex={index === periods.length - 1 ? 0 : -1} aria-label={columnSummary(period)} className={cx('uam-usage-col', edge, pct > 55 && 'is-high')} style={{ '--i': Math.min(index, 40), '--h': `${pct}%` } as CSSProperties}>
-                      <div className="uam-usage-col-stack" style={{ height: `${pct}%`, minHeight: total > 0 ? 2 : 0 }}>{bands.map(band => <div key={band.key} className="uam-usage-band" data-seg={band.key} style={{ height: `${total ? band.value / total * 100 : 0}%`, '--c': band.color } as CSSProperties} />)}</div>
-                      <span className="uam-usage-col-tip" aria-hidden>
-                        <span className="uam-usage-tip-head">{tipLabel(period.startMs)} · <b>{amount(period)}</b></span>
-                        {tipRows.map(row => <span key={row.key} className="uam-usage-tip-row"><i className="uam-usage-swatch" style={{ '--c': row.color } as CSSProperties} />{row.label}<span className="tabular-nums uam-usage-muted">{row.text}</span></span>)}
-                        {tipRows.length === 0 && <span className="uam-usage-muted">No usage</span>}
-                      </span>
-                    </div>
-                  })}
-                </div>
-              </div>
-              <p className="text-xs uam-usage-muted">{new Date(data.chartStartMs ?? data.startMs).toLocaleString()} to {new Date(data.endMs).toLocaleString()}{!hourly ? ` · ${data.chartBucketMs && data.chartBucketMs > 86400000 ? `${data.chartBucketMs / 86400000}-day` : 'Daily'} buckets use UTC` : ''}</p>
-            </div>
-          </section>
-          <section className="grid gap-3"><div className="flex flex-wrap items-baseline justify-between gap-3"><h2 className="text-sm font-medium">Totals</h2>{metric === 'cost' && <p className="text-xs uam-usage-muted">Estimated cache savings: {totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCacheSavingsUsd) : pricingPending ? 'Pricing…' : 'Unknown'}</p>}</div>
-            <TokenStack total={totals} height={16} labels />
-            <TokenLegend total={totals} />
-            <div className="grid gap-3 pt-2"><h3 className="uam-usage-label" id={providerHeadingId}>By provider</h3>
-              {providerRows.length > 0 && <table className="uam-usage-providers text-xs" aria-labelledby={providerHeadingId}>
-                <colgroup><col className="uam-usage-col-name" /><col /><col className="uam-usage-col-tokens" /><col className="uam-usage-col-cost" /></colgroup>
-                <thead className="sr-only"><tr><th scope="col">Provider</th><th scope="col">Token mix</th><th scope="col">Tokens</th><th scope="col">Cost</th></tr></thead>
-                <tbody>{providerRows.map(({ provider, state }) => <tr key={provider.providerId} data-state={state}>
-                  <th scope="row"><span className="flex min-w-0 items-center gap-2 font-normal"><i className="uam-usage-swatch" style={{ '--c': providerColor[provider.providerId] } as CSSProperties} aria-hidden /><span className="truncate">{providerLabel(provider.providerId)}</span></span></th>
-                  {state === 'used' ? <>
-                    <td><TokenStack total={provider} height={14} labels /><span className="sr-only">{TOKEN_SEGMENTS.filter(segment => segment.key !== 'reasoning' && segment.value(provider) > 0).map(segment => `${segment.label} ${percentOf(segment.value(provider), provider.totalTokens)}`).join(', ')}</span></td>
-                    <td className="text-right tabular-nums" title={provider.totalTokens.toLocaleString()}>{formatUsageCount(provider.totalTokens)}</td>
-                    <td><span className="uam-usage-cost-cell"><span className="tabular-nums">{costText(provider)}</span><CostBasis totals={provider} focusable pending={pricingPending} /></span></td>
-                  </> : <td colSpan={3} className="uam-usage-muted">{EMPTY_TEXT[state]}</td>}
-                </tr>)}</tbody>
-              </table>}
-              {idleProviders.length > 0 && <p className="text-xs uam-usage-muted">{EMPTY_TEXT.idle}: {idleProviders.map(provider => providerLabel(provider.providerId)).join(', ')}</p>}
-              {visibleProviders.length === 0 && <p className="text-xs uam-usage-muted">All providers are filtered out.</p>}
-            </div>
-          </section>
-          <section className="grid gap-3"><div className="flex items-center justify-between gap-3"><h2 className="text-sm font-medium">Breakdown</h2><div role="group" aria-label="Usage breakdown" className="uam-usage-seg"><Button size="sm" variant={breakdown === 'model' ? 'secondary' : 'ghost'} aria-pressed={breakdown === 'model'} onClick={() => setBreakdown('model')}>Models</Button><Button size="sm" variant={breakdown === 'time' ? 'secondary' : 'ghost'} aria-pressed={breakdown === 'time'} onClick={() => setBreakdown('time')}>Time</Button></div></div>
-            {breakdown === 'model' ? <div>{models.length === 0 && <p className="py-4 text-xs uam-usage-muted">No model usage in this range.</p>}{models.slice(0, modelLimit).map((model, index) => <div key={modelKey(model)} className="border-b" style={{ borderColor: 'var(--border)' }}>
-              <button className="uam-btn uam-btn--ghost uam-usage-model-row text-xs" aria-label={`Inspect ${providerLabel(model.providerId)} ${model.modelId} ${model.speed}`} aria-describedby={`${providerHeadingId}-cost-${index}`} aria-expanded={modelKey(model) === selectedModel} onClick={() => { setSelectedModel(previous => previous === modelKey(model) ? null : modelKey(model)); setEditingPrice(false) }}>
-                <span className="flex min-w-0 items-center gap-2"><ProviderLogo providerId={model.providerId} size={16} /><span className="truncate" title={model.modelId}>{model.modelId}</span>{model.speed !== 'standard' && <span className="uam-usage-muted">{model.speed}</span>}</span><span id={`${providerHeadingId}-cost-${index}`} className={cx('shrink-0', metric === 'cost' && 'uam-usage-cost-cell')}><span className="tabular-nums">{amount(model)}</span>{metric === 'cost' && <CostBasis totals={model} pending={pricingPending} />}</span>
-                <span className="uam-usage-model-bar">{metric === 'cost' ? <CostBar cost={usageCost(model) ?? 0} max={maxModel} color={providerColor[model.providerId]} /> : <TokenStack total={model} height={14} />}</span>
-              </button>
-              {currentModel === model && <div className="grid gap-3 pb-4"><TokenLegend total={model} /><p className="text-xs uam-usage-muted">{model.sessions} sessions · {model.records} usage records · {formatUsageCount(model.unpricedTokens)} unpriced tokens</p><Button size="sm" leadingIcon={<SlidersHorizontal size={13} />} onClick={() => setEditingPrice(value => !value)}>Model prices</Button>{editingPrice && <PriceEditor model={model} prices={prices} onSave={setPrices} onClose={() => setEditingPrice(false)} />}</div>}
-            </div>)}{models.length > modelLimit && <Button size="sm" className="mt-3" onClick={() => setModelLimit(value => value + 100)}>Show more models ({models.length - modelLimit} remaining)</Button>}</div> : <div>{[...periods].reverse().map(period => <div key={period.startMs} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 border-b py-3 text-xs" style={{ borderColor: 'var(--border)' }}><span>{new Date(period.startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })}{!hourly ? ' UTC' : ''}</span><span className="tabular-nums">{amount(period)}</span><span className="uam-usage-model-bar col-span-2"><CostBar cost={numeric(period)} max={peak} color="var(--text-3)" /></span></div>)}</div>}
-          </section>
-          {(data.duplicates > 0 || data.unidentifiedRecords > 0 || data.providers.some(provider => provider.suppressedForkRecords > 0)) && <details className="text-xs"><summary className="cursor-pointer">History diagnostics</summary><p className="mt-2">{data.duplicates} duplicate records, {data.unidentifiedRecords} records without stable identity, {data.providers.reduce((sum, provider) => sum + provider.suppressedForkRecords, 0)} copied fork records suppressed.</p></details>}
-        </div>}
-      </div>}
+          {/* Cost and Tokens are one tree: switching metric swaps the figures while the frame stays still. */}
+          <div className="uam-tokens grid" data-metric={view}>
+            {historyRow}
+            {chips}
+            <Reveal open={!showFigures && !history.loading && visibleProviders.length > 0}><p className="uam-usage-empty">No usage recorded in this range.</p></Reveal>
+            <Reveal open={visibleProviders.length === 0}><p className="uam-usage-empty">All providers are filtered out.</p></Reveal>
+            <Reveal open={showFigures}><div className="uam-tokens grid">{headline}{chart}</div></Reveal>
+            <Reveal open={providerRows.length > 0}><div className="uam-tokens grid">
+              <div className="uam-limits-group"><h2 className="uam-usage-label">By provider · models</h2><span className="uam-limits-updated">Bars share one scale across providers</span></div>
+              <div className="uam-limits-cards">{usedCards.map(providerCard)}{offCards.length > 1 ? <div className="uam-limits-off">{offCards.map(providerCard)}</div> : offCards.map(providerCard)}</div>
+            </div></Reveal>
+            <Reveal open={idleProviders.length > 0}><p className="uam-tokens-idle">{EMPTY_TEXT.idle}: {idleProviders.map(provider => providerLabel(provider.providerId)).join(', ')}</p></Reveal>
+          </div>
+        </div> : null}</Reveal>
+      </div></Reveal>
     </div>
   </main>
 }

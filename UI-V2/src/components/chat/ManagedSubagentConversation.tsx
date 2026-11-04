@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Square } from 'lucide-react'
-import { Button } from '../ui'
+import { Button, Notice, motionAllowed } from '../ui'
 import type { Message } from '../../types/message'
 import type { Session } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
@@ -383,7 +383,7 @@ function ManagedConversationContent({ sourceChatId, runId, transcriptChatId, tit
   })
   const history = useMemo(() => transcript ? managedHistoryMessages(resolvedId.current, transcript.messages) : [], [transcript])
   const refresh = () => { if (stoppingRef.current) return; stopTargetRef.current = null; ++request.current; readController.current?.abort(); backgroundRead.current = false; manualRefresh.current = true; setRefreshMessage('Refreshing conversation…'); setAttempt(value => value + 1) }
-  const failure = error && <p role="alert" className="uam-managed-conversation__error">{error}{transcript ? ' The previously loaded conversation is still shown.' : ''}</p>
+  const failure = error && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{error}{transcript ? ' The previously loaded conversation is still shown.' : ''}</Notice>
   return <section className="uam-managed-conversation" aria-label="Managed subagent conversation">
     <SubagentHeader title={transcript?.title || title || 'Managed subagent'} parentName={parentName} detail={managedRunLabel(currentStatus, displayLastReported)}
       headingRef={heading} onBack={onBack} onRefresh={refresh} refreshing={loading} refreshDisabled={stopping}>
@@ -400,10 +400,10 @@ function ManagedConversationContent({ sourceChatId, runId, transcriptChatId, tit
     </SubagentHeader>
     <p className="uam-managed-conversation__meta sr-only" role="status">{managedRunLabel(currentStatus, displayLastReported)}{loading && !transcript ? ' · Loading conversation…' : ''}</p>
     <p className="uam-managed-conversation__meta sr-only">{showFollowup || canStart ? 'Follow-up work stays attached to this child.' : stopping || stopTarget && parentOwner === stopTarget.parentOwner && !displayLastReported ? 'Stored child conversation. Available controls apply only to this child.' : 'Read-only stored conversation.'}</p>
-    {draftUnavailable && <p role="alert" className="uam-managed-conversation__error">Follow-up editing has reached its limit. Close other settled child views or check unresolved requests first.</p>}
+    {draftUnavailable && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">Follow-up limit reached. Close other child views first.</Notice>}
     {refreshMessage && <p className="uam-managed-conversation__meta sr-only" role="status">{refreshMessage}</p>}
     {stopMessage && !stopFailed && <p className="uam-managed-conversation__meta" role="status">{stopMessage}</p>}
-    {stopMessage && stopFailed && <p className="uam-managed-conversation__meta" role="alert">{stopMessage}</p>}
+    {stopMessage && stopFailed && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{stopMessage}</Notice>}
     {stopReadError && <p className="uam-managed-conversation__meta" role="status">{stopReadError}</p>}
     {canInspectFollowup && followupHidden && retainedDraft && !showFollowup && <p className="uam-managed-conversation__meta" role="status">Draft kept in this child.</p>}
     {transcript && history.length > 0
@@ -414,7 +414,7 @@ function ManagedConversationContent({ sourceChatId, runId, transcriptChatId, tit
           {transcript ? <p role="status" className="conversation-empty">No stored messages yet.</p>
             : loading ? <SubagentTranscriptLoading label="Loading conversation…" /> : null}
         </div>}
-    {showFollowup && followupDraft && <form className="uam-managed-conversation__followup" aria-label="Send follow-up work" onSubmit={event => { event.preventDefault(); void sendFollowup() }}>
+    {showFollowup && followupDraft && <form className={motionAllowed() ? 'uam-managed-conversation__followup uam-reveal' : 'uam-managed-conversation__followup'} aria-label="Send follow-up work" onSubmit={event => { event.preventDefault(); void sendFollowup() }}>
       <label htmlFor={fieldId}>Follow-up message</label>
       <textarea ref={setFollowupField} id={fieldId} className="uam-field uam-field--area" rows={3} value={followupDraft.text}
         readOnly={followupDraft.phase === 'pending'} aria-busy={followupDraft.phase === 'pending' || undefined} aria-describedby={`${fieldId}-help`}
@@ -430,7 +430,7 @@ function ManagedConversationContent({ sourceChatId, runId, transcriptChatId, tit
             event.preventDefault(); void sendFollowup()
           }
         }} />
-      <p id={`${fieldId}-help`} className="uam-managed-conversation__meta">Enter sends. Shift+Enter adds a line. Text only, up to 32 KiB.</p>
+      <p id={`${fieldId}-help`} className="uam-managed-conversation__meta">Enter sends · Shift+Enter for a new line · 32 KiB max</p>
       {followupDraft.phase === 'unknown' && <p className="uam-managed-conversation__meta">Retry sends the original message. Any edits stay in this separate draft.</p>}
       {followupDraft.phase === 'idle' && !followupTarget?.state.canSend && <p role="status" className="uam-managed-conversation__meta">{managedFollowupRefusal(followupTarget?.state.code ?? 'native_resume_unavailable')}</p>}
       <div className="uam-managed-conversation__followup-actions">
@@ -438,7 +438,7 @@ function ManagedConversationContent({ sourceChatId, runId, transcriptChatId, tit
         {followupDraft.phase === 'unknown' && <Button type="button" size="sm" aria-disabled={stopping || readPending || Boolean(error)} onClick={() => void sendFollowup(true)}>Retry same request</Button>}
         {followupDraft.phase === 'pending' && <span role="status" className="uam-managed-conversation__meta">Recording follow-up work…</span>}
       </div>
-      {followupDraft.feedback && <p role="alert" className="uam-managed-conversation__error">{followupDraft.feedback}</p>}
+      {followupDraft.feedback && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{followupDraft.feedback}</Notice>}
     </form>}
   </section>
 }

@@ -56,6 +56,7 @@ import type {
   ComputerUseAllowedApplication,
   WindowsPowerShellPreference,
 } from './cpp/types'
+import type { CEFResponse } from '../ipc/cefBridge'
 import type { StoreApi } from 'zustand'
 
 /** Positive evidence of a guarded, immutable saved-history tail; never input authority. */
@@ -105,7 +106,6 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   goalsByChatId: Record<string, Goal[]>
   activeGoalIdByChatId: Record<string, string | null>
   goalModeByChatId: Record<string, boolean>
-  defaultGoalTokenBudgetByChatId: Record<string, number>
 
   // Providers
   providers: Provider[]
@@ -119,6 +119,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   memoryIdleDelaySeconds: number
   memoryRecallBudgetBytes: number
   goalMaxLoopIterations: number
+  goalTokenBudget: number
   acpSetupInactivityTimeoutSeconds: number
   activeTurnInactivityTimeoutSeconds: number
   streamLoopRepeatLimit: number
@@ -255,7 +256,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setSessionSmallModelMode: (id: string, enabled: boolean) => Promise<boolean>
   /** Internal display observation/overlay; never publication or native mutation authority. */
   reconcileMemorySettingsProjection: (projection: Partial<AppState>, suppliedNativeSettings?: Partial<CppSettings>) => Partial<AppState>
-  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'acpSetupInactivityTimeoutSeconds' | 'activeTurnInactivityTimeoutSeconds' | 'streamLoopRepeatLimit' | 'acpTurnOutputLimitMiB' | 'memoryWorkerBindings' | 'permissionReviewerProviderId' | 'permissionReviewerModelId'>>) => Promise<boolean>
+  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'goalTokenBudget' | 'acpSetupInactivityTimeoutSeconds' | 'activeTurnInactivityTimeoutSeconds' | 'streamLoopRepeatLimit' | 'acpTurnOutputLimitMiB' | 'memoryWorkerBindings' | 'permissionReviewerProviderId' | 'permissionReviewerModelId'>>) => Promise<boolean>
   setUpdateSettings: (settings: Partial<Pick<AppState, 'automaticProviderUpdates' | 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
   setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }) => Promise<boolean>
   setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }, scopeExecutionHostId?: string) => Promise<boolean>
@@ -311,7 +312,6 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   removeGoal: (chatId: string, goalId: string) => Promise<MutationResult>
   resumeGoal: (chatId: string, goalId: string, restart?: boolean) => Promise<MutationResult>
   setGoalMode: (chatId: string, active: boolean) => void
-  setDefaultGoalTokenBudget: (chatId: string, tokenBudget: number) => void
   clearActiveGoal: (chatId: string) => Promise<MutationResult>
 
   // Folder actions
@@ -346,6 +346,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   deleteMemoryEntries: (entryIds: string[]) => Promise<boolean>
   openMemoryRoot: () => Promise<boolean>
   revealMemoryEntry: (entryId: string) => Promise<boolean>
+  readMemoryEntry: (request: Pick<MemoryScope, 'scopeType' | 'folderId'> & { entryId: string }) => Promise<CEFResponse<{ content: string }>>
   openMemoryScanModal: () => Promise<boolean>
   closeMemoryScanModal: () => void
   toggleMemoryScanChat: (chatId: string) => void

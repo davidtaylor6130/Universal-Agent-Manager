@@ -13,7 +13,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import { SessionItem } from './SessionItem'
 import './sidebar.css'
-import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Tooltip, ViewportMenu } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuItem, MenuSelect, Notice, ProgressFill, RowButton, Tooltip, ViewportMenu } from '../ui'
 import {
   type ChatSearchFilters,
   type ChatSearchFilterContext,
@@ -29,7 +29,7 @@ import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import { isAbsoluteRemoteWorkspace, isRemoteDirectoryBrowseAvailable, isSshHost } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
-import { usePresence } from '../ui/Overlay'
+import { Overlay, usePresence } from '../ui/Overlay'
 import { SSH_ENABLED } from '../../config/buildFeatures'
 
 interface FolderTreeProps {
@@ -127,12 +127,12 @@ function SidebarSectionHeader({ label, listId, expanded, onToggle, trailing, act
   action?: ReactNode
 }) {
   const toggle = (
-    <button
+    <RowButton
       type="button"
       aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
       aria-expanded={expanded}
       aria-controls={listId}
-      className="mx-1 flex w-[calc(100%-0.5rem)] items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
+      className="mx-1 flex w-[calc(100%-0.5rem)] items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left hover:bg-[var(--sidebar-item-hover)] focus-visible:[outline-offset:var(--focus-inset)]"
       style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer' }}
       onClick={onToggle}
     >
@@ -146,7 +146,7 @@ function SidebarSectionHeader({ label, listId, expanded, onToggle, trailing, act
         {label}
       </span>
       {trailing}
-    </button>
+    </RowButton>
   )
   return action ? <div className="group/section relative flex items-center">{toggle}<div className="absolute right-2 hidden group-hover/section:flex group-focus-within/section:flex">{action}</div></div> : toggle
 }
@@ -387,6 +387,10 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const pendingDeleteChatCount = useMemo(
     () => sessions.filter((session) => session.folderId === pendingDeleteFolderId).length,
     [sessions, pendingDeleteFolderId]
+  )
+  const pendingDeleteWorkspaceChatCount = useMemo(
+    () => sessions.filter((session) => session.folderId && pendingDeleteFolderIds?.includes(session.folderId)).length,
+    [sessions, pendingDeleteFolderIds]
   )
   const unsortedExpanded = searchModel.isSearching || !unsortedCollapsed
 
@@ -844,7 +848,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       onRescan={() => {
         setActionError('')
         void rescanFolderChats(folder.id).then((rescanned) => {
-          if (!rescanned) setActionError(`Could not open native history for ${folder.name}. Try again.`)
+          if (!rescanned) setActionError(`Could not rescan chats for ${folder.name}. Try again.`)
         })
       }}
       onEditNameChange={setEditFolderName}
@@ -922,9 +926,11 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             expanded={activeExpanded}
             onToggle={() => setActiveCollapsed((collapsed) => !collapsed)}
             action={!isCompanionContext() && (
+              
+              // ui: raw button kept — compact 10px chip styled inline in the section header
               <button
                 type="button"
-                aria-label="Mark all active chats done"
+                aria-label="Clear all active chats"
                 className="rounded px-1.5 text-[10px] hover:bg-[var(--sidebar-item-hover)]"
                 style={{ background: 'var(--surface)', border: 'none', color: 'var(--text-2)', cursor: 'pointer' }}
                 onClick={() => {
@@ -957,7 +963,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             </div>
           </div>
           {!activeExpanded && activeStatusCounts.attention > 0 && (
-            <button
+            <RowButton
               type="button"
               data-testid="active-attention-strip"
               className="uam-sb-attention-strip mx-1 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded-md px-2 py-1 text-left text-[11px]"
@@ -967,7 +973,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
               {activeStatusCounts.attention === 1
                 ? '1 chat needs attention'
                 : `${activeStatusCounts.attention} chats need attention`}
-            </button>
+            </RowButton>
           )}
         </div>
       )}
@@ -1064,7 +1070,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
               setUnsortedMenuPoint({ x: event.clientX, y: event.clientY })
             }}
           >
-            <button
+            <RowButton
               type="button"
               aria-label={`${unsortedExpanded ? 'Collapse' : 'Expand'} Unsorted`}
               aria-expanded={unsortedExpanded}
@@ -1086,9 +1092,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
               <span className="rounded px-1 text-[10px]" style={{ background: 'var(--surface-high)', color: 'var(--text-3)' }}>
                 {searchModel.unfolderedSessionIds.length}
               </span>
-            </button>
+            </RowButton>
             {!isCompanionContext() && <Tooltip label="Unsorted actions">
-              <button
+              {/* ui: raw button kept — 22px inline trigger; IconButton sizes are 26px and 30px */}<button
                 ref={unsortedMenuTriggerRef}
                 type="button"
                 aria-label="Actions for Unsorted"
@@ -1119,16 +1125,14 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
               className="rounded-md py-1 animate-fade-in"
               style={{ minWidth: 220, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}
             >
-              <button
-                type="button"
-                role="menuitem"
+              
+              <MenuItem
                 className="uam-menu-select__option flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
                 style={{ color: 'var(--text-2)', border: 'none', fontFamily: 'inherit' }}
+                icon={<FolderSync size={14} aria-hidden />}
+                label="Rebuild workspace folders…"
                 onClick={openWorkspaceRecovery}
-              >
-                <FolderSync size={14} aria-hidden />
-                Rebuild workspace folders…
-              </button>
+              />
             </ViewportMenu>
           )}
           <div
@@ -1232,7 +1236,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       {/* Add folder */}
       <div ref={addControlsRef} className="mt-1 px-2.5" style={isCompanionContext() ? { display: 'none' } : undefined}>
         {actionError && (
-          <Notice tone="error" title="Folder action failed" dismissLabel="Dismiss folder action error" onDismiss={() => setActionError('')}>
+          <Notice tone="error" title="Workspace action failed" dismissLabel="Dismiss folder action error" onDismiss={() => setActionError('')}>
             {actionError}
           </Notice>
         )}
@@ -1338,21 +1342,14 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
               className="uam-field w-full"
             />
             <div className="uam-inline-form__actions">
-              <span className="uam-inline-form__hint">Groups workspaces together</span>
               <Button variant="ghost" size="sm" aria-label="Cancel new collection" onClick={() => { setNewCollectionName(''); setAddingCollection(false) }}>Cancel</Button>
               <Button variant="primary" size="sm" aria-label="Create collection" disabled={!newCollectionName.trim()} onClick={commitAddCollection}>Create</Button>
             </div>
           </div>
         ) : (
           <div className="flex justify-center gap-1">
-            <button type="button" className="uam-add-link" onClick={() => { setActionError(''); setAddingFolder(true) }}>
-              <Plus size={14} aria-hidden />
-              <span>New workspace</span>
-            </button>
-            <button type="button" className="uam-add-link" onClick={() => { setActionError(''); setAddingCollection(true) }}>
-              <Plus size={14} aria-hidden />
-              <span>New collection</span>
-            </button>
+            <Button asLink leadingIcon={<Plus size={14} aria-hidden />} onClick={() => { setActionError(''); setAddingFolder(true) }}>New workspace</Button>
+            <Button asLink leadingIcon={<Plus size={14} aria-hidden />} onClick={() => { setActionError(''); setAddingCollection(true) }}>New collection</Button>
           </div>
         )}
       </div>
@@ -1369,30 +1366,36 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         />
       )}
 
-      {!companionContext && pendingDeleteFolderIds && (
-        <DeleteWorkspacesModal
-          folderCount={pendingDeleteFolderIds.length}
-          chatCount={sessions.filter((session) => session.folderId && pendingDeleteFolderIds.includes(session.folderId)).length}
-          error={deleteFolderError}
-          deleting={deletingFolder}
-          onCancel={() => { setPendingDeleteFolderIds(null); setDeleteFolderError('') }}
-          onConfirm={() => { void confirmDeleteWorkspaces() }}
-        />
-      )}
-      {!companionContext && pendingDeleteFolder && (
-        <DeleteFolderModal
-          folder={pendingDeleteFolder}
-          chatCount={pendingDeleteChatCount}
-          error={deleteFolderError}
-          deleting={deletingFolder}
-          onCancel={() => {
-            if (deletingFolder) return
-            setPendingDeleteFolderId(null)
-            setDeleteFolderError('')
-          }}
-          onConfirm={() => { void confirmDeleteFolder() }}
-        />
-      )}
+      <ConfirmDialog
+        open={!companionContext && Boolean(pendingDeleteFolderIds)}
+        title="Delete selected workspaces?"
+        label="Delete selected workspaces"
+        confirmLabel="Delete workspaces"
+        busy={deletingFolder}
+        error={deleteFolderError || undefined}
+        onCancel={() => { setPendingDeleteFolderIds(null); setDeleteFolderError('') }}
+        onConfirm={() => { void confirmDeleteWorkspaces() }}
+      >
+        <p>Delete {pendingDeleteFolderIds?.length ?? 0} {(pendingDeleteFolderIds?.length ?? 0) === 1 ? 'workspace' : 'workspaces'} and {pendingDeleteWorkspaceChatCount} {pendingDeleteWorkspaceChatCount === 1 ? 'chat' : 'chats'}? This cannot be undone. Workspace directories stay on disk.</p>
+        {deletingFolder && <>
+          <p role="status" aria-live="polite" className="mt-2">Deleting {pendingDeleteFolderIds?.length ?? 0} {(pendingDeleteFolderIds?.length ?? 0) === 1 ? 'workspace' : 'workspaces'} and {pendingDeleteWorkspaceChatCount} {pendingDeleteWorkspaceChatCount === 1 ? 'chat' : 'chats'}…</p>
+          <DeletionProgressBar label="Deleting workspaces" className="mt-2" />
+        </>}
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={!companionContext && Boolean(pendingDeleteFolder)}
+        title="Delete folder and chats?"
+        label="Delete folder and chats"
+        confirmLabel="Delete folder"
+        busy={deletingFolder}
+        error={deleteFolderError || undefined}
+        onCancel={() => { if (deletingFolder) return; setPendingDeleteFolderId(null); setDeleteFolderError('') }}
+        onConfirm={() => { void confirmDeleteFolder() }}
+      >
+        <p>Delete "{pendingDeleteFolder?.name}" and {pendingDeleteChatCount === 1 ? '1 chat' : `${pendingDeleteChatCount} chats`}? The folder on disk is kept.</p>
+        {pendingDeleteChatCount > 0 && <p className="mt-2 text-xs" style={{ color: 'var(--error)' }}>Deleted chats cannot be restored from this app.</p>}
+        {deletingFolder && <DeletionProgressBar label="Deleting workspace" className="mt-2" />}
+      </ConfirmDialog>
     </div>
     </ChatSelectionContext.Provider>
     </SubagentSearchMatches.Provider>
@@ -1469,10 +1472,10 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
         onFolderDrop(folderId)
       }}
     >
+      <Tooltip label={isCompanionContext() ? undefined : 'Shift-click to select collections'}>
       <div
         data-testid={`collection-header-${collection.id}`}
         data-collection-id={collection.id}
-        title={isCompanionContext() ? undefined : 'Shift-click to select collections'}
         className="group relative mx-1 flex items-center gap-1.5 rounded-md px-2.5 py-0.5 transition-colors duration-150"
         style={{ color: selected ? 'var(--text)' : 'var(--text-2)', background: dropTarget ? 'var(--sidebar-item-hover)' : selected ? 'var(--accent-dim)' : 'transparent', border: '1px solid transparent', outline: dropTarget ? '1px solid var(--accent)' : 'none' }}
         onContextMenu={(event) => {
@@ -1483,7 +1486,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
         }}
       >
         <Tooltip label={collection.collapsed ? `Expand ${collection.name}` : `Collapse ${collection.name}`}>
-          <button
+          {/* ui: raw button kept — unsized inline chevron that must keep its layout; IconButton imposes 26px */}<button
             type="button"
             aria-label={collection.collapsed ? `Expand ${collection.name}` : `Collapse ${collection.name}`}
             aria-expanded={!collection.collapsed}
@@ -1510,18 +1513,19 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
           />
         ) : (
           <Tooltip label={collection.name}>
-            <button type="button" aria-expanded={!collection.collapsed} aria-label={`${collection.name}${selected ? ', selected for bulk actions' : ''}`} className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold" onClick={onHeaderClick} style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }}>
+            <RowButton type="button" aria-expanded={!collection.collapsed} aria-label={`${collection.name}${selected ? ', selected for bulk actions' : ''}`} className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold" onClick={onHeaderClick} style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }}>
               {collection.name}
-            </button>
+            </RowButton>
           </Tooltip>
         )}
         <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>{folderCount}</span>
         {!isCompanionContext() && <Tooltip label="Collection actions">
-          <button ref={menuTriggerRef} type="button" aria-label={`Actions for ${collection.name}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => { setMenuPoint(null); setMenuOpen((open) => !open) }} style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}>
+          {/* ui: raw button kept — unsized inline trigger that must keep its layout; IconButton imposes 26px */}<button ref={menuTriggerRef} type="button" aria-label={`Actions for ${collection.name}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => { setMenuPoint(null); setMenuOpen((open) => !open) }} style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}>
             <MoreHorizontal size={14} />
           </button>
         </Tooltip>}
       </div>
+      </Tooltip>
       {menuOpen && (
         <ViewportMenu ref={menuRef} {...(menuPoint ? { point: menuPoint } : { anchorRef: menuTriggerRef, align: 'end' as const })} role="menu" aria-label={`${collection.name} actions`} onRequestClose={() => { setMenuOpen(false); setMenuPoint(null) }} onClick={(e) => e.stopPropagation()} className="fixed z-50 rounded-md py-1 animate-fade-in" style={{ minWidth: 168, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}>
           {selectionTargets ? <>
@@ -1552,7 +1556,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
             }}
           >
             {children}
-            {collection.references.filter((reference) => reference.type === 'desktop-app').map((reference) => <div key={reference.id} className="flex items-center gap-2 px-3 py-1 text-xs" onContextMenu={(event) => { event.preventDefault(); iconPicker.open('desktop-app', reference.id, reference.label) }}><CustomIcon icon={reference.customIcon} fallback={<Monitor size={14} aria-hidden />} /><span className="min-w-0 flex-1 truncate" title={reference.target}>{reference.label}</span><button type="button" aria-label={`Change icon for ${reference.label}`} className="uam-icon-button" onClick={() => iconPicker.open('desktop-app', reference.id, reference.label)}><Pencil size={12} /></button></div>)}
+            {collection.references.filter((reference) => reference.type === 'desktop-app').map((reference) => <div key={reference.id} className="flex items-center gap-2 px-3 py-1 text-xs" onContextMenu={(event) => { event.preventDefault(); iconPicker.open('desktop-app', reference.id, reference.label) }}><CustomIcon icon={reference.customIcon} fallback={<Monitor size={14} aria-hidden />} /><span className="min-w-0 flex-1 truncate" title={reference.target}>{reference.label}</span><Tooltip label={`Change icon for ${reference.label}`}>{/* ui: raw button kept — nested inside its own Tooltip; inline icon chip */}<button type="button" aria-label={`Change icon for ${reference.label}`} className="uam-icon-button" onClick={() => iconPicker.open('desktop-app', reference.id, reference.label)}><Pencil size={12} /></button></Tooltip></div>)}
             {folderCount === 0 && <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-3)' }}>Drag a workspace here</div>}
           </div>
         </div>
@@ -1607,75 +1611,14 @@ function PaneColorIcon({ Icon, colors, testId }: { Icon: LucideIcon; colors: str
 // Determinate only when the backend reports per-item progress; otherwise the indeterminate sweep (no fake percentage).
 function DeletionProgressBar({ label, className }: { label: string; className?: string }) {
   const progress = useAppStore((s) => s.deletionProgress)
+  const row = `flex h-6 min-w-0 items-center justify-between gap-2 rounded-md px-2 text-xs${className ? ` ${className}` : ''}`
   if (!progress || progress.total <= 0) {
-    return <div role="progressbar" aria-label={label} className={`uam-sb-progress${className ? ` ${className}` : ''}`}><span /></div>
+    return <ProgressFill label={label} indeterminate className={row} />
   }
-  return <div className={className}>
-    <div role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.completed} className="uam-sb-progress uam-sb-progress--determinate">
-      <span style={{ transform: `scaleX(${progress.completed / progress.total})` }} />
-    </div>
-    <div className="mt-1 flex min-w-0 items-baseline justify-between gap-2 text-xs" style={{ color: 'var(--text-2)' }}>
-      <span className="shrink-0 tabular-nums">{progress.completed} of {progress.total} removed</span>
-      {progress.currentLabel && <span className="truncate" style={{ color: 'var(--text-3)' }}>{progress.currentLabel}</span>}
-    </div>
-  </div>
-}
-
-function DeleteWorkspacesModal({ folderCount, chatCount, error, deleting, onCancel, onConfirm }: {
-  folderCount: number; chatCount: number; error: string; deleting: boolean; onCancel: () => void; onConfirm: () => void
-}) {
-  const dialogRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const previousFocus = document.activeElement as HTMLElement | null
-    dialogRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
-    return () => previousFocus?.focus()
-  }, [])
-  useEffect(() => {
-    if (deleting) dialogRef.current?.focus()
-  }, [deleting])
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.stopPropagation()
-        if (!deleting) onCancel()
-      }
-      if (event.key === 'Tab') {
-        const buttons = Array.from(dialogRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])
-        if (buttons.length === 0) { event.preventDefault(); dialogRef.current?.focus(); return }
-        const first = buttons[0], last = buttons[buttons.length - 1]
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
-      }
-    }
-    document.addEventListener('keydown', onKey, true)
-    return () => document.removeEventListener('keydown', onKey, true)
-  }, [deleting, onCancel])
-  return <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.55)' }} onClick={(event) => { if (event.target === event.currentTarget && !deleting) onCancel() }}>
-    <div ref={dialogRef} role="alertdialog" aria-modal="true" aria-label="Delete selected workspaces" aria-describedby="delete-workspaces-description" aria-busy={deleting} tabIndex={-1} className="w-full max-w-md" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)' }}>
-      <div className="px-5 py-4 text-sm font-semibold">Delete selected workspaces?</div>
-      <div className="px-5 pb-5 text-sm">
-        <p id="delete-workspaces-description">Delete {folderCount} {folderCount === 1 ? 'workspace' : 'workspaces'} and {chatCount} {chatCount === 1 ? 'chat' : 'chats'}? This cannot be undone. Workspace directories stay on disk.</p>
-        {deleting && <>
-          <p role="status" aria-live="polite" className="mt-2">Deleting {folderCount} {folderCount === 1 ? 'workspace' : 'workspaces'} and {chatCount} {chatCount === 1 ? 'chat' : 'chats'}…</p>
-          <DeletionProgressBar label="Deleting workspaces" className="mt-2" />
-        </>}
-        {error && <p role="alert" className="mt-2" style={{ color: 'var(--error)' }}>{error}</p>}
-      </div>
-      <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-        <Button size="sm" disabled={deleting} onClick={onCancel}>Cancel</Button>
-        <Button size="sm" variant="danger" disabled={deleting} onClick={onConfirm}>{deleting ? 'Deleting…' : 'Delete workspaces'}</Button>
-      </div>
-    </div>
-  </div>
-}
-
-interface DeleteFolderModalProps {
-  folder: Folder
-  chatCount: number
-  error: string
-  deleting: boolean
-  onCancel: () => void
-  onConfirm: () => void
+  return <ProgressFill label={label} value={progress.completed} max={progress.total} className={row}>
+    <span className="shrink-0 tabular-nums">{progress.completed} of {progress.total} removed</span>
+    {progress.currentLabel && <span className="truncate" style={{ color: 'var(--text-3)' }}>{progress.currentLabel}</span>}
+  </ProgressFill>
 }
 
 interface WorkspaceFolderRecoveryModalProps {
@@ -1712,18 +1655,14 @@ function WorkspaceFolderRecoveryModal({
   const hasResults = (preview?.groups.length ?? 0) > 0 || attentionSections.length > 0
 
   return (
-    <div
-      className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center p-4"
-      style={{ background: 'rgba(0,0,0,.55)' }}
-      onClick={(event) => { if (event.target === event.currentTarget && !applying) onCancel() }}
-    >
+    <Overlay open zIndex={80} onBackdropMouseDown={() => { if (!applying) onCancel() }}>
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Rebuild workspace folders"
         tabIndex={-1}
-        className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-xl animate-slide-in"
+        className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-xl"
         style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}
       >
         <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -1809,115 +1748,7 @@ function WorkspaceFolderRecoveryModal({
           </Button>
         </div>
       </div>
-    </div>
-  )
-}
-
-function DeleteFolderModal({
-  folder,
-  chatCount,
-  error,
-  deleting,
-  onCancel,
-  onConfirm,
-}: DeleteFolderModalProps) {
-  const chatLabel = chatCount === 1 ? '1 chat' : `${chatCount} chats`
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !deleting) {
-        onCancel()
-      }
-    }
-
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [deleting, onCancel])
-
-  return (
-    <div
-      className="uam-overlay fixed inset-0 z-50 flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget && !deleting) onCancel()
-      }}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Delete folder and chats"
-        tabIndex={-1}
-        className="rounded-xl shadow-2xl w-full max-w-md mx-4 animate-slide-in"
-        style={{
-          background: 'var(--surface)',
-          border: '1px solid var(--border-bright)',
-        }}
-      >
-        <div
-          className="flex items-center justify-between px-5 py-4"
-          style={{ borderBottom: '1px solid var(--border)' }}
-        >
-          <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
-            Delete folder and chats?
-          </span>
-          <IconButton icon={<X size={16} />} label="Close delete folder dialog" disabled={deleting} onClick={onCancel} />
-        </div>
-
-        <div className="p-5 space-y-4">
-          <p className="text-sm" style={{ color: 'var(--text)' }}>
-            This removes "{folder.name}" from Universal Agent Manager and deletes {chatLabel} inside it.
-            This will not delete the actual workspace directory from your computer.
-          </p>
-
-          {folder.directory && (
-            <div
-              className="rounded-md px-3 py-2"
-              style={{
-                background: 'var(--surface-up)',
-                border: '1px solid var(--border)',
-              }}
-            >
-              <div className="text-[10px] uppercase" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>
-                Directory stays on disk
-              </div>
-              <div className="truncate text-xs mt-1" style={{ color: 'var(--text-2)' }}>
-                {folder.directory}
-              </div>
-            </div>
-          )}
-
-          {chatCount > 0 && (
-            <p className="text-xs" style={{ color: 'var(--error)' }}>
-              Deleted chats cannot be restored from this app.
-            </p>
-          )}
-          {deleting && <DeletionProgressBar label="Deleting workspace" />}
-          {error && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
-        </div>
-
-        <div
-          className="flex items-center justify-end gap-2 px-5 py-4"
-          style={{ borderTop: '1px solid var(--border)' }}
-        >
-          <Button
-            variant="ghost"
-            size="md"
-            disabled={deleting}
-            onClick={onCancel}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="danger"
-            size="md"
-            loading={deleting}
-            onClick={onConfirm}
-          >
-            Delete Folder
-          </Button>
-        </div>
-      </div>
-    </div>
+    </Overlay>
   )
 }
 
@@ -1927,15 +1758,13 @@ function DeleteFolderModal({
 
 function FolderMenuItem({ icon, label, onClick, danger }: { icon: ReactNode; label: string; onClick: () => void; danger?: boolean }) {
   return (
-    <button
-      type="button"
-      role="menuitem"
+    <MenuItem
+      icon={icon}
+      label={label}
+      danger={danger}
       className={`uam-sb-menu-item${danger ? ' uam-sb-menu-item--danger' : ''}`}
-      onClick={onClick}
-    >
-      {icon}
-      {label}
-    </button>
+      onSelect={onClick}
+    />
   )
 }
 
@@ -2089,17 +1918,17 @@ const FolderRow = memo(function FolderRow({
           setMenuPos({ x: event.clientX, y: event.clientY })
         }}
       >
+      <Tooltip label={isCompanionContext() ? undefined : 'Shift-click to select workspaces'}>
       <div
         data-testid={`folder-header-${folder.id}`}
         data-workspace-id={folder.id}
-        title={isCompanionContext() ? undefined : "Shift-click to select workspaces"}
         role="button"
         aria-label={`${folder.name}${selected ? ", selected for bulk actions" : ""}`}
         tabIndex={0}
         aria-expanded={shouldShowSessions}
         aria-controls={`folder-sessions-${folder.id}`}
         aria-keyshortcuts={draggable ? "ArrowUp ArrowDown Enter Space Shift+Enter Shift+Space" : "Enter Space Shift+Enter Shift+Space"}
-        className="flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer rounded-md mx-1 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)] focus-visible:outline-offset-[-1px]"
+        className="flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer rounded-md mx-1 focus-visible:[outline-offset:var(--focus-inset)]"
         style={{
           background: selected ? 'var(--accent-dim)' : 'transparent',
           color: selected ? 'var(--text)' : 'var(--text-2)',
@@ -2151,18 +1980,19 @@ const FolderRow = memo(function FolderRow({
           {sessionIds.length}
         </span>
       </div>
+      </Tooltip>
         {/* Overflow menu trigger: revealed on hover and whenever keyboard focus is in the row. */}
         <div
           className={`absolute inset-y-0 right-3 flex items-center transition-opacity duration-100 ${menuPos ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100'}`}
         >
           {!isCompanionContext() && <Tooltip label="Folder actions" side="top">
-            <button
+            {/* ui: raw button kept — inline 22px trigger; IconButton sizes are 26px and 30px */}<button
               ref={menuTriggerRef}
               type="button"
               aria-label="Folder actions"
               aria-haspopup="menu"
               aria-expanded={Boolean(menuPos)}
-              className="flex items-center justify-center rounded focus-visible:outline-offset-[-2px]"
+              className="flex items-center justify-center rounded focus-visible:[outline-offset:var(--focus-inset)]"
               style={{ width: 22, height: 22, background: 'var(--surface-up)', color: 'var(--text-3)', border: '1px solid var(--border)', cursor: 'pointer' }}
               onClick={(e) => {
                 e.stopPropagation()
@@ -2198,7 +2028,7 @@ const FolderRow = memo(function FolderRow({
           {selectionTargets ? <>
             <SingleOnlyMenuItem noun="workspace" icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" />
             <CollectionMenuItems target={folder.id} label={folder.name} targets={selectionTargets} onAdded={() => setMenuPos(null)} />
-            <SingleOnlyMenuItem noun="workspace" icon={<RefreshCw size={14} aria-hidden />} label="Review native chats" />
+            <SingleOnlyMenuItem noun="workspace" icon={<RefreshCw size={14} aria-hidden />} label="Review chats" />
             <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label={`Change icon for ${selectionTargets.length} workspaces`} onClick={() => { setMenuPos(null); iconPicker.open('workspace', selectionTargets, `${selectionTargets.length} workspaces`) }} />
             <SingleOnlyMenuItem noun="workspace" icon={<Monitor size={14} aria-hidden />} label="Change host icon" />
             <SingleOnlyMenuItem noun="workspace" icon={<Pencil size={14} aria-hidden />} label="Rename folder" />
@@ -2206,7 +2036,7 @@ const FolderRow = memo(function FolderRow({
           </> : <>
           <FolderMenuItem icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" onClick={() => { setMenuPos(null); onCreateChat() }} />
           <CollectionMenuItems target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
-          {!isCompanionContext() && <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Review native chats" onClick={() => { setMenuPos(null); onRescan() }} />}
+          {!isCompanionContext() && <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Review chats" onClick={() => { setMenuPos(null); onRescan() }} />}
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Change workspace icon" onClick={() => { setMenuPos(null); iconPicker.open('workspace', folder.id, folder.name) }} />
           <FolderMenuItem icon={<Monitor size={14} aria-hidden />} label="Change host icon" onClick={() => { setMenuPos(null); iconPicker.open('host', host?.id || 'local', host?.label || 'This computer') }} />
           {!isCompanionContext() && <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />}
@@ -2315,6 +2145,7 @@ const FolderRow = memo(function FolderRow({
                 ))
               )}
               {shouldLimitSessions && (
+                // ui: raw button kept — inline text link with its own text-xs size and JS hover colour; Button asLink is a 26px pill
                 <button
                   type="button"
                   onClick={() => setShowAllSessions((value) => !value)}

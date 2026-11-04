@@ -90,3 +90,36 @@ UAM_TEST(ChatSearchCursorRejectsSameSizeEditsAndMissingTargets)
 	chat.messages_loaded = false;
 	UAM_ASSERT(!uam::ChatSearchTargetMatches(chat, uam::StateSerializer::MessageDigest(chat), 0));
 }
+
+
+UAM_TEST(ChatSearchRailUsesLiveHistoryWhenPageIndexIsMissing)
+{
+	ChatSession chat;
+	chat.id = "missing-page-index";
+	chat.messages = {{MessageRole::User, "current message"}};
+	chat.messages_loaded = true;
+	const std::string live_digest = uam::StateSerializer::MessageDigest(chat);
+	UAM_ASSERT(uam::ChatSearchTargetMatchesPageOrLive(chat, live_digest, 0, "", 0));
+}
+
+UAM_TEST(ChatSearchRailUsesLiveHistoryWhenSavedPageLags)
+{
+	ChatSession chat;
+	chat.id = "lagging-page-index";
+	chat.messages = {{MessageRole::User, "saved message"}, {MessageRole::Assistant, "new live message"}};
+	chat.messages_loaded = true;
+	const std::string live_digest = uam::StateSerializer::MessageDigest(chat);
+	UAM_ASSERT(uam::ChatSearchTargetMatchesPageOrLive(chat, live_digest, 1, "old-saved-digest", 1));
+}
+
+UAM_TEST(ChatSearchRailStillRejectsGenuinelyStaleTarget)
+{
+	ChatSession chat;
+	chat.id = "stale-target";
+	chat.messages = {{MessageRole::User, "replacement message"}};
+	chat.messages_loaded = true;
+	UAM_ASSERT(!uam::ChatSearchTargetMatchesPageOrLive(chat, "old-search-digest", 0,
+	    "old-search-digest", 1));
+	UAM_ASSERT(!uam::ChatSearchTargetMatchesPageOrLive(chat, "old-search-digest", 1,
+	    "old-search-digest", 2));
+}

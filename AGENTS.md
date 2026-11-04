@@ -123,6 +123,9 @@ open Builds/universal_agent_manager.app
 
 # Custom data root on macOS
 UAM_DATA_DIR=/tmp/uam-data ./Builds/universal_agent_manager.app/Contents/MacOS/universal_agent_manager
+
+# macOS: after a GUI check stops its app, drop the ~0.5 GB code_sign_clone copies launches leave behind
+python3 scripts/prune_code_sign_clones.py
 ```
 
 ## Tests

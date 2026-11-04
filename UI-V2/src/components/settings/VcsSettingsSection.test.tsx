@@ -5,6 +5,8 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { VcsSettingsSection, type VcsSettingsSectionHandle } from './VcsSettingsSection'
 import { useAppStore } from '../../store/useAppStore'
+import { reportAppFailure } from '../../utils/appFailure'
+vi.mock('../../utils/appFailure', async importOriginal => ({ ...await importOriginal<typeof import('../../utils/appFailure')>(), reportAppFailure: vi.fn() }));
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const initial = useAppStore.getState()
@@ -46,15 +48,15 @@ describe('VCS defaults controls', () => {
     try {
       act(() => toggle(host, 'Enable Git').click())
       act(() => ref.current!.requestLeave(pendingLeave))
-      expect(host.textContent).toContain('Discard unsaved VCS changes?')
+      expect(document.body.textContent).toContain('Discard unsaved VCS changes?')
       expect(pendingLeave).not.toHaveBeenCalled()
       await act(async () => button(host, 'Save VCS settings').click())
-      expect(host.textContent).toContain('Discard unsaved VCS changes?')
+      expect(document.body.textContent).toContain('Discard unsaved VCS changes?')
       expect(button(host, 'Saving…').disabled).toBe(true)
-      expect(button(host, 'Discard and leave').disabled).toBe(true)
-      act(() => button(host, 'Discard and leave').click())
+      expect(button(document.body, 'Discard and leave').disabled).toBe(true)
+      act(() => button(document.body, 'Discard and leave').click())
       expect(toggle(host, 'Enable Git').checked).toBe(false)
-      expect(host.textContent).toContain('Discard unsaved VCS changes?')
+      expect(document.body.textContent).toContain('Discard unsaved VCS changes?')
       expect(pendingLeave).not.toHaveBeenCalled()
       await act(async () => finish!('{}'))
       expect(useAppStore.getState().gitEnabled).toBe(false)
@@ -78,23 +80,23 @@ describe('VCS defaults controls', () => {
     try {
       act(() => toggle(host, 'Enable Git').click())
       act(() => ref.current!.requestLeave(leave))
-      expect(host.textContent).toContain('Discard unsaved VCS changes?')
+      expect(document.body.textContent).toContain('Discard unsaved VCS changes?')
       expect(leave).not.toHaveBeenCalled()
       await act(async () => button(host, 'Save VCS settings').click())
-      expect(host.textContent).toContain('Discard unsaved VCS changes?')
-      expect(button(host, 'Discard and leave').disabled).toBe(true)
-      act(() => button(host, 'Discard and leave').click())
+      expect(document.body.textContent).toContain('Discard unsaved VCS changes?')
+      expect(button(document.body, 'Discard and leave').disabled).toBe(true)
+      act(() => button(document.body, 'Discard and leave').click())
       expect(toggle(host, 'Enable Git').checked).toBe(false)
       expect(leave).not.toHaveBeenCalled()
       await act(async () => fail!())
       expect(useAppStore.getState().gitEnabled).toBe(true)
       expect(toggle(host, 'Enable Git').checked).toBe(false)
-      expect(host.textContent).toContain('Your changes are retained')
+      expect(vi.mocked(reportAppFailure)).toHaveBeenLastCalledWith('Could not save VCS settings.', 'Your changes are retained.')
       expect(button(host, 'Save VCS settings').disabled).toBe(false)
-      expect(host.textContent).toContain('Discard unsaved VCS changes?')
+      expect(document.body.textContent).toContain('Discard unsaved VCS changes?')
       expect(leave).not.toHaveBeenCalled()
-      expect(button(host, 'Discard and leave').disabled).toBe(false)
-      act(() => button(host, 'Discard and leave').click())
+      expect(button(document.body, 'Discard and leave').disabled).toBe(false)
+      act(() => button(document.body, 'Discard and leave').click())
       expect(leave).toHaveBeenCalledTimes(1)
       expect(toggle(host, 'Enable Git').checked).toBe(true)
       expect(host.querySelector('[role="alert"]')).toBeNull()
@@ -119,8 +121,8 @@ describe('VCS defaults controls', () => {
       expect(replies).toHaveLength(1)
       await act(async () => replies[0].fail(500, 'Disk full'))
       expect(branch().value).toBe('feature/retry')
-      expect(host.textContent).toContain('Your changes are retained')
-      expect(host.textContent).toContain('Discard unsaved VCS changes?')
+      expect(vi.mocked(reportAppFailure)).toHaveBeenLastCalledWith('Could not save VCS settings.', 'Your changes are retained.')
+      expect(document.body.textContent).toContain('Discard unsaved VCS changes?')
       expect(firstLeave).not.toHaveBeenCalled()
 
       await act(async () => button(host, 'Save VCS settings').click())
@@ -134,7 +136,7 @@ describe('VCS defaults controls', () => {
       act(() => input(branch(), 'feature/second-save'))
       expect(host.querySelector('[role="alert"]')).toBeNull()
       act(() => ref.current!.requestLeave(secondLeave))
-      expect(host.textContent).toContain('Discard unsaved VCS changes?')
+      expect(document.body.textContent).toContain('Discard unsaved VCS changes?')
       await act(async () => button(host, 'Save VCS settings').click())
       expect(replies).toHaveLength(3)
       await act(async () => replies[2].succeed('{}'))
@@ -154,7 +156,7 @@ describe('separate Git and SVN sections', () => {
     const { host, root } = mount()
     try {
       const sections = Array.from(host.querySelectorAll('section')).map((section) => section.getAttribute('aria-label'))
-      expect(sections).toEqual(['Git', 'SVN', 'No VCS'])
+      expect(sections).toEqual(['Git', 'SVN'])
       expect(host.querySelector('[aria-label="Git and SVN"]')).toBeNull()
       const git = host.querySelector<HTMLElement>('section[aria-label="Git"]')!
       const svn = host.querySelector<HTMLElement>('section[aria-label="SVN"]')!
@@ -162,7 +164,7 @@ describe('separate Git and SVN sections', () => {
       expect(git.querySelector('[aria-label="Default local Git base branch"]')).not.toBeNull()
       expect(git.querySelector('[role="group"][aria-label="Port method"]')).not.toBeNull()
       for (const label of ['Enable SVN', 'Update before new chat']) expect(svn.contains(toggle(host, label)), label).toBe(true)
-      expect(button(svn, 'Not supported').disabled).toBe(true)
+      expect(svn.textContent).not.toContain('branch and merge defaults')
       expect(host.querySelectorAll('input[type="checkbox"]')).toHaveLength(7)
       expect(Array.from(host.querySelectorAll('button')).filter((control) => control.textContent === 'Enabled' || control.textContent === 'Disabled')).toHaveLength(0)
       expect([toggle(host, 'Enable Git'), toggle(host, 'Automatic isolation'), toggle(host, 'Pull before first chat'), toggle(host, 'Enable SVN'), toggle(host, 'Update before new chat')].map((control) => control.checked))
@@ -207,7 +209,7 @@ describe('separate Git and SVN sections', () => {
       await act(async () => button(host, 'Save VCS settings').click())
       expect(Array.from(host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')).every((control) => control.disabled)).toBe(true)
       await act(async () => fail?.())
-      expect(host.textContent).toContain('Your changes are retained')
+      expect(vi.mocked(reportAppFailure)).toHaveBeenLastCalledWith('Could not save VCS settings.', 'Your changes are retained.')
       expect([toggle(host, 'Automatic isolation').checked, toggle(host, 'Pull before first chat').checked, toggle(host, 'Update before new chat').checked]).toEqual([false, true, true])
       expect(toggle(host, 'Pull before first chat').disabled).toBe(true)
       expect(useAppStore.getState()).toMatchObject({ gitAutoWorktree: true, gitPullBeforeChat: false, svnUpdateBeforeChat: false })
@@ -254,17 +256,17 @@ describe('SVN update before new chat', () => {
       await act(async () => button(host, 'Save VCS settings').click())
       expect(useAppStore.getState().svnUpdateBeforeChat).toBe(false)
       expect(toggle(host, 'Update before new chat').checked).toBe(true)
-      expect(host.textContent).toContain('Your changes are retained')
+      expect(vi.mocked(reportAppFailure)).toHaveBeenLastCalledWith('Could not save VCS settings.', 'Your changes are retained.')
     } finally { act(() => root.unmount()) }
   })
 })
 
 
 describe('local snapshot Git settings', () => {
-  it('places snapshot controls under SVN and No VCS', () => {
+  it('places snapshot controls under SVN and local Git files under Git', () => {
     const { host, root } = mount()
     try {
-      const section = host.querySelector<HTMLElement>('section[aria-label="No VCS"]')
+      const section = host.querySelector<HTMLElement>('section[aria-label="Git"]')
       expect(section).not.toBeNull()
       expect(host.querySelector('section[aria-label="SVN"]')!.contains(toggle(host, 'Local snapshot Git for SVN'))).toBe(true)
       expect(section!.contains(toggle(host, 'Local snapshot Git for SVN'))).toBe(false)
@@ -349,7 +351,7 @@ describe('local snapshot Git settings', () => {
       expect(toggle(host, 'Enable local Git files').disabled).toBe(false)
       expect(toggle(host, 'Local snapshot Git for SVN').checked).toBe(false)
       expect(toggle(host, 'Enable local Git files').checked).toBe(false)
-      expect(host.textContent).toContain('Your changes are retained')
+      expect(vi.mocked(reportAppFailure)).toHaveBeenLastCalledWith('Could not save VCS settings.', 'Your changes are retained.')
       act(() => button(host, 'Discard').click())
       expect(toggle(host, 'Local snapshot Git for SVN').checked).toBe(true)
       expect(toggle(host, 'Enable local Git files').checked).toBe(true)

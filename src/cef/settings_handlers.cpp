@@ -193,7 +193,7 @@ namespace
 	SettingsMemoryCanonicalValues CaptureMemorySettings(const AppSettings& value)
 	{
 		return {value.memory_enabled_default, value.memory_level_default, value.memory_idle_delay_seconds,
-		    value.memory_recall_budget_bytes, value.goal_max_loop_iterations, value.acp_setup_inactivity_timeout_seconds,
+		    value.memory_recall_budget_bytes, value.goal_max_loop_iterations, value.goal_token_budget, value.acp_setup_inactivity_timeout_seconds,
 		    value.acp_turn_output_limit_mib, value.memory_worker_bindings,
 		    value.permission_reviewer_provider_id, value.permission_reviewer_model_id, value.active_turn_inactivity_timeout_seconds, value.stream_loop_repeat_limit};
 	}
@@ -205,6 +205,7 @@ namespace
 		target.memory_idle_delay_seconds = value.memory_idle_delay_seconds;
 		target.memory_recall_budget_bytes = value.memory_recall_budget_bytes;
 		target.goal_max_loop_iterations = value.goal_max_loop_iterations;
+		target.goal_token_budget = value.goal_token_budget;
 		target.acp_setup_inactivity_timeout_seconds = value.acp_setup_inactivity_timeout_seconds;
 		target.acp_turn_output_limit_mib = value.acp_turn_output_limit_mib;
 		target.active_turn_inactivity_timeout_seconds = value.active_turn_inactivity_timeout_seconds;
@@ -221,7 +222,7 @@ namespace
 			if (!uam::excluded_provider_data::IsExcluded(id) && !uam::excluded_provider_data::IsExcluded(binding.worker_provider_id)) bindings[id] = {{"workerProviderId", binding.worker_provider_id}, {"workerModelId", binding.worker_model_id}};
 		return {{"memoryEnabledDefault", value.memory_enabled_default}, {"memoryLevelDefault", value.memory_level_default},
 		    {"memoryIdleDelaySeconds", value.memory_idle_delay_seconds}, {"memoryRecallBudgetBytes", value.memory_recall_budget_bytes},
-		    {"goalMaxLoopIterations", value.goal_max_loop_iterations}, {"acpSetupInactivityTimeoutSeconds", value.acp_setup_inactivity_timeout_seconds},
+		    {"goalMaxLoopIterations", value.goal_max_loop_iterations}, {"goalTokenBudget", value.goal_token_budget}, {"acpSetupInactivityTimeoutSeconds", value.acp_setup_inactivity_timeout_seconds},
 		    {"acpTurnOutputLimitMiB", value.acp_turn_output_limit_mib}, {"activeTurnInactivityTimeoutSeconds", value.active_turn_inactivity_timeout_seconds}, {"streamLoopRepeatLimit", value.stream_loop_repeat_limit}, {"memoryWorkerBindings", std::move(bindings)},
 		    {"permissionReviewerProviderId", value.permission_reviewer_provider_id}, {"permissionReviewerModelId", value.permission_reviewer_model_id}};
 	}
@@ -256,7 +257,7 @@ namespace
 		if (payload.contains("enabledDefault") && !payload["enabledDefault"].is_boolean()) return false;
 		for (const auto* key : {"levelDefault", "permissionReviewerProviderId", "permissionReviewerModelId"})
 			if (payload.contains(key) && !payload[key].is_string()) return false;
-		for (const auto* key : {"idleDelaySeconds", "recallBudgetBytes", "goalMaxLoopIterations", "acpTurnOutputLimitMiB", "acpSetupInactivityTimeoutSeconds", "activeTurnInactivityTimeoutSeconds", "streamLoopRepeatLimit"})
+		for (const auto* key : {"idleDelaySeconds", "recallBudgetBytes", "goalMaxLoopIterations", "goalTokenBudget", "acpTurnOutputLimitMiB", "acpSetupInactivityTimeoutSeconds", "activeTurnInactivityTimeoutSeconds", "streamLoopRepeatLimit"})
 		{
 			if (!payload.contains(key)) continue;
 			const auto& value = payload[key];
@@ -354,6 +355,10 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	if (const std::optional<int> max_loop_iterations = uam::nlohmann_json::IntFieldStrict(payload, "goalMaxLoopIterations"))
 	{
 		candidate.goal_max_loop_iterations = *max_loop_iterations;
+	}
+	if (const std::optional<int> goal_token_budget = uam::nlohmann_json::IntFieldStrict(payload, "goalTokenBudget"))
+	{
+		candidate.goal_token_budget = *goal_token_budget;
 	}
 	if (const std::optional<int> output_limit_mib = uam::nlohmann_json::IntFieldStrict(payload, "acpTurnOutputLimitMiB"))
 	{

@@ -193,7 +193,6 @@ export function deleteSessionsFromState(state: AppState, deletedIds: Set<string>
     goalsByChatId: withoutDeletedKeys(state.goalsByChatId, deletedIds),
     activeGoalIdByChatId: withoutDeletedKeys(state.activeGoalIdByChatId, deletedIds),
     goalModeByChatId: withoutDeletedKeys(state.goalModeByChatId, deletedIds),
-    defaultGoalTokenBudgetByChatId: withoutDeletedKeys(state.defaultGoalTokenBudgetByChatId, deletedIds),
     cliBindingBySessionId: withoutDeletedKeys(state.cliBindingBySessionId, deletedIds),
     acpBindingBySessionId: withoutDeletedKeys(state.acpBindingBySessionId, deletedIds),
     cliTranscriptBySessionId: withoutDeletedKeys(state.cliTranscriptBySessionId, deletedIds),
@@ -500,6 +499,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
     memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
     goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
+    goalTokenBudget: 0,
     acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
     activeTurnInactivityTimeoutSeconds: DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS,
     streamLoopRepeatLimit: DEFAULT_STREAM_LOOP_REPEAT_LIMIT,
@@ -692,6 +692,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           data.startIndex < 0 || !Number.isSafeInteger(data.totalCount) || data.totalCount === undefined ||
           data.startIndex + data.messages.length > data.totalCount || data.messages.length > 50 ||
           hit.messageIndex < data.startIndex || hit.messageIndex >= data.startIndex + data.messages.length) {
+        // ponytail: rail jumps report through the shared notice; the rail itself is the retry.
+        if (queryRequestId.startsWith('message-rail:')) {
+          set({ chatSearchNavigation: null })
+          reportAppFailure("Couldn't jump to that message", 'The chat changed while loading. Try the jump again.')
+          return false
+        }
         set((state) => ({ chatSearchNavigation: null, ...historyReadFailure(state, hit.chatId, response.error || 'Chat history changed. Try opening the message again.') }))
         return false
       }

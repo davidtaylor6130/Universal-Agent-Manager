@@ -6,6 +6,7 @@ import { useAppStore } from '../store/useAppStore'
 import { useUpdateMonitor } from './useUpdateMonitor'
 import { UpdatesPanel } from '../components/layout/UpdatesPanel'
 import type { CliVersionProviderState } from '../store/cpp/types'
+import { APP_FAILURE_EVENT, type AppFailure } from '../utils/appFailure'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -28,6 +29,9 @@ describe('useUpdateMonitor', () => {
     const detail = 'Stop or finish work running on this host before updating its helper.'
     window.cefQuery = ({ onFailure }) => onFailure(409, detail)
     const updates = [{ id: 'remote-helper-alpha', remoteHostId: 'alpha', name: 'Windows workstation SSH helper', currentVersion: '4.9.0-alpha-9', latestVersion: '4.9.0-alpha-19', url: '', installable: true }]
+    const failures: AppFailure[] = []
+    const listen = (event: Event) => failures.push((event as CustomEvent<AppFailure>).detail)
+    window.addEventListener(APP_FAILURE_EVENT, listen)
     function Panel() { return <UpdatesPanel monitor={{ ...useUpdateMonitor(), updates }} onClose={() => {}} /> }
     const host = document.createElement('div')
     const root = createRoot(host)
@@ -35,11 +39,10 @@ describe('useUpdateMonitor', () => {
       await act(async () => root.render(<Panel />))
       const label = mode === 'all' ? 'Update everything' : 'Update Windows workstation SSH helper to 4.9.0-alpha-19'
       await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click())
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain(detail)
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Windows workstation SSH helper')
-      await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Dismiss update error"]')!.click())
-      expect(host.querySelector('[role="alert"]')).toBeNull()
+      expect(failures).toEqual([expect.objectContaining({ message: 'Windows workstation SSH helper update failed', detail })])
+      expect(host.querySelector('button[aria-label="Retry Windows workstation SSH helper update to 4.9.0-alpha-19"]')).not.toBeNull()
     } finally {
+      window.removeEventListener(APP_FAILURE_EVENT, listen)
       act(() => root.unmount())
       useAppStore.setState(previous, true)
     }
@@ -104,7 +107,7 @@ describe('useUpdateMonitor', () => {
       } else {
         await act(async () => push('beta', { status: 'verified', running: false, lastInstallStatus: 'failed', message: 'fixture failure' }))
         expect(host.textContent).toContain('beta update failed')
-        expect(host.textContent).toContain('alpha update installed')
+        expect(host.querySelector('[role="progressbar"][aria-label="alpha installed"]')).not.toBeNull()
       }
       expect(requests).toEqual(['alpha', 'beta', 'gamma'])
     } finally {

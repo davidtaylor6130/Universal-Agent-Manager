@@ -11,6 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -356,6 +357,13 @@ bool ValidateAcpRestartOwnership(const AppState& app, const AcpSessionState& ses
 bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const ChatSession& chat);
 bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& fallback_message);
 void ReapLocalAcpLaunchTasks(AppState& app);
+// A revoked launch whose provider process may still be created, or is created but not yet handed to the
+// stop path: it counts as a stop in progress for that chat until reaping queues the stop.
+bool AbandonedAcpProcessCreationPending(const AppState& app, std::string_view chat_id);
+bool AcpProcessCreationPending(const AcpSessionState& session);
+// Test-only delay before a staged local launch creates its provider process; it runs where the
+// process is created, so a poll that creates the process synchronously exceeds its budget.
+inline std::atomic<int> g_acp_process_start_delay_ms_for_tests{0};
 /// <summary>Keeps model binding and worker launch ownership on the same effective setup scope.</summary>
 // An owned cold transaction binds admitted input before its one process/control attempt.
 bool StageAcpColdLaunch(AppState& app, AcpSessionState& session, ChatSession& chat,
@@ -538,7 +546,7 @@ inline void MarkAcpLoopStop(AcpSessionState& session, std::string channel, int c
 }
 void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
 	                      const std::string& message);
-void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
+void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat, bool ordinary_save_queued = false);
 void InvalidateAcpTransport(AppState& app, AcpSessionState& session, ChatSession& chat,
                            const std::string& message);
 /// <summary>Preserves queued intent durably and retires owned transport without reconnect or automatic FIFO admission.</summary>

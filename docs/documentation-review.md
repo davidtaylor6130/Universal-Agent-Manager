@@ -237,4 +237,8 @@ A local OpenCode Plan child stayed running for 8m53s until cancelled: its local 
 
 ## Stream loop stop default
 
-The [stream watch](providers/runtime-lifecycle.md#stream-watch) ships with loop stops on at 20 repeats, a conservative interim value chosen so ordinary polling, re-reads after edits, untimed or empty calls and repeated short fragments do not trip it (#636). Whether the default should be 10, 50 or Off, and whether a provider's fast identical polling with identical output (under 5 seconds per call, under 60 seconds apart) should ever count, needs David's decision from real loop reports. Until then the user can change or disable it in Goal Loops settings. The #636 branch is stacked on the unmerged #635 timeout notice and must merge after it.
+The [stream watch](providers/runtime-lifecycle.md#stream-watch) ships with loop stops on at 20 repeats, a conservative interim value chosen so ordinary polling, re-reads after edits, untimed or empty calls and repeated short fragments do not trip it (#636). Whether the default should be 10, 50 or Off, and whether a provider's fast identical polling with identical output (under 5 seconds per call, under 60 seconds apart) should ever count, needs David's decision from real loop reports. Until then the user can change or disable it in Goal Loops settings.
+
+## Active Chats inactivity settling
+
+**Pending David's decision.** Issue #629 asks that a chat leave [Active Chats](sidebar/active/active.md) only through Done, Clear all or Snooze. Current source also drops an entry after three days without new activity (`ACTIVE_CHAT_AUTO_DONE_MS` in the sidebar search model). Removing that window would return every older chat whose recorded interaction time was backfilled from its last update and never marked done, so the window is retained unchanged. Decide whether to remove it, together with a one-time settlement of backfilled chats, or keep it as a stated exception.

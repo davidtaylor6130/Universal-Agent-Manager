@@ -1,7 +1,8 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, Switch } from '../ui'
+import { Button, ConfirmDialog, Notice, SegmentedControl, Switch, usePresence } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { sanitizeGitBaseBranch } from '../../store/cpp/sanitizers'
 import { SaveButton, SettingRow, SettingsSection } from './SettingsPrimitives'
 
@@ -18,7 +19,6 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
   const [draft, setDraft] = useState(saved)
   const [baseline, setBaseline] = useState(saved)
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
   const [exit, setExit] = useState<(() => void) | null>(null)
   const busy = useRef(false)
   const dirty = JSON.stringify(draft) !== JSON.stringify(baseline)
@@ -30,52 +30,54 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
     return () => window.removeEventListener('beforeunload', guard)
   }, [dirty])
   useImperativeHandle(ref, () => ({ requestLeave: (next) => { if (busy.current) return; if (dirty) setExit(() => next); else next() } }))
-  const edit = (patch: Partial<typeof draft>) => { setDraft((current) => ({ ...current, ...patch })); setError('') }
+  const edit = (patch: Partial<typeof draft>) => { setDraft((current) => ({ ...current, ...patch })) }
   const base = sanitizeGitBaseBranch(draft.gitDefaultBaseBranch)
-  const validation = base === undefined ? 'Use a local branch name up to 255 UTF-8 bytes without control characters.' : ''
+  const validation = base === undefined ? 'Use a local branch name of up to 255 bytes, with no hidden characters.' : ''
+  const validationNotice = usePresence(Boolean(validation))
+  const shownValidation = useRef(validation)
+  if (validation) shownValidation.current = validation
   const save = async () => {
     if (busy.current || !dirty || validation) return
-    busy.current = true; setSaving(true); setError('')
+    busy.current = true; setSaving(true)
     try {
-      if (!await saveSettings({ ...draft, gitDefaultBaseBranch: base! })) { setError('Could not save VCS settings. Your changes are retained.'); return }
+      if (!await saveSettings({ ...draft, gitDefaultBaseBranch: base! })) { reportAppFailure('Could not save VCS settings.', 'Your changes are retained.'); return }
       const current = useAppStore.getState()
       const accepted = { gitEnabled: current.gitEnabled, svnEnabled: current.svnEnabled,
         gitSnapshotSvn: current.gitSnapshotSvn, gitSnapshotPlainFolders: current.gitSnapshotPlainFolders, gitAutoWorktree: current.gitAutoWorktree,
         gitDefaultBaseBranch: current.gitDefaultBaseBranch, gitPortMethod: current.gitPortMethod, gitPullBeforeChat: current.gitPullBeforeChat, svnUpdateBeforeChat: current.svnUpdateBeforeChat }
       setDraft(accepted); setBaseline(accepted); setExit(null)
-    } catch { setError('Could not save VCS settings. Your changes are retained.') }
+      reportAppNotice('VCS settings saved.', 'success')
+    } catch { reportAppFailure('Could not save VCS settings.', 'Your changes are retained.') }
     finally { busy.current = false; setSaving(false) }
   }
   const toggle = (label: string, checked: boolean, change: (checked: boolean) => void, disabled = false) =>
     <Switch hideLabel label={label} checked={checked} disabled={saving || disabled} onChange={(event) => change(event.currentTarget.checked)} />
-  return <div className="grid gap-6">
-    <SettingsSection title="Git">
-      <SettingRow title="Git" control={toggle('Enable Git', draft.gitEnabled, (value) => edit({ gitEnabled: value }))} />
+  return <div className="grid gap-0">
+    <SettingsSection title="Git" actions={<>
+        <Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setBaseline(saved) }}>Discard</Button>
+        <SaveButton saving={saving} disabled={saving || !dirty || Boolean(validation)} onClick={() => void save()}>Save VCS settings</SaveButton>
+      </>}>
+      <SettingRow title="Enable Git" control={toggle('Enable Git', draft.gitEnabled, (value) => edit({ gitEnabled: value }))} />
       <SettingRow title="Automatic isolation" description="Separate worktree before each new chat." control={toggle('Automatic isolation', draft.gitAutoWorktree, (value) => edit({ gitAutoWorktree: value }), !draft.gitEnabled)} />
-      <SettingRow title="Default base branch" description="Empty uses HEAD. Must exist locally." control={<input className="uam-field" aria-label="Default local Git base branch" placeholder="HEAD" value={draft.gitDefaultBaseBranch} disabled={saving || !draft.gitEnabled} spellCheck={false} onChange={(event) => edit({ gitDefaultBaseBranch: event.currentTarget.value })} />} />
-      <SettingRow title="Port changes" description="Merge and Squash stage changes for you to commit." control={<div className="flex gap-1" role="group" aria-label="Port method">
-        {(['patch', 'merge', 'squash'] as const).map((method) => <Button key={method} size="sm" disabled={saving || !draft.gitEnabled} aria-pressed={draft.gitPortMethod === method}
-          style={draft.gitPortMethod === method ? { borderColor: 'var(--text)', background: 'var(--surface-high)' } : undefined}
-          onClick={() => edit({ gitPortMethod: method })}>{method.charAt(0).toUpperCase() + method.slice(1)}</Button>)}
-      </div>} />
+      <SettingRow title="Default base branch" description="Empty uses HEAD. Must exist locally." control={<input className="uam-field" aria-label="Default local Git base branch" placeholder="HEAD" value={draft.gitDefaultBaseBranch} disabled={saving || !draft.gitEnabled} spellCheck={false} onChange={(event) => edit({ gitDefaultBaseBranch: event.currentTarget.value })} />}>
+        {validationNotice.mounted && <div className="uam-presence" data-state={validationNotice.closing ? 'closed' : 'open'}><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{shownValidation.current}</Notice></div>}
+      </SettingRow>
+      <SettingRow title="Port changes" description="Merge and Squash stage changes for you to commit."
+        control={<SegmentedControl aria-label="Port method" disabled={saving || !draft.gitEnabled} value={draft.gitPortMethod}
+          options={[{ value: 'patch', label: 'Patch' }, { value: 'merge', label: 'Merge' }, { value: 'squash', label: 'Squash' }]}
+          onChange={(method) => edit({ gitPortMethod: method })} />} />
       <SettingRow title="Pull before first chat" description="Fast-forward only, on a clean tree with an upstream." control={toggle('Pull before first chat', draft.gitPullBeforeChat, (value) => edit({ gitPullBeforeChat: value }), !draft.gitEnabled || !draft.gitAutoWorktree)} />
-    </SettingsSection>
-    <SettingsSection title="SVN">
-      <SettingRow title="SVN" control={toggle('Enable SVN', draft.svnEnabled, (value) => edit({ svnEnabled: value }))} />
-      <SettingRow title="Update before new chat" description="Run svn update before a new chat." control={toggle('Update before new chat', draft.svnUpdateBeforeChat, (value) => edit({ svnUpdateBeforeChat: value }), !draft.svnEnabled)} />
-      <SettingRow title="Local snapshot Git" description="Off means new chats edit the original working copy." control={toggle('Local snapshot Git for SVN', draft.gitSnapshotSvn, (value) => edit({ gitSnapshotSvn: value }))} />
-      <SettingRow title="SVN branch and merge defaults" control={<Button size="sm" disabled>Not supported</Button>} />
-    </SettingsSection>
-    <SettingsSection title="No VCS">
       <SettingRow title="Enable local Git files" description="Off means new chats edit the original folder directly." control={toggle('Enable local Git files', draft.gitSnapshotPlainFolders, (value) => edit({ gitSnapshotPlainFolders: value }))} />
     </SettingsSection>
-    {(error || validation) && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error || validation}</p>}
-    <div className="flex justify-end gap-2">
-      <Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setBaseline(saved); setError('') }}>Discard</Button>
-      <SaveButton saving={saving} disabled={saving || !dirty || Boolean(validation)} onClick={() => void save()}>Save VCS settings</SaveButton>
-    </div>
-    {exit && <div role="alert" className="flex items-center justify-between gap-3"><span>Discard unsaved VCS changes?</span><div className="flex gap-2">
-      <Button size="sm" onClick={() => setExit(null)}>Keep editing</Button><Button size="sm" disabled={saving} onClick={() => { const next = exit; setDraft(saved); setBaseline(saved); setError(''); setExit(null); next() }}>Discard and leave</Button>
-    </div></div>}
+    <SettingsSection title="SVN">
+      <SettingRow title="Enable SVN" control={toggle('Enable SVN', draft.svnEnabled, (value) => edit({ svnEnabled: value }))} />
+      <SettingRow title="Update before new chat" description="Run svn update before a new chat." control={toggle('Update before new chat', draft.svnUpdateBeforeChat, (value) => edit({ svnUpdateBeforeChat: value }), !draft.svnEnabled)} />
+      <SettingRow title="Local snapshot Git" description="Off means new chats edit the original working copy." control={toggle('Local snapshot Git for SVN', draft.gitSnapshotSvn, (value) => edit({ gitSnapshotSvn: value }))} />
+    </SettingsSection>
+    <ConfirmDialog open={Boolean(exit)} busy={saving} title="Discard unsaved VCS changes?" confirmLabel="Discard and leave" cancelLabel="Keep editing"
+      onCancel={() => setExit(null)}
+      onConfirm={() => { const next = exit; setDraft(saved); setBaseline(saved); setExit(null); next?.() }}>
+      Your unsaved Git, SVN and VCS changes will be lost.
+    </ConfirmDialog>
   </div>
 })

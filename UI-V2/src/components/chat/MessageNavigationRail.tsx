@@ -58,7 +58,8 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
   // otherwise a target that cannot reach the top (near the end) would hand the selection straight back.
   const [pin, setPin] = useState<{ index: number; seen: boolean } | null>(null)
   const railRef = useRef<HTMLDivElement>(null)
-  const hasMarks = count > 0
+  // One user message leaves nothing to step between, so the rail and its gutter stay away (ChatView mirrors this rule).
+  const hasMarks = count > 1
   // A jump whose row never shows (refused read, page budget spent) stops holding the selection.
   useEffect(() => {
     if (!pin || pin.seen || busy) return
@@ -139,7 +140,7 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
       if (frame !== null) cancelAnimationFrame(frame)
     }
   }, [viewportRef, hasMarks])
-  if (count === 0) return null
+  if (count < 2) return null
   // The transcript end only counts once the final user message is loaded, not at the end of an older page.
   const atEnd = view.visible.length > 0 && view.visible[view.visible.length - 1] >= view.lastRendered && view.lastRendered >= indices[count - 1]
   // Without visibility tracking the caller's position stands in.
@@ -173,7 +174,7 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
     {step(-1)}
     <div role="slider" tabIndex={busy ? -1 : 0} aria-label="Navigate user messages" aria-orientation="vertical"
       aria-valuemin={1} aria-valuemax={count} aria-valuenow={index + 1} aria-valuetext={valueText} aria-disabled={busy}
-      className="conversation-rail-track relative min-h-0 w-full cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+      className="conversation-rail-track relative min-h-0 w-full cursor-pointer focus-visible:[outline-offset:var(--focus-inset)]"
       style={{ height: Math.max(1, count - 1) * 8, maxHeight: '100%' }}
       onMouseMove={(event) => {
         const rect = event.currentTarget.getBoundingClientRect()
@@ -204,8 +205,8 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
         background: count === 1 ? 'var(--text-3)' : undefined,
         backgroundImage: count > 1 ? 'linear-gradient(to bottom, var(--text-3) 1.5px, transparent 1.5px)' : undefined,
         backgroundSize: count > 1 ? `100% calc((100% - 1px) / ${count - 1})` : undefined }} />
-      {[...lit].map((position) => <span key={position} aria-hidden data-rail-visible={position} className="conversation-rail-lit pointer-events-none"
-        style={{ position: 'absolute', top: markTop(position), left: 6, width: 14, height: 1.5, background: 'var(--text)' }} />)}
+      {[...lit].map((position) => <span key={position} aria-hidden data-rail-visible={position} className="conversation-rail-lit pointer-events-none motion-reduce:transition-none"
+        style={{ position: 'absolute', top: markTop(position), left: 6, width: 14, height: 1.5, background: 'var(--text)', transition: 'opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease)' }} />)}
       {previewIndex !== null && [-2, -1, 1, 2].map(distance => {
         const neighbor = index + distance
         if (neighbor < 0 || neighbor >= count) return null
@@ -217,8 +218,7 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
         {preview !== null
           ? <div className="conversation-rail-preview__text">{preview}</div>
           : <>
-            <div className="conversation-rail-preview__title">Not loaded yet</div>
-            <div className="conversation-rail-preview__hint">Scroll up or click to load this part of the chat.</div>
+            <div className="conversation-rail-preview__title">Not loaded. Scroll up or click to load.</div>
           </>}
       </div>}
     </div>

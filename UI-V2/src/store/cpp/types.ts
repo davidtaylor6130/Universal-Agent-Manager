@@ -767,6 +767,7 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   memoryIdleDelaySeconds: number
   memoryRecallBudgetBytes: number
   goalMaxLoopIterations: number
+  goalTokenBudget: number
   acpSetupInactivityTimeoutSeconds?: number
   activeTurnInactivityTimeoutSeconds?: number
   streamLoopRepeatLimit?: number

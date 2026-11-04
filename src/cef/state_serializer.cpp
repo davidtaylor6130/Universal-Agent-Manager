@@ -668,9 +668,19 @@ namespace uam
 			     session->reconnect_pending || session->recovering_remote_turn || session->recovering_remote_process ||
 			     session->worktree_launch_pending || ((session->remote_stop_pending || session->restart_marker_save_pending) &&
 			     session->restart_after_remote_stop_cleanup)));
+			const bool held = session ? session->queue_held : chat.acp_queue_held;
+			const bool baseline_hold = std::ranges::any_of(prompts, [](const AcpQueuedUserPromptState* prompt) { return prompt->repository_baseline_hold; });
 			for (const AcpQueuedUserPromptState* prompt : prompts)
 			{
 				if (prompt->prepared_for_delivery || !prompt->claude_quota_continuation_id.empty()) continue;
+				// A held row-less direct receipt only advances through Resume (#682): presenting it as Sending
+				// left no control while Send refused the held queue. Uncertain delivery, referenced rows and baseline holds keep
+				// their receipts so Resume never replays input that may have reached the provider.
+				if (prompt->direct_admission && held && !uncertain && !baseline_hold && prompt->existing_user_message_index < 0)
+				{
+					result["queuedPrompts"].push_back(SerializeQueuedAcpUserPrompt(*prompt));
+					continue;
+				}
 				if (prompt->direct_admission)
 				{
 					if (pending)
@@ -700,7 +710,7 @@ namespace uam
 				if (IsVisibleAcpQueuedPrompt(*prompt))
 					result["queuedPrompts"].push_back(SerializeQueuedAcpUserPrompt(*prompt));
 			}
-			result["queueHeld"] = (session ? session->queue_held : chat.acp_queue_held) && !result["queuedPrompts"].empty();
+			result["queueHeld"] = held && !result["queuedPrompts"].empty();
 		}
 
 		nlohmann::json SerializeMessageForFrontend(const Message& message,

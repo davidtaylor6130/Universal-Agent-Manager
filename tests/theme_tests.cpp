@@ -50,6 +50,27 @@ UAM_TEST(ThemeServiceSavesListsAndDeletesValidatedThemes)
 	UAM_ASSERT(!ThemeService::Exists(temp.root, "custom:midnight"));
 }
 
+UAM_TEST(ThemeServiceKeepsOptionalTokenColors)
+{
+	TempDir temp("uam-theme-tokens");
+	nlohmann::json theme = TestTheme();
+	theme["colors"]["tokenInput"] = "#AABBCC";
+	theme["colors"]["tokenReasoning"] = "#112233";
+	nlohmann::json normalized;
+	std::string error;
+	UAM_ASSERT(ThemeService::Save(temp.root, theme, &normalized, &error));
+	UAM_ASSERT_EQ(normalized["colors"]["tokenInput"].get<std::string>(), std::string("#aabbcc"));
+	UAM_ASSERT(!normalized["colors"].contains("tokenOutput"));
+	const nlohmann::json themes = ThemeService::List(temp.root);
+	UAM_ASSERT_EQ(themes.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(themes[0]["colors"]["tokenReasoning"].get<std::string>(), std::string("#112233"));
+
+	theme["colors"]["tokenCacheWrite"] = "blue";
+	error.clear();
+	UAM_ASSERT(!ThemeService::Save(temp.root, theme, nullptr, &error));
+	UAM_ASSERT(error.find("tokenCacheWrite") != std::string::npos);
+}
+
 UAM_TEST(ThemeServiceRejectsTraversalAndInvalidColors)
 {
 	TempDir temp("uam-theme-invalid");
