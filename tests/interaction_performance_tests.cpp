@@ -2,6 +2,8 @@
 #include "app/transcript_retention_service.h"
 #include "common/config/custom_icon.h"
 
+#include <algorithm>
+#include <array>
 #include <numeric>
 
 using namespace uam_test;
@@ -136,6 +138,35 @@ UAM_TEST(PerformanceColdLocalSummaryCatalogue)
 		file << document.dump();
 		UAM_ASSERT(file.good());
 	}
+	// The catalogue must read every primary and republish every summary cache, so on shared runners the
+	// file-system floor alone approaches the fixed 1000 ms (#526). Measure that floor on this machine with
+	// the same reads plus a plain unsynced temp write and rename per file, outside production code; the
+	// budget allows twice it with 1000 ms kept as the floor, so a durable sync per cache write still fails.
+	TempDir floor_root("uam-performance-cold-summary-floor");
+	std::array<std::chrono::steady_clock::duration, 3> floors{};
+	for (std::size_t sample = 0; sample < floors.size(); ++sample)
+	{
+		const fs::path copies = floor_root.root / std::to_string(sample);
+		fs::create_directories(copies);
+		const std::chrono::steady_clock::time_point floor_started = std::chrono::steady_clock::now();
+		for (const fs::directory_entry& entry : fs::directory_iterator(chats))
+		{
+			const fs::path temp_copy = copies / (entry.path().filename().string() + ".tmp");
+			{
+				std::ofstream copy(temp_copy, std::ios::binary);
+				copy << ReadFile(entry.path());
+				UAM_ASSERT(copy.good());
+			}
+			fs::rename(temp_copy, copies / entry.path().filename());
+		}
+		floors[sample] = std::chrono::steady_clock::now() - floor_started;
+		fs::remove_all(copies);
+	}
+	std::ranges::sort(floors);
+	const std::chrono::milliseconds budget = std::max(kHistoryPageBudget,
+	    std::chrono::ceil<std::chrono::milliseconds>(2 * floors[1]));
+	std::cout << "[TIMING] cold catalogue file-system floor: "
+	          << std::chrono::duration<double, std::milli>(floors[1]).count() << " ms\n";
 	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
 	const std::vector<ChatSession> summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
 	UAM_ASSERT_EQ(summaries.size(), std::size_t{1000});
@@ -144,7 +175,7 @@ UAM_TEST(PerformanceColdLocalSummaryCatalogue)
 		UAM_ASSERT(chat.messages.empty());
 		UAM_ASSERT_EQ(chat.persisted_message_count, std::size_t{2});
 	}
-	RequireBudget("cold 1000-chat summary catalogue with cache regeneration", started, kHistoryPageBudget);
+	RequireBudget("cold 1000-chat summary catalogue with cache regeneration", started, budget);
 }
 
 UAM_TEST(ColdSummaryCacheRegenerationPreservesPrimaryHistory)

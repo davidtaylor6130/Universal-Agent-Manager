@@ -33,6 +33,7 @@
 #include "common/utils/parse_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "common/utils/history_timestamp_order.h"
 #include "common/utils/uuid.h"
 #include "computer_use/computer_use_mcp_config.h"
 #include "core/chat_import_utils.h"
@@ -5047,7 +5048,7 @@ catch (const std::exception& error)
 	return false;
 }
 
-std::shared_ptr<PreparedChatSave> ChatRepository::PrepareLastOpenedAt(const fs::path& data_root, const ChatSession& metadata)
+std::shared_ptr<PreparedChatSave> ChatRepository::PrepareLastOpenedAt(const fs::path& data_root, const ChatSession& metadata, bool allow_full_save)
 try
 {
 	if (!metadata.temporary_storage_owner_token.empty() &&
@@ -5067,6 +5068,7 @@ try
 	if (!summary || summary->type != JsonValue::Type::Object || JsonStringOrEmpty(summary->Find(kChatIdField)) != metadata.id ||
 	    NonNegativeUintmaxFieldOrZero(summary->Find(kChatSummarySourceSizeField)) != source_size)
 	{
+		if (!allow_full_save) return nullptr;
 		std::optional<ChatSession> persisted = LoadLocalChat(data_root, metadata.id, true, nullptr, false);
 		if (!persisted) return nullptr;
 		persisted->last_opened_at = metadata.last_opened_at;
@@ -5103,24 +5105,24 @@ catch (const std::length_error&)
 	return nullptr;
 }
 
-bool ChatRepository::SaveLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& chat)
+bool ChatRepository::SaveLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& chat, bool allow_full_save)
 try
 {
-	if (!chat.temporary_storage_owner_token.empty()) return PublishPreparedChatSave(PrepareLastOpenedAt(data_root, chat));
+	if (!chat.temporary_storage_owner_token.empty()) return PublishPreparedChatSave(PrepareLastOpenedAt(data_root, chat, allow_full_save));
 	if (!uam::chat_ids::IsSafeStorageChatId(chat.id)) return false;
 	const fs::path chat_path = AppPaths::UamChatFilePath(data_root, chat.id);
 	const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat.id);
 	std::error_code error;
 	const std::uintmax_t source_size = fs::file_size(chat_path, error);
-	if (error || !SummaryCacheIsCurrent(chat_path, summary_path)) return SaveChat(data_root, chat);
+	if (error || !SummaryCacheIsCurrent(chat_path, summary_path)) return allow_full_save && SaveChat(data_root, chat);
 	std::string summary_text;
-	if (!uam::io::TryReadTextFile(summary_path, summary_text, kMaxPassiveMetadataReadBytes)) return SaveChat(data_root, chat);
+	if (!uam::io::TryReadTextFile(summary_path, summary_text, kMaxPassiveMetadataReadBytes)) return allow_full_save && SaveChat(data_root, chat);
 	auto summary = ParseJson(summary_text);
 	if (!summary || summary->type != JsonValue::Type::Object ||
 	    JsonStringOrEmpty(summary->Find(kChatIdField)) != chat.id ||
 	    NonNegativeUintmaxFieldOrZero(summary->Find(kChatSummarySourceSizeField)) != source_size)
 	{
-		return SaveChat(data_root, chat);
+		return allow_full_save && SaveChat(data_root, chat);
 	}
 	const bool passive_summary = JsonBoolOrDefault(summary->Find(kChatImportedReadOnlyField), false);
 	const auto summary_archive = passive_summary ? PassiveArchiveFromText(summary_text, chat.id) : nullptr;
@@ -5131,7 +5133,7 @@ try
 	uam::json::SetString(*summary, "attention_revision", chat.attention_revision);
 	uam::json::SetString(*summary, "settled_at", chat.settled_at);
 	uam::json::SetNumber(*summary, "snoozed_until_ms", static_cast<double>(chat.snoozed_until_ms));
-	return uam::io::WriteTextFile(summary_path, SerializeArchiveDocument(*summary, summary_archive)) || SaveChat(data_root, chat);
+	return uam::io::WriteTextFile(summary_path, SerializeArchiveDocument(*summary, summary_archive)) || (allow_full_save && SaveChat(data_root, chat));
 }
 catch (const std::length_error&)
 {
@@ -5407,7 +5409,7 @@ namespace
 			hydrated.managed_followup_input_unavailable = true;
 		}
 		hydrated.interaction_at = summary.interaction_at;
-		if (summary.last_opened_at > hydrated.last_opened_at)
+		if (uam::time::HistoryTimestampIsAfter(summary.last_opened_at, hydrated.last_opened_at))
 			hydrated.last_opened_at = summary.last_opened_at;
 		hydrated.attention_revision = summary.attention_revision;
 		hydrated.settled_at = summary.settled_at;
@@ -5531,7 +5533,7 @@ namespace
 		const LoadChatResult summary = ParseLocalChatFile(summary_path, false, source_size, false, max_read_bytes);
 		if (summary.chat && summary.chat->id == chat.id)
 		{
-			if (summary.chat->last_opened_at > chat.last_opened_at) chat.last_opened_at = summary.chat->last_opened_at;
+			if (uam::time::HistoryTimestampIsAfter(summary.chat->last_opened_at, chat.last_opened_at)) chat.last_opened_at = summary.chat->last_opened_at;
 			chat.attention_revision = summary.chat->attention_revision;
 			chat.interaction_at = summary.chat->interaction_at;
 			chat.settled_at = summary.chat->settled_at;
