@@ -354,6 +354,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 #endif
 		{"setUamAgentPreferences", &UamQueryHandler::HandleSetUamAgentPreferences},
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},
+		{"setComposerSettings", &UamQueryHandler::HandleSetComposerSettings},
 		{"setNativeImportFilters", &UamQueryHandler::HandleSetNativeImportFilters},
 		{"setVcsSettings", &UamQueryHandler::HandleSetVcsSettings},
 		{"setStorageSettings", &UamQueryHandler::HandleSetStorageSettings},

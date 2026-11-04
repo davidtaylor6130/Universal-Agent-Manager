@@ -569,6 +569,19 @@ describe('SettingsModal memory settings', () => {
   })
 
 
+  it('chooses what Send does while a turn is running in Chat Defaults', () => {
+    const setSteerActiveTurnOnSend = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState({ steerActiveTurnOnSend: false, setSteerActiveTurnOnSend })
+    const { host, root } = renderModal()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat defaults"]')?.click())
+    const control = host.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Send during a running turn"]')
+    expect(control?.textContent).toContain('Queue for next turn')
+    act(() => control!.click())
+    act(() => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((option) => option.textContent?.includes('Steer active turn'))!.click())
+    expect(setSteerActiveTurnOnSend).toHaveBeenCalledWith(true)
+    act(() => root.unmount()); host.remove()
+  })
+
   it('lists SSH routing under Connections and opens its settings page', () => {
     const { host, root } = renderModal()
     const group = [...host.querySelectorAll('nav h2')].find(item => item.textContent === 'Connections')?.parentElement

@@ -116,6 +116,7 @@ function deserializeState(
     runnerProtocolVersion: number
     showProviderIconsInSidebar: boolean
     showWorktreePathInSidebar: boolean
+    steerActiveTurnOnSend: boolean
     gitEnabled?: boolean
     svnEnabled?: boolean
     updateChecksEnabled: boolean
@@ -331,6 +332,7 @@ function deserializeState(
     runnerProtocolVersion: cpp.runnerProtocolVersion || existing.runnerProtocolVersion,
     showProviderIconsInSidebar: cpp.settings.showProviderIconsInSidebar ?? true,
     showWorktreePathInSidebar: cpp.settings.showWorktreePathInSidebar ?? true,
+    steerActiveTurnOnSend: cpp.settings.steerActiveTurnOnSend ?? false,
     gitEnabled: typeof cpp.settings.gitEnabled === 'boolean' ? cpp.settings.gitEnabled : true,
     svnEnabled: typeof cpp.settings.svnEnabled === 'boolean' ? cpp.settings.svnEnabled : true,
     updateChecksEnabled: cpp.settings.updateChecksEnabled,
@@ -569,6 +571,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     acpTurnOutputLimitMiB: patch.settings?.acpTurnOutputLimitMiB ?? current.acpTurnOutputLimitMiB,
     showProviderIconsInSidebar: patch.settings?.showProviderIconsInSidebar ?? current.showProviderIconsInSidebar,
     showWorktreePathInSidebar: patch.settings?.showWorktreePathInSidebar ?? current.showWorktreePathInSidebar,
+    steerActiveTurnOnSend: patch.settings?.steerActiveTurnOnSend ?? current.steerActiveTurnOnSend,
     gitEnabled: typeof patch.settings?.gitEnabled === 'boolean' ? patch.settings.gitEnabled : current.gitEnabled,
     svnEnabled: typeof patch.settings?.svnEnabled === 'boolean' ? patch.settings.svnEnabled : current.svnEnabled,
     updateChecksEnabled: patch.settings?.updateChecksEnabled ?? current.updateChecksEnabled,
@@ -820,6 +823,7 @@ export const useAppStore = create<AppState>((set, get) => {
           runnerProtocolVersion: current.runnerProtocolVersion,
           showProviderIconsInSidebar: current.showProviderIconsInSidebar,
           showWorktreePathInSidebar: current.showWorktreePathInSidebar,
+          steerActiveTurnOnSend: current.steerActiveTurnOnSend,
         gitEnabled: current.gitEnabled,
         svnEnabled: current.svnEnabled,
           updateChecksEnabled: current.updateChecksEnabled,
@@ -1195,6 +1199,7 @@ export const useAppStore = create<AppState>((set, get) => {
         runnerProtocolVersion: current.runnerProtocolVersion,
         showProviderIconsInSidebar: current.showProviderIconsInSidebar,
         showWorktreePathInSidebar: current.showWorktreePathInSidebar,
+        steerActiveTurnOnSend: current.steerActiveTurnOnSend,
         gitEnabled: current.gitEnabled,
         svnEnabled: current.svnEnabled,
         updateChecksEnabled: current.updateChecksEnabled,

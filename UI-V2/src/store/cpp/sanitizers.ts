@@ -1229,6 +1229,7 @@ export function sanitizeCppProvider(value: unknown): CppProvider | null {
     terminalPermissionControl: 'provider',
     npmPackageName: isString(value.npmPackageName) ? value.npmPackageName.trim() : undefined,
     nativeGoalCommand: isString(value.nativeGoalCommand) ? value.nativeGoalCommand.trim() : undefined,
+    supportsNativeSteering: value.supportsNativeSteering === true,
   }
 }
 
@@ -1768,6 +1769,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       theme: 'focus',
       showProviderIconsInSidebar: true,
       showWorktreePathInSidebar: true,
+      steerActiveTurnOnSend: false,
       gitEnabled: true,
       svnEnabled: true,
       memoryEnabledDefault: true,
@@ -1929,6 +1931,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     theme,
     showProviderIconsInSidebar: booleanOr(value.showProviderIconsInSidebar, true),
     showWorktreePathInSidebar: booleanOr(value.showWorktreePathInSidebar, true),
+    steerActiveTurnOnSend: booleanOr(value.steerActiveTurnOnSend, false),
     gitEnabled: booleanOr(value.gitEnabled, true),
     svnEnabled: booleanOr(value.svnEnabled, true),
     memoryEnabledDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true), false) !== 'off',

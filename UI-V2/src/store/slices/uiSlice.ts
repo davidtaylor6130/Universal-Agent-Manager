@@ -146,6 +146,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
     collapsibleWorkSections: storedShellLayout.collapsibleWorkSections,
     showProviderIconsInSidebar: true,
     showWorktreePathInSidebar: true,
+    steerActiveTurnOnSend: false,
     nativeImportExcludedTitlePrefixes: [] as string[],
     nativeImportExcludedDirectories: [] as string[],
     gitEnabled: true,
@@ -327,6 +328,16 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
       set(settings)
       if (!isCefContext()) return true
       const response = await sendToCEF({ action: 'setSidebarSettings', payload: settings, requestId: createRequestId('setSidebarSettings') })
+      if (!response.ok) set(latestOptimisticRollback(previous, optimisticRevision))
+      return response.ok
+    },
+
+    setSteerActiveTurnOnSend: async (steer: boolean) => {
+      const previous = { steerActiveTurnOnSend: get().steerActiveTurnOnSend }
+      const optimisticRevision = rememberOptimisticFields(['steerActiveTurnOnSend'])
+      set({ steerActiveTurnOnSend: steer })
+      if (!isCefContext()) return true
+      const response = await sendToCEF({ action: 'setComposerSettings', payload: { steerActiveTurnOnSend: steer }, requestId: createRequestId('setComposerSettings') })
       if (!response.ok) set(latestOptimisticRollback(previous, optimisticRevision))
       return response.ok
     },

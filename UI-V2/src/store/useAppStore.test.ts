@@ -6794,6 +6794,28 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().showWorktreePathInSidebar).toBe(false)
   })
 
+  it('reconciles and persists the active-turn Send preference through native settings (#688)', async () => {
+    expect(useAppStore.getState().steerActiveTurnOnSend).toBe(false)
+    // A restart hydrates the saved native value.
+    const restarted = makeCppState(1)
+    restarted.settings.steerActiveTurnOnSend = true
+    useAppStore.getState().loadFromCef(restarted)
+    expect(useAppStore.getState().steerActiveTurnOnSend).toBe(true)
+
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      requests.push(JSON.parse(request))
+      if (requests.length === 1) onSuccess('{}')
+      else onFailure(500, 'Failed to persist composer settings.')
+    }
+    await expect(useAppStore.getState().setSteerActiveTurnOnSend(false)).resolves.toBe(true)
+    expect(requests[0]).toMatchObject({ action: 'setComposerSettings', payload: { steerActiveTurnOnSend: false } })
+    expect(useAppStore.getState().steerActiveTurnOnSend).toBe(false)
+    // A refused save restores the previous choice instead of claiming it persisted.
+    await expect(useAppStore.getState().setSteerActiveTurnOnSend(true)).resolves.toBe(false)
+    expect(useAppStore.getState().steerActiveTurnOnSend).toBe(false)
+  })
+
   it('projects native Computer Use cleanup and retains it across unrelated sparse patches', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()

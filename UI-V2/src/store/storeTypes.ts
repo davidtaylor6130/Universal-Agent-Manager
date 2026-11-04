@@ -128,6 +128,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   runnerProtocolVersion: number
   showProviderIconsInSidebar: boolean
   showWorktreePathInSidebar: boolean
+  steerActiveTurnOnSend: boolean
   gitEnabled: boolean
   svnEnabled: boolean
   updateChecksEnabled: boolean
@@ -394,6 +395,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setVoiceInputSettings: (settings: VoiceInputSettingsRequest) => Promise<boolean>
   setStorageSettings: (settings: StorageSettingsRequest) => Promise<boolean>
   setSidebarSettings: (settings: Pick<AppState, 'showProviderIconsInSidebar' | 'showWorktreePathInSidebar'>) => Promise<boolean>
+  /** Saves what composer Send does while a turn runs: steer it (true) or queue for the next turn (false). */
+  setSteerActiveTurnOnSend: (steer: boolean) => Promise<boolean>
   setNewChatModalOpen: (open: boolean, folderId?: string | null, worktreeContext?: NewChatWorktreeContext | null) => void
   setSettingsOpen: (open: boolean) => void
   setSettingsScopeHostId: (hostId: string) => void

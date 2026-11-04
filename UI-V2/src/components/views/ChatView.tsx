@@ -157,6 +157,8 @@ interface PendingClaudePlanPrompt {
   draft: string
   attachments: Attachment[]
   context: ComposerReferenceSubmission
+  /** The original Send chose Steer; Plan-mode resolution keeps that action. */
+  steerNow?: boolean
 }
 
 const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
@@ -1684,8 +1686,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
   }
 
-  const submit = async (event?: FormEvent, promptOverride?: string, steerNow = false) => {
+  const submit = async (event?: FormEvent, promptOverride?: string, steerOverride?: boolean) => {
     event?.preventDefault()
+    // While a turn runs, Send follows the saved active-turn preference unless the alternate action overrides it.
+    const steerNow = steerOverride ?? (Boolean(providerAcp?.processing) && useAppStore.getState().steerActiveTurnOnSend)
     if (editingMessageIndex !== null) {
       if (branchingMessageIndex === null && canChangeProvider && (editingMessageText.trim() || editingMessageAttachments.length > 0)) {
         if (editingMessageSource.kind === 'unsent') await saveEditedUnsentMessage()
@@ -1733,10 +1737,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       return
     }
 
-    if (!steerNow && isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
+    if (isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
       const context = captureComposerReferenceSubmission(session.id)
       if (!context) { setSlashNotice(noticeFor(UNSENT_PROMPT_MESSAGE, 'warning')); return }
-      setClaudePlanPrompt({ prompt, draft, attachments: readyAttachments, context })
+      setClaudePlanPrompt({ prompt, draft, attachments: readyAttachments, context, ...(steerNow ? { steerNow: true } : {}) })
       return
     }
     const submittedSessionId = session.id
@@ -3099,7 +3103,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         return
       }
       const readyAttachments = submission.attachments
-      const ok = await sendCapturedComposerPrompt(submission.context, submission.prompt, readyAttachments.length ? readyAttachments : undefined)
+      const ok = await (submission.steerNow
+        ? sendCapturedComposerPrompt(submission.context, submission.prompt, readyAttachments, true)
+        : sendCapturedComposerPrompt(submission.context, submission.prompt, readyAttachments.length ? readyAttachments : undefined))
       const acknowledgedSession = useAppStore.getState().sessions.find((candidate) => candidate.id === submittedSessionId)
       if (ok && acknowledgedSession?.createdAt.getTime() === submission.context.birth) {
         acknowledgeChatComposerDraft(submittedSessionId, submission.context.birth, { text: submission.draft, attachments: readyAttachments })
@@ -4219,6 +4225,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               goalPaused={Boolean(goalPaused)}
               onToggleGoal={handleToggleGoal}
               onCancelTurn={cancelLiveTurn}
+              onSendAlternate={() => {
+                void submit(undefined, undefined, !useAppStore.getState().steerActiveTurnOnSend)
+                composerTextareaRef.current?.focus({ preventScroll: true })
+              }}
               onAttachFile={() => fileInputRef.current?.click()}
               onOpenMarkdownStore={() => void openMarkdownStore()}
               dictationState={dictationState}

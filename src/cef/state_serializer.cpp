@@ -2583,6 +2583,8 @@ namespace uam
 		j["structuredPermissionControl"] = profile.supports_structured && profile.id != uam::provider_ids::kAntigravityCli ? "uam" : "provider";
 		j["terminalPermissionControl"] = "provider";
 		j["nativeGoalCommand"] = profile.native_goal_command;
+		// Without native steering, Steer stops the running turn and sends the steer first.
+		j["supportsNativeSteering"] = ProviderRuntimeRegistry::ResolveById(profile.id).SupportsAcpSteering();
 		
 		const std::string npm_package = GetNpmPackageNameForProvider(profile.id);
 		if (!npm_package.empty())

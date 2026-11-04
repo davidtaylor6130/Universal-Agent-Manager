@@ -661,6 +661,28 @@ void UamQueryHandler::HandleSetSidebarSettings(CefRefPtr<CefBrowser> browser, co
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleSetComposerSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::optional<bool> steer = uam::nlohmann_json::BoolFieldStrict(payload, "steerActiveTurnOnSend");
+	if (!steer)
+	{
+		cb->Failure(400, "steerActiveTurnOnSend must be a boolean.");
+		return;
+	}
+
+	const AppSettings previous = m_app.settings;
+	m_app.settings.steer_active_turn_on_send = *steer;
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist composer settings."));
+		return;
+	}
+
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
 void UamQueryHandler::HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const AppSettings previous = m_app.settings;

@@ -53,6 +53,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kUiThemeKey = "ui_theme";
 	constexpr std::string_view kShowProviderIconsInSidebarKey = "show_provider_icons_in_sidebar";
 	constexpr std::string_view kShowWorktreePathInSidebarKey = "show_worktree_path_in_sidebar";
+	constexpr std::string_view kSteerActiveTurnOnSendKey = "steer_active_turn_on_send";
 	constexpr std::string_view kGitEnabledKey = "git_enabled";
 	constexpr std::string_view kGitAutoWorktreeKey = "git_auto_worktree";
 	constexpr std::string_view kGitSnapshotSvnKey = "git_snapshot_svn";
@@ -676,6 +677,7 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteEncodedSetting(lines, kUiThemeKey, normalized.ui_theme);
 		WriteBoolSetting(lines, kShowProviderIconsInSidebarKey, normalized.show_provider_icons_in_sidebar);
 		WriteBoolSetting(lines, kShowWorktreePathInSidebarKey, normalized.show_worktree_path_in_sidebar);
+		WriteBoolSetting(lines, kSteerActiveTurnOnSendKey, normalized.steer_active_turn_on_send);
 		WriteBoolSetting(lines, kGitEnabledKey, normalized.git_enabled);
 		WriteBoolSetting(lines, kGitAutoWorktreeKey, normalized.git_auto_worktree);
 		WriteBoolSetting(lines, kGitSnapshotSvnKey, normalized.git_snapshot_svn);
@@ -963,6 +965,10 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		else if (key == kShowWorktreePathInSidebarKey)
 		{
 			settings.show_worktree_path_in_sidebar = uam::parse::BoolOr(value, settings.show_worktree_path_in_sidebar);
+		}
+		else if (key == kSteerActiveTurnOnSendKey)
+		{
+			settings.steer_active_turn_on_send = uam::parse::BoolOr(value, settings.steer_active_turn_on_send);
 		}
 		else if (key == kGitEnabledKey)
 		{
