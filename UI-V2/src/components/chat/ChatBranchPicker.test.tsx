@@ -12,6 +12,7 @@ vi.mock('../../ipc/cefBridge', async (importOriginal) => ({
   createRequestId: () => 'rid',
 }))
 
+vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
 const send = vi.mocked(sendToCEF)
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -38,7 +39,8 @@ async function open(host: HTMLElement) {
 }
 
 beforeEach(() => {
-  useAppStore.setState({ sessions: [] })
+  // The picker is opened by the user in the chat on screen, so that chat is the active one.
+  useAppStore.setState({ sessions: [], activeSessionId: 'chat-1' })
   send.mockReset()
   send.mockImplementation(async (request) => {
     if (request.action === 'listChatBranches') {
@@ -166,6 +168,17 @@ it('requires an explicit SVN repository folder without guessing a layout', async
     expect(options()).toHaveLength(0)
     expect(document.body.textContent).not.toContain('Create branch from current')
     expect(document.activeElement?.getAttribute('aria-label')).toBe('SVN repository folder')
+  } finally { cleanup() }
+})
+
+it('does not steal focus when a picker in a background chat finishes loading', async () => {
+  useAppStore.setState({ activeSessionId: 'other-chat' })
+  svnResponses()
+  const { host, cleanup } = render({ vcsType: 'svn', branch: '42' })
+  try {
+    await open(host)
+    expect(document.activeElement?.getAttribute('aria-label')).not.toBe('SVN repository folder')
+    expect(document.activeElement).not.toBe(trigger(host))
   } finally { cleanup() }
 })
 
@@ -498,7 +511,7 @@ it('shows a pending branch and withdraws it when the checked-out branch is chose
   expect(trigger(host).getAttribute('aria-label')).toBe('Switch branch, empty/new pending, created from main on first message')
   await open(host)
   const dialog = document.body.querySelector('[role="dialog"]')!
-  expect(document.getElementById(dialog.getAttribute('aria-describedby')!)?.textContent).toBe('empty/new will be created from main when you send your first message. Select main above to cancel.')
+  expect(document.getElementById(dialog.getAttribute('aria-describedby')!)?.textContent).toBe('Created from main on first send. Select main to cancel.')
   await act(async () => { options()[0].click() })
   await flush()
   expect(send).toHaveBeenCalledWith(expect.objectContaining({ action: 'switchChatBranch', payload: { chatId: 'chat-1', branch: 'main' } }))

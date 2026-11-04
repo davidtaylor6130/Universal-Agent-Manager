@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   applyDocumentTheme,
+  contrastRatio,
+  meterWarningFor,
   BUILT_IN_THEMES,
   normalizeCustomTheme,
   normalizeStoredTheme,
@@ -123,6 +125,10 @@ describe('themeStorage', () => {
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
     expect(document.documentElement.style.getPropertyValue('--bg')).toBe('#101820')
     expect(document.documentElement.style.getPropertyValue('--message-user-bg')).toBe('#173047')
+    // Saved before token-type colours existed: the base's defaults fill in and apply; an explicit value wins.
+    expect(theme?.colors.tokenInput).toBe('#dc7ba3')
+    expect(document.documentElement.style.getPropertyValue('--token-input')).toBe('#dc7ba3')
+    expect(normalizeCustomTheme({ ...theme, colors: { ...theme?.colors, tokenOutput: '#AABBCC' } })?.colors.tokenOutput).toBe('#aabbcc')
     expect(document.documentElement.style.getPropertyValue('--accent-dim')).toContain('#38bdf8')
     expect(document.documentElement.style.getPropertyValue('--text-2')).toContain('60%')
     expect(document.documentElement.style.getPropertyValue('--text-3')).toContain('90%')
@@ -159,5 +165,14 @@ describe('themeStorage', () => {
       remove.mockRestore()
     }
     expect(normalizeCustomTheme({ ...theme, colors: { ...theme.colors, accent: 'blue' } })).toBeNull()
+  })
+
+  it('derives a meter warning band with 3:1 graphic contrast for custom themes', () => {
+    const light = ['#f7f8fa', '#ffffff']
+    const derived = meterWarningFor('#eab308', light, '#141820')
+    expect(derived).not.toBe('#eab308')
+    for (const surface of light) expect(contrastRatio(surface, derived)).toBeGreaterThanOrEqual(3)
+    expect(meterWarningFor('#a16207', light, '#141820')).toBe('#a16207')
+    expect(meterWarningFor('#f59e0b', ['#101820', '#17212b'], '#f1f5f9')).toBe('#f59e0b')
   })
 })

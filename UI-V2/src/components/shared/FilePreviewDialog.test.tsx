@@ -9,6 +9,8 @@ import { MarkdownContent } from '../markdown/Markdown'
 import { FilePreviewDialog } from './FilePreviewDialog'
 import { FileInspectionProvider } from './FileInspectionProvider'
 
+vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const session: Session = { id: 'inspect', name: 'Inspect', viewMode: 'chat', folderId: null, workspaceDirectory: '/work', executionHostId: 'local', createdAt: new Date(), updatedAt: new Date() }
 const preview = (text: string): WorkspaceFilePreview => ({ text, path: 'src/main.cpp', workspace: '/work', executionHostId: 'local' })
@@ -23,6 +25,22 @@ it('rejects malformed source responses before they enter the viewer', () => {
 })
 
 describe('Workspace source inspection', () => {
+  it('returns to the caller from the Back control and keeps Close separate', async () => {
+    const original = useAppStore.getState()
+    useAppStore.setState({ sessions: [session], folders: [], getWorkspaceFilePreview: vi.fn().mockResolvedValue(preview('one')) })
+    const host = document.createElement('div'); document.body.append(host)
+    const root = createRoot(host)
+    const onBack = vi.fn(); const onClose = vi.fn()
+    try {
+      await act(async () => root.render(<FilePreviewDialog chatId="inspect" reference={{ path: 'src/main.cpp' }} onBack={onBack} onClose={onClose} />))
+      await act(async () => button('Back to changes').click())
+      expect(onBack).toHaveBeenCalledTimes(1)
+      expect(onClose).not.toHaveBeenCalled()
+      await act(async () => button('Close file inspection').click())
+      expect(onClose).toHaveBeenCalledTimes(1)
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState(original, true) }
+  })
+
   it('ignores stale reads across workspace changes, supports reload errors, and virtualizes line ranges', async () => {
     const original = useAppStore.getState()
     let oldRead!: (file: WorkspaceFilePreview) => void
@@ -42,7 +60,7 @@ describe('Workspace source inspection', () => {
       expect(document.querySelector('[data-source-line="5002"]')?.getAttribute('style')).toContain('var(--accent-dim)')
       expect(document.querySelectorAll('[data-source-line]').length).toBeLessThan(80)
       await act(async () => button('Reload file').click())
-      expect(document.querySelector('[role="alert"]')?.textContent).toBe('The file was removed.')
+      expect(document.querySelector('[role="alert"]')?.textContent).toContain('The file was removed.')
       expect(document.querySelector('[data-source-line]')).toBeNull()
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState(original, true) }
   })
@@ -59,7 +77,7 @@ describe('Workspace source inspection', () => {
       await act(async () => root.render(<FileInspectionProvider chatId="inspect"><MarkdownContent content={'[deleted](/work/src/deleted.cpp:4) and `object.method`'} /></FileInspectionProvider>))
       await act(async () => button('deleted').click())
       expect(read).toHaveBeenCalledWith('inspect', '/work/src/deleted.cpp')
-      expect(document.querySelector('[role="alert"]')?.textContent).toBe('Missing file')
+      expect(document.querySelector('[role="alert"]')?.textContent).toContain('Missing file')
       await act(async () => button('Changes').click())
       expect(getDiff).toHaveBeenCalledWith('inspect', 'src/deleted.cpp', 'git', 'base-ref')
       expect(document.body.textContent).toContain('Against base-ref')

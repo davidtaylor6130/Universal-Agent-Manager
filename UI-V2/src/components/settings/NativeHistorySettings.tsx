@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronRight, Search, TriangleAlert } from 'lucide-react'
+import { Search, TriangleAlert } from 'lucide-react'
 import { isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { parseStartupNativeImportPage, sanitizeStartupNativeImportStatus, type StartupNativeImportPage } from '../../types/startupNativeImports'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, normalizeCliProviderIdAlias, providerMetadataForId } from '../../utils/providerMetadata'
-import { Button, Notice } from '../ui'
+import { Button, Disclosure, ProgressFill, usePresence, Reveal } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { ANTIGRAVITY_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
@@ -26,7 +27,6 @@ export function NativeImportFilters({ disabled = false, onDirtyChange }: { disab
   const [prefixes, setPrefixes] = useState(savedPrefixes.join('\n'))
   const [directories, setDirectories] = useState(savedDirectories.join('\n'))
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
   const dirty = ruleLines(prefixes, true).join('\n') !== savedPrefixes.join('\n') || ruleLines(directories).join('\n') !== savedDirectories.join('\n')
   useEffect(() => { onDirtyChange?.(dirty) }, [dirty, onDirtyChange])
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange])
@@ -42,18 +42,23 @@ export function NativeImportFilters({ disabled = false, onDirtyChange }: { disab
     setPrefixes((draft) => ruleLines(draft, true).join('\n') === previous.prefixes ? next.prefixes : draft)
     setDirectories((draft) => ruleLines(draft).join('\n') === previous.directories ? next.directories : draft)
   }, [savedPrefixes, savedDirectories])
-  const discard = () => { setPrefixes(savedPrefixes.join('\n')); setDirectories(savedDirectories.join('\n')); setError('') }
+  const discard = () => { setPrefixes(savedPrefixes.join('\n')); setDirectories(savedDirectories.join('\n')) }
   async function save() {
-    setSaving(true); setError('')
+    setSaving(true)
     const titlePrefixes = ruleLines(prefixes, true)
     const excludedDirectories = ruleLines(directories)
     const ok = await setNativeImportFilters({ titlePrefixes, directories: excludedDirectories })
     setSaving(false)
-    if (ok) { setPrefixes(titlePrefixes.join('\n')); setDirectories(excludedDirectories.join('\n')) }
-    else setError('The import filters could not be saved. Your changes are kept.')
+    if (ok) { setPrefixes(titlePrefixes.join('\n')); setDirectories(excludedDirectories.join('\n')); reportAppNotice('Import filters saved.', 'success') }
+    else reportAppFailure('Import filters could not be saved.', 'Your changes are kept. Use Save filters to try again.')
   }
-  return <SettingRow title="Import filters" description="Matching native sessions are never offered or imported. Chats already in UAM are not changed.">
-    <SettingsField label="Skip sessions whose title starts with" htmlFor="native-import-title-prefixes" hint="One per line. Case is ignored. Most providers title a session with its first message.">
+  return <SettingsSection title="Import filters" description="Skipped sessions are never offered or imported."
+    actions={<>
+      <Button size="sm" type="button" disabled={!dirty || saving} onClick={discard}>Discard</Button>
+      <SaveButton saving={saving} type="button" disabled={disabled || !dirty || saving} onClick={() => void save()}>Save filters</SaveButton>
+    </>}>
+    <p className="uam-set-field__hint">Chats already in UAM are not changed.</p>
+    <SettingsField label="Skip sessions whose title starts with" htmlFor="native-import-title-prefixes" hint="One per line. Case is ignored.">
       <textarea id="native-import-title-prefixes" name="titlePrefixes" value={prefixes} onChange={(event) => setPrefixes(event.currentTarget.value)}
         disabled={disabled || saving} rows={3} spellCheck={false} placeholder={'[automation]\nRun the nightly report'} className="uam-field uam-field--area w-full font-mono" />
     </SettingsField>
@@ -61,12 +66,7 @@ export function NativeImportFilters({ disabled = false, onDirtyChange }: { disab
       <textarea id="native-import-directories" name="directories" value={directories} onChange={(event) => setDirectories(event.currentTarget.value)}
         disabled={disabled || saving} rows={3} spellCheck={false} placeholder={'C:\\Users\\you\\scratch\n/home/you/experiments'} className="uam-field uam-field--area w-full font-mono" />
     </SettingsField>
-    {error && <Notice tone="error" title="Import filters" dismissible={false} dismissLabel="Dismiss import filter error">{error}</Notice>}
-    <div className="flex justify-end gap-2">
-      <Button size="sm" variant="ghost" type="button" disabled={!dirty || saving} onClick={discard}>Discard</Button>
-      <SaveButton saving={saving} type="button" disabled={disabled || !dirty || saving} onClick={() => void save()}>Save filters</SaveButton>
-    </div>
-  </SettingRow>
+  </SettingsSection>
 }
 
 type IssueGroup = { provider: string; reason: string; items: string[] }
@@ -97,7 +97,6 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
   const providerScope = providerNames.length > 1 ? `${providerNames.slice(0, -1).join(', ')} and ${providerNames[providerNames.length - 1]}` : providerNames[0]
   const [page, setPage] = useState<StartupNativeImportPage | null>(null)
   const [requesting, setRequesting] = useState(false)
-  const [error, setError] = useState('')
   const pending = useRef(false)
   const mounted = useRef(false)
   const cacheRequest = useRef(0)
@@ -115,23 +114,23 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
       if (!current || !mounted.current || request !== cacheRequest.current) return
       const data = response.ok ? parseStartupNativeImportPage(response.data) : null
       if (!data || data.generation !== status.generation) {
-        setError(response.error || 'Discovery results could not be read. Reopen Chat Data to retry.')
+        reportAppFailure('Native history discovery results could not be read.', response.error || 'Reopen chat data to retry.')
         return
       }
-      setPage(data); setError('')
+      setPage(data)
     })()
     return () => { current = false }
   }, [companion, status.generation, status.phase, status.totalCount, status.importedCount])
 
   async function discover() {
     if (pending.current || companion) return
-    pending.current = true; setRequesting(true); setError('')
+    pending.current = true; setRequesting(true)
     const before = useAppStore.getState().startupNativeImports
     try {
       const response = await sendToCEF<unknown>({ action: 'discoverSystemNativeImports', payload: {} })
       if (!mounted.current) return
       const data = response.ok ? parseStartupNativeImportPage(response.data) : null
-      if (!data) { setError(response.error || 'Native history discovery could not start.'); return }
+      if (!data) { reportAppFailure('Native history discovery could not start.', response.error || 'Use Discover histories to try again.'); return }
       // A state push may already have advanced this scan before its acknowledgement arrives.
       if (useAppStore.getState().startupNativeImports === before) {
         useAppStore.setState({ startupNativeImports: sanitizeStartupNativeImportStatus(data) })
@@ -151,11 +150,15 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
     : status.generation ? `${status.totalCount} histories awaiting review; ${status.importedCount} imported in this scan.`
     : 'Discovery does not import or resume chats.'
   const idForName = (name: string) => providerIds.find((id) => providerMetadataForId(id).shortName === name)
-  return <SettingsSection title="Native provider history">
-    <SettingRow title="Discover native histories" description="Scan this computer, then choose chats to import."
+  const reviewPresence = usePresence(status.phase === 'ready' && status.totalCount > 0)
+  return <>
+  <SettingsSection title="Native provider history">
+    {/* Only the scan row is the progress track; the disclosures below are their own card items. */}
+    <ProgressFill label="Native history scan" indeterminate active={active}>
+    <SettingRow title="Scan this computer"
       status={<span role="status">{summary}</span>}
       control={<div className="flex flex-wrap gap-2">
-        {status.phase === 'ready' && status.totalCount > 0 && <Button size="sm" variant="secondary" disabled={requesting || companion} onClick={() => useAppStore.getState().openStartupNativeImportReview()}>Review histories</Button>}
+        {reviewPresence.mounted && <Button className="uam-presence" data-state={reviewPresence.closing ? 'closed' : 'open'} size="sm" variant="secondary" disabled={requesting || companion} onClick={() => useAppStore.getState().openStartupNativeImportReview()}>Review histories</Button>}
         <Button size="sm" variant="secondary" data-native-history-discovery disabled={requesting || active || companion} leadingIcon={<Search size={14} />} aria-busy={requesting || status.phase === 'scanning' || undefined} onClick={() => void discover()}>Discover histories</Button>
       </div>}>
       <ul className="uam-native-scope" aria-label={providerScope ? `Reads ${providerScope} native history stores for this user.` : 'Reads native history stores supported by this desktop build.'}>
@@ -164,33 +167,33 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
           const count = current ? current.errors.filter((message) => message.startsWith(`${name} `)).length : 0
           return <li key={id} className="uam-native-scope__chip" data-issues={count > 0 || undefined}>
             <ProviderLogo providerId={id} size={14} />{name}
-            {count > 0 && <><span className="uam-native-scope__count" aria-hidden>{count}</span><span className="sr-only">, {count} {count === 1 ? 'issue' : 'issues'}</span></>}
+            <Reveal as="span" open={count > 0}><span className="uam-native-scope__count" aria-hidden>{count}</span><span className="sr-only">, {count} {count === 1 ? 'issue' : 'issues'}</span></Reveal>
           </li>
         })}
       </ul>
-      {error && <Notice tone="error" title="Native history discovery" dismissible={false} dismissLabel="Dismiss discovery error">{error}</Notice>}
-      {issueCount > 0 && <details className="uam-native-disclosure uam-native-disclosure--warning">
-        <summary><TriangleAlert size={14} aria-hidden />{issueCount === 1 ? '1 discovery issue' : `${issueCount} discovery issues`}<ChevronRight size={14} className="uam-native-disclosure__chevron" aria-hidden /></summary>
-        <ul className="uam-native-issues">{issues.map((group) => {
-          const providerId = idForName(group.provider)
-          return <li key={`${group.provider}:${group.reason}`}>
-            <span className="uam-native-issues__provider">{providerId && <ProviderLogo providerId={providerId} size={14} />}{group.provider || 'Discovery'}</span>
-            <span className="uam-native-issues__reason">{group.items.length > 0 ? `${group.items.length} conversation${group.items.length === 1 ? '' : 's'} skipped. ${group.reason}` : group.reason}</span>
-            {group.items.length > 0 && <details className="uam-native-issues__ids"><summary>Show IDs</summary><ul>{group.items.map((item) => <li key={item}><code>{item}</code></li>)}</ul></details>}
-          </li>
-        })}</ul>
-      </details>}
-      <details className="uam-native-disclosure">
-        <summary>How discovery works<ChevronRight size={14} className="uam-native-disclosure__chevron" aria-hidden /></summary>
-        <ul className="uam-native-notes">
-          <li>Nothing is imported until you select chats and confirm.</li>
-          <li>Histories from unregistered local workspaces stay in review until you assign their source workspace.</li>
-          <li>Existing chats, deleted or ignored sessions, and sessions matching your import filters are excluded.{SSH_ENABLED && ' SSH hosts are outside this scan.'}</li>
-          {OPENCODE_ENABLED && providerIds.includes(OPENCODE_CLI_PROVIDER_ID) && <li>OpenCode requires its configured CLI.</li>}
-          {ANTIGRAVITY_ENABLED && providerIds.includes(ANTIGRAVITY_CLI_PROVIDER_ID) && <li>Antigravity reads settled CLI SQLite and supported legacy histories. Changing, nested or unrecognised native records remain unimported and report a retryable issue.</li>}
-        </ul>
-      </details>
     </SettingRow>
-    <NativeImportFilters disabled={companion} onDirtyChange={onFiltersDirtyChange} />
+    </ProgressFill>
+    <Reveal open={issueCount > 0}><Disclosure
+      summary={<><TriangleAlert size={14} aria-hidden style={{ color: 'var(--warning)' }} />{issueCount === 1 ? '1 discovery issue' : `${issueCount} discovery issues`}</>}>
+      <ul className="uam-native-issues">{issues.map((group) => {
+        const providerId = idForName(group.provider)
+        return <li key={`${group.provider}:${group.reason}`} className="uam-native-issue-row">
+          <span className="uam-native-issues__provider">{providerId && <ProviderLogo providerId={providerId} size={14} />}{group.provider || 'Discovery'}</span>
+          <span className="uam-native-issues__reason">{group.items.length > 0 ? `${group.items.length} conversation${group.items.length === 1 ? '' : 's'} skipped. ${group.reason}` : group.reason}</span>
+          <Reveal open={group.items.length > 0}><Disclosure className="uam-native-issues__ids" summary="Show IDs"><ul>{group.items.map((item) => <li key={item}><code>{item}</code></li>)}</ul></Disclosure></Reveal>
+        </li>
+      })}</ul>
+    </Disclosure></Reveal>
+    <Disclosure summary="How discovery works">
+      <ul className="uam-native-notes">
+        <li>Nothing is imported until you select chats and confirm.</li>
+        <li>Histories from unregistered local workspaces stay in review until you assign their source workspace.</li>
+        <li>Existing chats, deleted or ignored sessions, and sessions matching your import filters are excluded.{SSH_ENABLED && ' SSH hosts are outside this scan.'}</li>
+        {OPENCODE_ENABLED && providerIds.includes(OPENCODE_CLI_PROVIDER_ID) && <li>OpenCode requires its configured CLI.</li>}
+        {ANTIGRAVITY_ENABLED && providerIds.includes(ANTIGRAVITY_CLI_PROVIDER_ID) && <li>Antigravity reads finished CLI chats and supported older histories. Chats that changed, are nested or are unrecognised are skipped and listed as issues.</li>}
+      </ul>
+    </Disclosure>
   </SettingsSection>
+  <NativeImportFilters disabled={companion} onDirtyChange={onFiltersDirtyChange} />
+  </>
 }

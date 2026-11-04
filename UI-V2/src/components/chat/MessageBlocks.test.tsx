@@ -1051,7 +1051,8 @@ describe('persisted context compaction', () => {
     const details = host.querySelector('details.context-compaction') as HTMLDetailsElement
     expect(details).not.toBeNull()
     expect(details.open).toBe(false)
-    expect(details.querySelector('summary')?.textContent).toBe('Context compacted · 27,445 → 1,192 tokens (96% reduced)')
+    expect(details.querySelector('summary')?.textContent).toBe('Context compacted')
+    expect(details.textContent).toContain('27,445 → 1,192 tokens (96% reduced)')
     details.open = true
     expect(details.textContent).toContain('Keep the selected workspace.')
     await act(async () => root.unmount())

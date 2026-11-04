@@ -1,8 +1,9 @@
 import { useId, useLayoutEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
-import { Button, cx } from '../ui'
-import type { ButtonProps } from '../ui'
+import { Button, Reveal, StatusDot, Tooltip, cx } from '../ui'
+import type { ButtonProps, StatusTone } from '../ui'
 import './settings-shell.css'
+import './settings-motion.css'
 
 /**
  * The one settings layout language, modelled on the MCP Servers page:
@@ -10,6 +11,10 @@ import './settings-shell.css'
  * card of rows. A row puts its title and description on the left and its
  * control on the right; wide inputs use SettingsField instead. Descriptions are
  * one line: they truncate, and the full text is in the tooltip.
+ */
+/**
+ * Mounts a conditional block with the settings enter/exit motion. While closing, the last
+ * content stays rendered so the exit animates; reduced motion and Motion Off unmount at once.
  */
 export function SettingsSection({ title, description, actions, children, flush = false, className }: {
   title: string
@@ -26,7 +31,7 @@ export function SettingsSection({ title, description, actions, children, flush =
       <header className="uam-set-section__head">
         <div className="min-w-0">
           <h3 className="uam-set-section__title">{title}</h3>
-          {description && <p className="uam-set-section__desc" title={typeof description === 'string' ? description : undefined}>{description}</p>}
+          {description && <Tooltip label={typeof description === 'string' ? description : undefined}><p className="uam-set-section__desc">{description}</p></Tooltip>}
         </div>
         {actions && <div className="uam-set-section__actions">{actions}</div>}
       </header>
@@ -87,8 +92,8 @@ export function SettingRow({ title, description, control, icon, children, htmlFo
         {icon && <span className="uam-set-row__icon">{icon}</span>}
         <div className="min-w-0">
           <Title className="uam-set-row__title" {...(htmlFor ? { htmlFor } : {})}>{title}</Title>
-          {description && <div id={descriptionId} className="uam-set-row__desc" title={typeof description === 'string' ? description : undefined}>{description}</div>}
-          {status && <div id={statusId} className="uam-set-row__status">{status}</div>}
+          {description && <Tooltip label={typeof description === 'string' ? description : undefined}><div id={descriptionId} className="uam-set-row__desc">{description}</div></Tooltip>}
+          <Reveal open={Boolean(status)} id={statusId} className="uam-set-row__status">{status}</Reveal>
         </div>
         {control && <div ref={controlRef} className="uam-set-row__control">{control}</div>}
       </div>
@@ -137,4 +142,11 @@ export function SettingsLoading({ label = 'Loading settings', rows = 3 }: { labe
       <span className="sr-only">{label}…</span>
     </div>
   )
+}
+
+/** Status mark with its state. Success and error boxes show no state text, so the word becomes their accessible name; other tones keep it visible. */
+export function StatusMark({ tone, label, size }: { tone: StatusTone; label: string; size?: number }) {
+  return tone === 'success' || tone === 'error'
+    ? <span role="img" aria-label={label}><StatusDot tone={tone} size={size} /></span>
+    : <><StatusDot tone={tone} size={size} />{label}</>
 }

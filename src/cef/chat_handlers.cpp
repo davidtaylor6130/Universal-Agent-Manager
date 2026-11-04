@@ -474,12 +474,6 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 				    *indexed = ChatRepository::ReadMessagePage(data_root, expected, page->first, page->second, &warning, [lifetime]() { return lifetime.expired(); });
 				    if (!*indexed) return uam::query_handler_async::AsyncFailure(500,
 				        uam::query_handler_internal::FailureDetailOrFallback(warning, "Failed to load chat messages."));
-				    if (search_target && (search_target->first != (*indexed)->messages_digest ||
-				        search_target->second >= (*indexed)->total_count))
-					    return uam::query_handler_async::AsyncFailure(409, "Chat history changed. Search again to select this message.");
-				    if (search_target && (search_target->second < (*indexed)->start_index ||
-				        search_target->second >= (*indexed)->start_index + (*indexed)->chat.messages.size()))
-					    return uam::query_handler_async::AsyncFailure(400, "The requested page does not contain the selected search message.");
 				    *hydrate_unsent = recover_cold_unsent && std::ranges::any_of((*indexed)->chat.messages,
 				        [](const Message& row) { return row.acp_prompt_not_sent; });
 				    if (!*hydrate_unsent)
@@ -527,7 +521,11 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 				    }
 				    if (*indexed)
 				    {
-					    if (!ChatRepository::MatchesMessagePage(*current, **indexed) ||
+					    if ((search_target && (!uam::ChatSearchTargetMatchesPageOrLive(*current, search_target->first,
+					        search_target->second, (*indexed)->messages_digest, (*indexed)->total_count) ||
+					        search_target->second < (*indexed)->start_index ||
+					        search_target->second >= (*indexed)->start_index + (*indexed)->chat.messages.size())) ||
+					        !ChatRepository::MatchesMessagePage(*current, **indexed) ||
 					        m_app.pending_chat_save_at_by_chat_id.contains(chat_id) || m_app.worktree_operation_chat_ids.contains(chat_id) ||
 					        ChatRepository::ChatStorageRevision(data_root, chat_id) != (*indexed)->storage_revision)
 						    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");

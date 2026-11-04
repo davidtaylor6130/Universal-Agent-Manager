@@ -5,12 +5,15 @@ import { ExecutionRoutingDialog, ExecutionRoutingWaitNotice } from './ExecutionR
 import { useAppStore } from '../../store/useAppStore'
 import { createExecutionRoutingSlice } from '../../store/slices/executionRoutingSlice'
 import type { Session } from '../../types/session'
+import { reportAppFailure } from '../../utils/appFailure'
+vi.mock('../../utils/appFailure', async importOriginal => ({ ...await importOriginal<typeof import('../../utils/appFailure')>(), reportAppFailure: vi.fn() }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const originalSave = useAppStore.getState().setExecutionRoutingSettings
 const originalRelease = useAppStore.getState().releaseExecutionRoutingReservation
 const mounted: { host: HTMLElement; root: ReturnType<typeof createRoot> }[] = []
 function mount(component: React.ReactNode) { const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host); mounted.push({ host, root }); act(() => root.render(component)); return host }
+function buttonNamed(text: string) { return Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === text)! }
 function input(selector: string, value: string) { const element = document.body.querySelector<HTMLInputElement>(selector)!; act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(element, value); element.dispatchEvent(new Event('input', { bubbles: true })) }) }
 
 describe('SSH routing controls', () => {
@@ -27,26 +30,33 @@ describe('SSH routing controls', () => {
   })
   afterEach(() => { for (const { host, root } of mounted.splice(0)) { act(() => root.unmount()); host.remove() } useAppStore.setState({ setExecutionRoutingSettings: originalSave, releaseExecutionRoutingReservation: originalRelease }); delete window.cefQuery })
 
-  it('requires integer capacity, maps only registered destinations on this SSH host, and keeps configuration after save failure', async () => {
+  it('clamps capacity on commit, maps only registered destinations on this SSH host, and keeps configuration after save failure', async () => {
     const save = vi.fn().mockRejectedValue(new Error('Disk full'))
     const close = vi.fn()
     useAppStore.setState({ setExecutionRoutingSettings: save })
     mount(<ExecutionRoutingDialog onClose={close} />)
     act(() => (document.body.querySelector('[aria-label="Route to Server A"]') as HTMLInputElement).click())
-    input('[aria-label="Concurrent sessions on Server A"]', '1.5')
-    const submit = () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save routing')!
-    await act(async () => submit().click())
-    expect(save).not.toHaveBeenCalled()
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('whole number')
+    const capacity = document.body.querySelector<HTMLInputElement>('[aria-label="Concurrent sessions on Server A"]')!
+    input('[aria-label="Concurrent sessions on Server A"]', '1025')
+    act(() => capacity.focus())
+    act(() => capacity.blur())
+    expect(capacity.value).toBe('1024')
     input('[aria-label="Concurrent sessions on Server A"]', '2')
-    const destination = document.body.querySelector<HTMLSelectElement>('[aria-label="Destination for Source on Server A"]')!
-    expect(Array.from(destination.options).map((option) => option.value)).toEqual(['', 'target'])
-    act(() => { destination.value = 'target'; destination.dispatchEvent(new Event('change', { bubbles: true })); (document.body.querySelector('[aria-label="Codex signed in on Server A"]') as HTMLInputElement).click() })
+    act(() => capacity.focus())
+    act(() => capacity.blur())
+    const submit = () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save routing')!
+    expect(save).not.toHaveBeenCalled()
+    act(() => buttonNamed('Map folder…').click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Remote folder for Source on Server A"]')!.click())
+    expect(Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).map((option) => option.textContent)).toEqual(['Destination · /remote'])
+    act(() => Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find((option) => option.textContent?.includes('Destination · /remote'))!.click())
+    act(() => buttonNamed('Map 1').click())
+    act(() => (document.body.querySelector('[aria-label="Codex signed in on Server A"]') as HTMLInputElement).click())
     await act(async () => submit().click())
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ hosts: [expect.objectContaining({ maxActiveTurns: 2, providers: [{ providerId: 'codex-cli', connectionIdentity: '', providerConfigurationIdentity: '', confirm: true }], workspaceMappings: [{ sourceFolderId: 'source', sourceDirectory: '/source', destinationFolderId: 'target' }] })] }))
     expect(close).not.toHaveBeenCalled()
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toBe('Disk full')
-    expect(destination.value).toBe('target')
+    expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Routing settings could not be saved.', 'Disk full')
+    expect(document.body.querySelector('.uam-rt-map-row')?.textContent).toContain('/remote')
   })
 
   it('shows an actionable wait and rejects release when the assignment changes during confirmation', async () => {
@@ -86,4 +96,33 @@ describe('SSH routing controls', () => {
     newer.remove()
   })
 
+  it('maps folders as an in-place step of the routing dialog instead of a second dialog', () => {
+    const close = vi.fn()
+    mount(<ExecutionRoutingDialog onClose={close} />)
+    const escape = (target: EventTarget = window) => act(() => { target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })) })
+    const computer = () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('.uam-rt-host .uam-disclosure__summary'))[0]
+    act(() => computer().click())
+    expect(computer().getAttribute('aria-expanded')).toBe('true')
+    act(() => { buttonNamed('Map folder…').focus(); buttonNamed('Map folder…').click() })
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1)
+    expect(document.body.querySelector('[role="dialog"] [role="group"][aria-label="Map folders to a computer"]')).not.toBeNull()
+    // The routing list stays mounted but hidden and inert while the step is open.
+    expect(buttonNamed('Save routing').closest('.hidden[inert]')).not.toBeNull()
+    // Escape inside an open remote-folder menu closes only the menu, keeping the step and its picks.
+    act(() => document.body.querySelector<HTMLInputElement>('[aria-label="Select Source"]')!.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Remote folder for Source on Server A"]')!.click())
+    escape(document.body.querySelector('[data-viewport-menu] [role="option"]')!)
+    expect(close).not.toHaveBeenCalled()
+    expect(document.body.querySelector('[aria-label="Map folders to a computer"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-viewport-menu]:not([data-state="closed"])')).toBeNull()
+    expect(document.body.querySelector<HTMLInputElement>('[aria-label="Select Source"]')!.checked).toBe(true)
+    escape()
+    expect(close).not.toHaveBeenCalled()
+    expect(document.body.querySelector('[aria-label="Map folders to a computer"]')).toBeNull()
+    expect(document.activeElement).toBe(buttonNamed('Map folder…'))
+    // The list was not remounted, so the expanded computer is still open.
+    expect(computer().getAttribute('aria-expanded')).toBe('true')
+    escape()
+    expect(close).toHaveBeenCalledOnce()
+  })
 })

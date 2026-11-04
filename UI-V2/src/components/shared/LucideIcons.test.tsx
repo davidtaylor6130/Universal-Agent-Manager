@@ -6,6 +6,8 @@ import { SUGGESTED_LUCIDE_ICONS } from '../../utils/lucideIconLibrary'
 import { CustomIcon } from './CustomIcon'
 import { LucideIconLibrary } from './LucideIcons'
 
+globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
+
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 function typeInto(input: HTMLInputElement, value: string) {
