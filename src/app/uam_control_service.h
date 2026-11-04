@@ -34,6 +34,8 @@ namespace uam
 		static bool PrepareTerminalMcpServer(AppState& app, CliTerminalState& terminal, const ChatSession& chat, nlohmann::json& server, std::string& error);
 		static void RevokeForChat(AppState& app, std::string_view chat_id);
 		static void RevokeForSession(AppState& app, AcpSessionState& session);
+		/// A cancelled turn abandons its in-flight UAM tool call: decline that session's pending request.
+		static bool DeclinePendingApprovalForSession(AppState& app, const AcpSessionState& session);
 		static bool ProcessPendingRequests(AppState& app);
 		/// Per-call actual response-writer stage seam for deterministic focused IO failures; no global hooks.
 		static bool ProcessPendingRequests(AppState& app,

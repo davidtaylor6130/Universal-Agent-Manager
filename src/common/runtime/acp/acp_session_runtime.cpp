@@ -6131,6 +6131,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			(void)acp_detail::WriteAcpMessage(*session, ProviderRuntimeRegistry::ResolveById(session->provider_id).OnAcpBuildUserInputResponse(*session, {}), error_out);
 		}
+		// Native and UAM Control questions settle together; an abandoned UAM question must not stay answerable.
+		(void)UamControlService::DeclinePendingApprovalForSession(app, *session);
 
 		session->queued_prompt.clear();
 		session->queued_skill_spans.clear();
