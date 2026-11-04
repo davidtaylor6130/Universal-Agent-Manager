@@ -2335,6 +2335,19 @@ button.uam-commit-check { cursor: pointer; }
 }
 
 /* ── Settings navigation ────────────────────────────────────── */
+/* Shared selected-item style (Settings navigation, sidebar bulk selection): --accent-dim tint plus one straight
+   3px accent line inset from the top and bottom so it never bends around rounded corners. The host positions itself. */
+.uam-selected-item { background: var(--accent-dim); }
+.uam-selected-item::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  background: var(--accent);
+  pointer-events: none;
+}
 .uam-settings-nav-item {
   position: relative;
   display: flex;

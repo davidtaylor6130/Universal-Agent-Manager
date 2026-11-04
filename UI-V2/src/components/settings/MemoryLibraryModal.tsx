@@ -778,7 +778,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
           <aside className="min-w-0 overflow-y-auto overflow-x-hidden p-3" style={{ borderRight: '1px solid var(--border)' }}>
             <Reveal open={groupedEntries.length > 0}>
               <nav ref={locationNavRef} aria-label="Memory locations" className="uam-settings-nav grid gap-1 min-w-0">
-                {locationIndicator && <span aria-hidden className="uam-settings-nav__indicator" style={{ transform: `translateY(${locationIndicator.top}px)`, height: locationIndicator.height }} />}
+                {locationIndicator && <span aria-hidden className="uam-settings-nav__indicator uam-selected-item" style={{ transform: `translateY(${locationIndicator.top}px)`, height: locationIndicator.height }} />}
                 {groupedEntries.filter((location) => location.key === 'global').map((location) => listNavItem(location, Globe))}
                 {isAllMemory && resourceCollections.map((collection) => {
                   const locations = collection.references.flatMap((reference) => {
