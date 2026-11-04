@@ -451,11 +451,13 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 	const double window_seconds = std::chrono::duration<double>(kTicks * kTick).count();
 	double per_second = 0.0;
 	std::vector<double> calls;
+	std::vector<double> rebuilds;
 	int pushes = 0;
 	for (int run = 0; run < 3; ++run)
 	{
 		uam::PushStateUpdate(nullptr, app);
 		std::vector<double> run_calls;
+		std::vector<double> run_rebuilds;
 		int run_pushes = 0;
 		for (int tick = 0; tick < kTicks; ++tick)
 		{
@@ -464,8 +466,11 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 			if (streamed || uam::DeferredStatePushDue())
 			{
 				const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+				const std::size_t rebuilds_before = uam::RuntimeStateRebuildCountForTests();
 				run_pushes += uam::PushRuntimeStateUpdateIfChanged(nullptr, app) ? 1 : 0;
-				run_calls.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+				const double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+				run_calls.push_back(elapsed);
+				if (uam::RuntimeStateRebuildCountForTests() != rebuilds_before) run_rebuilds.push_back(elapsed);
 			}
 			clock.Advance(kTick);
 		}
@@ -476,6 +481,7 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 		// Without the background-chat throttle pushes rise to ~31; rebuilding every deferred quiet tick gives ~58.
 		UAM_ASSERT_EQ(run_pushes, 9);
 		UAM_ASSERT_EQ(run_calls.size(), std::size_t{35});
+		UAM_ASSERT_EQ(run_rebuilds.size(), std::size_t{9});
 
 		// Final streamed state must reach the frontend: flush deferred work, then nothing may remain unsent.
 		for (int tick = 0; tick < 20 && uam::HasDeferredStatePush(); ++tick)
@@ -492,17 +498,65 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 		{
 			per_second = run_per_second;
 			calls = std::move(run_calls);
+			rebuilds = std::move(run_rebuilds);
 			pushes = run_pushes;
 		}
 	}
 
-	// Skipped calls inside the rebuild window cost microseconds; rebuilding every call put the median at ~3 ms.
 	UAM_ASSERT(Median(calls) < 1.0);
-	std::cout << "[TIMING] streaming push fixture: fingerprint p50=" << Median(fingerprints) << " ms; ticks=62 rebuilds="
-	          << calls.size() << " pushes=" << pushes << " per-rebuild p50=" << Median(calls) << " ms; UI-thread push cost="
+	// Recorded budget: rebuilding on every streamed tick measured 161-164 ms/s; the rebuild window measured 86-99 ms/s.
+	UAM_ASSERT(per_second < 130.0);
+	std::cout << "[TIMING] streaming push fixture: fingerprint p50=" << Median(fingerprints) << " ms; ticks=62 calls="
+	          << calls.size() << " rebuilds=" << rebuilds.size() << " pushes=" << pushes << " per-rebuild p50=" << Median(rebuilds)
+	          << " ms; UI-thread push cost="
 	          << per_second << " ms/s, cheapest of 3 windows\n";
 }
 
+
+UAM_TEST(RuntimeStatePushBypassesRebuildWindowForPendingRequestsAndCliLaunches)
+{
+	FakeStatePushClock clock;
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "urgent-poll";
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	uam::AcpSessionState* acp = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	uam::PushStateUpdate(nullptr, app);
+
+	// Open a rebuild window with an ordinary change, then make a non-urgent change inside it: deferred.
+	app.chats.front().title = "first";
+	UAM_ASSERT(uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+	clock.Advance(std::chrono::milliseconds(16));
+	app.chats.front().title = "second";
+	UAM_ASSERT(!uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT(uam::HasDeferredStatePush());
+
+	// A new pending permission inside the same window is pushed on this tick.
+	clock.Advance(std::chrono::milliseconds(16));
+	acp->pending_permission.request_id_json = "41";
+	UAM_ASSERT(uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+
+	// A new CLI launch inside the next window is pushed on this tick too.
+	clock.Advance(std::chrono::milliseconds(16));
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->terminal_id = "term-urgent";
+	terminal->frontend_chat_id = chat.id;
+	terminal->running = true;
+	terminal->startup_time_s = 1.0;
+	app.cli_terminals.push_back(std::move(terminal));
+	UAM_ASSERT(uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+
+	// Caller-flagged urgent slices (settings, catalogs, folders) also rebuild inside the window.
+	clock.Advance(std::chrono::milliseconds(16));
+	const std::size_t rebuilds = uam::RuntimeStateRebuildCountForTests();
+	uam::PushRuntimeStateUpdateIfChanged(nullptr, app, true);
+	UAM_ASSERT_EQ(uam::RuntimeStateRebuildCountForTests(), rebuilds + 1);
+}
 
 UAM_TEST(StatePushThrottlesBackgroundSummariesAndFlushesOnlyWhenDue)
 {

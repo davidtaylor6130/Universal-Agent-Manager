@@ -46,6 +46,9 @@ namespace
 	// Poll ticks run every 16 ms while a turn streams; rebuilding the full fingerprint on each one cost
 	// ~26% of the UI thread even though throttled summaries publish at most every 100 ms.
 	std::chrono::steady_clock::time_point g_last_runtime_state_rebuild_at{};
+	// Pending requests and CLI launch identities seen by the last poll rebuild; a change bypasses the window.
+	std::string g_last_runtime_urgent_signature;
+	std::size_t g_runtime_state_rebuild_count = 0;
 	std::unordered_map<std::string, nlohmann::json> g_last_pushed_chat_summaries_by_chat_id;
 	nlohmann::json g_last_pushed_folders_fingerprint;
 	nlohmann::json g_last_pushed_resource_collections_fingerprint;
@@ -116,6 +119,7 @@ namespace
 		g_last_pushed_chat_summaries_by_chat_id.clear();
 		g_last_summary_push_time_by_chat_id.clear();
 		g_last_runtime_state_rebuild_at = {};
+		g_last_runtime_urgent_signature.clear();
 		g_state_push_deferred = false;
 
 		const nlohmann::json& chats = fingerprint_state.at("chats");
@@ -470,10 +474,39 @@ namespace uam
 		return true;
 	}
 
-	bool PushRuntimeStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app)
+	/// <summary>Cheap key of the summary classes that bypass the 100 ms window inside BuildChatPatchDiff.</summary>
+	std::string RuntimeUrgentSignature(const AppState& app)
+	{
+		std::string signature;
+		for (const auto& session : app.acp_sessions)
+		{
+			if (session == nullptr) continue;
+			signature += session->pending_permission.request_id_json;
+			signature += '|';
+			signature += session->pending_user_input.request_id_json;
+			signature += ';';
+		}
+		for (const UamControlCapability& capability : app.uam_control_capabilities)
+		{
+			if (capability.pending_approval.has_value()) signature += "a" + capability.pending_approval->request_id + ';';
+		}
+		for (const auto& terminal : app.cli_terminals)
+		{
+			if (terminal == nullptr) continue;
+			signature += terminal->terminal_id;
+			signature += '@';
+			signature += std::to_string(terminal->startup_time_s);
+			signature += ';';
+		}
+		return signature;
+	}
+
+	bool PushRuntimeStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app, bool urgent)
 	{
 		const auto now = g_state_push_clock();
-		if (g_last_runtime_state_rebuild_at != std::chrono::steady_clock::time_point{} &&
+		std::string urgent_signature = RuntimeUrgentSignature(app);
+		if (urgent_signature != g_last_runtime_urgent_signature) urgent = true;
+		if (!urgent && g_last_runtime_state_rebuild_at != std::chrono::steady_clock::time_point{} &&
 		    now - g_last_runtime_state_rebuild_at < kChatSummaryMinPushInterval)
 		{
 			// Defer instead of dropping: the poll scheduler wakes when the window ends.
@@ -483,8 +516,12 @@ namespace uam
 			return false;
 		}
 		g_last_runtime_state_rebuild_at = now;
+		g_last_runtime_urgent_signature = std::move(urgent_signature);
+		++g_runtime_state_rebuild_count;
 		return PushStateUpdateIfChanged(browser, app);
 	}
+
+	std::size_t RuntimeStateRebuildCountForTests() { return g_runtime_state_rebuild_count; }
 
 	void PushStateUpdate(CefRefPtr<CefBrowser> browser, AppState& app)
 	{

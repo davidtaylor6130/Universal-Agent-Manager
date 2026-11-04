@@ -18,9 +18,11 @@ namespace uam
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app);
 	/// <summary>
 	/// Poll-tick variant: rebuilds the fingerprint at most once per 100 ms summary window and defers
-	/// changes inside it. Request handlers keep calling PushStateUpdateIfChanged for immediate feedback.
+	/// changes inside it. A new pending permission/user-input request or CLI launch identity, or
+	/// urgent=true, rebuilds immediately. Request handlers keep calling PushStateUpdateIfChanged.
 	/// </summary>
-	bool PushRuntimeStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app);
+	bool PushRuntimeStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app, bool urgent = false);
+	std::size_t RuntimeStateRebuildCountForTests();
 	void PushStateUpdate(CefRefPtr<CefBrowser> browser, AppState& app);
 
 	/// <summary>

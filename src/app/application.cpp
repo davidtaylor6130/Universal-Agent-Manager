@@ -578,7 +578,10 @@ void Application::PollTick()
 	// Push only when the serialized app state actually changed.
 	if (m_browser && ui_relevant_state_changed)
 	{
-		uam::PushRuntimeStateUpdateIfChanged(m_browser, m_app);
+		// Settings-level slices are rare and not throttled per chat, so they skip the rebuild window.
+		const bool urgent = provider_compatibility_changed || model_catalog_changed || folder_availability_changed ||
+		    remote_host_health_changed || model_discovery_retry_changed || startup_model_discovery_changed;
+		uam::PushRuntimeStateUpdateIfChanged(m_browser, m_app, urgent);
 	}
 
 	const std::chrono::steady_clock::time_point push_finished = std::chrono::steady_clock::now();
