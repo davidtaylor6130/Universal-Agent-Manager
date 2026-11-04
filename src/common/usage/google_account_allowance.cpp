@@ -1,6 +1,6 @@
 #include "common/usage/google_account_allowance.h"
 #include "common/usage/transcript_usage.h"
-#include "common/usage/account_credentials_macos.h"
+#include "common/usage/account_credentials.h"
 #include "common/platform/platform_services.h"
 #include "common/platform/platform_state_fields.h"
 #include "common/paths/path_utils.h"
@@ -285,7 +285,7 @@ namespace uam::usage
 	}
 	AccountAllowanceFetchResult FetchAntigravityAccountAllowance(const std::filesystem::path& directory, std::stop_token stop, bool allow_prompt)
 	{
-		auto credential = ReadMacAccountCredential("gemini", "antigravity", allow_prompt, stop);
+		auto credential = ReadAccountCredential("gemini", "antigravity", allow_prompt, stop);
 		if (!credential.error.empty()) return Failure(credential.error, credential.account_unavailable);
 		if (credential.credential.starts_with("go-keyring-base64:"))
 		{

@@ -18,6 +18,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace uam
 {
@@ -59,23 +60,37 @@ namespace uam
 			for (const StartupNativeImportRemoteScope& scope : request.remote_scopes)
 			{
 				if (stop.stop_requested()) break;
+				std::stop_token cancelled;
 				{
 					std::lock_guard lock(scope.gate->mutex);
 					if (scope.gate->pauses != 0 || scope.admission_generation != scope.gate->generation || scope.complete->load()) continue;
 					++scope.gate->active;
+					cancelled = scope.gate->cancel.get_token();
 				}
 				struct Completion
 				{
 					const StartupNativeImportRemoteScope& scope;
+					bool paused = false;
 					~Completion()
 					{
 						std::lock_guard lock(scope.gate->mutex);
-						scope.complete->store(true);
+						// A host pause leaves the scope pending so a later admission rescans it from the start.
+						if (!paused) scope.complete->store(true);
 						--scope.gate->active;
 					}
 				};
-				const Completion completion{scope};
-				ChatHistorySyncService::LocalHistoryDiscovery result = remote(scope, request.open_code_profile ? &*request.open_code_profile : nullptr, stop);
+				Completion completion{scope};
+				std::stop_source scope_stop;
+				const std::stop_callback forward_stop(stop, [&scope_stop]() { scope_stop.request_stop(); });
+				const std::stop_callback forward_pause(cancelled, [&scope_stop]() { scope_stop.request_stop(); });
+				ChatHistorySyncService::LocalHistoryDiscovery result = remote(scope, request.open_code_profile ? &*request.open_code_profile : nullptr, scope_stop.get_token());
+				completion.paused = cancelled.stop_requested();
+				if (completion.paused)
+				{
+					diagnostics::Write("Startup native history: remote scan on host " + strings::SafeLine(scope.host.id, 128, true) + " cancelled for a helper install; it will rescan after the install.");
+					result.CancelPending();
+					continue;
+				}
 				discovery.result.Merge(result.result);
 				for (ChatSession& chat : result.chats) discovery.chats.push_back(std::move(chat));
 			}
@@ -185,9 +200,15 @@ namespace uam
 		{
 			explicit Pause(std::shared_ptr<StartupNativeImportRemoteScanGate> value) : gate(std::move(value))
 			{
-				std::lock_guard lock(gate->mutex);
-				++gate->pauses;
-				++gate->generation;
+				std::stop_source running;
+				{
+					std::lock_guard lock(gate->mutex);
+					++gate->pauses;
+					++gate->generation;
+					running = std::exchange(gate->cancel, std::stop_source());
+				}
+				// Outside the gate lock: stop callbacks may terminate the in-flight remote export.
+				running.request_stop();
 			}
 			~Pause()
 			{

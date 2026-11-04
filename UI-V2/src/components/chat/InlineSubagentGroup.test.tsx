@@ -78,16 +78,16 @@ describe('scoped status and actions', () => {
     expect(host.querySelector<HTMLButtonElement>('[data-managed-open]')!.disabled).toBe(true); expect(open).not.toHaveBeenCalled()
     await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
     expect(bridge.send).toHaveBeenCalledTimes(3)
-    expect(host.querySelector<HTMLButtonElement>('[data-managed-open]')!.disabled).toBe(true); expect(open).not.toHaveBeenCalled(); expect(host.textContent).toContain('Could not read the latest subagent status')
+    expect(host.querySelector<HTMLButtonElement>('[data-managed-open]')!.disabled).toBe(true); expect(open).not.toHaveBeenCalled(); expect(host.textContent).toContain('Status not refreshed')
   })
   it('shares paginated metadata reads across separated groups', async () => {
     bridge.send.mockImplementation(({ payload }) => Promise.resolve(payload.offset === 0 ? { ok: true, data: { ...page([run(0)]).data, totalCount: 3, nextOffset: 1 } } : { ok: true, data: { ...page([run(1), run(2)]).data, offset: 1, totalCount: 3 } })); await showSaved([call(0), prose('Between'), call(2)]); expect(host.textContent).toContain('Worker 3'); expect(bridge.send).toHaveBeenCalledTimes(2)
   })
   it('rejects a changed control scope between listing pages', async () => {
-    bridge.send.mockImplementation(({ payload }) => Promise.resolve(payload.offset === 0 ? { ok: true, data: { ...page([run(0)]).data, totalCount: 3, nextOffset: 1 } } : { ok: true, data: { ...page([run(1), run(2)]).data, controlScopeId: 'replacement-scope', offset: 1, totalCount: 3 } })); await showSaved([call(0), prose('Between'), call(2)]); expect(host.textContent).toContain('Could not read the latest subagent status'); expect([...host.querySelectorAll<HTMLButtonElement>('[data-managed-open]')].every(button => button.disabled)).toBe(true)
+    bridge.send.mockImplementation(({ payload }) => Promise.resolve(payload.offset === 0 ? { ok: true, data: { ...page([run(0)]).data, totalCount: 3, nextOffset: 1 } } : { ok: true, data: { ...page([run(1), run(2)]).data, controlScopeId: 'replacement-scope', offset: 1, totalCount: 3 } })); await showSaved([call(0), prose('Between'), call(2)]); expect(host.textContent).toContain('Status not refreshed'); expect([...host.querySelectorAll<HTMLButtonElement>('[data-managed-open]')].every(button => button.disabled)).toBe(true)
   })
   it('retains previously read failure evidence when a refresh fails', async () => {
-    await showSaved([call(0)]); bridge.send.mockRejectedValue(new Error('lost connection')); expect([...host.querySelectorAll('button')].some(button => /refresh/i.test(button.textContent || ''))).toBe(false); await act(async () => document.dispatchEvent(new Event('visibilitychange'))); expect(host.textContent).toContain('Last reported: Failed'); expect(host.textContent).toContain('Could not read the latest subagent status')
+    await showSaved([call(0)]); bridge.send.mockRejectedValue(new Error('lost connection')); expect([...host.querySelectorAll('button')].some(button => /refresh/i.test(button.textContent || ''))).toBe(false); await act(async () => document.dispatchEvent(new Event('visibilitychange'))); expect(host.textContent).toContain('Last reported: Failed'); expect(host.textContent).toContain('Status not refreshed')
   })
   it('sends Stop once and never retries an unconfirmed mutation', async () => {
     bridge.send.mockResolvedValue(page([run(0, 'running')])); await showSaved([call(0)]); bridge.send.mockResolvedValue({ ok: false, error: 'connection lost' }); const stop = host.querySelector<HTMLButtonElement>('[aria-label="Stop managed subagent Worker 1"]')!; await act(async () => stop.click()); expect(bridge.send.mock.calls.filter(([request]) => request.action === 'cancelManagedSubagent')).toEqual([[{ action: 'cancelManagedSubagent', payload: { chatId: 'parent', runId: ids[0], controlScopeId: 'current-scope' } }, false]]); expect(host.textContent).toContain('Stop was not confirmed')
@@ -241,7 +241,7 @@ describe('compact Codex native tools preserve managed cards', () => {
   // Avoid requiring a nonexistent component, data-testid or classifier API.
   const compactToolEntry = (title: string) => [...host.querySelectorAll<HTMLButtonElement>('button')].find(button =>
     !button.classList.contains('uam-subagent-card') &&
-    (button.title === 'Open tool details' || button.title === title) &&
+    (button.classList.contains('uam-tool-row') || button.classList.contains('conversation-work__tool') || button.title === title) &&
     button.textContent?.includes(title))
   const originalSlot = (entry: Element) => {
     const before = [...host.querySelectorAll('.conversation-trace__text')].find(node => node.textContent === 'Before native tool')!
@@ -407,7 +407,7 @@ describe('R8 first-level managed anchors', () => {
       expect(group.querySelector('summary')!.textContent).toContain('2 launches')
       for (const index of [0, 1]) {
         const row = group.querySelector(`[data-launch-tool="${tools[index].id}"]`)!
-        const ordinary = row.querySelector<HTMLButtonElement>('[title="Open tool details"]')
+        const ordinary = row.querySelector<HTMLButtonElement>('.uam-tool-row')
         expect(ordinary, 'the real ordinary tool renderer keeps details reachable without managed authority').not.toBeNull()
         expect(ordinary!.textContent).toContain('agent_delegate')
         await act(async () => ordinary!.click())
@@ -463,7 +463,7 @@ describe('inline launch cards without manual refresh', () => {
     expect(host.querySelectorAll('[data-launch-tool]')).toHaveLength(2)
     bridge.send.mockRejectedValue(new Error('lost connection'))
     await act(async () => document.dispatchEvent(new Event('visibilitychange')))
-    expect(host.textContent).toContain('Could not read the latest subagent status')
+    expect(host.textContent).toContain('Status not refreshed')
     expect(refreshButtons()).toHaveLength(0)
     const text = host.textContent!
     expect(text.indexOf('Before')).toBeLessThan(text.indexOf('Worker 1'))
@@ -512,7 +512,7 @@ it('clears inline unconfirmed-Stop feedback only after a fresh successful status
   bridge.send.mockImplementation(({ action }) => action === 'cancelManagedSubagent' ? Promise.reject(new Error('Stop outcome unknown')) : new Promise(resolve => { answer = resolve }))
   await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Stop managed subagent Worker 1"]')!.click())
   expect(host.textContent).toContain('Stop was not confirmed')
-  expect(host.textContent).not.toContain('Could not read the latest subagent status')
+  expect(host.textContent).not.toContain('Status not refreshed')
   await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
   expect(host.textContent).toContain('Stop was not confirmed')
   await act(async () => answer(page([run(0, 'running')])))

@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "app/native_agent_history_service.h"
+#include "app/startup_native_import_service.h"
 #include "common/provider/gemini_history_loader.h"
 #include "common/utils/base64.h"
 #include "cef_handler_fixture.h"
@@ -844,6 +845,51 @@ UAM_TEST(RemoteHelperInstallLeavesSharedQueueFreeAndStopsOnCancelOrShutdown)
 	UAM_ASSERT(std::chrono::steady_clock::now() - closing < std::chrono::seconds(5));
 	UAM_ASSERT_EQ(shutdown->successes + shutdown->failures, 0);
 #endif
+}
+
+UAM_TEST(HelperInstallRefusalKeepsRunningBackgroundScan)
+{
+	TempDir temp("uam-remote-install-refusal-scan");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ExecutionHost host;
+	host.id = "install-refusal";
+	host.label = "Install refusal";
+	host.transport = "ssh";
+	host.ssh_alias = "uam-install-refusal";
+	host.platform = "linux";
+	host.runner_status = "ready";
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost(), host};
+	app.folders.push_back({"refusal-folder", "Fixture", "/fixture/workspace", false, host.id});
+	// A running chat on the host refuses the install before any helper work starts.
+	ChatSession busy = HandlerChat("refusal-busy-chat");
+	busy.execution_host_id = host.id;
+	busy.remote_process_exists = true;
+	app.chats.push_back(busy);
+	const auto entered = std::make_shared<std::promise<std::stop_token>>();
+	std::future<std::stop_token> scan_stop = entered->get_future();
+	app.startup_native_import_service = std::make_shared<uam::StartupNativeImportService>(
+	    [](const uam::StartupNativeImportScanRequest&, std::stop_token) { return ChatHistorySyncService::LocalHistoryDiscovery{}; },
+	    [entered](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, std::stop_token stop)
+	    {
+		    entered->set_value(stop);
+		    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		    while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+		    return ChatHistorySyncService::LocalHistoryDiscovery{};
+	    });
+	app.startup_native_import_service->Initialize(app);
+	UAM_ASSERT(scan_stop.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+	const std::stop_token running = scan_stop.get();
+	std::unique_ptr<UamQueryHandler> handler = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	const CefRefPtr<RecordingInstructionCallback> refused = new RecordingInstructionCallback;
+	ChatIconHandlerTestAccess::InstallRemoteHost(*handler, {{"id", host.id}, {"label", host.label}, {"sshAlias", host.ssh_alias}, {"runnerDirectory", ""}}, refused, 51);
+	UAM_ASSERT_EQ(refused->failures, 1);
+	UAM_ASSERT_EQ(refused->status, 409);
+	UAM_ASSERT(refused->body.find("chat-process") != std::string::npos);
+	UAM_ASSERT(!running.stop_requested());
+	UAM_ASSERT(app.startup_native_import_service->BackgroundScanPendingOnHost(host.id));
+	handler.reset();
+	app.startup_native_import_service->Cancel();
 }
 
 UAM_TEST(ComputerUseSettingsExposePendingRevocationWithoutChangingConsent)
@@ -1872,6 +1918,108 @@ UAM_TEST(NativeChildLineageHandlerPassiveRefreshAndColdReopenPreserveReceipt)
 		UAM_ASSERT(saved);
 		fixture.AssertReceipt(*saved);
 		UAM_ASSERT_EQ(saved->messages.front().content, snapshot.messages.front().content);
+	}
+}
+
+// #675: refreshing a writable child for the same native session keeps its display link,
+// even when the parent has no loaded delegation evidence to derive it again.
+UAM_TEST(NativeChildLineageHandlerWritableRefreshKeepsReceiptForSameSession)
+{
+	for (const std::string provider : {"opencode-cli", "codex-cli"})
+	{
+		NativeLineageHandlerFixture fixture(provider);
+		fixture.SeedReceipt(fixture.parent.id, fixture.parent.created_at);
+		fixture.Parent().messages.clear(); // Preservation must not manufacture new source evidence.
+		auto handler_owner = UamQueryHandlerTestAccess::Create(fixture.app, "file:///private/index.html");
+		auto& handler = *handler_owner;
+		ChatSession snapshot = fixture.child;
+		snapshot.messages.front().content = "Refreshed native child transcript";
+		UAM_ASSERT(snapshot.subagent_parent_chat_id.empty() && snapshot.subagent_parent_created_at.empty());
+		const auto refresh = ChatIconHandlerTestAccess::FinishNative(handler, fixture.Payload(), &snapshot);
+		UAM_ASSERT(refresh.ok);
+		UAM_ASSERT_EQ(fixture.Child().messages.front().content, snapshot.messages.front().content);
+		fixture.AssertReceipt(fixture.Child());
+		const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.child.id);
+		UAM_ASSERT(saved);
+		fixture.AssertReceipt(*saved);
+	}
+}
+
+// #675 review: a refresh where the child's workspace moves between the parent's checkout and
+// the child's own worktree of it must not drop the display link.
+UAM_TEST(NativeChildLineageHandlerWorktreeMoveRefreshKeepsReceipt)
+{
+	for (const std::string provider : {"opencode-cli", "codex-cli"})
+		for (const bool snapshot_moves : {true, false})
+		{
+			NativeLineageHandlerFixture fixture(provider);
+			fixture.SeedReceipt(fixture.parent.id, fixture.parent.created_at);
+			fixture.Parent().messages.clear(); // Preservation must not manufacture new source evidence.
+			const fs::path worktree = fixture.temp.root / ".uam" / "worktrees" / "child";
+			fs::create_directories(worktree);
+			ChatSession snapshot = fixture.child;
+			snapshot.messages.front().content = "Refreshed native child transcript";
+			ChatSession& moved = snapshot_moves ? snapshot : fixture.Child();
+			moved.workspace_worktree_directory = worktree.string();
+			moved.workspace_source_directory = fixture.parent.workspace_directory;
+			moved.workspace_isolation_kind = "git-worktree";
+			auto handler_owner = UamQueryHandlerTestAccess::Create(fixture.app, "file:///private/index.html");
+			auto& handler = *handler_owner;
+			const auto refresh = ChatIconHandlerTestAccess::FinishNative(handler, fixture.Payload(), &snapshot);
+			// The child's own worktree of the parent's checkout refreshes either way, keeping the receipt.
+			UAM_ASSERT(refresh.ok);
+			UAM_ASSERT_EQ(fixture.Child().messages.front().content, snapshot.messages.front().content);
+			fixture.AssertReceipt(fixture.Child());
+			const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.child.id);
+			UAM_ASSERT(saved);
+			fixture.AssertReceipt(*saved);
+		}
+}
+
+// An ordinary native open without a display link still requires the exact workspace.
+UAM_TEST(NativeChildLineageHandlerOrdinaryOpenRequiresExactWorkspace)
+{
+	for (const std::string provider : {"opencode-cli", "codex-cli"})
+	{
+		NativeLineageHandlerFixture fixture(provider);
+		UAM_ASSERT(fixture.Child().subagent_parent_chat_id.empty());
+		const fs::path worktree = fixture.temp.root / ".uam" / "worktrees" / "child";
+		fs::create_directories(worktree);
+		ChatSession snapshot = fixture.child;
+		snapshot.messages.front().content = "Ordinary worktree transcript";
+		snapshot.workspace_worktree_directory = worktree.string();
+		snapshot.workspace_source_directory = fixture.parent.workspace_directory;
+		snapshot.workspace_isolation_kind = "git-worktree";
+		auto handler_owner = UamQueryHandlerTestAccess::Create(fixture.app, "file:///private/index.html");
+		auto& handler = *handler_owner;
+		const auto refresh = ChatIconHandlerTestAccess::FinishNative(handler, fixture.Payload(), &snapshot);
+		UAM_ASSERT(!refresh.ok);
+		UAM_ASSERT(fixture.Child().messages.front().content != snapshot.messages.front().content);
+	}
+}
+
+UAM_TEST(NativeChildLineageHandlerOtherProjectRefreshRefused)
+{
+	for (const std::string provider : {"opencode-cli", "codex-cli"})
+	{
+		NativeLineageHandlerFixture fixture(provider);
+		fixture.SeedReceipt(fixture.parent.id, fixture.parent.created_at);
+		const fs::path other = fixture.temp.root.parent_path() / (fixture.temp.root.filename().string() + "-other-project");
+		const fs::path worktree = other / ".uam" / "worktrees" / "child";
+		fs::create_directories(worktree);
+		ChatSession snapshot = fixture.child;
+		snapshot.messages.front().content = "Foreign project transcript";
+		snapshot.workspace_directory = other.string();
+		snapshot.workspace_worktree_directory = worktree.string();
+		snapshot.workspace_source_directory = other.string();
+		snapshot.workspace_isolation_kind = "git-worktree";
+		auto handler_owner = UamQueryHandlerTestAccess::Create(fixture.app, "file:///private/index.html");
+		auto& handler = *handler_owner;
+		const auto refresh = ChatIconHandlerTestAccess::FinishNative(handler, fixture.Payload(), &snapshot);
+		fs::remove_all(other);
+		UAM_ASSERT(!refresh.ok);
+		UAM_ASSERT(fixture.Child().messages.front().content != snapshot.messages.front().content);
+		fixture.AssertReceipt(fixture.Child());
 	}
 }
 

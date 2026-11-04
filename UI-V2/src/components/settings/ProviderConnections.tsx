@@ -4,9 +4,10 @@ import { useAppStore } from '../../store/useAppStore'
 import { OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, providerMetadataForId } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Check, Minus, RefreshCw } from 'lucide-react'
-import { Button, IconButton, Notice, StatusDot, Switch, ViewportMenu, usePresence, type StatusTone } from '../ui'
-import { SettingRow } from './SettingsPrimitives'
+import { reportAppFailure } from '../../utils/appFailure'
+import { RefreshCw } from 'lucide-react'
+import { Button, IconButton, Notice, StatusDot, Switch, ViewportMenu, usePresence, type StatusTone, Reveal } from '../ui'
+import { SettingRow, SettingsSection, StatusMark } from './SettingsPrimitives'
 import './provider-settings.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
 import { COMPUTER_USE_ENABLED, OPENCODE_ENABLED } from '../../config/buildFeatures'
@@ -46,7 +47,6 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   const [busy, setBusy] = useState(false)
   /** The one switch whose save is in flight; only it shows the pending state. */
   const [pendingKey, setPendingKey] = useState('')
-  const [error, setError] = useState('')
   const [status, setStatus] = useState<McpStatus | null>(null)
   const [statusError, setStatusError] = useState('')
   const [refresh, setRefresh] = useState(0)
@@ -69,7 +69,6 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
     servers.map(server => [server.id, server.name, server.enabled, server.executionHostId, server.workspaceDirectory]),
     runtimeProviders.map(provider => [provider.id, provider.supportsStructured]),
   ])
-  useEffect(() => setError(''), [activeHostId])
   const validStatus = (value: McpStatus | undefined, expectedHost: string): value is McpStatus => value?.executionHostId === expectedHost && Array.isArray(value.providers)
   useEffect(() => {
     const generation = ++requestGeneration.current
@@ -87,13 +86,13 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   }, [])
   const enable = async () => {
     const save = ++latestSave.current
-    setBusy(true); busyRef.current = true; setError('')
+    setBusy(true); busyRef.current = true
     try {
       const store = useAppStore.getState()
       const result = await store.setCentralProviderConfiguration({ ...store.centralProviderConfiguration, uamControlEnabled: true })
       if (result.ok) setRefresh(value => value + 1)
-      if (!result.ok) setError(result.error || 'Could not enable UAM MCP.')
-    } catch { setError('Could not enable UAM MCP. Try again.') }
+      if (!result.ok) reportAppFailure('Could not enable UAM MCP.', result.error || 'Try again.')
+    } catch { reportAppFailure('Could not enable UAM MCP.', 'Try again.') }
     finally { if (save === latestSave.current) { setBusy(false); busyRef.current = false } }
   }
   const [discoveryDraft, setDiscoveryDraft] = useState<{ host: string, value: boolean, error: string, saving: boolean } | null>(null)
@@ -102,7 +101,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
     const save = ++latestSave.current
     const generation = ++requestGeneration.current
     const selectedHost = activeHostId
-    setBusy(true); busyRef.current = true; setError(''); setPendingKey(configurationKey(selectedHost, id, preference ? 'preference' : 'server', serverId))
+    setBusy(true); busyRef.current = true; setPendingKey(configurationKey(selectedHost, id, preference ? 'preference' : 'server', serverId))
     try {
       const result = await sendToCEF<McpStatus>({ action: 'setProviderMcpConfiguration', payload: { executionHostId: selectedHost, providerId: id, serverId, enabled, ...(preference ? { kind: 'preference' } : {}) } })
       if (generation !== requestGeneration.current || currentHost.current !== selectedHost) return null
@@ -110,18 +109,19 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
       const actual = preference ? row?.progressiveMcpDiscoveryEnabled : serverId === 'uam-mcp' ? row?.uamControlEnabled : serverId === 'shared-setup' ? row?.sharedSetupEnabled : row?.mcpServers?.find(server => server.id === serverId)?.enabled
       if (result.ok && validStatus(result.data, selectedHost) && actual === enabled) { setStatus(result.data); return '' }
       const failure = result.error || 'The provider MCP change could not be verified. Refresh and try again.'
-      if (!preference) setError(failure)
+      if (!preference) reportAppFailure('Provider MCP change not confirmed.', failure)
       return failure
     } catch {
       const failure = 'Could not save provider MCP configuration. Try again.'
-      if (generation === requestGeneration.current && !preference) setError(failure)
+      if (generation === requestGeneration.current && !preference) reportAppFailure('Provider MCP change not confirmed.', failure)
       return generation === requestGeneration.current ? failure : null
     }
     finally { if (save === latestSave.current) { setBusy(false); busyRef.current = false; setPendingKey('') } }
   }
-  /** Configuration switch. Unknown (undefined) renders as a dashed, disabled switch. Only the saving switch is pending; the rest stay steady. */
-  const checkbox = (label: string, checked: boolean | undefined, onChange?: () => void, pendingId = '') => <button type="button" role="checkbox" className="uam-prov-switch" aria-label={checked === undefined ? `${label} (unknown)` : label} aria-checked={checked === undefined ? 'mixed' : checked} data-pending={pendingId !== '' && pendingKey === pendingId || undefined} disabled={(pendingId !== '' && pendingKey === pendingId) || checked === undefined || !onChange} title={checked === undefined ? 'Not known yet' : checked ? 'On. Click to turn off.' : 'Off. Click to turn on.'} onClick={onChange}/>
-  /** Read-only availability glyph: state is shown, not set here. */
+  /** Configuration switch. Unknown (undefined) is a neutral dot, not a switch: a switch would read as off. Only the saving switch is disabled; the rest stay steady. */
+  const configSwitch = (label: string, checked: boolean | undefined, onChange?: () => void, pendingId = '') => checked === undefined
+    ? <span role="img" aria-label={`${label} (unknown)`} title="Not known yet"><StatusDot tone="neutral" /></span>
+    : <Switch hideLabel label={label} checked={checked} disabled={(pendingId !== '' && pendingKey === pendingId) || !onChange} title={checked ? 'On. Click to turn off.' : 'Off. Click to turn on.'} onChange={onChange} />
   const collapseServers = servers.length > MAX_SERVER_COLUMNS
   const [menuId, setMenuId] = useState<string | null>(null)
   const menuPresence = usePresence(menuId !== null)
@@ -153,13 +153,15 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
     const known = flags.some(flag => flag !== undefined)
     const label = terminalOnly ? 'Terminal only' : known ? `${on} of ${servers.length} on` : 'Unknown'
     const open = menuId === id
+    // ui: raw button kept — MCP popup trigger with a per-provider state meter; Chip would apply the choice-button look.
     return <button type="button" className="uam-prov-mcp-chip" aria-haspopup="dialog" aria-expanded={open} aria-label={`${providerMetadataForId(id).shortName} MCP servers, ${label}`}
       disabled={terminalOnly || servers.length === 0} onClick={event => openMenu(id, event.currentTarget)}>
       <span className="uam-prov-meter" aria-hidden>{flags.map((flag, index) => <i key={index} data-state={flag === undefined ? 'unknown' : flag ? 'on' : 'off'} />)}</span>
       <span className="tabular-nums">{label}</span>
     </button>
   }
-  const glyph = (label: string, available: boolean | undefined, title: string) => <button type="button" role="checkbox" disabled className="uam-prov-avail" data-state={available === undefined ? 'unknown' : available ? 'on' : 'off'} aria-label={available === undefined ? `${label} (unknown)` : label} aria-checked={available === undefined ? 'mixed' : available} title={title}>{available ? <Check size={13}/> : <Minus size={13}/>}</button>
+  /** Read-only availability: state is shown, not set here. */
+  const glyph = (label: string, available: boolean | undefined, title: string) => <span role="img" aria-label={available === undefined ? `${label} (unknown)` : `${label} ${available ? 'on' : 'off'}`} title={title}>{available === undefined ? <StatusDot tone="neutral" /> : <StatusDot tone={available ? 'success' : 'error'} />}</span>
   const reportedProgressiveDiscovery = status?.executionHostId === activeHostId ? status.providers.find(item => item.providerId === OPENCODE_CLI_PROVIDER_ID)?.progressiveMcpDiscoveryEnabled : undefined
   const progressiveDiscovery = typeof reportedProgressiveDiscovery === 'boolean' ? reportedProgressiveDiscovery : undefined
   /** Failed discovery saves keep the chosen value in the row for Retry or Discard (settings.md feedback near the control). */
@@ -173,23 +175,26 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   const draft = discoveryDraft?.host === activeHostId ? discoveryDraft : null
   const hostLabel = activeHostId === 'local' ? 'this computer' : hosts.find(item => item.id === activeHostId)?.label || activeHostId
   const progressiveSaving = draft?.saving === true
+  const draftPresence = usePresence(!!draft?.error)
+  // Each status line keeps its last text while it fades out.
+  const statusNote = usePresence(Boolean(statusError))
+  const shownStatusError = useRef(statusError)
+  if (statusError) shownStatusError.current = statusError
+  const checkingNote = usePresence(!status && !statusError)
   // Confirmed status matching an unsaved draft resolves it (e.g. after Refresh).
   useEffect(() => { if (draft && !draft.saving && progressiveDiscovery === draft.value) setDiscoveryDraft(null) }, [draft, progressiveDiscovery])
-  return <div className="space-y-3">
-    <div className="flex items-center gap-2 flex-wrap">
+  return <div className="grid gap-0">
+    <Reveal open={!central.uamControlEnabled}><Notice tone="error" title="UAM MCP is off" dismissLabel="Dismiss UAM MCP warning" actions={<Button size="sm" disabled={busy} onClick={() => void enable()}>Enable UAM MCP</Button>}>New sessions run without UAM tools.</Notice></Reveal>
+    {statusNote.mounted && <p role="status" data-state={statusNote.closing ? 'closed' : 'open'} className="uam-prov-sub uam-presence">{shownStatusError.current}</p>}
+    {checkingNote.mounted && <p role="status" data-state={checkingNote.closing ? 'closed' : 'open'} className="uam-prov-sub uam-presence">Checking connections…</p>}
+    <SettingsSection flush title="Connections" actions={<>
       <IconButton size="sm" variant="ghost" label="Refresh provider connections" tooltip="Check connections again" disabled={busy} onClick={() => setRefresh(value => value + 1)} icon={<RefreshCw size={14} className={!status && !statusError ? 'uam-prov-spin' : undefined}/>}/>
-      <div className="ml-auto flex gap-1">
-        <Button size="sm" variant="ghost" onClick={onPreferencesSelect}>Shared agent preferences</Button>
-        <Button size="sm" onClick={onMcpSelect}>Manage MCP servers</Button>
-      </div>
-    </div>
-    {!central.uamControlEnabled && <Notice tone="error" title="UAM MCP is off" dismissLabel="Dismiss UAM MCP warning" actions={<Button size="sm" disabled={busy} onClick={() => void enable()}>Enable UAM MCP</Button>}>New sessions run without UAM tools.</Notice>}
-    {error && <p role="alert" className="uam-prov-sub" style={{ color: 'var(--error)' }}>{error}</p>}
-    {statusError && <p role="status" className="uam-prov-sub">{statusError}</p>}
-    {!status && !statusError && <p role="status" className="uam-prov-sub">Checking connections…</p>}
+      <Button size="sm" variant="ghost" onClick={onPreferencesSelect}>Shared agent preferences</Button>
+      <Button size="sm" onClick={onMcpSelect}>Manage MCP servers</Button>
+    </>}>
     <div className="uam-prov-card overflow-x-auto">
       <table className="uam-prov-matrix w-full text-xs text-left" aria-label="Provider connection overview">
-        <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Provider', 'Status', 'UAM MCP', ...(COMPUTER_USE_ENABLED ? ['Computer Use'] : []), 'Shared setup'].map(label => <th key={label} className={`uam-prov-label uam-prov-th px-2 py-2${label === 'Provider' ? ' uam-prov-sticky uam-prov-th--provider' : ''} font-medium`}>{label}</th>)}{collapseServers
+        <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Provider', 'Status', 'UAM MCP', ...(COMPUTER_USE_ENABLED ? ['Computer use'] : []), 'Shared setup'].map(label => <th key={label} className={`uam-prov-label uam-prov-th px-2 py-2${label === 'Provider' ? ' uam-prov-sticky uam-prov-th--provider' : ''} font-medium`}>{label}</th>)}{collapseServers
           ? <th className="uam-prov-label uam-prov-th px-2 py-2 font-medium">MCP servers</th>
           : servers.map(server => <th key={server.id} className="uam-prov-label uam-prov-th px-2 py-2 font-medium">{server.name}</th>)}</tr></thead>
         <tbody>{ids.map(id => {
@@ -198,7 +203,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
           const terminalOnly = runtime?.supportsStructured === undefined ? metadata.structuredProtocol === 'none' : !runtime.supportsStructured
           const version = hostVersions.find(item => item.providerId === id)
           const health = status?.executionHostId === activeHostId ? status.providers.find(item => item.providerId === id) : undefined
-          const healthLabel = health?.status === 'connected' && status?.connectedProofAvailable ? 'Connected' : health?.status === 'handshake-confirmed' && status?.handshakeProofAvailable ? 'Handshake confirmed' : health?.status === 'configured-unverified' ? 'Configured, unverified' : health?.status === 'failed' ? 'Failed' : health?.status === 'missing' ? 'Not configured' : health?.status === 'disabled' ? 'Disabled' : 'Unknown'
+          const healthLabel = health?.status === 'connected' && status?.connectedProofAvailable ? 'Connected' : health?.status === 'handshake-confirmed' && status?.handshakeProofAvailable ? 'Responding' : health?.status === 'configured-unverified' ? 'Set up, not checked' : health?.status === 'failed' ? 'Failed' : health?.status === 'missing' ? 'Not configured' : health?.status === 'disabled' ? 'Disabled' : 'Unknown'
           const healthTone: StatusTone = terminalOnly ? 'neutral' : healthLabel === 'Connected' ? 'success' : healthLabel === 'Failed' ? 'error' : healthLabel === 'Not configured' ? 'warning' : 'neutral'
           const cli = version?.installedVersion || (version?.status === 'checking' ? 'Checking' : version?.status === 'unavailable' ? 'Not installed' : 'Not checked')
           const uamOn = health?.uamControlEnabled === undefined ? undefined : !terminalOnly && health.uamControlEnabled
@@ -207,36 +212,38 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
           const computerUseState = computerUse === false ? false : computerUse && computerUseKnown ? computerUseEnabled : undefined
           const computerUseDetail = computerUse === false ? 'Not available for this provider'
             : computerUse === undefined ? 'Not known yet'
-            : computerUseRevocationPending && computerUseEnabled === true ? "On. A chat's controls are still stopping. Turn off for all chats in Computer Use settings to retry cleanup."
+            : computerUseRevocationPending && computerUseEnabled === true ? "On. Chat controls are still stopping. Turn off for all chats to retry cleanup."
             : computerUseRevocationPending ? 'Cleanup pending. Retry disabling in Computer Use settings.'
             : !computerUseKnown ? 'Global status not confirmed. Check Computer Use settings.'
-            : computerUseEnabled ? 'Available. Each chat needs an approved target.' : 'Off. Turn Computer Use on in Computer Use settings.'
+            : computerUseEnabled ? 'Available. Each chat still needs you to choose the window it can control.' : 'Off. Turn Computer Use on in Computer Use settings.'
+          // ui: raw button kept — provider name cell is a table cell with bespoke overview styling.
           return <tr key={id} style={{ borderTop: '1px solid var(--border)' }}>
-            <td className="uam-prov-sticky uam-prov-provider-cell px-3 py-2"><button type="button" className="uam-prov-provider" onClick={() => onProviderSelect?.(id)} disabled={!onProviderSelect}><ProviderLogo providerId={id}/><span className="grid min-w-0"><span className="uam-prov-provider__name">{metadata.shortName}</span><span className="uam-prov-detail whitespace-nowrap">{cli}</span></span></button></td>
-            <td className="px-2 py-2"><span className="uam-prov-status" data-tone={healthTone} title={health?.detail}><StatusDot tone={healthTone}/>{terminalOnly ? 'Terminal only' : healthLabel}</span>
-              {!terminalOnly && health?.status === 'failed' && health.detail && <div className="uam-prov-detail uam-prov-detail--clip mt-0.5" title={health.detail}>{health.detail}</div>}</td>
+            <td className="uam-prov-sticky uam-prov-provider-cell px-3 py-2"><button type="button" className="uam-prov-provider" title={cli} onClick={() => onProviderSelect?.(id)} disabled={!onProviderSelect}><ProviderLogo providerId={id}/><span className="grid min-w-0"><span className="uam-prov-provider__name">{metadata.shortName}</span></span></button></td>
+            <td className="px-2 py-2"><span className="uam-prov-status" data-tone={healthTone} title={health?.detail}><StatusMark tone={healthTone} label={terminalOnly ? 'Terminal only' : healthLabel} /></span>
+              <Reveal open={!terminalOnly && health?.status === 'failed' && !!health.detail}>{!terminalOnly && health?.status === 'failed' && health.detail && <div className="uam-prov-detail uam-prov-detail--clip mt-0.5" title={health.detail}>{health.detail}</div>}</Reveal></td>
             <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} UAM MCP`, uamOn, terminalOnly ? 'Not used in terminal mode' : uamOn ? 'On. Managed in the UAM MCP service section.' : uamOn === false ? 'Off for this provider.' : 'Not known yet')}</td>
             {COMPUTER_USE_ENABLED && <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} Computer Use`, computerUseState, computerUseDetail)}</td>}
-            <td className="uam-prov-glyph-cell px-1 py-2">{checkbox(`${metadata.shortName} Shared setup`, health?.sharedSetupEnabled, terminalOnly ? undefined : () => void setConfiguration(id, 'shared-setup', !health?.sharedSetupEnabled), configurationKey(activeHostId, id, 'server', 'shared-setup'))}</td>
+            <td className="uam-prov-glyph-cell px-1 py-2">{configSwitch(`${metadata.shortName} Shared setup`, health?.sharedSetupEnabled, terminalOnly ? undefined : () => void setConfiguration(id, 'shared-setup', !health?.sharedSetupEnabled), configurationKey(activeHostId, id, 'server', 'shared-setup'))}</td>
             {collapseServers
               ? <td className="px-2 py-2">{mcpChip(id, terminalOnly, health)}</td>
               : servers.map(server => {
                 const enabled = serverEnabled(health, server.id)
-                return <td key={server.id} className="uam-prov-glyph-cell px-1 py-2">{checkbox(`${metadata.shortName} ${server.name}`, enabled, terminalOnly ? undefined : () => void setConfiguration(id, server.id, !enabled), configurationKey(activeHostId, id, 'server', server.id))}</td>
+                return <td key={server.id} className="uam-prov-glyph-cell px-1 py-2">{configSwitch(`${metadata.shortName} ${server.name}`, enabled, terminalOnly ? undefined : () => void setConfiguration(id, server.id, !enabled), configurationKey(activeHostId, id, 'server', server.id))}</td>
               })}
           </tr>
         })}</tbody>
       </table>
     </div>
-    {OPENCODE_ENABLED && providerId === OPENCODE_CLI_PROVIDER_ID && <SettingRow title="Progressive MCP discovery" description="Load MCP tools only when OpenCode needs them."
+    </SettingsSection>
+    {OPENCODE_ENABLED && providerId === OPENCODE_CLI_PROVIDER_ID && <SettingsSection title="OpenCode"><SettingRow title="Progressive MCP discovery" description="Load MCP tools only when OpenCode needs them."
       status={<span aria-live="polite">{progressiveSaving ? 'Saving discovery preference…' : draft?.error ? `Not saved: ${draft.error}` : progressiveDiscovery === undefined ? !status && !statusError ? 'Checking discovery setting…' : 'Discovery setting unavailable. Refresh connections.' : `Applies to ${hostLabel} the next time OpenCode starts.`}</span>}
       control={<Switch hideLabel label="OpenCode progressive MCP discovery" checked={draft ? draft.value : progressiveDiscovery === true}
         disabled={progressiveSaving || (progressiveDiscovery === undefined && !draft)} onChange={event => void saveDiscovery(event.currentTarget.checked)} />}>
-      {draft?.error && <div className="flex gap-1">
-        <Button size="sm" disabled={progressiveSaving} onClick={() => void saveDiscovery(draft.value)}>Retry</Button>
+      {draftPresence.mounted && <div className="flex gap-1 uam-presence" data-state={draftPresence.closing ? 'closed' : 'open'}>
+        <Button size="sm" disabled={progressiveSaving || !draft} onClick={() => { if (draft) void saveDiscovery(draft.value) }}>Retry</Button>
         <Button size="sm" variant="ghost" disabled={progressiveSaving} onClick={() => { setDiscoveryDraft(null); document.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')?.focus() }}>Discard</Button>
       </div>}
-    </SettingRow>}
+    </SettingRow></SettingsSection>}
     {menuPresence.mounted && shownMenuId && (() => {
       const id = shownMenuId
       const metadata = providerMetadataForId(id)
@@ -244,13 +251,12 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
       const terminalOnly = runtime?.supportsStructured === undefined ? metadata.structuredProtocol === 'none' : !runtime.supportsStructured
       const health = status?.executionHostId === activeHostId ? status.providers.find(item => item.providerId === id) : undefined
       return <ViewportMenu ref={menuRef} anchorRef={menuAnchor} align="end" role="dialog" aria-label={`${metadata.shortName} MCP servers`} data-state={menuPresence.closing ? 'closed' : 'open'}
-        className="uam-prov-pop" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setMenuId(null); menuAnchor.current?.focus() } }}>
-        <div className="uam-prov-label px-1 pb-1">MCP servers for {metadata.shortName}</div>
+        className="uam-prov-pop uam-settings-scope" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setMenuId(null); menuAnchor.current?.focus() } }}>
         {servers.map(server => {
           const enabled = serverEnabled(health, server.id)
           return <div key={server.id} className="uam-prov-pop__row">
             <span className="min-w-0 grid"><span className="truncate text-sm" style={{ color: 'var(--text)' }}>{server.name}</span></span>
-            {checkbox(`${metadata.shortName} ${server.name}`, enabled, terminalOnly ? undefined : () => void setConfiguration(id, server.id, !enabled), configurationKey(activeHostId, id, 'server', server.id))}
+            {configSwitch(`${metadata.shortName} ${server.name}`, enabled, terminalOnly ? undefined : () => void setConfiguration(id, server.id, !enabled), configurationKey(activeHostId, id, 'server', server.id))}
           </div>
         })}
       </ViewportMenu>

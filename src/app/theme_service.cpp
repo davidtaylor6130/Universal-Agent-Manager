@@ -32,6 +32,14 @@ namespace
 	    "warning",
 	    "error",
 	});
+	// Added after v1 shipped; older theme files omit them and the UI falls back to base defaults.
+	constexpr auto kOptionalColorKeys = std::to_array<std::string_view>({
+	    "tokenInput",
+	    "tokenCacheRead",
+	    "tokenCacheWrite",
+	    "tokenOutput",
+	    "tokenReasoning",
+	});
 
 	void SetError(std::string* error_out, std::string message)
 	{
@@ -126,6 +134,21 @@ namespace
 		{
 			const auto value_it = colors_it->find(std::string(key));
 			const std::string value = value_it != colors_it->end() && value_it->is_string() ? value_it->get<std::string>() : "";
+			if (!IsHexColor(value))
+			{
+				SetError(error_out, "Theme color '" + std::string(key) + "' must use #RRGGBB.");
+				return std::nullopt;
+			}
+			colors[std::string(key)] = uam::strings::ToLowerAscii(value);
+		}
+		for (std::string_view key : kOptionalColorKeys)
+		{
+			const auto value_it = colors_it->find(std::string(key));
+			if (value_it == colors_it->end())
+			{
+				continue;
+			}
+			const std::string value = value_it->is_string() ? value_it->get<std::string>() : "";
 			if (!IsHexColor(value))
 			{
 				SetError(error_out, "Theme color '" + std::string(key) + "' must use #RRGGBB.");

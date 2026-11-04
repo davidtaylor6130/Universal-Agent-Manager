@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { LoaderCircle } from 'lucide-react'
+import { CircleX, LoaderCircle } from 'lucide-react'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { sanitizeGitBaseBranch } from '../../store/cpp/sanitizers'
 import { useAppStore } from '../../store/useAppStore'
@@ -84,16 +84,16 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
   // before a completed invalid result clears the parent's override. Entries that repeat
   // the default (HEAD with no configured default, or the default branch itself) are omitted.
   const options = [
-    { value: 'default', label: `Use default (${defaultBranch || 'HEAD'})` },
+    { value: 'default', label: defaultBranch ? `Use default (${defaultBranch})` : 'Use default branch' },
     ...(attachedContext ? [
       ...(defaultBranch && attachedContext.currentBranch !== defaultBranch
-        ? [{ value: 'head', label: `Current branch (${attachedContext.currentBranch})`, description: 'Use HEAD instead of the default base branch.' }]
+        ? [{ value: 'head', label: `Current branch (${attachedContext.currentBranch})`, description: 'Start from the checked-out branch.' }]
         : []),
       ...attachedContext.localBranches.filter((branch) => branch.name !== defaultBranch).map((branch) => ({ value: `branch:${branch.name}`, label: branch.name })),
     ] : []),
   ]
   if (value !== undefined && !options.some((option) => option.value === selectedValue)) {
-    options.push({ value: selectedValue, label: value === '' ? 'Current branch (HEAD)' : value })
+    options.push({ value: selectedValue, label: value === '' ? (context?.detached ? 'Current branch (detached)' : 'Current branch') : value })
   }
   // Preselect the preferred branch once, on the first completed read; refreshes keep the user's choice.
   const preselected = useRef(false)
@@ -143,7 +143,7 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
         {!loading && ready && value !== undefined && value === autoPicked && (
           <p style={{ color: 'var(--text-3)' }}>Preselected: furthest ahead (newest commit).</p>
         )}
-        {error && !loading && <p role="alert" style={{ color: 'var(--error)' }}>{error}</p>}
+        {error && !loading && <p role="alert" className="flex items-center gap-1.5" style={{ color: 'var(--error)' }}><CircleX size={12} aria-hidden />{error}</p>}
       </div>
       {!unavailableReason && (
         <Button

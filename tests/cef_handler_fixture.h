@@ -20,6 +20,12 @@ struct UamQueryHandlerTestAccess
 		UAM_ASSERT(action == "getMemorySettings" || action == "setMemorySettings");
 		return handler.DispatchAction(action, nullptr, payload, callback);
 	}
+	static bool MemoryLibraryAction(UamQueryHandler& handler, std::string_view action,
+	    const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		UAM_ASSERT(action == "readMemoryEntry");
+		return handler.DispatchAction(action, nullptr, payload, callback);
+	}
 	static void MemorySettingsFaults(UamQueryHandler& handler,
 	    std::function<bool(uam::io::AtomicWriteStage)> gate = {}, std::function<void()> after_save = {})
 	{

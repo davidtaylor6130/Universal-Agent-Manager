@@ -626,6 +626,106 @@ UAM_TEST(LegacyChatAttentionCanBeAcknowledgedWithoutClearingANewerCompletion)
 	UAM_ASSERT_EQ(app.chats.front().attention_revision, fresh);
 }
 
+namespace
+{
+	// Pins the controller zone so local "YYYY-MM-DD HH:MM:SS" stamps have a fixed instant.
+	struct PinnedAttentionTimeZone
+	{
+		std::unique_ptr<ScopedEnvVar> zone;
+		static void Reload()
+		{
+#if defined(_WIN32)
+			_tzset();
+#else
+			tzset();
+#endif
+		}
+		explicit PinnedAttentionTimeZone(const char* tz) : zone(std::make_unique<ScopedEnvVar>("TZ", tz)) { Reload(); }
+		~PinnedAttentionTimeZone()
+		{
+			zone.reset();
+			Reload();
+		}
+	};
+
+	bool LegacyAttentionFor(const std::string& updated_at, const std::string& last_opened_at)
+	{
+		uam::AppState app;
+		ChatSession chat;
+		chat.id = "imported-iso";
+		chat.updated_at = updated_at;
+		chat.last_opened_at = last_opened_at;
+		app.chats.push_back(chat);
+		return !ChatDomainService().AttentionRevision(app, app.chats.front()).empty();
+	}
+}
+
+UAM_TEST(OpeningImportedIsoChatDoesNotCreateLegacyAttention)
+{
+	// Native imports keep ISO UTC updated_at; selection stamps local "YYYY-MM-DD HH:MM:SS".
+	// Same-date strings compare 'T' > ' ', which used to mark every first open as new work (#629).
+	UAM_ASSERT(!LegacyAttentionFor("2026-10-01T00:00:01.000Z", "2026-10-01 23:59:59"));
+}
+
+UAM_TEST(ImportedIsoUpdateAfterLocalOpenStillCreatesLegacyAttention)
+{
+	// UTC+9: the local open is 2026-10-01T23:00:00Z, so the ISO update is later even
+	// though its text sorts first.
+	PinnedAttentionTimeZone zone("JST-9");
+	UAM_ASSERT(LegacyAttentionFor("2026-10-01T23:30:00.000Z", "2026-10-02 08:00:00"));
+	UAM_ASSERT(!LegacyAttentionFor("2026-10-01T22:30:00.000Z", "2026-10-02 08:00:00"));
+}
+
+UAM_TEST(UnparseableAttentionStampsOnlyTextCompareWithinOneShape)
+{
+	UAM_ASSERT(LegacyAttentionFor("opened-b", "opened-a"));
+	UAM_ASSERT(!LegacyAttentionFor("opened-a", "opened-b"));
+	// Mixed shapes that do not parse (invalid month, DST folds) never count as newer.
+	UAM_ASSERT(!LegacyAttentionFor("2026-13-01T00:00:00.000Z", "2026-13-01 00:00:00"));
+}
+
+UAM_TEST(AcknowledgingImportedAttentionKeepsTheLaterOpenStamp)
+{
+	PinnedAttentionTimeZone zone("UTC0");
+	TempDir temp("uam-imported-attention-ack");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "imported-ack";
+	// Today's UTC midnight is earlier than now, but its text sorts after today's local stamp.
+	chat.updated_at = uam::time::TimestampNow().substr(0, 10) + "T00:00:00.000Z";
+	chat.last_opened_at = "2026-01-01 00:00:00";
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	ChatDomainService domain;
+	const std::string revision = domain.AttentionRevision(app, app.chats.front());
+	UAM_ASSERT(!revision.empty());
+	UAM_ASSERT(domain.AcknowledgeChatAttention(app, chat.id, revision));
+	UAM_ASSERT_EQ(app.chats.front().last_opened_at.size(), std::size_t{19});
+	UAM_ASSERT_EQ(app.chats.front().last_opened_at[10], ' ');
+	UAM_ASSERT(domain.AttentionRevision(app, app.chats.front()).empty());
+}
+
+UAM_TEST(ReloadKeepsNewerLocalOpenOverOlderIsoOpen)
+{
+	PinnedAttentionTimeZone zone("UTC0");
+	TempDir temp("uam-imported-open-reload");
+	ChatSession chat;
+	chat.id = "imported-reload";
+	chat.created_at = "2026-10-01T08:00:00.000Z";
+	chat.updated_at = "2026-10-01T09:00:00.000Z";
+	chat.last_opened_at = "2026-10-01T09:00:00.000Z";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.last_opened_at = "2026-10-01 23:59:59";
+	UAM_ASSERT(ChatRepository::SaveLastOpenedAt(temp.root, chat));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChatBounded(temp.root, chat.id, 1 << 20);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->last_opened_at, chat.last_opened_at);
+	uam::AppState app;
+	app.chats.push_back(*loaded);
+	UAM_ASSERT(ChatDomainService().AttentionRevision(app, app.chats.front()).empty());
+}
+
 #if defined(__APPLE__)
 UAM_TEST(MacOwnedProviderGroupIsCleanedBeforeExitedLeaderIsReaped)
 {

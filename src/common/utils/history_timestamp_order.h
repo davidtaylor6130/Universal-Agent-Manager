@@ -4,6 +4,7 @@
 
 #include <array>
 #include <optional>
+#include <string>
 #include <string_view>
 
 namespace uam::time
@@ -196,5 +197,26 @@ namespace uam::time
 		}
 		const bool before = left->seconds < right->seconds || (left->seconds == right->seconds && left->nanoseconds < right->nanoseconds);
 		return {before ? HistoryTimestampOrder::Before : HistoryTimestampOrder::After, provenance};
+	}
+
+	/// True when lhs is chronologically later than rhs across UAM's local
+	/// "YYYY-MM-DD HH:MM:SS" and provider ISO stamps. Same-shape stamps keep a
+	/// cheap text compare; unparseable mixed shapes (including DST folds) are
+	/// never later, so a format mismatch cannot invent ordering.
+	inline bool HistoryTimestampIsAfter(std::string_view lhs, std::string_view rhs)
+	{
+		if (lhs == rhs || lhs.empty()) return false;
+		if (rhs.empty()) return true;
+		const bool same_shape = lhs.size() == rhs.size() && (lhs.size() <= 10 || lhs[10] == rhs[10]);
+		if (same_shape && lhs.back() == rhs.back() && (lhs.size() == 19 || lhs.back() == 'Z')) return lhs > rhs;
+		const auto order = CompareHistoryTimestamps(lhs, rhs).order;
+		if (order == HistoryTimestampOrder::Unknown) return same_shape && lhs > rhs;
+		return order == HistoryTimestampOrder::After;
+	}
+
+	/// The chronologically later of two stamps, keeping lhs on ties or unknown order.
+	inline const std::string& LaterHistoryTimestamp(const std::string& lhs, const std::string& rhs)
+	{
+		return HistoryTimestampIsAfter(rhs, lhs) ? rhs : lhs;
 	}
 }

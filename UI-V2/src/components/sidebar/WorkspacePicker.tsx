@@ -140,7 +140,7 @@ export function WorkspacePicker({ folders, collections, executionHostId, value, 
   }
 
   return <>
-    <button ref={triggerRef} type="button" role="combobox" aria-label={label} aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? listId : undefined} disabled={disabled}
+    {/* ui: raw button kept — combobox trigger with its own focus and border handlers, not a menu row */}<button ref={triggerRef} type="button" role="combobox" aria-label={label} aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? listId : undefined} disabled={disabled}
       className="flex w-full items-center justify-between gap-2 rounded-md border border-[var(--border)] px-3 py-2 text-left text-sm outline-none"
       style={{ background: 'var(--surface-up)', color: 'var(--text)' }}
       onFocus={(event) => { event.currentTarget.style.borderColor = 'var(--accent)' }}
@@ -159,12 +159,12 @@ export function WorkspacePicker({ folders, collections, executionHostId, value, 
           const optionIndex = optionIndexByKey.get(row.key) ?? -1
           const groupCollapsed = collapsed(row.groupId)
           return <div key={row.key}>
-            {row.group && (index === 0 || filtered[index - 1].groupId !== row.groupId) && <button type="button" data-workspace-group={row.groupId} aria-expanded={!groupCollapsed}
+            {/* ui: raw button kept — group disclosure header styled as an uppercase label, not a menu row */}{row.group && (index === 0 || filtered[index - 1].groupId !== row.groupId) && <button type="button" data-workspace-group={row.groupId} aria-expanded={!groupCollapsed}
               className="flex w-full items-center gap-1 px-2 pt-2 pb-1 text-left font-medium uppercase" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)', letterSpacing: '0.08em' }} disabled={tokens.length > 0}
               onMouseDown={(event) => event.preventDefault()} onClick={() => setDisclosureOverrides((current) => new Map(current).set(row.groupId, !groupCollapsed))}>
               {groupCollapsed ? <ChevronRight size={12} aria-hidden /> : <ChevronDown size={12} aria-hidden />}{row.group}
             </button>}
-            {!groupCollapsed && <button type="button" role="option" id={`${listId}-option-${optionIndex}`} data-workspace-option-index={optionIndex} aria-selected={row.folderId === value} tabIndex={-1}
+            {/* ui: raw button kept — listbox option (role=option); MenuItem renders menuitem */}{!groupCollapsed && <button type="button" role="option" id={`${listId}-option-${optionIndex}`} data-workspace-option-index={optionIndex} aria-selected={row.folderId === value} tabIndex={-1}
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left" style={{ color: optionIndex === activeIndex ? 'var(--text)' : 'var(--text-2)', background: optionIndex === activeIndex ? 'var(--accent-dim)' : 'transparent' }}
               onMouseEnter={() => setActiveKey(row.key)} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(row)}>
               <CustomIcon icon={row.icon} fallback={<FolderIcon size={14} aria-hidden />} />

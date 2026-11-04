@@ -5,6 +5,7 @@ import { NativeHistorySettings, NativeImportFilters } from './NativeHistorySetti
 import { useAppStore } from '../../store/useAppStore'
 import { EMPTY_STARTUP_NATIVE_IMPORT_STATUS, type StartupNativeImportPage } from '../../types/startupNativeImports'
 import { SUPPORTED_CLI_PROVIDER_IDS, fallbackProviderForId } from '../../utils/providerMetadata'
+import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const page = (phase: StartupNativeImportPage['phase'] = 'scanning', generation = 'explicit-1'): StartupNativeImportPage => ({
@@ -15,6 +16,11 @@ let root: ReturnType<typeof createRoot>
 let requests: { action: string; payload: Record<string, unknown>; success: (value: string) => void; failure: (code: number, message: string) => void }[]
 const button = (label: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.textContent === label)!
 const answer = async (index: number, data: StartupNativeImportPage) => { await act(async () => requests[index].success(JSON.stringify(data))) }
+
+const failures: AppFailure[] = []
+const collectFailure = (event: Event) => { failures.push((event as CustomEvent<AppFailure>).detail) }
+beforeEach(() => { failures.length = 0; window.addEventListener(APP_FAILURE_EVENT, collectFailure) })
+afterEach(() => window.removeEventListener(APP_FAILURE_EVENT, collectFailure))
 
 describe('Chat Data import filters', () => {
   it('saves cleaned rules, enables Save only when changed and keeps the draft when saving fails', async () => {
@@ -38,11 +44,10 @@ describe('Chat Data import filters', () => {
       expect(saveButton().disabled).toBe(false)
       await act(async () => saveButton().click())
       expect(save).toHaveBeenLastCalledWith({ titlePrefixes: ['[automation]'], directories: ['C:\\scratch', '/home/you/tmp'] })
-      expect(filterHost.textContent).toContain('could not be saved')
+      expect(failures.at(-1)).toMatchObject({ message: 'Import filters could not be saved.', detail: expect.stringContaining('Your changes are kept') })
       expect(filterHost.querySelector<HTMLTextAreaElement>('#native-import-directories')!.value).toContain('/home/you/tmp')
       await act(async () => saveButton().click())
       expect(save).toHaveBeenCalledTimes(2)
-      expect(filterHost.textContent).not.toContain('could not be saved')
     } finally { act(() => filterRoot.unmount()); filterHost.remove() }
   })
 
@@ -74,10 +79,10 @@ describe('Chat Data native discovery', () => {
     mount()
     vi.spyOn(console, 'error').mockImplementation(() => {})
     await act(async () => requests[0].failure(409, 'Synthetic cache read failed'))
-    expect(host.textContent).toContain('Synthetic cache read failed')
+    expect(failures.at(-1)).toMatchObject({ message: 'Native history discovery results could not be read.', detail: 'Synthetic cache read failed' })
     act(() => useAppStore.setState({ startupNativeImports: { ...page('ready'), totalCount: 1 } }))
     await answer(1, { ...page('ready'), totalCount: 1 })
-    expect(host.textContent).not.toContain('Synthetic cache read failed')
+    expect(failures).toHaveLength(1)
   })
 
   beforeEach(() => {
@@ -97,6 +102,8 @@ describe('Chat Data native discovery', () => {
     const rows = Array.from(host.querySelectorAll('.uam-native-issues > li')).map((row) => row.firstElementChild?.textContent + '|' + row.children[1]?.textContent)
     expect(rows).toEqual(['Antigravity|2 conversations skipped. Nested context.', 'OpenCode|History discovery failed: invalid session list.', 'Discovery|One provider store could not be read.'])
     expect(host.textContent).toContain('5 discovery issues')
+    // The issues disclosure keeps its warning tone, unlike the neutral How discovery works.
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('5 discovery issues'))!.querySelector<SVGElement>('svg[style]')!.style.color).toBe('var(--warning)')
   })
   const mount = () => act(() => root.render(<NativeHistorySettings />))
 
@@ -104,7 +111,7 @@ describe('Chat Data native discovery', () => {
     mount()
     expect(requests).toHaveLength(0)
     expect(scope()).toContain('Antigravity native history stores')
-    expect(host.textContent).toContain('Changing, nested or unrecognised native records remain unimported')
+    expect(host.textContent).toContain('Chats that changed, are nested or are unrecognised are skipped')
     expect(host.textContent).toContain('unregistered local workspaces')
     act(() => { button('Discover histories').click(); button('Discover histories').click() })
     expect(requests).toHaveLength(1)
@@ -135,7 +142,7 @@ describe('Chat Data native discovery', () => {
     act(() => button('Discover histories').click())
     vi.spyOn(console, 'error').mockImplementation(() => {})
     await act(async () => requests[1].failure(409, 'Wait for the current history operation.'))
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Wait for the current history operation.')
+    expect(failures.at(-1)).toMatchObject({ message: 'Native history discovery could not start.', detail: 'Wait for the current history operation.' })
     expect(useAppStore.getState().startupNativeImports.generation).toBe('startup')
     act(() => button('Review histories').click())
     expect(useAppStore.getState().startupNativeImportReviewSequence).toBe(1)
