@@ -13,6 +13,8 @@
 #include "common/provider/provider_setup.h"
 #include "common/provider/provider_native_context.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "app/agent_run_ledger.h"
+#include "app/agent_run_scheduler.h"
 #include "common/runtime/acp/claude_quota_continuation.h"
 #include "common/runtime/acp/acp_control_capability_retention.h"
 #include "common/utils/time_utils.h"
@@ -1067,6 +1069,30 @@ UAM_TEST(RemoteRunnerReclaimsAcknowledgedSpoolPrefixesWithoutChangingCursors)
 	UAM_ASSERT(!fs::exists(native_path(stderr_path)));
 	UAM_ASSERT(!fs::exists(native_path(spool_directory)));
 #endif
+#endif
+}
+
+UAM_TEST(StdioProcessWithInputAcceptsAnEmptyWorkingDirectory)
+{
+#if defined(__APPLE__) || defined(__linux__)
+	// The runner's native OpenCode curl probe passes no working directory; Linux rejected it.
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields process;
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcessWithInput(process, {}, {"/bin/sh", "-c", "cat"}, "empty-cwd-ok", &error));
+	std::string output;
+	std::array<char, 64> buffer{};
+	int exit_code = -1;
+	for (int attempt = 0; attempt < 300; ++attempt)
+	{
+		const std::ptrdiff_t read = service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &error);
+		if (read > 0) { output.append(buffer.data(), static_cast<std::size_t>(read)); continue; }
+		if (service.PollStdioProcessExited(process, &exit_code) && read == 0) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	service.CloseStdioProcessHandles(process);
+	UAM_ASSERT_EQ(exit_code, 0);
+	UAM_ASSERT_EQ(output, std::string("empty-cwd-ok"));
 #endif
 }
 
@@ -6075,6 +6101,58 @@ UAM_TEST(AcpColdLaunchRevokesChangedAuthorityBeforeAndAfterFullReceipt)
 		UAM_ASSERT_EQ(attempts, 0);
 		if (mutation == "root") UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, chat.id)));
 	}
+}
+
+
+namespace
+{
+	// Binds the fixture session to a running managed run so the scheduler owns its outcome.
+	std::string BindManagedRunForLaunchFailure(uam::AppState& app, uam::AcpSessionState& session, const std::string& transcript_id)
+	{
+		AgentRun run;
+		run.id = uam::AgentRunLedger::NewRunId();
+		run.root_chat_id = "managed-launch-root";
+		run.transcript_chat_id = transcript_id;
+		run.agent_id = "reviewer";
+		run.provider_id = session.provider_id;
+		run.definition_snapshot = "Review safely.";
+		run.task = "Review.";
+		run.effective_workspace_access = "read";
+		run.status = "running";
+		run.depth = 1;
+		run.created_at = run.updated_at = uam::time::TimestampNow();
+		UAM_ASSERT(uam::AgentRunLedger::Save(app.data_root, run));
+		app.agent_runs.push_back(run);
+		session.managed_agent_run_id = run.id;
+		return run.id;
+	}
+
+	void AssertManagedLaunchFailed(uam::AppState& app)
+	{
+		(void)uam::AgentRunScheduler::PollAtForTests(app, 1000);
+		UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("failed"));
+		UAM_ASSERT_EQ(app.agent_runs.front().diagnostic_code, std::string("managed_launch_failed"));
+		UAM_ASSERT(!uam::strings::Contains(app.agent_runs.front().diagnostic, "Retry"));
+	}
+}
+
+UAM_TEST(AcpColdLaunchOwnershipLossFailsManagedRun)
+{
+	InjectedRemoteAdmissionFixture fixture;
+	PrepareColdAuthority(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	(void)BindManagedRunForLaunchFailure(app, *fixture.session, chat.id);
+	int attempts = 0;
+	UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+	    [&attempts](uam::AppState&, uam::AcpSessionState&, ChatSession&) { ++attempts; return true; }));
+	BindColdInput(fixture);
+	chat.native_session_id = "replacement-native"; // Revokes the staged launch's ownership.
+	UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+	UAM_ASSERT(fixture.session->queue_held && !fixture.session->managed_launch_attempted);
+	fixture.AwaitSave();
+	UAM_ASSERT_EQ(attempts, 0);
+	AssertManagedLaunchFailed(app);
 }
 
 namespace
