@@ -114,15 +114,20 @@ cmake --build Builds/tests --config Debug --parallel 4
 ctest --test-dir Builds/tests -C Debug --output-on-failure
 ```
 
-Pull-request CI also runs:
+CI runs in tiers so a pull request gets a fast answer and the slow platform checks still run before anything ships.
+
+Every pull request runs:
 
 - A locked CycloneDX frontend SBOM check.
 - Frontend tests and the production frontend build.
 - Linux x86-64, Linux ARM64, and Windows x86-64 helper builds with version smoke tests.
-- Native Release builds and CTest on macOS ARM, macOS Intel, and Windows x64.
-- Packaged-app smoke tests that validate the bundled UI, CEF resources, helper checksums, launch, and shutdown.
-- Separate Computer Use and provider CLI contract checks.
+- The build-flag UI rows and gate self-test when they are relevant.
+- A native Release build, CTest and packaged-app smoke test on macOS ARM, and the complete native core inventory on macOS ARM, split across four shard jobs that share one uploaded test binary.
+- On Windows x64 only when `scripts/select_native_tests.py` finds a change that can behave differently there (Windows-named files, the platform layer, sources whose old or new text contains a Windows or Apple platform conditional, shared build or test-runner inputs): the native Release build, CTest and smoke test, then four Windows shard jobs that share the built test binary and run the core cases whose test files reach a changed source. A change it cannot map runs every case.
+- The Windows Computer Use check for computer-use changes.
 
-Native CI jobs restore a per-platform `ccache` saved by the latest push to the base branch; pull requests read it without saving. Windows CI uses Ninja Multi-Config inside the MSVC developer environment so the cache applies there too, keeping the `Release/` output layout. A newer push to the same pull request cancels its older CI run. CI runs native core cases in two processes, with the wall-clock-budget cases in `tests/ci_serial.txt` running alone afterwards.
+Pull requests that change only Markdown, `LICENSE` or diagram files skip the native jobs. The provider CLI contract checks probe the latest published CLIs rather than repository code, so they run after relevant pushes and weekly. Every push to `main` or the V5 integration branch additionally runs the full core suite on macOS Intel and Windows x64, and, when their files change, the 19 native build-flag rows (V5 branch) and the Windows Computer Use check, so a platform-only regression appears on the base branch within one push. A pull request can still request the native build-flag rows with the `build-flags` label.
 
-Release tags must match the numeric version in `UI-V2/package.json`, optionally followed by a prerelease suffix (for example `v5.0.0-alpha.1` for version `5.0.0`); suffixed tags are published as GitHub prereleases so they never replace the latest release. The release job gates native core cases through one retry and `tests/ci_quarantine.txt` like CI, but keeps running every case serially. The release workflow publishes the two macOS archives, the Windows archive, and the frontend SBOM.
+Native build jobs compile the core test binary while the helper builds are still running, then wait for the helper artifacts (`scripts/wait_for_remote_runners.py`) before building and packaging the app. Native CI jobs restore a per-platform `ccache` saved by the latest push to the base branch; pull requests read it without saving. The cache may grow to 3 GB, so a full Windows build's objects fit without evicting entries mid-build, and entries unused for two days are dropped before a push saves it, and the native dependency caches (CEF and other fetched sources) are likewise saved only by branch pushes; only the small npm cache can still be saved by a pull request that changes the lockfile. After each CI push a cleanup job deletes superseded copies, keeping the newest of each cache family on that branch, so the repository stays under the 10 GB Actions cache limit. Windows CI uses Ninja Multi-Config inside the MSVC developer environment so the cache applies there too, keeping the `Release/` output layout. A newer push to the same pull request cancels its older CI run. CI runs native core cases in two processes, with the wall-clock-budget cases in `tests/ci_serial.txt` running alone afterwards; each shard keeps that order for its share.
+
+Release tags must match the numeric version in `UI-V2/package.json`, optionally followed by a prerelease suffix (for example `v5.0.0-alpha.1` for version `5.0.0`); suffixed tags are published as GitHub prereleases so they never replace the latest release. A release candidate tag containing `-rc` (for example `v5.0.0-rc.1`) is the full release gate: it builds and tests every native case on macOS ARM, macOS Intel and Windows, runs all build-flag rows, and publishes nothing. Before tagging a final release, its commit must have a passed release candidate run. A final tag on that commit rebuilds and packages without repeating the native test runs; without one, the final tag runs them as before. The release job gates native core cases through one retry and `tests/ci_quarantine.txt` like CI, but keeps running every case serially. The release workflow publishes the two macOS archives, the Windows archive, and the frontend SBOM.

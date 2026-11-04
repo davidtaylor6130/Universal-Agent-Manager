@@ -1580,6 +1580,7 @@ if(UAM_BUILD_TESTS)
     tests/acp_workspace_launch_tests.cpp
     tests/queued_prompt_hold_tests.cpp
     tests/agent_target_metadata_tests.cpp
+    tests/uam_control_chat_create_tests.cpp
     tests/turn_finalization_ownership_tests.cpp
     tests/checkpoint_staging_tests.cpp
     tests/codex_allowance_ownership_tests.cpp

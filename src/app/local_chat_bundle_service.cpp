@@ -11,6 +11,8 @@
 #include "common/chat/native_attachment_assets.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
+#include "common/paths/workspace_root.h"
+#include "core/chat_import_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/base64.h"
 #include "common/utils/diagnostic_log.h"
@@ -853,6 +855,13 @@ namespace uam
 			chat.provider_handoff_session_id.clear();
 			chat.provider_handoff_cli_contexts.clear();
 			chat.native_session_id.clear();
+			// The recorded local location is organisation, not execution authority: the copy stays
+			// read-only, and a remote path cannot be kept once the copy is rebound to this computer.
+			// Bundles are untrusted: keep only a plain local absolute path (allowlist), never a network,
+			// device, relative or ~ form that folder matching would otherwise probe.
+			// This must run before execution_host_id is reset below.
+			if (!uam::paths::IsControllerLocalWorkspace(chat) ||
+			    !uam::paths::IsPlainLocalAbsoluteWorkspacePath(uam::strings::Trim(chat.workspace_directory))) chat.workspace_directory.clear();
 			chat.execution_host_id = "local";
 			chat.remote_turn_reconnect_pending = false;
 			chat.remote_process_exists = false;
@@ -869,7 +878,6 @@ namespace uam
 			chat.remote_delivered_stderr_cursor = 0;
 			chat.folder_id.clear();
 			chat.linked_files.clear();
-			chat.workspace_directory.clear();
 			chat.workspace_isolation_kind.clear();
 			chat.workspace_source_directory.clear();
 			chat.workspace_base_ref.clear();
@@ -1064,6 +1072,7 @@ namespace uam
 					return result;
 				}
 			}
+			const std::vector<ChatFolder> folders = ChatFolderStore::Load(data_root);
 			// Complete validation of every incoming original happened above. Prepare
 			// all destination generations before publishing the first chat, binding
 			// each batch to the exact collision-resolved UAM identity.
@@ -1074,6 +1083,8 @@ namespace uam
 				candidate.chat.id = candidate.imported_id;
 				candidate.chat.title = candidate.imported_title;
 				StripImportedExecutionAuthority(candidate.chat);
+				if (const ChatFolder* folder = uam::FindImportedWorkspaceFolder(folders, uam::paths::PathFromUtf8(uam::strings::Trim(candidate.chat.workspace_directory))))
+					candidate.chat.folder_id = folder->id;
 				candidate.document["id"] = candidate.imported_id;
 				candidate.chat.passive_queued_prompt_archive = ChatRepository::ParsePassiveQueuedPromptArchive(
 				    candidate.document.dump(), candidate.imported_id);
