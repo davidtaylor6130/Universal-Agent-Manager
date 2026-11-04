@@ -33,7 +33,7 @@
 }
 .uam-runtime-pill:hover:not(:disabled) .uam-runtime-stop-icon,
 .uam-runtime-pill:focus-visible .uam-runtime-stop-icon { color: var(--error); }
-.uam-runtime-pill:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-runtime-pill:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-runtime-pill:active:not(:disabled) { transform: scale(0.96); }
 
 /* Label cross-fades between the state ("2:48") and "Stop" on hover. */

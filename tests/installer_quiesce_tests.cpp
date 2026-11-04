@@ -517,52 +517,52 @@ UAM_TEST(InstallerQuiesceLocalScanCannotBlockOrStartPausedHost)
 	UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t{1});
 }
 
-UAM_TEST(InstallerQuiesceActiveHostFinishesBeforeQueuedScopeRetry)
+UAM_TEST(InstallerQuiescePauseCancelsRunningHostScanAndRescansLater)
 {
 	TempDir temp("uam-installer-active-scope");
 	uam::AppState app;
 	InstallerWorkspace(app, temp.root);
 	app.folders.push_back({"second-folder", "Second", "/fixture/second-workspace", false, InstallerHost().id});
-	InstallerBarrierRelease active_release;
 	const auto active_entered = std::make_shared<std::promise<void>>();
 	const std::future<void> active_started = active_entered->get_future();
 	const auto remote_calls = std::make_shared<std::atomic<int>>(0);
 	app.startup_native_import_service = std::make_shared<uam::StartupNativeImportService>(
 	    [](const uam::StartupNativeImportScanRequest&, std::stop_token) { return ChatHistorySyncService::LocalHistoryDiscovery{}; },
-	    [wait = active_release.wait, active_entered, remote_calls](const uam::StartupNativeImportRemoteScope& scope, const ProviderProfile*, std::stop_token)
+	    [active_entered, remote_calls](const uam::StartupNativeImportRemoteScope& scope, const ProviderProfile*, std::stop_token stop)
 	    {
-		    if (++*remote_calls == 1)
-		    {
-			    active_entered->set_value();
-			    wait.wait();
-		    }
 		    ChatHistorySyncService::LocalHistoryDiscovery result;
 		    result.chats.push_back(InstallerScopedHistory(scope));
+		    if (++*remote_calls != 1) return result;
+		    // A long export pass that only ends when its bounded export observes cancellation.
+		    active_entered->set_value();
+		    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		    while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+		    // The interrupted pass reports a distinct partial session that must never be published.
+		    result.chats.front().id = result.chats.front().native_session_id = "ses_cancelled_partial";
 		    return result;
 	    });
 	uam::StartupNativeImportService& service = *app.startup_native_import_service;
 	service.Initialize(app);
 	UAM_ASSERT(active_started.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+	UAM_ASSERT(service.BackgroundScanPendingOnHost(InstallerHost().id));
 	std::shared_ptr<void> pause = service.PauseBackgroundScanOnHost(InstallerHost().id);
 	app.settings.execution_hosts[1].runner_status = "installing";
-	UAM_ASSERT(service.BackgroundScanPendingOnHost(InstallerHost().id));
-	UAM_ASSERT(uam::remote_install::HostHasActiveRuntimeWork(app, InstallerHost().id));
 	UAM_ASSERT(!service.BackgroundScanPendingOnHost("another-host"));
-	active_release.Release();
 	WaitInstallerCondition([&]() { return !service.BackgroundScanPendingOnHost(InstallerHost().id); });
 	UAM_ASSERT(!uam::remote_install::HostHasActiveRuntimeWork(app, InstallerHost().id));
 	UAM_ASSERT(!service.Poll(app));
 	app.settings.execution_hosts[1].runner_status = "ready";
-	WaitInstallerCondition([&]()
-	{
-		service.Poll(app);
-		return service.Snapshot().total_count == 1;
-	});
+	for (int poll = 0; poll < 20; ++poll) (void)service.Poll(app);
+	// The cancelled partial pass is not published or marked complete while the install lease is held.
+	UAM_ASSERT_EQ(service.Snapshot().phase, std::string("scanning"));
+	UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t{0});
 	UAM_ASSERT_EQ(remote_calls->load(), 1);
 	pause.reset();
 	WaitInstallerScan(service, app);
-	UAM_ASSERT_EQ(remote_calls->load(), 2);
-	UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t{2});
+	UAM_ASSERT_EQ(remote_calls->load(), 3);
+	const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+	UAM_ASSERT_EQ(ready.total_count, std::size_t{2});
+	UAM_ASSERT(std::ranges::find(ready.candidates, std::string("ses_cancelled_partial"), &uam::StartupNativeImportCandidate::native_session_id) == ready.candidates.end());
 }
 
 UAM_TEST(InstallerQuiesceDeferredScanRejectsChangedConnection)

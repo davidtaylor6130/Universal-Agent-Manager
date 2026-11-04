@@ -25,7 +25,7 @@
   transition: background var(--dur-fast) var(--ease-out-soft);
 }
 .uam-sidebar-glide .uam-sb-hit:hover { background: var(--sidebar-item-hover); }
-.uam-sidebar-glide .uam-sb-hit:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-sidebar-glide .uam-sb-hit:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 .uam-sidebar-glide .uam-sb-hit:disabled { opacity: .5; cursor: default; }
 .uam-sidebar-glide .uam-sb-hit__excerpt { color: var(--text-2); margin-top: 1px; }
 .uam-sidebar-glide .uam-sb-hits__label {

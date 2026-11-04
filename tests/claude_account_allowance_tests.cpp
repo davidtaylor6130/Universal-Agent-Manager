@@ -1,5 +1,5 @@
 #include "common/usage/claude_account_allowance.h"
-#include "common/usage/account_credentials_macos.h"
+#include "common/usage/account_credentials.h"
 #include "test_harness.h"
 #include "common/platform/platform_services.h"
 
@@ -18,7 +18,8 @@ namespace
 		mutable std::size_t offset = 0;
 		mutable int starts = 0, stops = 0, preloaded_starts = 0, input_closes = 0;
 		std::string response = "{\"five_hour\":{\"utilization\":57}}\n200";
-		bool silent = false, flood = false;
+		bool silent = false, flood = false, start_fails = false;
+		int exit_code = 0;
 		std::size_t chunk_size = 13;
 		std::stop_source* cancel_on_read = nullptr;
 
@@ -29,7 +30,7 @@ namespace
 		int NormalizeCapturedCommandExitCode(int code) const override { return code; }
 		ProcessExecutionResult ExecuteCommand(const std::string&, int, std::stop_token) const override { return {}; }
 		bool StartStdioProcess(uam::platform::StdioProcessPlatformFields&, const fs::path&, const std::vector<std::string>& argv,
-		    std::string*, const std::vector<std::pair<std::string, std::string>>&) const override { ++starts; arguments = argv; return true; }
+		    std::string*, const std::vector<std::pair<std::string, std::string>>&) const override { ++starts; arguments = argv; return !start_fails; }
 		bool StartStdioProcessWithInput(uam::platform::StdioProcessPlatformFields&, const fs::path&, const std::vector<std::string>&,
 		    std::string_view, std::string*, const std::vector<std::pair<std::string, std::string>>&) const override { ++preloaded_starts; return false; }
 		void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields&) const override {}
@@ -47,7 +48,7 @@ namespace
 			std::memcpy(bytes, response.data() + offset, length); offset += length; return static_cast<std::ptrdiff_t>(length);
 		}
 		std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields&, char*, std::size_t, std::string*) const override { return -2; }
-		bool PollStdioProcessExited(uam::platform::StdioProcessPlatformFields&, int* code) const override { if (silent || flood) return false; if (code) *code = 0; return offset == response.size(); }
+		bool PollStdioProcessExited(uam::platform::StdioProcessPlatformFields&, int* code) const override { if (silent || flood) return false; if (code) *code = exit_code; return offset == response.size(); }
 		fs::path ResolveCurrentExecutablePath() const override { return {}; }
 		std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const fs::path&, std::string*) const override { return {}; }
 		uintmax_t NativeGeminiSessionMaxFileBytes() const override { return 0; }
@@ -240,3 +241,45 @@ UAM_TEST(MacAccountCredentialHelperRejectsInvalidIdentifiersBeforeSpawning)
 		UAM_ASSERT(result.credential.empty()); UAM_ASSERT(!result.error.empty()); UAM_ASSERT_EQ(fixture.starts, 0);
 	}
 }
+
+UAM_TEST(SecretServiceCredentialReaderReadsExistingGoKeyringItemWithoutUnlocking)
+{
+	ClaudeAccountHttpsFixture fixture; fixture.chunk_size = 8192;
+	// secret-tool prints the item to stdout and its attribute.* lines to stderr, which the reader never keeps.
+	fixture.response = "[1]\nlabel = Password for 'antigravity' on 'gemini'\nsecret = {\"token\":\"synthetic-private-login\"}\ncreated = 2026-01-01 00:00:00\nmodified = 2026-01-01 00:00:00\nschema = org.freedesktop.Secret.Generic\n";
+	const auto result = uam::usage::ReadSecretServiceCredentialWithProcessService(fixture, "gemini", "antigravity");
+	UAM_ASSERT(result.error.empty()); UAM_ASSERT_EQ(result.credential, "{\"token\":\"synthetic-private-login\"}");
+	UAM_ASSERT(fixture.arguments.at(0).ends_with("secret-tool"));
+	UAM_ASSERT(std::vector<std::string>(fixture.arguments.begin() + 1, fixture.arguments.end()) == (std::vector<std::string>{"search", "service", "gemini", "username", "antigravity"}));
+	UAM_ASSERT_EQ(fixture.input_closes, 1); UAM_ASSERT_EQ(fixture.stops, 1);
+	ClaudeAccountHttpsFixture explicit_refresh; explicit_refresh.response = fixture.response; explicit_refresh.chunk_size = 8192;
+	UAM_ASSERT(uam::usage::ReadSecretServiceCredentialWithProcessService(explicit_refresh, "gemini", "antigravity", true).error.empty());
+	UAM_ASSERT_EQ(explicit_refresh.arguments.at(2), "--unlock");
+}
+
+UAM_TEST(SecretServiceCredentialReaderExplainsUnavailableStoreWithoutNamingMacOS)
+{
+	struct Case { bool start_fails; int exit_code; std::string response; bool account_unavailable; };
+	for (const auto& [start_fails, exit_code, response, account_unavailable] : std::vector<Case>{
+	         {true, 0, "", true},                                   // secret-tool cannot start
+	         {false, 127, "", true},                                // secret-tool is not installed
+	         {false, 1, "", true},                                  // no Secret Service answers
+	         {false, 0, "", true},                                  // no matching login: secret-tool exits 0 silently
+	         {false, 0, "[1]\nlabel = Password for 'antigravity' on 'gemini'\ncreated = 2026-01-01 00:00:00\nmodified = 2026-01-01 00:00:00\nschema = org.freedesktop.Secret.Generic\n", false}}) // locked keyring
+	{
+		ClaudeAccountHttpsFixture fixture; fixture.start_fails = start_fails; fixture.exit_code = exit_code; fixture.response = response;
+		const auto result = uam::usage::ReadSecretServiceCredentialWithProcessService(fixture, "gemini", "antigravity");
+		UAM_ASSERT(result.credential.empty()); UAM_ASSERT_EQ(result.account_unavailable, account_unavailable);
+		UAM_ASSERT(result.error.find("credential store") != std::string::npos);
+		UAM_ASSERT(result.error.find("macOS") == std::string::npos); UAM_ASSERT(result.error.find("Keychain") == std::string::npos); UAM_ASSERT(result.error.find("Mac") == std::string::npos);
+	}
+}
+
+#if defined(_WIN32)
+UAM_TEST(WindowsCredentialManagerMissingLoginUsesPlatformNeutralWording)
+{
+	const auto result = uam::usage::ReadAccountCredential("uam-test-missing-credential-644", "antigravity");
+	UAM_ASSERT(result.credential.empty()); UAM_ASSERT(result.account_unavailable);
+	UAM_ASSERT(result.error.find("credential store") != std::string::npos); UAM_ASSERT(result.error.find("macOS") == std::string::npos);
+}
+#endif

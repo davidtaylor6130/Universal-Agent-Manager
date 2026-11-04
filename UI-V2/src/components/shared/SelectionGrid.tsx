@@ -10,6 +10,7 @@ export function SelectionGrid({ label, options, value, onChange }: {
   onChange: (id: string) => void
 }) {
   return <div role="group" aria-label={label} className="uam-selection-grid">
+    {/* ui: raw button kept — multi-line selection card (icon, label, detail, status); no matching primitive */}
     {options.map(option => <button type="button" key={option.id}
       aria-label={option.label} aria-pressed={option.id === value} disabled={option.disabled}
       onClick={() => onChange(option.id)} className="uam-selection-option">

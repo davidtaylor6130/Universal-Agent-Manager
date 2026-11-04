@@ -26,9 +26,7 @@ function BrowserLaunchGuard() {
           <div className="browser-guard__eyebrow">Native shell required</div>
           <h1 className="browser-guard__title">This UI is not meant to run inside Chrome.</h1>
           <p className="browser-guard__body">
-            UAM removes browser tabs and the URL bar by hosting the React UI inside the
-            native CEF desktop window. Opening the bundled HTML directly will always show
-            browser chrome.
+            Open UAM from the desktop app. Browser mode shows browser tabs and the URL bar.
           </p>
           <div className="browser-guard__callout">
             {openedFromFile

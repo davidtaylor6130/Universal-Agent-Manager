@@ -1,7 +1,7 @@
 .uam-btn.uam-subagent-card { display: flex; flex: 1; min-width: 0; width: 100%; height: auto; min-height: 48px; padding: 8px 12px; gap: 12px; border-radius: var(--r-lg); background: var(--surface-up); color: var(--text); text-align: left; cursor: pointer; transition: background var(--dur-fast) var(--ease); }
 /* Agent surfaces step one tone away from the transcript's --bg: darker in light themes, lighter in dark ones. */
 .uam-btn.uam-subagent-card:hover:not(:disabled) { background: var(--surface-high); }
-.uam-btn.uam-subagent-card:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.uam-btn.uam-subagent-card:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-subagent-card[aria-current="page"] { border-color: var(--blue); }
 .uam-subagent-card > .uam-btn__label { display: block; flex: 1; min-width: 0; overflow: hidden; }
 .uam-subagent-card__provider { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: none; }

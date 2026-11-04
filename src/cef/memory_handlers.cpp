@@ -129,6 +129,34 @@ void UamQueryHandler::HandleListMemoryEntries(CefRefPtr<CefBrowser> /*browser*/,
 	                 });
 }
 
+void UamQueryHandler::HandleReadMemoryEntry(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	MemoryLibraryService::Scope scope;
+	std::string error;
+	if (!MemoryLibraryService::ResolveScope(m_app, payload.value("scopeType", "global"), payload.value("folderId", ""), scope, &error))
+	{
+		cb->Failure(400, FailureDetailOrFallback(error, "Failed to resolve memory scope."));
+		return;
+	}
+	const std::string entry_id = payload.value("entryId", "");
+	if (entry_id.empty())
+	{
+		cb->Failure(400, "A memory entry ID is required.");
+		return;
+	}
+	const std::string request_id = payload.value("requestId", "");
+	RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [scope, entry_id, request_id]()
+	    {
+		    std::string content;
+		    std::string error;
+		    if (!MemoryLibraryService::ReadEntryContent(scope, entry_id, content, &error))
+			    return AsyncFailure(404, FailureDetailOrFallback(error, "Failed to read memory entry."));
+		    nlohmann::json response{{"content", std::move(content)}};
+		    return AsyncSuccess(WithOptionalRequestId(std::move(response), request_id));
+	    });
+}
+
 void UamQueryHandler::HandleCreateMemoryEntry(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string requested_scope_type = payload.value("scopeType", "global");

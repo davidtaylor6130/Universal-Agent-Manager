@@ -238,6 +238,72 @@ std::vector<MemoryLibraryService::Entry> MemoryLibraryService::ListEntries(const
 	}
 	return entries;
 }
+
+bool MemoryLibraryService::ReadEntryContent(const Scope& scope, std::string_view entry_id, std::string& content_out, std::string* error_out)
+{
+	ClearError(error_out);
+	content_out.clear();
+	if (scope.scope_type == "all" && entry_id.starts_with("remote:"))
+	{
+		for (const Scope& remote : scope.remote_scopes)
+		{
+			const std::string prefix = RemoteMemoryPrefix(remote);
+			if (entry_id.starts_with(prefix)) return ReadEntryContent(remote, entry_id.substr(prefix.size()), content_out, error_out);
+		}
+		SetError(error_out, "The memory entry's SSH workspace no longer exists.");
+		return false;
+	}
+	// Only the owning scope is listed: a local entry must not depend on SSH hosts being reachable.
+	std::vector<Entry> entries;
+	if (scope.remote_host) entries = ListEntries(scope, error_out);
+	else if (!scope.roots.empty() || !scope.root_path.empty()) entries = MemoryLibraryStore::ListEntries(scope, error_out);
+	if (error_out != nullptr && !error_out->empty()) return false;
+	const auto found = std::ranges::find(entries, entry_id, &Entry::id);
+	if (found == entries.end())
+	{
+		SetError(error_out, "Memory entry is not available in this library scope.");
+		return false;
+	}
+	if (found->file_path.empty())
+	{
+		SetError(error_out, "Memory entry has no readable file path.");
+		return false;
+	}
+
+	std::string text;
+	if (scope.remote_host)
+	{
+		if (!MemoryClient(scope)->ReadTextFile(found->file_path, text, error_out)) return false;
+	}
+	else if (!uam::io::TryReadTextFile(found->file_path, text))
+	{
+		SetError(error_out, "Memory entry could not be read.");
+		return false;
+	}
+	std::istringstream input(text);
+	std::string line;
+	bool in_memory = false;
+	std::vector<std::string> body_lines;
+	while (std::getline(input, line))
+	{
+		if (!in_memory)
+		{
+			if (uam::strings::Trim(line) == "## Memory") in_memory = true;
+			continue;
+		}
+		if (uam::strings::StartsWith(uam::strings::Trim(line), "## ")) break;
+		body_lines.push_back(line);
+	}
+	if (!in_memory)
+	{
+		SetError(error_out, "Memory entry has no Memory section.");
+		return false;
+	}
+	// The writer separates the body from the next heading with blank lines; they are not part of the memory.
+	while (!body_lines.empty() && uam::strings::Trim(body_lines.back()).empty()) body_lines.pop_back();
+	content_out = uam::strings::Join(body_lines, "\n");
+	return true;
+}
 bool MemoryLibraryService::CreateEntry(const Scope& scope, const Draft& draft, Entry* created, std::string* error_out)
 {
 	if (!scope.remote_host) return MemoryLibraryStore::CreateEntry(scope, draft, created, error_out);

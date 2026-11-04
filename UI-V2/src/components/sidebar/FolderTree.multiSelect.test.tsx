@@ -196,7 +196,7 @@ describe('chat multi-selection actions', () => {
     for (const label of ['New chat in this worktree', 'Rename']) {
       const element = item(label)
       expect(element.getAttribute('aria-disabled')).toBe('true')
-      expect(document.getElementById(element.getAttribute('aria-describedby')!)?.textContent).toBe('Not available for multiple selection — select a single chat')
+      expect(document.getElementById(element.getAttribute('aria-describedby')!)?.textContent).toBe('Select one chat to use this')
     }
     act(() => item('Rename').click())
     expect(host.querySelector('input')).toBeNull()
@@ -232,10 +232,10 @@ describe('workspace multi-selection actions', () => {
 
   it('disables single-workspace actions with an explanation and applies the rest to every workspace', async () => {
     selectWorkspaces()
-    for (const label of ['New chat', 'Review native chats', 'Change host icon', 'Rename folder']) {
+    for (const label of ['New chat', 'Review chats', 'Change host icon', 'Rename folder']) {
       const element = item(label)
       expect(element.getAttribute('aria-disabled')).toBe('true')
-      expect(document.getElementById(element.getAttribute('aria-describedby')!)?.textContent).toBe('Not available for multiple selection — select a single workspace')
+      expect(document.getElementById(element.getAttribute('aria-describedby')!)?.textContent).toBe('Select one workspace to use this')
     }
     act(() => item('Move to collection').click())
     await act(async () => { item('Favourites').click(); await flush() })
@@ -269,7 +269,7 @@ describe('collection multi-selection actions', () => {
     const rows = Array.from(document.body.querySelectorAll('[role="menu"] [role="menuitem"]'))
     expect(rows.map((row) => row.classList.contains('uam-sb-menu-item') && !!row.querySelector('svg'))).toEqual([true, true, true])
     expect(item('Delete 2 collections').classList.contains('uam-sb-menu-item--danger')).toBe(true)
-    expect(document.getElementById(rename.getAttribute('aria-describedby')!)?.textContent).toBe('Not available for multiple selection — select a single collection')
+    expect(document.getElementById(rename.getAttribute('aria-describedby')!)?.textContent).toBe('Select one collection to use this')
     act(() => rename.click())
     expect(host.querySelector('input[aria-label^="Rename"]')).toBeNull()
     act(() => item('Delete 2 collections').click())

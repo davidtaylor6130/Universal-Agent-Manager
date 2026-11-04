@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import secrets
 import subprocess
+import sys
 from urllib.parse import urlsplit
 
 
@@ -51,6 +52,8 @@ def main():
     for command in processes.splitlines():
         if re.search(r'/Contents/MacOS/universal_agent_manager(?:\s|$)', command) and ' --uam-' not in command:
             parser.error('Quit the running UAM desktop first. Your existing app will not be stopped or replaced.')
+    # Drop code_sign_clone copies left by earlier launches (#684).
+    subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / 'scripts/prune_code_sign_clones.py')])
     support = Path.home() / 'Library/Application Support'
     directory = support / 'UAM Companion'
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)

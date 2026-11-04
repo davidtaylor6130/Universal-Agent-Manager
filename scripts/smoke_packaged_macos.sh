@@ -8,6 +8,7 @@ smoke_parent=$(cd "${TMPDIR:-/tmp}" && pwd -P)
 smoke_root=$(mktemp -d "$smoke_parent/uam-package-smoke.XXXXXX")
 app_pid=""
 gui_pid=""
+prune_clones="$(cd "$(dirname "$0")" && pwd -P)/prune_code_sign_clones.py"
 
 cleanup()
 {
@@ -21,11 +22,14 @@ cleanup()
             kill -KILL "$pid" 2>/dev/null || true
         fi
     done
+    # macOS keeps a ~0.5 GB code_sign_clone copy of each launched bundle (#684).
+    python3 "$prune_clones" || true
     if [[ -n "$smoke_root" && -d "$smoke_root" && "$smoke_root" == "$smoke_parent"/uam-package-smoke.* ]]; then
         rm -rf "$smoke_root"
     fi
 }
 trap cleanup EXIT INT TERM
+python3 "$prune_clones" || true
 
 unpack_root="$smoke_root/unpacked"
 data_root="$smoke_root/data"

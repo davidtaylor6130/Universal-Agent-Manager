@@ -17,6 +17,8 @@ fi
 
 for bundle in "${bundle_candidates[@]}"; do
     if [ -d "$bundle" ]; then
+        # Drop code_sign_clone copies left by earlier launches (#684).
+        python3 scripts/prune_code_sign_clones.py || true
         echo "Launching $bundle"
         open "$bundle"
         exit 0

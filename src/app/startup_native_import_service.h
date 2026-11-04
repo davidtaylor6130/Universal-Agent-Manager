@@ -46,6 +46,8 @@ namespace uam
 		unsigned pauses = 0;
 		unsigned active = 0;
 		std::uint64_t generation = 0;
+		/// <summary>Shared by scopes admitted since the last pause; a pause stops them and installs a fresh source.</summary>
+		std::stop_source cancel;
 	};
 
 	struct StartupNativeImportRemoteScope
@@ -92,7 +94,7 @@ namespace uam
 		void Cancel();
 		bool ImportPending() const { return m_phase == "importing"; }
 		bool BackgroundScanPendingOnHost(const std::string& host_id) const;
-		/// <summary>Prevent new remote scans on this host until every copy of the returned lease is released.</summary>
+		/// <summary>Cancel running and prevent new remote scans on this host until every copy of the returned lease is released; cancelled scopes rescan later.</summary>
 		std::shared_ptr<void> PauseBackgroundScanOnHost(const std::string& host_id);
 		bool SelectedImportPendingOnHost(const std::string& host_id) const;
 

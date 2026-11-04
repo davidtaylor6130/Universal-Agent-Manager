@@ -1,11 +1,5 @@
 /* Provider & MCP settings. Scoped to .uam-prov-*; colours are tokens only. */
 
-.uam-prov-heading {
-  font-size: var(--fs-md);
-  font-weight: 600;
-  color: var(--text);
-}
-
 .uam-prov-sub {
   font-size: var(--fs-sm);
   line-height: 1.45;
@@ -27,37 +21,12 @@
   overflow: hidden;
 }
 
-.uam-prov-row {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  transition: background var(--dur-fast) var(--ease-out-soft);
-}
-
-.uam-prov-row + .uam-prov-row {
-  border-top: 1px solid var(--border);
-}
-
-.uam-prov-row:hover {
-  background: var(--surface-up);
-}
-
 .uam-prov-card tbody tr {
   transition: background var(--dur-fast) var(--ease-out-soft);
 }
 
 .uam-prov-card tbody tr:hover {
   background: var(--surface-up);
-}
-
-.uam-prov-row-main {
-  flex: 1;
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-  text-align: left;
-  border-radius: var(--r-sm);
 }
 
 .uam-prov-detail {
@@ -81,60 +50,7 @@
 .uam-prov-status[data-tone='warning'] { color: var(--warning); }
 .uam-prov-status[data-tone='error'] { color: var(--error); }
 
-/* Configuration switch: on/off is what you set, not what is happening. */
-.uam-prov-switch {
-  position: relative;
-  flex: none;
-  width: 28px;
-  height: 16px;
-  padding: 0;
-  border-radius: 999px;
-  border: 1px solid var(--border-bright);
-  background: var(--surface-high);
-  cursor: pointer;
-  transition: background var(--dur-fast) var(--ease-out-soft), border-color var(--dur-fast) var(--ease-out-soft);
-}
-
-.uam-prov-switch::after {
-  content: '';
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--text-3);
-  transition: transform var(--dur-fast) var(--ease-out-soft), background var(--dur-fast) var(--ease-out-soft);
-}
-
-.uam-prov-switch[aria-checked='true'] {
-  background: var(--text);
-  border-color: var(--text);
-}
-
-.uam-prov-switch[aria-checked='true']::after {
-  background: var(--bg);
-  transform: translateX(12px);
-}
-
-.uam-prov-switch[aria-checked='mixed'] {
-  border-style: dashed;
-  opacity: 0.6;
-}
-
-.uam-prov-switch:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
-
-/* While a save is in flight, switches pause without dimming so the matrix does not flash. */
-.uam-prov-switch[data-pending]:disabled { opacity: 1; cursor: progress; }
 .uam-prov-card td:not(:first-child):not(:nth-child(2)), .uam-prov-card th:not(:first-child):not(:nth-child(2)) { text-align: center; }
-
-.uam-prov-switch:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
 
 /* Shared warning tint for session banners. */
 .uam-prov-warning {
@@ -171,8 +87,7 @@
 }
 
 .uam-prov-json:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+  outline: var(--focus-ring); outline-offset: var(--focus-inset);
 }
 
 /* Smooth disclosure: content eases in and out (grid-rows 1fr <-> 0fr); unmounts after the exit window. */
@@ -191,10 +106,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .uam-prov-enter,
-  .uam-prov-row,
-  .uam-prov-switch,
-  .uam-prov-switch::after {
+  .uam-prov-enter {
     animation: none;
     transition: none;
   }
@@ -205,16 +117,13 @@
 .uam-prov-seg__item { height: 24px; padding: 0 var(--sp-3); border-radius: var(--r-sm); font-size: var(--fs-sm); color: var(--text-2); transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
 .uam-prov-seg__item:hover { color: var(--text); background: var(--sidebar-item-hover); }
 .uam-prov-seg__item[aria-selected='true'] { color: var(--text); background: var(--surface-high); box-shadow: var(--elev-1); }
-.uam-prov-seg__item:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-prov-seg__item:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-prov-provider { display: flex; align-items: center; gap: var(--sp-2); text-align: left; min-width: 0; border-radius: var(--r-sm); }
 .uam-prov-provider:not(:disabled):hover .uam-prov-provider__name { color: var(--accent); }
 .uam-prov-provider__name { font-size: var(--fs-base); font-weight: 500; color: var(--text); transition: color var(--dur-fast) var(--ease); }
 .uam-prov-sticky { position: sticky; left: 0; z-index: 1; background: var(--surface); }
 .uam-prov-card tbody tr:hover .uam-prov-sticky { background: var(--surface-up); }
 .uam-prov-detail--clip { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
-.uam-prov-avail { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; color: var(--text-3); cursor: default; }
-.uam-prov-avail[data-state='on'] { color: var(--success); background: var(--success-dim); }
-.uam-prov-avail[data-state='unknown'] { opacity: .5; }
 .uam-prov-spin { animation: uam-prov-spin 900ms linear infinite; }
 @keyframes uam-prov-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .uam-prov-spin { animation: none; } }
@@ -241,7 +150,7 @@
 }
 .uam-mcp-dialog:focus { outline: none; }
 .uam-mcp-advanced > summary { color: var(--text-2); border-radius: var(--r-sm); }
-.uam-mcp-advanced > summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-mcp-advanced > summary:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 /* Central setup: removable chips for default skills and agents. */
 .uam-central-chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
@@ -260,13 +169,12 @@
 .uam-central-editor { display: grid; gap: var(--sp-3); padding-block: var(--sp-3); border-top: 1px solid var(--border); }
 .uam-central-editor .uam-set-field { gap: 4px; }
 .uam-central-editor textarea.uam-field { font-family: var(--font-mono); font-size: var(--fs-xs); }
-.uam-central-choice { display: grid; gap: var(--sp-2); }
 
 /* Add-server chooser: descriptive option cards. */
 .uam-prov-option { display: flex; align-items: center; gap: var(--sp-3); width: 100%; padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
 .uam-prov-option:hover { background: var(--surface-up); border-color: var(--border-bright); }
 .uam-prov-option:active { transform: scale(.99); }
-.uam-prov-option:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-prov-option:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 .uam-prov-option__icon { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: var(--r-md); background: var(--surface-high); color: var(--text-2); flex-shrink: 0; }
 .uam-prov-option__label { font-size: var(--fs-base); font-weight: var(--fw-medium); color: var(--text); }
 .uam-prov-option__detail { font-size: var(--fs-xs); color: var(--text-3); }
@@ -292,7 +200,7 @@
 /* Overview matrix with many servers: one "MCP servers" count chip opens a popover with each switch. */
 .uam-prov-mcp-chip { display: inline-flex; align-items: center; gap: var(--sp-2); height: 24px; padding: 0 var(--sp-2); border: 1px solid var(--border); border-radius: 999px; background: var(--surface-up); font-size: var(--fs-sm); color: var(--text-2); white-space: nowrap; transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
 .uam-prov-mcp-chip:hover:not(:disabled), .uam-prov-mcp-chip[aria-expanded='true'] { background: var(--surface-high); border-color: var(--border-bright); color: var(--text); }
-.uam-prov-mcp-chip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-prov-mcp-chip:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-prov-mcp-chip:disabled { opacity: .5; cursor: default; }
 .uam-prov-meter { display: inline-flex; gap: 2px; }
 .uam-prov-meter i { width: 4px; height: 10px; border-radius: 2px; background: var(--surface-high); }
@@ -306,3 +214,7 @@
 @keyframes uam-prov-pop-in { from { opacity: 0; transform: scale(.98) translateY(-4px); } to { opacity: 1; transform: none; } }
 @keyframes uam-prov-pop-out { to { opacity: 0; transform: scale(.98) translateY(-4px); } }
 @media (prefers-reduced-motion: reduce) { .uam-prov-pop, .uam-prov-pop[data-state='closed'] { animation: none; } }
+
+/* Discovery issue: provider and reason share one line; the Show IDs disclosure follows on that line. */
+.uam-native-issues > li.uam-native-issue-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-3); }
+.uam-native-issue-row > .uam-native-issues__ids { margin-top: 0; }

@@ -192,7 +192,7 @@ async function mutateOneCurrentIdentity(dimension: Dimension) {
     if (currentAvailable) {
         const lastUser = (currentChild.messageCount ?? 0) - 2
         expect(ownRow(lastUser)?.textContent).toContain(`Canonical child history row ${lastUser}`)
-    } else expect(host.textContent).toContain('This native conversation is unavailable.')
+    } else expect(host.textContent).toContain('No readable transcript from the provider.')
     expect(held).toHaveLength(1) // New current view may hydrate, never implicitly repeats the old target.
     return currentAvailable
 }
@@ -281,7 +281,7 @@ describe('passive native-journal refresh refusal feedback', () => {
         expect(ownRow(1198)?.textContent).toContain('Canonical child history row 1198')
         expect(host.querySelector('[role="alert"] p')?.textContent).toBe(refusal)
         expect(host.querySelector('[role="alert"] details')).toBeNull()
-        expect(host.textContent).not.toContain('This native conversation is unavailable.')
+        expect(host.textContent).not.toContain('No readable transcript from the provider.')
         expect(host.textContent).not.toContain('Loaded messages are still shown.')
         expect(useAppStore.getState().chatHistoryErrorBySessionId[child.id]).toBeUndefined()
         expect(useAppStore.getState().messages[parent.id]).toBe(parentMessages)
@@ -312,7 +312,7 @@ describe('passive native-journal refresh refusal feedback', () => {
         await render()
         await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Refresh conversation"]')!.click())
         expect(host.querySelector('[role="alert"] p')?.textContent).toBe(refusal)
-        expect(host.querySelector('[role="status"]')?.textContent).toBe('Saved history was retained, but could not be read this time. Refresh to try reading it again.')
+        expect(host.querySelector('[role="status"]')?.textContent).toBe('Saved history kept, but could not be read. Refresh to try again.')
         expect(host.querySelector('[role="alert"] details')).toBeNull()
         expect(host.textContent).not.toContain('The provider has not supplied a readable transcript.')
         expect(ownRow(1198)).toBeNull()
@@ -553,7 +553,7 @@ describe('actual NativeConversation held history ownership, authored UNRUN', () 
         expect(host.innerHTML).toBe(beforeHtml)
         expect(useAppStore.getState()).toBe(beforeReply)
         expect(useAppStore.getState().chatHistoryErrorBySessionId[child.id]).toBeUndefined()
-        if (!available) expect(host.textContent).toContain('This native conversation is unavailable.')
+        if (!available) expect(host.textContent).toContain('No readable transcript from the provider.')
         expectNoInputOrGlobalNavigation()
     })
 })
