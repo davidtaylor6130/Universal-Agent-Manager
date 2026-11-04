@@ -239,10 +239,6 @@ Issue #517 adds the UAM `chat_create` tool ([UAM tools](providers/uam-tools.md))
 
 A local OpenCode Plan child stayed running for 8m53s until cancelled: its local model server sent no response headers for 300 seconds, OpenCode retried natively and ACP reported no progress. The recorded "model does not support reasoning" entry came from OpenCode's separate title agent on its small model, and UAM sent no reasoning effort. UAM's managed-run deadline and turn inactivity limit are both 30 minutes. Decide whether managed children need a shorter no-output threshold or a visible provider-waiting state; no UAM change is made until decided.
 
-## Stream loop stop default
-
-The [stream watch](providers/runtime-lifecycle.md#stream-watch) ships with loop stops on at 20 repeats, a conservative interim value chosen so ordinary polling, re-reads after edits, untimed or empty calls and repeated short fragments do not trip it (#636). Whether the default should be 10, 50 or Off, and whether a provider's fast identical polling with identical output (under 5 seconds per call, under 60 seconds apart) should ever count, needs David's decision from real loop reports. Until then the user can change or disable it in Goal Loops settings.
-
 ## Native mid-turn steering (OpenCode)
 
 **Open question, #371.** UAM has not wired native steering for OpenCode. Whether OpenCode applies a prompt posted to a busy session at its next step is unverified; until it is checked, Steer interrupts the turn and sends the steer first once it settles. The [OpenCode checklist](providers/opencode/opencode.md) records this limit.

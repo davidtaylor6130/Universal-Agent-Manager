@@ -590,7 +590,6 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.lastExitCode === next.lastExitCode &&
     existing.lastStopReason === next.lastStopReason &&
     existing.timeoutStop?.label === next.timeoutStop?.label && existing.timeoutStop?.seconds === next.timeoutStop?.seconds &&
-    existing.timeoutStop?.kind === next.timeoutStop?.kind && existing.timeoutStop?.count === next.timeoutStop?.count && existing.timeoutStop?.example === next.timeoutStop?.example &&
     diagnosticsEquivalent(existing.diagnostics, next.diagnostics) &&
     toolCallsEquivalent(existing.toolCalls, next.toolCalls) &&
     existing.planSummary === next.planSummary &&

@@ -43,7 +43,6 @@ void ResetAcpTurnStreamState(AcpSessionState& session)
 	session.codex_streamed_reasoning_keys.clear();
 	session.codex_last_reasoning_section.clear();
 	session.turn_events.clear();
-	session.stream_watch = {};
 	session.turn_protocol_bytes = 0;
 	session.turn_output_warning_emitted = false;
 	session.turn_output_bytes_per_second.fill(0);

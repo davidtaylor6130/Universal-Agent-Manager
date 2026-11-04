@@ -94,7 +94,7 @@ UAM_TEST(MemorySettingsHandlerGetPrimaryOnlyAdvancesFenceWithoutSaving)
 	const auto first = fixture.Dispatch("getMemorySettings");
 	const auto second = fixture.Dispatch("getMemorySettings");
 	UAM_ASSERT(first->body.at("primaryValidated").get<bool>());
-	UAM_ASSERT_EQ(first->body.at("values").size(), std::size_t{12});
+	UAM_ASSERT_EQ(first->body.at("values").size(), std::size_t{11});
 	UAM_ASSERT_EQ(first->body.at("scope"), second->body.at("scope"));
 	UAM_ASSERT_EQ(second->body.at("revision").get<std::uint64_t>(), revision + 2);
 	UAM_ASSERT_EQ(ReadFile(path), before);
@@ -181,19 +181,6 @@ UAM_TEST(MemorySettingsHandlerPersistsProviderTurnTimeout)
 	UAM_ASSERT_EQ(response->body.at("values").at("activeTurnInactivityTimeoutSeconds"), nlohmann::json(2700));
 	UAM_ASSERT_EQ(fixture.app.settings.active_turn_inactivity_timeout_seconds, 2700);
 	UAM_ASSERT_EQ(fixture.Primary().active_turn_inactivity_timeout_seconds, 2700);
-}
-
-UAM_TEST(MemorySettingsHandlerPersistsStreamLoopRepeatLimit)
-{
-	MemorySettingsHandlerFixture fixture;
-	auto payload = fixture.Fence();
-	payload["streamLoopRepeatLimit"] = 0;
-	payload["memoryRequestId"] = "loop-limit-commit";
-	const auto response = fixture.Dispatch("setMemorySettings", payload);
-	UAM_ASSERT_EQ(response->body.at("outcome"), nlohmann::json("committed"));
-	UAM_ASSERT_EQ(response->body.at("values").at("streamLoopRepeatLimit"), nlohmann::json(0));
-	UAM_ASSERT_EQ(fixture.app.settings.stream_loop_repeat_limit, 0);
-	UAM_ASSERT_EQ(fixture.Primary().stream_loop_repeat_limit, 0);
 }
 
 UAM_TEST(MemorySettingsHandlerBeforeReplaceRejectionPreservesPrimary)

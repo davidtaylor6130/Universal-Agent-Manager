@@ -994,16 +994,11 @@ namespace uam
 			const AcpTurnInactivityRecoveryAction action = AcpTurnInactivityRecovery(
 			    session, now_seconds, static_cast<double>(timeout_seconds),
 			    kAcpCancelTimeoutSeconds);
-			// The shared stream watch (#636) reports repeated output; a loop stops through the same cancel path.
-			const int loop_limit = app.settings.stream_loop_repeat_limit;
-			const bool loop = action == AcpTurnInactivityRecoveryAction::None && !maintenance_operation && loop_limit > 0 &&
-			    session.stream_watch.PeakCount() >= static_cast<std::uint32_t>(loop_limit) && session.running && session.processing &&
-			    !session.cancel_requested && !session.inactivity_timeout_pending && !AcpSessionIsWaitingForInput(session);
-			if (action == AcpTurnInactivityRecoveryAction::None && !loop)
+			if (action == AcpTurnInactivityRecoveryAction::None)
 			{
 				return false;
 			}
-			if (!loop && chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
+			if (chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
 			    chat.remote_turn_reconnect_pending)
 			{
 				session.last_runtime_activity_time_s = now_seconds;
@@ -1018,26 +1013,18 @@ namespace uam
 				return true;
 			}
 
-			const std::uint32_t repeats = session.stream_watch.PeakCount();
-			const std::string repeated = stream_watch::ChannelLabel(session.stream_watch.PeakChannel());
-			const std::string example = session.stream_watch.PeakExample();
-			// Diagnostics carry the kind and count only; the repeated content stays in the UI notice.
-			const std::string message = loop
-			    ? std::string(RuntimeDisplayName(session)) + " turn stopped after the same " + repeated + " repeated " + std::to_string(repeats) +
-			          " times. The delivered prompt was not replayed."
-			    : std::string(RuntimeDisplayName(session)) +
-			          (codex_turn_start_pending ? " turn start" : " turn") + " timed out after " +
-			          std::to_string(timeout_seconds) +
-			          " seconds without provider activity. The delivered prompt was not replayed.";
+			const std::string message = std::string(RuntimeDisplayName(session)) +
+			    (codex_turn_start_pending ? " turn start" : " turn") + " timed out after " +
+			    std::to_string(timeout_seconds) +
+			    " seconds without provider activity. The delivered prompt was not replayed.";
 			std::string cancel_error;
 			const bool cancel_sent = CancelAcpTurn(
 			    app, session.chat_id, &cancel_error, true, true);
 			session.inactivity_timeout_pending = cancel_sent && session.running;
 			session.last_error = message;
-			if (loop) MarkAcpLoopStop(session, repeated, static_cast<int>(repeats), example);
-			else if (!codex_turn_start_pending && !maintenance_operation) MarkAcpTimeoutStop(session, "Provider turn timeout", timeout_seconds);
+			if (!codex_turn_start_pending && !maintenance_operation) MarkAcpTimeoutStop(session, "Provider turn timeout", timeout_seconds);
 			session.lifecycle_state = kAcpLifecycleError;
-			AppendAcpDiagnostic(session, "turn", loop ? "stream_loop_cancel" : "inactivity_cancel", "", "", false, 0, message, cancel_error);
+			AppendAcpDiagnostic(session, "turn", "inactivity_cancel", "", "", false, 0, message, cancel_error);
 			if (!maintenance_operation) BlockActiveGoalForInactivityTimeout(app, session, chat, message);
 			MarkAcpChatUnseenIfBackground(app, chat);
 			if (!session.inactivity_timeout_pending)

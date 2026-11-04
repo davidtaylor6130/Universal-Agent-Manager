@@ -1,7 +1,6 @@
 #pragma once
 
 #include "common/models/app_models.h"
-#include "common/runtime/stream_watch.h"
 #include "common/utils/range_utils.h"
 #include "common/utils/string_utils.h"
 
@@ -159,7 +158,6 @@ namespace uam::settings
 	{
 		settings.cli_idle_timeout_seconds = std::clamp(settings.cli_idle_timeout_seconds, kMinCliIdleTimeoutSeconds, kMaxCliIdleTimeoutSeconds);
 		settings.active_turn_inactivity_timeout_seconds = std::clamp(settings.active_turn_inactivity_timeout_seconds, kMinActiveTurnInactivityTimeoutSeconds, kMaxActiveTurnInactivityTimeoutSeconds);
-		settings.stream_loop_repeat_limit = stream_watch::NormalizeLoopRepeatLimit(settings.stream_loop_repeat_limit);
 		settings.acp_setup_inactivity_timeout_seconds = settings.acp_setup_inactivity_timeout_seconds <= 0
 		                                                    ? kDefaultAcpSetupInactivityTimeoutSeconds
 		                                                    : std::clamp(settings.acp_setup_inactivity_timeout_seconds, kMinAcpSetupInactivityTimeoutSeconds, kMaxAcpSetupInactivityTimeoutSeconds);

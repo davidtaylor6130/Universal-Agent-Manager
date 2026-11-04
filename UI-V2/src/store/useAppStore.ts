@@ -110,7 +110,6 @@ function deserializeState(
     goalTokenBudget: number
     acpSetupInactivityTimeoutSeconds: number
     activeTurnInactivityTimeoutSeconds: number
-    streamLoopRepeatLimit: number
     acpTurnOutputLimitMiB: number
     appVersion: string
     runnerProtocolVersion: number
@@ -325,7 +324,6 @@ function deserializeState(
     goalTokenBudget: cpp.settings.goalTokenBudget ?? 0,
     acpSetupInactivityTimeoutSeconds: cpp.settings.acpSetupInactivityTimeoutSeconds ?? 600,
     activeTurnInactivityTimeoutSeconds: cpp.settings.activeTurnInactivityTimeoutSeconds ?? 1800,
-    streamLoopRepeatLimit: cpp.settings.streamLoopRepeatLimit ?? 20,
     acpTurnOutputLimitMiB: cpp.settings.acpTurnOutputLimitMiB ?? 1024,
     appVersion: cpp.appVersion || existing.appVersion,
     runnerProtocolVersion: cpp.runnerProtocolVersion || existing.runnerProtocolVersion,
@@ -565,7 +563,6 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     goalTokenBudget: patch.settings?.goalTokenBudget ?? current.goalTokenBudget,
     acpSetupInactivityTimeoutSeconds: patch.settings?.acpSetupInactivityTimeoutSeconds ?? current.acpSetupInactivityTimeoutSeconds,
     activeTurnInactivityTimeoutSeconds: patch.settings?.activeTurnInactivityTimeoutSeconds ?? current.activeTurnInactivityTimeoutSeconds,
-    streamLoopRepeatLimit: patch.settings?.streamLoopRepeatLimit ?? current.streamLoopRepeatLimit,
     acpTurnOutputLimitMiB: patch.settings?.acpTurnOutputLimitMiB ?? current.acpTurnOutputLimitMiB,
     showProviderIconsInSidebar: patch.settings?.showProviderIconsInSidebar ?? current.showProviderIconsInSidebar,
     showWorktreePathInSidebar: patch.settings?.showWorktreePathInSidebar ?? current.showWorktreePathInSidebar,
@@ -786,7 +783,6 @@ export const useAppStore = create<AppState>((set, get) => {
             goalTokenBudget: current.goalTokenBudget,
             acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
             activeTurnInactivityTimeoutSeconds: current.activeTurnInactivityTimeoutSeconds,
-            streamLoopRepeatLimit: current.streamLoopRepeatLimit,
             acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
             appVersion: current.appVersion,
             runnerProtocolVersion: current.runnerProtocolVersion,
@@ -1138,7 +1134,6 @@ export const useAppStore = create<AppState>((set, get) => {
         goalTokenBudget: current.goalTokenBudget,
         acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
         activeTurnInactivityTimeoutSeconds: current.activeTurnInactivityTimeoutSeconds,
-        streamLoopRepeatLimit: current.streamLoopRepeatLimit,
         acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
         appVersion: current.appVersion,
         runnerProtocolVersion: current.runnerProtocolVersion,

@@ -33,7 +33,6 @@ OpenCode CLI uses V1 ACP or the checked V2 native API adapter. Common behaviour 
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources capture the host's progressive MCP preference; running sessions retain their captured setup. |
 | `remote-execution` | Both | Needs verification | SSH helper route exists; [V2 launch admission](#version-compatibility) uses the checked executing host, and neither source preparation nor a desktop-only change verifies deployed helpers or live platform/CLI combinations. Shared UAM [bootstrap failure classification](../../remote-environments/ssh.md#bootstrap-failures) has passing isolated native probe regressions; helper delivery and live acceptance remain unverified. |
-| `stream-watch` | UAM | Partial | Structured Chat text, thought and tool events reach the shared [stream watch](../runtime-lifecycle.md#stream-watch) through the common turn-event and tool-call sinks, so loop and stall stops use the normal cancel path with focused native and UI verification; CLI View turns keep only the existing busy-time limit without loop detection or the notice, and live provider, SSH and Windows acceptance is pending. |
 
 ## Version compatibility
 
