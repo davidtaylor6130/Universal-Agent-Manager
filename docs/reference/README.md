@@ -31,7 +31,7 @@ These pages preserve useful source-level details from the trial base, outside th
 | [Duplication audit](codebase-dedup-report.md) | Prior code investigation, not product behaviour |
 | [Archived performance script](history/run_performance_test.ps1) | Manual Windows 500-chat load fixture; still writes the removed `rag_enabled` field |
 
-Exact current acceptance and assigned owners remain in the [V5 log](<../../V5 Improvement Change log.md>).
+Exact current acceptance and assigned owners remain in the GitHub issues.
 
 ## Previous entry points
 

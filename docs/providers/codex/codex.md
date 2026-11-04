@@ -2,7 +2,7 @@
 
 Codex CLI uses app-server over stdio. Common behaviour is defined once in the [provider agreements](../providers.md); this checklist only records delivery and known limits. Native capabilities depend on the installed CLI, selected model and execution environment; shared UAM routes do not imply that every native variant is supported.
 
-**Assessment:** source routes and retained base evidence only, 2026-10-16. Implemented is not live verification or David’s acceptance. Consult the [status definitions](../../documentation-rules.md#agreements-and-implementation) and [V5 log](<../../../V5 Improvement Change log.md>).
+**Assessment:** source routes and retained base evidence only, 2026-10-16. Implemented is not live verification or David’s acceptance. Consult the [status definitions](../../documentation-rules.md#agreements-and-implementation) and the GitHub issues.
 
 | Capability | Delivery | Implementation | Limit or route |
 |---|---|---|---|
@@ -35,4 +35,4 @@ Codex CLI uses app-server over stdio. Common behaviour is defined once in the [p
 | `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. Shared UAM [bootstrap failure classification](../../remote-environments/ssh.md#bootstrap-failures) has passing isolated native probe regressions; helper delivery and live acceptance remain unverified. |
 | `stream-watch` | UAM | Partial | Structured Chat text, thought and tool events reach the shared [stream watch](../runtime-lifecycle.md#stream-watch) through the common turn-event and tool-call sinks, so loop and stall stops use the normal cancel path with focused native and UI verification; CLI View turns keep only the existing busy-time limit without loop detection or the notice, and live provider, SSH and Windows acceptance is pending. |
 
-**Source:** [provider runtime](../../../src/common/provider/codex/cli/codex_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the V5 log.
+**Source:** [provider runtime](../../../src/common/provider/codex/cli/codex_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the GitHub issues.

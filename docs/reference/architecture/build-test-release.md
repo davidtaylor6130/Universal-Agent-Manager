@@ -30,7 +30,7 @@ Unrelated CEF handler fixtures use `tests/cef_handler_fixture.h` to construct th
 
 Windows executables (the app, `uam-runner`, `uam_core_tests` and the CEF handler test executables) embed `src/uam_long_paths.manifest`. Besides long paths, it declares Windows 10 support. Without that entry, Windows reports version 6.2 (Windows 8) to the process in a signed-in desktop session, including kernel32's file version. Chromium then hits `NOTREACHED()` in its client-hint platform-version code, and CEF crashes about 4 seconds after start (`libcef.dll`, `0x80000003`). Background SSH sessions do not apply that version lie, so they hide the crash. The core case `WindowsManifestDeclaresWindows10SoCefSeesTheRealVersion` fails when the entry is missing, because Windows then reports a pre-Windows 10 version to every session type.
 
-The supported release slice has six provider implementations and the React/CEF, ACP, terminal, workspace and memory paths. Do not add excluded engines or remove a provider without explicit direction. Update the root V5 log in the same implementation commit and retain review/user acceptance flags until they are actually complete.
+The supported release slice has six provider implementations and the React/CEF, ACP, terminal, workspace and memory paths. Do not add excluded engines or remove a provider without explicit direction. Track review and user acceptance on the GitHub PR or issue until they are actually complete.
 
 ## Build flags
 
@@ -45,7 +45,7 @@ Native exclusion uses per-provider and per-feature source lists in `CMakeLists.t
 - CMake and packaging: `CMakeLists.txt`, `cmake/`, `Builds/`.
 - UI source and tests: `UI-V2/src/`, `UI-V2/package.json`.
 - Native tests: `tests/`, `CMakeLists.txt`.
-- Repository gates and change status: `AGENTS.md`, `V5 Improvement Change log.md`.
+- Repository gates and change status: `AGENTS.md`, GitHub PRs, issues and milestones.
 
 Commands and build-directory restriction are listed in [AGENTS.md](../../../AGENTS.md). Budgets are test-specific; do not treat an individual interaction assertion as a general startup or release performance target.
 

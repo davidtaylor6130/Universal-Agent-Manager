@@ -1,6 +1,6 @@
 # OpenCode V2.1.2 protocol assessment
 
-Task `task-0835`, 2026-10-23. This is a source assessment of upstream commit `a517687fde98a7329ada3ae644a01a9fc6c4e99e`, not a live provider test or acceptance. The source implementation now selects the local V2 native adapter under the [version policy](../providers/opencode/opencode.md#version-compatibility), preserving the V1 implementation. Ownership and pending review are recorded in the [V5 log](<../../V5 Improvement Change log.md>).
+Task `task-0835`, 2026-10-23. This is a source assessment of upstream commit `a517687fde98a7329ada3ae644a01a9fc6c4e99e`, not a live provider test or acceptance. The source implementation now selects the local V2 native adapter under the [version policy](../providers/opencode/opencode.md#version-compatibility), preserving the V1 implementation. Ownership and pending review are recorded in the GitHub issues.
 
 ## Supported transport and discovery
 

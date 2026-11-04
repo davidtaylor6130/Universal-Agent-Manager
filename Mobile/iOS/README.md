@@ -27,4 +27,4 @@ Run the desktop companion from this branch, or a newer build advertising the sam
 
 Recorded checks and delivery limits: [Verification](VERIFICATION.md).
 
-Product behaviour and current delivery limits: [Native phone agreement](../../docs/phone-native.md). Exact verification, Claude review and David’s acceptance remain separate in the [V5 log](<../../V5 Improvement Change log.md>).
+Product behaviour and current delivery limits: [Native phone agreement](../../docs/phone-native.md). Exact verification, Claude review and David’s acceptance remain separate in the GitHub issues.

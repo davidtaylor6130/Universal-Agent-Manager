@@ -1,6 +1,6 @@
 # UAM project guide for Claude
 
-Read [AGENTS.md](AGENTS.md) first: it owns release scope, work ownership, the V5 change log, build commands, acceptance and documentation maintenance. These instructions supplement it and do not redefine those agreements.
+Read [AGENTS.md](AGENTS.md) first: it owns release scope, work tracking, build commands, acceptance and documentation maintenance. These instructions supplement it and do not redefine those agreements.
 
 Start feature work at [docs/README.md](docs/README.md), then read [How these docs work](docs/documentation-rules.md), the relevant parent introduction and owning feature page. The guide describes expected behaviour; explicit provider checklist statuses and [open decisions](docs/documentation-review.md) distinguish gaps from acceptance. Update affected documentation and capability rows in the same implementation commit, even when the user did not request docs, and run `python3 scripts/check_docs.py`.
 

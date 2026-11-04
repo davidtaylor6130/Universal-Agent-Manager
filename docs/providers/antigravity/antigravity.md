@@ -2,7 +2,7 @@
 
 Antigravity CLI is fully in scope for structured Chat and native CLI View, subject to the same shared requirements as every other provider. Structured chat uses its native stream JSON adapter; CLI View runs the interactive agy terminal. Missing native capabilities require a UAM equivalent or an explicit implementation gap, not a release-scope exemption. Common behaviour is defined once in the [provider agreements](../providers.md); David’s [scope confirmation](../../documentation-review.md#antigravity-scope) does not certify every implementation route.
 
-**Assessment:** source routes and retained base evidence, with the runtime/goal source assessment updated 2026-10-24. Implemented is not live verification or David’s acceptance. Consult the [status definitions](../../documentation-rules.md#agreements-and-implementation) and [V5 log](<../../../V5 Improvement Change log.md>).
+**Assessment:** source routes and retained base evidence, with the runtime/goal source assessment updated 2026-10-24. Implemented is not live verification or David’s acceptance. Consult the [status definitions](../../documentation-rules.md#agreements-and-implementation) and the GitHub issues.
 
 | Capability | Delivery | Implementation | Limit or route |
 |---|---|---|---|
@@ -35,6 +35,6 @@ Antigravity CLI is fully in scope for structured Chat and native CLI View, subje
 | `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. Shared UAM [bootstrap failure classification](../../remote-environments/ssh.md#bootstrap-failures) has passing isolated native probe regressions; helper delivery and live acceptance remain unverified. |
 | `stream-watch` | UAM | Partial | Structured Chat text, thought and tool events reach the shared [stream watch](../runtime-lifecycle.md#stream-watch) through the common turn-event and tool-call sinks, so loop and stall stops use the normal cancel path with focused native and UI verification; CLI View turns keep only the existing busy-time limit without loop detection or the notice, and live provider, SSH and Windows acceptance is pending. |
 
-**Source:** [provider runtime](../../../src/common/provider/antigravity/cli/antigravity_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the V5 log.
+**Source:** [provider runtime](../../../src/common/provider/antigravity/cli/antigravity_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the GitHub issues.
 
 The [26-capability runtime pass](../../reference/antigravity-runtime-goals.md#shared-capability-source-pass) distinguishes existing UAM routes, native limits and the separately owned history/managed-binding gaps; native API absence does not complete a required UAM capability.

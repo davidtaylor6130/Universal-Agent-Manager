@@ -6,7 +6,7 @@ On Windows, UAM checks and starts the npm (`@github/copilot`) or winget (`GitHub
 
 A new chat whose first launch waits for worktree preparation starts Copilot with its queued prompt's agent, so the first prompt is delivered without restarting Copilot.
 
-**Assessment:** source routes and retained verification evidence, 2026-10-17. Implemented is not live verification or David’s acceptance. Consult the [status definitions](../../documentation-rules.md#agreements-and-implementation) and [V5 log](<../../../V5 Improvement Change log.md>).
+**Assessment:** source routes and retained verification evidence, 2026-10-17. Implemented is not live verification or David’s acceptance. Consult the [status definitions](../../documentation-rules.md#agreements-and-implementation) and the GitHub issues.
 
 ## Managed continuation
 
@@ -45,4 +45,4 @@ Native enforcement remains an unresolved assumption: the compatible CLI must enf
 | `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. Shared UAM [bootstrap failure classification](../../remote-environments/ssh.md#bootstrap-failures) has passing isolated native probe regressions; helper delivery and live acceptance remain unverified. |
 | `stream-watch` | UAM | Partial | Structured Chat text, thought and tool events reach the shared [stream watch](../runtime-lifecycle.md#stream-watch) through the common turn-event and tool-call sinks, so loop and stall stops use the normal cancel path with focused native and UI verification; CLI View turns keep only the existing busy-time limit without loop detection or the notice, and live provider, SSH and Windows acceptance is pending. |
 
-**Source:** [provider runtime](../../../src/common/provider/copilot/cli/copilot_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the V5 log.
+**Source:** [provider runtime](../../../src/common/provider/copilot/cli/copilot_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the GitHub issues.

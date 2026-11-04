@@ -1,37 +1,16 @@
 # AGENTS.md
 
-## V5 Master Change Log
+## Work tracking and acceptance
 
-Every agent implementing a V5 change must read and update the tracked root document
-[`V5 Improvement Change log.md`](<V5 Improvement Change log.md>) in the same commit as
-the implementation. Update an existing matching row or append distinct work using
-**Group | Type | Change | Summary | Status**. Types are **Performance**, **Graphical**,
-**Code Only**, **Bugfix** or **Misc**; Change names have at most five words and Summary
-is one factual sentence. Preserve other agents' entries and explicitly distinguish
-completed work from partial implementation or unverified acceptance. Keep detailed
-working evidence in `.UAM/AINotes/`, but do not substitute ignored notes for this log.
+Track work ownership, verification, review and acceptance in the GitHub pull requests,
+issues and milestones. Claim an issue before starting, preserve other agents' work and
+explicitly distinguish completed work from partial implementation or unverified acceptance.
+Keep detailed working evidence in `.UAM/AINotes/`, but record outcomes on the issue or PR.
 
-Status flags must reflect acceptance, not just implementation: use **Un-Reviewed**
-and **Not User Tested** where those checks are outstanding. Every React/frontend
-UI or UX code change, including another agent's work and changes classified as
-Bugfix or Performance, requires **Claude Review** until Claude's review is recorded
-and its findings resolved. Only David's explicit approval of the specific change
-can authorize **Complete**; record the approval reference and satisfy its required
-review first. Automated tests, builds, installation, restarts and requests to
-continue are not user sign-off. Preserve pending flags when adding follow-up fixes.
-
-Agents must also maintain the **Incomplete Work** section in that root log using
-**Group | Type | Change | Summary | Status | Owner**. Add newly discovered fixes or
-missing acceptance immediately, deduplicate against existing entries, and claim work
-before starting by setting Owner to the exact **UAM chat ID** and Status to **In
-Progress** while retaining acceptance flags. Unclaimed work is **Unassigned**; never
-invent IDs or substitute display names, PIDs or branch names. Contact an existing
-owner using available UAM tools before overlapping work or transferring ownership;
-when communication is unavailable, record the gate and avoid conflicting edits.
-Record explicit handoffs with the prior and next chat IDs in linked working evidence.
-Move completed implementation into the main Changes table while retaining unresolved
-acceptance in Incomplete Work; preserve a recorded disposition before removing a
-resolved task. A completed implementation is not David's user sign-off.
+Acceptance is not implementation. Every React/frontend UI or UX code change, including
+another agent's work and Bugfix or Performance changes, requires Claude review with its
+findings resolved. Only David's explicit approval of the specific change counts as user
+sign-off; automated tests, builds, installation, restarts and requests to continue do not.
 
 ## Feature documentation agreement
 
@@ -39,7 +18,7 @@ Before changing a feature, read [docs/README.md](docs/README.md), [the documenta
 
 All work MUST comply with the rules and agreements in [docs/](docs/README.md): feature behaviour, UI, architecture, source of truth, testing, logging and provider requirements alike. Reuse the shared components, services and patterns the docs define instead of building equivalent one-off implementations. For example, GUI work builds dialogs, notices, buttons and settings rows from the primitives in [UI primitives](docs/ui/primitives.md), and backend work respects [architecture boundaries](docs/architecture/code-structure.md). When no documented element fits, extend the shared one and document it in the same commit rather than creating a local variant. When you touch code that violates a documented rule, bring it into compliance or record it as a known gap. If a rule seems wrong, raise it with David instead of silently diverging.
 
-Every behaviour-changing commit must update the owning feature agreement when the expectation changes, any affected provider capability rows, relevant system relationships and the V5 log in the same commit. Review documentation impact during commit preparation even when the human did not mention docs. If no documentation change is needed, explain why in the commit/PR description rather than making a cosmetic edit. Preserve explicit implementation gaps and pending acceptance; documenting a feature does not implement or approve it.
+Every behaviour-changing commit must update the owning feature agreement when the expectation changes, any affected provider capability rows, and relevant system relationships in the same commit. Review documentation impact during commit preparation even when the human did not mention docs. If no documentation change is needed, explain why in the commit/PR description rather than making a cosmetic edit. Preserve explicit implementation gaps and pending acceptance; documenting a feature does not implement or approve it.
 
 All six [provider checklists](docs/providers/providers.md#provider-checklists) must account for every shared required capability. Use explicit Implemented, Partial, Not implemented, Needs verification or reasoned Not applicable entries, with provider/UAM delivery recorded. A missing file or row is a documentation defect, not an unsupported-feature convention. Avoid repeating common requirements in provider-specific pages. Run `python3 scripts/check_docs.py` before committing documentation or provider-capability changes; this gate checks documentation integrity, not runtime support or acceptance.
 

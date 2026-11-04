@@ -2,7 +2,7 @@
 
 OpenCode CLI uses V1 ACP or the checked V2 native API adapter. Common behaviour is defined once in the [provider agreements](../providers.md); this checklist only records delivery and known limits. Native capabilities depend on the installed CLI, selected model and execution environment; shared UAM routes do not imply that every native variant is supported.
 
-**Assessment:** source routes and retained automated evidence only; V1 assessment 2026-10-17 and local V2 source continuation 2026-10-23. Implemented is not live verification or David’s acceptance. Consult the [status definitions](../../documentation-rules.md#agreements-and-implementation) and [V5 log](<../../../V5 Improvement Change log.md>).
+**Assessment:** source routes and retained automated evidence only; V1 assessment 2026-10-17 and local V2 source continuation 2026-10-23. Implemented is not live verification or David’s acceptance. Consult the [status definitions](../../documentation-rules.md#agreements-and-implementation) and the GitHub issues.
 
 | Capability | Delivery | Implementation | Limit or route |
 |---|---|---|---|
@@ -71,4 +71,4 @@ The authenticated native companion treats a late answer from a busy server as sl
 
 The built-in `doom_loop` question is distinct from an MCP action whose generated name is also `doom_loop`. Recognition of the inspected OpenCode 1.18.35 question requires its native tool-and-input metadata; the authenticated child snapshot also needs matching tool patterns and no action tool link. Unknown or changed shapes retain denial or cancellation. This identifies a trusted producer shape, not origin attestation: plugins can imitate it, and ACP does not retain every native snapshot field. This distinction is implemented with protocol verification and scoped source review; recognizing this question grants no provider-native Task permission and does not relax captured read ceilings or broader native policy limits. Desktop, live-provider, Windows, SSH and user acceptance remain pending.
 
-**Source:** [provider runtime](../../../src/common/provider/opencode/cli/opencode_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the V5 log.
+**Source:** [provider runtime](../../../src/common/provider/opencode/cli/opencode_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the GitHub issues.

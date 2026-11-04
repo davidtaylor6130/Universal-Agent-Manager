@@ -33,7 +33,6 @@ These docs describe what UAM’s features mean and how they are expected to beha
 
 - [Documentation review](documentation-review.md): corrected contradictions, confirmed decisions, unresolved scope and known implementation gaps.
 - [Engineering reference](reference/README.md): useful technical detail and source navigation, outside the short feature agreements.
-- [V5 change log](<../V5 Improvement Change log.md>): work ownership, verification, review and David’s specific acceptance.
-- [Repository instructions](../AGENTS.md): required workflow, builds and documentation maintenance.
+- [Repository instructions](../AGENTS.md): required workflow, work tracking in GitHub PRs and issues, builds and documentation maintenance.
 
-Before committing behaviour changes, update the owning feature page and applicable provider checklist in the same commit. Follow [the maintenance agreement](documentation-rules.md#changes-and-commits) even when the user did not request documentation. Run `python3 scripts/check_docs.py`; it checks documentation integrity, not feature correctness. David approved retaining this guide and requested its adoption into `uam/v5-improvements` on 2026-10-17; see the [adoption record](<../V5 Improvement Change log.md#documentation-adoption-2026-10-17>).
+Before committing behaviour changes, update the owning feature page and applicable provider checklist in the same commit. Follow [the maintenance agreement](documentation-rules.md#changes-and-commits) even when the user did not request documentation. Run `python3 scripts/check_docs.py`; it checks documentation integrity, not feature correctness. David approved retaining this guide and requested its adoption into `uam/v5-improvements` on 2026-10-17.

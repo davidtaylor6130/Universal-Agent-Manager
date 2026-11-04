@@ -6,15 +6,15 @@ This page records decisions already agreed with David. It also states whether th
 
 **Agreed 2026-10-12:** app-wide messages should use the notifications panel and one shared transient alert surface. Replace feature-specific popups, including the collection-move failure toast and bottom-right upgrade notice. Features must not add their own popup systems.
 
-**Implementation:** Implemented. The V5 log row `Single Notification System` retains pending verification, Claude Review and user testing; [Notifications](../ui/notifications.md) owns the delivered behaviour.
+**Implementation:** Implemented. `Single Notification System` retains pending verification, Claude Review and user testing; [Notifications](../ui/notifications.md) owns the delivered behaviour.
 
 ## Remove organization undo
 
 **Agreed 2026-10-12:** remove the organization undo feature, including its toast, store and backend undo payloads for workspace, collection, reference and resource reorder/move operations. Route failures through notifications.
 
-**Implementation:** Implemented. The organization undo toast, store and payloads are removed; the V5 log row `Remove Organization Undo` retains pending verification, code review and user testing.
+**Implementation:** Implemented. The organization undo toast, store and payloads are removed; `Remove Organization Undo` retains pending verification, code review and user testing.
 
-Do not mark either decision complete from documentation alone; completion requires the V5 log's review and user-test flags to clear.
+Do not mark either decision complete from documentation alone; completion requires the tracked review and user-test gates to clear.
 
 ## Existing VCS panel
 

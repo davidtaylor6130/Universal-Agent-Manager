@@ -35,7 +35,7 @@ UAM stores its own history and settings locally. Provider CLIs and configured tr
 
 ## Working on UAM
 
-Read [AGENTS.md](AGENTS.md) and [the documentation rules](docs/documentation-rules.md) before changing behaviour. Find the owning feature page and applicable UI rules; keep affected agreements, provider checklist rows and the [V5 change log](<V5 Improvement Change log.md>) aligned in the same commit. This applies even when the human has not explicitly requested documentation. Preserve implementation gaps and pending acceptance rather than changing expectations to match a defect.
+Read [AGENTS.md](AGENTS.md) and [the documentation rules](docs/documentation-rules.md) before changing behaviour. Find the owning feature page and applicable UI rules; keep affected agreements and provider checklist rows aligned in the same commit. This applies even when the human has not explicitly requested documentation. Preserve implementation gaps and pending acceptance rather than changing expectations to match a defect.
 
 Run `python3 scripts/check_docs.py` before committing documentation or provider-capability changes. Use the existing application checks appropriate to an implementation change; documentation checks do not establish runtime correctness. [Engineering reference](docs/reference/README.md) retains useful source details, while [Documentation review](docs/documentation-review.md) records resolved contradictions and remaining scope decisions. [Engineering rules](docs/engineering/engineering.md) define testing and logging.
 

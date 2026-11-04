@@ -1,6 +1,6 @@
 # Queue setting admission audit
 
-Task `task-1076`, source inspection against `c1443f2f2bf150ad825b2db0d910049257fea23f` plus this task’s isolated candidate. This records code routes and scoped native fixtures, not live provider support or David’s acceptance. Historical task evidence is retained privately; current implementation and pending acceptance remain in the [V5 log](<../../V5 Improvement Change log.md>).
+Task `task-1076`, source inspection against `c1443f2f2bf150ad825b2db0d910049257fea23f` plus this task’s isolated candidate. This records code routes and scoped native fixtures, not live provider support or David’s acceptance. Historical task evidence is retained privately; current implementation and pending acceptance remain in the GitHub issues.
 
 ## Admission and public guards
 

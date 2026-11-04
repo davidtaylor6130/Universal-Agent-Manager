@@ -6,4 +6,4 @@ Voice input turns speech into editable composer text using the selected system d
 
 The companion uses its keyboard microphone rather than desktop audio capture; its composer placeholder and microphone tooltip say so. Consolidated macOS/Windows dictation operation, the companion route and user acceptance remain unverified.
 
-The composer does not offer voice mode or read-aloud playback: David removed them on 2026-10-26 ([decision](../../documentation-review.md#composer-actions-voice-mode-and-terminology)). Dictation through the composer microphone is the voice feature. The unused native speech-output services remain to be deleted in a backend follow-up tracked in the [V5 log](<../../../V5 Improvement Change log.md>).
+The composer does not offer voice mode or read-aloud playback: David removed them on 2026-10-26 ([decision](../../documentation-review.md#composer-actions-voice-mode-and-terminology)). Dictation through the composer microphone is the voice feature. The unused native speech-output services remain to be deleted in a backend follow-up tracked in the GitHub issues.

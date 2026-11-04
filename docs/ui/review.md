@@ -1,6 +1,6 @@
 # Reviewing UI work
 
-A UI change includes user experience, visual design, states and motion, not just CSS. A presentation-only task covers structure, copy, layout, primitives and disclosure; store or bridge changes need authorized logic scope. Small isolated fixes can be made directly, while larger newly discovered work is recorded in the V5 log rather than silently expanding a UI pass. Preserve the existing release review and ownership rules in [AGENTS.md](../../AGENTS.md).
+A UI change includes user experience, visual design, states and motion, not just CSS. A presentation-only task covers structure, copy, layout, primitives and disclosure; store or bridge changes need authorized logic scope. Small isolated fixes can be made directly, while larger newly discovered work is recorded in the GitHub issues rather than silently expanding a UI pass. Preserve the existing release review and ownership rules in [AGENTS.md](../../AGENTS.md).
 
 - Check every changed surface visually in dark and light themes (and at least one other built-in theme for colour work), including loading, empty and error states.
 - Keep existing tests' intent; when copy or structure changes on purpose, update the assertion minimally rather than deleting it.

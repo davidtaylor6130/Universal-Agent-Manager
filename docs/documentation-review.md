@@ -1,10 +1,10 @@
 # Documentation review and decisions
 
-This page records the isolated documentation trial and subsequent provider implementation decisions. The provider worktree includes local V5 `e28ba717` and fetched V5 `db982f96` through merge `bb4fed8b`. Expected behaviour comes from David’s instructions and recorded repository decisions; the original documentation-only trial is separate from later native builds, regression checks and read-only CLI probes. The [V5 log](<../V5 Improvement Change log.md>) remains the acceptance and ownership register.
+This page records the isolated documentation trial and subsequent provider implementation decisions. The provider worktree includes local V5 `e28ba717` and fetched V5 `db982f96` through merge `bb4fed8b`. Expected behaviour comes from David’s instructions and recorded repository decisions; the original documentation-only trial is separate from later native builds, regression checks and read-only CLI probes. GitHub PRs, issues and milestones remain the acceptance and ownership register.
 
 ## SVN branch-equivalent selection
 
-Task-1230’s initial read-only revision patch left this requirement open. David explicitly requested completion on 2026-10-23, including an explicit mapping boundary when repository layout is unknown. The implementation now accepts an explicit repository-relative parent, discovers existing child directories and offers a guarded, confirmed local working-copy switch; it does not infer `trunk`/`branches`. The per-selection mapping resolves the layout question for this route. Automated, connected bridge, platform and user acceptance remain separately recorded in the V5 log. The separate new-chat Git selector remains task-1322; see [composer workspace actions](chat/composer/workspace-actions.md) and [SVN](settings/version-control/svn.md).
+Task-1230’s initial read-only revision patch left this requirement open. David explicitly requested completion on 2026-10-23, including an explicit mapping boundary when repository layout is unknown. The implementation now accepts an explicit repository-relative parent, discovers existing child directories and offers a guarded, confirmed local working-copy switch; it does not infer `trunk`/`branches`. The per-selection mapping resolves the layout question for this route. Automated, connected bridge, platform and user acceptance remain separately recorded in the GitHub issues. The separate new-chat Git selector remains task-1322; see [composer workspace actions](chat/composer/workspace-actions.md) and [SVN](settings/version-control/svn.md).
 
 ## Resolved documentation conflicts
 
@@ -55,7 +55,7 @@ The prior [ChatView](../UI-V2/src/components/views/ChatView.tsx) implementation 
 | Claude Plan: Accept edits and proceed, Review each edit, Keep planning | Keep the original authored prompt, selected attachments and reference snapshots through mode/permission waits; new selections belong to the next message. |
 | Generated Codex plan Approve/Deny | Send the fixed application action without borrowing or clearing the independent composer draft or its references. |
 
-The source patch uses a shared captured submission, refuses a changed target chat/birth/provider/host/workspace before delayed dispatch, and clears only unchanged submitted references for the same chat birth after admission. The [regressions](../UI-V2/src/components/views/ChatView.test.tsx) now assert the authorized initial-send rule across goal and all three Claude choices, including references added during goal/mode waits; the generated-action exclusion tests remain. Frontend regressions and the synthetic component fixture have been exercised; linked native CEF integration, real runtime/provider verification, scoped Claude review and David's implementation acceptance remain pending in the [V5 log](<../V5 Improvement Change log.md>).
+The source patch uses a shared captured submission, refuses a changed target chat/birth/provider/host/workspace before delayed dispatch, and clears only unchanged submitted references for the same chat birth after admission. The [regressions](../UI-V2/src/components/views/ChatView.test.tsx) now assert the authorized initial-send rule across goal and all three Claude choices, including references added during goal/mode waits; the generated-action exclusion tests remain. Frontend regressions and the synthetic component fixture have been exercised; linked native CEF integration, real runtime/provider verification, scoped Claude review and David's implementation acceptance remain pending in the GitHub issues.
 
 ## Composer actions, voice mode and terminology
 
@@ -83,7 +83,7 @@ Do not reassign the owners of these existing V5 tasks or mark them fixed from th
 
 ## Stalled goal loop cap
 
-**Source-confirmed implementation gap; behavioral regression pending.** The [goal iteration cap](settings/goal-loops.md) must bound automatic UAM worker continuation. Review-driven continuation checks it before worker queueing, including after a transient blocker. The separate stalled-loop auto-resume route can still queue a worker for an active goal already at or above the cap, including after the cap is lowered. This existing route needs its own admission check and behavioral regression; it remains outside task-0970's review-ordering correction and does not weaken the agreed bound. Ownership and acceptance remain in V5 Incomplete Work as Stalled Goal Loop Cap.
+**Source-confirmed implementation gap; behavioral regression pending.** The [goal iteration cap](settings/goal-loops.md) must bound automatic UAM worker continuation. Review-driven continuation checks it before worker queueing, including after a transient blocker. The separate stalled-loop auto-resume route can still queue a worker for an active goal already at or above the cap, including after the cap is lowered. This existing route needs its own admission check and behavioral regression; it remains outside task-0970's review-ordering correction and does not weaken the agreed bound. Ownership and acceptance remain in the GitHub issues as Stalled Goal Loop Cap.
 
 ## Documentation validation
 
@@ -91,24 +91,24 @@ The local checker validates navigation, heading targets, reachability and one ex
 
 ## Decision status
 
-Both questions raised by the trial are resolved above. David approved retaining the guide and requested its merge into `uam/v5-improvements` on 2026-10-17; see the [adoption record](<../V5 Improvement Change log.md#documentation-adoption-2026-10-17>). Independent documentation review remains pending; implementation gaps and runtime acceptance remain tracked separately.
+Both questions raised by the trial are resolved above. David approved retaining the guide and requested its merge into `uam/v5-improvements` on 2026-10-17. Independent documentation review remains pending; implementation gaps and runtime acceptance remain tracked separately.
 
 ## V5 synchronization
 
-The trial merges `uam/v5-improvements` at `e28ba717`, including empty native-chat rejection and independent account allowances. Incoming application sources are retained without merge edits. New import, allowance, cost and accessibility rules are reflected in the short agreements and provider rows; detailed acquisition, cache and isolated-test-bundle guidance is retained in engineering reference. Upstream review receipts and unresolved native failures remain in the V5 log; this synchronization does not establish new runtime or user acceptance.
+The trial merges `uam/v5-improvements` at `e28ba717`, including empty native-chat rejection and independent account allowances. Incoming application sources are retained without merge edits. New import, allowance, cost and accessibility rules are reflected in the short agreements and provider rows; detailed acquisition, cache and isolated-test-bundle guidance is retained in engineering reference. Upstream review receipts and unresolved native failures remain in the GitHub issues; this synchronization does not establish new runtime or user acceptance.
 
 ## Remaining scope and source mismatches
 
 - [Existing VCS panel](architecture/decisions.md#existing-vcs-panel): resolved 2026-10-25; David keeps the existing Git/SVN commit panel in V5. New panel features still need approval, and the `AGENTS.md` Release Slice exclusion still needs a matching update.
-- Antigravity availability copy now follows the agreed structured Chat and CLI View scope after removing the stale terminal-only description; the [checklist](providers/antigravity/antigravity.md) and V5 log retain broader capability and acceptance gaps.
+- Antigravity availability copy now follows the agreed structured Chat and CLI View scope after removing the stale terminal-only description; the [checklist](providers/antigravity/antigravity.md) and the GitHub issues retain broader capability and acceptance gaps.
 
 ## System-wide native import
 
-The explicit [Chat Data native discovery](settings/chat-data.md#native-provider-histories) entry point retains unregistered absolute local workspaces and stages explicit assignment before selected publication for all six readers. Continued [primary-source research](reference/antigravity-native-history-decision.md) superseded the initial Antigravity upstream-only stopping point with bounded native CLI SQLite and authenticated legacy readers, preserving distinct cascade/trajectory IDs, original workspace and complete terminal-step snapshots. Unknown/nested storage variants and unsupported generic-result media/render content remain whole-conversation refusals and require authoritative format evidence; an official stable export remains desirable. Focused compilation/application publication have synthetic verification; platform/live continuation, Claude review and David acceptance retain explicit pending gates in the [V5 log](<../V5 Improvement Change log.md>); no real history scan or import has occurred.
+The explicit [Chat Data native discovery](settings/chat-data.md#native-provider-histories) entry point retains unregistered absolute local workspaces and stages explicit assignment before selected publication for all six readers. Continued [primary-source research](reference/antigravity-native-history-decision.md) superseded the initial Antigravity upstream-only stopping point with bounded native CLI SQLite and authenticated legacy readers, preserving distinct cascade/trajectory IDs, original workspace and complete terminal-step snapshots. Unknown/nested storage variants and unsupported generic-result media/render content remain whole-conversation refusals and require authoritative format evidence; an official stable export remains desirable. Focused compilation/application publication have synthetic verification; platform/live continuation, Claude review and David acceptance retain explicit pending gates in the GitHub issues; no real history scan or import has occurred.
 
 ## Helper metadata publication
 
-The [SSH agreement](remote-environments/ssh.md) requires installed manifests and checksums to follow the official owned bootstrap transaction. The isolated task-1085 source patch adds publication, restoration and interrupted-transaction recovery for Linux and Windows, retaining the Windows staged loaded-executable replacement route. The production bootstrap compiles and its focused native and injected Linux/Windows filesystem controls pass on macOS, including rejection of failed Linux identity queries that still print expected values; actual Linux execution and Windows loaded-image/PowerShell 5/OpenSSH acceptance remain pending, as do independent review and David's approval. Historical separately synchronized sidecars do not verify either automatic route, and installed-file fingerprints must never be substituted for observed resident identity. Ownership, scoped helper-script verification and acceptance remain in the [V5 log](<../V5 Improvement Change log.md>).
+The [SSH agreement](remote-environments/ssh.md) requires installed manifests and checksums to follow the official owned bootstrap transaction. The isolated task-1085 source patch adds publication, restoration and interrupted-transaction recovery for Linux and Windows, retaining the Windows staged loaded-executable replacement route. The production bootstrap compiles and its focused native and injected Linux/Windows filesystem controls pass on macOS, including rejection of failed Linux identity queries that still print expected values; actual Linux execution and Windows loaded-image/PowerShell 5/OpenSSH acceptance remain pending, as do independent review and David's approval. Historical separately synchronized sidecars do not verify either automatic route, and installed-file fingerprints must never be substituted for observed resident identity. Ownership, scoped helper-script verification and acceptance remain in the GitHub issues.
 
 The completed R3 independent code review found four transaction gaps: Windows lease expiry racing finite commands, protocol-2 recovery endpoint selection, partial journal publication and Ready status after an unconfirmed commit. Source corrections and deterministic controls are applied; changed-input compilation and nine safe CTest routes pass on macOS (seven native, 25 PowerShell and 15 Linux-shell controls), while fresh independent review and CEF/app compilation remain pending. The historical passing controls retain their original input scope and do not establish these corrections or David's acceptance.
 
@@ -126,7 +126,7 @@ Open, pending David: [#627](https://github.com/davidtaylor6130/Universal-Agent-M
 
 ## Provider parity decisions
 
-The provider implementation work preserves all six providers and excludes account-usage changes. Source capability rows now distinguish implemented native adapters from protocol limits and unverified acceptance; the [V5 log](<../V5 Improvement Change log.md>) records actual build and test outcomes.
+The provider implementation work preserves all six providers and excludes account-usage changes. Source capability rows now distinguish implemented native adapters from protocol limits and unverified acceptance; the GitHub PRs and issues record actual build and test outcomes.
 
 | Remaining boundary | Decision required |
 |---|---|
@@ -152,7 +152,7 @@ The provider implementation work preserves all six providers and excludes accoun
 | One native collaboration tool targets several child sessions | Authoritative child vectors and per-child conversation selection are source-integrated; preserve full lineage, control and live GUI acceptance requirements. |
 | Providers expose no verified universal Fast tier | Keep unsupported speed controls hidden and add a route only after native provider, model and authentication metadata prove it. |
 
-Actual Claude source review is recorded in the V5 log; authenticated model turns, live SSH/platform combinations and David’s item-specific acceptance remain separate gates, and no source review or automated check grants Complete.
+Actual Claude source review is recorded in the GitHub issues; authenticated model turns, live SSH/platform combinations and David’s item-specific acceptance remain separate gates, and no source review or automated check grants Complete.
 
 ## T3 subagent experience reference
 
