@@ -23,6 +23,7 @@ Import from `components/ui` (index.ts):
 - Disclosure (replaces native `<details>`: `summary`, `children`, `defaultOpen` or controlled `open`/`onOpenChange`; the panel slides open from its summary and closes back into it.)
 - Reveal (wraps any conditional content: `open`, `as` div or span; enters from slightly below and leaves back the same way, keeping its last children on screen through the exit. Use it instead of a bare `cond && …`.)
 - Swap (keyed cross-slide for content replaced in place, such as list and detail panes or Form/JSON views: outgoing slides out left while incoming slides in from the right.)
+- UsageGauge (`usedPercent`, `size`, `decorative`; the composer allowance half-dial, described below)
 - Overlay
 - ConfirmDialog (optional cancel label, middle secondary action, and `dismissible={false}` for a choice that Escape or the backdrop must not answer)
 - MenuItem (icon, label, detail with `detailLayout` inline|stacked, `trailing` pill, shortcut, `selected` for a checkable menuitemradio, `checked` for a menuitemcheckbox, danger, disabled with `disabledReason` or `nativeDisabled`; ref and attribute passthrough; menus, context menus and the command palette)
@@ -30,6 +31,8 @@ Import from `components/ui` (index.ts):
 - RowButton (full-width list row; reset, hover and focus only, so row classes keep their look)
 
 Icons: lucide-react, 14–16px, stroke default. A Notice may omit dismissal while it represents an unresolved state that the user cannot dismiss into success; its title remains visible on the bar. Ordinary notices retain their dismissal control.
+
+UsageGauge (`usedPercent`, `size`, `decorative`) is the shared half-dial usage meter: an arc in equal thirds using `--success` (0–33% used), `--meter-warning` (33–66%) and `--error` (66–100%), with a needle at the clamped used percentage that rotates on `--dur-base`/`--ease-out-soft` and therefore settles immediately under reduced motion or Motion Off. Its default 20px width and 2.5px arc / 1.5px needle strokes are a deliberate exception to the 14–16px icon size: the half-dial is about 12px tall, giving roughly a 14px icon's footprint while keeping three bands and the needle legible. A standalone known value, including 0%, exposes `role="meter"` with `aria-valuenow` and `aria-valuetext`; an unknown or non-numeric value shows a decorative neutral `--text-2` arc without a needle or meter value. Inside a button, whose children are presentational, pass `decorative` so the gauge is `aria-hidden` and the button's accessible name carries the readable value (a deliberate deviation from the meter-semantics rule in [Accessibility](accessibility.md), which the composer allowance control uses). Forced-colours mode draws the arc in `CanvasText` and the needle in `Highlight`.
 
 ## Settings primitives
 

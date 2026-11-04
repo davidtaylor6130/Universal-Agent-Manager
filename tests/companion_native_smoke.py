@@ -5,6 +5,7 @@ Usage: python3 tests/companion_native_smoke.py Builds/agent/universal_agent_mana
 Retains bounded logs/fixtures under .UAM/AINotes; never launches installed UAM or sends a real model prompt.
 """
 import argparse
+import atexit
 import base64
 import hashlib
 import json
@@ -22,6 +23,9 @@ import time
 import urllib.error
 import urllib.request
 import zlib
+
+# macOS keeps a ~0.5 GB code_sign_clone copy of each launched bundle (#684).
+atexit.register(subprocess.run, [sys.executable, str(Path(__file__).resolve().parents[1] / 'scripts/prune_code_sign_clones.py')])
 
 
 def fake_provider():
