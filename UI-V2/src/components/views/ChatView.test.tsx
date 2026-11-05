@@ -2371,6 +2371,65 @@ describe('ChatView', () => {
         expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Plan the steer', [], true, expect.any(Function))
       } finally { done() }
     })
+
+    it.each([
+      { preference: true, alternateLabel: 'Queue for next turn instead', expected: undefined },
+      { preference: false, alternateLabel: 'Interrupt and steer instead', expected: true },
+    ])('keeps the alternate action chosen while dictating (preference steer=$preference)', async ({ preference, alternateLabel, expected }) => {
+      useAppStore.setState({ steerActiveTurnOnSend: preference })
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      const requests: Array<{ action: string; payload?: { dictationId?: string } }> = []
+      window.cefQuery = vi.fn(({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') })
+      useAppStore.setState({ sendAcpPrompt })
+      const { host, done } = mount()
+      try {
+        typeDraft(host, 'Spoken draft')
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Start dictation"]')!.click(); await Promise.resolve() })
+        await act(async () => { host.querySelector<HTMLButtonElement>(`button[aria-label="${alternateLabel}"]`)!.click(); await Promise.resolve() })
+        expect(requests.some((request) => request.action === 'stopDictation')).toBe(true)
+        expect(sendAcpPrompt).not.toHaveBeenCalled()
+        const dictationId = requests.find((request) => request.action === 'startDictation')?.payload?.dictationId
+        await act(async () => { window.dispatchEvent(new CustomEvent('uam-dictation', { detail: { type: 'dictation', dictationId, event: 'end' } })); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Spoken draft', [], expected, expect.any(Function))
+      } finally { done() }
+    })
+
+    it('keeps the toolbar width stable when the first character replaces Cancel', () => {
+      const { host, done } = mount()
+      try {
+        const actions = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.uam-composer-action')).slice(-2)
+        const [slot, cancel] = actions()
+        expect(slot.classList.contains('uam-composer-alternate-send')).toBe(true)
+        expect(slot.dataset.state).toBe('closed')
+        expect(cancel.getAttribute('aria-label')).toBe('Cancel turn')
+        typeDraft(host, 'x')
+        const [openSlot, send] = actions()
+        expect(openSlot.classList.contains('uam-composer-alternate-send')).toBe(true)
+        expect(openSlot.dataset.state).toBe('open')
+        expect(send.getAttribute('aria-label')).toBe('Queue prompt')
+        expect(host.querySelector('button[aria-label="Cancel turn"]')).toBeNull()
+      } finally { done() }
+    })
+
+    it.each([
+      { draft: '/ralph Ship it', sent: '/ralph Ship it' },
+      { draft: '/goal Ship it', sent: 'Ship it' },
+    ])('applies the labelled action to goal command $draft', async ({ draft, sent }) => {
+      useAppStore.setState((state) => ({ steerActiveTurnOnSend: true, goalTokenBudget: 0,
+        setGoal: vi.fn(() => Promise.resolve({ ok: true, goalId: 'goal-1' })),
+        providers: state.providers.map((provider) => provider.id === 'gemini-cli' ? { ...provider, nativeGoalCommand: '/ralph' } : provider) }))
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(false))
+      useAppStore.setState({ sendAcpPrompt })
+      const { host, done } = mount()
+      try {
+        typeDraft(host, draft)
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Interrupt and steer"]')!.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', sent, [], true, expect.any(Function))
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Queue for next turn instead"]')!.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', sent, [], undefined, expect.any(Function))
+      } finally { done() }
+    })
   })
 
   it.each([true, false])('preserves new text and attachments during prompt admission acceptance=%s', async (accepted) => {

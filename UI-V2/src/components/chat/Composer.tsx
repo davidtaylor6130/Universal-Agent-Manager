@@ -755,11 +755,8 @@ export function ComposerToolbar({
         />
       </div>
       </>}
-        {running && !editing && (holdSend || !canSend) && (
-          <IconButton title="Cancel turn" icon={<Square size={11} fill="currentColor" aria-hidden />} label="Cancel turn" tooltip={false} onClick={onCancelTurn} className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center" style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', background: 'color-mix(in srgb, var(--red) 14%, var(--surface))', color: 'var(--red)' }} />
-        )}
-        {/* Space stays reserved so Send does not shift; the closed state fades out and leaves the tab order. */}
-        {onSendAlternate && !holdSend && (editing || !running || canSend) && <IconButton
+        {/* Space stays reserved in every state, ahead of Cancel and Send, so swapping them does not shift the toolbar; the closed state fades out and leaves the tab order. */}
+        {onSendAlternate && !holdSend && <IconButton
           icon={steerByDefault ? <ListPlus size={15} aria-hidden /> : <CornerUpRight size={15} aria-hidden />}
           label={alternateSendLabel}
           title={alternateSendAvailable ? alternateSendTitle : undefined}
@@ -773,6 +770,9 @@ export function ComposerToolbar({
           className="uam-composer-action uam-composer-secondary-control uam-composer-alternate-send h-[26px] w-[26px] shrink-0 inline-flex items-center justify-center p-0"
           style={{ borderRadius: 6 }}
         />}
+        {running && !editing && (holdSend || !canSend) && (
+          <IconButton title="Cancel turn" icon={<Square size={11} fill="currentColor" aria-hidden />} label="Cancel turn" tooltip={false} onClick={onCancelTurn} className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center" style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', background: 'color-mix(in srgb, var(--red) 14%, var(--surface))', color: 'var(--red)' }} />
+        )}
         {(holdSend || editing || !running || canSend) && <ComposerSendButton canSend={canSend} running={running} editing={editing} steer={steerByDefault} label={sendLabel ?? (steerByDefault ? steerLabel : undefined)} title={steerByDefault ? `${steerLabel}: ${steerDetail}` : undefined} />}
     </div>
   )

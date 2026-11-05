@@ -992,8 +992,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const dictationFinalTextRef = useRef('')
   const dictationInterimTextRef = useRef('')
   const dictationHadErrorRef = useRef(false)
-  const dictationSubmitAfterStopRef = useRef(false)
-  const submitDictatedPromptRef = useRef<(prompt: string) => void>(() => {})
+  // Carries the Send action chosen while dictating, so it applies once dictation finishes.
+  const dictationSubmitAfterStopRef = useRef<false | { steerOverride?: boolean }>(false)
+  const submitDictatedPromptRef = useRef<(prompt: string, steerOverride?: boolean) => void>(() => {})
   const submitInFlightRef = useRef(false)
   const previousComposerIdentityRef = useRef({ id: session.id, birth: sessionBirth })
   const abandonedBirthSubmission = previousComposerIdentityRef.current.id === session.id &&
@@ -1605,7 +1606,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
   }
 
-  const submitGoal = async (prompt: string) => {
+  const submitGoal = async (prompt: string, steerNow: boolean) => {
     const goalMatch = prompt.match(/^\/goal\s+(.+?)(?:\s+--budget\s+(\d+))?\s*$/s)
     if (!goalMatch) return false
     const objective = goalMatch[1].trim()
@@ -1616,7 +1617,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     await createGoalAndSend({ objective, tokenBudget, executionOwner: providerManaged ? 'provider' : 'uam',
       prompt: providerManaged ? `${nativeGoalCommand} ${objective}` : objective,
       attachments: composerAttachments.filter((attachment) => attachment.status === 'ready').map(({ status, error, ...attachment }) => attachment),
-      sendFailure: 'Goal was created, but the first prompt failed to send.' })
+      sendFailure: 'Goal was created, but the first prompt failed to send.', steerNow: steerNow || undefined })
     return true
   }
 
@@ -1710,7 +1711,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       useAppStore.getState().sessions.find((chat) => chat.id === session.id)?.createdAt.getTime() !== session.createdAt.getTime() ||
       composerAttachments.some((attachment) => attachment.status !== 'ready')) return
 	if (dictationActiveRef.current && promptOverride === undefined) {
-	  await stopDictation(true)
+	  await stopDictation({ steerOverride })
 	  return
 	}
 	const readyAttachments = composerAttachments
@@ -1720,13 +1721,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (prompt === '/side' && !session.temporaryParentChatId && !isCompanionContext()) { setDraft(''); await navigateSide(); return }
     if ((prompt === '/side-return' || prompt === '/side-dismiss') && session.temporaryParentChatId && !isCompanionContext()) { setDraft(''); await navigateSide(prompt === '/side-return' ? 'return' : 'dismiss'); return }
     // Handle /goal command
-    if (prompt.startsWith('/goal ')) { await submitGoal(prompt); return }
+    if (prompt.startsWith('/goal ')) { await submitGoal(prompt, steerNow); return }
     const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
     if (nativeGoalCommand && (prompt === nativeGoalCommand || prompt.startsWith(`${nativeGoalCommand} `))) {
       const objective = prompt.slice(nativeGoalCommand.length).trim()
       if (!objective) { setGoalError('Goal objective is required.'); return }
       await createGoalAndSend({ objective, tokenBudget: goalTokenBudget, executionOwner: 'provider',
-        prompt, attachments: readyAttachments, sendFailure: 'Goal was created, but the provider command failed to send.' })
+        prompt, attachments: readyAttachments, sendFailure: 'Goal was created, but the provider command failed to send.', steerNow: steerNow || undefined })
       return
     }
     if (goalArmNextMessage) {
@@ -2284,8 +2285,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     [editingMessageIndex, providerSupported, session.importedReadOnly, draft, submitting, goalSubmitting, referenceCaptureLoading, composerAttachments]
   )
   const dictationAvailable = isCompanionContext() ? browserDictationAvailable() : isCefContext()
-  submitDictatedPromptRef.current = (prompt) => {
-    void submit(undefined, prompt)
+  submitDictatedPromptRef.current = (prompt, steerOverride) => {
+    void submit(undefined, prompt, steerOverride)
   }
 
   const startDictation = async () => {
@@ -2316,7 +2317,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setDictationState('listening')
   }
 
-  async function stopDictation(submitAfterStop = false) {
+  async function stopDictation(submitAfterStop: false | { steerOverride?: boolean } = false) {
     if (!dictationActiveRef.current) return
 	dictationSubmitAfterStopRef.current = submitAfterStop
     setDictationState('stopping')
@@ -2381,7 +2382,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       setDictationState('idle')
       setDraft(prompt)
       if (submitAfterStop && !dictationHadErrorRef.current && prompt.trim()) {
-        submitDictatedPromptRef.current(prompt)
+        submitDictatedPromptRef.current(prompt, submitAfterStop ? submitAfterStop.steerOverride : undefined)
       }
     }
 
