@@ -1207,3 +1207,6 @@ export const useAppStore = create<AppState>((set, get) => {
     },
   }
 })
+
+// A warm chat over the cap that was processing becomes evictable through a later binding update.
+useAppStore.subscribe((state) => state.evictWarmChats())

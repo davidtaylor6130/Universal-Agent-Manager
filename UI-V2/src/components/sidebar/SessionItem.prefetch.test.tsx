@@ -207,6 +207,42 @@ it('never evicts a chat another load claimed while its preload was in flight', a
   expect(sessions.slice(2).every(session => messages[session.id]?.length === 1)).toBe(true)
 })
 
+it('evicts a preload that was processing as soon as it stops', async () => {
+  const sessions = Array.from({ length: 5 }, (_, index) => chat(`busy-${index}`))
+  render(sessions)
+  const processing = (ids: string[]) => useAppStore.setState({ acpBindingBySessionId: Object.fromEntries(ids.map(id => [id, { processing: true }])) as never })
+  for (let index = 0; index < 4; index += 1) {
+    pointer(sessions[index].id, 'pointerover'); wait(150); pointer(sessions[index].id, 'pointerout')
+    await answer(index)
+  }
+  pointer('busy-4', 'pointerover'); wait(150); pointer('busy-4', 'pointerout')
+  processing(sessions.map(session => session.id))
+  await answer(4)
+  // Unload refuses processing chats, so all five stay loaded and tracked.
+  expect(sessions.every(session => useAppStore.getState().messages[session.id]?.length === 1)).toBe(true)
+  expect(sent('releaseChatMessages')).toHaveLength(0)
+  processing(sessions.slice(1).map(session => session.id))
+  await flush()
+  expect(useAppStore.getState().messages['busy-0']).toBeUndefined()
+  expect(sessions.slice(1).every(session => useAppStore.getState().messages[session.id]?.length === 1)).toBe(true)
+  expect(sent('releaseChatMessages').map(([envelope]) => (envelope as Envelope).payload)).toEqual([{ chatId: 'busy-0' }])
+})
+
+it('keeps a preload evictable after the forced reload that follows a turn', async () => {
+  const sessions = Array.from({ length: 5 }, (_, index) => chat(`forced-${index}`))
+  render(sessions)
+  pointer('forced-0', 'pointerover'); wait(150); pointer('forced-0', 'pointerout')
+  await answer(0)
+  act(() => { void useAppStore.getState().loadSessionMessages('forced-0', true) })
+  await answer(1)
+  for (let index = 1; index < sessions.length; index += 1) {
+    pointer(sessions[index].id, 'pointerover'); wait(150); pointer(sessions[index].id, 'pointerout')
+    await answer(index + 1)
+  }
+  expect(useAppStore.getState().messages['forced-0']).toBeUndefined()
+  expect(sent('releaseChatMessages')).toHaveLength(1)
+})
+
 it('evicts the oldest unopened preload beyond four retained chats', async () => {
   const sessions = Array.from({ length: 5 }, (_, index) => chat(`keep-${index}`))
   render(sessions)

@@ -230,6 +230,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   loadOlderSessionMessages: (id: string) => Promise<boolean>
   /** Hover/focus intent: warm a cold local chat's first page without selecting it. */
   prefetchSessionMessages: (id: string) => void
+  /** Unloads the oldest unopened warm chats beyond the retained cap, skipping any still processing. */
+  evictWarmChats: () => void
   unloadSessionMessages: (id: string) => void
   addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string, routingMode?: 'explicit' | 'automatic', options?: CreateSessionOptions) => Promise<boolean>
   branchFromMessage: (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[]) => Promise<string | null>
