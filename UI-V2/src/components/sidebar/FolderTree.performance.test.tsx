@@ -46,4 +46,5 @@ it('commits chat selection within 250ms with 1,000 mounted sidebar rows', () => 
     useAppStore.setState(initial, true)
     vi.unstubAllGlobals()
   }
-})
+// Mounting 1,000 rows took 8s on a hosted macOS runner. It isn't what this test measures; the budgets above are.
+}, 30_000)
