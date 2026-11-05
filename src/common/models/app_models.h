@@ -882,6 +882,8 @@ struct ResourceCollection
 	bool collapsed = false;
 	std::vector<ResourceReference> references;
 	CustomIcon custom_icon;
+	/// Empty for a top-level collection; otherwise the containing collection's id. Last so positional initializers stay valid.
+	std::string parent_id;
 };
 
 struct ShellAction

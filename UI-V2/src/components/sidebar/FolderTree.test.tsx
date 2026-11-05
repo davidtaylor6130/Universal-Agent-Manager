@@ -2,6 +2,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
+import { APP_FAILURE_EVENT } from '../../utils/appFailure'
 import type { Folder, Session } from '../../types/session'
 import { FolderTree } from './FolderTree'
 import { chatGridLeaves, defaultChatGridLayout, setChatInLeaf, splitChatLeaf, writeChatGridLayout } from '../../utils/chatGridStorage'
@@ -552,6 +553,311 @@ describe('FolderTree', () => {
     vi.unstubAllGlobals()
   })
 
+  it('shows nested collections as a tree with nesting actions and a child-aware delete', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
+    useAppStore.setState({
+      resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+        { id: 'other', name: 'Other', collapsed: false, references: [] },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      const parentChildren = host.querySelector('[data-testid="collection-children-homelab"]') as HTMLElement
+      expect(parentChildren.querySelector('[data-testid="folder-collection-services"] [data-testid="folder-row-project"]')).toBeTruthy()
+      const toggle = host.querySelector('[data-testid="collection-header-homelab"] button[aria-label="Collapse Homelab"]') as HTMLButtonElement
+      expect(toggle.getAttribute('aria-controls')).toBe(parentChildren.id)
+
+      // Nested collection menu: keyboard-reachable actions for nesting and leaving the parent.
+      const trigger = host.querySelector('button[aria-label="Actions for Services"]') as HTMLButtonElement
+      act(() => trigger.click())
+      let menu = document.body.querySelector('[role="menu"][aria-label="Services actions"]') as HTMLElement
+      expect(menu.textContent).toContain('New collection inside')
+      const top = Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('Move to top level')) as HTMLButtonElement
+      await act(async () => { top.click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections.find((collection) => collection.id === 'services')?.parentId).toBeUndefined()
+
+      // Move to collection lists only valid targets with their path.
+      act(() => (host.querySelector('button[aria-label="Actions for Homelab"]') as HTMLButtonElement).click())
+      menu = document.body.querySelector('[role="menu"][aria-label="Homelab actions"]') as HTMLElement
+      expect(menu.textContent).not.toContain('Move to top level')
+      act(() => (Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('Move to collection')) as HTMLButtonElement).click())
+      const submenu = document.body.querySelector('[role="menu"][aria-label="Move Homelab to collection"]') as HTMLElement
+      const labels = Array.from(submenu.querySelectorAll('button')).map((button) => button.textContent)
+      expect(labels).toEqual(['Other', 'Services'])
+      await act(async () => { (Array.from(submenu.querySelectorAll('button')).find((button) => button.textContent === 'Services') as HTMLButtonElement).click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections.find((collection) => collection.id === 'homelab')?.parentId).toBe('services')
+
+      // Deleting a parent offers to move children up a level.
+      act(() => (host.querySelector('button[aria-label="Actions for Services"]') as HTMLButtonElement).click())
+      menu = document.body.querySelector('[role="menu"][aria-label="Services actions"]') as HTMLElement
+      act(() => (Array.from(menu.querySelectorAll('button')).find((button) => button.textContent === 'Delete') as HTMLButtonElement).click())
+      const dialog = document.body.querySelector('[role="alertdialog"]') as HTMLElement
+      expect(dialog.textContent).toContain('1 collection inside')
+      const keep = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Move contents up') as HTMLButtonElement
+      await act(async () => { keep.click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections.map((collection) => [collection.id, collection.parentId])).toEqual([['other', undefined], ['homelab', undefined]])
+      expect(useAppStore.getState().folders.map((folder) => folder.id)).toContain('project')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  describe('nested collection delete prompt', () => {
+    const openPrompt = (host: HTMLElement, name: string) => {
+      act(() => (host.querySelector(`button[aria-label="Actions for ${name}"]`) as HTMLButtonElement).click())
+      const menu = document.body.querySelector(`[role="menu"][aria-label="${name} actions"]`) as HTMLElement
+      act(() => (Array.from(menu.querySelectorAll('button')).find((button) => button.textContent === 'Delete') as HTMLButtonElement).click())
+      return document.body.querySelector('[role="alertdialog"]') as HTMLElement
+    }
+    const withTree = async (run: (host: HTMLElement) => Promise<void> | void) => {
+      vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      const root = createRoot(host)
+      try {
+        act(() => root.render(<FolderTree searchQuery="" />))
+        await run(host)
+      } finally {
+        act(() => root.unmount())
+        host.remove()
+        vi.unstubAllGlobals()
+      }
+    }
+    const buttons = (dialog: HTMLElement) => Array.from(dialog.querySelectorAll('button')).map((button) => button.textContent)
+    const workspace = { id: 'project-ref', type: 'workspace-folder' as const, target: 'project', label: 'Project' }
+    const app = { id: 'app-ref', type: 'desktop-app' as const, target: '/Applications/App.app', label: 'App' }
+
+    it('keeps the warning and counts every level', () => withTree((host) => {
+      act(() => useAppStore.setState({ resourceCollections: [
+        { id: 'a', name: 'A', collapsed: false, references: [] },
+        { id: 'b', name: 'B', parentId: 'a', collapsed: false, references: [] },
+        { id: 'c', name: 'C', parentId: 'b', collapsed: false, references: [] },
+      ] }))
+      const dialog = openPrompt(host, 'A')
+      expect(dialog.getAttribute('aria-label')).toBe('Delete collection A')
+      expect(dialog.textContent).toContain('The collection “A” will be permanently deleted. This cannot be undone.')
+      expect(dialog.textContent).toContain('It has 2 collections inside, counting nested ones.')
+      expect(dialog.textContent).toContain('Move contents up moves its child collections to the top level and leaves its workspaces ungrouped.')
+      expect(buttons(dialog)).toEqual(['Cancel', 'Move contents up', 'Delete all'])
+    }))
+
+    it('moves a nested collection\'s workspaces, references and children to its parent', () => withTree(async (host) => {
+      act(() => useAppStore.setState({ resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: false, references: [workspace, app] },
+        { id: 'sub', name: 'Sub', parentId: 'services', collapsed: false, references: [] },
+      ] }))
+      const dialog = openPrompt(host, 'Services')
+      expect(dialog.textContent).toContain('Move contents up moves everything inside to “Homelab”.')
+      await act(async () => { (Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Move contents up') as HTMLButtonElement).click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections).toEqual([
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [workspace, app] },
+        { id: 'sub', name: 'Sub', parentId: 'homelab', collapsed: false, references: [] },
+      ])
+    }))
+
+    it('offers the choice for a nested collection holding only references', () => withTree((host) => {
+      act(() => useAppStore.setState({ resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: false, references: [workspace] },
+      ] }))
+      expect(buttons(openPrompt(host, 'Services'))).toEqual(['Cancel', 'Move contents up', 'Delete all'])
+    }))
+
+    it('says what a top-level collection loses when there is nowhere to move it', () => withTree((host) => {
+      act(() => useAppStore.setState({ resourceCollections: [
+        { id: 'solo', name: 'Solo', collapsed: false, references: [workspace, app] },
+        { id: 'top', name: 'Top', collapsed: false, references: [app] },
+        { id: 'kid', name: 'Kid', parentId: 'top', collapsed: false, references: [] },
+      ] }))
+      const solo = openPrompt(host, 'Solo')
+      expect(buttons(solo)).toEqual(['Cancel', 'Delete collection'])
+      expect(solo.textContent).toContain('cannot be restored. Its other links are removed.')
+      expect(solo.getAttribute('aria-label')).toBe('Delete collection Solo')
+      expect(solo.textContent).toContain('The collection “Solo” will be permanently deleted. This cannot be undone.')
+      act(() => (Array.from(solo.querySelectorAll('button')).find((button) => button.textContent === 'Cancel') as HTMLButtonElement).click())
+      expect(openPrompt(host, 'Top').textContent).toContain('leaves its workspaces ungrouped; its other links are removed.')
+    }))
+
+    it('names the parent limit only when moving references up can hit it', () => withTree(async (host) => {
+      const failures: { detail?: string }[] = []
+      const collect = (event: Event) => failures.push((event as CustomEvent).detail)
+      window.addEventListener(APP_FAILURE_EVENT, collect)
+      const original = useAppStore.getState().deleteResourceCollection
+      const deleteResourceCollection = vi.fn(async () => false)
+      const press = async (dialog: HTMLElement, label: string) => { await act(async () => { (Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === label) as HTMLButtonElement).click(); await Promise.resolve() }) }
+      act(() => useAppStore.setState({ deleteResourceCollection, resourceCollections: [
+        { id: 'solo', name: 'Solo', collapsed: false, references: [workspace] },
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: false, references: [app] },
+      ] }))
+      await press(openPrompt(host, 'Solo'), 'Delete collection')
+      await press(openPrompt(host, 'Services'), 'Delete all')
+      await press(openPrompt(host, 'Services'), 'Move contents up')
+      window.removeEventListener(APP_FAILURE_EVENT, collect)
+      act(() => useAppStore.setState({ deleteResourceCollection: original }))
+      expect(deleteResourceCollection.mock.calls).toEqual([['solo', false], ['services', true], ['services', false]])
+      expect(failures.map((failure) => failure.detail?.includes('500'))).toEqual([false, false, true])
+      expect(failures[2].detail).toContain('“Homelab” may be full')
+    }))
+
+    it('uses the same prompt for a one-item selection as for the menu', () => withTree(async (host) => {
+      act(() => useAppStore.setState({ resourceCollections: [
+        { id: 'a', name: 'A', collapsed: false, references: [] },
+        { id: 'b', name: 'B', parentId: 'a', collapsed: false, references: [] },
+        { id: 'c', name: 'C', parentId: 'b', collapsed: false, references: [] },
+      ] }))
+      const fromMenu = openPrompt(host, 'A')
+      const menuText = fromMenu.textContent
+      expect(menuText).toContain('its workspaces and theirs become ungrouped')
+      act(() => (Array.from(fromMenu.querySelectorAll('button')).find((button) => button.textContent === 'Cancel') as HTMLButtonElement).click())
+      act(() => host.querySelector('[data-collection-id="a"] button[aria-label="A"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+      act(() => (host.querySelector('[aria-label="Delete 1 selected collection"]') as HTMLButtonElement).click())
+      const fromSelection = document.body.querySelector('[role="alertdialog"]') as HTMLElement
+      expect(fromSelection.textContent).toBe(menuText)
+      expect(fromSelection.textContent).toContain('It has 2 collections inside, counting nested ones.')
+      await act(async () => { (Array.from(fromSelection.querySelectorAll('button')).find((button) => button.textContent === 'Delete all') as HTMLButtonElement).click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections).toEqual([])
+      expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+      expect(host.querySelector('[aria-label="Delete 1 selected collection"]')).toBeNull()
+    }))
+  })
+
+  it('leaves collection drags to the collection or list, never to a workspace row', async () => {
+    useAppStore.setState({
+      resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+        { id: 'other', name: 'Other', collapsed: false, references: [] },
+      ],
+    })
+    const failures: unknown[] = []
+    const collect = (event: Event) => failures.push((event as CustomEvent).detail)
+    window.addEventListener(APP_FAILURE_EVENT, collect)
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      const dragged = (id: string, kind: string) => {
+        const data = new Map<string, string>()
+        const transfer = { effectAllowed: '', get types() { return [...data.keys()] }, getData: (type: string) => data.get(type) ?? '', setData: (type: string, value: string) => { data.set(type, value) } }
+        const start = new Event('dragstart', { bubbles: true })
+        Object.defineProperty(start, 'dataTransfer', { value: transfer })
+        act(() => { host.querySelector(`[data-testid="collection-header-${id}"]`)!.dispatchEvent(start) })
+        const event = new Event(kind, { bubbles: true, cancelable: true })
+        Object.defineProperty(event, 'dataTransfer', { value: transfer })
+        Object.defineProperty(event, 'clientY', { value: 1 })
+        return event
+      }
+      const row = () => host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
+
+      // Homelab cannot nest in itself: nothing accepts the drop and the row shows no insert line.
+      const self = dragged('homelab', 'dragover')
+      act(() => { row().dispatchEvent(self) })
+      expect(self.defaultPrevented).toBe(false)
+      expect(row().style.boxShadow).toBe('none')
+      const selfDrop = dragged('homelab', 'drop')
+      await act(async () => { row().dispatchEvent(selfDrop); await Promise.resolve() })
+      expect(failures).toEqual([])
+      expect(useAppStore.getState().resourceCollections.map((collection) => collection.id)).toEqual(['homelab', 'other'])
+
+      // Other can nest in Homelab: the enclosing collection accepts, the row still shows nothing.
+      const valid = dragged('other', 'dragover')
+      act(() => { row().dispatchEvent(valid) })
+      expect(valid.defaultPrevented).toBe(true)
+      expect(row().style.boxShadow).toBe('none')
+      const validDrop = dragged('other', 'drop')
+      await act(async () => { row().dispatchEvent(validDrop); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections.find((collection) => collection.id === 'other')?.parentId).toBe('homelab')
+      expect(failures).toEqual([])
+    } finally {
+      window.removeEventListener(APP_FAILURE_EVENT, collect)
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('counts nested collections and workspaces directly inside a collection in its header badge', () => {
+    useAppStore.setState({
+      resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: false, references: [] },
+        { id: 'deep', name: 'Deep', parentId: 'services', collapsed: false, references: [] },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      const badge = (id: string) => host.querySelector(`[data-testid="collection-count-${id}"]`)?.textContent
+      expect(badge('homelab')).toBe('2')
+      expect(badge('services')).toBe('1')
+      expect(badge('deep')).toBe('0')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('moves a collection when its submenu target gets a full press and release', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
+    useAppStore.setState({
+      resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [] },
+        { id: 'services', name: 'Services', collapsed: false, references: [] },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      act(() => (host.querySelector('button[aria-label="Actions for Services"]') as HTMLButtonElement).click())
+      const menu = document.body.querySelector('[role="menu"][aria-label="Services actions"]') as HTMLElement
+      act(() => (Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('Move to collection')) as HTMLButtonElement).click())
+      const target = document.body.querySelector('[role="menu"][aria-label="Move Services to collection"] button') as HTMLButtonElement
+      // A real press reaches the document first; the submenu is portaled outside the parent menu and must survive it.
+      act(() => { target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })) })
+      expect(target.isConnected).toBe(true)
+      act(() => { target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true })) })
+      await act(async () => { target.click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections.find((collection) => collection.id === 'services')?.parentId).toBe('homelab')
+      expect(document.body.querySelector('[role="menu"][aria-label="Services actions"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('search still reaches workspaces referenced by nested collections', () => {
+    useAppStore.setState({
+      resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: true, references: [] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: true, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="Chat 1" />))
+      expect(host.querySelector('[data-testid="folder-row-project"]')).toBeTruthy()
+      expect(host.querySelector('[data-testid="folder-collection-homelab"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('opens collection actions from the collection context menu', () => {
     vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
     useAppStore.setState({
@@ -724,13 +1030,15 @@ describe('FolderTree', () => {
     const source = host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
     const target = host.querySelector('[data-testid="folder-row-second"]') as HTMLElement
     vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: 40, height: 40, left: 0, right: 100, width: 100, x: 0, y: 0, toJSON: () => ({}) })
-    const transfer = { effectAllowed: '', setData: vi.fn() }
+    const transfer = { effectAllowed: '', types: ['text/x-uam-folder-id'], getData: () => '', setData: vi.fn() }
     const dragStart = new Event('dragstart', { bubbles: true })
     Object.defineProperty(dragStart, 'dataTransfer', { value: transfer })
     const dragOver = new Event('dragover', { bubbles: true, cancelable: true })
     Object.defineProperty(dragOver, 'clientY', { value: 35 })
+    Object.defineProperty(dragOver, 'dataTransfer', { value: transfer })
     const drop = new Event('drop', { bubbles: true, cancelable: true })
     Object.defineProperty(drop, 'clientY', { value: 35 })
+    Object.defineProperty(drop, 'dataTransfer', { value: transfer })
 
     act(() => {
       source.dispatchEvent(dragStart)

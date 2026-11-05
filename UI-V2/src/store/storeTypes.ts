@@ -336,9 +336,12 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   browseFolderDirectory: (currentValue: string) => Promise<string | null>
   listRemoteDirectories: (executionHostId: string, directory: string) => Promise<RemoteDirectoryBrowseResult>
   setCustomIcon: (targetType: CustomIconTarget, targetId: string, icon: CustomIconInput) => Promise<boolean>
-  createResourceCollection: (name: string) => Promise<ResourceCollection | null>
+  createResourceCollection: (name: string, parentId?: string | null) => Promise<ResourceCollection | null>
+  /** Nests a collection (with its references and children) under parentId, or moves it to the top level for null. */
+  moveResourceCollection: (collectionId: string, parentId: string | null) => Promise<boolean>
   renameResourceCollection: (collectionId: string, name: string) => Promise<boolean>
-  deleteResourceCollection: (collectionId: string) => Promise<boolean>
+  /** Child collections move up a level unless deleteChildren removes them too; referenced targets are never deleted. */
+  deleteResourceCollection: (collectionId: string, deleteChildren?: boolean) => Promise<boolean>
   toggleResourceCollection: (collectionId: string) => Promise<boolean>
   reorderResourceCollections: (collectionIds: string[]) => Promise<boolean>
   addResourceReference: (collectionId: string, type: ResourceReferenceType, target: string, label?: string) => Promise<ResourceReference | null>

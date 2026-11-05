@@ -2164,7 +2164,8 @@ function sanitizeResourceCollections(value: unknown): ResourceCollection[] {
           return [{ id: referenceId, type, target, label: stringOr(item.label).trim(), customIcon: sanitizeCustomIcon(item.customIcon) }]
         })
       : []
-    return [{ id, name, collapsed: booleanOr(entry.collapsed, false), references, customIcon: sanitizeCustomIcon(entry.customIcon) }]
+    const parentId = stringOr(entry.parentId).trim()
+    return [{ id, name, ...(parentId ? { parentId } : {}), collapsed: booleanOr(entry.collapsed, false), references, customIcon: sanitizeCustomIcon(entry.customIcon) }]
   })
 }
 

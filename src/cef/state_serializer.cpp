@@ -2561,13 +2561,18 @@ namespace uam
 		{
 			references.push_back(SerializeResourceReference(reference));
 		}
-		return {
+		nlohmann::json object = {
 		    {"id", collection.id},
 		    {"name", collection.name},
 		    {"collapsed", collection.collapsed},
 		    {"customIcon", uam::icons::Serialize(collection.custom_icon)},
 		    {"references", std::move(references)},
 		};
+		if (!collection.parent_id.empty())
+		{
+			object["parentId"] = collection.parent_id;
+		}
+		return object;
 	}
 
 	nlohmann::json StateSerializer::SerializeProvider(const ProviderProfile& profile)

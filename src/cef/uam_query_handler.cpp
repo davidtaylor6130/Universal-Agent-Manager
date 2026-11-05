@@ -412,6 +412,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"createResourceCollection", &UamQueryHandler::HandleCreateResourceCollection},
 		{"renameResourceCollection", &UamQueryHandler::HandleRenameResourceCollection},
 		{"deleteResourceCollection", &UamQueryHandler::HandleDeleteResourceCollection},
+		{"moveResourceCollection", &UamQueryHandler::HandleMoveResourceCollection},
 		{"toggleResourceCollection", &UamQueryHandler::HandleToggleResourceCollection},
 		{"reorderResourceCollections", &UamQueryHandler::HandleReorderResourceCollections},
 		{"addResourceReference", &UamQueryHandler::HandleAddResourceReference},

@@ -4,6 +4,7 @@ import type { ResourceReferenceType } from '../../types/resourceCollection'
 import { reportAppFailure } from '../../utils/appFailure'
 import { RowSubmenu } from './RowSubmenu'
 import { MenuItem } from '../ui'
+import { collectionPath } from '../../utils/collectionTree'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 
 /** Moves membership through one guarded native transaction and reports failures to the shell. */
@@ -72,8 +73,8 @@ export function CollectionMenuItems({
               disabled={current}
               className="uam-sb-menu-item"
               icon={<Library size={13} aria-hidden />}
-              aria-label={current ? `${collection.name} (current)` : collection.name}
-              label={<span className="truncate">{collection.name}</span>}
+              aria-label={current ? `${collectionPath(collections, collection.id)} (current)` : collectionPath(collections, collection.id)}
+              label={<span className="truncate">{collectionPath(collections, collection.id)}</span>}
               trailing={current ? <Check size={13} aria-hidden className="shrink-0" /> : undefined}
               onSelect={() => move(collection.id)}
             />

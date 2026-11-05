@@ -307,6 +307,26 @@ describe('workspace multi-selection actions', () => {
   })
 })
 
+describe('hidden chat selection', () => {
+  it('shift-range and bulk actions skip chats hidden in collapsed collections', async () => {
+    act(() => useAppStore.setState({
+      sessions: [chat('hidden', 'w1'), chat('a'), chat('z', 'w2')],
+      activeSessionId: null,
+      // DOM order: open collection (a), collapsed collection (hidden), ungrouped workspace (z).
+      resourceCollections: [
+        { id: 'col2', name: 'Archive', collapsed: false, references: [{ id: 'p-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+        { id: 'col', name: 'Favourites', collapsed: true, references: [{ id: 'w1-ref', type: 'workspace-folder', target: 'w1', label: 'Workspace one' }] },
+      ],
+    }))
+    expect(row('hidden')?.closest('[inert]')).toBeTruthy()
+    selectChats('a', 'z')
+    expect(selectedIds()).toEqual(['a', 'z'])
+    openChatMenu('z')
+    act(() => item('Delete 2 chats').click())
+    expect(document.body.querySelector('[role="alertdialog"]')?.textContent).not.toContain('Chat hidden')
+  })
+})
+
 describe('collection multi-selection actions', () => {
   it('reads the same for one collection from its menu and as a one-item selection, and reports a failure by name on both', async () => {
     useAppStore.setState({ deleteResourceCollection: async () => false } as never)
@@ -338,16 +358,37 @@ describe('collection multi-selection actions', () => {
     const rename = item('Rename')
     expect(rename.getAttribute('aria-disabled')).toBe('true')
     const rows = Array.from(document.body.querySelectorAll('[role="menu"] [role="menuitem"]'))
-    expect(rows.map((row) => row.classList.contains('uam-sb-menu-item') && !!row.querySelector('svg'))).toEqual([true, true, true])
+    expect(rows.map((row) => row.classList.contains('uam-sb-menu-item') && !!row.querySelector('svg'))).toEqual([true, true, true, true, true, true])
+    for (const label of ['New collection inside', 'Move to collection', 'Move to top level']) {
+      const single = item(label)
+      expect(single.getAttribute('aria-disabled')).toBe('true')
+      expect(document.getElementById(single.getAttribute('aria-describedby')!)?.textContent).toBe('Select one collection to use this')
+    }
     expect(item('Delete 2 collections').classList.contains('uam-sb-menu-item--danger')).toBe(true)
     expect(document.getElementById(rename.getAttribute('aria-describedby')!)?.textContent).toBe('Select one collection to use this')
     act(() => rename.click())
     expect(host.querySelector('input[aria-label^="Rename"]')).toBeNull()
     act(() => item('Delete 2 collections').click())
     const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Delete 2 selected collections"]')!
+    expect(dialog.textContent).toContain('What is inside a nested one moves to its parent')
     await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Delete collections')!.click(); await flush() })
     expect(sent('deleteResourceCollection')).toEqual([{ collectionId: 'col' }, { collectionId: 'col2' }])
     expect(useAppStore.getState().resourceCollections).toEqual([])
+  })
+
+  it('never range-selects collections hidden inside a collapsed parent and nests contents as groups', () => {
+    act(() => useAppStore.setState({ resourceCollections: [
+      { id: 'col', name: 'Favourites', collapsed: true, references: [] },
+      { id: 'hidden', name: 'Hidden', parentId: 'col', collapsed: false, references: [] },
+      { id: 'col2', name: 'Archive', collapsed: false, references: [] },
+    ] }))
+    const contents = host.querySelector<HTMLElement>('[role="group"][aria-label="Favourites contents"]')!
+    expect(contents.querySelector('[data-collection-id="hidden"]')).toBeTruthy()
+    act(() => host.querySelector<HTMLElement>('[data-collection-id="col"] button[aria-label="Favourites"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    act(() => host.querySelector<HTMLElement>('[data-collection-id="col2"] button[aria-label="Archive"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    expect(host.textContent).toContain('2 collections selected')
+    act(() => host.querySelector<HTMLElement>('[data-collection-id="col2"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
+    expect(item('Delete 2 collections')).toBeTruthy()
   })
 
   it('keeps a plain click as expand or collapse without selecting', async () => {
