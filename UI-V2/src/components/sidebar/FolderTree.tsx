@@ -1558,7 +1558,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
         if (!nesting && !event.dataTransfer.types.includes('text/x-uam-folder-resource-id')) return
         // Only the innermost collection is a target; invalid nesting targets do not accept the drop.
         event.stopPropagation()
-        if (nesting && (!draggedCollectionId || draggedCollectionId === collection.id || !canNestCollection(collections, draggedCollectionId, collection.id))) return
+        if (nesting && (!draggedCollectionId || !canNestCollection(collections, draggedCollectionId, collection.id))) return
         event.preventDefault()
         setDropTarget(true)
       }}
@@ -1570,7 +1570,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
         event.preventDefault()
         event.stopPropagation()
         setDropTarget(false)
-        if (nestedId) void moveCollection(nestedId, collection.id)
+        if (nestedId) { if (canNestCollection(collections, nestedId, collection.id)) void moveCollection(nestedId, collection.id) }
         else onFolderDrop(folderId)
       }}
     >
@@ -2043,12 +2043,14 @@ const FolderRow = memo(function FolderRow({
         onDragStart()
       }}
       onDragOver={(event) => {
-        if (!draggable) return
+        // Only workspace drags reorder rows; a collection drag passes through to the enclosing collection or list.
+        if (!draggable || !event.dataTransfer.types.includes('text/x-uam-folder-id')) return
         event.preventDefault()
         const rect = event.currentTarget.getBoundingClientRect()
         onDragOver(event.clientY < rect.top + rect.height / 2 ? 'before' : 'after')
       }}
       onDrop={(event) => {
+        if (!event.dataTransfer.types.includes('text/x-uam-folder-id')) return
         event.preventDefault()
         const rect = event.currentTarget.getBoundingClientRect()
         onDrop(event.clientY < rect.top + rect.height / 2 ? 'before' : 'after')

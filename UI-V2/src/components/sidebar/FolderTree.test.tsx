@@ -697,6 +697,60 @@ describe('FolderTree', () => {
     }))
   })
 
+  it('leaves collection drags to the collection or list, never to a workspace row', async () => {
+    useAppStore.setState({
+      resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+        { id: 'other', name: 'Other', collapsed: false, references: [] },
+      ],
+    })
+    const failures: unknown[] = []
+    const collect = (event: Event) => failures.push((event as CustomEvent).detail)
+    window.addEventListener(APP_FAILURE_EVENT, collect)
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      const dragged = (id: string, kind: string) => {
+        const data = new Map<string, string>()
+        const transfer = { effectAllowed: '', get types() { return [...data.keys()] }, getData: (type: string) => data.get(type) ?? '', setData: (type: string, value: string) => { data.set(type, value) } }
+        const start = new Event('dragstart', { bubbles: true })
+        Object.defineProperty(start, 'dataTransfer', { value: transfer })
+        act(() => { host.querySelector(`[data-testid="collection-header-${id}"]`)!.dispatchEvent(start) })
+        const event = new Event(kind, { bubbles: true, cancelable: true })
+        Object.defineProperty(event, 'dataTransfer', { value: transfer })
+        Object.defineProperty(event, 'clientY', { value: 1 })
+        return event
+      }
+      const row = () => host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
+
+      // Homelab cannot nest in itself: nothing accepts the drop and the row shows no insert line.
+      const self = dragged('homelab', 'dragover')
+      act(() => { row().dispatchEvent(self) })
+      expect(self.defaultPrevented).toBe(false)
+      expect(row().style.boxShadow).toBe('none')
+      const selfDrop = dragged('homelab', 'drop')
+      await act(async () => { row().dispatchEvent(selfDrop); await Promise.resolve() })
+      expect(failures).toEqual([])
+      expect(useAppStore.getState().resourceCollections.map((collection) => collection.id)).toEqual(['homelab', 'other'])
+
+      // Other can nest in Homelab: the enclosing collection accepts, the row still shows nothing.
+      const valid = dragged('other', 'dragover')
+      act(() => { row().dispatchEvent(valid) })
+      expect(valid.defaultPrevented).toBe(true)
+      expect(row().style.boxShadow).toBe('none')
+      const validDrop = dragged('other', 'drop')
+      await act(async () => { row().dispatchEvent(validDrop); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections.find((collection) => collection.id === 'other')?.parentId).toBe('homelab')
+      expect(failures).toEqual([])
+    } finally {
+      window.removeEventListener(APP_FAILURE_EVENT, collect)
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('counts nested collections and workspaces directly inside a collection in its header badge', () => {
     useAppStore.setState({
       resourceCollections: [
@@ -943,11 +997,12 @@ describe('FolderTree', () => {
     const source = host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
     const target = host.querySelector('[data-testid="folder-row-second"]') as HTMLElement
     vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: 40, height: 40, left: 0, right: 100, width: 100, x: 0, y: 0, toJSON: () => ({}) })
-    const transfer = { effectAllowed: '', setData: vi.fn() }
+    const transfer = { effectAllowed: '', types: ['text/x-uam-folder-id'], getData: () => '', setData: vi.fn() }
     const dragStart = new Event('dragstart', { bubbles: true })
     Object.defineProperty(dragStart, 'dataTransfer', { value: transfer })
     const dragOver = new Event('dragover', { bubbles: true, cancelable: true })
     Object.defineProperty(dragOver, 'clientY', { value: 35 })
+    Object.defineProperty(dragOver, 'dataTransfer', { value: transfer })
     const drop = new Event('drop', { bubbles: true, cancelable: true })
     Object.defineProperty(drop, 'clientY', { value: 35 })
     Object.defineProperty(drop, 'dataTransfer', { value: transfer })
