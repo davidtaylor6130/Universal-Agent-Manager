@@ -8405,6 +8405,17 @@ describe('ChatView', () => {
     if (overrides.assistantContent) expect(text).toContain(overrides.assistantContent)
   })
 
+  it('binds a settled row whose finished compaction summary stays in its content', () => {
+    // RetypeSummaries turns a finished summary into context_compaction while message.content keeps the text.
+    const text = renderTurnAfterFollowUp({ assistantContent: 'Status update.\n\nFinished summary.\n\nSettled answer.', turnEvents: [
+      { type: 'assistant_text', text: 'Status update.' },
+      { type: 'context_compaction', text: 'Finished summary.', requestId: 'acp-compaction:summary' },
+      { type: 'assistant_text', text: '\n\nSettled answer.' },
+    ] })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
   it.each([
     { name: 'a turn with no answer text', assistantContent: 'Imported answer', turnEvents: [{ type: 'tool_call' as const, toolCallId: 'tool-1' }] },
     { name: 'a short chunk at the start of a longer row', assistantContent: 'OK, here is the longer imported answer.', turnEvents: [{ type: 'assistant_text' as const, text: 'OK' }] },

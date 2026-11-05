@@ -209,14 +209,14 @@ function fileUriToPath(uri: string): string {
 }
 
 /** True when the turn has answer text and the row's content is exactly that text, in order, so the timeline can replace
- * the row without losing anything. Compaction summaries are saved in content and shown by neither view, so they are
- * skipped; whitespace between chunks is ignored. */
+ * the row without losing anything. Compaction summaries are saved in content, and the timeline shows or hides them through
+ * their own events, so their text is skipped; whitespace between chunks is ignored. */
 function contentIsExactlyTurnText(content: string, events: readonly AcpTurnEvent[]) {
   let rest = content.trimStart()
   let hasAnswerText = false
   for (const event of events) {
     const answer = event.type === 'assistant_text'
-    if (!answer && event.type !== 'context_compaction_summary' && event.type !== 'context_compaction_interrupted') continue
+    if (!answer && event.type !== 'context_compaction_summary' && event.type !== 'context_compaction_interrupted' && event.type !== 'context_compaction') continue
     const text = event.text.trim()
     if (!text) continue
     if (rest.startsWith(text)) rest = rest.slice(text.length).trimStart()
