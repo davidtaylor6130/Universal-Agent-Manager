@@ -182,6 +182,19 @@ describe('WorkspacePicker', () => {
     open()
     expect(document.querySelector('[data-workspace-group="team"]')?.getAttribute('aria-expanded')).toBe('true')
   })
+  it('labels nested groups by path so equal names stay distinct and searchable', () => {
+    props = { ...props, value: 'u', collections: [
+      collection('homelab', 'Homelab'), { ...collection('h-services', 'Services', 'a'), parentId: 'homelab' },
+      collection('work', 'Work'), { ...collection('w-services', 'Services', 'b'), parentId: 'work' },
+    ] }
+    render()
+    open()
+    expect(document.querySelector('[data-workspace-group="h-services"]')!.textContent).toBe('Homelab / Services')
+    expect(document.querySelector('[data-workspace-group="w-services"]')!.textContent).toBe('Work / Services')
+    query('homelab')
+    expect(options().map((option) => option.textContent)).toEqual([expect.stringContaining('App')])
+  })
+
   it('keeps equal collection labels independent and reveals searched parents without changing saved collapse', () => {
     props = { ...props, value: 'u', collections: [collection('first', 'Same group', 'a'), collection('second', 'Same group', 'b')] }
     render()
