@@ -187,6 +187,7 @@ jobs:
         run: npm --prefix UI-V2 ci
 
       - name: Test frontend
+        if: steps.candidate.outputs.passed != 'true'
         run: npm --prefix UI-V2 run test
 
       - name: Install static zlib (Windows)

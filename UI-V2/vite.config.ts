@@ -44,6 +44,8 @@ export default defineConfig({
   define: featureDefines,
   base: './',   // relative paths so file:// serving works in CEF
   test: {
+    // Hosted macOS Intel runners have taken 760s for a suite that takes 150s on Linux; budgets stay in the tests.
+    testTimeout: 30_000,
     environment: 'jsdom',
     globals: true,
     include: ['src/**/*.test.{ts,tsx}'],
