@@ -15,7 +15,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import type { Session } from '../../types/session'
 import { IconButton, MenuItem, Tooltip, ViewportMenu } from '../ui'
-import { DeleteConfirmDialog, countLabel } from './DeleteConfirmDialog'
+import { DeleteConfirmDialog, relatedBranchContents } from './DeleteConfirmDialog'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import {
   chatGridLeaves,
@@ -1012,7 +1012,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         kind="chat"
         count={1}
         name={sessionName}
-        contents={familySessionIds.length > 1 ? `its ${countLabel(familySessionIds.length - 1, 'related branch', 'related branches')}` : undefined}
+        contents={relatedBranchContents(1, familySessionIds.length)}
         busy={deleting}
         error={deleteError}
         returnFocusTo={() => rowRef.current}

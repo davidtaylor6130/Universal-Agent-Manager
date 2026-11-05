@@ -12,7 +12,7 @@ import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import { SessionItem } from './SessionItem'
-import { DeleteConfirmDialog, countLabel } from './DeleteConfirmDialog'
+import { DeleteConfirmDialog, countLabel, relatedBranchContents } from './DeleteConfirmDialog'
 import './sidebar.css'
 import { Button, IconButton, MenuItem, MenuSelect, Notice, ProgressFill, RowButton, Tooltip, ViewportMenu } from '../ui'
 import {
@@ -1178,7 +1178,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         kind="chat"
         count={pendingBulkDeleteIds?.length ?? 0}
         name={pendingBulkDeleteIds?.length === 1 ? sessions.find((session) => session.id === pendingBulkDeleteIds[0])?.name : undefined}
-        contents={(pendingBulkDeleteFamilyIds?.length ?? 0) > (pendingBulkDeleteIds?.length ?? 0) ? countLabel((pendingBulkDeleteFamilyIds?.length ?? 0) - (pendingBulkDeleteIds?.length ?? 0), 'related branch', 'related branches') : undefined}
+        contents={relatedBranchContents(pendingBulkDeleteIds?.length ?? 0, pendingBulkDeleteFamilyIds?.length ?? 0)}
         returnFocusTo={() => rowFocusTarget('data-session-id', pendingBulkDeleteIds?.[0])}
         error={bulkDeleteFailed ? 'The chats could not be deleted. A chat may still be running.' : ''}
         busy={bulkDeleting}

@@ -108,6 +108,23 @@ describe('chat multi-selection actions', () => {
     expect(selectedIds()).toEqual([])
   })
 
+  it('reads the same for one chat from its menu and as a one-item selection', () => {
+    useAppStore.setState({ sessions: [...useAppStore.getState().sessions, chat('a-branch-2', 'project', { parentChatId: 'a', branchRootChatId: 'a' })] })
+    const open = () => document.body.querySelector<HTMLElement>('[role="alertdialog"]')!
+    const read = () => ({ label: open().getAttribute('aria-label'), text: open().textContent })
+    const cancel = () => act(() => Array.from(open().querySelectorAll('button')).find((button) => button.textContent === 'Cancel')!.click())
+    openChatMenu('a')
+    act(() => item('Delete').click())
+    const fromMenu = read()
+    cancel()
+    act(() => row('a').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    expect(selectedIds()).toEqual(['a'])
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected chat"]')!.click())
+    expect(read()).toEqual(fromMenu)
+    expect(fromMenu.label).toBe('Delete chat Chat a and its 2 related branches')
+    expect(fromMenu.text).toContain('The chat “Chat a” and its 2 related branches will be permanently deleted')
+  })
+
   it('routes the Delete key on a selected row to the whole selection', () => {
     selectChats('b', 'c')
     act(() => { row('c').focus(); row('c').dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Delete' })) })

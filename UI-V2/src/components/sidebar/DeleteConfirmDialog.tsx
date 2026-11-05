@@ -7,6 +7,12 @@ export function countLabel(count: number, noun: string, plural = `${noun}s`): st
   return `${count} ${count === 1 ? noun : plural}`
 }
 
+/** Contents wording for chat deletes, shared so one chat reads the same from its menu and as a one-item selection. */
+export function relatedBranchContents(chatCount: number, familyCount: number): string | undefined {
+  if (familyCount <= chatCount) return undefined
+  return `${chatCount === 1 ? 'its ' : ''}${countLabel(familyCount - chatCount, 'related branch', 'related branches')}`
+}
+
 /**
  * The sidebar delete confirmation for chats, workspaces and collections, single or multi-selected.
  * Thin wrapper over ConfirmDialog: states item type, count and contents in one sentence; callers add consequences as children.
