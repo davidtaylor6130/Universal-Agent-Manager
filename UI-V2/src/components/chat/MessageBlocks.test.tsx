@@ -1276,20 +1276,76 @@ it('retains passive collapsed recorded launches without borrowing an enclosing p
   } finally { act(() => root.unmount()); host.remove(); window.cefQuery = oldCef; useAppStore.setState(previous, true); vi.unstubAllGlobals() }
 })
 
-it('animates the running step side to side by transform only, with no idle, Motion Off or reduced-motion sweep', () => {
-  const css = readFileSync(resolve(process.cwd(), 'src/components/chat/conversation.css'), 'utf8')
-  const sweep = '[data-processing-step="true"] .conversation-work__tool-title::after'
-  const rule = css.slice(css.indexOf(sweep), css.indexOf('}', css.indexOf(sweep)))
-  expect(rule).toContain('animation: conversation-processing-sweep')
-  // The title shrinks to its text while running so the band crosses the label rather than the empty row.
-  expect(css).toContain('[data-processing-step="true"] .conversation-work__tool-title { flex: 0 1 auto; margin-right: auto; }')
-  const keyframes = css.slice(css.indexOf('@keyframes conversation-processing-sweep'))
-  expect(keyframes.slice(0, keyframes.indexOf('\n'))).toMatch(/transform: translateX\(-100%\).*transform: translateX\(250%\)/)
-  // Only the active step selector animates; a background-position text sweep repaints every frame.
-  expect(css.match(/animation: conversation-processing-sweep/g)).toHaveLength(1)
-  expect(css).not.toMatch(/conversation-processing-sweep[^}]*background-position/)
-  expect(css).toContain(`[data-motion="off"] ${sweep}`)
+it('sweeps one accent band across the whole running row behind text in the primary text colour without moving its icon', () => {
+  const css = readFileSync(resolve(process.cwd(), 'src/components/chat/conversation.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+  // Minimal rule reader: innermost `selectors { body }` pairs, and the bodies of named at-rule blocks.
+  const rules = (text: string) => [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .map((match) => ({ selectors: match[1].split(/,(?![^(]*\))/).map((selector) => selector.trim()), body: match[2] }))
+  const blocks = (prelude: string) => css.split(prelude).slice(1).map((rest) => {
+    let depth = 0
+    for (let i = rest.indexOf('{'); i < rest.length; i++) {
+      if (rest[i] === '{') depth++
+      else if (rest[i] === '}' && --depth === 0) return rest.slice(rest.indexOf('{') + 1, i)
+    }
+    return ''
+  })
+  const value = (body: string, property: string) => body.match(new RegExp(`(?:^|[;\\s])${property}:\\s*([^;]+)`))?.[1].trim()
+  const sameSelectors = (a: string[], b: string[]) => a.length === b.length && a.every((selector) => b.includes(selector))
+  const all = rules(css)
+
+  // Exactly one band per running row: one ::after on the tool button and one on the thought summary, never per label.
+  const sweeps = all.filter((rule) => value(rule.body, 'animation')?.startsWith('conversation-processing-sweep'))
+  expect(sweeps).toHaveLength(1)
+  const [sweep] = sweeps
+  expect(sweep.selectors).toHaveLength(2)
+  expect(sweep.selectors.every((selector) => selector.startsWith('[data-processing-step="true"]') && selector.endsWith('::after'))).toBe(true)
+  expect(sweep.selectors.some((selector) => selector.endsWith('.conversation-work__tool::after'))).toBe(true)
+  expect(sweep.selectors.some((selector) => selector.endsWith('summary::after'))).toBe(true)
+  expect(sweep.selectors.join()).not.toMatch(/tool-title|thought-label/)
+  // The accent is carried by the band, painted behind the text.
+  expect(value(sweep.body, 'background')).toContain('var(--accent)')
+  expect(value(sweep.body, 'z-index')).toBe('-1')
+
+  // Running text is the primary text colour; no running label/preview rule uses the accent.
+  const colours = all.filter((rule) => rule.selectors.some((selector) => selector.startsWith('[data-processing-step="true"]') && /tool-title|thought-label/.test(selector)))
+  expect(colours.map((rule) => rule.selectors.join()).join()).toMatch(/thought-label/)
+  expect(colours.map((rule) => rule.selectors.join()).join()).toMatch(/tool-title/)
+  for (const rule of colours) {
+    expect(rule.body).not.toContain('var(--accent)')
+    if (value(rule.body, 'color')) expect(value(rule.body, 'color')).toBe('var(--text)')
+    expect(value(rule.body, 'flex')).toBeUndefined()
+  }
+
+  // Running rows neither clip nor re-parent the timeline icon: if the row becomes positioned, the icon is offset
+  // by the event padding so it keeps exactly its idle position.
+  const rows = sweep.selectors.map((selector) => selector.replace(/::after$/, ''))
+  const rowRules = all.filter((rule) => rule.selectors.some((selector) => rows.includes(selector)))
+  for (const rule of rowRules) expect(value(rule.body, 'overflow')).toBeUndefined()
+  if (rowRules.some((rule) => value(rule.body, 'position'))) {
+    const px = (text?: string) => Number(text?.replace('px', ''))
+    const icon = all.find((rule) => sameSelectors(rule.selectors, ['.conversation-work__event-icon']))!.body
+    const [padTop, , , padLeft] = value(all.find((rule) => sameSelectors(rule.selectors, ['.conversation-work__event']))!.body, 'padding')!.split(/\s+/)
+    const anchored = all.find((rule) => sameSelectors(rule.selectors, rows.map((selector) => `${selector} > .conversation-work__event-icon`)))
+    expect(anchored).toBeDefined()
+    expect(px(value(anchored!.body, 'left'))).toBe(px(value(icon, 'left')) - px(padLeft))
+    expect(px(value(anchored!.body, 'top'))).toBe(px(value(icon, 'top')) - px(padTop))
+  }
+
+  // The keyframes animate transform and opacity only (a background-position sweep repaints every frame).
+  const keyframes = blocks('@keyframes conversation-processing-sweep')
+  expect(keyframes).toHaveLength(1)
+  const properties = new Set([...keyframes[0].matchAll(/([a-z-]+)\s*:/g)].map((match) => match[1]))
+  expect([...properties].sort()).toEqual(['opacity', 'transform'])
+
+  // Motion Off and reduced motion stop the sweep (a still accent wash keeps the active row identifiable).
+  const off = all.find((rule) => sameSelectors(rule.selectors, sweep.selectors.map((selector) => `[data-motion="off"] ${selector}`)))
+  expect(value(off!.body, 'animation')).toBe('none')
+  const reduced = blocks('@media (prefers-reduced-motion: reduce)').flatMap(rules).find((rule) => sameSelectors(rule.selectors, sweep.selectors))
+  expect(value(reduced!.body, 'animation')).toBe('none')
   expect(css).toContain('[data-motion="off"] .conversation-work__live { animation: none; }')
-  const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)', css.indexOf(sweep)))
-  expect(reduced.slice(0, reduced.indexOf('}\n}'))).toContain(sweep)
+
+  // Forced colours, which drop the band background, mark the running row with a system Highlight outline.
+  const forced = blocks('@media (forced-colors: active)').flatMap(rules)
+    .filter((rule) => rule.selectors.every((selector) => rows.some((row) => selector.startsWith(row))))
+  expect(forced.some((rule) => value(rule.body, 'outline')?.includes('Highlight'))).toBe(true)
 })

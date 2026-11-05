@@ -109,34 +109,51 @@
 .conversation-interrupted { display: flex; align-items: center; gap: 8px; margin: 16px 0; color: var(--text-3); font-size: var(--fs-sm); }
 .conversation-interrupted::before, .conversation-interrupted::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .conversation-interrupted svg { flex-shrink: 0; color: var(--warning); }
-[data-processing-step="true"] .conversation-work__tool-title,
-[data-processing-step="true"] .conversation-work__thought-label,
 .uam-thinking-block[data-active="true"] .uam-thinking-row__kind,
 .uam-thinking-block[data-active="true"] .uam-thinking-row__preview {
   color: var(--accent);
 }
-/* Running step: a page-coloured band sweeps side to side over the accent label. It moves by transform only
-   (a background-position text sweep repainted every frame and was removed for typing performance), runs only
-   on the one active step and stops for Motion Off and reduced motion. */
-[data-processing-step="true"] .conversation-work__tool-title,
-[data-processing-step="true"] .conversation-work__thought-label { position: relative; overflow: hidden; }
-/* Size the running title to its text so the sweep crosses the label, not the empty row; status stays right. */
-[data-processing-step="true"] .conversation-work__tool-title { flex: 0 1 auto; margin-right: auto; }
-[data-processing-step="true"] .conversation-work__tool-title::after,
-[data-processing-step="true"] .conversation-work__thought-label::after {
-  content: ""; position: absolute; inset: 0 auto 0 0; width: 40%; pointer-events: none;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--bg) 72%, transparent), transparent);
-  transform: translateX(-100%);
+/* Running compact step (direct row only, not nested sub-agent history): label and preview keep the primary text
+   colour; the accent lives only in one band behind the text that sweeps across the whole row (label and preview
+   together). The band moves by transform and fades by opacity only (a background-position text sweep repainted every
+   frame and was removed for typing performance), stays inside the row so nothing is clipped, and runs only on the one
+   active step. The row becomes the band's containing block, so its timeline icon is re-anchored by the event's
+   padding (22px, 2px) and keeps exactly its idle position. Motion Off and reduced motion show a still accent wash. */
+[data-processing-step="true"] > .conversation-work__timeline > .conversation-work__event > .conversation-work__tool > .conversation-work__tool-title,
+[data-processing-step="true"] > .conversation-work__timeline > .conversation-work__event > .conversation-work__thought > summary > :is(.conversation-work__thought-label, .conversation-work__tool-title) { color: var(--text); }
+[data-processing-step="true"] > .conversation-work__timeline > .conversation-work__event > .conversation-work__tool,
+[data-processing-step="true"] > .conversation-work__timeline > .conversation-work__event > .conversation-work__thought > summary { position: relative; isolation: isolate; }
+[data-processing-step="true"] > .conversation-work__timeline > .conversation-work__event > .conversation-work__tool > .conversation-work__event-icon,
+[data-processing-step="true"] > .conversation-work__timeline > .conversation-work__event > .conversation-work__thought > summary > .conversation-work__event-icon { left: -30px; top: 3px; }
+[data-processing-step="true"] > .conversation-work__timeline > .conversation-work__event > .conversation-work__tool::after,
+[data-processing-step="true"] > .conversation-work__timeline > .conversation-work__event > .conversation-work__thought > summary::after {
+  content: ""; position: absolute; inset: 0 auto 0 0; z-index: -1; width: 40%; pointer-events: none;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 22%, transparent), transparent);
+  opacity: 0;
   animation: conversation-processing-sweep calc(1.8s * var(--motion-scale, 1)) var(--ease) infinite;
 }
-@keyframes conversation-processing-sweep { 0%, 18% { transform: translateX(-100%); } 72%, 100% { transform: translateX(250%); } }
-[data-motion="off"] [data-processing-step="true"] .conversation-work__tool-title::after,
-[data-motion="off"] [data-processing-step="true"] .conversation-work__thought-label::after { display: none; }
+/* 40% band travels 0 → 150% of its width, i.e. from the row's left edge to its right edge, fading in and out. */
+@keyframes conversation-processing-sweep {
+  0%, 12% { transform: translateX(0); opacity: 0; }
+  30%, 60% { opacity: 1; }
+  78%, 100% { transform: translateX(150%); opacity: 0; }
+}
+[data-motion="off"] [data-processing-step="true"] > .conversation-work__timeline > .conversation-work__event > .conversation-work__tool::after,
+[data-motion="off"] [data-processing-step="true"] > .conversation-work__timeline > .conversation-work__event > .conversation-work__thought > summary::after {
+  animation: none; transform: none; opacity: 1; width: 100%; background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
 /* The Working dot rests at full colour with Motion Off; reduced motion already settles it via the global rule. */
 [data-motion="off"] .conversation-work__live { animation: none; }
 @media (prefers-reduced-motion: reduce) {
-  [data-processing-step="true"] .conversation-work__tool-title::after,
-  [data-processing-step="true"] .conversation-work__thought-label::after { display: none; }
+  [data-processing-step="true"] > .conversation-work__timeline > .conversation-work__event > .conversation-work__tool::after,
+  [data-processing-step="true"] > .conversation-work__timeline > .conversation-work__event > .conversation-work__thought > summary::after {
+    animation: none; transform: none; opacity: 1; width: 100%; background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+}
+/* Forced colours drop the band's background; a system Highlight outline (no layout) marks the running row instead. */
+@media (forced-colors: active) {
+  [data-processing-step="true"] > .conversation-work__timeline > .conversation-work__event > .conversation-work__tool:not(:focus-visible),
+  [data-processing-step="true"] > .conversation-work__timeline > .conversation-work__event > .conversation-work__thought > summary:not(:focus-visible) { outline: 1px solid Highlight; outline-offset: 2px; }
 }
 
 .conversation-work__inline { font-size: var(--fs-sm); line-height: 1.55; color: var(--text-3); }
