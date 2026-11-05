@@ -4,6 +4,8 @@ Runtime state distinguishes startup, ready, working, waiting, stopping, stopped 
 
 Shutdown must preserve a saved, undispatched remote queue when an idle runtime has no corresponding queued input or active turn; an empty runtime queue does not prove that saved input was consumed. A retiring runtime and its late stop results must not overwrite a replacement chat's queue, authored state or delivery evidence. Failed stop-worker setup or pending remote-stop publication must retain the original process fields; the runtime switches from running to pending remote stop only after successful publication.
 
+The chat header runtime control gives each state its own icon as well as its colour and text: the shared dashed working ring while a turn runs (still under reduced motion or Motion Off), the stop icon while live, a timer inside the shrinking idle ring once the post-grace countdown starts (warning tone in the final minute) and the shared failure cross with Failed when the runtime reports an error; a failed runtime stays stoppable from the control. Its tooltip and a visually hidden accessible description name the state; the Terminal View and phone countdown use the same timer icon, a `timer` role and an accessible name that includes the remaining time and the grace-period explanation.
+
 **Implementation: Partial.** The shared runtime has shutdown projection and stop-handoff guards; independent cold Retry process lifetime and cleanup remain incomplete. Verification, review and acceptance are recorded in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md).
 
 ## Stream watch
