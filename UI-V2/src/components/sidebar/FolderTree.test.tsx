@@ -641,7 +641,8 @@ describe('FolderTree', () => {
         { id: 'c', name: 'C', parentId: 'b', collapsed: false, references: [] },
       ] }))
       const dialog = openPrompt(host, 'A')
-      expect(dialog.textContent).toContain('“A” will be permanently deleted and cannot be restored.')
+      expect(dialog.getAttribute('aria-label')).toBe('Delete collection A')
+      expect(dialog.textContent).toContain('The collection “A” will be permanently deleted. This cannot be undone.')
       expect(dialog.textContent).toContain('It has 2 collections inside, counting nested ones.')
       expect(dialog.textContent).toContain('Move contents up moves its child collections to the top level and leaves its workspaces ungrouped.')
       expect(buttons(dialog)).toEqual(['Cancel', 'Move contents up', 'Delete all'])
@@ -679,6 +680,8 @@ describe('FolderTree', () => {
       const solo = openPrompt(host, 'Solo')
       expect(buttons(solo)).toEqual(['Cancel', 'Delete collection'])
       expect(solo.textContent).toContain('cannot be restored. Its other links are removed.')
+      expect(solo.getAttribute('aria-label')).toBe('Delete collection Solo')
+      expect(solo.textContent).toContain('The collection “Solo” will be permanently deleted. This cannot be undone.')
       act(() => (Array.from(solo.querySelectorAll('button')).find((button) => button.textContent === 'Cancel') as HTMLButtonElement).click())
       expect(openPrompt(host, 'Top').textContent).toContain('leaves its workspaces ungrouped; its other links are removed.')
     }))

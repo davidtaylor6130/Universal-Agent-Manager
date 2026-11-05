@@ -1445,13 +1445,10 @@ function collectionDeleteMessage(collections: readonly ResourceCollection[], col
   const inside = subtree.length - 1
   const parent = collections.find((entry) => entry.id === collection.parentId)
   const ownLinks = hasOtherLinks(collection)
-  if (!canMoveContentsUp(collections, collection)) {
-    return [`“${collection.name}” will be permanently deleted. Workspaces remain, but this collection cannot be restored.${ownLinks ? ' Its other links are removed.' : ''}`]
-  }
   const direct = collections.filter((entry) => entry.parentId === collection.id).length
   const anyLinks = collections.some((entry) => subtree.includes(entry.id) && hasOtherLinks(entry))
   return [
-    `“${collection.name}” will be permanently deleted and cannot be restored.${inside > 0 ? ` It has ${inside} ${inside === 1 ? 'collection' : 'collections'} inside${inside > direct ? ', counting nested ones' : ''}.` : ''}`,
+    `The collection “${collection.name}” will be permanently deleted. This cannot be undone.${inside > 0 ? ` It has ${inside} ${inside === 1 ? 'collection' : 'collections'} inside${inside > direct ? ', counting nested ones' : ''}.` : ''}`,
     parent
       ? `Move contents up moves everything inside to “${parent.name}”.`
       : `Move contents up moves its child collections to the top level and leaves its workspaces ungrouped${ownLinks ? '; its other links are removed' : ''}.`,
@@ -1473,15 +1470,23 @@ function CollectionDeleteDialog({ collection, open, onClose }: { collection: Res
       if (!removed) reportAppFailure(`Could not delete "${collection.name}".`, mayBeFull ? `A collection holds at most 500 items, so “${parent.name}” may be full. Refresh and try again.` : 'Could not save the change. Refresh and try again.')
     })
   }
+  if (!offerMoveUp) {
+    return (
+      <DeleteConfirmDialog open={open} kind="collection" count={1} name={collection.name} onCancel={onClose} onConfirm={() => removeCollection(false)}>
+        <p className="mt-2">Workspaces remain, but this collection cannot be restored.{hasOtherLinks(collection) ? ' Its other links are removed.' : ''}</p>
+      </DeleteConfirmDialog>
+    )
+  }
+  // ConfirmDialog directly: the shared delete confirmation has no middle action or custom confirm label.
   return (
     <ConfirmDialog
       open={open}
       title="Delete collection?"
-      label={`Delete ${collection.name} collection`}
-      confirmLabel={offerMoveUp ? 'Delete all' : 'Delete collection'}
-      {...(offerMoveUp ? { secondaryAction: { label: 'Move contents up', onClick: () => removeCollection(false) } } : {})}
+      label={`Delete collection ${collection.name}`}
+      confirmLabel="Delete all"
+      secondaryAction={{ label: 'Move contents up', onClick: () => removeCollection(false) }}
       onCancel={onClose}
-      onConfirm={() => removeCollection(offerMoveUp)}
+      onConfirm={() => removeCollection(true)}
     >
       {collectionDeleteMessage(collections, collection).map((line, index) => <p key={index} className={index > 0 ? 'mt-2' : undefined}>{line}</p>)}
     </ConfirmDialog>
