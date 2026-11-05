@@ -26,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <thread>
 #include <vector>
 
 namespace uam::io { enum class AtomicWriteStage; }
@@ -242,6 +243,10 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	std::function<bool(uam::io::AtomicWriteStage)> m_nativeMediaPublicationStageGateForTests;
 	std::function<bool(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion)> m_queuedPromptHistoryDispatcherForTests;
 	bool DispatchNativeMediaRefresh(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion, CefThreadId = TID_FILE_BACKGROUND);
+	// A remote refresh read holds its thread through a slow SSH call, so each gets its own instead of the serial file lane.
+	bool DispatchRemoteRefreshRead(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion);
+	struct RemoteRefreshReadThread { std::shared_ptr<std::atomic<bool>> finished; std::jthread thread; };
+	std::vector<RemoteRefreshReadThread> m_remoteRefreshReadThreads;
 	bool DispatchRemoteInstallStage(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion);
 	std::function<bool(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion)> m_attachmentPreviewDispatcherForTests;
 	bool DispatchManagedSubagentQuery(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion);

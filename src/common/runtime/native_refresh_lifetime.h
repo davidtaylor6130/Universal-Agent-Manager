@@ -27,23 +27,33 @@ namespace uam::native_history
 		inline constexpr unsigned kMaxDiscoveryParserOwners = 2;
 		// Explicit remote refreshes hold their owner through a slow SSH read; they
 		// must not starve local branch, managed-run or metadata preparation. Each
-		// host has its own slots so one slow host only delays its own refreshes,
-		// and a total cap bounds all remote work. Admission refuses (busy) rather
-		// than queues, so no host can wait behind another.
+		// host has its own slots and each read its own thread, so one slow host's
+		// reads only delay its own refreshes, and a total cap bounds all remote work.
+		// Admission refuses (busy) rather than queues.
 		// ponytail: two hung hosts fill the total cap; raise it if that is seen.
 		inline std::atomic<unsigned> remote_refresh_owners{0}; // Total; written under the mutex.
 		inline constexpr unsigned kMaxRemoteRefreshOwners = 4;
 		inline constexpr unsigned kMaxRemoteRefreshOwnersPerHost = 2;
-		inline std::mutex remote_refresh_mutex;
-		inline std::map<std::string, unsigned, std::less<>> remote_refresh_host_owners;
+		struct RemoteRefreshHosts
+		{
+			std::mutex mutex;
+			std::map<std::string, unsigned, std::less<>> owners;
+		};
+		// ponytail: leaked on purpose. Detached cleanup workers can outlive static destruction at exit.
+		inline RemoteRefreshHosts& RemoteRefreshHostsState()
+		{
+			static RemoteRefreshHosts* const hosts = new RemoteRefreshHosts;
+			return *hosts;
+		}
 		inline bool TryAcquireRemoteRefresh(std::string_view host) noexcept
 		{
 			try
 			{
-				std::lock_guard lock(remote_refresh_mutex);
+				RemoteRefreshHosts& hosts = RemoteRefreshHostsState();
+				std::lock_guard lock(hosts.mutex);
 				if (remote_refresh_owners.load() >= kMaxRemoteRefreshOwners) return false;
-				auto found = remote_refresh_host_owners.find(host);
-				if (found == remote_refresh_host_owners.end()) found = remote_refresh_host_owners.emplace(std::string(host), 0u).first;
+				auto found = hosts.owners.find(host);
+				if (found == hosts.owners.end()) found = hosts.owners.emplace(std::string(host), 0u).first;
 				if (found->second >= kMaxRemoteRefreshOwnersPerHost) return false;
 				++found->second;
 				remote_refresh_owners.fetch_add(1);
@@ -53,16 +63,18 @@ namespace uam::native_history
 		}
 		inline void ReleaseRemoteRefresh(std::string_view host) noexcept
 		{
-			std::lock_guard lock(remote_refresh_mutex);
-			const auto found = remote_refresh_host_owners.find(host);
-			if (found != remote_refresh_host_owners.end() && --found->second == 0) remote_refresh_host_owners.erase(found);
+			RemoteRefreshHosts& hosts = RemoteRefreshHostsState();
+			std::lock_guard lock(hosts.mutex);
+			const auto found = hosts.owners.find(host);
+			if (found != hosts.owners.end() && --found->second == 0) hosts.owners.erase(found);
 			remote_refresh_owners.fetch_sub(1);
 		}
 		inline unsigned RemoteRefreshOwnersOnHost(std::string_view host) noexcept
 		{
-			std::lock_guard lock(remote_refresh_mutex);
-			const auto found = remote_refresh_host_owners.find(host);
-			return found == remote_refresh_host_owners.end() ? 0u : found->second;
+			RemoteRefreshHosts& hosts = RemoteRefreshHostsState();
+			std::lock_guard lock(hosts.mutex);
+			const auto found = hosts.owners.find(host);
+			return found == hosts.owners.end() ? 0u : found->second;
 		}
 	}
 

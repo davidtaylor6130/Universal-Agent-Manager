@@ -877,6 +877,22 @@ bool UamQueryHandler::DispatchNativeMediaRefresh(CefRefPtr<Callback> cb, Managed
 	    m_asyncLifetime, cb, std::move(worker), std::move(completion)));
 }
 
+bool UamQueryHandler::DispatchRemoteRefreshRead(CefRefPtr<Callback> cb, ManagedSubagentWorker worker, ManagedSubagentCompletion completion)
+{
+	if (m_nativeMediaRefreshDispatcherForTests) return DispatchNativeMediaRefresh(cb, std::move(worker), std::move(completion));
+	std::erase_if(m_remoteRefreshReadThreads, [](const RemoteRefreshReadThread& read) { return read.finished->load(); });
+	CefRefPtr<CefTask> task = new uam::query_handler_async::CefQueryWorkerTask(m_asyncLifetime, cb, std::move(worker), std::move(completion));
+	auto finished = std::make_shared<std::atomic<bool>>(false);
+	std::jthread thread([task, finished]() mutable
+	{
+		task->Execute();
+		task = nullptr;
+		finished->store(true);
+	});
+	m_remoteRefreshReadThreads.push_back({std::move(finished), std::move(thread)});
+	return true;
+}
+
 void UamQueryHandler::HandleRefreshLocalGeminiMedia(CefRefPtr<CefBrowser> browser, const ChatSession& chat,
     const std::string& known_digest, const std::optional<std::pair<std::size_t, std::optional<std::size_t>>>& page,
     bool defer_tool_call_content, CefRefPtr<Callback> cb)
@@ -1318,7 +1334,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 	bool queued = false;
 	try
 	{
-		queued = DispatchNativeMediaRefresh(cb,
+		queued = DispatchRemoteRefreshRead(cb,
 		    [work, root, id, revision, summary_revision, metadata, original_digest, lineage, incarnation, parse_identity, host, request, reader = m_remoteNativeHistoryReaderForTests]()
 		    {
 			    if (request->stop_requested()) return AsyncFailure(409, "A newer history refresh was requested.");

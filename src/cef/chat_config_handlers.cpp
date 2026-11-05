@@ -620,6 +620,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		return;
 	}
 	const auto request = BeginNativeHistoryRead(request_key, cb, std::make_shared<NativeHistoryRequest>(ownership->cancellation));
+	if (remote_host) request->execution_host_id = remote_host->id; // A helper reinstall stops this read.
 
 	ChatSession identity;
 	identity.id = source_id;

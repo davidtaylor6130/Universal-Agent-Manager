@@ -117,5 +117,5 @@ UAM_TEST(NativeRefreshLifetimeRemoteSlotsArePerHostWithinTotalCap)
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
 	while ((owners::remote_refresh_owners.load() || owners::refresh_owners.load()) && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
 	UAM_ASSERT_EQ(owners::remote_refresh_owners.load(), 0u);
-	{ std::lock_guard lock(owners::remote_refresh_mutex); UAM_ASSERT(owners::remote_refresh_host_owners.empty()); }
+	{ auto& hosts = owners::RemoteRefreshHostsState(); std::lock_guard lock(hosts.mutex); UAM_ASSERT(hosts.owners.empty()); }
 }
