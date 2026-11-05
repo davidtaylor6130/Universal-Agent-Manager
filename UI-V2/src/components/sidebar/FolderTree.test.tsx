@@ -683,17 +683,47 @@ describe('FolderTree', () => {
       expect(openPrompt(host, 'Top').textContent).toContain('leaves its workspaces ungrouped; its other links are removed.')
     }))
 
-    it('reports a delete native refuses', () => withTree(async (host) => {
-      const failures: unknown[] = []
+    it('names the parent limit only when moving references up can hit it', () => withTree(async (host) => {
+      const failures: { detail?: string }[] = []
       const collect = (event: Event) => failures.push((event as CustomEvent).detail)
       window.addEventListener(APP_FAILURE_EVENT, collect)
+      const original = useAppStore.getState().deleteResourceCollection
       const deleteResourceCollection = vi.fn(async () => false)
-      act(() => useAppStore.setState({ deleteResourceCollection, resourceCollections: [{ id: 'solo', name: 'Solo', collapsed: false, references: [] }] }))
-      const dialog = openPrompt(host, 'Solo')
-      await act(async () => { (Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Delete collection') as HTMLButtonElement).click(); await Promise.resolve() })
+      const press = async (dialog: HTMLElement, label: string) => { await act(async () => { (Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === label) as HTMLButtonElement).click(); await Promise.resolve() }) }
+      act(() => useAppStore.setState({ deleteResourceCollection, resourceCollections: [
+        { id: 'solo', name: 'Solo', collapsed: false, references: [workspace] },
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: false, references: [app] },
+      ] }))
+      await press(openPrompt(host, 'Solo'), 'Delete collection')
+      await press(openPrompt(host, 'Services'), 'Delete all')
+      await press(openPrompt(host, 'Services'), 'Move contents up')
       window.removeEventListener(APP_FAILURE_EVENT, collect)
-      expect(deleteResourceCollection).toHaveBeenCalledWith('solo', false)
-      expect(failures).toHaveLength(1)
+      act(() => useAppStore.setState({ deleteResourceCollection: original }))
+      expect(deleteResourceCollection.mock.calls).toEqual([['solo', false], ['services', true], ['services', false]])
+      expect(failures.map((failure) => failure.detail?.includes('500'))).toEqual([false, false, true])
+      expect(failures[2].detail).toContain('“Homelab” may be full')
+    }))
+
+    it('uses the same prompt for a one-item selection as for the menu', () => withTree(async (host) => {
+      act(() => useAppStore.setState({ resourceCollections: [
+        { id: 'a', name: 'A', collapsed: false, references: [] },
+        { id: 'b', name: 'B', parentId: 'a', collapsed: false, references: [] },
+        { id: 'c', name: 'C', parentId: 'b', collapsed: false, references: [] },
+      ] }))
+      const fromMenu = openPrompt(host, 'A')
+      const menuText = fromMenu.textContent
+      expect(menuText).toContain('its workspaces and theirs become ungrouped')
+      act(() => (Array.from(fromMenu.querySelectorAll('button')).find((button) => button.textContent === 'Cancel') as HTMLButtonElement).click())
+      act(() => host.querySelector('[data-collection-id="a"] button[aria-label="A"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+      act(() => (host.querySelector('[aria-label="Delete 1 selected collection"]') as HTMLButtonElement).click())
+      const fromSelection = document.body.querySelector('[role="alertdialog"]') as HTMLElement
+      expect(fromSelection.textContent).toBe(menuText)
+      expect(fromSelection.textContent).toContain('It has 2 collections inside, counting nested ones.')
+      await act(async () => { (Array.from(fromSelection.querySelectorAll('button')).find((button) => button.textContent === 'Delete all') as HTMLButtonElement).click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections).toEqual([])
+      expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+      expect(host.querySelector('[aria-label="Delete 1 selected collection"]')).toBeNull()
     }))
   })
 

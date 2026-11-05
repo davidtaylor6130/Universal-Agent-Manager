@@ -1230,21 +1230,22 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         }}
       />
 
+      {pendingDeleteCollections?.length === 1 && resourceCollections.filter((collection) => collection.id === pendingDeleteCollections[0].id).map((collection) => (
+        <CollectionDeleteDialog key={collection.id} open collection={collection} onClose={() => setPendingDeleteCollections(null)} />
+      ))}
       <DeleteConfirmDialog
-        open={Boolean(pendingDeleteCollections)}
+        open={(pendingDeleteCollections?.length ?? 0) > 1}
         kind="collection"
         count={pendingDeleteCollections?.length ?? 0}
-        name={pendingDeleteCollections?.length === 1 ? pendingDeleteCollections[0].label : undefined}
         onCancel={() => setPendingDeleteCollections(null)}
         onConfirm={() => {
           const targets = pendingDeleteCollections ?? []
           setPendingDeleteCollections(null)
-          if (targets.length === 1) { void deleteCollection(targets[0]); return }
           void runForEach(targets, async ({ id }) => await useAppStore.getState().deleteResourceCollection(id) ? null : 'The collection could not be deleted.', 'Could not delete collections')
             .then((deleted) => setSelectedCollectionIds((current) => new Set([...current].filter((id) => !deleted.includes(id)))))
         }}
       >
-        <p className="mt-2">What is inside a nested one moves to its parent; a top-level one's child collections become top level, its workspaces become ungrouped and its other links are removed. Workspaces remain, but {pendingDeleteCollections?.length === 1 ? 'this collection' : 'these collections'} cannot be restored.</p>
+        <p className="mt-2">What is inside a nested one moves to its parent; a top-level one's child collections become top level, its workspaces become ungrouped and its other links are removed. Workspaces remain, but these collections cannot be restored.</p>
       </DeleteConfirmDialog>
 
       {recoveryDialogOpen && (
@@ -1427,11 +1428,6 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   )
 }
 
-/** One collection's delete, from its menu or as a one-item selection. */
-async function deleteCollection({ id, label }: BulkTarget, deleteChildren = false) {
-  if (!await useAppStore.getState().deleteResourceCollection(id, deleteChildren)) reportAppFailure(`Could not delete "${label}".`, 'Could not save the change. Refresh and try again.')
-}
-
 const COLLECTION_DRAG_TYPE = 'text/x-uam-collection-id'
 // dataTransfer values are unreadable during dragover, so valid drop targets read the dragged id from here.
 let draggedCollectionId: string | null = null
@@ -1459,8 +1455,37 @@ function collectionDeleteMessage(collections: readonly ResourceCollection[], col
     parent
       ? `Move contents up moves everything inside to “${parent.name}”.`
       : `Move contents up moves its child collections to the top level and leaves its workspaces ungrouped${ownLinks ? '; its other links are removed' : ''}.`,
-    `Delete all ${inside > 0 ? 'permanently deletes the collections inside too and leaves their workspaces ungrouped' : 'leaves its workspaces ungrouped'}${anyLinks ? '; other links inside are removed' : ''}. Workspaces and chats remain.`,
+    `Delete all ${inside > 0 ? 'permanently deletes the collections inside too, and its workspaces and theirs become ungrouped' : 'leaves its workspaces ungrouped'}${anyLinks ? '; other links inside are removed' : ''}. Workspaces and chats remain.`,
   ]
+}
+
+/** One collection's delete prompt, from its menu or as a one-item selection. */
+function CollectionDeleteDialog({ collection, open, onClose }: { collection: ResourceCollection; open: boolean; onClose: () => void }) {
+  const collections = useAppStore((state) => state.resourceCollections)
+  const remove = useAppStore((state) => state.deleteResourceCollection)
+  const offerMoveUp = canMoveContentsUp(collections, collection)
+  const removeCollection = (deleteContents: boolean) => {
+    const parent = collections.find((entry) => entry.id === collection.parentId)
+    // Only moving references up can hit the parent's limit.
+    const mayBeFull = !deleteContents && parent && collection.references.length > 0
+    onClose()
+    void remove(collection.id, deleteContents).then((removed) => {
+      if (!removed) reportAppFailure(`Could not delete "${collection.name}".`, mayBeFull ? `A collection holds at most 500 items, so “${parent.name}” may be full. Refresh and try again.` : 'Could not save the change. Refresh and try again.')
+    })
+  }
+  return (
+    <ConfirmDialog
+      open={open}
+      title="Delete collection?"
+      label={`Delete ${collection.name} collection`}
+      confirmLabel={offerMoveUp ? 'Delete all' : 'Delete collection'}
+      {...(offerMoveUp ? { secondaryAction: { label: 'Move contents up', onClick: () => removeCollection(false) } } : {})}
+      onCancel={onClose}
+      onConfirm={() => removeCollection(offerMoveUp)}
+    >
+      {collectionDeleteMessage(collections, collection).map((line, index) => <p key={index} className={index > 0 ? 'mt-2' : undefined}>{line}</p>)}
+    </ConfirmDialog>
+  )
 }
 
 async function moveCollection(collectionId: string, parentId: string | null) {
@@ -1481,7 +1506,6 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
   const rename = useAppStore((state) => state.renameResourceCollection)
   const collections = useAppStore((state) => state.resourceCollections)
   const childCount = collections.filter((entry) => entry.parentId === collection.id).length
-  const offerMoveUp = canMoveContentsUp(collections, collection)
   const moveTargets = collections.filter((entry) => entry.id !== collection.parentId && canNestCollection(collections, collection.id, entry.id))
   const canNestInside = canNestCollection(collections, null, collection.id)
   const [addingChild, setAddingChild] = useState(false)
@@ -1542,12 +1566,6 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
     setAddingChild(true)
   }
   const isCollectionDrag = (event: { dataTransfer: DataTransfer }) => event.dataTransfer.types.includes(COLLECTION_DRAG_TYPE)
-  const removeCollection = (deleteContents: boolean) => {
-    setConfirmingDelete(false)
-    void remove(collection.id, deleteContents).then((removed) => {
-      if (!removed) reportAppFailure(`Could not delete "${collection.name}".`, 'A collection holds at most 500 items, so its parent may be full. Refresh and try again.')
-    })
-  }
 
   return (
     <div
@@ -1710,17 +1728,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
         </div>
       </div>
       {iconPicker.dialog}
-      <ConfirmDialog
-        open={confirmingDelete}
-        title="Delete collection?"
-        label={`Delete ${collection.name} collection`}
-        confirmLabel={offerMoveUp ? 'Delete all' : 'Delete collection'}
-        {...(offerMoveUp ? { secondaryAction: { label: 'Move contents up', onClick: () => removeCollection(false) } } : {})}
-        onCancel={() => setConfirmingDelete(false)}
-        onConfirm={() => removeCollection(offerMoveUp)}
-      >
-        {collectionDeleteMessage(collections, collection).map((line, index) => <p key={index} className={index > 0 ? 'mt-2' : undefined}>{line}</p>)}
-      </ConfirmDialog>
+      <CollectionDeleteDialog collection={collection} open={confirmingDelete} onClose={() => setConfirmingDelete(false)} />
     </div>
   )
 }
