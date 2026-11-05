@@ -1695,6 +1695,8 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 		}
 	}
 	chat->native_session_id.clear();
+	// Stops legacy-ID load normalization from resuming the previous provider's session as this one's.
+	chat->native_session_reset_pending = true;
 	chat->computer_use_enabled = false;
 	chat->computer_use_target_kind = "window";
 	chat->computer_use_target_id.clear();

@@ -3139,6 +3139,7 @@ UAM_TEST(CodexNativeContextImportPersistsIdentityAndDoesNotReplayOnViewSwitch)
 	chat.id = "import-roundtrip";
 	chat.provider_id = "codex-cli";
 	chat.native_session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+	chat.native_session_reset_pending = true;
 	chat.provider_handoff_context = "User: Actual prior conversation.\n\nAssistant: Saved response.";
 	ExecutionHost host;
 	host.id = "local";
@@ -3153,8 +3154,10 @@ UAM_TEST(CodexNativeContextImportPersistsIdentityAndDoesNotReplayOnViewSwitch)
 	UAM_ASSERT_EQ(chat.native_session_id, std::string("11111111-2222-4333-8444-555555555555"));
 	UAM_ASSERT_EQ(chat.provider_handoff_session_id, chat.native_session_id);
 	UAM_ASSERT_EQ(terminal.attached_session_id, chat.native_session_id);
+	UAM_ASSERT(!chat.native_session_reset_pending);
 	const std::optional<ChatSession> reopened = ChatRepository::LoadLocalChat(app.data_root, chat.id);
 	UAM_ASSERT(reopened.has_value());
+	UAM_ASSERT(!reopened->native_session_reset_pending);
 	chat = *reopened;
 	argv = {(temp.root / "must-not-run").string()};
 	UAM_ASSERT(PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
@@ -3202,6 +3205,39 @@ UAM_TEST(CodexImportedRemoteIdentityWaitsForOwnedReplyInsteadOfSavedBlankThread)
 	UAM_ASSERT(uam::DiscoverCliTerminalNativeSession(app, terminal));
 	UAM_ASSERT_EQ(app.chats[0].native_session_id, terminal.attached_session_id);
 	UAM_ASSERT_EQ(app.chats[0].provider_handoff_session_id, terminal.attached_session_id);
+}
+
+UAM_TEST(CliViewIdentityCompletesNativeResetAfterProviderSwitch)
+{
+	TempDir temp("uam-cli-identity-after-switch");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "cli-identity-after-switch";
+	chat.provider_id = "gemini-cli";
+	chat.workspace_directory = temp.root.string();
+	chat.native_session_id = "gemini-native";
+	chat.messages.push_back(Message{MessageRole::User, "Earlier."});
+	app.chats.push_back(chat);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::Changed);
+	UAM_ASSERT(app.chats.front().native_session_reset_pending);
+
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = chat.id;
+	terminal.attached_chat_id = chat.id;
+	terminal.attached_session_id = "claude-native";
+	UAM_ASSERT(uam::DiscoverCliTerminalNativeSession(app, terminal));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("claude-native"));
+	UAM_ASSERT(!app.chats.front().native_session_reset_pending);
+	const std::optional<ChatSession> reopened = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(reopened.has_value() && !reopened->native_session_reset_pending);
+
+	// A record saved with the flag stuck heals when the same identity is seen again.
+	app.chats.front().native_session_reset_pending = true;
+	UAM_ASSERT(uam::DiscoverCliTerminalNativeSession(app, terminal));
+	UAM_ASSERT(!app.chats.front().native_session_reset_pending);
+	UAM_ASSERT(!uam::DiscoverCliTerminalNativeSession(app, terminal));
 }
 
 UAM_TEST(CodexNativeContextImportRefusesBlankAndOversizeHistoryBeforeStartingProvider)

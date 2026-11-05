@@ -75,8 +75,7 @@ namespace uam
 			return false;
 		}
 		const bool previous_reset_pending = chat.native_session_reset_pending;
-		chat.native_session_id = session_id;
-		chat.native_session_reset_pending = false;
+		chat.LinkNativeSessionId(session_id);
 		chat.remote_claude_session_unstarted = false;
 		if (!ChatRepository::SaveChat(app.data_root, chat))
 		{

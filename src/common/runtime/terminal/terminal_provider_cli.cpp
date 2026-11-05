@@ -659,12 +659,14 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 			if (resume == argv.cend() || resume + 1 == argv.cend() || !uam::uuid::IsCanonicalUuid(*(resume + 1))) return false;
 			const std::string previous_identity = chat.native_session_id;
 			const std::string previous_handoff = chat.provider_handoff_session_id;
-			chat.native_session_id = *(resume + 1);
+			const bool previous_reset_pending = chat.native_session_reset_pending;
+			chat.LinkNativeSessionId(*(resume + 1));
 			chat.provider_handoff_session_id = chat.native_session_id;
 			if (!state->prepared_chat_save || !ChatRepository::PublishPreparedChatSave(state->prepared_chat_save, true, &chat))
 			{
 				chat.native_session_id = previous_identity;
 				chat.provider_handoff_session_id = previous_handoff;
+				chat.native_session_reset_pending = previous_reset_pending;
 				error = "Could not save the imported Codex session. Retry opening its terminal.";
 				return false;
 			}
@@ -759,7 +761,7 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 						state->succeeded = false;
 					else
 					{
-						snapshot.native_session_id = *(resume + 1);
+						snapshot.LinkNativeSessionId(*(resume + 1));
 						snapshot.provider_handoff_session_id = snapshot.native_session_id;
 						state->prepared_chat_save = ChatRepository::PrepareChatSave(data_root, snapshot, state->storage_revision);
 						state->succeeded = state->prepared_chat_save != nullptr;

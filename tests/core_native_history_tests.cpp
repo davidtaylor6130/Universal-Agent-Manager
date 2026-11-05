@@ -2266,6 +2266,88 @@ UAM_TEST(CopilotCliBuildsCommandsAndInteractiveArgv)
 #endif
 }
 
+UAM_TEST(CliViewSessionSetupCompletesNativeResetForOpenCodeAndCopilot)
+{
+	TempDir temp("uam-cli-setup-after-reset");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	struct Case { ProviderProfile profile; std::string resume_id; };
+	std::vector<Case> cases;
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	cases.push_back({ProviderProfileStore::DefaultOpenCodeProfile(), "ses_after_reset"});
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	cases.push_back({ProviderProfileStore::DefaultCopilotProfile(), ""});
+#endif
+	for (const Case& test_case : cases)
+	{
+		ChatSession chat;
+		chat.id = "chat-reset-" + test_case.profile.id;
+		chat.provider_id = test_case.profile.id;
+		chat.native_session_reset_pending = true;
+		std::string error;
+		UAM_ASSERT(ProviderRuntimeRegistry::Resolve(test_case.profile).PrepareInteractiveSession(app, chat, test_case.profile, test_case.resume_id, ExecutionHost{}, &error));
+		UAM_ASSERT(!chat.native_session_id.empty());
+		UAM_ASSERT(!chat.native_session_reset_pending);
+		const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(temp.root, chat.id);
+		UAM_ASSERT(persisted.has_value() && !persisted->native_session_reset_pending);
+	}
+}
+
+UAM_TEST(LocalDraftInfersNativeLinkOnlyWithoutPendingReset)
+{
+	for (const bool reset_pending : {true, false})
+	{
+		TempDir temp("uam-draft-infer-after-reset");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatSession draft;
+		draft.id = "chat-infer-after-reset";
+		draft.provider_id = uam::provider_ids::kGeminiCli;
+		draft.workspace_directory = temp.root.string();
+		draft.native_session_reset_pending = reset_pending;
+		draft.created_at = draft.updated_at = "2026-01-01T00:00:00.000Z";
+		draft.messages = {Message{MessageRole::User, "Match this request"}};
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, draft));
+		ChatSession native = draft;
+		native.id = "11111111-1111-4111-8111-111111111111";
+		native.native_session_id = native.id;
+		native.native_session_reset_pending = false;
+		UAM_ASSERT(NativeSessionLinkService().MatchNativeSessionIdForLocalDraft(draft, {native}).has_value());
+		std::vector<ChatSession> native_chats{native};
+		ChatHistorySyncService().ApplyLocalOverrides(app, native_chats);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, draft.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->native_session_id, reset_pending ? std::string() : native.id);
+		UAM_ASSERT_EQ(saved->native_session_reset_pending, reset_pending);
+	}
+}
+
+// The terminal poll calls this with an identity the running terminal really reported.
+UAM_TEST(TerminalDiscoveredDraftLinkCompletesNativeReset)
+{
+	TempDir temp("uam-draft-link-after-reset");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-link-after-reset";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.native_session_reset_pending = true;
+	UAM_ASSERT(uam::chat_ids::IsLocalDraftChatId(chat.id));
+	UAM_ASSERT(ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, chat, "native-after-reset"));
+	UAM_ASSERT_EQ(chat.native_session_id, std::string("native-after-reset"));
+	UAM_ASSERT(!chat.native_session_reset_pending);
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(persisted.has_value() && !persisted->native_session_reset_pending);
+
+	// A record already holding this identity with the flag set also completes.
+	chat.native_session_reset_pending = true;
+	UAM_ASSERT(ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, chat, "native-after-reset"));
+	UAM_ASSERT(!chat.native_session_reset_pending);
+}
+
 UAM_TEST(CopilotTerminalLaunchIdentityIsPersistedAndReused)
 {
 #if UAM_ENABLE_RUNTIME_COPILOT_CLI

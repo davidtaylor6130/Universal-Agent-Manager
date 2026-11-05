@@ -2122,7 +2122,8 @@ namespace
 
 	bool LocalDraftCanInferNativeSessionLink(const uam::AppState& app, const ChatSession& chat)
 	{
-		if (NativeSessionLinkService().HasRealNativeSessionId(chat) || !NativeSessionLinkService().IsLocalDraftChatId(chat.id))
+		// A pending reset wants a fresh session, so matching text must not relink the earlier one.
+		if (chat.native_session_reset_pending || NativeSessionLinkService().HasRealNativeSessionId(chat) || !NativeSessionLinkService().IsLocalDraftChatId(chat.id))
 		{
 			return false;
 		}
@@ -6399,12 +6400,12 @@ bool ChatHistorySyncService::PersistLocalDraftNativeSessionLink(const uam::AppSt
 		return false;
 	}
 
-	if (native_session_links.RealNativeSessionId(local_chat) == session_id)
+	if (native_session_links.RealNativeSessionId(local_chat) == session_id && !local_chat.native_session_reset_pending)
 	{
 		return true;
 	}
 
-	local_chat.native_session_id = session_id;
+	local_chat.LinkNativeSessionId(session_id);
 	return ChatRepository::SaveChat(app.data_root, local_chat);
 }
 

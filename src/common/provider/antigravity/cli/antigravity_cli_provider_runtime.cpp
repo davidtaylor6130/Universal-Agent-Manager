@@ -552,6 +552,7 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 				const std::string previous = chat.native_session_id;
 				const bool first_goal_identity = previous.empty() && session.antigravity_goal_turn.owner_chat_id == chat.id && BoundAntigravityGoal(app, session);
 				SetChatNativeSessionIdIfChanged(chat, identity);
+				(void)BindPendingProviderHandoff(session, chat);
 				if (first_goal_identity)
 					session.antigravity_goal_turn.native_conversation_id = chat.native_session_id;
 				SyncResolvedNativeSessionIdForChat(app, chat, identity, previous);
