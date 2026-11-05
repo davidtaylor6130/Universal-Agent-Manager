@@ -4864,6 +4864,19 @@ UAM_TEST(ProviderAcpRetriesPendingCompatibilityAndPreservesUndeliveredPrompt)
 		UAM_ASSERT(pending_session->queued_user_prompts.empty());
 		UAM_ASSERT(!pending_session->reconnect_pending);
 
+		// A steer that races turn completion finds no active turn and takes the ordinary start path (#688),
+		// never a priority-steer queue entry. That path refuses while the CLI check is pending, unlike Send,
+		// which admits direct input here; the refused steer leaves nothing queued or recorded.
+		UAM_ASSERT(!uam::AcpSessionHasActiveTurn(*pending_session));
+		error.clear();
+		UAM_ASSERT(!uam::SteerAcpPrompt(app, pending_chat.id, "Steer after the turn ended.", {}, {}, false, &error));
+		UAM_ASSERT(error.find("compatibility") != std::string::npos);
+		UAM_ASSERT(pending_session->queued_user_prompts.empty());
+		UAM_ASSERT(visible_queue().empty());
+		UAM_ASSERT(app.chats.front().messages.empty());
+		UAM_ASSERT(!pending_session->reconnect_pending);
+		error.clear();
+
 		UAM_ASSERT(uam::SendAcpPrompt(app, pending_chat.id, "Retry before the check.", {}, {}, false, &error));
 		const uam::AcpQueuedUserPromptState direct_before_retry = pending_session->queued_user_prompts.front();
 		UAM_ASSERT(direct_before_retry.direct_admission && pending_session->reconnect_pending);
@@ -11407,6 +11420,42 @@ UAM_TEST(AcpSetupInactivityTimeoutStopsAndReconnectsWithoutDroppingQueuedWork)
 	UAM_ASSERT(uam::SteerAcpPrompt(app, raw_session->chat_id, "New Gemini steering prompt", {}, {}, false, &error));
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("New Gemini steering prompt"));
 	UAM_ASSERT(raw_session->reconnect_pending);
+}
+
+UAM_TEST(AcpSteerGoesAheadOfQueuedPromptsAndKeepsTheirOrder)
+{
+	TempDir temp("uam-acp-steer-order");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-steer-order";
+	chat.provider_id = "gemini-cli";
+	chat.workspace_directory = uam::paths::Utf8PathString(temp.root);
+	app.chats.push_back(chat);
+	auto owned = std::make_unique<uam::AcpSessionState>();
+	owned->chat_id = chat.id;
+	owned->provider_id = "gemini-cli";
+	owned->protocol_kind = "gemini-acp";
+	owned->queued_user_prompts.push_back(uam::AcpQueuedUserPromptState{"First queued prompt"});
+	owned->queued_user_prompts.push_back(uam::AcpQueuedUserPromptState{"Second queued prompt"});
+	owned->reconnect_pending = true;
+	uam::AcpSessionState* session = owned.get();
+	app.acp_sessions.push_back(std::move(owned));
+	UAM_ASSERT(uam::AcpSessionHasDeferredUserQueueOnly(*session));
+
+	std::string error;
+	UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "Steer first", {}, {}, false, &error));
+	UAM_ASSERT_EQ(session->queued_user_prompts.size(), std::size_t{3});
+	UAM_ASSERT_EQ(session->queued_user_prompts[0].text, std::string("Steer first"));
+	UAM_ASSERT(session->queued_user_prompts[0].priority_steer);
+	UAM_ASSERT_EQ(session->queued_user_prompts[1].text, std::string("First queued prompt"));
+	UAM_ASSERT_EQ(session->queued_user_prompts[2].text, std::string("Second queued prompt"));
+	// The persisted chat queue matches the live order.
+	const ChatSession& saved = app.chats.front();
+	UAM_ASSERT_EQ(saved.acp_queued_prompts.size(), std::size_t{3});
+	UAM_ASSERT_EQ(saved.acp_queued_prompts[0].text, std::string("Steer first"));
+	UAM_ASSERT_EQ(saved.acp_queued_prompts[1].text, std::string("First queued prompt"));
+	UAM_ASSERT_EQ(saved.acp_queued_prompts[2].text, std::string("Second queued prompt"));
 }
 
 UAM_TEST(AcpRemoteRestartRequiresAZeroExitFromTheStopProxy)

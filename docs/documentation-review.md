@@ -266,3 +266,7 @@ The [stream watch](providers/runtime-lifecycle.md#stream-watch) ships with loop 
 - The preview returns static validation and blocked-content warnings only. Rendering the page to report runtime errors or a screenshot is **not done**: it needs an offscreen renderer owned by the native tool route.
 - Save as HTML file uses the existing folder picker and writes a unique title-based name, because no native Save As dialog exists. Open in browser writes a content-addressed copy under the system temporary folder with the restrictive policy prepended. The copy folder is refused if it is a link, not a folder or (outside Windows) owned by another user, and each new copy deletes view copies older than 24 hours.
 - Reduced motion and Motion Off stop the page's CSS animations and transitions; script-driven animation is not controlled.
+
+## Active-turn Send in CLI View
+
+Issue #688 asks for the Send during a running turn preference to apply in both Chat and CLI View. CLI View is the provider's own terminal interface ([CLI terminal view](providers/terminal-view/terminal-view.md)) and has no UAM composer or Send action: keystrokes go straight to the native CLI, which decides itself whether input queues or steers. The preference therefore applies to the Chat composer only. Decide whether CLI View needs a UAM-owned input control or provider-specific key mapping; no terminal input change is made until decided.

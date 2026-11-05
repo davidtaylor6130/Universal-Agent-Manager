@@ -873,6 +873,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   useEffect(() => () => { agentImportRequest.current += 1 }, [])
   const [chatDataBusy, setChatDataBusy] = useState<'export' | 'import' | null>(null)
   const [chatDataFolder, setChatDataFolder] = useState('')
+  const steerActiveTurnOnSend = useAppStore((state) => state.steerActiveTurnOnSend)
+  const setSteerActiveTurnOnSend = useAppStore((state) => state.setSteerActiveTurnOnSend)
   const [selectedSection, setSelectedSection] = useState<SettingsSectionId>('appearance')
   // Measure the active nav item so one indicator (tint + line) can glide between items.
   useLayoutEffect(() => {
@@ -1954,6 +1956,16 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   (option) => <ProviderLogo providerId={option.id} />
                 )} />
             <Reveal open={settingsScope === SETTINGS_ALL_ENVIRONMENTS}>
+              <SettingRow title="Send during a running turn" description="The composer offers the other action beside Send." control={renderDefaultsMenu(
+                    'active-turn-send',
+                    steerActiveTurnOnSend ? 'steer' : 'queue',
+                    'Send during a running turn',
+                    [
+                      { id: 'queue', label: 'Queue for next turn', detail: 'Runs after the current turn finishes.' },
+                      { id: 'steer', label: 'Steer active turn', detail: 'Sent at its next safe point; providers without native steering stop the turn first.' },
+                    ],
+                    (mode) => void setSteerActiveTurnOnSend(mode === 'steer')
+                  )} />
               <SettingRow title="Reviewer provider" description="AI approves routine requests; unsure ones come to you." control={renderDefaultsMenu(
                     'permission-reviewer-provider',
                     permissionReviewerProviderId,

@@ -123,7 +123,8 @@ export function providersEquivalent(previous: Provider, next: Provider): boolean
 	previous.structuredPermissionControl === next.structuredPermissionControl &&
 	previous.terminalPermissionControl === next.terminalPermissionControl &&
 	previous.npmPackageName === next.npmPackageName &&
-	previous.nativeGoalCommand === next.nativeGoalCommand
+	previous.nativeGoalCommand === next.nativeGoalCommand &&
+	previous.supportsNativeSteering === next.supportsNativeSteering
 }
 
 export function providerFromCppProvider(provider: CppProvider, previous: Provider | undefined): Provider {
@@ -141,6 +142,7 @@ export function providerFromCppProvider(provider: CppProvider, previous: Provide
 	terminalPermissionControl: provider.terminalPermissionControl,
     npmPackageName: provider.npmPackageName,
 	  nativeGoalCommand: provider.nativeGoalCommand,
+    supportsNativeSteering: provider.supportsNativeSteering,
   }
 
   if (previous) {

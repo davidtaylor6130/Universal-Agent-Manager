@@ -146,3 +146,14 @@
 
 /* Tabs above the composer share its edge; the composer top border stays as a line below them. */
 .uam-composer-workspace-tab, .uam-composer-goal-tab { border: 1px solid var(--composer-border, color-mix(in srgb, var(--text) 16%, transparent)); border-bottom: 0; }
+
+/* Alternate active-turn Send (Queue or Steer): reserved slot, presence-style fade on the shared motion tokens. */
+.uam-composer-alternate-send {
+  transition: opacity var(--dur-fast) var(--ease), visibility 0s linear 0s;
+}
+.uam-composer-alternate-send[data-state='closed'] {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease), visibility 0s linear var(--dur-fast);
+}

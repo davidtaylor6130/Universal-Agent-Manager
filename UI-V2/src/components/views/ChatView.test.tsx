@@ -2201,6 +2201,342 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  describe('active-turn Send preference (#688)', () => {
+    const queued = (id: string, text: string) => ({ id, revision: 1, text, uamAgentId: '', attachments: [], markdownStoreFiles: [], goalMode: false, goalId: '' })
+    const typeDraft = (host: HTMLElement, text: string) => {
+      const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, text)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      return textarea
+    }
+    const mount = () => {
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      const root = createRoot(host)
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      return { host, done: () => { act(() => root.unmount()); host.remove() } }
+    }
+    const enter = (textarea: HTMLTextAreaElement) => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    afterEach(() => useAppStore.setState({ steerActiveTurnOnSend: false }))
+
+    it('queues by default and offers an interrupting Steer as an accessible alternative that sends exactly once', async () => {
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      useAppStore.setState({ sendAcpPrompt })
+      const { host, done } = mount()
+      try {
+        const textarea = typeDraft(host, 'Use the other file')
+        expect(host.querySelector('button[aria-label="Queue prompt"]')).toBeTruthy()
+        // Gemini has no native steering, so the alternative names the interruption.
+        const alternate = host.querySelector('button[aria-label="Interrupt and steer instead"]') as HTMLButtonElement
+        expect(alternate.dataset.state).toBe('open')
+        expect(alternate.title).toContain('Stops the running turn')
+        alternate.focus()
+        await act(async () => { alternate.click(); alternate.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Use the other file', [], true, expect.any(Function))
+        expect(document.activeElement).toBe(textarea)
+      } finally { done() }
+    })
+
+    it('names in-place steering for a provider with native steering', () => {
+      useAppStore.setState((state) => ({ steerActiveTurnOnSend: true, providers: state.providers.map((provider) => provider.id === 'gemini-cli' ? { ...provider, supportsNativeSteering: true } : provider) }))
+      const { host, done } = mount()
+      try {
+        typeDraft(host, 'Adjust course')
+        const send = host.querySelector('button[aria-label="Steer active turn"]') as HTMLButtonElement
+        expect(send.title).toContain('next safe point')
+        expect(host.querySelector('button[aria-label="Queue for next turn instead"]')).toBeTruthy()
+      } finally { done() }
+    })
+
+    it('steers with Send and Enter when Steer is selected, and keeps Queue available', async () => {
+      useAppStore.setState({ steerActiveTurnOnSend: true })
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(false))
+      useAppStore.setState({ sendAcpPrompt })
+      const { host, done } = mount()
+      try {
+        const textarea = typeDraft(host, 'Stop and use Postgres')
+        const send = host.querySelector('button[aria-label="Interrupt and steer"]') as HTMLButtonElement
+        expect(send).toBeTruthy()
+        expect(host.querySelector('button[aria-label="Queue prompt"]')).toBeNull()
+        await act(async () => { send.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', 'Stop and use Postgres', [], true, expect.any(Function))
+        // A failed steer keeps the authored draft.
+        expect(textarea.value).toBe('Stop and use Postgres')
+
+        await act(async () => { enter(textarea); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(2)
+        expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', 'Stop and use Postgres', [], true, expect.any(Function))
+
+        const queue = host.querySelector('button[aria-label="Queue for next turn instead"]') as HTMLButtonElement
+        await act(async () => { queue.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(3)
+        expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', 'Stop and use Postgres', [], undefined, expect.any(Function))
+      } finally { done() }
+    })
+
+    it('steers exactly once for a double Enter before the send settles', async () => {
+      useAppStore.setState({ steerActiveTurnOnSend: true })
+      const finishes: Array<(ok: boolean) => void> = []
+      const sendAcpPrompt = vi.fn(() => new Promise<boolean>((resolve) => finishes.push(resolve)))
+      useAppStore.setState({ sendAcpPrompt })
+      const { host, done } = mount()
+      try {
+        const textarea = typeDraft(host, 'Only once')
+        act(() => { enter(textarea); enter(textarea) })
+        await act(async () => { await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Only once', [], true, expect.any(Function))
+        await act(async () => { finishes.forEach((finish) => finish(true)); await Promise.resolve() })
+      } finally { done() }
+    })
+
+    it('sends an idle prompt directly whatever the preference and keeps the alternate slot reserved but hidden', async () => {
+      useAppStore.setState({ steerActiveTurnOnSend: true })
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      useAppStore.setState((state) => ({ sendAcpPrompt, acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, pendingPermission: null } } }))
+      const { host, done } = mount()
+      try {
+        typeDraft(host, 'Idle prompt')
+        const reserved = host.querySelector('.uam-composer-alternate-send') as HTMLButtonElement
+        expect(reserved.dataset.state).toBe('closed')
+        expect(reserved.disabled).toBe(true)
+        expect(reserved.tabIndex).toBe(-1)
+        expect(reserved.getAttribute('aria-hidden')).toBe('true')
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Idle prompt', [], undefined, expect.any(Function))
+      } finally { done() }
+    })
+
+    it('steers with attachments and keeps them in the draft when steering fails', async () => {
+      useAppStore.setState({ steerActiveTurnOnSend: true })
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(false))
+      useAppStore.setState({ sendAcpPrompt })
+      writeChatComposerDraft('chat-1', { text: 'See screenshot', attachments: [{ id: 'shot', name: 'shot.png', type: 'image', size: 4, path: '/tmp/shot.png' }] })
+      const { host, done } = mount()
+      try {
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Interrupt and steer"]')!.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        const call = sendAcpPrompt.mock.calls[0] as unknown as [string, string, Array<{ id: string }>, boolean]
+        expect(call[2].map((item) => item.id)).toEqual(['shot'])
+        expect(call[3]).toBe(true)
+        expect(host.textContent).toContain('shot.png')
+        expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('See screenshot')
+      } finally { done() }
+    })
+
+    it('leaves already queued prompts in their order after a steer', async () => {
+      useAppStore.setState({ steerActiveTurnOnSend: true })
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      const reorderQueuedAcpPrompts = vi.fn(() => Promise.resolve(true))
+      const steerQueuedAcpPrompt = vi.fn(() => Promise.resolve(true))
+      useAppStore.setState((state) => ({ sendAcpPrompt, reorderQueuedAcpPrompts, steerQueuedAcpPrompt,
+        acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], queuedPrompts: [queued('q-1', 'First queued'), queued('q-2', 'Second queued')] } } }))
+      const { host, done } = mount()
+      try {
+        typeDraft(host, 'Steer now')
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Interrupt and steer"]')!.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Steer now', [], true, expect.any(Function))
+        expect(reorderQueuedAcpPrompts).not.toHaveBeenCalled()
+        expect(steerQueuedAcpPrompt).not.toHaveBeenCalled()
+        const text = host.textContent ?? ''
+        expect(text.indexOf('First queued')).toBeGreaterThanOrEqual(0)
+        expect(text.indexOf('First queued')).toBeLessThan(text.indexOf('Second queued'))
+      } finally { done() }
+    })
+
+    it('keeps the Claude Plan mode step for a steer and steers once after it is resolved', async () => {
+      useAppStore.setState({ steerActiveTurnOnSend: true })
+      const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      useAppStore.setState((state) => ({
+        sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+        acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], providerId: 'claude-cli', protocolKind: 'claude-code-stream-json',
+          processing: true, pendingPermission: null, currentModeId: 'plan',
+          availableModes: [{ id: 'default', name: 'Default', description: '' }, { id: 'plan', name: 'Plan', description: '' }] } },
+        setSessionApprovalMode, sendAcpPrompt,
+      }))
+      const { host, done } = mount()
+      try {
+        typeDraft(host, 'Plan the steer')
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Interrupt and steer"]')!.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).not.toHaveBeenCalled()
+        expect(document.body.textContent).toContain('Claude Plan mode is read-only')
+        await act(async () => { [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Review each edit')!.click() })
+        expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'default')
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Plan the steer', [], true, expect.any(Function))
+      } finally { done() }
+    })
+
+    it.each([
+      { preference: true, alternateLabel: 'Queue for next turn instead', expected: undefined },
+      { preference: false, alternateLabel: 'Interrupt and steer instead', expected: true },
+    ])('keeps the alternate action chosen while dictating (preference steer=$preference)', async ({ preference, alternateLabel, expected }) => {
+      useAppStore.setState({ steerActiveTurnOnSend: preference })
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      const requests: Array<{ action: string; payload?: { dictationId?: string } }> = []
+      window.cefQuery = vi.fn(({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') })
+      useAppStore.setState({ sendAcpPrompt })
+      const { host, done } = mount()
+      try {
+        typeDraft(host, 'Spoken draft')
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Start dictation"]')!.click(); await Promise.resolve() })
+        await act(async () => { host.querySelector<HTMLButtonElement>(`button[aria-label="${alternateLabel}"]`)!.click(); await Promise.resolve() })
+        expect(requests.some((request) => request.action === 'stopDictation')).toBe(true)
+        expect(sendAcpPrompt).not.toHaveBeenCalled()
+        const dictationId = requests.find((request) => request.action === 'startDictation')?.payload?.dictationId
+        await act(async () => { window.dispatchEvent(new CustomEvent('uam-dictation', { detail: { type: 'dictation', dictationId, event: 'end' } })); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Spoken draft', [], expected, expect.any(Function))
+      } finally { done() }
+    })
+
+    it('keeps the toolbar width stable when the first character replaces Cancel', () => {
+      const { host, done } = mount()
+      try {
+        const actions = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.uam-composer-action')).slice(-2)
+        const [slot, cancel] = actions()
+        expect(slot.classList.contains('uam-composer-alternate-send')).toBe(true)
+        expect(slot.dataset.state).toBe('closed')
+        expect(cancel.getAttribute('aria-label')).toBe('Cancel turn')
+        typeDraft(host, 'x')
+        const [openSlot, send] = actions()
+        expect(openSlot.classList.contains('uam-composer-alternate-send')).toBe(true)
+        expect(openSlot.dataset.state).toBe('open')
+        expect(send.getAttribute('aria-label')).toBe('Queue prompt')
+        expect(host.querySelector('button[aria-label="Cancel turn"]')).toBeNull()
+      } finally { done() }
+    })
+
+    it.each([
+      { kind: 'slash', draft: '/goal Ship it', sent: 'Ship it' },
+      { kind: 'native', draft: '/ralph Ship it', sent: '/ralph Ship it' },
+      { kind: 'armed', draft: 'Ship it', sent: 'Ship it' },
+    ])('asks in Claude Plan mode before a $kind goal steer creates its goal', async ({ kind, draft, sent }) => {
+      const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      const setGoal = vi.fn(() => Promise.resolve({ ok: true, goalId: 'goal-1' }))
+      useAppStore.setState((state) => ({ steerActiveTurnOnSend: true, goalTokenBudget: 0,
+        providers: state.providers.map((provider) => provider.id === 'claude-cli' ? { ...provider, nativeGoalCommand: '/ralph' } : provider),
+        sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+        acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], providerId: 'claude-cli', protocolKind: 'claude-code-stream-json',
+          processing: true, pendingPermission: null, currentModeId: 'plan',
+          availableModes: [{ id: 'default', name: 'Default', description: '' }, { id: 'plan', name: 'Plan', description: '' }] } },
+        setSessionApprovalMode, sendAcpPrompt, setGoal,
+      }))
+      const { host, done } = mount()
+      try {
+        if (kind === 'armed') {
+          // Goal can only be armed between turns, so the turn starts after it is armed.
+          const setProcessing = (processing: boolean) => act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing } } })))
+          setProcessing(false)
+          openComposerOptions(host)
+          act(() => goalMenuItem()!.click())
+          setProcessing(true)
+        }
+        const textarea = typeDraft(host, draft)
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Interrupt and steer"]')!.click(); await Promise.resolve() })
+        expect(setGoal).not.toHaveBeenCalled()
+        expect(sendAcpPrompt).not.toHaveBeenCalled()
+        expect(document.body.textContent).toContain('Claude Plan mode is read-only')
+        await act(async () => { [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Review each edit')!.click() })
+        expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'default')
+        expect(setGoal).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', sent, [], true, expect.any(Function))
+        expect(document.body.textContent).not.toContain('Claude Plan mode is read-only')
+        expect(textarea.value).toBe('')
+      } finally { done() }
+    })
+
+    describe('Claude Plan dialog choices for a goal steer', () => {
+      const openDialog = async () => {
+        const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+        const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+        const setGoal = vi.fn(() => Promise.resolve({ ok: true, goalId: 'goal-1' }))
+        useAppStore.setState((state) => ({ steerActiveTurnOnSend: true, goalTokenBudget: 0,
+          sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+          acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], providerId: 'claude-cli', protocolKind: 'claude-code-stream-json',
+            processing: true, pendingPermission: null, currentModeId: 'plan',
+            availableModes: [{ id: 'default', name: 'Default', description: '' }, { id: 'plan', name: 'Plan', description: '' }] } },
+          setSessionApprovalMode, sendAcpPrompt, setGoal,
+        }))
+        const mounted = mount()
+        const textarea = typeDraft(mounted.host, '/goal Ship it')
+        await act(async () => { mounted.host.querySelector<HTMLButtonElement>('button[aria-label="Interrupt and steer"]')!.click(); await Promise.resolve() })
+        expect(document.body.textContent).toContain('Claude Plan mode is read-only')
+        return { ...mounted, textarea, setSessionApprovalMode, sendAcpPrompt, setGoal }
+      }
+
+      it('cancels on Escape: no goal, no interrupt, draft kept', async () => {
+        const { textarea, setGoal, sendAcpPrompt, setSessionApprovalMode, done } = await openDialog()
+        try {
+          await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await Promise.resolve() })
+          expect(document.body.textContent).not.toContain('Claude Plan mode is read-only')
+          expect(setGoal).not.toHaveBeenCalled()
+          expect(sendAcpPrompt).not.toHaveBeenCalled()
+          expect(setSessionApprovalMode).not.toHaveBeenCalled()
+          expect(textarea.value).toBe('/goal Ship it')
+        } finally { done() }
+      })
+
+      it('sends in Plan mode on Keep planning, as for any Plan prompt', async () => {
+        const { textarea, setGoal, sendAcpPrompt, setSessionApprovalMode, done } = await openDialog()
+        try {
+          await act(async () => { [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Keep planning')!.click() })
+          expect(setSessionApprovalMode).not.toHaveBeenCalled()
+          expect(setGoal).toHaveBeenCalledTimes(1)
+          expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+          expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Ship it', [], true, expect.any(Function))
+          expect(textarea.value).toBe('')
+        } finally { done() }
+      })
+    })
+
+    it('cancels an ordinary Claude Plan prompt on Escape and keeps the draft', async () => {
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      useAppStore.setState((state) => ({
+        sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+        acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], providerId: 'claude-cli', protocolKind: 'claude-code-stream-json', processing: false, lifecycleState: 'ready', pendingPermission: null, currentModeId: 'plan',
+          availableModes: [{ id: 'default', name: 'Default', description: '' }, { id: 'plan', name: 'Plan', description: '' }] } },
+        sendAcpPrompt,
+      }))
+      const { host, done } = mount()
+      try {
+        const textarea = typeDraft(host, 'Plan this')
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click(); await Promise.resolve() })
+        expect(document.body.textContent).toContain('Claude Plan mode is read-only')
+        await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await Promise.resolve() })
+        expect(document.body.textContent).not.toContain('Claude Plan mode is read-only')
+        expect(sendAcpPrompt).not.toHaveBeenCalled()
+        expect(textarea.value).toBe('Plan this')
+      } finally { done() }
+    })
+
+    it.each([
+      { draft: '/ralph Ship it', sent: '/ralph Ship it' },
+      { draft: '/goal Ship it', sent: 'Ship it' },
+    ])('applies the labelled action to goal command $draft', async ({ draft, sent }) => {
+      useAppStore.setState((state) => ({ steerActiveTurnOnSend: true, goalTokenBudget: 0,
+        setGoal: vi.fn(() => Promise.resolve({ ok: true, goalId: 'goal-1' })),
+        providers: state.providers.map((provider) => provider.id === 'gemini-cli' ? { ...provider, nativeGoalCommand: '/ralph' } : provider) }))
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(false))
+      useAppStore.setState({ sendAcpPrompt })
+      const { host, done } = mount()
+      try {
+        typeDraft(host, draft)
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Interrupt and steer"]')!.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', sent, [], true, expect.any(Function))
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Queue for next turn instead"]')!.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', sent, [], undefined, expect.any(Function))
+      } finally { done() }
+    })
+  })
+
   it.each([true, false])('preserves new text and attachments during prompt admission acceptance=%s', async (accepted) => {
     let finishSend!: (ok: boolean) => void
     const send = vi.fn(() => new Promise<boolean>((resolve) => { finishSend = resolve }))

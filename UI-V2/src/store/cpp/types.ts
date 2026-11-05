@@ -619,6 +619,7 @@ export interface CppProvider {
   terminalPermissionControl?: 'provider'
   npmPackageName?: string
 	nativeGoalCommand?: string
+  supportsNativeSteering?: boolean
 }
 
 export interface MemoryWorkerBinding {
@@ -761,6 +762,7 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   theme: StoredTheme
   showProviderIconsInSidebar?: boolean
   showWorktreePathInSidebar?: boolean
+  steerActiveTurnOnSend?: boolean
   gitEnabled?: boolean
   svnEnabled?: boolean
   memoryEnabledDefault: boolean

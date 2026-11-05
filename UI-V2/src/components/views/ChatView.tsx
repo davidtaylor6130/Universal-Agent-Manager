@@ -157,6 +157,10 @@ interface PendingClaudePlanPrompt {
   draft: string
   attachments: Attachment[]
   context: ComposerReferenceSubmission
+  /** The original Send chose Steer; Plan-mode resolution keeps that action. */
+  steerNow?: boolean
+  /** A goal steer creates its goal only after the Plan-mode choice. */
+  goal?: { objective: string; tokenBudget: number; executionOwner: 'uam' | 'provider'; sendFailure: string; disarm?: boolean }
 }
 
 const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
@@ -990,8 +994,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const dictationFinalTextRef = useRef('')
   const dictationInterimTextRef = useRef('')
   const dictationHadErrorRef = useRef(false)
-  const dictationSubmitAfterStopRef = useRef(false)
-  const submitDictatedPromptRef = useRef<(prompt: string) => void>(() => {})
+  // Carries the Send action chosen while dictating, so it applies once dictation finishes.
+  const dictationSubmitAfterStopRef = useRef<false | { steerOverride?: boolean }>(false)
+  const submitDictatedPromptRef = useRef<(prompt: string, steerOverride?: boolean) => void>(() => {})
   const submitInFlightRef = useRef(false)
   const previousComposerIdentityRef = useRef({ id: session.id, birth: sessionBirth })
   const abandonedBirthSubmission = previousComposerIdentityRef.current.id === session.id &&
@@ -1564,11 +1569,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const createGoalAndSend = async (request: {
     objective: string; tokenBudget: number; executionOwner: 'uam' | 'provider'; prompt: string;
     attachments: Attachment[]; sendFailure: string; steerNow?: boolean; disarm?: boolean;
-  }) => {
+  }, planSubmission?: PendingClaudePlanPrompt) => {
     const submittedSessionId = session.id
-    const submittedDraft = draft
-    const submittedContext = captureComposerReferenceSubmission(submittedSessionId)
+    const submittedDraft = planSubmission?.draft ?? draft
+    const submittedContext = planSubmission?.context ?? captureComposerReferenceSubmission(submittedSessionId)
     if (!submittedContext) { setGoalError("The chat's workspace or provider changed, so this goal wasn't sent. Review the selected references, then send again."); return }
+    if (!planSubmission && request.steerNow && isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
+      const { prompt, attachments, steerNow: _steerNow, ...goal } = request
+      setClaudePlanPrompt({ prompt, draft, attachments, context: submittedContext, steerNow: true, goal })
+      return
+    }
     const generation = ++goalMutationGenerationRef.current
     const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === submittedSessionId && goalMutationGenerationRef.current === generation &&
       useAppStore.getState().sessions.find((chat) => chat.id === submittedSessionId)?.createdAt.getTime() === submittedContext.birth
@@ -1603,7 +1613,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
   }
 
-  const submitGoal = async (prompt: string) => {
+  const submitGoal = async (prompt: string, steerNow: boolean) => {
     const goalMatch = prompt.match(/^\/goal\s+(.+?)(?:\s+--budget\s+(\d+))?\s*$/s)
     if (!goalMatch) return false
     const objective = goalMatch[1].trim()
@@ -1614,7 +1624,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     await createGoalAndSend({ objective, tokenBudget, executionOwner: providerManaged ? 'provider' : 'uam',
       prompt: providerManaged ? `${nativeGoalCommand} ${objective}` : objective,
       attachments: composerAttachments.filter((attachment) => attachment.status === 'ready').map(({ status, error, ...attachment }) => attachment),
-      sendFailure: 'Goal was created, but the first prompt failed to send.' })
+      sendFailure: 'Goal was created, but the first prompt failed to send.', steerNow: steerNow || undefined })
     return true
   }
 
@@ -1684,8 +1694,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
   }
 
-  const submit = async (event?: FormEvent, promptOverride?: string, steerNow = false) => {
+  const submit = async (event?: FormEvent, promptOverride?: string, steerOverride?: boolean) => {
     event?.preventDefault()
+    // While a turn runs, Send follows the saved active-turn preference unless the alternate action overrides it.
+    const steerNow = steerOverride ?? (Boolean(providerAcp?.processing) && useAppStore.getState().steerActiveTurnOnSend)
     if (editingMessageIndex !== null) {
       if (branchingMessageIndex === null && canChangeProvider && (editingMessageText.trim() || editingMessageAttachments.length > 0)) {
         if (editingMessageSource.kind === 'unsent') await saveEditedUnsentMessage()
@@ -1706,7 +1718,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       useAppStore.getState().sessions.find((chat) => chat.id === session.id)?.createdAt.getTime() !== session.createdAt.getTime() ||
       composerAttachments.some((attachment) => attachment.status !== 'ready')) return
 	if (dictationActiveRef.current && promptOverride === undefined) {
-	  await stopDictation(true)
+	  await stopDictation({ steerOverride })
 	  return
 	}
 	const readyAttachments = composerAttachments
@@ -1716,13 +1728,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (prompt === '/side' && !session.temporaryParentChatId && !isCompanionContext()) { setDraft(''); await navigateSide(); return }
     if ((prompt === '/side-return' || prompt === '/side-dismiss') && session.temporaryParentChatId && !isCompanionContext()) { setDraft(''); await navigateSide(prompt === '/side-return' ? 'return' : 'dismiss'); return }
     // Handle /goal command
-    if (prompt.startsWith('/goal ')) { await submitGoal(prompt); return }
+    if (prompt.startsWith('/goal ')) { await submitGoal(prompt, steerNow); return }
     const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
     if (nativeGoalCommand && (prompt === nativeGoalCommand || prompt.startsWith(`${nativeGoalCommand} `))) {
       const objective = prompt.slice(nativeGoalCommand.length).trim()
       if (!objective) { setGoalError('Goal objective is required.'); return }
       await createGoalAndSend({ objective, tokenBudget: goalTokenBudget, executionOwner: 'provider',
-        prompt, attachments: readyAttachments, sendFailure: 'Goal was created, but the provider command failed to send.' })
+        prompt, attachments: readyAttachments, sendFailure: 'Goal was created, but the provider command failed to send.', steerNow: steerNow || undefined })
       return
     }
     if (goalArmNextMessage) {
@@ -1733,10 +1745,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       return
     }
 
-    if (!steerNow && isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
+    if (isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
       const context = captureComposerReferenceSubmission(session.id)
       if (!context) { setSlashNotice(noticeFor(UNSENT_PROMPT_MESSAGE, 'warning')); return }
-      setClaudePlanPrompt({ prompt, draft, attachments: readyAttachments, context })
+      setClaudePlanPrompt({ prompt, draft, attachments: readyAttachments, context, ...(steerNow ? { steerNow: true } : {}) })
       return
     }
     const submittedSessionId = session.id
@@ -2280,8 +2292,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     [editingMessageIndex, providerSupported, session.importedReadOnly, draft, submitting, goalSubmitting, referenceCaptureLoading, composerAttachments]
   )
   const dictationAvailable = isCompanionContext() ? browserDictationAvailable() : isCefContext()
-  submitDictatedPromptRef.current = (prompt) => {
-    void submit(undefined, prompt)
+  submitDictatedPromptRef.current = (prompt, steerOverride) => {
+    void submit(undefined, prompt, steerOverride)
   }
 
   const startDictation = async () => {
@@ -2312,7 +2324,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setDictationState('listening')
   }
 
-  async function stopDictation(submitAfterStop = false) {
+  async function stopDictation(submitAfterStop: false | { steerOverride?: boolean } = false) {
     if (!dictationActiveRef.current) return
 	dictationSubmitAfterStopRef.current = submitAfterStop
     setDictationState('stopping')
@@ -2377,7 +2389,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       setDictationState('idle')
       setDraft(prompt)
       if (submitAfterStop && !dictationHadErrorRef.current && prompt.trim()) {
-        submitDictatedPromptRef.current(prompt)
+        submitDictatedPromptRef.current(prompt, submitAfterStop ? submitAfterStop.steerOverride : undefined)
       }
     }
 
@@ -3099,7 +3111,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         return
       }
       const readyAttachments = submission.attachments
-      const ok = await sendCapturedComposerPrompt(submission.context, submission.prompt, readyAttachments.length ? readyAttachments : undefined)
+      if (submission.goal) {
+        // Retrying would create the goal again, so failures surface in the composer as for any goal send.
+        await createGoalAndSend({ ...submission.goal, prompt: submission.prompt, attachments: readyAttachments, steerNow: true }, submission)
+        setClaudePlanPrompt((current) => current === submission ? null : current)
+        return
+      }
+      const ok = await (submission.steerNow
+        ? sendCapturedComposerPrompt(submission.context, submission.prompt, readyAttachments, true)
+        : sendCapturedComposerPrompt(submission.context, submission.prompt, readyAttachments.length ? readyAttachments : undefined))
       const acknowledgedSession = useAppStore.getState().sessions.find((candidate) => candidate.id === submittedSessionId)
       if (ok && acknowledgedSession?.createdAt.getTime() === submission.context.birth) {
         acknowledgeChatComposerDraft(submittedSessionId, submission.context.birth, { text: submission.draft, attachments: readyAttachments })
@@ -3752,6 +3772,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               cancelLabel="Keep planning"
               secondaryAction={{ label: 'Review each edit', onClick: () => void resolveClaudePlanPrompt('default') }}
               onCancel={() => void resolveClaudePlanPrompt('plan')}
+              onDismiss={() => setClaudePlanPrompt(null)}
               onConfirm={() => void resolveClaudePlanPrompt('acceptEdits')}
             >
               Claude Plan mode is read-only. Choose how to proceed with this prompt.
@@ -4219,6 +4240,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               goalPaused={Boolean(goalPaused)}
               onToggleGoal={handleToggleGoal}
               onCancelTurn={cancelLiveTurn}
+              onSendAlternate={() => {
+                void submit(undefined, undefined, !useAppStore.getState().steerActiveTurnOnSend)
+                composerTextareaRef.current?.focus({ preventScroll: true })
+              }}
               onAttachFile={() => fileInputRef.current?.click()}
               onOpenMarkdownStore={() => void openMarkdownStore()}
               dictationState={dictationState}

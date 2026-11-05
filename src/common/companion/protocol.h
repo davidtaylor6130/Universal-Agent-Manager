@@ -131,7 +131,7 @@ namespace uam::companion
 			state["settings"] = MobileSettings(state["settings"]);
 		if (state.contains("providers") && state["providers"].is_array())
 			for (auto& provider : state["providers"])
-				provider = Pick(provider, {"id", "name", "shortName", "outputMode", "supportsStructured", "supportsCli", "structuredProtocol", "structuredPermissionControl", "terminalPermissionControl", "nativeGoalCommand", "npmPackageName"});
+				provider = Pick(provider, {"id", "name", "shortName", "outputMode", "supportsStructured", "supportsCli", "structuredProtocol", "structuredPermissionControl", "terminalPermissionControl", "nativeGoalCommand", "supportsNativeSteering", "npmPackageName"});
 		if (state.contains("memoryActivity"))
 		{
 			const auto& activity = state["memoryActivity"];

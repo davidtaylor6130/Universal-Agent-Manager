@@ -1047,6 +1047,7 @@ struct AppSettings
 	std::string ui_theme = "focus";
 	bool show_provider_icons_in_sidebar = true;
 	bool show_worktree_path_in_sidebar = true;
+	bool steer_active_turn_on_send = false;
 	bool git_enabled = true;
 	bool git_auto_worktree = true;
 	bool git_snapshot_svn = true;
