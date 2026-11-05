@@ -1265,13 +1265,236 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
     expect(setSessionProvider).toHaveBeenCalledOnce()
-    expect(setSessionProvider).toHaveBeenCalledWith('chat-1', 'codex-cli')
+    expect(setSessionProvider).toHaveBeenCalledWith('chat-1', 'codex-cli', expect.any(Function), false)
     expect(setSessionModel).toHaveBeenCalledWith('chat-1', '')
     expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
     useAppStore.setState({ setSessionProvider: originalSetSessionProvider, setSessionModel: originalSetSessionModel })
+  })
+
+  it('shows the native refusal reason when a provider switch is rejected', async () => {
+    const originalSetSessionProvider = useAppStore.getState().setSessionProvider
+    const reason = 'Resume or discard the held queued input first.'
+    const setSessionProvider = vi.fn((_id: string, _providerId: string, onFailure?: (reason: string) => void) => {
+      onFailure?.(reason)
+      return Promise.resolve(false)
+    })
+    useAppStore.setState((state) => ({
+      setSessionProvider,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Switch from Gemini to Codex"]')
+    await act(async () => {
+      (Array.from(dialog?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Switch to Codex') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect(setSessionProvider).toHaveBeenCalledOnce()
+    expect(document.body.querySelector('[role="alertdialog"]')?.textContent).toContain(reason)
+    expect(document.body.querySelector('[role="alertdialog"]')?.textContent).not.toContain('The provider or model could not be changed.')
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ setSessionProvider: originalSetSessionProvider })
+  })
+
+  it('warns before an uncertain-delivery switch, sends the override only on Switch anyway, and Cancel changes nothing', async () => {
+    const originalSetSessionProvider = useAppStore.getState().setSessionProvider
+    const setSessionProvider = vi.fn((_id: string, _providerId: string) => Promise.resolve(true))
+    const bind = (override: 'none' | 'warn') => useAppStore.setState((state) => ({
+      setSessionProvider,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [], providerSwitchOverride: override },
+      },
+    }))
+    bind('warn')
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const openDialog = () => {
+      act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+      act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+      act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+      return document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Switch from Gemini to Codex"]')!
+    }
+    const button = (dialog: HTMLElement, label: string) => Array.from(dialog.querySelectorAll('button')).find((candidate) => candidate.textContent === label) as HTMLButtonElement | undefined
+
+    let dialog = openDialog()
+    expect(dialog.textContent).toContain('may run that prompt twice')
+    expect(button(dialog, 'Switch to Codex')).toBeUndefined()
+    act(() => button(dialog, 'Cancel')!.click())
+    expect(setSessionProvider).not.toHaveBeenCalled()
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+
+    dialog = openDialog()
+    await act(async () => {
+      button(dialog, 'Switch anyway')!.click()
+      await Promise.resolve()
+    })
+    expect(setSessionProvider).toHaveBeenCalledWith('chat-1', 'codex-cli', expect.any(Function), true)
+
+    setSessionProvider.mockClear()
+    bind('none')
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    dialog = openDialog()
+    expect(dialog.textContent).not.toContain('may run that prompt twice')
+    await act(async () => {
+      button(dialog, 'Switch to Codex')!.click()
+      await Promise.resolve()
+    })
+    expect(setSessionProvider).toHaveBeenCalledWith('chat-1', 'codex-cli', expect.any(Function), false)
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ setSessionProvider: originalSetSessionProvider })
+  })
+
+  it.each([
+    ['disconnected', 'keeps running until the host can be reached', true],
+    ['stranded', 'will not be sent; its text stays in this chat', false],
+    ['stranded-disconnected', 'keeps running until the host can be reached', true],
+    ['stranded-disconnected', 'will not be sent; its text stays in this chat', true],
+  ] as const)('reaches Switch anyway from a locked %s state and sends the override', async (override, text, processing) => {
+    const originalSetSessionProvider = useAppStore.getState().setSessionProvider
+    const setSessionProvider = vi.fn((_id: string, _providerId: string) => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      setSessionProvider,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: processing ? 'processing' : 'ready', processing, pendingPermission: null, pendingUserInput: null, queuedPrompts: [], pendingDirectPrompts: [{ id: 'receipt', text: 'Held', revision: 1 }], providerSwitchOverride: override },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+    const model = document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!
+    expect(model.disabled).toBe(false)
+    act(() => model.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')!
+    expect(dialog.textContent).toContain(text)
+    const confirm = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Switch anyway') as HTMLButtonElement
+    expect(confirm.className).not.toContain('primary')
+    await act(async () => {
+      confirm.click()
+      await Promise.resolve()
+    })
+    expect(setSessionProvider).toHaveBeenCalledWith('chat-1', 'codex-cli', expect.any(Function), true)
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ setSessionProvider: originalSetSessionProvider })
+  })
+
+  it('hides the direction meant for clients with no dialog from the dialog itself', async () => {
+    const originalSetSessionProvider = useAppStore.getState().setSessionProvider
+    const reason = 'UAM cannot confirm whether the provider received this chat\'s latest message. Switching may run that prompt twice.'
+    const setSessionProvider = vi.fn((_id: string, _providerId: string, onFailure?: (reason: string) => void) => {
+      onFailure?.(`${reason} Accept this in the switch dialog in the desktop app.`)
+      return Promise.resolve(false)
+    })
+    useAppStore.setState((state) => ({
+      setSessionProvider,
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [], providerSwitchOverride: 'none' } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')!
+    await act(async () => {
+      (Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Switch to Codex') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    const text = document.body.querySelector('[role="alertdialog"]')?.textContent ?? ''
+    expect(text).toContain(reason)
+    expect(text).not.toContain('desktop app')
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ setSessionProvider: originalSetSessionProvider })
+  })
+
+  it('closes the dialog and reports only the model when the provider changed but the model did not', async () => {
+    const original = { setSessionProvider: useAppStore.getState().setSessionProvider, setSessionModel: useAppStore.getState().setSessionModel }
+    const setSessionProvider = vi.fn((_id: string, _providerId: string) => Promise.resolve(true))
+    const setSessionModel = vi.fn((_id: string, _modelId: string) => Promise.resolve(false))
+    useAppStore.setState((state) => ({
+      setSessionProvider,
+      setSessionModel,
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [], providerSwitchOverride: 'warn' } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')!
+    await act(async () => {
+      (Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Switch anyway') as HTMLButtonElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(setSessionModel).toHaveBeenCalledOnce()
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState(original)
+  })
+
+  it('keeps the provider rail locked during an ordinary running turn with a queued dispatch', () => {
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'processing', processing: true, pendingPermission: null, pendingUserInput: null, queuedPrompts: [], providerSwitchOverride: 'none' },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    // The whole selector stays closed, so no provider-switch dialog can open during ordinary work.
+    expect(document.body.querySelector('[data-model-picker-sidebar]')).toBeNull()
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('locks the provider rail with the real reason while visible queued input remains', () => {
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queueHeld: true, queuedPrompts: [{ id: 'queued', revision: 1, text: 'Held', attachments: [], uamAgentId: '', markdownStoreFiles: [], goalMode: false, goalId: '' }], providerSwitchOverride: 'none' },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    const locked = document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!
+    expect(document.getElementById(locked.getAttribute('aria-describedby') ?? '')?.textContent).toContain('Resume or remove the queued messages')
+    act(() => root.unmount())
+    host.remove()
   })
 
   it('blocks handoff to a provider that cannot start structured chats', async () => {

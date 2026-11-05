@@ -171,6 +171,8 @@ export function ComposerToolbar({
   providers,
   providerId,
   canChangeProvider,
+  providerLockReason,
+  providerSwitchUnlocked,
   canSend,
   editing = false,
   sendLabel,
@@ -236,6 +238,9 @@ export function ComposerToolbar({
   providers: Provider[]
   providerId: string
   canChangeProvider: boolean
+  providerLockReason?: string
+  /** A disconnected recovery blocks model changes but must still reach the provider-switch warning. */
+  providerSwitchUnlocked?: boolean
   canSend: boolean
   /** Composer is editing a sent message: the send button saves the edit. */
   editing?: boolean
@@ -723,7 +728,7 @@ export function ComposerToolbar({
                 providers={providers.some((candidate) => candidate.id === providerId) ? providers : [...providers, provider]} providerId={providerId} currentModelId={currentModel.id}
                 activeOptions={modelOptions} activeLoading={acp?.modelsLoading} activeError={acp?.modelRefreshError}
                 onRefreshActive={onRefreshModels}
-                modelDisabled={modelDisabled} canChangeProvider={canChangeProvider}
+                modelDisabled={modelDisabled} canChangeProvider={canChangeProvider} providerLockReason={providerLockReason} providerSwitchUnlocked={providerSwitchUnlocked}
                 workspaceDirectory={workspaceDirectory} executionHostId={executionHostId}
                 onClose={() => { onToggleModel(); modelTriggerRef.current?.focus() }}
                 onSelect={(selectedProviderId, selectedModelId) => {

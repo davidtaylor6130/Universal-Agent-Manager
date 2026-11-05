@@ -7,6 +7,7 @@
 
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "app/managed_subagent_control_service.h"
 #include "app/native_session_link_service.h"
 #include "app/persistence_coordinator.h"
@@ -6470,7 +6471,11 @@ bool ChatHistorySyncService::MoveChatToFolder(uam::AppState& app, ChatSession& c
 		}
 		ChatSession moved_chat = chat;
 		if (!ChatRepository::HydrateChatMessages(app.data_root, moved_chat)) return false;
-		const bool release_hold = uam::QueueHoldHasNoInput(app, moved_chat);
+		if (const char* refusal = uam::NativeResetRefusalReason(app, moved_chat))
+		{
+			app.status_line = refusal;
+			return false;
+		}
 		std::string error;
 		if (!uam::chat::BuildConversationHandoff(moved_chat, moved_chat.provider_handoff_context, &error))
 		{
@@ -6482,11 +6487,11 @@ bool ChatHistorySyncService::MoveChatToFolder(uam::AppState& app, ChatSession& c
 		moved_chat.native_session_id.clear();
 		moved_chat.native_session_reset_pending = true;
 		moved_chat.provider_handoff_session_id.clear();
-		if (release_hold) moved_chat.acp_queue_held = false;
+		if (!uam::ChatHasUncertainRemoteInput(moved_chat)) moved_chat.acp_queue_held = false;
 		moved_chat.updated_at = uam::time::TimestampNow();
 		if (!ChatRepository::SaveChat(app.data_root, moved_chat)) return false;
 		chat = std::move(moved_chat);
-		if (uam::AcpSessionState* held_session = release_hold ? uam::FindAcpSessionForChat(app, chat.id) : nullptr) held_session->queue_held = false;
+		uam::ReleaseQueueHoldAfterNativeReset(app, chat);
 		app.resolved_native_sessions_by_chat_id.erase(chat.id);
 		return true;
 	}

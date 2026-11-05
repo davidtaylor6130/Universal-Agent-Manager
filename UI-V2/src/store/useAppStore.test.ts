@@ -7955,6 +7955,40 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests).toEqual([])
   })
 
+  it('passes a native provider-switch refusal reason through and restores the provider', async () => {
+    useAppStore.getState().loadFromCef(makeCppState(1))
+    const previousProvider = useAppStore.getState().sessions[0].providerId
+    window.cefQuery = ({ onFailure }) => {
+      onFailure(409, 'Resume or discard the held queued input first.')
+    }
+    const reasons: string[] = []
+    await expect(useAppStore.getState().setSessionProvider('chat-1', 'codex-cli', (reason) => reasons.push(reason))).resolves.toBe(false)
+    expect(reasons).toEqual(['Resume or discard the held queued input first.'])
+    expect(useAppStore.getState().sessions[0].providerId).toBe(previousProvider)
+  })
+
+  it('names the real reason when a non-empty queue locks the switch, without asking native', async () => {
+    useAppStore.getState().loadFromCef(makeCppState(1))
+    useAppStore.setState((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], queuedPrompts: [{ id: 'queued', revision: 1, text: 'Held', attachments: [], uamAgentId: '', markdownStoreFiles: [], goalMode: false, goalId: '' }] } } }))
+    window.cefQuery = () => { throw new Error('The bridge must not be asked.') }
+    const reasons: string[] = []
+    await expect(useAppStore.getState().setSessionProvider('chat-1', 'codex-cli', (reason) => reasons.push(reason))).resolves.toBe(false)
+    expect(reasons).toEqual(['Resume or remove the queued messages before changing provider.'])
+  })
+
+  it('sends the uncertain-delivery override only when the caller chose it', async () => {
+    const payloads: unknown[] = []
+    for (const allow of [undefined, true]) {
+      useAppStore.getState().loadFromCef(makeCppState(1))
+      window.cefQuery = ({ request, onFailure }) => {
+        payloads.push(JSON.parse(request).payload)
+        onFailure(409, 'refused')
+      }
+      await useAppStore.getState().setSessionProvider('chat-1', 'codex-cli', undefined, allow)
+    }
+    expect(payloads).toEqual([{ chatId: 'chat-1', providerId: 'codex-cli' }, { chatId: 'chat-1', providerId: 'codex-cli', allowUncertainDelivery: true }])
+  })
+
   it('routes restart and timeout intent explicitly while ordinary stops remain interrupts', async () => {
     const requests: { action: string; payload?: any }[] = []
     ensureTestWindow().cefQuery = ((params: { request: string; onSuccess?: (response: string) => void }) => {

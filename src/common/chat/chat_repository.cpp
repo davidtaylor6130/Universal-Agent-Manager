@@ -6625,7 +6625,13 @@ try
 	const auto* messages = document->Find(kChatMessagesField);
 	if (!messages || messages->type != JsonValue::Type::Array) return {};
 	for (const auto& row : messages->array_value)
-		if (row.type != JsonValue::Type::Object || !false_bool(row, "acp_prompt_not_sent")) return {};
+	{
+		// A removed row keeps its marker for history but no longer owns unsent input.
+		if (row.type != JsonValue::Type::Object) return {};
+		const JsonValue* discarded = row.Find("acp_prompt_discarded");
+		const bool removed = discarded != nullptr && discarded->type == JsonValue::Type::Bool && discarded->bool_value;
+		if (!removed && !false_bool(row, "acp_prompt_not_sent")) return {};
+	}
 	const auto decoded = ParseLocalChatDocument(primary_path, *primary_bytes, true, 0, false, limit, nullptr, false);
 	if (!decoded.chat || decoded.chat->id != chat.id || !decoded.chat->claude_quota_continuation.id.empty() ||
 	    !decoded.chat->acp_unsent_prompt_recoveries.empty()) return {};

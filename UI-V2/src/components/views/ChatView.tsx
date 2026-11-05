@@ -2,13 +2,13 @@ import { browserDictationAvailable } from '../../ipc/companionPlatform'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
-import type { AcpBinding, AcpQueuedPrompt, AcpTurnEvent, ManualCompactionAvailability } from '../../store/cpp/types'
+import type { AcpBinding, AcpQueuedPrompt, AcpTurnEvent, ManualCompactionAvailability, ProviderSwitchOverride } from '../../store/cpp/types'
 import { attachmentsEquivalent } from '../../store/cpp/reconcile'
 import { MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, messageAttachments, sanitizeManualCompaction, sanitizeNativeInputId, sanitizeOriginRequestId, sanitizeManagedOriginRunId } from '../../store/cpp/sanitizers'
 import { formatContextReferences } from '../../utils/contextReferences'
 import { acknowledgeComposerReferences, captureComposerReferenceSubmission, composerReferenceSubmissionIsCurrent, type ComposerReferenceSubmission } from '../../utils/composerReferenceSubmission'
 import { FileInspectionProvider } from '../shared/FileInspectionProvider'
-import { chatHasUnfinishedWork } from '../../utils/chatWork'
+import { chatHasUnfinishedWork, providerSwitchLockReason, providerSwitchOverrideUnlocks } from '../../utils/chatWork'
 import { MessageNavigationRail } from '../chat/MessageNavigationRail'
 import { motionScrollBehavior } from '../../utils/motionStorage'
 import { ChangedFilesTree } from '../chat/ChangedFilesTree'
@@ -305,34 +305,41 @@ function ProviderHandoffDialog({
   sourceName,
   targetName,
   blockedReason,
+  override = 'none',
+  activeGoal = false,
   onCancel,
   onConfirm,
 }: {
   sourceName: string
   targetName: string
   blockedReason?: string
+  override?: ProviderSwitchOverride
+  activeGoal?: boolean
   onCancel: () => void
-  onConfirm: () => Promise<boolean>
+  /** Resolves true on success, or a refusal reason to show instead of the generic failure. */
+  onConfirm: () => Promise<boolean | string>
 }) {
   const [switching, setSwitching] = useState(false)
   const [error, setError] = useState('')
+  const uncertainDelivery = override !== 'none'
 
   const confirm = async () => {
     if (switching || blockedReason) return
     setSwitching(true)
     setError('')
-    if (await onConfirm()) return
+    const result = await onConfirm()
+    if (result === true) return
     setSwitching(false)
-    setError('The provider or model could not be changed. Finish any active work and try again.')
+    setError(typeof result === 'string' && result ? result : 'The provider or model could not be changed. Finish any active work and try again.')
   }
 
   return (
     <ConfirmDialog
       open
-      tone="primary"
+      tone={uncertainDelivery ? 'danger' : 'primary'}
       title={`Switch this chat to ${targetName}?`}
       label={`Switch from ${sourceName} to ${targetName}`}
-      confirmLabel={`Switch to ${targetName}`}
+      confirmLabel={uncertainDelivery ? 'Switch anyway' : `Switch to ${targetName}`}
       confirmDisabled={Boolean(blockedReason)}
       busy={switching}
       error={error || undefined}
@@ -358,6 +365,7 @@ function ProviderHandoffDialog({
         </div>
         <p className="text-xs" style={{ color: 'var(--text-3)' }}>Anything the current provider did not record in UAM will not transfer.</p>
         {blockedReason && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--yellow)', color: 'var(--yellow)' }}>{blockedReason}</div>}
+        {uncertainDelivery && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--yellow)', color: 'var(--yellow)' }}>UAM cannot confirm whether the provider received this chat's latest message. If it did, switching may run that prompt twice.{override.startsWith('stranded') && ' A held message has not been sent and will not be sent; its text stays in this chat.'}{override.endsWith('disconnected') && ' The previous provider keeps running until the host can be reached. UAM then stops it, and new messages wait for that.'}{activeGoal && ' The active goal will be blocked.'} Cancel to leave this chat unchanged.</div>}
       </div>
     </ConfirmDialog>
   )
@@ -2076,6 +2084,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const canDeleteUnsentReceipt = !acp?.processing && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy' && ['ready', 'stopped', 'error'].includes(acp?.lifecycleState ?? 'stopped')
   const canManageUnsent = !acp?.processing && !(acp?.queuedPrompts?.length) && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
   const canChangeProvider = canManageUnsent && !(acp?.unsentDirectPrompts?.length)
+  const providerLockReason = providerSwitchLockReason(acp, cli)
   const canSaveEdit = branchingMessageIndex === null && canChangeProvider && (editingMessageText.trim().length > 0 || editingMessageAttachments.length > 0)
   const unsentActionsDisabled = session.importedReadOnly || !canManageUnsent || branchingMessageIndex !== null || editingMessageIndex !== null
   const unsentReceiptDeleteDisabled = session.importedReadOnly || !canDeleteUnsentReceipt || branchingMessageIndex !== null || editingMessageIndex !== null
@@ -3441,14 +3450,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           sourceName={currentProviderName}
           targetName={providerHandoffTargetName}
           blockedReason={providerHandoffBlockedReason}
+          override={acp?.providerSwitchOverride}
+          activeGoal={Boolean(activeGoal)}
           onCancel={() => setProviderHandoffTargetId('')}
           onConfirm={async () => {
-            const changed = await setSessionProvider(session.id, providerHandoffTarget.id)
-            if (!changed) return false
-            if (currentSessionIdRef.current !== session.id) return false
-            if (providerHandoffModelId !== null && !await setSessionModel(session.id, providerHandoffModelId)) return false
+            let refusal = ''
+            const changed = await setSessionProvider(session.id, providerHandoffTarget.id, (reason) => { refusal = reason }, (acp?.providerSwitchOverride ?? 'none') !== 'none')
+            // That sentence directs clients with no dialog; this one is about to show the warning itself.
+            if (!changed) return refusal.replace(' Accept this in the switch dialog in the desktop app.', '') || false
+            // The provider has changed from here on, so a failure below must not read as a failed switch.
+            if (currentSessionIdRef.current !== session.id) return true
+            const modelSet = providerHandoffModelId === null || await setSessionModel(session.id, providerHandoffModelId)
             setProviderHandoffTargetId('')
             setProviderHandoffModelId(null)
+            if (!modelSet) reportAppFailure('The model was not changed', `This chat is now on ${providerHandoffTargetName} with its default model. Choose the model again from the model picker.`)
             return true
           }}
         />
@@ -4185,7 +4200,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               provider={currentProvider}
               providers={composerProviders}
               providerId={currentProviderId}
-              canChangeProvider={canChangeProvider}
+              canChangeProvider={!providerLockReason}
+              providerLockReason={providerLockReason}
+              providerSwitchUnlocked={providerSwitchOverrideUnlocks(acp)}
               canSend={questionInComposer ? questionSubmitState === 'ready' : editingMessageIndex !== null ? canSaveEdit : canSend}
               editing={editingMessageIndex !== null}
               sendLabel={questionInComposer ? 'Submit answers' : undefined}

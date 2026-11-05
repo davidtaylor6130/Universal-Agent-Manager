@@ -304,6 +304,29 @@ namespace
 	}
 }
 
+UAM_TEST(ProviderSwitchKeepsAnAutomaticAssignmentAdmissibleForTheNewProvider)
+{
+	TempDir temp("uam-routing-provider-switch");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	const ProviderProfile claude = ProviderProfileStore::DefaultClaudeProfile();
+	app.provider_profiles.push_back(claude);
+	const ExecutionHost& host = app.settings.execution_hosts.back();
+	uam::CliProviderVersionState version;
+	version.provider_id = claude.id;
+	version.execution_host = host;
+	version.checked = version.supported = true;
+	version.installed_version = "2.0.0";
+	app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(claude.id, host.id)] = version;
+	app.settings.execution_routing.hosts.front().provider_confirmations.push_back({claude.id, uam::ExecutionRoutingConnectionIdentity(host), uam::ExecutionRoutingProviderIdentity(app, claude, host.id)});
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, app.chats.front().id, claude.id), uam::ChatProviderSwitchResult::Changed);
+	const uam::ExecutionRoutingDecision after = uam::AdmitExecutionRouting(app, app.chats.front());
+	UAM_ASSERT_EQ(after.status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(after.assignment.host_id, std::string("remote"));
+	UAM_ASSERT_EQ(after.assignment.provider_configuration_identity, uam::ExecutionRoutingProviderIdentity(app, claude, host.id));
+}
+
 UAM_TEST(ExecutionRoutingSettingsRoundTripAndInvalidInputAreAtomic)
 {
 	TempDir temp("uam-routing-settings");

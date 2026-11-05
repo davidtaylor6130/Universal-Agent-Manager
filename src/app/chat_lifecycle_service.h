@@ -104,11 +104,36 @@ namespace uam
 		ActiveRuntime,
 		RuntimeStopping,
 		SaveFailed,
+		QueueHeld,
+		UncertainDelivery,
 	};
 
-	ChatProviderSwitchResult SwitchChatProvider(AppState& app, std::string_view chat_id, std::string_view provider_id);
+	/// <summary>A refusal always wins. Otherwise an uncertain remote delivery needs allow_uncertain_delivery, the user's explicit choice to risk running that prompt twice.</summary>
+	ChatProviderSwitchResult SwitchChatProvider(AppState& app, std::string_view chat_id, std::string_view provider_id, bool allow_uncertain_delivery = false);
 	/// <summary>True when a queue hold protects nothing, so a native session reset may release it. The chat's messages must be loaded.</summary>
 	bool QueueHoldHasNoInput(const AppState& app, const ChatSession& chat);
+	/// <summary>Input the user can clear, or a queue-storage problem: refused whatever the user chooses, or null. The chat's messages must be loaded.</summary>
+	const char* ProviderSwitchRefusalReason(const AppState& app, const ChatSession& chat);
+	/// <summary>True when queued input still has a Resume, Retry or Remove control the user can reach.</summary>
+	bool ProviderSwitchQueueHasClearableInput(const AppState& app, const ChatSession& chat);
+	/// <summary>States the user cannot clear, so a switch needs the may-run-twice warning instead of a refusal.
+	/// Disconnected and StrandedInput also lift the frontend's active-work lock, which would hide that warning.</summary>
+	enum class ProviderSwitchOverride
+	{
+		None,
+		Warn,
+		Disconnected,
+		StrandedInput,
+	};
+	ProviderSwitchOverride ProviderSwitchOverrideNeeded(const AppState& app, const ChatSession& chat);
+	/// <summary>A remote recovery whose transport is down: it retries indefinitely and Stop refuses it until the host answers.</summary>
+	bool AcpRemoteRecoveryIsDisconnected(const AppState& app, const ChatSession& chat);
+	/// <summary>A native session reset holds the empty-hold Send and its acknowledgement until a new native ID arrives, so
+	/// chat moves and folder directory changes refuse with this reason while held, unsent or uncertain input remains.</summary>
+	const char* NativeResetRefusalReason(const AppState& app, const ChatSession& chat);
+	bool QueueHoldBlocksNativeReset(const AppState& app, const ChatSession& chat);
+	/// <summary>Clears the chat and runtime queue hold after a native-reset save commits, unless a remote delivery is still uncertain.</summary>
+	void ReleaseQueueHoldAfterNativeReset(AppState& app, ChatSession& chat);
 	struct TemporarySideChatContext
 	{
 		ChatMessagePage page;

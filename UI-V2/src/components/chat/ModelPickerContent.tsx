@@ -40,7 +40,7 @@ export function matchingModelCatalog(catalogs: ProviderModelCatalog[], providerI
 }
 
 /** T3-style provider rail and model list; browsing never changes the running provider. */
-export function ModelPickerContent({ providers, providerId, currentModelId, activeOptions, activeLoading, activeError, modelDisabled, canChangeProvider, workspaceDirectory, executionHostId, listHeight = LIST_HEIGHT, onRefreshActive, onSelect, onClose }: {
+export function ModelPickerContent({ providers, providerId, currentModelId, activeOptions, activeLoading, activeError, modelDisabled, canChangeProvider, providerLockReason, providerSwitchUnlocked, workspaceDirectory, executionHostId, listHeight = LIST_HEIGHT, onRefreshActive, onSelect, onClose }: {
   providers: Provider[]
   providerId: string
   currentModelId: string
@@ -49,6 +49,8 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
   activeError?: string
   modelDisabled: boolean
   canChangeProvider: boolean
+  providerLockReason?: string
+  providerSwitchUnlocked?: boolean
   workspaceDirectory: string
   executionHostId: string
   listHeight?: number
@@ -123,7 +125,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
       return next
     })
   }, [selectedScope, authoritativeLoading, authoritativeError])
-  const disabled = (option: PickerModel) => Boolean(option.disabled || modelDisabled || (option.providerId !== providerId && !canChangeProvider))
+  const disabled = (option: PickerModel) => Boolean(option.disabled || (option.providerId === providerId ? modelDisabled : !canChangeProvider || (modelDisabled && !providerSwitchUnlocked)))
   // Favourites group under provider headers, so they render unwindowed (small lists); flat provider lists window.
   const grouped = selectedProvider === 'favorites'
   const virtual = !grouped && models.length > 60
@@ -240,7 +242,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
           ref={(element) => { if (element) railRefs.current.set(entry.id, element); else railRefs.current.delete(entry.id) }}
           icon={entry.id === 'favorites' ? <Star size={18} fill="currentColor" aria-hidden /> : <ProviderLogo providerId={entry.id} size={20} />}
           label={entry.label} aria-pressed={entry.id === selectedProvider}
-          disabled={locked} disabledReason={locked ? 'Provider changes are unavailable right now' : undefined}
+          disabled={locked} disabledReason={locked ? providerLockReason || 'Provider changes are unavailable right now' : undefined}
           tabIndex={entry.id === selectedProvider ? 0 : -1}
           onClick={() => selectProvider(entry.id)}
           className="uam-np-rail__button"

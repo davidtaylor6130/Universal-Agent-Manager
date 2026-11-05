@@ -611,6 +611,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.turnAssistantMessageIndex === next.turnAssistantMessageIndex &&
     existing.turnSerial === next.turnSerial &&
     (existing.queueHeld ?? false) === (next.queueHeld ?? false) &&
+    (existing.providerSwitchOverride ?? 'none') === (next.providerSwitchOverride ?? 'none') &&
     sameArrayEntries(existing.unsentMessageIndices ?? [], next.unsentMessageIndices ?? []) &&
     sameArrayEntries(existing.recoverableUnsentMessageIndices ?? [], next.recoverableUnsentMessageIndices ?? []) &&
     queuedPromptsEquivalent(existing.queuedPrompts ?? [], next.queuedPrompts ?? []) &&
@@ -747,6 +748,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     turnAssistantMessageIndex: typeof acp?.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
     turnSerial: typeof acp?.turnSerial === 'number' ? acp.turnSerial : 0,
     queueHeld: acp?.queueHeld ?? false,
+    providerSwitchOverride: acp?.providerSwitchOverride ?? 'none',
     unsentMessageIndices: acp?.unsentMessageIndices ?? [],
     recoverableUnsentMessageIndices: acp?.recoverableUnsentMessageIndices ?? [],
     queuedPrompts: acp?.queuedPrompts ?? [],

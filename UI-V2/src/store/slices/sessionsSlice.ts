@@ -10,6 +10,7 @@ import type { ChatSearchHit, ChatSearchNavigation } from '../../types/chatSearch
 import { chatSearchPageRequest, sanitizeChatSearchHits } from '../../utils/chatSearchResults'
 import { setPreferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from '../cpp/types'
+import { providerSwitchLockReason } from '../../utils/chatWork'
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, Session, ViewMode } from '../../types/session'
 import { version as packageVersion } from '../../../package.json'
 import { defaultsForExecutionHost, withSettingsScope } from '../../utils/settingsScope'
@@ -1710,7 +1711,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    setSessionProvider: async (id: string, providerId: string): Promise<boolean> => {
+    setSessionProvider: async (id: string, providerId: string, onFailure?: (reason: string) => void, allowUncertainDelivery = false): Promise<boolean> => {
       const requestedProviderId = normalizeCliProviderIdAlias(providerId)
       const current = get()
       if (!requestedProviderId || !current.providers.some((provider) => provider.id === requestedProviderId)) {
@@ -1728,7 +1729,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
       const acp = current.acpBindingBySessionId[id]
       const cli = current.cliBindingBySessionId[id]
-      if (acp?.processing || (acp?.queuedPrompts?.length ?? 0) > 0 || acp?.pendingPermission || acp?.pendingUserInput || cli?.processing || cli?.turnState === 'busy') {
+      const lockReason = providerSwitchLockReason(acp, cli)
+      if (lockReason) {
+        onFailure?.(lockReason)
         return false
       }
       const defaults = sanitizeProviderChatDefaults(current.providerChatDefaults[requestedProviderId] ?? null)
@@ -1761,7 +1764,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         applyProvider()
         const response = await sendToCEF({
           action: 'setChatProvider',
-          payload: { chatId: id, providerId: requestedProviderId },
+          payload: { chatId: id, providerId: requestedProviderId, ...(allowUncertainDelivery ? { allowUncertainDelivery: true } : {}) },
           requestId,
         })
 
@@ -1789,6 +1792,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             } : s),
           }))
           pendingRequestIdsByKey.delete(requestKey)
+          if (response.error) onFailure?.(response.error)
         }
 
         return false
@@ -3092,6 +3096,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             queue[index].id !== entry.id || queue[index].revision !== entry.revision || queue[index].prepared)) return false
       if (isCefContext()) {
         const response = await sendToCEF({ action: 'resumeQueuedAcpPrompts', payload: { chatId: sessionId, expected } })
+        if (!response.ok && response.error) throw new Error(response.error)
         return response.ok
       }
       set((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, [sessionId]: { ...state.acpBindingBySessionId[sessionId], queueHeld: false } } }))

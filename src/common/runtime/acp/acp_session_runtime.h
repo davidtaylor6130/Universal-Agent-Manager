@@ -67,8 +67,18 @@ bool RetryCompatibilityBlockedAcpModelDiscoveries(AppState& app);
 bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
 /// <summary>Raw authored indices excluded from delivered history only when their own interval has no output.</summary>
 std::vector<int> KnownUnsentAcpMessageIndices(const AppState& app, const ChatSession& chat);
+/// True while the chat has a row the user can still retry, edit or remove; a removed row or one with later output does not count.
+bool ChatHasUnsentAcpPrompt(const AppState& app, const ChatSession& chat);
 /// True while a remote turn or delivery may already have received the chat's latest input.
 bool ChatHasUncertainRemoteInput(const ChatSession& chat);
+/// Gives up a turn the user accepted may have run: settles its rows and saves stranded input as an unsent row, before a provider switch saves.
+void AbandonUncertainRemoteTurn(AppState& app, ChatSession& chat, const std::string& previous_provider_id);
+/// After the provider switch saves, an active goal that was waiting on the abandoned turn is blocked rather than left waiting.
+void BlockActiveGoalForAbandonedTurn(AppState& app, ChatSession& chat);
+/// The helper is gone, so its token, cursors and protocol no longer describe anything.
+void ForgetStoppedRemoteProcess(ChatSession& chat);
+/// Attaches to the old helper only to stop it, retrying until the host answers; a new launch waits for that confirmation.
+void RetireRemoteHelper(AppState& app, ChatSession& chat);
 /// <summary>Latest legacy draft authorized for explicit fresh-session retry without replaying any earlier draft.</summary>
 std::vector<int> RecoverableUnsentAcpMessageIndices(const AppState& app, const ChatSession& chat);
 bool DiscardUnsentAcpMessage(AppState& app, const std::string& chat_id, int message_index, const std::string& expected_messages_digest, std::string* error_out = nullptr);

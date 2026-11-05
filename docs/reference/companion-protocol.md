@@ -168,7 +168,7 @@ The following mutate only the requested chat or create a chat. Their responses r
 | `acknowledgeChatAttention` | `{chatId,attentionRevision}` |
 | `recordRuntimeActivity` | `{chatId}` |
 | `setChatModel` | `{chatId,modelId,modelRole?:"worker"}`; optional reviewer role uses existing validation |
-| `setChatProvider` | `{chatId,providerId}` |
+| `setChatProvider` | `{chatId,providerId,allowUncertainDelivery?}`; a 409 refuses it, and only `allowUncertainDelivery:true` passes the uncertain remote delivery refusal after the user accepted that a prompt may run twice |
 | `setChatCodexOptions` | `{chatId,reasoningEffort,serviceTier?,serviceTierExplicit?}` |
 | `setChatApprovalMode` | `{chatId,modeId}` |
 | `setNativeModelOption` | `{chatId,nativeSessionId,executionHostId,lifetime,optionId,value:string|null}`; exact current native session and advertised choice required |

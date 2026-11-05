@@ -46,6 +46,15 @@
 
 using namespace uam_test;
 
+UAM_TEST(ChatProviderSwitchOverrideNeedsExplicitTrue)
+{
+	using uam::query_handler_internal::ProviderSwitchAllowsUncertainDelivery;
+	UAM_ASSERT(ProviderSwitchAllowsUncertainDelivery(nlohmann::json{{"allowUncertainDelivery", true}}));
+	UAM_ASSERT(!ProviderSwitchAllowsUncertainDelivery(nlohmann::json::object()));
+	UAM_ASSERT(!ProviderSwitchAllowsUncertainDelivery(nlohmann::json{{"allowUncertainDelivery", false}}));
+	UAM_ASSERT(!ProviderSwitchAllowsUncertainDelivery(nlohmann::json{{"allowUncertainDelivery", "true"}}));
+}
+
 UAM_TEST(ChatProviderSwitchBridgePayloadHandlesNullStringFields)
 {
 	const auto null_provider = uam::cef::ParseBridgeRequest(R"({"action":"setChatProvider","payload":{"chatId":"chat-opencode","providerId":null},"requestId":"switch-1"})");

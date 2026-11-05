@@ -26,6 +26,7 @@
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
+#include "app/chat_lifecycle_service.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_queue_projection.h"
 #include "common/runtime/acp/acp_session_internal.h"
@@ -834,10 +835,7 @@ namespace uam
 			result["pendingDirectPrompts"] = nlohmann::json::array();
 			result["unsentDirectPrompts"] = nlohmann::json::array();
 			const std::vector<int> known = KnownUnsentAcpMessageIndices(app, chat);
-			const bool uncertain = chat.remote_turn_reconnect_pending || !chat.remote_active_turn_id.empty() ||
-			    !chat.remote_prompt_delivery_id.empty() || !chat.remote_prompt_delivery_session_id.empty() ||
-			    !chat.remote_prompt_delivery_payload.empty() || !chat.remote_pending_requests.empty() ||
-			    !chat.remote_interaction_responses.empty() || (session && (session->remote_stop_unconfirmed ||
+			const bool uncertain = ChatHasUncertainRemoteInput(chat) || !chat.remote_interaction_responses.empty() || (session && (session->remote_stop_unconfirmed ||
 			    !session->pending_request_methods.empty() || !session->pending_steer_requests.empty()));
 			const bool pending = uncertain || (session && (session->processing || session->pending_prompt_delivery)) || (session && !session->queue_held &&
 			    (session->processing || !session->queued_prompt.empty() || session->pending_agent_input ||
@@ -888,6 +886,13 @@ namespace uam
 					result["queuedPrompts"].push_back(SerializeQueuedAcpUserPrompt(*prompt));
 			}
 			result["queueHeld"] = held && !result["queuedPrompts"].empty();
+			switch (ProviderSwitchRefusalReason(app, chat) != nullptr ? ProviderSwitchOverride::None : ProviderSwitchOverrideNeeded(app, chat))
+			{
+			case ProviderSwitchOverride::None: result["providerSwitchOverride"] = "none"; break;
+			case ProviderSwitchOverride::Warn: result["providerSwitchOverride"] = "warn"; break;
+			case ProviderSwitchOverride::Disconnected: result["providerSwitchOverride"] = "disconnected"; break;
+			case ProviderSwitchOverride::StrandedInput: result["providerSwitchOverride"] = AcpRemoteRecoveryIsDisconnected(app, chat) ? "stranded-disconnected" : "stranded"; break;
+			}
 		}
 
 		nlohmann::json SerializeMessageForFrontend(const Message& message,

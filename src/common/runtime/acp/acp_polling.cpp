@@ -710,6 +710,7 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		if (read_bytes > 0)
 		{
 			bytes_read += static_cast<std::size_t>(read_bytes);
+			if (ChatIsRetiringRemoteHelper(chat)) continue; // The old provider's output must not reach the new session's chat.
 			if (!AppendAcpStdoutChunk(session, std::string_view(buffer.data(), static_cast<std::size_t>(read_bytes))))
 			{
 				const std::string message = std::string(RuntimeDisplayName(session)) + " emitted an oversized structured response without a newline.";
