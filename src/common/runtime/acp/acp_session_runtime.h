@@ -83,9 +83,13 @@ bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* e
 bool AppendAcpHtmlView(AcpSessionState& session, ChatSession& chat, const std::string& view_id, const std::string& title, const std::string& html);
 /// <summary>Removes an HTML view whose publication could not be durably recorded.</summary>
 void RemoveAcpHtmlView(AcpSessionState& session, ChatSession& chat, const std::string& view_id);
+/// Error returned to a pending UAM Control request abandoned by a turn stop; callers name non-user stops.
+inline constexpr const char* kAcpUserStopDeclineReason = "The user stopped this turn before this request was answered.";
+inline constexpr const char* kAcpTimeoutDeclineReason = "The turn timed out without provider activity before this request was answered.";
 bool CancelAcpTurn(AppState& app, const std::string& chat_id,
                    std::string* error_out = nullptr, bool update_goal_state = true,
-                   bool preserve_queued_prompts = false, bool hold_preserved_queue = false);
+                   bool preserve_queued_prompts = false, bool hold_preserved_queue = false,
+                   const char* uam_request_decline_reason = kAcpUserStopDeclineReason);
 void FinalizeAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, bool maintenance_operation = false);
 bool HandleAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds);
 /// <summary>Stops a provider; internal recovery may preserve held intent instead of discarding it.</summary>

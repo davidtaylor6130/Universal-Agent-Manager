@@ -20,6 +20,7 @@
 
 namespace
 {
+	constexpr const char* kAntigravityGoalStopDeclineReason = "UAM stopped this turn for goal control before this request was answered.";
 	constexpr const char* kAntigravityNativeGoalUnavailable = "Antigravity native Goal control is unavailable in structured Chat. Use a UAM-managed goal for bounded continuation.";
 
 	/// <summary>Recognizes a native Goal command without treating prose mentions or longer names as commands.</summary>
@@ -229,7 +230,7 @@ namespace
 		session.goal_resume_suppressed = true;
 		session.last_error = reason;
 		std::string stop_error;
-		(void)uam::CancelAcpTurn(app, chat.id, &stop_error, false, true, true);
+		(void)uam::CancelAcpTurn(app, chat.id, &stop_error, false, true, true, kAntigravityGoalStopDeclineReason);
 	}
 
 	bool AccountAntigravityGoalDelta(uam::AppState& app, uam::AcpSessionState& session, Goal& goal, int64_t delta)
@@ -501,7 +502,7 @@ bool AntigravityCliProviderRuntime::OnAcpGoalControlCommitted(uam::AppState& app
 	if (!OwnsAntigravityGoalControl(app, session, chat, goal_id))
 		return true;
 	session.goal_resume_suppressed = true;
-	return uam::CancelAcpTurn(app, chat.id, &error, false, true, true);
+	return uam::CancelAcpTurn(app, chat.id, &error, false, true, true, kAntigravityGoalStopDeclineReason);
 }
 
 std::string AntigravityCliProviderRuntime::OnAcpValidateResumeId(const ChatSession& chat) const
