@@ -1216,6 +1216,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         onConfirm={() => {
           const targets = pendingDeleteCollections ?? []
           setPendingDeleteCollections(null)
+          if (targets.length === 1) { void deleteCollection(targets[0]); return }
           void runForEach(targets, async ({ id }) => await useAppStore.getState().deleteResourceCollection(id) ? null : 'The collection could not be deleted.', 'Could not delete collections')
             .then((deleted) => setSelectedCollectionIds((current) => new Set([...current].filter((id) => !deleted.includes(id)))))
         }}
@@ -1403,6 +1404,11 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   )
 }
 
+/** One collection's delete, from its menu or as a one-item selection. */
+async function deleteCollection({ id, label }: BulkTarget) {
+  if (!await useAppStore.getState().deleteResourceCollection(id)) reportAppFailure(`Could not delete "${label}".`, 'Could not save the change. Refresh and try again.')
+}
+
 function FolderCollection({ collection, folderCount, hiddenPaneColors, selected, selectionTargets, onHeaderClick, onDeleteSelected, onFolderDrop, children }: {
   collection: ResourceCollection; folderCount: number; hiddenPaneColors: string[]; selected: boolean
   /** Selected collections the menu acts on when this header is part of a multi-selection. */
@@ -1413,7 +1419,6 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
   const iconPicker = useCustomIconPicker()
   const toggle = useAppStore((state) => state.toggleResourceCollection)
   const rename = useAppStore((state) => state.renameResourceCollection)
-  const remove = useAppStore((state) => state.deleteResourceCollection)
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(collection.name)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -1570,7 +1575,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
         count={1}
         name={collection.name}
         onCancel={() => setConfirmingDelete(false)}
-        onConfirm={() => { setConfirmingDelete(false); void remove(collection.id) }}
+        onConfirm={() => { setConfirmingDelete(false); void deleteCollection({ id: collection.id, label: collection.name }) }}
       >
         <p className="mt-2">Workspaces remain, but this collection cannot be restored.</p>
       </DeleteConfirmDialog>
