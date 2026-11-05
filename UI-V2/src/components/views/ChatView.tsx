@@ -2,7 +2,7 @@ import { browserDictationAvailable } from '../../ipc/companionPlatform'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
-import type { AcpBinding, AcpQueuedPrompt, ManualCompactionAvailability } from '../../store/cpp/types'
+import type { AcpBinding, AcpQueuedPrompt, AcpTurnEvent, ManualCompactionAvailability } from '../../store/cpp/types'
 import { attachmentsEquivalent } from '../../store/cpp/reconcile'
 import { MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, messageAttachments, sanitizeManualCompaction, sanitizeNativeInputId, sanitizeOriginRequestId, sanitizeManagedOriginRunId } from '../../store/cpp/sanitizers'
 import { formatContextReferences } from '../../utils/contextReferences'
@@ -206,6 +206,24 @@ function fileUriToPath(uri: string): string {
   } catch {
     return uri.replace(/^file:\/\//, '')
   }
+}
+
+/** True when the turn has answer text and the row's content is exactly that text, in order, so the timeline can replace
+ * the row without losing anything. Compaction summaries are saved in content, and the timeline shows or hides them through
+ * their own events, so their text is skipped; whitespace between chunks is ignored. */
+function contentIsExactlyTurnText(content: string, events: readonly AcpTurnEvent[]) {
+  let rest = content.trimStart()
+  let hasAnswerText = false
+  for (const event of events) {
+    const answer = event.type === 'assistant_text'
+    if (!answer && event.type !== 'context_compaction_summary' && event.type !== 'context_compaction_interrupted' && event.type !== 'context_compaction') continue
+    const text = event.text.trim()
+    if (!text) continue
+    if (rest.startsWith(text)) rest = rest.slice(text.length).trimStart()
+    else if (answer) return false
+    hasAnswerText ||= answer
+  }
+  return hasAnswerText && !rest
 }
 
 function lastMessageIndexWithRole(messages: Message[], role: Message['role']) {
@@ -1114,9 +1132,24 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     turnAssistantMessageIndex === messages.length - 2
       ? messages.length - 1
       : -1
+  const completedTurnAssistantText = useMemo(() => acp?.processing
+    ? ''
+    : turnEvents.reduce(
+        (text, event) => event.type === 'assistant_text' ? text + event.text : text,
+        ''
+      ).trim(), [acp?.processing, turnEvents])
+  // A settled turn's events were synced into the backend's turn assistant row, so bind them there even when a later
+  // user row follows (#278). Native imports can replace rows without resetting the index, so a non-tail row must follow
+  // the turn's user row and hold exactly the turn's text; anything else keeps the row and the separate card.
+  // While processing, a steer can leave the index on an earlier row; require the tail.
+  const settledTurnAssistantRowValid =
+    !acp?.processing &&
+    turnUserMessageIndex >= 0 && turnUserMessageIndex < turnAssistantMessageIndex &&
+    messages[turnUserMessageIndex]?.role === 'user' &&
+    contentIsExactlyTurnText(messages[turnAssistantMessageIndex]?.content ?? '', turnEvents)
   const turnAssistantMessageMatches =
     turnAssistantMessageIndex >= earliestRenderedMessageIndex &&
-    (turnAssistantMessageIndex === messages.length - 1 || redundantStreamingMessageIndex >= 0) &&
+    (turnAssistantMessageIndex === messages.length - 1 || redundantStreamingMessageIndex >= 0 || settledTurnAssistantRowValid) &&
     messages[turnAssistantMessageIndex]?.role === 'assistant'
   const turnUserMessageMatches =
     turnUserMessageIndex >= earliestRenderedMessageIndex &&
@@ -1124,12 +1157,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     messages[turnUserMessageIndex]?.role === 'user' &&
     (turnUserMessageIndex === messages.length - 1 ||
       (turnAssistantMessageMatches && turnUserMessageIndex < turnAssistantMessageIndex))
-  const completedTurnAssistantText = useMemo(() => acp?.processing
-    ? ''
-    : turnEvents.reduce(
-        (text, event) => event.type === 'assistant_text' ? text + event.text : text,
-        ''
-      ).trim(), [acp?.processing, turnEvents])
   const completedFallbackAlreadyPersisted =
     !acp?.processing &&
     completedTurnAssistantText.length > 0 &&
