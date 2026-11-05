@@ -108,7 +108,7 @@ describe('chat multi-selection actions', () => {
     expect(selectedIds()).toEqual([])
   })
 
-  it('reads the same for one chat from its menu and as a one-item selection', () => {
+  it('reads the same for one chat from its menu and as a one-item selection', async () => {
     useAppStore.setState({ sessions: [...useAppStore.getState().sessions, chat('a-branch-2', 'project', { parentChatId: 'a', branchRootChatId: 'a' })] })
     const open = () => document.body.querySelector<HTMLElement>('[role="alertdialog"]')!
     const read = () => ({ label: open().getAttribute('aria-label'), text: open().textContent })
@@ -123,6 +123,28 @@ describe('chat multi-selection actions', () => {
     expect(read()).toEqual(fromMenu)
     expect(fromMenu.label).toBe('Delete chat Chat a and its 2 related branches')
     expect(fromMenu.text).toContain('The chat “Chat a” and its 2 related branches will be permanently deleted')
+
+    // A refused delete reads the same too.
+    const refuse = async (index: number) => {
+      await act(async () => { Array.from(open().querySelectorAll('button')).find((button) => button.textContent === 'Delete chat')!.click(); await flush() })
+      await act(async () => { held[index].onSuccess(JSON.stringify({ deletedChatIds: [], rejected: [{ id: 'a', error: 'Cannot delete chats while a selected runtime is still running.' }], selectedChatId: 'keep' })); await flush() })
+      return read()
+    }
+    const selectionFailure = await refuse(0)
+    expect(selectionFailure.text).toContain('The chat could not be deleted. Finish active work and try again.')
+    cancel()
+    openChatMenu('a')
+    act(() => item('Delete').click())
+    expect(await refuse(1)).toEqual(selectionFailure)
+  })
+
+  it('reads the same for one workspace when a one-item selection fails', async () => {
+    useAppStore.setState({ deleteFolders: async () => false, workspaceDeletionError: '' } as never)
+    act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-w1"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspace"]')!.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')!
+    await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Delete workspace')!.click(); await flush() })
+    expect(dialog.textContent).toContain('The workspace could not be deleted. Try again.')
   })
 
   it('routes the Delete key on a selected row to the whole selection', () => {

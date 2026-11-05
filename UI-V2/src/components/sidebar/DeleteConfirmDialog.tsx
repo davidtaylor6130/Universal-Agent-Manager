@@ -13,6 +13,11 @@ export function relatedBranchContents(chatCount: number, familyCount: number): s
   return `${chatCount === 1 ? 'its ' : ''}${countLabel(familyCount - chatCount, 'related branch', 'related branches')}`
 }
 
+/** Failure wording for chat deletes, shared for the same reason. */
+export function chatDeleteFailure(chatCount: number): string {
+  return chatCount === 1 ? 'The chat could not be deleted. Finish active work and try again.' : 'The chats could not be deleted. A chat may still be running.'
+}
+
 /**
  * The sidebar delete confirmation for chats, workspaces and collections, single or multi-selected.
  * Thin wrapper over ConfirmDialog: states item type, count and contents in one sentence; callers add consequences as children.

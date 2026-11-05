@@ -12,7 +12,7 @@ import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import { SessionItem } from './SessionItem'
-import { DeleteConfirmDialog, countLabel, relatedBranchContents } from './DeleteConfirmDialog'
+import { DeleteConfirmDialog, chatDeleteFailure, countLabel, relatedBranchContents } from './DeleteConfirmDialog'
 import './sidebar.css'
 import { Button, IconButton, MenuItem, MenuSelect, Notice, ProgressFill, RowButton, Tooltip, ViewportMenu } from '../ui'
 import {
@@ -569,14 +569,15 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     workspaceDeleteInFlightRef.current = true
     setDeletingFolder(true)
     setDeleteFolderError('')
+    const failure = pendingDeleteFolderIds.length === 1 ? 'The workspace could not be deleted. Try again.' : 'The workspaces could not be deleted. Try again.'
     try {
       const ids = pendingDeleteFolderIds
       if (await deleteFolders(ids)) clearWorkspaceSelection()
       // Partial deletion: refused workspaces were reported by name and stay selected for another try.
       else if (ids.some((id) => !useAppStore.getState().folders.some((folder) => folder.id === id))) setPendingDeleteFolderIds(null)
-      else setDeleteFolderError(useAppStore.getState().workspaceDeletionError || 'The workspaces could not be deleted. Try again.')
+      else setDeleteFolderError(useAppStore.getState().workspaceDeletionError || failure)
     } catch (error) {
-      setDeleteFolderError(error instanceof Error && error.message.trim() ? error.message : 'The workspaces could not be deleted. Try again.')
+      setDeleteFolderError(error instanceof Error && error.message.trim() ? error.message : failure)
     } finally {
       workspaceDeleteInFlightRef.current = false
       setDeletingFolder(false)
@@ -1180,7 +1181,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         name={pendingBulkDeleteIds?.length === 1 ? sessions.find((session) => session.id === pendingBulkDeleteIds[0])?.name : undefined}
         contents={relatedBranchContents(pendingBulkDeleteIds?.length ?? 0, pendingBulkDeleteFamilyIds?.length ?? 0)}
         returnFocusTo={() => rowFocusTarget('data-session-id', pendingBulkDeleteIds?.[0])}
-        error={bulkDeleteFailed ? 'The chats could not be deleted. A chat may still be running.' : ''}
+        error={bulkDeleteFailed ? chatDeleteFailure(pendingBulkDeleteIds?.length ?? 0) : ''}
         busy={bulkDeleting}
         onCancel={() => { if (!bulkDeleteInFlightRef.current) setPendingBulkDeleteIds(null) }}
         onConfirm={() => {

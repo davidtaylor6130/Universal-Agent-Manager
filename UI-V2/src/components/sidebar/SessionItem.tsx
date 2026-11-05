@@ -15,7 +15,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import type { Session } from '../../types/session'
 import { IconButton, MenuItem, Tooltip, ViewportMenu } from '../ui'
-import { DeleteConfirmDialog, relatedBranchContents } from './DeleteConfirmDialog'
+import { DeleteConfirmDialog, chatDeleteFailure, relatedBranchContents } from './DeleteConfirmDialog'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import {
   chatGridLeaves,
@@ -571,10 +571,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         setConfirmDelete(false)
         rowRef.current?.focus()
       } else {
-        setDeleteError('The chat could not be deleted. Finish active work and try again.')
+        setDeleteError(chatDeleteFailure(1))
       }
     } catch {
-      setDeleteError('The chat could not be deleted. Finish active work and try again.')
+      setDeleteError(chatDeleteFailure(1))
     } finally {
       setDeleting(false)
     }
