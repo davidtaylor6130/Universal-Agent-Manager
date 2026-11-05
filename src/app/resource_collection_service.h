@@ -22,7 +22,7 @@ class ResourceCollectionService
 	/// Moves a collection, with its references and child collections, under parent_id (empty for top level).
 	static bool Move(AppState& app, const std::string& collection_id, const std::string& parent_id, std::string* error_out);
 	static bool Rename(AppState& app, const std::string& collection_id, const std::string& name, std::string* error_out);
-	/// Child collections move up a level unless delete_children removes them with the parent. Referenced targets are never deleted.
+	/// Child collections and references move to the parent unless delete_children removes the subtree. A top-level collection has no parent, so its children become top level and its references go; workspaces become ungrouped. Referenced targets are never deleted.
 	static bool Delete(AppState& app, const std::string& collection_id, std::string* error_out, bool delete_children = false);
 	static bool ToggleCollapsed(AppState& app, const std::string& collection_id, std::string* error_out);
 	static bool ReorderCollections(AppState& app, const std::vector<std::string>& collection_ids, std::string* error_out);

@@ -1244,7 +1244,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             .then((deleted) => setSelectedCollectionIds((current) => new Set([...current].filter((id) => !deleted.includes(id)))))
         }}
       >
-        <p className="mt-2">Collections inside {pendingDeleteCollections?.length === 1 ? 'it move' : 'them move'} up a level, and workspaces remain, but {pendingDeleteCollections?.length === 1 ? 'this collection' : 'these collections'} cannot be restored.</p>
+        <p className="mt-2">What is inside a nested one moves to its parent; a top-level one's child collections become top level, its workspaces become ungrouped and its other links are removed. Workspaces remain, but {pendingDeleteCollections?.length === 1 ? 'this collection' : 'these collections'} cannot be restored.</p>
       </DeleteConfirmDialog>
 
       {recoveryDialogOpen && (
@@ -1436,6 +1436,33 @@ const COLLECTION_DRAG_TYPE = 'text/x-uam-collection-id'
 // dataTransfer values are unreadable during dragover, so valid drop targets read the dragged id from here.
 let draggedCollectionId: string | null = null
 
+/** A reference with no home of its own once its collection goes, unlike a workspace or chat, which stays in the sidebar. */
+const hasOtherLinks = (collection: ResourceCollection) => collection.references.some((reference) => reference.type !== 'workspace-folder' && reference.type !== 'chat')
+
+/** Move contents up is a real choice only when it keeps something Delete all would not. */
+function canMoveContentsUp(collections: readonly ResourceCollection[], collection: ResourceCollection) {
+  return collections.some((entry) => entry.parentId === collection.id) || (collections.some((entry) => entry.id === collection.parentId) && collection.references.length > 0)
+}
+
+function collectionDeleteMessage(collections: readonly ResourceCollection[], collection: ResourceCollection): string[] {
+  const subtree = collectionSubtreeIds(collections, collection.id)
+  const inside = subtree.length - 1
+  const parent = collections.find((entry) => entry.id === collection.parentId)
+  const ownLinks = hasOtherLinks(collection)
+  if (!canMoveContentsUp(collections, collection)) {
+    return [`“${collection.name}” will be permanently deleted. Workspaces remain, but this collection cannot be restored.${ownLinks ? ' Its other links are removed.' : ''}`]
+  }
+  const direct = collections.filter((entry) => entry.parentId === collection.id).length
+  const anyLinks = collections.some((entry) => subtree.includes(entry.id) && hasOtherLinks(entry))
+  return [
+    `“${collection.name}” will be permanently deleted and cannot be restored.${inside > 0 ? ` It has ${inside} ${inside === 1 ? 'collection' : 'collections'} inside${inside > direct ? ', counting nested ones' : ''}.` : ''}`,
+    parent
+      ? `Move contents up moves everything inside to “${parent.name}”.`
+      : `Move contents up moves its child collections to the top level and leaves its workspaces ungrouped${ownLinks ? '; its other links are removed' : ''}.`,
+    `Delete all ${inside > 0 ? 'permanently deletes the collections inside too and leaves their workspaces ungrouped' : 'leaves its workspaces ungrouped'}${anyLinks ? '; other links inside are removed' : ''}. Workspaces and chats remain.`,
+  ]
+}
+
 async function moveCollection(collectionId: string, parentId: string | null) {
   if (await useAppStore.getState().moveResourceCollection(collectionId, parentId)) return true
   reportAppFailure('Could not move the collection.', 'Collections can nest at most 5 levels deep and never inside themselves. Refresh and try again.')
@@ -1454,6 +1481,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
   const rename = useAppStore((state) => state.renameResourceCollection)
   const collections = useAppStore((state) => state.resourceCollections)
   const childCount = collections.filter((entry) => entry.parentId === collection.id).length
+  const offerMoveUp = canMoveContentsUp(collections, collection)
   const moveTargets = collections.filter((entry) => entry.id !== collection.parentId && canNestCollection(collections, collection.id, entry.id))
   const canNestInside = canNestCollection(collections, null, collection.id)
   const [addingChild, setAddingChild] = useState(false)
@@ -1514,6 +1542,12 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
     setAddingChild(true)
   }
   const isCollectionDrag = (event: { dataTransfer: DataTransfer }) => event.dataTransfer.types.includes(COLLECTION_DRAG_TYPE)
+  const removeCollection = (deleteContents: boolean) => {
+    setConfirmingDelete(false)
+    void remove(collection.id, deleteContents).then((removed) => {
+      if (!removed) reportAppFailure(`Could not delete "${collection.name}".`, 'A collection holds at most 500 items, so its parent may be full. Refresh and try again.')
+    })
+  }
 
   return (
     <div
@@ -1680,14 +1714,12 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
         open={confirmingDelete}
         title="Delete collection?"
         label={`Delete ${collection.name} collection`}
-        confirmLabel={childCount > 0 ? 'Delete all' : 'Delete collection'}
-        {...(childCount > 0 ? { secondaryAction: { label: 'Move contents up', onClick: () => { setConfirmingDelete(false); void deleteCollection({ id: collection.id, label: collection.name }) } } } : {})}
+        confirmLabel={offerMoveUp ? 'Delete all' : 'Delete collection'}
+        {...(offerMoveUp ? { secondaryAction: { label: 'Move contents up', onClick: () => removeCollection(false) } } : {})}
         onCancel={() => setConfirmingDelete(false)}
-        onConfirm={() => { setConfirmingDelete(false); void deleteCollection({ id: collection.id, label: collection.name }, childCount > 0) }}
+        onConfirm={() => removeCollection(offerMoveUp)}
       >
-        {childCount > 0
-          ? `“${collection.name}” has ${childCount} ${childCount === 1 ? 'collection' : 'collections'} inside. Move contents up keeps them one level up; Delete all removes them too. Workspaces and chats remain.`
-          : <>“{collection.name}” will be permanently deleted. Workspaces remain, but this collection cannot be restored.</>}
+        {collectionDeleteMessage(collections, collection).map((line, index) => <p key={index} className={index > 0 ? 'mt-2' : undefined}>{line}</p>)}
       </ConfirmDialog>
     </div>
   )

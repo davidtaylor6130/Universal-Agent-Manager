@@ -176,7 +176,7 @@ export function createResourceCollectionsSlice(set: ZustandSet, get: ZustandGet)
         })
         if (!response.ok) return false
       }
-      // Mirrors native: children move up a level or go with the parent; referenced targets are never touched.
+      // Mirrors native: children and references move to the parent or go with it; referenced targets are never touched.
       set((state) => {
         const deleted = state.resourceCollections.find((item) => item.id === collectionId)
         if (!deleted) return {}
@@ -184,6 +184,10 @@ export function createResourceCollectionsSlice(set: ZustandSet, get: ZustandGet)
         return {
           resourceCollections: state.resourceCollections.flatMap((item) => {
             if (removed.has(item.id)) return []
+            if (!deleteChildren && item.id === deleted.parentId) {
+              const moved = deleted.references.filter((reference) => !item.references.some((existing) => existing.type === reference.type && existing.target === reference.target))
+              return [{ ...item, references: [...item.references, ...moved] }]
+            }
             if (item.parentId !== collectionId) return [item]
             const { parentId: _parent, ...rest } = item
             return [deleted.parentId ? { ...rest, parentId: deleted.parentId } : rest]

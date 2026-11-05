@@ -345,6 +345,64 @@ UAM_TEST(ResourceCollectionDeleteParentMovesChildrenUpOrDeletesThemWithIt)
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 }
 
+UAM_TEST(ResourceCollectionDeleteMovesReferencesToParentOrDropsThemAtTopLevel)
+{
+	TempDir temp("uam-resource-delete-contents");
+	uam::AppState app = ResourceTestApp(temp.root);
+	std::string error;
+	const ResourceCollection homelab = CreateNested(app, "Homelab", "");
+	const ResourceCollection services = CreateNested(app, "Services", homelab.id);
+	const ResourceCollection sub = CreateNested(app, "Sub", services.id);
+	UAM_ASSERT(uam::ResourceCollectionService::AddReference(app, services.id, "workspace-folder", "workspace-1", "Workspace", nullptr, &error));
+	UAM_ASSERT(uam::ResourceCollectionService::AddReference(app, services.id, "desktop-app", "/Applications/App.app", "App", nullptr, &error));
+	UAM_ASSERT(uam::ResourceCollectionService::AddReference(app, homelab.id, "workspace-folder", "workspace-1", "Workspace", nullptr, &error));
+	const std::vector<ResourceReference> moved = FindLoaded(app.resource_collections, services.id)->references;
+
+	UAM_ASSERT(uam::ResourceCollectionService::Delete(app, services.id, &error, false));
+	const std::vector<ResourceCollection> loaded = uam::ResourceCollectionService::Load(temp.root);
+	UAM_ASSERT(FindLoaded(loaded, services.id) == nullptr);
+	UAM_ASSERT_EQ(FindLoaded(loaded, sub.id)->parent_id, homelab.id);
+	const std::vector<ResourceReference>& kept = FindLoaded(loaded, homelab.id)->references;
+	// The workspace the parent already held is not added twice; the desktop app keeps its identity.
+	UAM_ASSERT_EQ(kept.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(kept[0].target, std::string("workspace-1"));
+	UAM_ASSERT_EQ(kept[1].id, moved[1].id);
+	UAM_ASSERT_EQ(kept[1].target, std::string("/Applications/App.app"));
+	UAM_ASSERT_EQ(kept[1].label, std::string("App"));
+
+	// A top-level collection has no parent: children become top level, references go, targets stay.
+	UAM_ASSERT(uam::ResourceCollectionService::Delete(app, homelab.id, &error, false));
+	UAM_ASSERT_EQ(app.resource_collections.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.resource_collections[0].id, sub.id);
+	UAM_ASSERT(app.resource_collections[0].parent_id.empty());
+	UAM_ASSERT(app.resource_collections[0].references.empty());
+	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(1));
+}
+
+UAM_TEST(ResourceCollectionDeleteKeepsOrganisationWhenParentCannotHoldTheReferences)
+{
+	TempDir temp("uam-resource-delete-full");
+	uam::AppState app = ResourceTestApp(temp.root);
+	std::string error;
+	const ResourceCollection parent = CreateNested(app, "Parent", "");
+	const ResourceCollection child = CreateNested(app, "Child", parent.id);
+	UAM_ASSERT(uam::ResourceCollectionService::AddReference(app, child.id, "website", "https://child.example", "Child", nullptr, &error));
+	ResourceCollection* full = &app.resource_collections[0];
+	for (int index = 0; index < 500; ++index)
+	{
+		ResourceReference reference;
+		reference.id = "resource-reference-" + std::to_string(index);
+		reference.type = "website";
+		reference.target = "https://parent.example/" + std::to_string(index);
+		full->references.push_back(std::move(reference));
+	}
+	const std::string before = uam::StateSerializer::Serialize(app)["resourceCollections"].dump();
+
+	UAM_ASSERT(!uam::ResourceCollectionService::Delete(app, child.id, &error, false));
+	UAM_ASSERT_EQ(error, std::string("Resource reference limit reached."));
+	UAM_ASSERT_EQ(uam::StateSerializer::Serialize(app)["resourceCollections"].dump(), before);
+}
+
 UAM_TEST(ResourceCollectionNestingMutationsKeepPreviousOrganisationWhenSaveFails)
 {
 	TempDir temp("uam-resource-nesting-rollback");

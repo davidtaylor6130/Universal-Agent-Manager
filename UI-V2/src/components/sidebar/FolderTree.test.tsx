@@ -2,6 +2,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
+import { APP_FAILURE_EVENT } from '../../utils/appFailure'
 import type { Folder, Session } from '../../types/session'
 import { FolderTree } from './FolderTree'
 import { chatGridLeaves, defaultChatGridLayout, setChatInLeaf, splitChatLeaf, writeChatGridLayout } from '../../utils/chatGridStorage'
@@ -608,6 +609,94 @@ describe('FolderTree', () => {
     }
   })
 
+  describe('nested collection delete prompt', () => {
+    const openPrompt = (host: HTMLElement, name: string) => {
+      act(() => (host.querySelector(`button[aria-label="Actions for ${name}"]`) as HTMLButtonElement).click())
+      const menu = document.body.querySelector(`[role="menu"][aria-label="${name} actions"]`) as HTMLElement
+      act(() => (Array.from(menu.querySelectorAll('button')).find((button) => button.textContent === 'Delete') as HTMLButtonElement).click())
+      return document.body.querySelector('[role="alertdialog"]') as HTMLElement
+    }
+    const withTree = async (run: (host: HTMLElement) => Promise<void> | void) => {
+      vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      const root = createRoot(host)
+      try {
+        act(() => root.render(<FolderTree searchQuery="" />))
+        await run(host)
+      } finally {
+        act(() => root.unmount())
+        host.remove()
+        vi.unstubAllGlobals()
+      }
+    }
+    const buttons = (dialog: HTMLElement) => Array.from(dialog.querySelectorAll('button')).map((button) => button.textContent)
+    const workspace = { id: 'project-ref', type: 'workspace-folder' as const, target: 'project', label: 'Project' }
+    const app = { id: 'app-ref', type: 'desktop-app' as const, target: '/Applications/App.app', label: 'App' }
+
+    it('keeps the warning and counts every level', () => withTree((host) => {
+      act(() => useAppStore.setState({ resourceCollections: [
+        { id: 'a', name: 'A', collapsed: false, references: [] },
+        { id: 'b', name: 'B', parentId: 'a', collapsed: false, references: [] },
+        { id: 'c', name: 'C', parentId: 'b', collapsed: false, references: [] },
+      ] }))
+      const dialog = openPrompt(host, 'A')
+      expect(dialog.textContent).toContain('“A” will be permanently deleted and cannot be restored.')
+      expect(dialog.textContent).toContain('It has 2 collections inside, counting nested ones.')
+      expect(dialog.textContent).toContain('Move contents up moves its child collections to the top level and leaves its workspaces ungrouped.')
+      expect(buttons(dialog)).toEqual(['Cancel', 'Move contents up', 'Delete all'])
+    }))
+
+    it('moves a nested collection\'s workspaces, references and children to its parent', () => withTree(async (host) => {
+      act(() => useAppStore.setState({ resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: false, references: [workspace, app] },
+        { id: 'sub', name: 'Sub', parentId: 'services', collapsed: false, references: [] },
+      ] }))
+      const dialog = openPrompt(host, 'Services')
+      expect(dialog.textContent).toContain('Move contents up moves everything inside to “Homelab”.')
+      await act(async () => { (Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Move contents up') as HTMLButtonElement).click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections).toEqual([
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [workspace, app] },
+        { id: 'sub', name: 'Sub', parentId: 'homelab', collapsed: false, references: [] },
+      ])
+    }))
+
+    it('offers the choice for a nested collection holding only references', () => withTree((host) => {
+      act(() => useAppStore.setState({ resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: false, references: [workspace] },
+      ] }))
+      expect(buttons(openPrompt(host, 'Services'))).toEqual(['Cancel', 'Move contents up', 'Delete all'])
+    }))
+
+    it('says what a top-level collection loses when there is nowhere to move it', () => withTree((host) => {
+      act(() => useAppStore.setState({ resourceCollections: [
+        { id: 'solo', name: 'Solo', collapsed: false, references: [workspace, app] },
+        { id: 'top', name: 'Top', collapsed: false, references: [app] },
+        { id: 'kid', name: 'Kid', parentId: 'top', collapsed: false, references: [] },
+      ] }))
+      const solo = openPrompt(host, 'Solo')
+      expect(buttons(solo)).toEqual(['Cancel', 'Delete collection'])
+      expect(solo.textContent).toContain('cannot be restored. Its other links are removed.')
+      act(() => (Array.from(solo.querySelectorAll('button')).find((button) => button.textContent === 'Cancel') as HTMLButtonElement).click())
+      expect(openPrompt(host, 'Top').textContent).toContain('leaves its workspaces ungrouped; its other links are removed.')
+    }))
+
+    it('reports a delete native refuses', () => withTree(async (host) => {
+      const failures: unknown[] = []
+      const collect = (event: Event) => failures.push((event as CustomEvent).detail)
+      window.addEventListener(APP_FAILURE_EVENT, collect)
+      const deleteResourceCollection = vi.fn(async () => false)
+      act(() => useAppStore.setState({ deleteResourceCollection, resourceCollections: [{ id: 'solo', name: 'Solo', collapsed: false, references: [] }] }))
+      const dialog = openPrompt(host, 'Solo')
+      await act(async () => { (Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Delete collection') as HTMLButtonElement).click(); await Promise.resolve() })
+      window.removeEventListener(APP_FAILURE_EVENT, collect)
+      expect(deleteResourceCollection).toHaveBeenCalledWith('solo', false)
+      expect(failures).toHaveLength(1)
+    }))
+  })
+
   it('counts nested collections and workspaces directly inside a collection in its header badge', () => {
     useAppStore.setState({
       resourceCollections: [
@@ -861,6 +950,7 @@ describe('FolderTree', () => {
     Object.defineProperty(dragOver, 'clientY', { value: 35 })
     const drop = new Event('drop', { bubbles: true, cancelable: true })
     Object.defineProperty(drop, 'clientY', { value: 35 })
+    Object.defineProperty(drop, 'dataTransfer', { value: transfer })
 
     act(() => {
       source.dispatchEvent(dragStart)

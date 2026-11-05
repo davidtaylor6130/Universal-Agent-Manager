@@ -428,6 +428,28 @@ namespace uam
 		else
 		{
 			const std::string grandparent = deleted->parent_id;
+			// A top-level collection has nowhere to keep references: workspaces become ungrouped and other references go with it.
+			if (ResourceCollection* parent = FindCollection(next, grandparent); parent != nullptr)
+			{
+				for (ResourceReference reference : deleted->references)
+				{
+					const auto same = [&](const ResourceReference& existing) { return existing.type == reference.type && existing.target == reference.target; };
+					if (std::ranges::any_of(parent->references, same))
+					{
+						continue;
+					}
+					if (parent->references.size() >= kMaxReferencesPerCollection)
+					{
+						SetError(error_out, "Resource reference limit reached.");
+						return false;
+					}
+					if (std::ranges::any_of(parent->references, [&](const ResourceReference& existing) { return existing.id == reference.id; }))
+					{
+						reference.id = NewId("resource-reference");
+					}
+					parent->references.push_back(std::move(reference));
+				}
+			}
 			for (ResourceCollection& collection : next)
 			{
 				if (collection.parent_id == id)

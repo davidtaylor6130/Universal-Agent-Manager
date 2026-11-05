@@ -324,6 +324,15 @@ describe('nested resource collections', () => {
     expect(useAppStore.getState().resourceCollections).toEqual(tree())
   })
 
+  it('moves references to the parent with the children, without duplicating what the parent already holds', async () => {
+    const shared = { id: 'r-shared', type: 'workspace-folder' as const, target: 'w1', label: 'One' }
+    const own = { id: 'r-own', type: 'desktop-app' as const, target: '/Apps/A.app', label: 'A' }
+    const parent = { id: 'p', name: 'P', collapsed: false, references: [shared] }
+    useAppStore.setState({ resourceCollections: [parent, { id: 'c', name: 'C', parentId: 'p', collapsed: false, references: [{ ...shared, id: 'r-dup' }, own] }, { id: 'k', name: 'K', parentId: 'c', collapsed: false, references: [] }] })
+    expect(await useAppStore.getState().deleteResourceCollection('c', false)).toBe(true)
+    expect(useAppStore.getState().resourceCollections).toEqual([{ ...parent, references: [shared, own] }, { id: 'k', name: 'K', parentId: 'p', collapsed: false, references: [] }])
+  })
+
   it('moves children up a level or deletes them with the parent without touching references targets', async () => {
     useAppStore.setState({ folders: [{ id: 'project', name: 'Project', parentId: null, directory: '/tmp', isExpanded: true, createdAt: new Date() }] })
     expect(await useAppStore.getState().deleteResourceCollection('middle', false)).toBe(true)

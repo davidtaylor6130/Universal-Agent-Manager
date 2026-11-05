@@ -370,6 +370,7 @@ describe('collection multi-selection actions', () => {
     expect(host.querySelector('input[aria-label^="Rename"]')).toBeNull()
     act(() => item('Delete 2 collections').click())
     const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Delete 2 selected collections"]')!
+    expect(dialog.textContent).toContain('What is inside a nested one moves to its parent')
     await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Delete collections')!.click(); await flush() })
     expect(sent('deleteResourceCollection')).toEqual([{ collectionId: 'col' }, { collectionId: 'col2' }])
     expect(useAppStore.getState().resourceCollections).toEqual([])
