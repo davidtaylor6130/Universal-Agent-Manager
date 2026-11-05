@@ -46,7 +46,7 @@
 .uam-set-section__actions { display: flex; align-items: center; gap: var(--sp-1); flex-shrink: 0; }
 .uam-set-card { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); padding: 2px var(--sp-4); }
 .uam-set-card--flush { padding: 0; overflow: hidden; }
-.uam-set-card > .uam-set-field { padding-block: var(--sp-3); }
+.uam-set-card > .uam-set-field, .uam-set-card > form > .uam-set-field { padding-block: var(--sp-3); }
 .uam-set-card > .uam-set-field + .uam-set-field, .uam-set-card > .uam-set-row + .uam-set-field, .uam-set-card > .uam-set-field + .uam-set-row { border-top: 1px solid var(--border); }
 .uam-set-row { padding-block: var(--sp-3); }
 .uam-set-row + .uam-set-row { border-top: 1px solid var(--border); }

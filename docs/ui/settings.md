@@ -14,7 +14,7 @@ Every item in a settings card (row, Disclosure trigger, Notice, empty-state row,
 
 ## Copy and lists
 
-Use sentence case and plain consequences. A row description is roughly one short line, about 60 characters, and does not repeat its title; a trivially obvious row can omit it. Merge one- or two-row sections with a related neighbour. Hosts, servers, agents, skills and editors use identity/detail/status rows with labelled icon actions and an Add section action; multi-field add/edit flows use the shared Overlay/Presence modal. MCP summaries omit endpoints, executable paths, arguments and workspace directories, which remain in the editor. Empty states have one muted sentence and the add action.
+Use sentence case and plain consequences. A row description is roughly one short line, about 60 characters, and does not repeat its title; a trivially obvious row can omit it. Merge one- or two-row sections with a related neighbour. Hosts, servers, agents, skills and editors use identity/detail/status rows with labelled icon actions and an Add section action; multi-field add/edit flows use the shared Overlay/Presence modal. Configured hosts open their own sub-page: Back to hosts returns to the list and restores focus to that host's Open button (or to Add a host once it is removed), and host options sit in a section rather than a disclosure. MCP summaries omit endpoints, executable paths, arguments and workspace directories, which remain in the editor. Empty states have one muted sentence and the add action.
 
 ## State and drafts
 

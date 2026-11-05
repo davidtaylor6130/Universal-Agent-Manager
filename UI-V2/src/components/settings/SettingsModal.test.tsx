@@ -680,13 +680,146 @@ describe('SettingsModal memory settings', () => {
     act(() => host.querySelector<HTMLButtonElement>(`nav [aria-label="${name}"]`)?.click())
   }
 
-  function openRemoteHostsSection(host: HTMLElement) {
+  function openRemoteHostsSection(host: HTMLElement, hostLabel?: string) {
     const button = Array.from(host.querySelectorAll('button')).find(
       (candidate) => candidate.textContent?.includes('Remote hosts')
     )
     expect(button).toBeTruthy()
     act(() => button?.click())
+    if (hostLabel) act(() => host.querySelector<HTMLButtonElement>(`button[aria-label="Open ${hostLabel}"]`)!.click())
   }
+
+  const subPageHost = (id: string, label: string) => ({ id, label, transport: 'ssh', sshAlias: id, runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '' })
+
+  it('moves focus to Add a host after removing the host shown on its sub-page', async () => {
+    useAppStore.setState({ executionHosts: [subPageHost('host-a', 'Host A')] as never })
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string }
+      if (parsed.action === 'removeRemoteHost') useAppStore.setState({ executionHosts: [] })
+      onSuccess(JSON.stringify({ hosts: [] }))
+    }
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host, 'Host A')
+      act(() => host.querySelector<HTMLButtonElement>('section[aria-label="Host A"] button[aria-label="Remove Host A"]')!.click())
+      await act(async () => { Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Remove host')!.click(); await Promise.resolve(); await Promise.resolve() })
+      expect(host.querySelector('section[aria-label="Host A"]')).toBeNull()
+      expect(document.activeElement?.id).toBe('remote-host-name')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('opens each configured host on its own sub-page and returns focus on Back', () => {
+    useAppStore.setState({ executionHosts: [subPageHost('host-a', 'Host A'), subPageHost('host-b', 'Host B')] as never })
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host)
+      // The list shows identity rows only: no inline options or disclosure.
+      expect(host.textContent).not.toContain('Host options')
+      expect(host.querySelector('[aria-label="Instruction file on Host A"]')).toBeNull()
+      const openB = host.querySelector<HTMLButtonElement>('button[aria-label="Open Host B"]')!
+      act(() => openB.click())
+      const back = Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Back to hosts')!
+      expect(document.activeElement).toBe(back)
+      expect(host.querySelector('section[aria-label="Host B"]')).toBeTruthy()
+      expect(host.querySelector('[aria-label="Instruction file on Host B"]')).toBeTruthy()
+      expect(host.querySelector('[aria-label="Instruction file on Host A"]')).toBeNull()
+      expect(host.querySelector('section[aria-label="Add a host"]')).toBeNull()
+      act(() => back.click())
+      expect(host.querySelector('[aria-label="Instruction file on Host B"]')).toBeNull()
+      expect(document.activeElement).toBe(host.querySelector('button[aria-label="Open Host B"]'))
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('asks before Back discards an unsaved host options draft', () => {
+    useAppStore.setState({ executionHosts: [subPageHost('host-a', 'Host A')] as never })
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host, 'Host A')
+      const back = () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Back to hosts')!
+      setNativeInputValue(host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!, '/tmp/draft-AGENTS.md')
+      act(() => back().click())
+      expect(document.body.textContent).toContain('Discard host option changes?')
+      act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep editing')!.click())
+      expect(host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')?.value).toBe('/tmp/draft-AGENTS.md')
+      act(() => back().click())
+      act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Discard changes')!.click())
+      expect(host.querySelector('[aria-label="Instruction file on Host A"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('blocks Back during a host task and keeps the unsaved options guard after one', async () => {
+    useAppStore.setState({ executionHosts: [subPageHost('host-a', 'Host A')] as never })
+    const pending: Array<{ action: string; onSuccess: (value: string) => void; onFailure: (code: number, message: string) => void }> = []
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      pending.push({ action: (JSON.parse(request) as { action: string }).action, onSuccess, onFailure })
+    }
+    const { host, root } = renderModal()
+    const back = () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Back to hosts')!
+    const keep = () => act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep editing')!.click())
+    const input = () => host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!
+    try {
+      openRemoteHostsSection(host, 'Host A')
+      setNativeInputValue(input(), '/tmp/draft-AGENTS.md')
+      await act(async () => { Array.from(input().form!.querySelectorAll('button')).find(button => button.textContent === 'Check file')!.click() })
+      expect(pending.map((request) => request.action)).toContain('checkRemoteHostInstruction')
+      expect(back().disabled).toBe(true)
+      for (const request of pending.splice(0)) await act(async () => { request.onSuccess('{}') })
+      expect(back().disabled).toBe(false)
+      act(() => back().click())
+      expect(document.body.textContent).toContain('Discard host option changes?')
+      keep()
+      // A save in flight cannot land after Discard, and a failed save keeps the guard and the draft.
+      await act(async () => { (Array.from(input().form!.querySelectorAll('button')).find(button => button.type === 'submit') as HTMLButtonElement).click() })
+      expect(back().disabled).toBe(true)
+      for (const request of pending.splice(0)) await act(async () => { request.onFailure(500, 'Save failed') })
+      expect(input().value).toBe('/tmp/draft-AGENTS.md')
+      act(() => back().click())
+      expect(document.body.textContent).toContain('Discard host option changes?')
+      keep()
+      expect(input().value).toBe('/tmp/draft-AGENTS.md')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('warns before the window closes with unsaved host options', () => {
+    useAppStore.setState({ executionHosts: [subPageHost('host-a', 'Host A')] as never })
+    const { host, root } = renderModal()
+    const unload = () => { const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented }
+    try {
+      openRemoteHostsSection(host, 'Host A')
+      expect(unload()).toBe(false)
+      setNativeInputValue(host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!, '/tmp/draft-AGENTS.md')
+      expect(unload()).toBe(true)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('falls back to the list when the host on its sub-page disappears', () => {
+    useAppStore.setState({ executionHosts: [subPageHost('host-a', 'Host A')] as never })
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host, 'Host A')
+      act(() => useAppStore.setState({ executionHosts: [] }))
+      expect(host.querySelector('section[aria-label="Add a host"]')).toBeTruthy()
+      expect(document.activeElement?.id).toBe('remote-host-name')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
 
   it('previews the exact SSH setup before explicitly installing the helper', async () => {
     const actions: string[] = []
@@ -878,7 +1011,7 @@ describe('SettingsModal memory settings', () => {
     }
     const { host, root } = renderModal()
     try {
-      openRemoteHostsSection(host)
+      openRemoteHostsSection(host, 'Fixture host')
       const checkbox = host.querySelector<HTMLInputElement>('[name="cliUpdatesAsAdmin"]')!
       expect(checkbox.checked).toBe(!enabled)
       await act(async () => { checkbox.click() })
@@ -903,7 +1036,7 @@ describe('SettingsModal memory settings', () => {
     }
     const { host, root } = renderModal()
     try {
-      openRemoteHostsSection(host)
+      openRemoteHostsSection(host, 'Fixture host')
       const input = host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Fixture host"]')!
       setNativeInputValue(input, '/tmp/new-instructions.md')
       const form = input.form!
@@ -943,7 +1076,7 @@ describe('SettingsModal memory settings', () => {
     }
     const { host: container, root } = renderModal()
     try {
-      openRemoteHostsSection(container)
+      openRemoteHostsSection(container, 'Fixture host')
       const area = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Host instructions on Fixture host"]')!
       const saveButton = () => area.form!.querySelector<HTMLButtonElement>('button[type="submit"]')!
       expect(saveButton().disabled).toBe(true)
@@ -975,7 +1108,7 @@ describe('SettingsModal memory settings', () => {
     }
     const { host: container, root } = renderModal()
     try {
-      openRemoteHostsSection(container)
+      openRemoteHostsSection(container, 'Fixture host')
       const area = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Host instructions on Fixture host"]')!
       expect(area.value).toBe('Be terse.')
       await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Use instruction file instead')!.click())
@@ -1000,7 +1133,7 @@ describe('SettingsModal memory settings', () => {
     })
     const { host, root } = renderModal()
     try {
-      openRemoteHostsSection(host)
+      openRemoteHostsSection(host, 'Fixture host')
       expect(host.textContent).toContain(expected)
       expect(host.querySelector<HTMLInputElement>('[name="startupEnabled"]')?.checked).toBe(true)
       // Saved is on, so only states that are not "enabled" differ from it.
@@ -1032,7 +1165,7 @@ describe('SettingsModal memory settings', () => {
     }
     const { host, root } = renderModal()
     try {
-      openRemoteHostsSection(host)
+      openRemoteHostsSection(host, 'Host A')
       const saveA = () => Array.from(host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!.form!.querySelectorAll('button')).find(b => b.type === 'submit') as HTMLButtonElement
       const inputA = host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!
       expect(saveA().disabled).toBe(true)
@@ -1050,6 +1183,13 @@ describe('SettingsModal memory settings', () => {
       expect(host.querySelector('[role="progressbar"][aria-label="Remote host task running on Host A"][aria-busy="true"]')).toBeTruthy()
       expect(host.querySelector('[role="progressbar"][aria-label="Remote host task running on Host B"]')).toBeNull()
       expect(saveA().disabled).toBe(true)
+      // Back waits for the save; the list then shows a task on one host without blocking the other.
+      expect(Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Back to hosts')!.disabled).toBe(true)
+      await act(async () => { requests.find(r => r.action === 'saveRemoteHostOptions')!.respond() })
+      act(() => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Back to hosts')!.click())
+      act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Discard changes')!.click())
+      await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Reinstall helper on Host A"]')!.click() })
+      expect(host.querySelector('[role="group"][aria-label="Remote host task running on Host A"][aria-busy="true"]')).toBeTruthy()
       const reinstallB = host.querySelector<HTMLButtonElement>('button[aria-label="Reinstall helper on Host B"]')!
       expect(reinstallB.disabled).toBe(false)
       expect(host.querySelector<HTMLButtonElement>('button[aria-label="Reinstall helper on Host A"]')!.disabled).toBe(true)
@@ -1059,7 +1199,7 @@ describe('SettingsModal memory settings', () => {
     }
   })
 
-  it('keeps an unsaved host option draft and its disclosure open through a busy toggle', async () => {
+  it('keeps an unsaved host option draft open through a busy toggle', async () => {
     const hosts = [
       { id: 'host-a', label: 'Host A', transport: 'ssh', sshAlias: 'host-a', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', instructionFile: '/tmp/AGENTS.md' },
     ]
@@ -1071,7 +1211,7 @@ describe('SettingsModal memory settings', () => {
     }
     const { host, root } = renderModal()
     try {
-      openRemoteHostsSection(host)
+      openRemoteHostsSection(host, 'Host A')
       const inputA = () => host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!
       const saveA = () => Array.from(inputA().form!.querySelectorAll('button')).find(b => b.type === 'submit') as HTMLButtonElement
       setNativeInputValue(inputA(), '/tmp/draft-AGENTS.md')
