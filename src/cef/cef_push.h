@@ -41,6 +41,8 @@ namespace uam
 	}
 	std::string StateUpdateForTests(const AppState& app);
 	std::string StatePatchForTests(const AppState& before, const AppState& after);
+	/// <summary>Receives every built statePatch message, pushed or not; nullptr stops observing.</summary>
+	void SetStatePatchObserverForTests(void (*observer)(const std::string& message));
 	std::string SettingsPatchForTests(const AppState& app);
 
 	/// <summary>

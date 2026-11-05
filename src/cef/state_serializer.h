@@ -7,8 +7,10 @@
 // once CMake has run FetchContent.
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 struct ChatMessagePage;
 
@@ -30,7 +32,26 @@ class StateSerializer
 	static nlohmann::json Serialize(const AppState& app, bool summary_only = false);
 
 	/// Serialise state summaries; compact catalogs are internal comparison tokens and need patch hydration.
-	static nlohmann::json SerializeFingerprint(const AppState& app, bool compact_catalogs = false);
+	/// Without include_chats the "chats" slice is omitted; poll-time diffs compare SerializeChatFingerprintDigests instead.
+	static nlohmann::json SerializeFingerprint(const AppState& app, bool compact_catalogs = false, bool include_chats = true);
+
+	/// <summary>Digest of one visible chat's compact fingerprint summary; the chat pointer is valid until AppState changes.</summary>
+	struct ChatSummaryDigest
+	{
+		const ChatSession* chat = nullptr;
+		std::uint64_t digest = 0;
+		/// Compact summary (wait telemetry stripped) when the scan had to build it, as for live ACP sessions; null otherwise.
+		nlohmann::json summary;
+	};
+
+	/// <summary>
+	/// Digests every visible chat's compact fingerprint summary, in SerializeFingerprint order, from the same field
+	/// code that builds its JSON but without building it: equal digests mean an unchanged summary.
+	/// </summary>
+	static std::vector<ChatSummaryDigest> SerializeChatFingerprintDigests(const AppState& app);
+
+	/// <summary>Builds the compact fingerprint summaries SerializeFingerprint(app, true) would list for these chats.</summary>
+	static std::vector<nlohmann::json> SerializeChatFingerprints(const AppState& app, const std::vector<const ChatSession*>& chats);
 
 	/// Hydrate a changed chat summary with full model options for frontend patches.
 	static nlohmann::json SerializeChatSummary(const AppState& app, const ChatSession& chat);
