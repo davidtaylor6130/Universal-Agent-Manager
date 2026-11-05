@@ -208,20 +208,22 @@ function fileUriToPath(uri: string): string {
   }
 }
 
-/** Each non-empty assistant_text event appears in content, in order; other content (e.g. an OpenCode compaction summary)
- * may sit between chunks. ponytail: a short chunk such as "OK" can match coincidentally in an unrelated row; accepted,
- * since a native message id would be needed to rule that out. */
-function contentContainsTurnTextInOrder(content: string, events: readonly AcpTurnEvent[]) {
-  let offset = 0
+/** True when the turn has answer text and the row's content is exactly that text, in order, so the timeline can replace
+ * the row without losing anything. Compaction summaries are saved in content and shown by neither view, so they are
+ * skipped; whitespace between chunks is ignored. */
+function contentIsExactlyTurnText(content: string, events: readonly AcpTurnEvent[]) {
+  let rest = content.trimStart()
+  let hasAnswerText = false
   for (const event of events) {
-    if (event.type !== 'assistant_text') continue
+    const answer = event.type === 'assistant_text'
+    if (!answer && event.type !== 'context_compaction_summary' && event.type !== 'context_compaction_interrupted') continue
     const text = event.text.trim()
     if (!text) continue
-    const found = content.indexOf(text, offset)
-    if (found < 0) return false
-    offset = found + text.length
+    if (rest.startsWith(text)) rest = rest.slice(text.length).trimStart()
+    else if (answer) return false
+    hasAnswerText ||= answer
   }
-  return true
+  return hasAnswerText && !rest
 }
 
 function lastMessageIndexWithRole(messages: Message[], role: Message['role']) {
@@ -1138,13 +1140,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       ).trim(), [acp?.processing, turnEvents])
   // A settled turn's events were synced into the backend's turn assistant row, so bind them there even when a later
   // user row follows (#278). Native imports can replace rows without resetting the index, so a non-tail row must follow
-  // the turn's user row and contain each turn text chunk in order (compaction summaries can sit between chunks).
+  // the turn's user row and hold exactly the turn's text; anything else keeps the row and the separate card.
   // While processing, a steer can leave the index on an earlier row; require the tail.
   const settledTurnAssistantRowValid =
     !acp?.processing &&
     turnUserMessageIndex >= 0 && turnUserMessageIndex < turnAssistantMessageIndex &&
     messages[turnUserMessageIndex]?.role === 'user' &&
-    contentContainsTurnTextInOrder(messages[turnAssistantMessageIndex]?.content ?? '', turnEvents)
+    contentIsExactlyTurnText(messages[turnAssistantMessageIndex]?.content ?? '', turnEvents)
   const turnAssistantMessageMatches =
     turnAssistantMessageIndex >= earliestRenderedMessageIndex &&
     (turnAssistantMessageIndex === messages.length - 1 || redundantStreamingMessageIndex >= 0 || settledTurnAssistantRowValid) &&

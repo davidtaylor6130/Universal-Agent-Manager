@@ -10,7 +10,7 @@ import { buildUamAgentCycle, buildVisibleWorkSections, ChatView, matchesUamAgent
 import { useAppStore, type VcsCommitStatus } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
 import { acpBindingFromCppChat, reconcileCppMessages } from '../../store/cpp/reconcile'
-import type { CppChat } from '../../store/cpp/types'
+import type { AcpTurnEvent, CppChat } from '../../store/cpp/types'
 import { sanitizeCppAcpSession, sanitizeCppSettings } from '../../store/cpp/sanitizers'
 import { readChatComposerDraft, removeComposerDrafts, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { resetOutgoingPresentation } from '../../utils/outgoingMessagePresentation'
@@ -8339,7 +8339,7 @@ describe('ChatView', () => {
   })
 
   // #278: a settled turn keeps its events while a later user row (failed-reconnect queue, prepared input) is appended.
-  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; leadingAssistant?: boolean }) => {
+  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; leadingAssistant?: boolean; turnEvents?: AcpTurnEvent[] }) => {
     useAppStore.setState((state) => ({
       messages: {
         ...state.messages,
@@ -8358,7 +8358,7 @@ describe('ChatView', () => {
           processing: overrides.processing ?? false,
           pendingPermission: null,
           toolCalls: [],
-          turnEvents: [{ type: 'assistant_text', text: 'Status update.' }, { type: 'assistant_text', text: '\n\nSettled answer.' }],
+          turnEvents: overrides.turnEvents ?? [{ type: 'assistant_text', text: 'Status update.' }, { type: 'assistant_text', text: '\n\nSettled answer.' }],
           turnUserMessageIndex: overrides.turnUserMessageIndex ?? 0,
           turnAssistantMessageIndex: overrides.turnAssistantMessageIndex ?? 1,
           turnSerial: 2,
@@ -8382,7 +8382,11 @@ describe('ChatView', () => {
   })
 
   it('binds a settled row whose content has a compaction summary between turn text chunks', () => {
-    const text = renderTurnAfterFollowUp({ assistantContent: 'Status update.\n\nCompacted context summary.\n\nSettled answer.' })
+    const text = renderTurnAfterFollowUp({ assistantContent: 'Status update.\n\nCompacted context summary.\n\nSettled answer.', turnEvents: [
+      { type: 'assistant_text', text: 'Status update.' },
+      { type: 'context_compaction_summary', text: '\n\nCompacted context summary.', requestId: 'opencode-message:summary' },
+      { type: 'assistant_text', text: '\n\nSettled answer.' },
+    ] })
     expect(text.match(/Settled answer\./g)).toHaveLength(1)
     expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
   })
@@ -8399,6 +8403,17 @@ describe('ChatView', () => {
     // The fallback renders the turn text after the follow-up row; the persisted row keeps its own content.
     expect(text.lastIndexOf('Settled answer.')).toBeGreaterThan(text.indexOf('Follow-up row'))
     if (overrides.assistantContent) expect(text).toContain(overrides.assistantContent)
+  })
+
+  it.each([
+    { name: 'a turn with no answer text', assistantContent: 'Imported answer', turnEvents: [{ type: 'tool_call' as const, toolCallId: 'tool-1' }] },
+    { name: 'a short chunk at the start of a longer row', assistantContent: 'OK, here is the longer imported answer.', turnEvents: [{ type: 'assistant_text' as const, text: 'OK' }] },
+    { name: 'a short chunk at the end of a longer row', assistantContent: 'The longer imported answer is OK', turnEvents: [{ type: 'assistant_text' as const, text: 'OK' }] },
+    { name: 'text no turn event accounts for between chunks', assistantContent: 'Status update.\n\nImported middle.\n\nSettled answer.', turnEvents: undefined },
+  ])('never hides a stale row holding more than the turn text: $name', ({ assistantContent, turnEvents }) => {
+    const text = renderTurnAfterFollowUp({ assistantContent, turnEvents })
+    expect(text).toContain(assistantContent.replaceAll('\n\n', ''))
+    expect(text.indexOf(assistantContent.slice(0, 15))).toBeLessThan(text.indexOf('Follow-up row'))
   })
 
   it('keeps the fallback visible while processing even when persisted text matches', () => {
