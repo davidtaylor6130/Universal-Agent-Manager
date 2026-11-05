@@ -619,8 +619,7 @@ void Application::PollTick()
 
 	int next_poll_delay_ms = m_app.startup_native_import_service != nullptr && m_app.startup_native_import_service->ImportPending() ? 16 : GetNextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning(), TerminalUiVisible(m_browser));
 	// A throttled summary must flush when its 100 ms window ends, not on the next idle 250/1000 ms tick.
-	if (uam::HasDeferredStatePush()) next_poll_delay_ms = std::min(next_poll_delay_ms, uam::MillisecondsUntilDeferredStatePushDue());
-	ScheduleNextUpdate(next_poll_delay_ms);
+	ScheduleNextUpdate(uam::CapPollDelayForDeferredStatePush(next_poll_delay_ms));
 }
 
 void Application::ScheduleNextUpdate(int delay_ms)

@@ -12,6 +12,7 @@
 #include "common/utils/diagnostic_log.h"
 #include "common/utils/nlohmann_json_utils.h"
 
+#include <algorithm>
 #include <chrono>
 #include <unordered_map>
 #include <unordered_set>
@@ -435,6 +436,11 @@ namespace uam
 	{
 		const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(g_deferred_state_push_due_at - g_state_push_clock()).count();
 		return remaining < 1 ? 1 : static_cast<int>(remaining);
+	}
+
+	int CapPollDelayForDeferredStatePush(int delay_ms)
+	{
+		return HasDeferredStatePush() ? std::min(delay_ms, MillisecondsUntilDeferredStatePushDue()) : delay_ms;
 	}
 
 	void SetStatePushClockForTests(std::chrono::steady_clock::time_point (*clock)())

@@ -557,14 +557,14 @@ UAM_TEST(RuntimeStatePushBypassesRebuildWindowForPendingRequestsAndCliLaunches)
 
 namespace
 {
-	/// <summary>Follows the poll scheduler: sleeps until the deferred push is due, then ticks. Returns the wake-ups used.</summary>
+	/// <summary>Follows PollTick's delay from an idle 1000 ms tick: sleeps the capped delay, then ticks. Returns the wake-ups used.</summary>
 	int WakeUpsUntilDeferredPushPublishes(FakeStatePushClock& clock, uam::AppState& app)
 	{
 		int wake_ups = 0;
 		bool published = false;
 		while (!published && wake_ups < 20)
 		{
-			clock.Advance(std::chrono::milliseconds(uam::MillisecondsUntilDeferredStatePushDue()));
+			clock.Advance(std::chrono::milliseconds(uam::CapPollDelayForDeferredStatePush(1000)));
 			++wake_ups;
 			if (uam::DeferredStatePushDue()) published = uam::PushRuntimeStateUpdateIfChanged(nullptr, app);
 		}
@@ -595,9 +595,14 @@ UAM_TEST(DeferredStatePushThatComesDueInsideARebuildWindowDoesNotBusyPoll)
 	UAM_ASSERT(uam::DeferredStatePushDue());
 	UAM_ASSERT(!uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
 	UAM_ASSERT(!uam::DeferredStatePushDue());
-	UAM_ASSERT_EQ(uam::MillisecondsUntilDeferredStatePushDue(), 30);
+	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(1000), 30);
+	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(16), 16);
 	UAM_ASSERT_EQ(WakeUpsUntilDeferredPushPublishes(clock, app), 1);
 	UAM_ASSERT(!uam::HasDeferredStatePush());
+	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(1000), 1000);
+	// PollTick needs CEF to run, so this checks that it schedules through the capped delay.
+	const std::string application = ReadFile(fs::path(__FILE__).parent_path().parent_path() / "src/app/application.cpp");
+	UAM_ASSERT(application.find("ScheduleNextUpdate(uam::CapPollDelayForDeferredStatePush(next_poll_delay_ms));") != std::string::npos);
 
 	// A bridge push's per-chat window can end inside a later rebuild window: bridge at t=0, rebuild at t=62, due at t=100,
 	// rebuild window until t=162, so the summary publishes 162 ms after the previous publish.

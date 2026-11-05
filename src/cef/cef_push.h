@@ -40,6 +40,8 @@ namespace uam
 	/// scheduler caps its next delay with this so slow idle ticks never hold it back.
 	/// </summary>
 	int MillisecondsUntilDeferredStatePushDue();
+	/// <summary>The poll delay to schedule: delay_ms, shortened to the pending deferred summary's due time if there is one.</summary>
+	int CapPollDelayForDeferredStatePush(int delay_ms);
 	/// <summary>Replaces the summary-throttle clock; nullptr restores steady_clock::now.</summary>
 	void SetStatePushClockForTests(std::chrono::steady_clock::time_point (*clock)());
 	inline std::string StateFingerprintForTests(const AppState& app)
