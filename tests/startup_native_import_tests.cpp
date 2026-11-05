@@ -804,6 +804,59 @@ UAM_TEST(StartupImportLeavesOldSessionsForExplicitDiscovery)
 	UAM_ASSERT_EQ(offered_ids(service), (std::set<std::string>{"old", "remote-old"}));
 }
 
+// A folder filter saved after startup also covers the remote sessions startup staged or held back.
+UAM_TEST(StartupImportDiscoveryFiltersStagedRemoteSessionsAgain)
+{
+	TempDir temp("uam-native-import-startup-refilter");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	ExecutionHost host;
+	host.id = "synthetic-host"; host.transport = "ssh"; host.platform = "linux"; host.runner_status = "ready";
+	app.settings.execution_hosts.push_back(host);
+	app.folders.push_back({"remote", "Remote", "/synthetic/remote", false, host.id});
+	app.settings.native_import_startup_max_age_days = 30;
+	const auto remote = [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, std::stop_token)
+	{
+		ChatHistorySyncService::LocalHistoryDiscovery result;
+		for (const auto& [id, updated_at] : {std::pair<std::string, std::string>{"remote-old", "2020-01-01T00:00:00.000Z"}, {"remote-recent", uam::time::IsoUtcTimestampNow()}})
+		{
+			auto chat = StartupHistory("/synthetic/remote", id);
+			chat.execution_host_id = host.id; chat.folder_id = "remote"; chat.updated_at = updated_at;
+			result.chats.push_back(std::move(chat));
+		}
+		return result;
+	};
+	uam::StartupNativeImportService service(FixtureScanner({}), remote);
+	service.Initialize(app); WaitForStartup(service, app);
+	UAM_ASSERT_EQ(service.Snapshot().candidates.size(), std::size_t{1});
+	app.settings.native_import_excluded_directories = {"/synthetic/remote"};
+	UAM_ASSERT(service.DiscoverLocalHistory(app)); WaitForStartup(service, app);
+	UAM_ASSERT(service.Snapshot().candidates.empty());
+	// Local discovery never rescans remote hosts, so removing the rule must bring both back.
+	app.settings.native_import_excluded_directories.clear();
+	UAM_ASSERT(service.DiscoverLocalHistory(app)); WaitForStartup(service, app);
+	UAM_ASSERT_EQ(service.Snapshot().candidates.size(), std::size_t{2});
+	// A rule saved during review refuses the selection and also keeps the sessions for later.
+	const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+	std::vector<std::string> all;
+	for (const auto& candidate : ready.candidates) all.push_back(candidate.candidate_id);
+	app.settings.native_import_excluded_directories = {"/synthetic/remote"};
+	std::string error;
+	UAM_ASSERT(!service.Decide(app, ready.generation, all, {}, &error));
+	UAM_ASSERT(service.Snapshot().candidates.empty());
+	app.settings.native_import_excluded_directories.clear();
+	UAM_ASSERT(service.DiscoverLocalHistory(app)); WaitForStartup(service, app);
+	UAM_ASSERT_EQ(service.Snapshot().candidates.size(), std::size_t{2});
+	// A removed remote workspace's sessions are not listed, and return if the workspace does.
+	const std::vector<ChatFolder> folders = app.folders;
+	std::erase_if(app.folders, [](const ChatFolder& folder) { return folder.id == "remote"; });
+	UAM_ASSERT(service.DiscoverLocalHistory(app)); WaitForStartup(service, app);
+	UAM_ASSERT(service.Snapshot().candidates.empty());
+	app.folders = folders;
+	UAM_ASSERT(service.DiscoverLocalHistory(app)); WaitForStartup(service, app);
+	UAM_ASSERT_EQ(service.Snapshot().candidates.size(), std::size_t{2});
+}
+
 UAM_TEST(StartupImportAgeLimitKeepsSessionsActiveExactlyAtTheLimit)
 {
 	AppSettings settings;

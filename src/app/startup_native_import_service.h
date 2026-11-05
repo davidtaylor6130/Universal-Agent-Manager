@@ -128,8 +128,9 @@ namespace uam
 		std::string m_phase = "idle";
 		std::string m_generation;
 		std::vector<Candidate> m_candidates;
-		/// <summary>Remote sessions startup left out for age; explicit discovery adds them to review.</summary>
+		/// <summary>Remote sessions left out for age, an import filter or a missing workspace; explicit discovery reviews those eligible again.</summary>
 		std::vector<Candidate> m_startup_deferred;
+		void HoldBackIneligibleRemoteCandidates(const AppState& app);
 		std::vector<Candidate> m_selected;
 		ChatHistorySyncService::LocalHistoryDiscovery m_import;
 		std::vector<std::string> m_errors;

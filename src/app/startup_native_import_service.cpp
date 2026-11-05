@@ -123,6 +123,7 @@ namespace uam
 		// Remote sessions startup left out for age join this review; the local scan below finds local ones without the limit.
 		for (Candidate& candidate : m_startup_deferred) m_candidates.push_back(std::move(candidate));
 		m_startup_deferred.clear();
+		HoldBackIneligibleRemoteCandidates(app);
 		m_selected.clear();
 		m_errors.clear();
 		m_omitted_error_count = 0;
@@ -467,8 +468,23 @@ namespace uam
 		return snapshot;
 	}
 
+	void StartupNativeImportService::HoldBackIneligibleRemoteCandidates(const AppState& app)
+	{
+		// Local discovery never rescans remote hosts, so a session excluded by a rule or missing its workspace is set aside rather than destroyed: it returns at the next discovery once that changes.
+		const auto kept = std::ranges::stable_partition(m_candidates, [&app](const Candidate& candidate)
+		{
+			if (paths::IsControllerLocalWorkspace(candidate.chat)) return true;
+			const ChatFolder* owner = ChatDomainService().FindFolderById(app, candidate.owner.id);
+			return owner != nullptr && owner->directory == candidate.owner.directory && owner->execution_host_id == candidate.owner.execution_host_id &&
+			    !chat_import::NativeImportExcludedBySettings(app.settings, candidate.chat);
+		});
+		for (Candidate& candidate : kept) m_startup_deferred.push_back(std::move(candidate));
+		m_candidates.erase(kept.begin(), kept.end());
+	}
+
 	bool StartupNativeImportService::Revalidate(AppState& app, std::string* error_out)
 	{
+		HoldBackIneligibleRemoteCandidates(app);
 		ChatHistorySyncService::LocalHistoryDiscovery metadata;
 		for (const Candidate& candidate : m_candidates) metadata.chats.push_back(OwnershipMetadata(candidate.chat));
 		if (!ChatHistorySyncService().FilterStartupImportCandidates(app, metadata, error_out, true)) return false;
