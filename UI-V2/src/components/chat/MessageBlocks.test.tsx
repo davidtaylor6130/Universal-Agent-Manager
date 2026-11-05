@@ -1276,7 +1276,7 @@ it('retains passive collapsed recorded launches without borrowing an enclosing p
   } finally { act(() => root.unmount()); host.remove(); window.cefQuery = oldCef; useAppStore.setState(previous, true); vi.unstubAllGlobals() }
 })
 
-it('sweeps one accent band across the whole running row behind primary-colour text without moving its icon', () => {
+it('sweeps one accent band across the whole running row behind text in the primary text colour without moving its icon', () => {
   const css = readFileSync(resolve(process.cwd(), 'src/components/chat/conversation.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
   // Minimal rule reader: innermost `selectors { body }` pairs, and the bodies of named at-rule blocks.
   const rules = (text: string) => [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
@@ -1306,7 +1306,7 @@ it('sweeps one accent band across the whole running row behind primary-colour te
   expect(value(sweep.body, 'background')).toContain('var(--accent)')
   expect(value(sweep.body, 'z-index')).toBe('-1')
 
-  // Running text is the primary colour; no running label/preview rule uses the accent.
+  // Running text is the primary text colour; no running label/preview rule uses the accent.
   const colours = all.filter((rule) => rule.selectors.some((selector) => selector.startsWith('[data-processing-step="true"]') && /tool-title|thought-label/.test(selector)))
   expect(colours.map((rule) => rule.selectors.join()).join()).toMatch(/thought-label/)
   expect(colours.map((rule) => rule.selectors.join()).join()).toMatch(/tool-title/)
