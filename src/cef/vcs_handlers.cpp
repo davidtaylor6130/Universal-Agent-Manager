@@ -130,7 +130,6 @@ namespace
 		json["baseRef"] = status.base_ref;
 		json["warning"] = status.warning;
 		json["error"] = status.error;
-		json["baselineUnavailable"] = status.baseline_unavailable;
 		return json;
 	}
 
@@ -288,6 +287,7 @@ namespace
 		json["lineStatsReady"] = status.line_stats_ready;
 		json["warning"] = status.warning;
 		json["error"] = status.error;
+		json["baselineUnavailable"] = status.baseline_unavailable;
 		return json;
 	}
 
