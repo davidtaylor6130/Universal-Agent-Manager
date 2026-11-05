@@ -898,6 +898,9 @@ void MarkAcpProcessExited(AcpSessionState& session, ChatSession* chat,
 	                      bool preserve_active_turn)
 {
 	session.pending_compaction.reset();
+	// A delivered handoff whose identity never arrived stays unbound and is resent to the next session,
+	// unless the turn is preserved for a reconnect that can still report that identity.
+	if (!preserve_active_turn) session.provider_handoff_identity_pending = false;
 	if (has_exit_code)
 	{
 		session.has_last_exit_code = true;

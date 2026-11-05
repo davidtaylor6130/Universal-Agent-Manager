@@ -477,13 +477,15 @@ bool CopilotCliProviderRuntime::PrepareInteractiveSession(uam::AppState& app, Ch
 	const std::string previous_resolved_session_id = previous_resolved_session == app.resolved_native_sessions_by_chat_id.end() ? std::string() : previous_resolved_session->second;
 	const bool had_resolved_session = previous_resolved_session != app.resolved_native_sessions_by_chat_id.end();
 	app.resolved_native_sessions_by_chat_id.erase(chat.id);
-	chat.native_session_id = session_id;
+	const bool previous_reset_pending = chat.native_session_reset_pending;
+	chat.LinkNativeSessionId(session_id);
 	if (ProviderRuntime::SaveHistory(provider, app.data_root, chat))
 	{
 		return true;
 	}
 
 	chat.native_session_id = previous_session_id;
+	chat.native_session_reset_pending = previous_reset_pending;
 	if (had_resolved_session)
 	{
 		app.resolved_native_sessions_by_chat_id[chat.id] = previous_resolved_session_id;

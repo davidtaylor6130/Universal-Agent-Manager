@@ -792,6 +792,7 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 		{
 			const std::string previous_native_session_id = chat.native_session_id;
 			SetChatNativeSessionIdIfChanged(chat, session_id);
+			(void)BindPendingProviderHandoff(session, chat);
 			SyncResolvedNativeSessionIdForChat(app, chat, session_id, previous_native_session_id);
 		}
 	}
@@ -1040,11 +1041,10 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 			if (session.session_id != session_id) session.provider_usage.rate_limits = {};
 			session.session_id = session_id;
 			const std::string previous_native_session_id = chat.native_session_id;
-			if (!session.goal_internal_session && SetChatNativeSessionIdIfChanged(chat, session_id))
-			{
-				SyncResolvedNativeSessionIdForChat(app, chat, session_id, previous_native_session_id);
-				SaveChatQuietly(app, chat);
-			}
+			const bool identity_changed = !session.goal_internal_session && SetChatNativeSessionIdIfChanged(chat, session_id);
+			const bool handoff_bound = BindPendingProviderHandoff(session, chat);
+			if (identity_changed) SyncResolvedNativeSessionIdForChat(app, chat, session_id, previous_native_session_id);
+			if (identity_changed || handoff_bound) SaveChatQuietly(app, chat);
 		}
 
 		// A native reset must not expose the previous conversation's cumulative tokens.

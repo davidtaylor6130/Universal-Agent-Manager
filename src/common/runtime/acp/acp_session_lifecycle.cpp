@@ -11,6 +11,7 @@
 #include "common/config/settings_normalization.h"
 #include <atomic>
 #include <thread>
+#include <utility>
 #include "common/provider/provider_setup_input.h"
 #include "common/runtime/acp/claude_quota_continuation.h"
 #include "app/execution_routing_integration.h"
@@ -1583,6 +1584,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	AgentRunScheduler::InitialTurnSettled(session, "failed", session.last_error);
 	RevokeSavedImageRetry(session);
 	const bool preserve_native_recovery = (session.recovering_remote_process || session.recovering_remote_turn) && !session.remote_source_exit_reported;
+	if (!preserve_native_recovery) session.provider_handoff_identity_pending = false;
 	session.pending_local_launch.reset();
 	AbandonPendingLocalSteers(session);
 	RestorePendingPromptDelivery(session, chat);
@@ -3856,6 +3858,7 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 	{
 		local_delivery_save_needed = local_delivery_save_needed || chat.provider_handoff_session_id != session.session_id;
 		chat.provider_handoff_session_id = session.session_id;
+		session.provider_handoff_identity_pending = session.session_id.empty();
 		if (remote) ScheduleChatSave(app, chat, 0.0);
 	}
 	session.queued_prompt.clear();
@@ -4778,19 +4781,26 @@ void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_secon
 	app.pending_chat_save_at_by_chat_id[chat.id] = due_at;
 }
 
+bool BindPendingProviderHandoff(AcpSessionState& session, ChatSession& chat)
+{
+	if (!session.provider_handoff_identity_pending || session.goal_internal_session || session.session_id.empty()) return false;
+	session.provider_handoff_identity_pending = false;
+	if (chat.provider_handoff_context.empty() || !chat.provider_handoff_session_id.empty()) return false;
+	chat.provider_handoff_session_id = session.session_id;
+	return true;
+}
+
 bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id)
 {
 	const std::string normalized_session_id = uam::strings::Trim(std::string(session_id));
-	if (normalized_session_id.empty() || chat.native_session_id == normalized_session_id)
-	{
-		return false;
-	}
+	if (normalized_session_id.empty()) return false;
+	// A provider confirming the saved identity also completes a pending reset, so report it for saving.
+	if (chat.native_session_id == normalized_session_id) return std::exchange(chat.native_session_reset_pending, false);
 
 	if (!chat.claude_quota_continuation.id.empty() &&
 	    (chat.native_session_id != chat.claude_quota_continuation.native_session_id || normalized_session_id != chat.claude_quota_continuation.native_session_id))
 		chat.claude_quota_continuation.state = "cancelled";
-	chat.native_session_id = normalized_session_id;
-	chat.native_session_reset_pending = false;
+	chat.LinkNativeSessionId(normalized_session_id);
 	return true;
 }
 

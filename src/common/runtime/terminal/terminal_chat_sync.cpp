@@ -99,8 +99,8 @@ bool DiscoverCliTerminalNativeSession(AppState& app, CliTerminalState& terminal)
 	}
 	if (identity.empty()) return false;
 	terminal.attached_session_id = identity;
-	if (chat->native_session_id == identity) return false;
-	chat->native_session_id = identity;
+	if (chat->native_session_id == identity && !chat->native_session_reset_pending) return false;
+	chat->LinkNativeSessionId(identity);
 	if (provider.id == uam::provider_ids::kCodexCli && !chat->provider_handoff_context.empty())
 		chat->provider_handoff_session_id = identity;
 	chat->updated_at = uam::time::TimestampNow();

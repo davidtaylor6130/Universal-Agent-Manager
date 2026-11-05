@@ -885,6 +885,8 @@ namespace uam
 		std::string goal_turn_kind;
 		std::string goal_turn_model_id;
 		bool goal_internal_session = false;
+		// Provider-switch context was written before this stream reported its native identity.
+		bool provider_handoff_identity_pending = false;
 		bool goal_review_turn = false;
 		bool goal_review_scheduled = false;
 		std::string goal_review_goal_id;

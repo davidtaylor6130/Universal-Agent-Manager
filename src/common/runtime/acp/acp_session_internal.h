@@ -515,6 +515,8 @@ void NoteChatSaveScheduled(AppState& app, const ChatSession& chat);
 bool HasActiveChatSaveWorker(const AppState& app, std::string_view chat_id);
 void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5);
 bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id);
+/// <summary>Binds provider-switch context written before a stream-JSON route reported its native identity.</summary>
+bool BindPendingProviderHandoff(AcpSessionState& session, ChatSession& chat);
 void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, std::string_view session_id, std::string_view previous_session_id = {});
 void RestorePendingPromptDelivery(AcpSessionState& session, ChatSession& chat);
 void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state);

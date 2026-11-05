@@ -107,6 +107,8 @@ namespace uam
 	};
 
 	ChatProviderSwitchResult SwitchChatProvider(AppState& app, std::string_view chat_id, std::string_view provider_id);
+	/// <summary>True when a queue hold protects nothing, so a native session reset may release it. The chat's messages must be loaded.</summary>
+	bool QueueHoldHasNoInput(const AppState& app, const ChatSession& chat);
 	struct TemporarySideChatContext
 	{
 		ChatMessagePage page;

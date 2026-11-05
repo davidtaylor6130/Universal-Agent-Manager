@@ -1611,6 +1611,17 @@ bool uam::RebuildUnsortedWorkspaceFolders(AppState& app, WorkspaceFolderRecovery
 	return true;
 }
 
+bool uam::QueueHoldHasNoInput(const AppState& app, const ChatSession& chat)
+{
+	const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+	// A storage-problem hold may own journal input that never loaded, so its empty queue proves nothing.
+	// Delivery clears a row's not-sent marker first, so an uncertain remote turn can leave no row to see.
+	return !ChatHasUncertainRemoteInput(chat) && !chat.acp_queue_storage_error && !chat.managed_followup_input_unavailable && chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0 && chat.acp_unsent_prompt_recoveries.empty() &&
+	    (session == nullptr || session->queued_user_prompts.empty()) &&
+	    // A removed row keeps its not-sent marker for history but no longer holds input.
+	    std::ranges::none_of(chat.messages, [](const Message& row) { return row.acp_prompt_not_sent && !row.acp_prompt_discarded; });
+}
+
 uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string_view chat_id, std::string_view provider_id)
 {
 	const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, provider_id);
@@ -1633,7 +1644,7 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 	{
 		return ChatProviderSwitchResult::ActiveRuntime;
 	}
-	if (ChatHasBusyCliTerminal(app, chat->id))
+	if (ChatHasBusyCliTerminal(app, chat->id) || AcpEmptyHeldSendPending(app, chat->id))
 	{
 		return ChatProviderSwitchResult::ActiveRuntime;
 	}
@@ -1695,6 +1706,10 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 		}
 	}
 	chat->native_session_id.clear();
+	// Stops legacy-ID load normalization from resuming the previous provider's session as this one's.
+	chat->native_session_reset_pending = true;
+	// A hold with no input is released with the reset; held input stays held for Resume under the new provider.
+	if (QueueHoldHasNoInput(app, *chat)) chat->acp_queue_held = false;
 	chat->computer_use_enabled = false;
 	chat->computer_use_target_kind = "window";
 	chat->computer_use_target_id.clear();
@@ -2413,6 +2428,8 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 		return false;
 	}
 
+	std::vector<std::string> reset_chat_ids;
+	std::vector<std::string> released_hold_chat_ids;
 	if (directory_changed)
 	{
 		for (ChatSession& chat : app.chats)
@@ -2436,6 +2453,12 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 					chat.native_session_id.clear();
 					chat.native_session_reset_pending = true;
 					chat.provider_handoff_session_id.clear();
+					reset_chat_ids.push_back(chat.id);
+					if (QueueHoldHasNoInput(app, chat))
+					{
+						chat.acp_queue_held = false; // Saved with the reset.
+						released_hold_chat_ids.push_back(chat.id);
+					}
 				}
 				chat.workspace_directory = input.directory;
 			}
@@ -2476,6 +2499,12 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 			if (ChatBelongsToFolder(chat, target_folder_id) && chat.native_session_reset_pending)
 				app.resolved_native_sessions_by_chat_id.erase(chat.id);
 	}
+	// An idle terminal still belongs to the old directory's session; it must not relink it and complete the reset.
+	for (const std::string& chat_id : reset_chat_ids)
+		(void)uam::StopAndEraseCliTerminalForChat(app, chat_id, false);
+	// Only chats reset above were hydrated and checked; other folder chats keep their holds.
+	for (const std::string& chat_id : released_hold_chat_ids)
+		if (uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat_id)) session->queue_held = false;
 
 	app.status_line = "Folder settings saved.";
 	return true;

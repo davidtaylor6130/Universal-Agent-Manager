@@ -347,7 +347,7 @@ bool OpenCodeCliProviderRuntime::PrepareInteractiveSession(uam::AppState& app, C
 		return false;
 	}
 	// A failed save retains the exact ID for retry, but must never launch an untracked CLI.
-	chat.native_session_id = resume_id;
+	chat.LinkNativeSessionId(resume_id);
 	if (!SaveHistory(profile, app.data_root, chat))
 	{
 		if (error_out != nullptr) *error_out = "Could not save the OpenCode session. Retry when storage is available.";

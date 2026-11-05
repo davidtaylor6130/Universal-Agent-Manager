@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <string_view>
 #include <thread>
 #include <tuple>
@@ -654,6 +655,12 @@ struct ChatSession
 	bool managed_parent_input_receipts_present = false;
 	ClaudeQuotaContinuation claude_quota_continuation;
 	bool native_session_reset_pending = false;
+	/// Records this chat's provider session; a linked identity completes any pending native reset.
+	void LinkNativeSessionId(std::string session_id)
+	{
+		native_session_id = std::move(session_id);
+		native_session_reset_pending = false;
+	}
 	// New Claude chats may assign an owned CLI ID on first local or remote launch.
 	// Keep the persisted legacy field name; older unbound chats may already have history.
 	bool remote_claude_session_unstarted = false;

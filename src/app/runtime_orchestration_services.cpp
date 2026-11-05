@@ -6,6 +6,7 @@
 #include "common/provider/opencode_v2_session.h"
 
 #include "app/chat_domain_service.h"
+#include "app/chat_lifecycle_service.h"
 #include "app/managed_subagent_control_service.h"
 #include "app/native_session_link_service.h"
 #include "app/persistence_coordinator.h"
@@ -2122,7 +2123,8 @@ namespace
 
 	bool LocalDraftCanInferNativeSessionLink(const uam::AppState& app, const ChatSession& chat)
 	{
-		if (NativeSessionLinkService().HasRealNativeSessionId(chat) || !NativeSessionLinkService().IsLocalDraftChatId(chat.id))
+		// A pending reset wants a fresh session, so matching text must not relink the earlier one.
+		if (chat.native_session_reset_pending || NativeSessionLinkService().HasRealNativeSessionId(chat) || !NativeSessionLinkService().IsLocalDraftChatId(chat.id))
 		{
 			return false;
 		}
@@ -6399,12 +6401,12 @@ bool ChatHistorySyncService::PersistLocalDraftNativeSessionLink(const uam::AppSt
 		return false;
 	}
 
-	if (native_session_links.RealNativeSessionId(local_chat) == session_id)
+	if (native_session_links.RealNativeSessionId(local_chat) == session_id && !local_chat.native_session_reset_pending)
 	{
 		return true;
 	}
 
-	local_chat.native_session_id = session_id;
+	local_chat.LinkNativeSessionId(session_id);
 	return ChatRepository::SaveChat(app.data_root, local_chat);
 }
 
@@ -6456,6 +6458,7 @@ bool ChatHistorySyncService::MoveChatToFolder(uam::AppState& app, ChatSession& c
 		}
 		ChatSession moved_chat = chat;
 		if (!ChatRepository::HydrateChatMessages(app.data_root, moved_chat)) return false;
+		const bool release_hold = uam::QueueHoldHasNoInput(app, moved_chat);
 		std::string error;
 		if (!uam::chat::BuildConversationHandoff(moved_chat, moved_chat.provider_handoff_context, &error))
 		{
@@ -6467,9 +6470,11 @@ bool ChatHistorySyncService::MoveChatToFolder(uam::AppState& app, ChatSession& c
 		moved_chat.native_session_id.clear();
 		moved_chat.native_session_reset_pending = true;
 		moved_chat.provider_handoff_session_id.clear();
+		if (release_hold) moved_chat.acp_queue_held = false;
 		moved_chat.updated_at = uam::time::TimestampNow();
 		if (!ChatRepository::SaveChat(app.data_root, moved_chat)) return false;
 		chat = std::move(moved_chat);
+		if (uam::AcpSessionState* held_session = release_hold ? uam::FindAcpSessionForChat(app, chat.id) : nullptr) held_session->queue_held = false;
 		app.resolved_native_sessions_by_chat_id.erase(chat.id);
 		return true;
 	}
