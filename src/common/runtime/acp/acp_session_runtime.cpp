@@ -1029,9 +1029,12 @@ namespace uam
 			          (codex_turn_start_pending ? " turn start" : " turn") + " timed out after " +
 			          std::to_string(timeout_seconds) +
 			          " seconds without provider activity. The delivered prompt was not replayed.";
+			// A pending UAM request does not set the provider wait flags, so a loop stop can reach one.
+			const std::string loop_decline_reason = "The turn stopped after the same " + repeated + " repeated " + std::to_string(repeats) +
+			    " times before this request was answered.";
 			std::string cancel_error;
 			const bool cancel_sent = CancelAcpTurn(
-			    app, session.chat_id, &cancel_error, true, true, false, kAcpTimeoutDeclineReason);
+			    app, session.chat_id, &cancel_error, true, true, false, loop ? loop_decline_reason.c_str() : kAcpTimeoutDeclineReason);
 			session.inactivity_timeout_pending = cancel_sent && session.running;
 			session.last_error = message;
 			if (loop) MarkAcpLoopStop(session, repeated, static_cast<int>(repeats), example);

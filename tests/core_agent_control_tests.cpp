@@ -1707,12 +1707,13 @@ UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
 
 UAM_TEST(CodexTurnCancelDeclinesPendingUamQuestion)
 {
-	struct Case { const char* method; nlohmann::json arguments; const char* question_id; std::string answer; bool timeout; };
+	struct Case { const char* method; nlohmann::json arguments; const char* question_id; std::string answer; bool timeout; bool loop = false; };
 	const std::vector<Case> cases = {
 	    {"user_question", {{"question", "Which branch?"}, {"options", {"main", "dev"}}}, "userQuestion", "main", false},
 	    {"computer_use_request", {{"reason", "The task needs a visible browser."}}, "computerUse", "Allow", false},
 	    {"goal_create", {{"objective", "Finish the bounded task."}, {"idempotencyKey", "cancel-goal"}}, "goalCreate", "Allow", false},
 	    {"user_question", {{"question", "Which branch?"}}, "userQuestion", "main", true},
+	    {"user_question", {{"question", "Which branch?"}}, "userQuestion", "main", false, true},
 	};
 	for (const Case& test_case : cases)
 	{
@@ -1764,7 +1765,13 @@ UAM_TEST(CodexTurnCancelDeclinesPendingUamQuestion)
 		UAM_ASSERT_EQ(pending->questions.front().id, std::string(test_case.question_id));
 
 		// A stop abandons the provider's tool call; its request must not stay answerable afterwards.
-		if (test_case.timeout)
+		if (test_case.loop)
+		{
+			codex.turn_started_time_s = codex.last_runtime_activity_time_s = 1.0;
+			for (int i = 0; i < app.settings.stream_loop_repeat_limit; ++i) codex.stream_watch.ObserveTool("Read src/app.cpp", R"({"path":"src/app.cpp"})", "same contents", 0.1, 1.0 + i * 0.001);
+			UAM_ASSERT(uam::HandleAcpTurnInactivityTimeout(app, codex, app.chats.front(), 2.0));
+		}
+		else if (test_case.timeout)
 		{
 			app.settings.active_turn_inactivity_timeout_seconds = 1;
 			codex.turn_started_time_s = codex.last_runtime_activity_time_s = 1.0;
@@ -1780,7 +1787,7 @@ UAM_TEST(CodexTurnCancelDeclinesPendingUamQuestion)
 		UAM_ASSERT(uam::io::TryReadTextFile(codex_capability.directory / "responses" / "codex-request.json", response_text));
 		const nlohmann::json response = nlohmann::json::parse(response_text);
 		UAM_ASSERT(!response.value("ok", true));
-		UAM_ASSERT_EQ(response.value("error", ""), std::string(test_case.timeout ? uam::kAcpTimeoutDeclineReason : uam::kAcpUserStopDeclineReason));
+		UAM_ASSERT_EQ(response.value("error", ""), test_case.loop ? "The turn stopped after the same tool call repeated " + std::to_string(app.settings.stream_loop_repeat_limit) + " times before this request was answered." : std::string(test_case.timeout ? uam::kAcpTimeoutDeclineReason : uam::kAcpUserStopDeclineReason));
 		UAM_ASSERT(!uam::UamControlService::ResolveApproval(app, codex.chat_id, pending->request_id_json,
 		                                                    {{test_case.question_id, {test_case.answer}}}, &error));
 		UAM_ASSERT_EQ(app.chats.front().uam_control_audit.back().result, std::string("rejected"));
