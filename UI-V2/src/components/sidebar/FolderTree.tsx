@@ -1609,6 +1609,9 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
           {selectionTargets ? <>
             <SingleOnlyMenuItem noun="collection" icon={<Pencil size={14} aria-hidden />} label="Rename" />
             <FolderMenuItem icon={<Library size={14} aria-hidden />} label={`Change icon for ${selectionTargets.length} collections`} onClick={() => { setMenuOpen(false); iconPicker.open('collection', selectionTargets, `${selectionTargets.length} collections`) }} />
+            <SingleOnlyMenuItem noun="collection" icon={<Plus size={14} aria-hidden />} label="New collection inside" />
+            <SingleOnlyMenuItem noun="collection" icon={<Library size={14} aria-hidden />} label="Move to collection" />
+            <SingleOnlyMenuItem noun="collection" icon={<Library size={14} aria-hidden />} label="Move to top level" />
             <MenuDivider />
             <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label={`Delete ${selectionTargets.length} collections…`} danger onClick={() => { setMenuOpen(false); onDeleteSelected() }} />
           </> : <>

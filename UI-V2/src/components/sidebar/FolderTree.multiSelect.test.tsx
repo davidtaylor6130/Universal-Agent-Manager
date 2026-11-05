@@ -358,7 +358,12 @@ describe('collection multi-selection actions', () => {
     const rename = item('Rename')
     expect(rename.getAttribute('aria-disabled')).toBe('true')
     const rows = Array.from(document.body.querySelectorAll('[role="menu"] [role="menuitem"]'))
-    expect(rows.map((row) => row.classList.contains('uam-sb-menu-item') && !!row.querySelector('svg'))).toEqual([true, true, true])
+    expect(rows.map((row) => row.classList.contains('uam-sb-menu-item') && !!row.querySelector('svg'))).toEqual([true, true, true, true, true, true])
+    for (const label of ['New collection inside', 'Move to collection', 'Move to top level']) {
+      const single = item(label)
+      expect(single.getAttribute('aria-disabled')).toBe('true')
+      expect(document.getElementById(single.getAttribute('aria-describedby')!)?.textContent).toBe('Select one collection to use this')
+    }
     expect(item('Delete 2 collections').classList.contains('uam-sb-menu-item--danger')).toBe(true)
     expect(document.getElementById(rename.getAttribute('aria-describedby')!)?.textContent).toBe('Select one collection to use this')
     act(() => rename.click())
