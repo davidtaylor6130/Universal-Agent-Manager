@@ -110,6 +110,14 @@ it('starts nothing for a chat that is already loaded, already loading, selected,
   expect(reads()).toHaveLength(1)
 })
 
+it.each(['pendingDirectPrompts', 'unsentDirectPrompts'])('starts nothing for a stopped chat with a held direct prompt in %s', (field) => {
+  // Native reads settle these admissions, so a hover must not start one. queuedPrompts is empty and queueHeld false here.
+  render([chat('held')])
+  useAppStore.setState({ acpBindingBySessionId: { held: { queueHeld: false, queuedPrompts: [], [field]: [{ id: 'prompt-1', revision: 1, text: 'Held' }] } as never } })
+  pointer('held', 'pointerover'); wait(200)
+  expect(reads()).toHaveLength(0)
+})
+
 it('starts a read when keyboard focus rests on a row', () => {
   render([chat('focus-a')])
   act(() => row('focus-a').focus())

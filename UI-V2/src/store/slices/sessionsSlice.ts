@@ -794,11 +794,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const state = get()
       const session = state.sessions.find((candidate) => candidate.id === id)
       const binding = state.acpBindingBySessionId[id]
-      // Remote reads can start a provider history read, and a chat with queued or running input can have its
+      // Remote reads can start a provider history read, and a chat with queued, held or running input can have its
       // admissions settled by the read, so only idle local chats are warmed.
       if (!session || isCompanionContext() || (session.executionHostId || 'local') !== 'local' || id === state.activeSessionId ||
           state.messages[id] !== undefined || state.chatHistoryReadBySessionId[id] || state.chatHistoryErrorBySessionId[id] ||
-          binding?.processing || binding?.queueHeld || binding?.queuedPrompts?.length || state.cliBindingBySessionId[id]?.processing ||
+          binding?.processing || binding?.queueHeld || binding?.queuedPrompts?.length || binding?.pendingDirectPrompts?.length ||
+          binding?.unsentDirectPrompts?.length || state.cliBindingBySessionId[id]?.processing ||
           pendingRequestIdsByKey.has(`getChatMessages:${id}`) || prefetchInFlight.size >= PREFETCH_MAX_IN_FLIGHT) return
       const promise = requestChatMessagesFromCef(id, false, false, 0, true)
       const requestId = pendingRequestIdsByKey.get(`getChatMessages:${id}`)
