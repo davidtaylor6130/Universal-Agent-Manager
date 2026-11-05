@@ -453,11 +453,13 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 	const double window_seconds = std::chrono::duration<double>(kTicks * kTick).count();
 	double per_second = 0.0;
 	std::vector<double> calls;
+	std::vector<double> rebuilds;
 	int pushes = 0;
 	for (int run = 0; run < 3; ++run)
 	{
 		uam::PushStateUpdate(nullptr, app);
 		std::vector<double> run_calls;
+		std::vector<double> run_rebuilds;
 		int run_pushes = 0;
 		for (int tick = 0; tick < kTicks; ++tick)
 		{
@@ -466,23 +468,28 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 			if (streamed || uam::DeferredStatePushDue())
 			{
 				const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
-				run_pushes += uam::PushStateUpdateIfChanged(nullptr, app) ? 1 : 0;
-				run_calls.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+				const std::size_t rebuilds_before = uam::RuntimeStateRebuildCountForTests();
+				run_pushes += uam::PushRuntimeStateUpdateIfChanged(nullptr, app) ? 1 : 0;
+				const double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+				run_calls.push_back(elapsed);
+				if (uam::RuntimeStateRebuildCountForTests() != rebuilds_before) run_rebuilds.push_back(elapsed);
 			}
 			clock.Advance(kTick);
 		}
 
 		// The three streaming chats share one 100 ms window: pushes land on ticks 0, 7, 14 ... 56 (every 112 ms),
-		// so 9 pushes; rebuilds are the 31 streamed ticks plus the quiet ticks 7, 21, 35 and 49 that are due.
+		// so 9 pushes; calls are the 31 streamed ticks plus the quiet ticks 7, 21, 35 and 49 that are due.
+		// Only the 9 due calls rebuild the fingerprint; before the runtime rebuild window all 35 rebuilt.
 		// Without the background-chat throttle pushes rise to ~31; rebuilding every deferred quiet tick gives ~58.
 		UAM_ASSERT_EQ(run_pushes, 9);
 		UAM_ASSERT_EQ(run_calls.size(), std::size_t{35});
+		UAM_ASSERT_EQ(run_rebuilds.size(), std::size_t{9});
 
 		// Final streamed state must reach the frontend: flush deferred work, then nothing may remain unsent.
 		for (int tick = 0; tick < 20 && uam::HasDeferredStatePush(); ++tick)
 		{
 			clock.Advance(kTick);
-			if (uam::DeferredStatePushDue()) uam::PushStateUpdateIfChanged(nullptr, app);
+			if (uam::DeferredStatePushDue()) uam::PushRuntimeStateUpdateIfChanged(nullptr, app);
 		}
 		UAM_ASSERT(!uam::HasDeferredStatePush());
 		clock.Advance(std::chrono::milliseconds(120));
@@ -493,15 +500,126 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 		{
 			per_second = run_per_second;
 			calls = std::move(run_calls);
+			rebuilds = std::move(run_rebuilds);
 			pushes = run_pushes;
 		}
 	}
 
-	std::cout << "[TIMING] streaming push fixture: fingerprint p50=" << Median(fingerprints) << " ms; ticks=62 rebuilds="
-	          << calls.size() << " pushes=" << pushes << " per-rebuild p50=" << Median(calls) << " ms; UI-thread push cost="
+	std::cout << "[TIMING] streaming push fixture: fingerprint p50=" << Median(fingerprints) << " ms; ticks=62 calls="
+	          << calls.size() << " rebuilds=" << rebuilds.size() << " pushes=" << pushes << " per-rebuild p50=" << Median(rebuilds)
+	          << " ms; UI-thread push cost="
 	          << per_second << " ms/s, cheapest of 3 windows\n";
 }
 
+
+UAM_TEST(RuntimeStatePushBypassesRebuildWindowForPendingRequestsAndCliLaunches)
+{
+	FakeStatePushClock clock;
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "urgent-poll";
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	uam::AcpSessionState* acp = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	uam::PushStateUpdate(nullptr, app);
+
+	// Open a rebuild window with an ordinary change, then make a non-urgent change inside it: deferred.
+	app.chats.front().title = "first";
+	UAM_ASSERT(uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+	clock.Advance(std::chrono::milliseconds(16));
+	app.chats.front().title = "second";
+	UAM_ASSERT(!uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT(uam::HasDeferredStatePush());
+
+	// A new pending permission inside the same window is pushed on this tick.
+	clock.Advance(std::chrono::milliseconds(16));
+	acp->pending_permission.request_id_json = "41";
+	UAM_ASSERT(uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+
+	// A new CLI launch inside the next window is pushed on this tick too.
+	clock.Advance(std::chrono::milliseconds(16));
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->terminal_id = "term-urgent";
+	terminal->frontend_chat_id = chat.id;
+	terminal->running = true;
+	terminal->startup_time_s = 1.0;
+	app.cli_terminals.push_back(std::move(terminal));
+	UAM_ASSERT(uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+
+	// Caller-flagged urgent slices (settings, catalogs, folders) also rebuild inside the window.
+	clock.Advance(std::chrono::milliseconds(16));
+	const std::size_t rebuilds = uam::RuntimeStateRebuildCountForTests();
+	uam::PushRuntimeStateUpdateIfChanged(nullptr, app, true);
+	UAM_ASSERT_EQ(uam::RuntimeStateRebuildCountForTests(), rebuilds + 1);
+}
+
+namespace
+{
+	/// <summary>Follows PollTick's delay from an idle 1000 ms tick: sleeps the capped delay, then ticks. Returns the wake-ups used.</summary>
+	int WakeUpsUntilDeferredPushPublishes(FakeStatePushClock& clock, uam::AppState& app)
+	{
+		int wake_ups = 0;
+		bool published = false;
+		while (!published && wake_ups < 20)
+		{
+			clock.Advance(std::chrono::milliseconds(uam::CapPollDelayForDeferredStatePush(1000)));
+			++wake_ups;
+			if (uam::DeferredStatePushDue()) published = uam::PushRuntimeStateUpdateIfChanged(nullptr, app);
+		}
+		return wake_ups;
+	}
+}
+
+UAM_TEST(DeferredStatePushThatComesDueInsideARebuildWindowDoesNotBusyPoll)
+{
+	FakeStatePushClock clock;
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "deferred-in-window";
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+	uam::PushStateUpdate(nullptr, app);
+
+	// t=0 publishes the summary, so its next publish is due at t=100.
+	app.chats.front().title = "first";
+	UAM_ASSERT(uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+	// t=30: an urgent rebuild restarts the rebuild window (until t=130) and defers the summary to t=100.
+	clock.Advance(std::chrono::milliseconds(30));
+	app.chats.front().title = "second";
+	UAM_ASSERT(!uam::PushRuntimeStateUpdateIfChanged(nullptr, app, true));
+	UAM_ASSERT_EQ(uam::MillisecondsUntilDeferredStatePushDue(), 70);
+	// t=100: the tick cannot rebuild yet; the scheduler must sleep to the window's end instead of polling every 1 ms.
+	clock.Advance(std::chrono::milliseconds(70));
+	UAM_ASSERT(uam::DeferredStatePushDue());
+	UAM_ASSERT(!uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT(!uam::DeferredStatePushDue());
+	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(1000), 30);
+	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(16), 16);
+	UAM_ASSERT_EQ(WakeUpsUntilDeferredPushPublishes(clock, app), 1);
+	UAM_ASSERT(!uam::HasDeferredStatePush());
+	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(1000), 1000);
+	// PollTick needs CEF to run, so this checks that it schedules through the capped delay.
+	const std::string application = ReadFile(fs::path(__FILE__).parent_path().parent_path() / "src/app/application.cpp");
+	UAM_ASSERT(application.find("ScheduleNextUpdate(uam::CapPollDelayForDeferredStatePush(next_poll_delay_ms));") != std::string::npos);
+
+	// A bridge push's per-chat window can end inside a later rebuild window: bridge at t=0, rebuild at t=62, due at t=100,
+	// rebuild window until t=162, so the summary publishes 162 ms after the previous publish.
+	clock.Advance(std::chrono::milliseconds(200));
+	app.chats.front().title = "bridge";
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	clock.Advance(std::chrono::milliseconds(62));
+	app.chats.front().title = "streamed";
+	UAM_ASSERT(!uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::MillisecondsUntilDeferredStatePushDue(), 38);
+	clock.Advance(std::chrono::milliseconds(38));
+	UAM_ASSERT(!uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::MillisecondsUntilDeferredStatePushDue(), 62);
+	UAM_ASSERT_EQ(WakeUpsUntilDeferredPushPublishes(clock, app), 1);
+}
 
 UAM_TEST(StatePushThrottlesBackgroundSummariesAndFlushesOnlyWhenDue)
 {

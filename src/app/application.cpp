@@ -578,7 +578,10 @@ void Application::PollTick()
 	// Push only when the serialized app state actually changed.
 	if (m_browser && ui_relevant_state_changed)
 	{
-		uam::PushStateUpdateIfChanged(m_browser, m_app);
+		// Settings-level slices are rare and not throttled per chat, so they skip the rebuild window.
+		const bool urgent = provider_compatibility_changed || model_catalog_changed || folder_availability_changed ||
+		    remote_host_health_changed || model_discovery_retry_changed || startup_model_discovery_changed;
+		uam::PushRuntimeStateUpdateIfChanged(m_browser, m_app, urgent);
 	}
 
 	const std::chrono::steady_clock::time_point push_finished = std::chrono::steady_clock::now();
@@ -616,8 +619,7 @@ void Application::PollTick()
 
 	int next_poll_delay_ms = m_app.startup_native_import_service != nullptr && m_app.startup_native_import_service->ImportPending() ? 16 : GetNextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning(), TerminalUiVisible(m_browser));
 	// A throttled summary must flush when its 100 ms window ends, not on the next idle 250/1000 ms tick.
-	if (uam::HasDeferredStatePush()) next_poll_delay_ms = std::min(next_poll_delay_ms, uam::MillisecondsUntilDeferredStatePushDue());
-	ScheduleNextUpdate(next_poll_delay_ms);
+	ScheduleNextUpdate(uam::CapPollDelayForDeferredStatePush(next_poll_delay_ms));
 }
 
 void Application::ScheduleNextUpdate(int delay_ms)

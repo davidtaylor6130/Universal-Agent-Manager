@@ -16,6 +16,13 @@ namespace uam
 	/// browser's main frame.  Safe to call from any thread — marshals to the UI thread internally.
 	/// </summary>
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app);
+	/// <summary>
+	/// Poll-tick variant: rebuilds the fingerprint at most once per 100 ms summary window and defers
+	/// changes inside it. A new pending permission/user-input request or CLI launch identity, or
+	/// urgent=true, rebuilds immediately. Request handlers keep calling PushStateUpdateIfChanged.
+	/// </summary>
+	bool PushRuntimeStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app, bool urgent = false);
+	std::size_t RuntimeStateRebuildCountForTests();
 	void PushStateUpdate(CefRefPtr<CefBrowser> browser, AppState& app);
 
 	/// <summary>
@@ -33,6 +40,8 @@ namespace uam
 	/// scheduler caps its next delay with this so slow idle ticks never hold it back.
 	/// </summary>
 	int MillisecondsUntilDeferredStatePushDue();
+	/// <summary>The poll delay to schedule: delay_ms, shortened to the pending deferred summary's due time if there is one.</summary>
+	int CapPollDelayForDeferredStatePush(int delay_ms);
 	/// <summary>Replaces the summary-throttle clock; nullptr restores steady_clock::now.</summary>
 	void SetStatePushClockForTests(std::chrono::steady_clock::time_point (*clock)());
 	inline std::string StateFingerprintForTests(const AppState& app)
