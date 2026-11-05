@@ -8414,6 +8414,7 @@ describe('ChatView', () => {
     ] })
     expect(text.match(/Settled answer\./g)).toHaveLength(1)
     expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
+    expect(text).toContain('Finished summary.')
   })
 
   it.each([
