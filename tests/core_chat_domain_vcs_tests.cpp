@@ -1,4 +1,5 @@
 #include "common/companion/protocol.h"
+#include <sstream>
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -2579,8 +2580,12 @@ UAM_TEST(VcsChatBaselineReportsARemovedRefAsUnavailableBeforeAndAfterGc)
 	const uam::VcsCommitStatus intact = service.Status(app, chat, uam::VcsType::Git, true, "chat");
 	UAM_ASSERT(intact.error.empty() && !intact.baseline_unavailable && intact.changed_files.size() == 1);
 
-	// The removal command the Changes documentation gives users, before and after the objects are pruned.
-	UAM_ASSERT(RunTestCommand("cd " + ShellQuoteForTest(repo.string()) + " && git for-each-ref --format='%(refname)' refs/uam/chat-baselines/ | xargs -n1 git update-ref -d"));
+	// What the removal command in the Changes documentation does, before and after the objects are pruned.
+	const ProcessExecutionResult refs = PlatformServicesFactory::Instance().process_service.ExecuteCommand("git -C " + ShellQuoteForTest(repo.string()) + " for-each-ref " + ShellQuoteForTest("--format=%(refname)") + " refs/uam/chat-baselines/", 120000);
+	UAM_ASSERT(refs.ok && refs.exit_code == 0 && !uam::strings::IsBlank(refs.output));
+	std::istringstream ref_lines(refs.output);
+	for (std::string ref; std::getline(ref_lines, ref);)
+		if (!uam::strings::IsBlank(ref)) UAM_ASSERT(RunGitForTest(repo, "update-ref -d " + ShellQuoteForTest(uam::strings::Trim(ref))));
 	for (const bool pruned : {false, true})
 	{
 		if (pruned) UAM_ASSERT(RunGitForTest(repo, "-c gc.reflogExpire=now -c gc.pruneExpire=now gc --prune=now"));
