@@ -2,10 +2,10 @@ import { useEffect } from 'react'
 import { X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton, Overlay, Reveal, Swap, Switch, useOverlayState } from '../ui'
+import { Button, IconButton, Overlay, Swap, Switch, useOverlayState } from '../ui'
 import { reportAppFailure } from '../../utils/appFailure'
 import { providerMetadataForId } from '../../utils/providerMetadata'
-import { SettingRow, SettingsLoading } from './SettingsPrimitives'
+import { SettingRow, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import './provider-settings.css'
 
 export function MemoryScanModal() {
@@ -66,50 +66,48 @@ export function MemoryScanModal() {
         </div>
 
         <div className="uam-scan-body">
-          <div className="uam-scan-toolbar">
-            <div className="text-sm" style={{ color: 'var(--text-2)' }}>
-              {memoryScanCandidates.length} eligible chat{memoryScanCandidates.length === 1 ? '' : 's'}
-              <Reveal as="span" open={memoryScanCandidates.length > 0}><span style={{ color: 'var(--text-3)' }}> · {selectedMemoryScanChatIds.length} selected</span></Reveal>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button variant="ghost" size="sm" onClick={selectAllMemoryScanChats} disabled={memoryScanLoading || memoryScanRunning || memoryScanCandidates.length === 0}>
-                Select all
-              </Button>
-              <Button variant="ghost" size="sm" onClick={selectNoMemoryScanChats} disabled={memoryScanLoading || memoryScanRunning || memoryScanCandidates.length === 0}>
-                Select none
-              </Button>
-            </div>
-          </div>
-
           <Swap swapKey={memoryScanLoading ? 'loading' : memoryScanCandidates.length === 0 ? 'empty' : 'list'}>
           {memoryScanLoading ? (
             <SettingsLoading label="Loading eligible chats" rows={3} />
-          ) : memoryScanCandidates.length === 0 ? (
-            <p className="text-sm" style={{ color: 'var(--text-3)' }}>No eligible chats are available to scan right now.</p>
           ) : (
-            <div className="uam-set-card">
-              {memoryScanCandidates.map((candidate) => {
-                const selected = selectedMemoryScanChatIds.includes(candidate.chatId)
-                const providerName = providerMetadataForId(candidate.providerId).name
-                return (
-                  <SettingRow
-                    key={candidate.chatId}
-                    title={<span
-                      className="uam-scan-title-row"
-                      title={`${providerName} · ${candidate.memoryLastProcessedAt ? `Last scanned ${candidate.memoryLastProcessedAt}` : 'Not scanned yet'}`}
-                    >
-                      {candidate.title}
-                      {candidate.alreadyFullyProcessed && <span className="uam-scan-chip">Previously processed</span>}
-                    </span>}
-                    control={<>
-                      <span className="text-xs" style={{ color: 'var(--text-3)' }}>{`${candidate.folderTitle || 'Unsorted'} · ${candidate.messageCount} message${candidate.messageCount === 1 ? '' : 's'}`}</span>
-                      <Switch hideLabel label={`Include ${candidate.title}`} checked={selected} disabled={memoryScanRunning} onChange={() => toggleMemoryScanChat(candidate.chatId)} />
-                    </>}
-                  />
-                )
-              })}
-              <SettingRow title={<span className="text-xs" style={{ color: 'var(--text-3)' }}>Only the chats you select are read.</span>} />
-            </div>
+            <SettingsSection
+              title="Chats"
+              description={`${memoryScanCandidates.length} eligible${memoryScanCandidates.length > 0 ? ` · ${selectedMemoryScanChatIds.length} selected` : ''}`}
+              actions={<>
+                <Button variant="ghost" size="sm" onClick={selectAllMemoryScanChats} disabled={memoryScanLoading || memoryScanRunning || memoryScanCandidates.length === 0}>
+                  Select all
+                </Button>
+                <Button variant="ghost" size="sm" onClick={selectNoMemoryScanChats} disabled={memoryScanLoading || memoryScanRunning || memoryScanCandidates.length === 0}>
+                  Select none
+                </Button>
+              </>}
+            >
+              {memoryScanCandidates.length === 0 ? (
+                <p className="text-sm" style={{ color: 'var(--text-3)' }}>No eligible chats are available to scan right now.</p>
+              ) : <>
+                {memoryScanCandidates.map((candidate) => {
+                  const selected = selectedMemoryScanChatIds.includes(candidate.chatId)
+                  const providerName = providerMetadataForId(candidate.providerId).name
+                  return (
+                    <SettingRow
+                      key={candidate.chatId}
+                      title={<span
+                        className="uam-scan-title-row"
+                        title={`${providerName} · ${candidate.memoryLastProcessedAt ? `Last scanned ${candidate.memoryLastProcessedAt}` : 'Not scanned yet'}`}
+                      >
+                        {candidate.title}
+                        {candidate.alreadyFullyProcessed && <span className="uam-scan-chip">Previously processed</span>}
+                      </span>}
+                      control={<>
+                        <span className="text-xs" style={{ color: 'var(--text-3)' }}>{`${candidate.folderTitle || 'Unsorted'} · ${candidate.messageCount} message${candidate.messageCount === 1 ? '' : 's'}`}</span>
+                        <Switch hideLabel label={`Include ${candidate.title}`} checked={selected} disabled={memoryScanRunning} onChange={() => toggleMemoryScanChat(candidate.chatId)} />
+                      </>}
+                    />
+                  )
+                })}
+                <SettingRow title={<span className="text-xs" style={{ color: 'var(--text-3)' }}>Only the chats you select are read.</span>} />
+              </>}
+            </SettingsSection>
           )}
           </Swap>
         </div>

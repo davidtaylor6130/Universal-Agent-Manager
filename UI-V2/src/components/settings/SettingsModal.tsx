@@ -284,7 +284,7 @@ const HOST_INSTRUCTION_TEXT_MAX_BYTES = 256 * 1024
 
 type RemoteHostOptionsDraft = { instructionFile: string; instructionText?: string | null; startupEnabled: boolean; cliUpdatesAsAdmin: boolean }
 
-function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: ExecutionHost; busy: boolean; onSave: (draft: RemoteHostOptionsDraft) => void; onCheck: (instructionFile: string) => void }) {
+function RemoteHostOptionsForm({ host, busy, onDirtyChange, onSave, onCheck }: { host: ExecutionHost; busy: boolean; onDirtyChange: (dirty: boolean) => void; onSave: (draft: RemoteHostOptionsDraft) => void; onCheck: (instructionFile: string) => void }) {
   const [instructionFile, setInstructionFile] = useState(host.instructionFile || '')
   // null = no inline text (the legacy instruction file applies); a string is inline text, where '' suppresses the host fragment.
   const [inlineText, setInlineText] = useState<string | null>(host.instructionText ?? null)
@@ -300,6 +300,10 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
     || textDirty
     || startupEnabled !== Boolean(host.startupEnabled)
     || cliUpdatesAsAdmin !== Boolean(host.cliUpdatesAsAdmin)
+  useEffect(() => {
+    onDirtyChange(dirty)
+    return () => onDirtyChange(false)
+  }, [dirty, onDirtyChange])
   const saveReason = textError || instructionError ? 'Fix the errors above first.' : dirty ? undefined : 'No changes to save.'
   // Switch = saved preference; status = applied state on the host. Without runnerStartupApplied, keep the legacy line.
   const applied = host.runnerStartupApplied
@@ -321,7 +325,7 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
       ? 'Empty. No host instructions are sent, and the instruction file is skipped.'
       : 'Sent to this host. The instruction file below is skipped.'
   return (
-    <form className="mt-2 grid gap-2" onSubmit={(event) => {
+    <form className="grid" onSubmit={(event) => {
       event.preventDefault()
       if (!busy && dirty && !instructionError && !textError) onSave({ instructionFile, instructionText: textDirty ? inlineText : undefined, startupEnabled, cliUpdatesAsAdmin })
     }}>
@@ -346,7 +350,7 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
         <input id={`remote-host-instruction-${host.id}`} name="instructionFile" aria-label={`Instruction file on ${host.label}`} aria-invalid={Boolean(instructionError) || undefined} value={instructionFile} onChange={(event) => setInstructionFile(event.currentTarget.value)} disabled={busy} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="uam-field w-full font-mono" />
         <Reveal open={Boolean(instructionError)}><span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{instructionError}</span></Reveal>
       </SettingsField>
-      <div className="flex items-center justify-end gap-2">
+      <div className="uam-set-actions pt-3">
         <Reveal as="span" open={Boolean(textError || instructionError)} className="mr-auto"><span id={`remote-host-save-reason-${host.id}`} className="text-xs" style={{ color: 'var(--text-3)' }}>{saveReason}</span></Reveal>
         <Button size="sm" variant="secondary" type="button" disabled={busy || !instructionFile.trim() || Boolean(instructionError)} onClick={() => onCheck(instructionFile)}>Check file</Button>
         <Button size="sm" variant="primary" type="submit" disabled={busy || !dirty || Boolean(instructionError) || Boolean(textError)} aria-describedby={textError || instructionError ? `remote-host-save-reason-${host.id}` : undefined}>Save host options</Button>
@@ -911,6 +915,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [themeExit, setThemeExit] = useState<(() => void) | null>(null)
   const [discardExit, setDiscardExit] = useState<(() => void) | null>(null)
   const [pendingHostRemoval, setPendingHostRemoval] = useState<ExecutionHost | null>(null)
+  const [openRemoteHostId, setOpenRemoteHostId] = useState<string | null>(null)
+  const [remoteHostOptionsDirty, setRemoteHostOptionsDirty] = useState(false)
+  const remoteHostBackRef = useRef<HTMLButtonElement>(null)
+  const lastOpenRemoteHostId = useRef<string | null>(null)
   const [themeDraft, setThemeDraft] = useState<CustomTheme | null>(null)
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'theme' | 'editor'; id: string; name: string } | null>(null)
   const memoryMenuRef = useRef<HTMLDivElement>(null)
@@ -943,7 +951,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     else if (selectedSection === 'memory-store' && memoryRef.current) memoryRef.current.requestLeave(next)
     else if (selectedSection === 'shell-actions' && shellRef.current) shellRef.current.requestLeave(next)
     else if ((selectedSection === 'central-configuration' || selectedSection === 'agents') && centralRef.current) centralRef.current.requestLeave(next)
-    else if ((selectedSection === 'mcp-servers' && mcpDraftDirty) || (selectedSection === 'chat-data' && importFiltersDirty)) { setDiscardExit(() => next); setConfirmDiscard(true) }
+    else if ((selectedSection === 'mcp-servers' && mcpDraftDirty) || (selectedSection === 'chat-data' && importFiltersDirty) || (SSH_ENABLED && selectedSection === 'remote-hosts' && remoteHostOptionsDirty)) { setDiscardExit(() => next); setConfirmDiscard(true) }
     else next()
   }
   const editorDirty = editorAssociationsDraft.some(item => {
@@ -952,11 +960,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       || (rawExtensions[item.id] !== undefined && JSON.stringify(parseExtensions(rawExtensions[item.id])) !== JSON.stringify(saved?.extensions))
   })
   useEffect(() => {
-    if (!themeDirty && !mcpDraftDirty && !editorDirty && !importFiltersDirty) return
+    if (!themeDirty && !mcpDraftDirty && !editorDirty && !importFiltersDirty && !remoteHostOptionsDirty) return
     const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
     window.addEventListener('beforeunload', guard)
     return () => window.removeEventListener('beforeunload', guard)
-  }, [themeDirty, mcpDraftDirty, editorDirty, importFiltersDirty])
+  }, [themeDirty, mcpDraftDirty, editorDirty, importFiltersDirty, remoteHostOptionsDirty])
   const requestClose = () => {
     if (mcpSaving || editorSavePending.current || remoteBusy) return
     requestThemeExit(() => requestSectionExit(() => {
@@ -973,6 +981,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     requestThemeExit(() => requestSectionExit(() => {
       setThemeDraft(null)
       setSelectedSection(section)
+      setOpenRemoteHostId(null)
+      lastOpenRemoteHostId.current = null
       setOpenMemoryMenu(null)
       setOpenCliVersionMenu(null)
     }))
@@ -1777,6 +1787,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const setSettingsScopeHostId = useAppStore((s) => s.setSettingsScopeHostId)
   const hostScopedSettings = useAppStore((s) => s.hostScopedSettings === true)
   const hasSshHosts = SSH_ENABLED && executionHosts.some((host) => isSshHost(host))
+  // A host removed while its page is open falls back to the list.
+  const openRemoteHost = openRemoteHostId ? executionHosts.find((host) => host.id === openRemoteHostId && host.id !== 'local') ?? null : null
+  // Opening a host moves focus to Back; Back returns focus to that host's Open button, or to Add a host once it was removed.
+  useEffect(() => {
+    if (openRemoteHost) remoteHostBackRef.current?.focus()
+    else if (lastOpenRemoteHostId.current) {
+      const open = [...(dialogRef.current?.querySelectorAll<HTMLElement>('.uam-settings-page:not(.uam-settings-page--leaving) [data-host-open]') ?? [])].find((button) => button.dataset.hostOpen === lastOpenRemoteHostId.current)
+      ;(open ?? (SSH_ENABLED ? dialogRef.current?.querySelector<HTMLElement>('.uam-settings-page:not(.uam-settings-page--leaving) #remote-host-name') : null))?.focus()
+    }
+    lastOpenRemoteHostId.current = openRemoteHost?.id ?? null
+  }, [openRemoteHost?.id])
   const storedScopeHostId = executionHosts.some((host) => isSshHost(host) && host.id === settingsScopeHostId) ? settingsScopeHostId : SETTINGS_ALL_ENVIRONMENTS
   const onProviderPage = selectedSection === 'provider-summary' || selectedSection.startsWith('provider:')
   const scopeBarVisible = hasSshHosts && (onProviderPage || selectedSection === 'defaults' || selectedSection === 'mcp-servers')
@@ -2512,6 +2533,43 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (SSH_ENABLED && selectedSection === 'remote-hosts') {
       const remoteHosts = executionHosts.filter((host) => host.id !== 'local')
+      const remoteHostStatus = (host: ExecutionHost) => (
+        <span className="inline-flex flex-wrap items-center gap-1.5">
+          <StatusMark tone={host.runnerStatus === 'ready' ? 'success' : host.runnerStatus === 'error' ? 'error' : 'neutral'} label={host.runnerStatus === 'ready' ? 'Ready' : host.runnerStatus === 'error' ? 'Error' : host.runnerStatus} />
+          <Reveal as="span" open={Boolean(host.runnerVersion || host.platform)}><span style={{ color: 'var(--text-3)' }}>· {[host.runnerVersion ? `helper ${host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span></Reveal>
+        </span>
+      )
+      const remoteHostActions = (host: ExecutionHost) => <>
+        <IconButton icon={<RefreshCw size={14} />} label={`Reinstall helper on ${host.label}`} disabled={isRemoteHostBusy(host.id)} onClick={() => void previewRemoteHost(host)} />
+        <IconButton icon={<Trash2 size={14} />} label={`Remove ${host.label}`} variant="danger" disabled={isRemoteHostBusy(host.id)} onClick={() => setPendingHostRemoval(host)} />
+      </>
+      // Per-host sub-page, like provider pages: the list stays scannable and each host's options get a full page.
+      if (openRemoteHost) return (
+        <div className="grid gap-0">
+          <Button ref={remoteHostBackRef} size="sm" variant="ghost" className="justify-self-start mb-5" style={{ paddingInline: 'var(--sp-2)' }} leadingIcon={<ArrowLeft size={15} aria-hidden />} disabled={isRemoteHostBusy(openRemoteHost.id)} onClick={() => requestSectionExit(() => setOpenRemoteHostId(null))}>Back to hosts</Button>
+          <SettingsSection title={openRemoteHost.label}>
+            <SettingRow
+              title="SSH config alias"
+              description={<span className="font-mono">{openRemoteHost.sshAlias}</span>}
+              status={remoteHostStatus(openRemoteHost)}
+              control={<div className="flex items-center gap-1">{remoteHostActions(openRemoteHost)}</div>}
+            />
+            <ProgressFill label={`Remote host task running on ${openRemoteHost.label}`} indeterminate active={isRemoteHostBusy(openRemoteHost.id)}>
+              <SettingRow title="Helper location" description={<span className="font-mono">home / {openRemoteHost.runnerDirectory || (openRemoteHost.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</span>} />
+            </ProgressFill>
+          </SettingsSection>
+          <SettingsSection title="Host options">
+            <RemoteHostOptionsForm
+              key={openRemoteHost.id}
+              host={openRemoteHost}
+              busy={isRemoteHostBusy(openRemoteHost.id)}
+              onDirtyChange={setRemoteHostOptionsDirty}
+              onSave={(draft) => void saveRemoteHostOptions(openRemoteHost, draft)}
+              onCheck={(instructionFile) => checkRemoteHostInstruction(openRemoteHost, instructionFile)}
+            />
+          </SettingsSection>
+        </div>
+      )
       const addHostSection = (
             <SettingsSection
               title="Add a host"
@@ -2556,40 +2614,21 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           <SettingsSection title="Configured hosts">
             <Reveal open={remoteHosts.length === 0}><SettingRow title="No remote hosts yet" /></Reveal>
             <AnimatedRows items={remoteHosts} keyOf={(host) => host.id} render={(host) => (
-              <SettingRow
-                icon={<Server size={15} aria-hidden />}
-                title={host.label}
-                description={<span className="font-mono">{host.sshAlias}</span>}
-                status={(
-                  <span className="inline-flex flex-wrap items-center gap-1.5">
-                    <StatusMark tone={host.runnerStatus === 'ready' ? 'success' : host.runnerStatus === 'error' ? 'error' : 'neutral'} label={host.runnerStatus === 'ready' ? 'Ready' : host.runnerStatus === 'error' ? 'Error' : host.runnerStatus} />
-                    <Reveal as="span" open={Boolean(host.runnerVersion || host.platform)}><span style={{ color: 'var(--text-3)' }}>· {[host.runnerVersion ? `helper ${host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span></Reveal>
-                  </span>
-                )}
-                control={(
-                  <div className="flex items-center gap-1">
-                    <IconButton icon={<RefreshCw size={14} />} label={`Reinstall helper on ${host.label}`} disabled={isRemoteHostBusy(host.id)} onClick={() => void previewRemoteHost(host)} />
-                    <IconButton icon={<Trash2 size={14} />} label={`Remove ${host.label}`} variant="danger" disabled={isRemoteHostBusy(host.id)} onClick={() => setPendingHostRemoval(host)} />
-                  </div>
-                )}
-              >
-                {(() => {
-                  const options = (
-                    <Disclosure summary="Host options">
-                      <div className="grid gap-3">
-                        <div className="font-mono text-xs" style={{ color: 'var(--text-3)' }}>Helper: home / {host.runnerDirectory || (host.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</div>
-                        <RemoteHostOptionsForm
-                          host={host}
-                          busy={isRemoteHostBusy(host.id)}
-                          onSave={(draft) => void saveRemoteHostOptions(host, draft)}
-                          onCheck={(instructionFile) => checkRemoteHostInstruction(host, instructionFile)}
-                        />
-                      </div>
-                    </Disclosure>
-                  )
-                  return <ProgressFill label={`Remote host task running on ${host.label}`} indeterminate active={isRemoteHostBusy(host.id)}>{options}</ProgressFill>
-                })()}
-              </SettingRow>
+              // A row holding controls cannot be a progressbar, so it takes the fill class as a busy group.
+              <div className={isRemoteHostBusy(host.id) ? 'uam-progress-fill' : undefined} data-indeterminate={isRemoteHostBusy(host.id) || undefined} role={isRemoteHostBusy(host.id) ? 'group' : undefined} aria-busy={isRemoteHostBusy(host.id) || undefined} aria-label={isRemoteHostBusy(host.id) ? `Remote host task running on ${host.label}` : undefined}>
+                <SettingRow
+                  icon={<Server size={15} aria-hidden />}
+                  title={host.label}
+                  description={<span className="font-mono">{host.sshAlias}</span>}
+                  status={remoteHostStatus(host)}
+                  control={(
+                    <div className="flex items-center gap-1">
+                      {remoteHostActions(host)}
+                      <IconButton data-host-open={host.id} icon={<ChevronRight size={14} />} label={`Open ${host.label}`} onClick={() => setOpenRemoteHostId(host.id)} />
+                    </div>
+                  )}
+                />
+              </div>
             )} />
           </SettingsSection>
         </div>
@@ -2999,7 +3038,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   </div>
                 </div>
                   if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-3"><div className="uam-settings-frame uam-settings-frame--full flex-1 min-h-0 flex flex-col">{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden">{renderSectionContent()}</SettingsPageSwap></div></div>
-                  return <div className="uam-settings-scroll"><div className="uam-settings-frame" style={selectedSection === 'phone' ? { margin: '0 auto' } : undefined}>{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
+                  return <div className="uam-settings-scroll"><div className="uam-settings-frame" style={selectedSection === 'phone' ? { margin: '0 auto' } : undefined}>{header}{scopeBar}<SettingsPageSwap pageKey={SSH_ENABLED && openRemoteHost && selectedSection === 'remote-hosts' ? `remote-hosts:${openRemoteHost.id}` : selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
                 })()}
               </>}</Swap>
             </div>
@@ -3060,11 +3099,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           </div>
         </Overlay>}
       </Presence>}
-      <ConfirmDialog open={confirmDiscard} tone="danger" title={selectedSection === 'chat-data' ? 'Discard import filter changes?' : 'Discard MCP changes?'} label={selectedSection === 'chat-data' ? 'Discard unsaved import filters' : 'Discard unsaved MCP changes'}
+      <ConfirmDialog open={confirmDiscard} tone="danger" title={selectedSection === 'chat-data' ? 'Discard import filter changes?' : SSH_ENABLED && selectedSection === 'remote-hosts' ? 'Discard host option changes?' : 'Discard MCP changes?'} label={selectedSection === 'chat-data' ? 'Discard unsaved import filters' : SSH_ENABLED && selectedSection === 'remote-hosts' ? 'Discard unsaved host options' : 'Discard unsaved MCP changes'}
         cancelLabel="Keep editing" confirmLabel="Discard changes"
         onCancel={() => { setConfirmDiscard(false); dialogRef.current?.focus() }}
         onConfirm={() => { setMcpDraftDirty(false); setImportFiltersDirty(false); setConfirmDiscard(false); discardExit?.(); setDiscardExit(null) }}>
-        <p>{selectedSection === 'chat-data' ? 'The import filters have unsaved changes.' : 'The MCP server configuration has unsaved changes.'}</p>
+        <p>{selectedSection === 'chat-data' ? 'The import filters have unsaved changes.' : SSH_ENABLED && selectedSection === 'remote-hosts' ? 'The host options have unsaved changes.' : 'The MCP server configuration has unsaved changes.'}</p>
       </ConfirmDialog>
       <ConfirmDialog open={Boolean(pendingDelete)} title={`Delete ${pendingDelete?.kind === 'theme' ? 'theme' : 'editor group'}?`} label={pendingDelete ? `Delete ${pendingDelete.name}` : undefined}
         confirmLabel="Delete permanently" busy={themeSaving || editorSaving}
@@ -3081,7 +3120,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         New {pendingDefaultYolo.providerName} chats will automatically approve {COMPUTER_USE_ENABLED ? 'computer use, commands' : 'commands'}, file changes, and every other permission request.
       </ConfirmDialog>}</Presence>
       {SSH_ENABLED && <ConfirmDialog open={pendingHostRemoval !== null} title={`Remove ${pendingHostRemoval?.label ?? 'host'}?`} confirmLabel="Remove host" busy={isRemoteHostBusy(pendingHostRemoval?.id ?? '')}
-        onCancel={() => setPendingHostRemoval(null)} onConfirm={() => { const host = pendingHostRemoval; if (host) void removeRemoteHost(host).then(() => setPendingHostRemoval(null)) }}>
+        onCancel={() => setPendingHostRemoval(null)} onConfirm={() => { const host = pendingHostRemoval; if (host) void removeRemoteHost(host).then(() => { setPendingHostRemoval(null); if (openRemoteHostId === host.id) setOpenRemoteHostId(null) }) }}>
         This removes the saved host configuration. Any helper files on that machine are left untouched.
       </ConfirmDialog>}
     </div>
