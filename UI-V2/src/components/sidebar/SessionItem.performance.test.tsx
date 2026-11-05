@@ -24,7 +24,7 @@ const sleep = (ms: number) => act(() => new Promise<void>(resolve => setTimeout(
 
 // Native history reads share one file thread that runs one read at a time; queued user-blocking reads start before
 // queued user-visible (background) ones, but a started read always finishes first.
-let lane: { busy: boolean; queue: { background: boolean; run: () => void }[] }
+let lane: { busy: boolean; queue: { chatId: string; background: boolean; run: () => void }[] }
 const pump = () => {
   if (lane.busy || lane.queue.length === 0) return
   const blocking = lane.queue.findIndex(job => !job.background)
@@ -39,8 +39,12 @@ beforeEach(() => {
   lane = { busy: false, queue: [] }
   bridge.send.mockReset().mockImplementation((envelope: Envelope) => new Promise(resolve => {
     const chatId = String(envelope.payload?.chatId ?? '')
+    if (envelope.action === 'promoteChatHistoryRead') {
+      const queued = lane.queue.find(job => job.chatId === chatId)
+      if (queued) queued.background = false
+    }
     if (envelope.action !== 'getChatMessages') return resolve({ ok: true, requestId: envelope.requestId, data: {} })
-    lane.queue.push({ background: envelope.payload?.background === true, run: () => resolve({ ok: true, requestId: envelope.requestId,
+    lane.queue.push({ chatId, background: envelope.payload?.background === true, run: () => resolve({ ok: true, requestId: envelope.requestId,
       data: { chatId, messagesDigest: `digest-${chatId}`, startIndex: 0, totalCount: 1, messages: [{ role: 'user', content: 'Saved row', createdAt: '2026-10-01T08:00:00Z' }] } }) })
     pump()
   }))
@@ -90,4 +94,19 @@ it('does not make an unhovered click wait behind queued hover warm-ups', async (
   expect(historyReads()).toBe(3)
   // At most the started warm-up's remainder plus its own read; never behind both warm-ups.
   expect(contended).toBeLessThan(2 * READ_MS)
+})
+
+it('does not make a click on a hovered chat wait behind queued status reads', async () => {
+  // A status read holds the lane with another queued, and the warm-up queues behind them. The lane frees once the click
+  // has promoted the warm-up, or after a bound when nothing promotes it, so the order does not depend on render time.
+  const finished: string[] = []
+  lane.busy = true
+  lane.queue.push({ chatId: 'status-queued', background: true, run: () => finished.push('status-queued') })
+  const freeLane = () => { clearInterval(watch); clearTimeout(bound); lane.busy = false; pump() }
+  const watch = setInterval(() => { if (bridge.send.mock.calls.some(([envelope]) => (envelope as Envelope).action === 'promoteChatHistoryRead')) freeLane() }, 5)
+  const bound = setTimeout(freeLane, 1000)
+  await openMs('hovered-chat', ['hovered-chat'])
+  expect(historyReads()).toBe(1)
+  expect(finished).toEqual([])
+  await sleep(READ_MS) // let the status read finish so its timer cannot touch the next test's lane
 })

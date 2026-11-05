@@ -153,6 +153,15 @@ it('lets a click during the preload reuse it and keep showing loading', async ()
   expect(useAppStore.getState().chatHistoryErrorBySessionId['click-a']).toBeUndefined()
 })
 
+it('moves a joined preload ahead of queued background work and keeps one read', () => {
+  render([chat('promote-a', { messageCount: 1 })])
+  pointer('promote-a', 'pointerover'); wait(150)
+  expect(sent('promoteChatHistoryRead')).toHaveLength(0)
+  act(() => { void useAppStore.getState().loadSessionMessages('promote-a') })
+  expect(reads()).toHaveLength(1)
+  expect(sent('promoteChatHistoryRead').map(([envelope]) => (envelope as Envelope).payload)).toEqual([{ chatId: 'promote-a' }])
+})
+
 it('shows the error when a preload the click joined fails', async () => {
   render([chat('fail-a', { messageCount: 1 })])
   pointer('fail-a', 'pointerover'); wait(150)

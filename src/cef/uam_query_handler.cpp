@@ -282,6 +282,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setVisibleChatIds", &UamQueryHandler::HandleSetVisibleChatIds},
 		{"releaseChatMessages", &UamQueryHandler::HandleReleaseChatMessages},
 		{"getChatMessages", &UamQueryHandler::HandleGetChatMessages},
+		{"promoteChatHistoryRead", &UamQueryHandler::HandlePromoteChatHistoryRead},
 		{"getChatFileChangeReceipts", &UamQueryHandler::HandleGetChatFileChangeReceipts},
 		{"applyOrganizationAction", &UamQueryHandler::HandleOrganizationAction},
 		{"getToolCallContent", &UamQueryHandler::HandleGetToolCallContent},

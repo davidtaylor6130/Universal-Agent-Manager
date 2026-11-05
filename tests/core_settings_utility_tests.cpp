@@ -633,7 +633,27 @@ UAM_TEST(VcsStatusSubprocessReadsYieldToChatHistory)
 	// Hover warm-ups (#624) must not delay an explicit open, so only they use the lower-priority lane.
 	const std::size_t lane = chats.find("payload.value(\"background\", false) ? TID_FILE_USER_VISIBLE : TID_FILE_USER_BLOCKING", history);
 	UAM_ASSERT(lane < chats.find("\nvoid UamQueryHandler::", history + 1));
-	UAM_ASSERT(chats.find("}, history_read_thread);", history) < chats.find("\nvoid UamQueryHandler::", history + 1));
+	UAM_ASSERT(chats.find("}, history_read_thread, ", history) < chats.find("\nvoid UamQueryHandler::", history + 1));
+	// An explicit open that joins a queued warm-up moves it to the user-blocking lane.
+	const std::size_t promote = chats.find("void UamQueryHandler::HandlePromoteChatHistoryRead(");
+	UAM_ASSERT(promote != std::string::npos);
+	UAM_ASSERT(chats.find("CefPostTask(TID_FILE_USER_BLOCKING, read->second)", promote) < chats.find("\nvoid UamQueryHandler::", promote + 1));
+}
+
+UAM_TEST(PromotedQueuedTaskRunsOnceAcrossBothLanes)
+{
+	struct CountingTask : public CefTask
+	{
+		explicit CountingTask(int& runs) : m_runs(runs) {}
+		void Execute() override { ++m_runs; }
+		int& m_runs;
+		IMPLEMENT_REFCOUNTING(CountingTask);
+	};
+	int runs = 0;
+	CefRefPtr<CefTask> task = new uam::query_handler_async::CefRunOnceTask(new CountingTask(runs));
+	task->Execute();
+	task->Execute();
+	UAM_ASSERT_EQ(runs, 1);
 }
 
 UAM_TEST(AttachmentStagingNeverFallsBackToLocalForAnUnknownExecutionHost)

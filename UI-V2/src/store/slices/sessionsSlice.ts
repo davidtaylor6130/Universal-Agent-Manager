@@ -287,6 +287,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     if (prefetch && !background && !force && !refreshNative && presentationRetry === 0 && isLatestPendingRequest(requestKey, prefetch.requestId) &&
         prefetch.birth === chatBirthAtRequestStart && prefetch.digest === sessionAtRequestStart.messagesDigest && prefetch.count === sessionAtRequestStart.messageCount) {
       set(state => ({ chatHistoryReadBySessionId: { ...state.chatHistoryReadBySessionId, [chatId]: { requestId: prefetch.requestId, birth: prefetch.birth } } }))
+      // The warm-up may still be queued on the lower-priority lane; an explicit open must not wait behind that lane.
+      void sendToCEF({ action: 'promoteChatHistoryRead', payload: { chatId } })
       return prefetch.promise
     }
     const requestId = createRequestId('getChatMessages')

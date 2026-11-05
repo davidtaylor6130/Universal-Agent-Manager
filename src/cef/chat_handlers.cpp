@@ -352,6 +352,18 @@ void UamQueryHandler::HandleReleaseChatMessages(CefRefPtr<CefBrowser>, const nlo
 	    });
 }
 
+void UamQueryHandler::HandlePromoteChatHistoryRead(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const auto read = m_promotableHistoryReads.find(payload.value("chatId", ""));
+	if (read != m_promotableHistoryReads.end())
+	{
+		// A read that already started ignores this second post; its answer still goes to the original request.
+		(void)CefPostTask(TID_FILE_USER_BLOCKING, read->second);
+		m_promotableHistoryReads.erase(read);
+	}
+	cb->Success("{}");
+}
+
 void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const bool retry_reuses_saved_read = std::exchange(m_retryReusesSavedRead, false);
@@ -362,6 +374,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	bool refresh_native = payload.value("refreshNative", false);
 	// Sidebar hover warm-ups yield to an explicit open: user-blocking work runs first on the shared file thread.
 	const CefThreadId history_read_thread = payload.value("background", false) ? TID_FILE_USER_VISIBLE : TID_FILE_USER_BLOCKING;
+	CefRefPtr<CefTask> promotable_read;
 	std::optional<std::pair<std::size_t, std::optional<std::size_t>>> page;
 	if (payload.contains("limit") || payload.contains("before"))
 	{
@@ -506,6 +519,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		    [this, browser, chat_id, known_digest, page, defer_tool_call_content, search_target, expected_count,
 		     expected_digest, loaded, tail, cached_revision, data_root, indexed, expected, hydrate_unsent, unsent_revision, recover_cold_unsent](uam::query_handler_async::AsyncCefResult& response)
 		    {
+			    m_promotableHistoryReads.erase(chat_id);
 			    bool publish_tail = false;
 			    const std::function<void()> complete = [&]()
 			    {
@@ -590,7 +604,8 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    }
 			    catch (...) { dispose(); throw; }
 			    dispose();
-		    }, history_read_thread);
+		    }, history_read_thread, history_read_thread == TID_FILE_USER_VISIBLE ? &promotable_read : nullptr);
+		if (promotable_read) m_promotableHistoryReads[chat_id] = promotable_read;
 		return;
 	}
 
