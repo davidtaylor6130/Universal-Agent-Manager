@@ -302,7 +302,10 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 			}
 			~Work() noexcept { Acknowledge(); } // Armed cleanup worker, never app/CEF ownership.
 		};
-		auto work = uam::native_history::TryCreateWorkerOwnedNativeRefresh<Work>();
+		// A slow SSH read must not occupy the capacity local branch, managed-run and metadata preparation share.
+		auto work = passive_host
+		    ? uam::native_history::TryCreateWorkerOwnedNativeRefresh<Work, uam::native_history::NativeRefreshWorkerPool::RemoteRefresh>(passive_host->id)
+		    : uam::native_history::TryCreateWorkerOwnedNativeRefresh<Work>();
 		if (!work) { cb->Failure(503, "Native history preparation is busy. Retry shortly."); return; }
 		work->root = m_app.data_root;
 		if (passive_host) work->host = *passive_host;
@@ -346,6 +349,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		const auto ownership = ChatDomainService().BeginBranchPreparation(m_app, source_id, native_id);
 		if (!ownership) { cb->Failure(409, "Chat preparation is still running. Retry after it settles."); return; }
 		const auto request = BeginNativeHistoryRead(request_key, cb, std::make_shared<NativeHistoryRequest>(ownership->cancellation));
+		if (passive_host) request->execution_host_id = passive_host->id; // A helper reinstall stops this read.
 		const auto finish = [this, source_id, request_key, request, ownership]()
 		{
 			(void)ChatDomainService().ConsumeBranchPreparation(m_app, source_id, ownership);
@@ -404,7 +408,13 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		bool queued = false;
 		try
 		{
-			queued = CefPostTask(TID_FILE_BACKGROUND, new CefQueryWorkerTask(m_asyncLifetime, cb,
+			// An SSH read has its own thread and slot, like an explicit remote refresh; a local read stays on the file lane.
+			const auto dispatch_read = [&](ManagedSubagentWorker read, ManagedSubagentCompletion completion)
+			{
+				return passive_host ? DispatchRemoteRefreshRead(cb, std::move(read), std::move(completion))
+				    : CefPostTask(TID_FILE_BACKGROUND, new CefQueryWorkerTask(m_asyncLifetime, cb, std::move(read), std::move(completion)));
+			};
+			queued = dispatch_read(
 			    [work, native_id, primary, summary, source_primary, source_summary, profile, request]()
 			    {
 				    if (request->stop_requested() || !NativeChildOpenReferenceAvailable(work->root, work->source_identity, native_id) ||
@@ -563,7 +573,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 				    if (!preparation_queued) { result = AsyncFailure(503, "Passive original preparation could not be queued."); return; }
 				    result.callback_deferred = true;
 				    deferred = true;
-			    }));
+			    });
 		}
 		catch (...) { finish(); cb->Failure(503, "Passive history loading could not be queued."); return; }
 		if (!queued) { finish(); cb->Failure(503, "Passive history loading could not be queued."); }

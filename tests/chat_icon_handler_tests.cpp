@@ -4678,6 +4678,9 @@ namespace
 		// Work lease. Read real capacity, never manufacture a receipt or ACK.
 		// Principal data/byte/callback assertions must already have passed.
 		AwaitBranchFaultOwnerCount(0);
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+		while (uam::native_history::detail::remote_refresh_owners.load() != 0 && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		UAM_ASSERT_EQ(uam::native_history::detail::remote_refresh_owners.load(), 0u);
 	}
 
 	struct RemoteOwnedControlsFixture final : RemoteGeminiHistoryHandlerFixture
@@ -4922,8 +4925,11 @@ namespace
 		const std::string agent = "88888888-8888-4888-8888-888888888888";
 		const std::string reference;
 		std::string bytes;
+		std::string parent_id;
 		explicit RemoteGeminiChildJournal(RemoteGeminiHistoryHandlerFixture& owner)
-		    : fixture(owner), reference(uam::native_agents::BuildHistoryId("gemini-cli", owner.native_id, agent, owner.host.id)) { UAM_ASSERT(!reference.empty()); }
+		    : fixture(owner), reference(uam::native_agents::BuildHistoryId("gemini-cli", owner.native_id, agent, owner.host.id)), parent_id(owner.owner_id) { UAM_ASSERT(!reference.empty()); }
+		RemoteGeminiChildJournal(RemoteGeminiHistoryHandlerFixture& owner, std::string parent, const std::string& host_id)
+		    : fixture(owner), reference(uam::native_agents::BuildHistoryId("gemini-cli", owner.native_id, agent, host_id)), parent_id(std::move(parent)) { UAM_ASSERT(!reference.empty()); }
 		fs::path File() const { return fixture.NativeFile().parent_path() / fixture.native_id / (agent + ".jsonl"); }
 		fs::path Primary() const { return AppPaths::UamChatFilePath(fixture.app.data_root, reference); }
 		void Write(bool with_answer)
@@ -4941,7 +4947,7 @@ namespace
 		{
 			CefRefPtr<RemoteHistoryQueryCallback> callback = new RemoteHistoryQueryCallback;
 			fixture.pending_callbacks.push_back(callback);
-			ChatIconHandlerTestAccess::OpenNative(*fixture.handler, {{"chatId", fixture.owner_id}, {"nativeSessionId", reference}, {"selectChat", false}, {"refreshHistory", true}}, callback);
+			ChatIconHandlerTestAccess::OpenNative(*fixture.handler, {{"chatId", parent_id}, {"nativeSessionId", reference}, {"selectChat", false}, {"refreshHistory", true}}, callback);
 			return callback;
 		}
 		CefRefPtr<RemoteHistoryQueryCallback> Await(CefRefPtr<RemoteHistoryQueryCallback> callback) const
@@ -4996,6 +5002,113 @@ UAM_TEST(RemoteNativeHistoryHandlerGeminiChildInlineOriginalsOpenAndSave)
 	(void)child.AssertSaved();
 	UAM_ASSERT_EQ(ReadFile(child.File()), child.bytes);
 	fixture.Settle(callback);
+}
+
+// A slow SSH child read takes no shared preparation slot and does not wait behind background file work.
+UAM_TEST(RemoteNativeHistoryHandlerGeminiChildReadLeavesSharedCapacityAndFileLaneFree)
+{
+	RemoteOwnedControlsFixture fixture;
+	RemoteGeminiChildJournal child(fixture); child.Write(true);
+	auto first = uam::native_history::TryCreateWorkerOwnedNativeRefresh<int>();
+	auto second = uam::native_history::TryCreateWorkerOwnedNativeRefresh<int>();
+	UAM_ASSERT(first && second);
+	HandlerBranchQueueRelease release;
+	const auto held = std::make_shared<std::atomic<int>>(0);
+	const auto shared_release = release.promise.get_future().share();
+	UAM_ASSERT(CefPostTask(TID_FILE_BACKGROUND, new InstructionQueueHold(shared_release, held)));
+	UAM_ASSERT(CefPostTask(TID_FILE_USER_BLOCKING, new InstructionQueueHold(shared_release, held)));
+	RunCreationLoopUntil([held]() { return held->load() == 1; }, std::chrono::seconds(3));
+	UAM_ASSERT_EQ(held->load(), 1);
+	const auto before = fixture.Launches();
+	const auto callback = child.Begin();
+	UAM_ASSERT_EQ(callback->failures, 0); // Both shared slots are held, and that does not refuse an SSH read.
+	RunCreationLoopUntil([&] { return fixture.Launches() > before; }, std::chrono::seconds(10));
+	const auto launches = fixture.Launches();
+	release.Release();
+	UAM_ASSERT(launches > before); // The helper was reached while the background lane was held.
+	first.reset(); second.reset();
+	RequireRemoteChildOpened(child, child.Await(callback));
+	(void)child.AssertSaved();
+	fixture.Settle(callback);
+}
+
+// Real threads: a child read held on one SSH host must not delay a child open on another.
+UAM_TEST(RemoteNativeHistoryHandlerGeminiChildHeldReadDoesNotDelayAnotherHost)
+{
+	RemoteOwnedControlsFixture fixture;
+	ExecutionHost other_host = fixture.host; other_host.id = "other-history-host"; other_host.ssh_alias = "other-history-fixture";
+	fixture.app.settings.execution_hosts.push_back(other_host);
+	ChatFolder other_folder; other_folder.id = "other-remote-folder"; other_folder.title = "Other remote project";
+	other_folder.directory = fixture.workspace; other_folder.execution_host_id = other_host.id;
+	fixture.app.folders.push_back(other_folder); UAM_ASSERT(ChatFolderStore::Save(fixture.app.data_root, fixture.app.folders));
+	ChatSession other = fixture.Current();
+	other.id = "remote-gemini-cef-other-owner"; other.branch_root_chat_id = other.id; other.folder_id = other_folder.id; other.execution_host_id = other_host.id;
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, other));
+	const auto saved_other = ChatRepository::LoadLocalChat(fixture.app.data_root, other.id, true);
+	UAM_ASSERT(saved_other && saved_other->messages_loaded); fixture.app.chats.push_back(*saved_other);
+	RemoteGeminiChildJournal held_child(fixture); held_child.Write(true);
+	RemoteGeminiChildJournal other_child(fixture, other.id, other_host.id);
+	// The fixture's ssh waits while the hold file exists, except for the other host's alias.
+	const fs::path hold = fixture.temp.root / "hold-ssh";
+	UAM_ASSERT(uam::io::WriteTextFile(hold, "held"));
+	struct RemoveHold { fs::path path; ~RemoveHold() { std::error_code ignored; fs::remove(path, ignored); } } remove_hold{hold};
+	const fs::path ssh = fixture.temp.root / "bin" / "ssh";
+	UAM_ASSERT(uam::io::WriteTextFile(ssh,
+	    "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$UAM_PRIVATE_HISTORY_SSH_ARGUMENTS\" || exit 91\n"
+	    "printf 'launch\\n' >> \"$UAM_PRIVATE_HISTORY_SSH_MARKER\" || exit 92\n"
+	    "case \"$*\" in *other-history-fixture*) ;; *) while [ -f '" + uam::paths::Utf8PathString(hold) + "' ]; do sleep 0.02; done ;; esac\n"
+	    "exec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
+	fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	const auto before = fixture.Launches();
+	const auto held = held_child.Begin();
+	RunCreationLoopUntil([&] { return fixture.Launches() > before; }, std::chrono::seconds(10));
+	UAM_ASSERT(fixture.Launches() > before); // The first host's read is now waiting inside its ssh.
+	UAM_ASSERT_EQ(uam::native_history::detail::RemoteRefreshOwnersOnHost(fixture.host.id), 1u); // Its own host's slot.
+	UAM_ASSERT_EQ(ChatIconHandlerTestAccess::HostReads(*fixture.handler, fixture.host.id), (std::pair<int, int>{1, 0})); // A helper reinstall can stop it.
+	const auto opened = other_child.Begin();
+	RunCreationLoopUntil([&] { return opened->Completed(); }, std::chrono::seconds(15));
+	UAM_ASSERT(opened->Completed());
+	if (opened->failures) throw std::runtime_error("Other host child open refused (" + std::to_string(opened->status) + "): " + opened->body);
+	UAM_ASSERT(!held->Completed());
+	std::error_code ignored; fs::remove(hold, ignored);
+	held_child.Await(held);
+	RequireRemoteChildOpened(held_child, held);
+	fixture.Settle(held); fixture.Settle(opened);
+}
+
+// A saved SSH child reopens from its owned copy, without its journal or a helper read.
+UAM_TEST(RemoteNativeHistoryHandlerGeminiChildSavedReopenUsesOwnedOriginals)
+{
+	RemoteOwnedControlsFixture fixture;
+	RemoteGeminiChildJournal child(fixture); child.Write(true);
+	const auto opened = child.Open(); RequireRemoteChildOpened(child, opened); fixture.Settle(opened);
+	const auto key = child.AssertSaved();
+	AwaitRemoteCandidateCapacity();
+	fs::remove(child.File());
+	auto* live = ChatDomainService().FindChatById(fixture.app, child.reference);
+	UAM_ASSERT(live); live->messages.clear(); live->messages_loaded = false;
+	const auto before = fixture.Launches();
+	CefRefPtr<RemoteHistoryQueryCallback> reopened = new RemoteHistoryQueryCallback;
+	fixture.pending_callbacks.push_back(reopened);
+	ChatIconHandlerTestAccess::OpenNative(*fixture.handler, {{"chatId", fixture.owner_id}, {"nativeSessionId", child.reference}, {"selectChat", false}, {"refreshHistory", false}}, reopened);
+	child.Await(reopened);
+	RequireRemoteChildOpened(child, reopened);
+	UAM_ASSERT_EQ(fixture.Launches(), before);
+	UAM_ASSERT_EQ(child.AssertSaved(), key);
+	fixture.Settle(reopened);
+}
+
+// A malformed SSH journal is refused and saves nothing.
+UAM_TEST(RemoteNativeHistoryHandlerGeminiChildMalformedJournalSavesNothing)
+{
+	RemoteOwnedControlsFixture fixture;
+	RemoteGeminiChildJournal child(fixture); child.Write(true);
+	UAM_ASSERT(uam::io::WriteTextFile(child.File(), "{not json\n"));
+	const auto refused = child.Open();
+	UAM_ASSERT_EQ(refused->successes, 0); UAM_ASSERT_EQ(refused->failures, 1);
+	UAM_ASSERT(!fs::exists(child.Primary()));
+	UAM_ASSERT(ChatDomainService().FindChatById(fixture.app, child.reference) == nullptr);
+	fixture.Settle(refused);
 }
 
 // A shorter readable SSH journal must not replace the fuller saved child or its originals.
