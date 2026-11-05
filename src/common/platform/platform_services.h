@@ -167,6 +167,13 @@ class IPlatformFileDialogService
 	virtual bool OpenFolderInEditorPreset(const std::filesystem::path& folder_path, const std::string& editor_preset_id, std::string* error_out = nullptr) const = 0;
 	virtual bool RevealPathInFileManager(const std::filesystem::path& file_path, std::string* error_out = nullptr) const = 0;
 	virtual bool OpenFileInTextEditor(const std::filesystem::path& file_path, std::string* error_out = nullptr) const = 0;
+	/// <summary>Opens one existing file with the OS default application (a browser for .html).</summary>
+	virtual bool OpenFileWithDefaultApplication(const std::filesystem::path& file_path, std::string* error_out = nullptr) const
+	{
+		(void)file_path;
+		if (error_out != nullptr) *error_out = "Opening files is unavailable on this platform.";
+		return false;
+	}
 };
 
 /// <summary>

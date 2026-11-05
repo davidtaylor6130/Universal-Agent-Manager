@@ -334,6 +334,7 @@ export type AcpTurnEvent =
   | { type: 'thought'; text: string; toolCallId?: string; requestId?: string }
   | { type: 'context_compaction' | 'context_compaction_interrupted'; text: string; toolCallId?: string; requestId?: string; tokensBefore?: number; tokensAfter?: number }
   | { type: 'plan'; text?: string; toolCallId?: string; requestId?: string }
+  | { type: 'html_view'; text: string; title: string; requestId: string; toolCallId?: string }
   | { type: 'tool_call'; toolCallId: string; text?: string; requestId?: string }
   | { type: 'permission_request'; requestId: string; toolCallId?: string; text?: string }
   | { type: 'user_input_request'; requestId: string; toolCallId?: string; text?: string }

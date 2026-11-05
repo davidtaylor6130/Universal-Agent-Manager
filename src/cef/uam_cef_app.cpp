@@ -65,7 +65,7 @@ namespace
 			CefString mime = CefGetMimeType(extension);
 			if (mime.empty()) mime = "application/octet-stream";
 			CefResponse::HeaderMap headers;
-			headers.emplace("Content-Security-Policy", std::string(uam::cef::kContentSecurityPolicy));
+			headers.emplace("Content-Security-Policy", uam::cef::ContentSecurityPolicyForUiResource(key));
 			headers.emplace("X-Content-Type-Options", "nosniff");
 			headers.emplace("Cache-Control", "no-cache");
 			return new CefStreamResourceHandler(200, "OK", mime, headers, stream);
@@ -324,7 +324,7 @@ namespace
 
 	bool IsTrustedRendererFrame(CefRefPtr<CefFrame> frame, const std::string& trusted_ui_index_url)
 	{
-		return frame != nullptr && uam::cef::IsTrustedUiUrl(frame->GetURL().ToString(), trusted_ui_index_url);
+		return frame != nullptr && uam::cef::ShouldBindUiBridge(frame->IsMain(), frame->GetURL().ToString(), trusted_ui_index_url);
 	}
 
 } // namespace
@@ -404,6 +404,13 @@ void UamCefApp::OnContextInitialized()
 		return;
 	}
 	m_trustedUiIndexUrl = uam::cef::ResolveTrustedUiIndexUrl();
+	CefRefPtr<CefValue> network_prediction = CefValue::Create();
+	network_prediction->SetInt(uam::cef::kNetworkPredictionNever);
+	CefString network_prediction_error;
+	if (!CefRequestContext::GetGlobalContext()->SetPreference(uam::cef::kNetworkPredictionPreference, network_prediction, network_prediction_error))
+	{
+		uam::diagnostics::Write("[CEF] Could not disable network prediction: " + network_prediction_error.ToString());
+	}
 	CefString exe_dir_string;
 	const std::filesystem::path exe_dir = CefGetPath(PK_DIR_EXE, exe_dir_string)
 	                                          ? uam::paths::PathFromUtf8(exe_dir_string.ToString())
@@ -480,6 +487,12 @@ void UamCefApp::OnWebKitInitialized()
 
 void UamCefApp::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefV8Context> context)
 {
+	// Runs natively for every frame, before any of its script, so a page or a child frame never sees these.
+	const CefRefPtr<CefV8Value> global = context != nullptr ? context->GetGlobal() : nullptr;
+	if (global != nullptr)
+	{
+		for (const char* name : uam::cef::kRendererGlobalsRemoved) (void)global->DeleteValue(name);
+	}
 	if (m_renderer_router != nullptr && IsTrustedRendererFrame(frame, m_trustedUiIndexUrl))
 	{
 		m_renderer_router->OnContextCreated(browser, frame, context);

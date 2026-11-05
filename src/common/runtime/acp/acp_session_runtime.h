@@ -75,6 +75,10 @@ bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatS
 bool PersistQueuedAcpUserPromptsAsInterrupted(AcpSessionState& session, ChatSession& chat);
 /// <summary>Requests native compaction in a ready idle session without deleting saved history.</summary>
 bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
+/// <summary>Adds one agent-published HTML view to the live turn's assistant message; false when the id already exists.</summary>
+bool AppendAcpHtmlView(AcpSessionState& session, ChatSession& chat, const std::string& view_id, const std::string& title, const std::string& html);
+/// <summary>Removes an HTML view whose publication could not be durably recorded.</summary>
+void RemoveAcpHtmlView(AcpSessionState& session, ChatSession& chat, const std::string& view_id);
 bool CancelAcpTurn(AppState& app, const std::string& chat_id,
                    std::string* error_out = nullptr, bool update_goal_state = true,
                    bool preserve_queued_prompts = false, bool hold_preserved_queue = false);

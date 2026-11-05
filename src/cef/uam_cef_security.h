@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cef/cef_includes.h"
+#include "common/chat/html_view.h"
 #include "common/paths/path_utils.h"
 #include "common/utils/range_utils.h"
 #include "common/utils/string_utils.h"
@@ -33,7 +34,16 @@ namespace uam::cef
 	    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
 	    "img-src 'self' data: blob: https:; font-src 'self' data:; "
 	    "connect-src 'self' https://api.github.com https://registry.npmjs.org https://formulae.brew.sh; "
-	    "worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-src 'none'";
+	    "worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-src uam://app/html-view-frame.html";
+	/// Sandboxed host page for agent HTML views. It gets its own restrictive policy instead of the app's.
+	inline constexpr std::string_view kHtmlViewFrameResource = "html-view-frame.html";
+	inline constexpr std::string_view kHtmlViewFrameUrl = "uam://app/html-view-frame.html";
+	/// Page script reaches the network through these whatever the frame's policy says: `connect-src` does not cover WebRTC, and
+	/// CEF 146 ignores the `webrtc 'block'` directive and the WebRTC IP-handling switch. UAM uses no WebRTC, so no frame gets them.
+	inline constexpr std::array<const char*, 3> kRendererGlobalsRemoved = {"RTCPeerConnection", "webkitRTCPeerConnection", "RTCIceTransport"};
+	/// Stops `<link rel="preconnect">` and `<link rel="dns-prefetch">`, which no policy covers and which otherwise open connections or send DNS queries from any frame. 2 means never.
+	inline constexpr const char* kNetworkPredictionPreference = "net.network_prediction_options";
+	inline constexpr int kNetworkPredictionNever = 2;
 
 	inline std::string StripUrlQueryAndFragment(std::string url)
 	{
@@ -151,6 +161,18 @@ namespace uam::cef
 		return stripped_url == stripped_trusted;
 	}
 
+	/// <summary>Response policy for one packaged UI resource key (relative path).</summary>
+	inline std::string ContentSecurityPolicyForUiResource(std::string_view relative_key)
+	{
+		return std::string(relative_key == kHtmlViewFrameResource ? uam::html_view::kContentSecurityPolicy : kContentSecurityPolicy);
+	}
+
+	/// <summary>The renderer bridge binds only in the trusted top-level UI document, never in a subframe.</summary>
+	inline bool ShouldBindUiBridge(bool is_main_frame, const std::string& frame_url, const std::string& trusted_index_url)
+	{
+		return is_main_frame && IsTrustedUiUrl(frame_url, trusted_index_url);
+	}
+
 	inline bool IsTrustedMainFrame(CefRefPtr<CefFrame> frame, const std::string& trusted_index_url)
 	{
 		return frame != nullptr && frame->IsMain() && IsTrustedUiUrl(frame->GetURL().ToString(), trusted_index_url);
@@ -168,6 +190,22 @@ namespace uam::cef
 
 		const std::string scheme = UrlScheme(url);
 		return uam::ranges::Contains(kExternalUrlSchemes, scheme);
+	}
+
+	enum class NavigationDecision
+	{
+		Allow,
+		Cancel,
+		CancelAndOpenExternally,
+	};
+
+	/// <summary>The main frame may load only the UI index; a subframe only the HTML view frame host.
+	/// Blocked subframe navigations never open the system browser, so frame content cannot launch URLs.</summary>
+	inline NavigationDecision DecideNavigation(bool is_main_frame, const std::string& url, const std::string& trusted_index_url)
+	{
+		if (is_main_frame ? IsTrustedUiUrl(url, trusted_index_url) : StripUrlQueryAndFragment(url) == kHtmlViewFrameUrl)
+			return NavigationDecision::Allow;
+		return is_main_frame && ShouldOpenExternally(url) ? NavigationDecision::CancelAndOpenExternally : NavigationDecision::Cancel;
 	}
 
 	template <typename ExternalOpener>

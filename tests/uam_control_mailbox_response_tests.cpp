@@ -1,3 +1,4 @@
+#include "common/chat/html_view.h"
 #include "test_harness.h"
 #include "app/uam_control_service.h"
 
@@ -470,7 +471,8 @@ UAM_TEST(UamControlStdioWaitCancellationPreservesNextCallAndEofExits)
 UAM_TEST(UamControlStdioOversizePartialLineExitsWithInputStillOpen)
 {
 	WaitProxyFixture fixture;
-	const std::string bytes(64U * 1024U + 1U, 'x'); // Deliberately no newline or EOF.
+	// The line cap is the largest per-method envelope (HTML views); no newline or EOF.
+	const std::string bytes(uam::html_view::kMaxRequestBytes + 1U, 'x');
 	UAM_ASSERT(fixture.service.WriteToStdioProcess(fixture.process, bytes.data(), bytes.size(), &fixture.error));
 	fixture.Exit(2);
 }

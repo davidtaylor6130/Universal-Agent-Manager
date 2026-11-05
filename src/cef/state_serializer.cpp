@@ -585,6 +585,7 @@ namespace uam
 			{
 				block_json["requestId"] = block.request_id_json;
 			}
+			if (!block.title.empty()) block_json["title"] = block.title;
 			if (block.compaction_tokens_before >= 0) block_json["tokensBefore"] = block.compaction_tokens_before;
 			if (block.compaction_tokens_after >= 0) block_json["tokensAfter"] = block.compaction_tokens_after;
 			return block_json;
@@ -1074,6 +1075,7 @@ namespace uam
 				{
 					event_json["requestId"] = event.request_id_json;
 				}
+				if (!event.title.empty()) event_json["title"] = event.title;
 				if (event.compaction_tokens_before >= 0) event_json["tokensBefore"] = event.compaction_tokens_before;
 				if (event.compaction_tokens_after >= 0) event_json["tokensAfter"] = event.compaction_tokens_after;
 				turn_events_json.push_back(std::move(event_json));

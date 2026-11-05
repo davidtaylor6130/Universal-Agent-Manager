@@ -102,6 +102,8 @@ namespace uam::chat_pages
 			FingerprintHashString(hash, block.text);
 			FingerprintHashString(hash, block.tool_call_id);
 			FingerprintHashString(hash, block.request_id_json);
+			// Only html_view blocks carry a title; keep every existing fingerprint unchanged.
+			if (!block.title.empty()) FingerprintHashString(hash, block.title);
 			FingerprintHashString(hash, std::to_string(block.compaction_tokens_before));
 			FingerprintHashString(hash, std::to_string(block.compaction_tokens_after));
 		}

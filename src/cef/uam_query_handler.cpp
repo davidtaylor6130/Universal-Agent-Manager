@@ -469,6 +469,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"resolveAcpUserInput", &UamQueryHandler::HandleResolveAcpUserInput},
 		{"stopAcpSession", &UamQueryHandler::HandleStopAcpSession},
 		{"writeClipboardText", &UamQueryHandler::HandleWriteClipboardText},
+		{"openHtmlView", &UamQueryHandler::HandleOpenHtmlView},
+		{"saveHtmlView", &UamQueryHandler::HandleSaveHtmlView},
 		{"setTheme", &UamQueryHandler::HandleSetTheme},
 		{"listThemes", &UamQueryHandler::HandleListThemes},
 		{"saveTheme", &UamQueryHandler::HandleSaveTheme},

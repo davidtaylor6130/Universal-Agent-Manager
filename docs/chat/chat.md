@@ -5,6 +5,7 @@ A chat is UAM’s durable conversation with its own provider selection, model, a
 - [Lifecycle](lifecycle.md)
 - [Sending, queues and recovery](sending.md)
 - [Messages](messages.md)
+- [HTML views](html-views.md)
 - [Composer](composer/composer.md)
 - [Goals](goals.md)
 - [Subagents](subagents.md)

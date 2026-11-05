@@ -22,6 +22,7 @@
 #include "app/markdown_store_service.h"
 #include "app/managed_subagent_control_service.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/html_view.h"
 #include "common/config/approval_modes.h"
 #include "common/config/central_provider_configuration.h"
 #include "common/config/settings_normalization.h"
@@ -226,7 +227,7 @@ namespace uam
 					for (std::size_t i = 0; i < read.size && !m_failed; ++i)
 					{
 						if (bytes[i] == '\n') CompleteLine();
-						else if (m_partial.size() >= kMaxRequestBytes) m_failed = true;
+						else if (m_partial.size() >= html_view::kMaxRequestBytes) m_failed = true; // Largest per-method envelope.
 						else m_partial.push_back(bytes[i]);
 					}
 				}
@@ -307,6 +308,16 @@ namespace uam
 			return true;
 		}
 
+		bool IsHtmlViewMethod(std::string_view method)
+		{
+			return method == "html_view_preview" || method == "html_view_publish";
+		}
+
+		std::size_t RequestLimit(std::string_view method)
+		{
+			return IsHtmlViewMethod(method) ? html_view::kMaxRequestBytes : kMaxRequestBytes;
+		}
+
 		bool ValidToolArguments(std::string_view method, const nlohmann::json& arguments)
 		{
 			if (method == "_mcp_cancel_request")
@@ -326,6 +337,8 @@ namespace uam
 				return HasOnlyStringArguments(arguments, {"objective", "idempotencyKey"});
 			if (method == "chat_create")
 				return HasOnlyStringArguments(arguments, {"task"}, {"providerId", "modelId", "title"});
+			if (IsHtmlViewMethod(method))
+				return HasOnlyStringArguments(arguments, {"title", "html"});
 			if (method == "computer_use_request")
 				return HasOnlyStringArguments(arguments, {"reason"});
 			if (method == "user_question")
@@ -1150,6 +1163,57 @@ namespace uam
 			                                     .expires_at_epoch_ms = now_epoch_ms + kApprovalLifetimeMs});
 		}
 
+		ToolResult HtmlViewPreview(const nlohmann::json& arguments)
+		{
+			const std::string& html = arguments.at("html").get_ref<const std::string&>();
+			const std::string error = html_view::ValidationError(arguments.at("title").get_ref<const std::string&>(), html);
+			nlohmann::json errors = nlohmann::json::array();
+			if (!error.empty()) errors.push_back(error);
+			return {.ok = true,
+			        .result = {{"publishable", error.empty()}, {"bytes", html.size()}, {"limitBytes", html_view::kMaxHtmlBytes},
+			                   {"errors", std::move(errors)}, {"warnings", html_view::Diagnostics(html)},
+			                   {"screenshot", "unavailable"}},
+			        .reason = error.empty() ? "HTML view preview passed." : error};
+		}
+
+		AcpSessionState* HtmlViewSession(AppState& app, const UamControlCapability& capability)
+		{
+			for (const auto& session : app.acp_sessions)
+				if (session != nullptr && session->chat_id == capability.session_chat_id &&
+				    session->uam_control_capability_id == capability.id && session->provider_id == capability.provider_id)
+					return session.get();
+			return nullptr; // CLI View terminals have no structured transcript to show a card in.
+		}
+
+		ToolResult HtmlViewPublish(AppState& app, UamControlCapability& capability, std::string_view request_id,
+		                           const nlohmann::json& arguments)
+		{
+			const std::string& title = arguments.at("title").get_ref<const std::string&>();
+			const std::string& html = arguments.at("html").get_ref<const std::string&>();
+			if (const std::string error = html_view::ValidationError(title, html); !error.empty())
+				return {.error = error};
+			ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
+			const ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
+			if (!ControlEnabled(chat, capability, false) || !ControlEnabled(root_chat, capability, true))
+				return {.error = "UAM Control is disabled or the owning chat is unavailable."};
+			AcpSessionState* session = HtmlViewSession(app, capability);
+			if (session == nullptr)
+				return {.error = "HTML views need this chat's structured Chat view; CLI View cannot display them."};
+			if (!session->processing)
+				return {.error = "HTML views can only be published during an active turn."};
+			if (std::ranges::count(session->turn_events, html_view::kBlockType, &AcpTurnEventState::type) >= static_cast<std::ptrdiff_t>(html_view::kMaxViewsPerTurn))
+				return {.error = "This turn already has " + std::to_string(html_view::kMaxViewsPerTurn) +
+				                 " HTML views, the limit per turn. Combine content into fewer pages."};
+			const std::string view_id = "html-view:" + capability.id + ":" + std::string(request_id);
+			const std::string trimmed_title = uam::strings::Trim(title);
+			if (!AppendAcpHtmlView(*session, *chat, view_id, trimmed_title, html))
+				return {.error = "This HTML view was already published."};
+			return {.ok = true,
+			        .result = {{"published", true}, {"viewId", view_id}, {"bytes", html.size()},
+			                   {"warnings", html_view::Diagnostics(html)}},
+			        .reason = "Published HTML view."};
+		}
+
 		ToolResult ExecuteTool(AppState& app, UamControlCapability& capability,
 		                       std::string_view method, const nlohmann::json& arguments)
 		{
@@ -1531,7 +1595,8 @@ namespace uam
 			auto reject = [](std::string error) {
 				return nlohmann::json{{"ok", false}, {"error", std::move(error)}};
 			};
-			if (!request.is_object() || request.dump().size() > kMaxRequestBytes)
+			if (!request.is_object() ||
+			    request.dump().size() > RequestLimit(request.contains("method") && request["method"].is_string() ? request["method"].get_ref<const std::string&>() : std::string_view{}))
 				return reject("Malformed or oversized control request.");
 			UamControlCapability* capability = FindCapability(app, capability_id);
 			if (capability == nullptr || !HasAuthority(app, *capability, now_epoch_ms))
@@ -1613,7 +1678,11 @@ namespace uam
 			const std::optional<ChatSession> rollback = before_chat == nullptr || method == "agent_wait" ? std::nullopt : std::optional<ChatSession>{*before_chat};
 			const bool needs_approval = (method == "goal_create" || method == "chat_create") && before_chat != nullptr &&
 			    !MutationsAllowed(*before_chat);
-			ToolResult result = method == "agent_wait"
+			ToolResult result = method == "html_view_preview"
+			                        ? HtmlViewPreview(arguments)
+			                        : method == "html_view_publish"
+			                        ? HtmlViewPublish(app, *capability, request_id, arguments)
+			                        : method == "agent_wait"
 			                        ? AgentWait(app, *capability, request_id, arguments)
 			                        : method == "computer_use_request"
 			                        ? ComputerUseRequest(app, *capability, request_id, arguments, now_epoch_ms)
@@ -1628,8 +1697,17 @@ namespace uam
 			if (result.deferred) return method == "agent_wait" ? nlohmann::json{{"pendingAgentWait", true}} :
 			    method == "chat_create" && result.ok ? nlohmann::json{{"pendingChatCreate", true}} : nlohmann::json{{"pendingApproval", true}};
 			const UamControlCapability capability_snapshot = *capability;
-			if (!AppendAuditAndSave(app, capability_snapshot, request_id, method, result))
+			const bool published_view = result.ok && method == "html_view_publish";
+			ChatSession* view_chat = published_view ? ChatDomainService().FindChatById(app, capability_snapshot.session_chat_id) : nullptr;
+			const bool view_saved = !published_view || capability_snapshot.session_chat_id == capability_snapshot.chat_id ||
+			    (view_chat != nullptr && ChatRepository::SaveChat(app.data_root, *view_chat));
+			if (!view_saved || !AppendAuditAndSave(app, capability_snapshot, request_id, method, result))
 			{
+				if (published_view)
+				{
+					AcpSessionState* session = HtmlViewSession(app, capability_snapshot);
+					if (session != nullptr && view_chat != nullptr) RemoveAcpHtmlView(*session, *view_chat, result.result.value("viewId", ""));
+				}
 				if (result.ok && method == "agent_delegate")
 				{
 					std::string cancel_error;
@@ -1696,7 +1774,16 @@ namespace uam
 			chat_create["description"] = "Start one separate top-level UAM chat in this chat's workspace and execution host and send task as its first prompt. Optional providerId and modelId come from agent_list providerTargets; omitted values inherit this chat's provider and model. The new chat copies this chat's permission modes, so it is never more permissive, and always gets its own Git worktree; UAM refuses when Git automatic worktrees are off or the workspace cannot be isolated. In YOLO it starts immediately; otherwise it waits for the user's approval in UAM. Unavailable in Plan mode, to read-only agents and to subagents. At most 2 per turn and 8 per chat; a chat started this way cannot start others. Retrying identical arguments returns the same chat. The reply arrives after the first prompt is sent; if it cannot be sent the empty chat is removed and an error is returned.";
 			nlohmann::json agent_wait = ToolSchema("agent_wait", {{"runId", {{"type", "string"}}}}, {"runId"});
 			agent_wait["description"] = "Wait in this active turn for one owned child for up to 80 seconds. Returns its exact status/result and timedOut. If still running, another explicit agent_wait on the same run is allowed; do not redelegate. This read never cancels the child or starts a new turn.";
+			const nlohmann::json html_view_properties = {
+			    {"title", {{"type", "string"}, {"description", "Short single-line title shown on the card (at most 120 bytes)."}}},
+			    {"html", {{"type", "string"}, {"description", "Complete self-contained HTML document (at most 131072 bytes). Inline all CSS, scripts, images (data: URLs) and data."}}}};
+			nlohmann::json html_view_preview = ToolSchema("html_view_preview", html_view_properties, {"title", "html"});
+			html_view_preview["description"] = "Check an HTML view before publishing. Returns publishable, size, validation errors and warnings about content the sandbox blocks (remote resources, network APIs, storage, frames, pop-ups). Publishes nothing; no screenshot is produced.";
+			nlohmann::json html_view_publish = ToolSchema("html_view_publish", html_view_properties, {"title", "html"});
+			html_view_publish["description"] = "Show a self-contained HTML page (chart, table, diagram, mockup, small interactive view) as a sandboxed card in this chat's current turn, above your text reply. Scripts run only inside the sandbox; network, storage, cookies, pop-ups and the UAM app are unreachable. Rejected when over 131072 bytes, empty, in CLI View or outside an active turn. Call html_view_preview first to see warnings.";
 			nlohmann::json tools = nlohmann::json::array({
+			    std::move(html_view_preview),
+			    std::move(html_view_publish),
 			    std::move(agent_wait),
 			    ToolSchema("skill_list"),
 			    ToolSchema("skill_read", {{"id", {{"type", "string"}}}, {"path", {{"type", "string"}, {"description", "Relative asset path inside the installed skill; defaults to SKILL.md."}}}}, {"id"}),
@@ -1720,7 +1807,8 @@ namespace uam
 			{
 				const std::string name = tool.value("name", "");
 				if (name == "agent_list" || name == "agent_status" || name == "agent_wait" || name == "skill_list" ||
-				    name == "skill_read" || name == "goal_get" || name == "user_question")
+				    name == "skill_read" || name == "goal_get" || name == "user_question" ||
+				    IsHtmlViewMethod(name)) // HTML views only add a display card to this chat's own transcript.
 					tool["annotations"] = {{"readOnlyHint", true}};
 			}
 			return tools;
@@ -1763,7 +1851,7 @@ namespace uam
 			if (aborted()) return std::nullopt;
 			const nlohmann::json request{{"requestId", id}, {"method", method}, {"arguments", arguments}};
 			const std::string request_text = request.dump();
-			if (request_text.size() > kMaxRequestBytes ||
+			if (request_text.size() > RequestLimit(method) ||
 			    !uam::io::WriteTextFile(capability / "requests" / (id + ".json"), request_text)) return std::nullopt;
 			const std::filesystem::path response_path = capability / "responses" / (id + ".json");
 			const int max_attempts = method == "computer_use_request" || method == "goal_create" || method == "user_question" || method == "chat_create"
@@ -2416,7 +2504,7 @@ namespace uam
 				const std::string request_id = uam::paths::Utf8PathString(file.stem());
 				nlohmann::json response{{"ok", false}, {"error", "Malformed or oversized control request."}};
 				const auto size = uam::paths::FileSizeNoThrow(file);
-				if (SafeRequestId(request_id) && size.has_value() && *size > 0 && *size <= kMaxRequestBytes &&
+				if (SafeRequestId(request_id) && size.has_value() && *size > 0 && *size <= html_view::kMaxRequestBytes &&
 				    file.extension() == ".json" && !uam::paths::IsLinkOrReparsePointNoThrow(file))
 				{
 					std::string text;

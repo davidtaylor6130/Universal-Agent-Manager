@@ -344,6 +344,14 @@ export function sanitizeTurnEvent(value: unknown): AcpTurnEvent | null {
     }
   }
 
+  if (type === 'html_view') {
+    // Agent-published page: kept as inert text here and only ever rendered inside the sandboxed frame host.
+    const requestId = stringOr(value.requestId)
+    const text = stringOr(value.text)
+    if (!requestId || !text) return null
+    return { type, text, requestId, title: stringOr(value.title) || 'HTML view' }
+  }
+
   if (type === 'plan') {
     return {
       type,
