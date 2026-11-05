@@ -19,6 +19,7 @@
 #include "common/runtime/acp/acp_session_update_handler.h"
 
 #include "app/chat_domain_service.h"
+#include "app/chat_lifecycle_service.h"
 #include "common/chat/conversation_handoff.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "app/agent_definition_service.h"
@@ -3800,7 +3801,18 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 			AcpSessionState& holder = EnsureAcpSessionForChat(app, chat);
-			return BeginEmptyHeldSend(app, chat, holder, prompt, provenance, error_out);
+			// The empty-hold route refuses a pending reset, so a hold that outlived its uncertainty ends here, as a switch would end it.
+			if (!chat.native_session_reset_pending || !chat.messages_loaded || !QueueHoldHasNoInput(app, chat))
+				return BeginEmptyHeldSend(app, chat, holder, prompt, provenance, error_out);
+			const bool previous_chat_held = chat.acp_queue_held;
+			chat.acp_queue_held = false;
+			if (!ChatRepository::SaveChat(app.data_root, chat))
+			{
+				chat.acp_queue_held = previous_chat_held;
+				if (error_out) *error_out = "The message was not sent because the held queue could not be released. Retry when storage is available.";
+				return false;
+			}
+			holder.queue_held = false;
 		}
 		if (!chat.svn_update_pending && chat.workspace_isolation_kind != paths::kPendingGitWorktreeIsolationKind &&
 		    (!preparing_session || !preparing_session->pending_agent_input) &&
@@ -5126,9 +5138,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
 		int remote_last = chat.remote_turn_user_message_index;
 		int remote_first = remote_last;
-		const bool uncertain_remote_input = chat.remote_turn_reconnect_pending || !chat.remote_active_turn_id.empty() ||
-		    !chat.remote_prompt_delivery_session_id.empty() || !chat.remote_prompt_delivery_id.empty() ||
-		    !chat.remote_prompt_delivery_payload.empty() || !chat.remote_pending_requests.empty();
+		const bool uncertain_remote_input = ChatHasUncertainRemoteInput(chat);
 		if (uncertain_remote_input)
 		{
 			if (remote_last < 0 || remote_last >= static_cast<int>(chat.messages.size()))
@@ -5175,6 +5185,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (no_output) indices.push_back(static_cast<int>(index));
 		}
 		return indices;
+	}
+
+	bool ChatHasUncertainRemoteInput(const ChatSession& chat)
+	{
+		return chat.remote_turn_reconnect_pending || !chat.remote_active_turn_id.empty() ||
+		    !chat.remote_prompt_delivery_session_id.empty() || !chat.remote_prompt_delivery_id.empty() ||
+		    !chat.remote_prompt_delivery_payload.empty() || !chat.remote_pending_requests.empty();
 	}
 
 	/// <summary>Discard a proven unsent row without moving native indices or changing later delivery ownership.</summary>
@@ -5225,11 +5242,20 @@ For desktop observation and input, use only the provider's built-in controller; 
 		    (session && (session->provider_id != chat->provider_id || std::ranges::any_of(session->queued_user_prompts, pending))))
 			return reject("This input has pending delivery or is part of provider history and cannot be removed as an unsent prompt.");
 		const auto previous_recoveries = chat->acp_unsent_prompt_recoveries;
+		const bool previous_chat_held = chat->acp_queue_held;
 		row.acp_prompt_discarded = true;
 		std::erase_if(chat->acp_unsent_prompt_recoveries, [message_index](const auto& value) { return value.user_message_index == message_index; });
-		if (ChatRepository::SaveChat(app.data_root, *chat)) return true;
+		// Removing the only held input ends the hold, as removing the last queued prompt does; Send has no other way past it during a native reset.
+		const bool release_hold = QueueHoldHasNoInput(app, *chat);
+		if (release_hold) chat->acp_queue_held = false;
+		if (ChatRepository::SaveChat(app.data_root, *chat))
+		{
+			if (release_hold && session) session->queue_held = false;
+			return true;
+		}
 		row.acp_prompt_discarded = false;
 		chat->acp_unsent_prompt_recoveries = previous_recoveries;
+		chat->acp_queue_held = previous_chat_held;
 		return reject("The unsent prompt could not be removed because its saved state could not be updated.");
 	}
 
@@ -9142,6 +9168,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 	{
 		const auto found = app.pending_chat_save_tasks.find(chat_id);
 		return found != app.pending_chat_save_tasks.end() && found->second && found->second->empty_held_send;
+	}
+
+	bool AcpEmptyHeldSendPending(const AppState& app, const std::string& chat_id)
+	{
+		return HasPendingEmptyHeldSend(app, chat_id);
 	}
 
 	static void RevokePendingEmptyHeldSend(AppState& app, const std::string& chat_id, bool successor)

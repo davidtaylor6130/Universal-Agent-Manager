@@ -14192,6 +14192,45 @@ UAM_TEST(GoalInternalSessionNeverBindsChatProviderHandoff)
 	UAM_ASSERT_EQ(chat.provider_handoff_session_id, std::string());
 }
 
+UAM_TEST(ProviderSwitchReleasesEmptyQueueHoldSoNextSendIsAdmitted)
+{
+	TempDir temp("uam-provider-switch-empty-hold");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-switch-empty-hold";
+	chat.provider_id = "gemini-cli";
+	chat.workspace_directory = temp.root.string();
+	chat.native_session_id = "gemini-native";
+	chat.acp_queue_held = true;
+	chat.messages.push_back(Message{MessageRole::User, "The launch code is 4821."});
+	chat.messages.push_back(Message{MessageRole::Assistant, "Noted."});
+	app.chats.push_back(chat);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::Changed);
+	std::optional<ChatSession> reopened = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(reopened.has_value());
+	UAM_ASSERT(reopened->native_session_reset_pending);
+	app.chats.front() = *reopened;
+	// Mirrors EnsureAcpSessionForChat, which seeds the runtime hold from the saved chat.
+	auto owned = std::make_unique<uam::AcpSessionState>();
+	uam::AcpSessionState& session = *owned;
+	session.chat_id = chat.id;
+	session.provider_id = "claude-cli";
+	session.protocol_kind = "claude-code-stream-json";
+	session.queue_held = app.chats.front().acp_queue_held;
+	session.running = true;
+	session.initialized = true;
+	session.session_setup_request_id = 1;
+	app.acp_sessions.push_back(std::move(owned));
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "What is the launch code?", {}, {}, false, &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(session.queued_prompt.find("What is the launch code?") != std::string::npos);
+	UAM_ASSERT(session.queued_prompt.find("User: The launch code is 4821.") != std::string::npos);
+	UAM_ASSERT(!reopened->acp_queue_held);
+}
+
 UAM_TEST(ProviderResumeWithSavedIdentityCompletesNativeReset)
 {
 	ChatSession chat;
@@ -14200,6 +14239,100 @@ UAM_TEST(ProviderResumeWithSavedIdentityCompletesNativeReset)
 	UAM_ASSERT(uam::acp_detail::SetChatNativeSessionIdIfChanged(chat, "same-native"));
 	UAM_ASSERT(!chat.native_session_reset_pending);
 	UAM_ASSERT(!uam::acp_detail::SetChatNativeSessionIdIfChanged(chat, "same-native"));
+}
+
+UAM_TEST(ProviderSwitchKeepsHeldQueuedInputForResume)
+{
+	TempDir temp("uam-provider-switch-held-input");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-switch-held-input";
+	chat.provider_id = "gemini-cli";
+	chat.workspace_directory = temp.root.string();
+	chat.native_session_id = "gemini-native";
+	chat.acp_queue_held = true;
+	chat.messages.push_back(Message{MessageRole::User, "Earlier."});
+	uam::AcpQueuedUserPromptState queued;
+	queued.id = "held-follow-up";
+	queued.revision = 1;
+	queued.text = "Held follow-up.";
+	chat.acp_queued_prompts.push_back(queued);
+	app.chats.push_back(chat);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::Changed);
+	const ChatSession& switched = app.chats.front();
+	UAM_ASSERT_EQ(switched.provider_id, std::string("claude-cli"));
+	UAM_ASSERT(switched.acp_queue_held && switched.native_session_reset_pending);
+	UAM_ASSERT_EQ(switched.acp_queued_prompts.size(), static_cast<std::size_t>(1));
+	std::optional<ChatSession> reopened = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(reopened.has_value() && reopened->acp_queue_held);
+	UAM_ASSERT_EQ(reopened->acp_queued_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(reopened->acp_queued_prompts.front().text, std::string("Held follow-up."));
+
+	// Resume still reaches the held prompt under the new provider.
+	uam::AcpSessionState& session = uam::acp_detail::EnsureAcpSessionForChat(app, app.chats.front());
+	UAM_ASSERT(session.queue_held);
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), static_cast<std::size_t>(1));
+	std::string error;
+	UAM_ASSERT(uam::ResumeQueuedAcpPrompts(app, chat.id, {{"held-follow-up", 1}}, &error));
+	UAM_ASSERT(!session.queue_held);
+	PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+}
+
+UAM_TEST(ProviderSwitchKeepsStorageProblemQueueHoldAndJournal)
+{
+	for (const bool storage_error : {true, false})
+	{
+		TempDir temp("uam-provider-switch-storage-hold");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatSession chat;
+		chat.id = "chat-switch-storage-hold";
+		chat.provider_id = "gemini-cli";
+		chat.workspace_directory = temp.root.string();
+		chat.native_session_id = "gemini-native";
+		chat.acp_queue_held = true;
+		// Prompts never loaded from the journal, so the in-memory queue looks empty.
+		chat.acp_queue_storage_error = storage_error;
+		chat.managed_followup_input_unavailable = !storage_error;
+		chat.messages.push_back(Message{MessageRole::User, "Earlier."});
+		app.chats.push_back(chat);
+		const std::filesystem::path journal = temp.root / "queue-outboxes" / (chat.id + ".json");
+		std::filesystem::create_directories(journal.parent_path());
+		const std::string journal_bytes = R"({"unreadable-journal-input":"retain me"})";
+		{
+			std::ofstream out(journal, std::ios::binary);
+			out << journal_bytes;
+		}
+		// Saves are refused in this state, so the switch fails with the provider, hold and journal intact.
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::SaveFailed);
+		UAM_ASSERT_EQ(app.chats.front().provider_id, std::string("gemini-cli"));
+		UAM_ASSERT(app.chats.front().acp_queue_held && !app.chats.front().native_session_reset_pending);
+		UAM_ASSERT_EQ(ReadFile(journal), journal_bytes);
+	}
+}
+
+UAM_TEST(ProviderSwitchWaitsForPendingEmptyHeldSend)
+{
+	TempDir temp("uam-provider-switch-pending-empty-held-send");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-switch-pending-empty-held-send";
+	chat.provider_id = "gemini-cli";
+	chat.workspace_directory = temp.root.string();
+	chat.acp_queue_held = true;
+	chat.messages.push_back(Message{MessageRole::User, "Earlier."});
+	app.chats.push_back(chat);
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Fresh input.", {}, {}, false, &error));
+	UAM_ASSERT(uam::AcpEmptyHeldSendPending(app, chat.id));
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::ActiveRuntime);
+	UAM_ASSERT_EQ(app.chats.front().provider_id, std::string("gemini-cli"));
+	UAM_ASSERT(!app.chats.front().native_session_reset_pending);
 }
 
 UAM_TEST(AcpCompactionLoadReplayEnrichesNativeIdentityWithoutEnteringLiveTurn)

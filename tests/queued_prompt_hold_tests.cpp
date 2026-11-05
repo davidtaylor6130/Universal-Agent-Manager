@@ -1,4 +1,6 @@
 #include "test_harness.h"
+#include "common/chat/chat_message_page_index.h"
+#include "common/utils/hash_utils.h"
 #include "cef/state_serializer.h"
 #include "common/chat/conversation_handoff.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
@@ -852,7 +854,14 @@ UAM_TEST(ExplicitFreshSendPreservesNonemptyUncertainMalformedAndUnsavedQueueHold
 				if (arm == 17) primary["acp_unsent_prompt_recoveries"] = nlohmann::json::array({false});
 				UAM_ASSERT(uam::io::WriteTextFile(fixture.Primary(), primary.dump()));
 			}
-			if (arm == 18) chat.native_session_reset_pending = true;
+			if (arm == 18)
+			{
+				// A pending reset alone no longer blocks Send, so held input is what this arm protects.
+				chat.native_session_reset_pending = true;
+				Message unsent{MessageRole::User, "Not delivered."};
+				unsent.acp_prompt_not_sent = true;
+				chat.messages.push_back(unsent);
+			}
 			if (arm == 19)
 			{
 				ChatSession raw = chat;
@@ -888,6 +897,134 @@ UAM_TEST(ExplicitFreshSendPreservesNonemptyUncertainMalformedAndUnsavedQueueHold
 			throw std::runtime_error("Empty-held refusal arm " + std::to_string(arm) + ": " + error.what());
 		}
 	}
+}
+
+UAM_TEST(RemovingOnlyUnsentRowEndsHoldDuringNativeReset)
+{
+	for (const bool through_switch : {false, true})
+	{
+		EmptyHeldFreshSendFixture fixture(true);
+		fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultClaudeProfile());
+		Message unsent{MessageRole::User, "Not delivered."};
+		unsent.acp_prompt_not_sent = true;
+		fixture.Chat().messages.push_back(unsent);
+		if (through_switch)
+		{
+			// The unsent row keeps the hold across the switch, and the reset is pending.
+			UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, fixture.id, "claude-cli"), uam::ChatProviderSwitchResult::Changed);
+			UAM_ASSERT(fixture.Chat().acp_queue_held);
+			uam::acp_detail::EnsureAcpSessionForChat(fixture.app, fixture.Chat());
+		}
+		else
+		{
+			fixture.Chat().native_session_reset_pending = true;
+			UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+		}
+		UAM_ASSERT(fixture.Chat().native_session_reset_pending);
+		std::string error;
+		UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, fixture.id, fixture.fresh, &error));
+		UAM_ASSERT(fixture.Chat().acp_queue_held && fixture.Session().queue_held);
+
+		std::uint64_t hash = uam::hashing::kFnv1a64OffsetBasis;
+		for (const auto& row : fixture.Chat().messages) uam::chat_pages::AppendMessageDigest(hash, row);
+		UAM_ASSERT(uam::DiscardUnsentAcpMessage(fixture.app, fixture.id, static_cast<int>(fixture.Chat().messages.size() - 1),
+		    uam::chat_pages::FinishMessageDigest(hash, fixture.Chat().messages.size()), &error));
+		UAM_ASSERT(fixture.Chat().messages.back().acp_prompt_discarded);
+		UAM_ASSERT(!fixture.Chat().acp_queue_held && !fixture.Session().queue_held);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.id);
+		UAM_ASSERT(saved.has_value() && !saved->acp_queue_held);
+
+		error.clear();
+		UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.id, fixture.fresh, &error));
+		UAM_ASSERT(error.empty());
+		fixture.Drain();
+	}
+}
+
+UAM_TEST(UncertainRemoteDeliveryKeepsHoldAfterRemoveAndSwitch)
+{
+	for (const bool active_turn : {true, false})
+	{
+		EmptyHeldFreshSendFixture fixture(true);
+		fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultClaudeProfile());
+		// U1 is still unsent; U2 went out, so delivery cleared its marker while the outcome is unknown.
+		Message older{MessageRole::User, "Older unsent."};
+		older.acp_prompt_not_sent = true;
+		fixture.Chat().messages.push_back(older);
+		fixture.Chat().messages.push_back(Message{MessageRole::User, "Sent, outcome unknown."});
+		fixture.Chat().remote_turn_user_message_index = static_cast<int>(fixture.Chat().messages.size() - 1);
+		if (active_turn) fixture.Chat().remote_active_turn_id = "uncertain-remote-turn";
+		else fixture.Chat().remote_prompt_delivery_id = "uncertain-delivery";
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+
+		std::uint64_t hash = uam::hashing::kFnv1a64OffsetBasis;
+		for (const auto& row : fixture.Chat().messages) uam::chat_pages::AppendMessageDigest(hash, row);
+		std::string error;
+		UAM_ASSERT(uam::DiscardUnsentAcpMessage(fixture.app, fixture.id, static_cast<int>(fixture.Chat().messages.size() - 2),
+		    uam::chat_pages::FinishMessageDigest(hash, fixture.Chat().messages.size()), &error));
+		UAM_ASSERT(fixture.Chat().acp_queue_held && fixture.Session().queue_held);
+		UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, fixture.id, fixture.fresh, &error));
+
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, fixture.id, "claude-cli"), uam::ChatProviderSwitchResult::Changed);
+		UAM_ASSERT(fixture.Chat().acp_queue_held && fixture.Chat().native_session_reset_pending);
+		error.clear();
+		UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, fixture.id, fixture.fresh, &error));
+		UAM_ASSERT(fixture.Chat().acp_queue_held);
+
+		// Once the uncertainty settles nothing is held, so the next Send works without another switch.
+		fixture.Chat().remote_active_turn_id.clear();
+		fixture.Chat().remote_prompt_delivery_id.clear();
+		fixture.Chat().remote_turn_user_message_index = -1;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+		error.clear();
+		UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.id, fixture.fresh, &error));
+		UAM_ASSERT(error.empty());
+		UAM_ASSERT(!fixture.Chat().acp_queue_held && !fixture.Session().queue_held);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.id);
+		UAM_ASSERT(saved.has_value() && !saved->acp_queue_held);
+		fixture.Drain();
+	}
+}
+
+UAM_TEST(ProviderSwitchKeepsHeldInputOfUnloadedQueueUntilItIsRemoved)
+{
+	EmptyHeldFreshSendFixture fixture(true);
+	fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultClaudeProfile());
+	uam::AcpQueuedUserPromptState queued;
+	queued.id = "held-follow-up";
+	queued.revision = 1;
+	queued.text = "Held follow-up.";
+	fixture.Chat().acp_queued_prompts.push_back(queued);
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(fixture.app.data_root, fixture.Chat()));
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, fixture.id, "claude-cli"), uam::ChatProviderSwitchResult::Changed);
+	UAM_ASSERT(fixture.Chat().acp_queue_held && fixture.Chat().native_session_reset_pending);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.id);
+	UAM_ASSERT(saved.has_value() && saved->acp_queue_held && !saved->acp_queue_storage_error);
+	UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{1});
+	uam::acp_detail::EnsureAcpSessionForChat(fixture.app, fixture.Chat());
+	std::string error;
+	UAM_ASSERT(uam::RemoveQueuedAcpPrompt(fixture.app, fixture.id, 0, &error));
+	UAM_ASSERT(fixture.Chat().acp_queued_prompts.empty() && !fixture.Chat().acp_queue_held);
+	error.clear();
+	UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.id, fixture.fresh, &error));
+	fixture.Drain();
+}
+
+UAM_TEST(ProviderSwitchRefusesLoadedHeldQueueAsActiveWork)
+{
+	EmptyHeldFreshSendFixture fixture(true);
+	fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultClaudeProfile());
+	uam::AcpQueuedUserPromptState queued;
+	queued.id = "held-follow-up";
+	queued.revision = 1;
+	queued.text = "Held follow-up.";
+	fixture.Chat().acp_queued_prompts.push_back(queued);
+	fixture.Session().queued_user_prompts.push_back(queued);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, fixture.id, "claude-cli"), uam::ChatProviderSwitchResult::ActiveRuntime);
+	UAM_ASSERT_EQ(fixture.Chat().provider_id, std::string("codex-cli"));
+	UAM_ASSERT(fixture.Chat().acp_queue_held && !fixture.Chat().native_session_reset_pending);
+	fixture.Chat().acp_queued_prompts.clear();
+	fixture.Session().queued_user_prompts.clear();
 }
 
 UAM_TEST(ExplicitFreshSendDoesNotReplaceThePendingEmptyHoldInvocation)
