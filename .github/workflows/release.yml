@@ -97,7 +97,12 @@ jobs:
             ${{ matrix.checksum }}
             ${{ matrix.version }}
             ${{ matrix.manifest }}
-            Builds/runner/${{ matrix.artifact }}.zip
+          if-no-files-found: error
+      # Its own artifact: a ZIP above the Windows Release folder would nest the helper files one level down.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-archive
+          path: Builds/runner/${{ matrix.artifact }}.zip
           if-no-files-found: error
 
   build:
