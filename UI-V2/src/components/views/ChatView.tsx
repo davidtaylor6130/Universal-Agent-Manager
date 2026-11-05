@@ -3772,6 +3772,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               cancelLabel="Keep planning"
               secondaryAction={{ label: 'Review each edit', onClick: () => void resolveClaudePlanPrompt('default') }}
               onCancel={() => void resolveClaudePlanPrompt('plan')}
+              onDismiss={() => setClaudePlanPrompt(null)}
               onConfirm={() => void resolveClaudePlanPrompt('acceptEdits')}
             >
               Claude Plan mode is read-only. Choose how to proceed with this prompt.

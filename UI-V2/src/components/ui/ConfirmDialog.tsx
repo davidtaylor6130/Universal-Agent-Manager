@@ -12,6 +12,8 @@ export interface ConfirmDialogProps {
   confirmLabel: string
   onConfirm: () => void
   onCancel: () => void
+  /** Answers Escape and backdrop clicks when the cancel button is itself a choice; defaults to onCancel. */
+  onDismiss?: () => void
   /** Accessible name; defaults to the title. */
   label?: string
   tone?: 'danger' | 'primary'
@@ -30,13 +32,13 @@ export interface ConfirmDialogProps {
 }
 
 /** Small alert dialog for confirming a (usually destructive) action. Escape cancels while idle unless dismissible is false. */
-export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, onCancel, label, tone = 'danger', busy = false, error, cancelLabel = 'Cancel', secondaryAction, dismissible = true, confirmDisabled = false, settingsOwned = false }: ConfirmDialogProps) {
+export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, onCancel, onDismiss, label, tone = 'danger', busy = false, error, cancelLabel = 'Cancel', secondaryAction, dismissible = true, confirmDisabled = false, settingsOwned = false }: ConfirmDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
   const busyRef = useRef(busy)
   busyRef.current = busy
-  const onCancelRef = useRef(onCancel)
-  onCancelRef.current = onCancel
+  const onCancelRef = useRef(onDismiss ?? onCancel)
+  onCancelRef.current = onDismiss ?? onCancel
   const dismissibleRef = useRef(dismissible)
   dismissibleRef.current = dismissible
 
@@ -79,7 +81,7 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
   }, [open, busy])
 
   return (
-    <Overlay open={open} zIndex={70} onBackdropMouseDown={() => { if (!busy && dismissible) onCancel() }}>
+    <Overlay open={open} zIndex={70} onBackdropMouseDown={() => { if (!busy && dismissible) (onDismiss ?? onCancel)() }}>
       <div
         ref={dialogRef}
         tabIndex={-1}
