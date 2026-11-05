@@ -827,7 +827,12 @@ UAM_TEST(RemoteRefreshFeedbackChangedPostcommitOwnerNeverRedrawsOldHistory)
 UAM_TEST(RemoteRefreshFeedbackCancelledQuerySavesWithoutDeliveryAndNextRequestReusesIt)
 {
 	FeedbackFixture fixture;
-	fixture.app.selected_chat_index = -1; // Selected-chat summaries are throttled; observe pushes on an unthrottled row.
+	fixture.app.selected_chat_index = -1;
+	// Every chat summary is throttled for 100 ms after a push, so the clock steps past that window below.
+	static std::chrono::steady_clock::time_point push_now;
+	push_now = std::chrono::steady_clock::now();
+	uam::SetStatePushClockForTests([] { return push_now; });
+	struct RestorePushClock { ~RestorePushClock() { uam::SetStatePushClockForTests(nullptr); } } restore_push_clock;
 	(void)uam::PushStateUpdateIfChanged(nullptr, fixture.app); // Baseline before the refresh.
 	RemoteRefreshFeedbackTestAccess::Query(*fixture.handler, 41);
 	const auto cancelled = fixture.Start();
@@ -837,6 +842,7 @@ UAM_TEST(RemoteRefreshFeedbackCancelledQuerySavesWithoutDeliveryAndNextRequestRe
 	// Delivery only: no history reaches the cancelled callback or the state push.
 	UAM_ASSERT_EQ(cancelled->successes, 0); UAM_ASSERT_EQ(cancelled->failures, 1); UAM_ASSERT_EQ(cancelled->status, 409);
 	UAM_ASSERT(cancelled->error.find("New native answer") == std::string::npos);
+	push_now += std::chrono::milliseconds(100);
 	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, fixture.app));
 	// The read and its save still finished.
 	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.Chat().id, true, nullptr, false);
