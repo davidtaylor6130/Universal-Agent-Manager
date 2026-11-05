@@ -207,6 +207,9 @@ function formatWakeTime(untilMs: number): string {
   return wake.toDateString() === new Date().toDateString() ? time : `${wake.toLocaleDateString([], { weekday: 'short' })} ${time}`
 }
 
+/** Hover/focus dwell before a row warms its chat history (#624). */
+const PREFETCH_INTENT_MS = 150
+
 const HOVER_FADE = 'transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0'
 
 export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityFolderName, activityFolderIcon, activityHostLabel, activityHostRemote = false, onSessionClick, onSessionOpen, subagentRow = false }: SessionItemProps) {
@@ -470,6 +473,14 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const inputRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
+  // Hover or focus intent warms a cold chat's history; a quick pass across the list starts nothing.
+  const prefetchTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const schedulePrefetch = () => {
+    clearTimeout(prefetchTimer.current)
+    prefetchTimer.current = setTimeout(() => useAppStore.getState().prefetchSessionMessages(sessionId), PREFETCH_INTENT_MS)
+  }
+  const cancelPrefetch = () => clearTimeout(prefetchTimer.current)
+  useEffect(() => cancelPrefetch, [])
   const menuReturnFocusRef = useRef<HTMLElement | null>(null)
   const activityDate = activityLayout ? session?.updatedAt ?? sessionLastOpenedAt : sessionLastOpenedAt
   const lastOpenedLabel = formatSidebarTime(activityDate)
@@ -594,6 +605,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           // Hover and selected backgrounds come from .uam-sb-row in sidebar.css so they share one box.
           boxShadow: selected ? 'inset 2px 0 0 var(--accent)' : 'none',
         }}
+        onPointerEnter={schedulePrefetch}
+        onPointerLeave={cancelPrefetch}
+        onFocus={schedulePrefetch}
+        onBlur={cancelPrefetch}
         onClick={(event) => {
           if (editing || onSessionClick?.(sessionId, event)) return
           selectChat()

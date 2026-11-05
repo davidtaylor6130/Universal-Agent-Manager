@@ -248,9 +248,24 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
   const boundedTailReloads = new Map<string, number>()
   const loadedMessagesDigestByChatId = new Map<string, string>()
   const messageHydrationGenerationByChatId = new Map<string, number>()
+  // ponytail: fixed caps for hover prefetch; tune when profiling shows memory or bridge pressure.
+  const PREFETCH_MAX_IN_FLIGHT = 2
+  const PREFETCH_MAX_RETAINED = 4
+  type PrefetchEntry = { requestId: string; promise: Promise<void | false | AcceptedHistoryPage>; birth: number; digest?: string; count?: number; claimed: boolean }
+  const prefetchInFlight = new Map<string, PrefetchEntry>()
+  const prefetchedIds: string[] = []
+  // Any other ordinary load or selection of the chat owns its history from then on; the prefetch must not evict or release it.
+  // A forced reload is not an open: it refreshes a chat that stays warm (turn completion reloads loaded chats), so it does not claim.
+  const claimPrefetch = (chatId: string) => {
+    const entry = prefetchInFlight.get(chatId)
+    if (entry) entry.claimed = true
+    const index = prefetchedIds.indexOf(chatId)
+    if (index >= 0) prefetchedIds.splice(index, 1)
+  }
 
-  const requestChatMessagesFromCef = (chatId: string, force = false, refreshNative = false, presentationRetry = 0): Promise<void | false | AcceptedHistoryPage> | undefined => {
+  const requestChatMessagesFromCef = (chatId: string, force = false, refreshNative = false, presentationRetry = 0, background = false): Promise<void | false | AcceptedHistoryPage> | undefined => {
     if (!isCefContext() || !chatId) return
+    if (!background && !force) claimPrefetch(chatId)
     if (get().chatSearchNavigation?.chatId === chatId || boundedTailReloads.has(chatId)) return
     const current = get()
     const historyStartAtRequestStart = current.historyStartIndexBySessionId[chatId] ?? 0
@@ -266,6 +281,17 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       Number.isSafeInteger(sessionAtRequestStart?.messageCount) && sessionAtRequestStart?.messagesDigest &&
       historyStartAtRequestStart + (messagesAtRequestStart?.length ?? 0) > sessionAtRequestStart!.messageCount!)
     const requestKey = `getChatMessages:${chatId}`
+    // An ordinary open joins a hover prefetch instead of superseding it and restarting the native read.
+    // It only joins while the chat's identity and saved summary still match the prefetch's, and keeps the read marker
+    // on the prefetch so the open shows loading (and any failure) rather than an unavailable state.
+    const prefetch = prefetchInFlight.get(chatId)
+    if (prefetch && !background && !force && !refreshNative && presentationRetry === 0 && isLatestPendingRequest(requestKey, prefetch.requestId) &&
+        prefetch.birth === chatBirthAtRequestStart && prefetch.digest === sessionAtRequestStart.messagesDigest && prefetch.count === sessionAtRequestStart.messageCount) {
+      set(state => ({ chatHistoryReadBySessionId: { ...state.chatHistoryReadBySessionId, [chatId]: { requestId: prefetch.requestId, birth: prefetch.birth } } }))
+      // The warm-up may still be queued on the lower-priority lane; an explicit open must not wait behind that lane.
+      void sendToCEF({ action: 'promoteChatHistoryRead', payload: { chatId } })
+      return prefetch.promise
+    }
     const requestId = createRequestId('getChatMessages')
     const hydrationGeneration = messageHydrationGenerationByChatId.get(chatId) ?? 0
     rememberPendingRequest(requestKey, requestId)
@@ -291,6 +317,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         limit: 50,
         deferToolCallContent: true,
         ...(refreshNative ? { refreshNative: true } : {}),
+        ...(background ? { background: true } : {}),
         messagesDigest: requestedDigest,
       },
       requestId,
@@ -323,7 +350,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (!response.ok || !response.data) {
         if (!response.ok && response.error === 'Chat history changed while loading. Retry to refresh it.' && mayReadColdHistoryOnce) {
           // A refusal contains no page to adopt. Share the presentation reread's single budget.
-          const fresh = requestChatMessagesFromCef(chatId, true, false, presentationRetry + 1)
+          const fresh = requestChatMessagesFromCef(chatId, true, false, presentationRetry + 1, background)
           if (fresh) return fresh
         }
         const chatName = current.sessions.find((session) => session.id === chatId)?.name?.trim() || chatId
@@ -357,7 +384,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             idleShutdownAtMs: bindingAtRequestStart.idleShutdownAtMs,
             diagnostics: bindingAtRequestStart.diagnostics })) {
         // Discard this page; presentation changes only permit one new read, never stale unsent adoption.
-        const fresh = requestChatMessagesFromCef(chatId, true, false, presentationRetry + 1)
+        const fresh = requestChatMessagesFromCef(chatId, true, false, presentationRetry + 1, background)
         if (fresh) return fresh
       }
       if (data.unchanged) {
@@ -564,6 +591,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     setActiveSession: (id: string | null, navigation?: { preserveSubagentRoute?: boolean; leafId?: string }) => {
+      if (id) claimPrefetch(id)
       const selected = get().sessions.find(candidate => candidate.id === id)
       const parent = selected && subagentParentFor(selected, get().sessions)
       if (parent && id) {
@@ -764,6 +792,48 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     loadSessionMessages: requestChatMessagesFromCef,
+
+    prefetchSessionMessages: (id: string) => {
+      const state = get()
+      const session = state.sessions.find((candidate) => candidate.id === id)
+      const binding = state.acpBindingBySessionId[id]
+      // Remote reads can start a provider history read, and a chat with queued, held or running input can have its
+      // admissions settled by the read, so only idle local chats are warmed.
+      if (!session || isCompanionContext() || (session.executionHostId || 'local') !== 'local' || id === state.activeSessionId ||
+          state.messages[id] !== undefined || state.chatHistoryReadBySessionId[id] || state.chatHistoryErrorBySessionId[id] ||
+          binding?.processing || binding?.queueHeld || binding?.queuedPrompts?.length || binding?.pendingDirectPrompts?.length ||
+          binding?.unsentDirectPrompts?.length || state.cliBindingBySessionId[id]?.processing ||
+          pendingRequestIdsByKey.has(`getChatMessages:${id}`) || prefetchInFlight.size >= PREFETCH_MAX_IN_FLIGHT) return
+      const promise = requestChatMessagesFromCef(id, false, false, 0, true)
+      const requestId = pendingRequestIdsByKey.get(`getChatMessages:${id}`)
+      if (!promise || !requestId) return
+      const entry: PrefetchEntry = { requestId, promise, birth: session.createdAt.getTime(), digest: session.messagesDigest, count: session.messageCount, claimed: false }
+      prefetchInFlight.set(id, entry)
+      void promise.then(() => {
+        if (prefetchInFlight.get(id) === entry) prefetchInFlight.delete(id)
+        const settled = get()
+        if (entry.claimed || settled.activeSessionId === id || prefetchedIds.includes(id)) return
+        // Nothing was adopted and no forced reload took over (failed), so drop the native copy the read may have loaded.
+        if (settled.messages[id] === undefined && !pendingRequestIdsByKey.has(`getChatMessages:${id}`)) {
+          if (isCefContext()) void sendToCEF({ action: 'releaseChatMessages', payload: { chatId: id } })
+          return
+        }
+        prefetchedIds.push(id)
+        get().evictWarmChats()
+      })
+    },
+
+    // Unopened warm pages are evicted oldest first; an ordinary load or selection removes a chat from this list. Unload
+    // refuses a processing chat, so it stays listed and the store's subscriber retries this after every update.
+    evictWarmChats: () => {
+      while (prefetchedIds.length > PREFETCH_MAX_RETAINED) {
+        const state = get()
+        const index = prefetchedIds.findIndex(id => !state.acpBindingBySessionId[id]?.processing && !state.cliBindingBySessionId[id]?.processing)
+        if (index < 0) return
+        const [oldest] = prefetchedIds.splice(index, 1)
+        if (state.activeSessionId !== oldest) state.unloadSessionMessages(oldest)
+      }
+    },
 
     loadOlderSessionMessages: async (id: string) => {
       if (!isCefContext()) return false

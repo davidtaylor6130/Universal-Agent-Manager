@@ -83,6 +83,7 @@ Current bridge actions, grouped by domain (the live dispatch table is `UamQueryH
 | `getInitialState` | Return full serialized app state |
 | `selectSession` | Select a chat |
 | `getChatMessages` | Return messages for a chat |
+| `promoteChatHistoryRead` | Move a chat's queued hover warm-up read to the user-blocking lane |
 | `getUsageHistory` | Query host-scoped usage history with immutable byte-bounded snapshot continuation |
 | `createSession` | Create a chat in a workspace folder with a provider |
 | `openNativeSessionChat` | Open a chat backed by a discovered native session |

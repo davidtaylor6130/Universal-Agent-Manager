@@ -6,6 +6,7 @@
 
 #include "include/cef_task.h"
 
+#include <atomic>
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -133,6 +134,25 @@ class CefQueryWorkerTask : public CefTask
 	IMPLEMENT_REFCOUNTING(CefQueryWorkerTask);
 };
 
+/// <summary>Runs its task once however many lanes it was posted to, so posting it again promotes a task still queued.</summary>
+class CefRunOnceTask : public CefTask
+{
+  public:
+	explicit CefRunOnceTask(CefRefPtr<CefTask> task) : m_task(std::move(task)) {}
+
+	void Execute() override
+	{
+		if (m_started.exchange(true)) return;
+		m_task->Execute();
+		m_task = nullptr;
+	}
+
+  private:
+	std::atomic<bool> m_started{false};
+	CefRefPtr<CefTask> m_task;
+	IMPLEMENT_REFCOUNTING(CefRunOnceTask);
+};
+
 /// User requests require immediate results, including when no BrowserView exists.
 /// CEF may indefinitely defer BACKGROUND work while the application is idle.
 template <typename Worker>
@@ -147,14 +167,16 @@ bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBr
 }
 
 template <typename Worker, typename Completion>
-bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker, Completion completion, CefThreadId thread_id = TID_FILE_USER_BLOCKING)
+bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker, Completion completion, CefThreadId thread_id = TID_FILE_USER_BLOCKING, CefRefPtr<CefTask>* promotable = nullptr)
 {
-	if (!CefPostTask(thread_id,
-	                 new CefQueryWorkerTask(std::move(lifetime), callback, std::move(worker), std::move(completion))))
+	CefRefPtr<CefTask> task = new CefQueryWorkerTask(std::move(lifetime), callback, std::move(worker), std::move(completion));
+	if (promotable != nullptr) task = new CefRunOnceTask(task);
+	if (!CefPostTask(thread_id, task))
 	{
 		if (callback) callback->Failure(503, "The background task queue is unavailable.");
 		return false;
 	}
+	if (promotable != nullptr) *promotable = task;
 	return true;
 }
 

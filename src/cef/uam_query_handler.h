@@ -1,5 +1,7 @@
 #pragma once
 
+#include "include/cef_task.h"
+
 #include <set>
 #include <atomic>
 #include <map>
@@ -128,6 +130,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	// Saved results of delivery-cancelled reads, consumed by the next request for the same chat.
 	// ponytail: no expiry; the next request of any kind for that chat consumes it.
 	std::set<std::string> m_reusableNativeHistory;
+	// Hover warm-up reads an explicit open can still move ahead of queued status reads (#624).
+	std::map<std::string, CefRefPtr<CefTask>> m_promotableHistoryReads;
 	bool m_retryReusesSavedRead = false; // Set only while a waiter retries after a finished read.
 	ChatIconQueryIdentity m_dispatchingQuery{-1, "", -1};
 	// Registers the read and wraps cb so a cancelled request receives no history.
@@ -169,6 +173,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleSelectSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetVisibleChatIds(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleReleaseChatMessages(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandlePromoteChatHistoryRead(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleRefreshLocalGeminiMedia(CefRefPtr<CefBrowser> browser, const ChatSession& chat,
 	    const std::string& known_digest, const std::optional<std::pair<std::size_t, std::optional<std::size_t>>>& page,
 	    bool defer_tool_call_content, CefRefPtr<Callback> cb);
