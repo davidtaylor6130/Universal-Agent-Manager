@@ -797,6 +797,8 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   favoriteUamAgentIds?: string[]
   nativeImportExcludedTitlePrefixes?: string[]
   nativeImportExcludedDirectories?: string[]
+  /** Startup import leaves out sessions with no activity in this many days (0 = no limit). */
+  nativeImportStartupMaxAgeDays?: number
   uamAgentCycleShortcut?: UamAgentCycleShortcut
   /** Saved global Computer Use consent. Unknown when absent; does not grant a target. */
   computerUseGloballyEnabled?: boolean

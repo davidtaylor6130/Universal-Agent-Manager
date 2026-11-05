@@ -161,6 +161,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   nativeImportExcludedTitlePrefixes: string[]
   /** Native sessions in one of these folders, or below one, are never offered for import. */
   nativeImportExcludedDirectories: string[]
+  /** Startup import leaves out sessions with no activity in this many days (0 = no limit); Chat Data discovery still lists them. */
+  nativeImportStartupMaxAgeDays: number
   uamAgentCycleShortcut: UamAgentCycleShortcut
   computerUseEnabled?: boolean
   computerUseRevocationPending?: boolean
@@ -272,7 +274,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setCentralProviderConfiguration: (configuration: CentralProviderConfiguration) => Promise<{ ok: boolean; error?: string }>
   setMcpServers: (servers: McpServerConfiguration[], scopeExecutionHostId?: string) => Promise<{ ok: boolean; error?: string }>
   setUamAgentPreferences: (settings: { favoriteUamAgentIds: string[]; uamAgentCycleShortcut: UamAgentCycleShortcut }) => Promise<boolean>
-  setNativeImportFilters: (filters: { titlePrefixes: string[]; directories: string[] }) => Promise<boolean>
+  setNativeImportFilters: (filters: { titlePrefixes: string[]; directories: string[]; startupMaxAgeDays: number }) => Promise<boolean>
   setShellActions: (actions: ShellAction[]) => Promise<boolean>
   applyShellActions: () => Promise<boolean>
   dismissShellActionNotification: () => Promise<void>

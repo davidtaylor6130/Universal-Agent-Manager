@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <fstream>
+#include <set>
 #include <future>
 #include <thread>
 
@@ -742,6 +743,82 @@ UAM_TEST(NativeImportFiltersDropMatchingTitlesAndFoldersBeforeOffering)
 	discovery.chats = {kept, scripted, scratch};
 	UAM_ASSERT(ChatHistorySyncService().FilterStartupImportCandidates(app, discovery));
 	UAM_ASSERT_EQ(discovery.chats.size(), std::size_t{3});
+}
+
+UAM_TEST(StartupImportLeavesOldSessionsForExplicitDiscovery)
+{
+	TempDir temp("uam-native-import-startup-age");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	ExecutionHost host;
+	host.id = "synthetic-host"; host.transport = "ssh"; host.platform = "linux"; host.runner_status = "ready";
+	app.settings.execution_hosts.push_back(host);
+	app.folders.push_back({"remote", "Remote", "/synthetic/remote", false, host.id});
+	const std::string now = uam::time::IsoUtcTimestampNow();
+	const std::string old_time = "2020-01-01T00:00:00.000Z";
+	const auto history = [&](const std::string& id, const std::string& updated_at)
+	{
+		ChatSession chat = StartupHistory(temp.root / "workspace", id);
+		chat.updated_at = updated_at;
+		return chat;
+	};
+	const std::vector<ChatSession> local = {history("recent", now), history("old", old_time), history("untimed", ""), history("garbled", "not-a-time")};
+	const auto remote = [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, std::stop_token)
+	{
+		ChatHistorySyncService::LocalHistoryDiscovery result;
+		for (const auto& [id, updated_at] : {std::pair<std::string, std::string>{"remote-old", old_time}, {"remote-recent", now}})
+		{
+			auto chat = StartupHistory("/synthetic/remote", id);
+			chat.execution_host_id = host.id; chat.folder_id = "remote"; chat.updated_at = updated_at;
+			result.chats.push_back(std::move(chat));
+		}
+		return result;
+	};
+	const auto offered_ids = [](const uam::StartupNativeImportService& service)
+	{
+		std::set<std::string> ids;
+		for (const auto& candidate : service.Snapshot().candidates) ids.insert(candidate.native_session_id);
+		return ids;
+	};
+	{
+		// Off by default: startup offers every session.
+		uam::StartupNativeImportService service(FixtureScanner(local), remote);
+		service.Initialize(app); WaitForStartup(service, app);
+		UAM_ASSERT_EQ(offered_ids(service), (std::set<std::string>{"recent", "old", "untimed", "garbled", "remote-old", "remote-recent"}));
+	}
+	app.settings.native_import_startup_max_age_days = 30;
+	uam::StartupNativeImportService service(FixtureScanner(local), remote);
+	service.Initialize(app); WaitForStartup(service, app);
+	// Startup offers recent sessions and sessions without a readable time; nothing is saved.
+	UAM_ASSERT_EQ(offered_ids(service), (std::set<std::string>{"recent", "untimed", "garbled", "remote-recent"}));
+	UAM_ASSERT(!fs::exists(app.data_root));
+	// Declining everything startup offered leaves the held-back sessions untouched.
+	const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+	std::vector<std::string> declined;
+	for (const auto& candidate : ready.candidates) declined.push_back(candidate.candidate_id);
+	std::string error;
+	UAM_ASSERT(service.Decide(app, ready.generation, {}, declined, &error));
+	UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t{0});
+	// The explicit Chat Data scan lists the old local session and the remote one startup held back.
+	UAM_ASSERT(service.DiscoverLocalHistory(app)); WaitForStartup(service, app);
+	UAM_ASSERT_EQ(offered_ids(service), (std::set<std::string>{"old", "remote-old"}));
+}
+
+UAM_TEST(StartupImportAgeLimitKeepsSessionsActiveExactlyAtTheLimit)
+{
+	AppSettings settings;
+	settings.native_import_startup_max_age_days = 30;
+	const std::time_t now = 1'800'000'000;
+	const auto at = [](std::time_t value)
+	{
+		ChatSession chat;
+		chat.updated_at = uam::time::detail::FormatTimestamp(uam::time::detail::UtcTimeSnapshot(value), uam::time::kIsoUtcTimestampFormat);
+		return chat;
+	};
+	UAM_ASSERT(!uam::chat_import::NativeImportOlderThanStartupLimit(settings, at(now - 30 * 86400), now));
+	UAM_ASSERT(uam::chat_import::NativeImportOlderThanStartupLimit(settings, at(now - 30 * 86400 - 1), now));
+	settings.native_import_startup_max_age_days = 0;
+	UAM_ASSERT(!uam::chat_import::NativeImportOlderThanStartupLimit(settings, at(0), now));
 }
 
 UAM_TEST(NativeImportFiltersSavedDuringReviewStopSelectedPublication)

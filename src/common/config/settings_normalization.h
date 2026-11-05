@@ -113,6 +113,7 @@ namespace uam::settings
 			}
 			*rules = std::move(kept);
 		}
+		settings.native_import_startup_max_age_days = std::clamp(settings.native_import_startup_max_age_days, 0, 3650);
 		settings.uam_agent_cycle_shortcut = uam::strings::TrimAndLowerAscii(settings.uam_agent_cycle_shortcut);
 		if (!IsUamAgentCycleShortcut(settings.uam_agent_cycle_shortcut))
 		{

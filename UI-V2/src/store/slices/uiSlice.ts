@@ -149,6 +149,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
     steerActiveTurnOnSend: false,
     nativeImportExcludedTitlePrefixes: [] as string[],
     nativeImportExcludedDirectories: [] as string[],
+    nativeImportStartupMaxAgeDays: 0,
     gitEnabled: true,
     svnEnabled: true,
     isNewChatModalOpen: false,
@@ -342,19 +343,24 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
       return response.ok
     },
 
-    setNativeImportFilters: async (filters: { titlePrefixes: string[]; directories: string[] }) => {
+    setNativeImportFilters: async (filters: { titlePrefixes: string[]; directories: string[]; startupMaxAgeDays: number }) => {
       const clean = (rules: string[]) => Array.from(new Set(rules.map((rule) => rule.trim()).filter((rule) => rule && rule.length <= 4096))).slice(0, 100)
-      const next = { nativeImportExcludedTitlePrefixes: clean(filters.titlePrefixes), nativeImportExcludedDirectories: clean(filters.directories) }
+      const next = {
+        nativeImportExcludedTitlePrefixes: clean(filters.titlePrefixes),
+        nativeImportExcludedDirectories: clean(filters.directories),
+        nativeImportStartupMaxAgeDays: Math.min(3650, Math.max(0, Math.round(filters.startupMaxAgeDays))),
+      }
       const previous = {
         nativeImportExcludedTitlePrefixes: get().nativeImportExcludedTitlePrefixes,
         nativeImportExcludedDirectories: get().nativeImportExcludedDirectories,
+        nativeImportStartupMaxAgeDays: get().nativeImportStartupMaxAgeDays,
       }
       const optimisticRevision = rememberOptimisticFields(Object.keys(next))
       set(next)
       if (!isCefContext()) return true
       const response = await sendToCEF({
         action: 'setNativeImportFilters',
-        payload: { titlePrefixes: next.nativeImportExcludedTitlePrefixes, directories: next.nativeImportExcludedDirectories },
+        payload: { titlePrefixes: next.nativeImportExcludedTitlePrefixes, directories: next.nativeImportExcludedDirectories, startupMaxAgeDays: next.nativeImportStartupMaxAgeDays },
         requestId: createRequestId('setNativeImportFilters'),
       })
       if (!response.ok) set(latestOptimisticRollback(previous, optimisticRevision))

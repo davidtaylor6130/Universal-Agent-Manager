@@ -1108,6 +1108,8 @@ struct AppSettings
 	std::vector<std::string> native_import_excluded_title_prefixes;
 	/// <summary>Native sessions whose workspace is one of these folders, or inside one, are never offered for import.</summary>
 	std::vector<std::string> native_import_excluded_directories;
+	/// <summary>Startup import leaves out native sessions with no recorded activity in this many days (0 = no limit, the default until the open decision is settled); explicit discovery still lists them.</summary>
+	int native_import_startup_max_age_days = 0;
 	std::string uam_agent_cycle_shortcut = "shift+tab";
 	std::string memory_level_default = "strict";
 };

@@ -3,6 +3,7 @@
 
 #include "app/chat_domain_service.h"
 #include "common/chat/native_chat_identity.h"
+#include "common/chat/native_import_filter.h"
 #include "common/chat/chat_folder_store.h"
 #include "core/chat_import_utils.h"
 #include "common/config/execution_host_config.h"
@@ -14,6 +15,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <ctime>
 #include <set>
 #include <thread>
 #include <unordered_map>
@@ -118,6 +120,9 @@ namespace uam
 		}
 		// Only replace settled staging metadata; saved chats, declines and native histories remain authoritative.
 		std::erase_if(m_candidates, [](const Candidate& candidate) { return paths::IsControllerLocalWorkspace(candidate.chat); });
+		// Remote sessions startup left out for age join this review; the local scan below finds local ones without the limit.
+		for (Candidate& candidate : m_startup_deferred) m_candidates.push_back(std::move(candidate));
+		m_startup_deferred.clear();
 		m_selected.clear();
 		m_errors.clear();
 		m_omitted_error_count = 0;
@@ -335,8 +340,10 @@ namespace uam
 			}
 			// Identity keys canonicalize workspace paths (a file-system query each); derive each once per pass.
 			std::set<std::pair<std::string, std::string>> candidate_keys;
-			for (const Candidate& existing : m_candidates)
-				candidate_keys.emplace(chat_identity::NativeIdentityKeyForHistoryImport(existing.chat), existing.chat.execution_host_id);
+			for (const std::vector<Candidate>* staged : {&m_candidates, &m_startup_deferred})
+				for (const Candidate& existing : *staged)
+					candidate_keys.emplace(chat_identity::NativeIdentityKeyForHistoryImport(existing.chat), existing.chat.execution_host_id);
+			const std::time_t now = std::time(nullptr);
 			// Unmatched local histories share one planned workspace per directory; it is saved only with a selected import.
 			AppState plan;
 			plan.folders = app.folders;
@@ -358,6 +365,9 @@ namespace uam
 				if (owner == nullptr && (!m_include_unregistered_local || !paths::IsControllerLocalWorkspace(chat))) return;
 				const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
 				if (candidate_keys.contains({key, chat.execution_host_id})) return;
+				// Startup leaves old sessions to explicit discovery: local ones are rescanned there, remote ones wait below.
+				const bool deferred = !m_include_unregistered_local && chat_import::NativeImportOlderThanStartupLimit(app.settings, chat, now);
+				if (deferred && paths::IsControllerLocalWorkspace(chat)) return;
 				Candidate candidate;
 				if (!paths::IsControllerLocalWorkspace(chat))
 				{
@@ -369,7 +379,7 @@ namespace uam
 					    captured_folder->second.directory != owner->directory || captured_folder->second.execution_host_id != owner->execution_host_id) return;
 					candidate.host = captured->second;
 				}
-				candidate.summary = {m_generation + ":" + std::to_string(m_candidates.size()), chat.provider_id,
+				candidate.summary = {m_generation + ":" + std::to_string(m_candidates.size() + m_startup_deferred.size()), chat.provider_id,
 				    chat.native_session_id, strings::SafeLine(chat.title, 512, true), chat.folder_id, chat.workspace_directory,
 				    strings::NonEmptyOrFallback(chat.execution_host_id, "local"), chat.updated_at};
 				const auto exported = discovery.open_code_exports.find(key);
@@ -380,7 +390,7 @@ namespace uam
 				candidate.new_workspace = candidate.summary.new_workspace = new_workspace;
 				candidate.summary.workspace_title = strings::SafeLine(candidate.owner.title, 512, true);
 				candidate_keys.emplace(key, candidate.chat.execution_host_id);
-				m_candidates.push_back(std::move(candidate));
+				(deferred ? m_startup_deferred : m_candidates).push_back(std::move(candidate));
 			};
 			for (ChatSession& chat : discovery.chats) add(std::move(chat), {});
 			for (std::pair<ChatSession, std::filesystem::path>& record : discovery.codex_rollouts) add(std::move(record.first), std::move(record.second));
@@ -656,6 +666,7 @@ namespace uam
 		}
 		m_import.CancelPending();
 		m_candidates.clear();
+		m_startup_deferred.clear();
 		m_selected.clear();
 		if (m_initialized) m_phase = "cancelled";
 	}

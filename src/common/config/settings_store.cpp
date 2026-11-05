@@ -107,6 +107,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kFavoriteUamAgentIdsKey = "favorite_uam_agent_ids";
 	constexpr std::string_view kNativeImportExcludedTitlePrefixesKey = "native_import_excluded_title_prefixes";
 	constexpr std::string_view kNativeImportExcludedDirectoriesKey = "native_import_excluded_directories";
+	constexpr std::string_view kNativeImportStartupMaxAgeDaysKey = "native_import_startup_max_age_days";
 	constexpr std::string_view kUamAgentCycleShortcutKey = "uam_agent_cycle_shortcut";
 	constexpr std::string_view kComputerUseGloballyEnabledKey = "computer_use_globally_enabled";
 	constexpr std::string_view kComputerUseAllowlistEnabledKey = "computer_use_allowlist_enabled";
@@ -745,6 +746,7 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
 		WriteEncodedSetting(lines, kNativeImportExcludedTitlePrefixesKey, EncodeFavoriteUamAgentIds(normalized.native_import_excluded_title_prefixes));
 		WriteEncodedSetting(lines, kNativeImportExcludedDirectoriesKey, EncodeFavoriteUamAgentIds(normalized.native_import_excluded_directories));
+		WriteSettingValue(lines, kNativeImportStartupMaxAgeDaysKey, normalized.native_import_startup_max_age_days);
 		WriteEncodedSetting(lines, kUamAgentCycleShortcutKey, normalized.uam_agent_cycle_shortcut);
 		WriteBoolSetting(lines, kComputerUseGloballyEnabledKey, normalized.computer_use_globally_enabled);
 		WriteBoolSetting(lines, kComputerUseAllowlistEnabledKey, normalized.computer_use_allowlist_enabled);
@@ -1219,6 +1221,10 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		else if (key == kNativeImportExcludedDirectoriesKey)
 		{
 			DecodeFavoriteUamAgentIds(decoded_value, settings.native_import_excluded_directories);
+		}
+		else if (key == kNativeImportStartupMaxAgeDaysKey)
+		{
+			settings.native_import_startup_max_age_days = uam::parse::IntOr(value, settings.native_import_startup_max_age_days);
 		}
 		else if (key == kUamAgentCycleShortcutKey)
 		{

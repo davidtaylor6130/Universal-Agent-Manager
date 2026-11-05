@@ -1,9 +1,11 @@
 #pragma once
 
 #include "common/models/app_models.h"
+#include "common/utils/history_timestamp_order.h"
 
 #include <algorithm>
 #include <cctype>
+#include <ctime>
 #include <string>
 #include <string_view>
 
@@ -59,5 +61,18 @@ namespace uam::chat_import
 			}
 		}
 		return false;
+	}
+
+	/// <summary>
+	/// True when startup import should leave this session for explicit discovery: its last recorded activity is
+	/// before the user's startup age limit (exactly the limit is still offered). A missing or unreadable time never hides a session.
+	/// </summary>
+	inline bool NativeImportOlderThanStartupLimit(const AppSettings& settings, const ChatSession& chat, std::time_t now)
+	{
+		if (settings.native_import_startup_max_age_days <= 0) return false;
+		const std::time_t cutoff = now - static_cast<std::time_t>(settings.native_import_startup_max_age_days) * 86400;
+		const std::string cutoff_text = uam::time::detail::FormatTimestamp(uam::time::detail::UtcTimeSnapshot(cutoff), uam::time::kIsoUtcTimestampFormat);
+		const std::string& activity = chat.updated_at.empty() ? chat.created_at : chat.updated_at;
+		return uam::time::CompareHistoryTimestamps(activity, cutoff_text).order == uam::time::HistoryTimestampOrder::Before;
 	}
 }

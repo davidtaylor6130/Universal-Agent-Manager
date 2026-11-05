@@ -1626,7 +1626,19 @@ namespace
 			chat.persisted_messages_digest = chat.updated_at + ":" + std::to_string(message_count);
 		}
 		else chat.title = uam::BuildImportedChatTitle(chat.messages, chat.created_at);
-		if (metadata_only) chat.messages_loaded = false;
+		if (metadata_only)
+		{
+			chat.messages_loaded = false;
+			// Discovery stops at the first user message, so the start time is all it read; the rollout's last write is the latest activity.
+			if (!modified_error)
+			{
+				const std::time_t modified = std::chrono::system_clock::to_time_t(std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+				    source_modified - fs::file_time_type::clock::now() + std::chrono::system_clock::now()));
+				const std::string modified_text = uam::time::detail::FormatTimestamp(uam::time::detail::UtcTimeSnapshot(modified), uam::time::kIsoUtcTimestampFormat);
+				const uam::time::HistoryTimestampOrder order = uam::time::CompareHistoryTimestamps(chat.updated_at, modified_text).order;
+				if (order == uam::time::HistoryTimestampOrder::Before || order == uam::time::HistoryTimestampOrder::Unknown) chat.updated_at = modified_text;
+			}
+		}
 		return chat;
 	}
 

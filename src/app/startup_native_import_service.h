@@ -128,6 +128,8 @@ namespace uam
 		std::string m_phase = "idle";
 		std::string m_generation;
 		std::vector<Candidate> m_candidates;
+		/// <summary>Remote sessions startup left out for age; explicit discovery adds them to review.</summary>
+		std::vector<Candidate> m_startup_deferred;
 		std::vector<Candidate> m_selected;
 		ChatHistorySyncService::LocalHistoryDiscovery m_import;
 		std::vector<std::string> m_errors;

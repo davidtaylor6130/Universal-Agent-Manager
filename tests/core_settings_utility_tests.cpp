@@ -2896,6 +2896,17 @@ UAM_TEST(SettingsStorePersistsNativeImportFilters)
 	const nlohmann::json frontend = uam::settings_frontend_json::SerializeCommonSettingsFields(loaded);
 	UAM_ASSERT_EQ(frontend["nativeImportExcludedTitlePrefixes"], nlohmann::json::array({"[automation]", "Run the nightly"}));
 	UAM_ASSERT_EQ(frontend["nativeImportExcludedDirectories"], nlohmann::json::array({"C:\\scratch", "/home/you/tmp"}));
+	UAM_ASSERT_EQ(AppSettings{}.native_import_startup_max_age_days, 0);
+	UAM_ASSERT_EQ(frontend["nativeImportStartupMaxAgeDays"], 0);
+	settings.native_import_startup_max_age_days = 45;
+	UAM_ASSERT(SettingsStore::Save(settings_file, settings));
+	SettingsStore::Load(settings_file, loaded);
+	UAM_ASSERT_EQ(loaded.native_import_startup_max_age_days, 45);
+	UAM_ASSERT_EQ(uam::settings_frontend_json::SerializeCommonSettingsFields(loaded)["nativeImportStartupMaxAgeDays"], 45);
+	settings.native_import_startup_max_age_days = 9999;
+	UAM_ASSERT(SettingsStore::Save(settings_file, settings));
+	SettingsStore::Load(settings_file, loaded);
+	UAM_ASSERT_EQ(loaded.native_import_startup_max_age_days, 3650);
 }
 
 UAM_TEST(SettingsStorePersistsOrderedUamAgentPreferences)

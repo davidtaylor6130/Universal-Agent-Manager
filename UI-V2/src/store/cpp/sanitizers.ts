@@ -1807,6 +1807,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       favoriteUamAgentIds: [],
       nativeImportExcludedTitlePrefixes: [],
       nativeImportExcludedDirectories: [],
+      nativeImportStartupMaxAgeDays: 0,
       uamAgentCycleShortcut: 'shift+tab',
       computerUseAllowlistEnabled: false,
       computerUseAllowedApplications: [],
@@ -1870,6 +1871,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     : []
   const nativeImportExcludedTitlePrefixes = importRules(value.nativeImportExcludedTitlePrefixes)
   const nativeImportExcludedDirectories = importRules(value.nativeImportExcludedDirectories)
+  const startupAge = value.nativeImportStartupMaxAgeDays
+  const nativeImportStartupMaxAgeDays = typeof startupAge === 'number' && Number.isFinite(startupAge) ? Math.min(3650, Math.max(0, Math.round(startupAge))) : 0
   const executionHosts: NonNullable<CppSettings['executionHosts']> = [{
     id: 'local', label: 'This computer', transport: 'local' as const, sshAlias: '',
     runnerStatus: 'ready' as const, runnerVersion: '', platform: '', architecture: '', lastSeenAt: '',
@@ -1967,6 +1970,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     favoriteUamAgentIds,
     nativeImportExcludedTitlePrefixes,
     nativeImportExcludedDirectories,
+    nativeImportStartupMaxAgeDays,
     uamAgentCycleShortcut,
     computerUseGloballyEnabled: typeof value.computerUseGloballyEnabled === 'boolean' ? value.computerUseGloballyEnabled : undefined,
     computerUseRevocationPending: typeof value.computerUseRevocationPending === 'boolean' ? value.computerUseRevocationPending : undefined,

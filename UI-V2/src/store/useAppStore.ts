@@ -143,6 +143,7 @@ function deserializeState(
     favoriteUamAgentIds: string[]
     nativeImportExcludedTitlePrefixes: string[]
     nativeImportExcludedDirectories: string[]
+    nativeImportStartupMaxAgeDays: number
     uamAgentCycleShortcut: AppState['uamAgentCycleShortcut']
     computerUseEnabled?: boolean
     computerUseAllowlistEnabled: boolean
@@ -377,6 +378,7 @@ function deserializeState(
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
     nativeImportExcludedTitlePrefixes: cpp.settings.nativeImportExcludedTitlePrefixes ?? [],
     nativeImportExcludedDirectories: cpp.settings.nativeImportExcludedDirectories ?? [],
+    nativeImportStartupMaxAgeDays: cpp.settings.nativeImportStartupMaxAgeDays ?? 0,
     uamAgentCycleShortcut: cpp.settings.uamAgentCycleShortcut ?? 'shift+tab',
     computerUseEnabled: cpp.settings.computerUseGloballyEnabled,
     computerUseRevocationPending: cpp.settings.computerUseRevocationPending,
@@ -616,6 +618,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
     nativeImportExcludedTitlePrefixes: patch.settings?.nativeImportExcludedTitlePrefixes ?? current.nativeImportExcludedTitlePrefixes,
     nativeImportExcludedDirectories: patch.settings?.nativeImportExcludedDirectories ?? current.nativeImportExcludedDirectories,
+    nativeImportStartupMaxAgeDays: patch.settings?.nativeImportStartupMaxAgeDays ?? current.nativeImportStartupMaxAgeDays,
     uamAgentCycleShortcut: patch.settings?.uamAgentCycleShortcut ?? current.uamAgentCycleShortcut,
     computerUseEnabled: patch.settings?.computerUseGloballyEnabled ?? current.computerUseEnabled,
     computerUseRevocationPending: patch.settings?.computerUseRevocationPending ?? current.computerUseRevocationPending,
@@ -868,6 +871,7 @@ export const useAppStore = create<AppState>((set, get) => {
           favoriteUamAgentIds: current.favoriteUamAgentIds,
           nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
           nativeImportExcludedDirectories: current.nativeImportExcludedDirectories,
+          nativeImportStartupMaxAgeDays: current.nativeImportStartupMaxAgeDays,
           uamAgentCycleShortcut: current.uamAgentCycleShortcut,
           computerUseEnabled: current.computerUseEnabled,
           computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
@@ -1244,6 +1248,7 @@ export const useAppStore = create<AppState>((set, get) => {
         favoriteUamAgentIds: current.favoriteUamAgentIds,
         nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
         nativeImportExcludedDirectories: current.nativeImportExcludedDirectories,
+        nativeImportStartupMaxAgeDays: current.nativeImportStartupMaxAgeDays,
         uamAgentCycleShortcut: current.uamAgentCycleShortcut,
         computerUseEnabled: current.computerUseEnabled,
         computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,

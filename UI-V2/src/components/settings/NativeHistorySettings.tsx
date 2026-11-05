@@ -23,39 +23,45 @@ const ruleLines = (text: string, foldCase = false) => {
 export function NativeImportFilters({ disabled = false, onDirtyChange }: { disabled?: boolean; onDirtyChange?: (dirty: boolean) => void }) {
   const savedPrefixes = useAppStore((state) => state.nativeImportExcludedTitlePrefixes)
   const savedDirectories = useAppStore((state) => state.nativeImportExcludedDirectories)
+  const savedDays = String(useAppStore((state) => state.nativeImportStartupMaxAgeDays))
   const setNativeImportFilters = useAppStore((state) => state.setNativeImportFilters)
   const [prefixes, setPrefixes] = useState(savedPrefixes.join('\n'))
   const [directories, setDirectories] = useState(savedDirectories.join('\n'))
+  const [days, setDays] = useState(savedDays)
   const [saving, setSaving] = useState(false)
-  const dirty = ruleLines(prefixes, true).join('\n') !== savedPrefixes.join('\n') || ruleLines(directories).join('\n') !== savedDirectories.join('\n')
+  const daysValid = /^\d{1,4}$/.test(days.trim()) && Number(days) <= 3650
+  const dirty = ruleLines(prefixes, true).join('\n') !== savedPrefixes.join('\n') || ruleLines(directories).join('\n') !== savedDirectories.join('\n') ||
+    (daysValid ? String(Number(days)) : days) !== savedDays
   useEffect(() => { onDirtyChange?.(dirty) }, [dirty, onDirtyChange])
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange])
   // Follow saved rules changed elsewhere in each list the user has not edited; a save's own rollback keeps the draft.
   const savingRef = useRef(saving)
   savingRef.current = saving
-  const lastSaved = useRef({ prefixes: savedPrefixes.join('\n'), directories: savedDirectories.join('\n') })
+  const lastSaved = useRef({ prefixes: savedPrefixes.join('\n'), directories: savedDirectories.join('\n'), days: savedDays })
   useEffect(() => {
     const previous = lastSaved.current
-    const next = { prefixes: savedPrefixes.join('\n'), directories: savedDirectories.join('\n') }
+    const next = { prefixes: savedPrefixes.join('\n'), directories: savedDirectories.join('\n'), days: savedDays }
     lastSaved.current = next
     if (savingRef.current) return
     setPrefixes((draft) => ruleLines(draft, true).join('\n') === previous.prefixes ? next.prefixes : draft)
     setDirectories((draft) => ruleLines(draft).join('\n') === previous.directories ? next.directories : draft)
-  }, [savedPrefixes, savedDirectories])
-  const discard = () => { setPrefixes(savedPrefixes.join('\n')); setDirectories(savedDirectories.join('\n')) }
+    setDays((draft) => draft === previous.days ? next.days : draft)
+  }, [savedPrefixes, savedDirectories, savedDays])
+  const discard = () => { setPrefixes(savedPrefixes.join('\n')); setDirectories(savedDirectories.join('\n')); setDays(savedDays) }
   async function save() {
     setSaving(true)
     const titlePrefixes = ruleLines(prefixes, true)
     const excludedDirectories = ruleLines(directories)
-    const ok = await setNativeImportFilters({ titlePrefixes, directories: excludedDirectories })
+    const startupMaxAgeDays = Number(days)
+    const ok = await setNativeImportFilters({ titlePrefixes, directories: excludedDirectories, startupMaxAgeDays })
     setSaving(false)
-    if (ok) { setPrefixes(titlePrefixes.join('\n')); setDirectories(excludedDirectories.join('\n')); reportAppNotice('Import filters saved.', 'success') }
+    if (ok) { setPrefixes(titlePrefixes.join('\n')); setDirectories(excludedDirectories.join('\n')); setDays(String(startupMaxAgeDays)); reportAppNotice('Import filters saved.', 'success') }
     else reportAppFailure('Import filters could not be saved.', 'Your changes are kept. Use Save filters to try again.')
   }
   return <SettingsSection title="Import filters" description="Skipped sessions are never offered or imported."
     actions={<>
       <Button size="sm" type="button" disabled={!dirty || saving} onClick={discard}>Discard</Button>
-      <SaveButton saving={saving} type="button" disabled={disabled || !dirty || saving} onClick={() => void save()}>Save filters</SaveButton>
+      <SaveButton saving={saving} type="button" disabled={disabled || !dirty || !daysValid || saving} onClick={() => void save()}>Save filters</SaveButton>
     </>}>
     <p className="uam-set-field__hint">Chats already in UAM are not changed.</p>
     <SettingsField label="Skip sessions whose title starts with" htmlFor="native-import-title-prefixes" hint="One per line. Case is ignored.">
@@ -66,6 +72,15 @@ export function NativeImportFilters({ disabled = false, onDirtyChange }: { disab
       <textarea id="native-import-directories" name="directories" value={directories} onChange={(event) => setDirectories(event.currentTarget.value)}
         disabled={disabled || saving} rows={3} spellCheck={false} placeholder={'C:\\Users\\you\\scratch\n/home/you/experiments'} className="uam-field uam-field--area w-full font-mono" />
     </SettingsField>
+    <SettingsField label="Leave out of startup import after" htmlFor="native-import-startup-age" hint={<span id="native-import-startup-age-hint">Older sessions stay in Discover histories. 0 = no limit.</span>}>
+      <div className="flex items-center gap-2">
+        <input id="native-import-startup-age" name="startupMaxAgeDays" type="number" min={0} max={3650} step={1} value={days} aria-invalid={!daysValid || undefined}
+          aria-describedby={daysValid ? 'native-import-startup-age-hint' : 'native-import-startup-age-hint native-import-startup-age-error'}
+          onChange={(event) => setDays(event.currentTarget.value)} disabled={disabled || saving} className="uam-field w-24 tabular-nums" />
+        <span className="text-xs" style={{ color: 'var(--text-3)' }}>days</span>
+      </div>
+    </SettingsField>
+    <Reveal open={!daysValid}><p id="native-import-startup-age-error" className="text-xs" role="alert" style={{ color: 'var(--error)' }}>Enter a whole number of days from 0 to 3650.</p></Reveal>
   </SettingsSection>
 }
 
