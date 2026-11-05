@@ -1476,8 +1476,9 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
       <div
         data-testid={`collection-header-${collection.id}`}
         data-collection-id={collection.id}
-        className="group relative mx-1 flex items-center gap-1.5 rounded-md px-2.5 py-0.5 transition-colors duration-150"
-        style={{ color: selected ? 'var(--text)' : 'var(--text-2)', background: dropTarget ? 'var(--sidebar-item-hover)' : selected ? 'var(--accent-dim)' : 'transparent', border: '1px solid transparent', outline: dropTarget ? '1px solid var(--accent)' : 'none' }}
+        className={`group relative mx-1 flex items-center gap-1.5 rounded-md px-2.5 py-0.5 transition-colors duration-150${selected && !dropTarget ? ' uam-selected-item' : ''}`}
+        // Selected tint and line come from the shared .uam-selected-item; inline paint only for drop targets and rest.
+        style={{ color: selected ? 'var(--text)' : 'var(--text-2)', background: dropTarget ? 'var(--sidebar-item-hover)' : selected ? undefined : 'transparent', border: '1px solid transparent', outline: dropTarget ? '1px solid var(--accent)' : undefined }}
         onContextMenu={(event) => {
           event.preventDefault()
           event.stopPropagation()
@@ -1928,9 +1929,10 @@ const FolderRow = memo(function FolderRow({
         aria-expanded={shouldShowSessions}
         aria-controls={`folder-sessions-${folder.id}`}
         aria-keyshortcuts={draggable ? "ArrowUp ArrowDown Enter Space Shift+Enter Shift+Space" : "Enter Space Shift+Enter Shift+Space"}
-        className="flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer rounded-md mx-1 focus-visible:[outline-offset:var(--focus-inset)]"
+        className={`relative flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer rounded-md mx-1 focus-visible:[outline-offset:var(--focus-inset)]${selected ? ' uam-selected-item' : ''}`}
         style={{
-          background: selected ? 'var(--accent-dim)' : 'transparent',
+          // Selected tint and line come from the shared .uam-selected-item.
+          background: selected ? undefined : 'transparent',
           color: selected ? 'var(--text)' : 'var(--text-2)',
         }}
         onClick={onToggle}

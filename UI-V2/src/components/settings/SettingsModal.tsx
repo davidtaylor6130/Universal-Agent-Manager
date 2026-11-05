@@ -2952,7 +2952,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               <Reveal open={Boolean(settingsSearch)}><IconButton size="sm" icon={<X size={12}/>} label="Clear settings search" onClick={() => setSettingsSearch('')}/></Reveal>
             </div>
             <nav ref={navRef} aria-label="Settings pages" className="uam-settings-nav min-h-0 overflow-y-auto flex-1">
-              {navIndicator && <span aria-hidden className="uam-settings-nav__indicator" style={{ transform: `translateY(${navIndicator.top}px)`, height: navIndicator.height }} />}
+              {navIndicator && <span aria-hidden className="uam-settings-nav__indicator uam-selected-item" style={{ transform: `translateY(${navIndicator.top}px)`, height: navIndicator.height }} />}
               <Reveal open={visibleSettingsGroups.length === 0}><p role="status" className="px-2 text-xs" style={{color:'var(--text-3)'}}>No settings found.</p></Reveal>
               {visibleSettingsGroups.map(group => <div key={group.label} className="mb-5 last:mb-0">
                 <h2 className="px-2 mb-1 text-[length:var(--fs-xs)] font-semibold uppercase tracking-[0.08em]" style={{color:'var(--text-3)'}}>{group.label}</h2>

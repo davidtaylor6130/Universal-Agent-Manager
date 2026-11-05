@@ -1712,6 +1712,8 @@ describe('FolderTree', () => {
     act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-a"]')!.click())
     act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-c"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
     expect(host.querySelectorAll('[data-workspace-id][aria-label$="selected for bulk actions"]')).toHaveLength(3)
+    // Selected workspace headers share the Settings selected-item style with selected chats.
+    expect(Array.from(host.querySelectorAll<HTMLElement>('[data-workspace-id][aria-label$="selected for bulk actions"]')).every((row) => row.classList.contains('uam-selected-item') && row.style.background === '')).toBe(true)
     const openDelete = () => host.querySelector<HTMLButtonElement>('[aria-label="Delete 3 selected workspaces"]')!.click()
     const dialogButton = (label: string) => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === label)!
     act(openDelete)

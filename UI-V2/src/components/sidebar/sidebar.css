@@ -43,6 +43,9 @@
 /* One light accent tint for selected or active rows; a selected row keeps its tint while hovered. */
 .uam-sb-row--selected,
 .uam-sb-row--selected:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+/* Bulk (Shift-click) selection uses the shared Settings selected-item style; it wins over the active tint and hover. */
+.uam-sb-row.uam-selected-item,
+.uam-sb-row.uam-selected-item:hover { background: var(--accent-dim); }
 @keyframes uam-sb-row-in {
   from { opacity: 0; transform: translateY(-3px); }
 }

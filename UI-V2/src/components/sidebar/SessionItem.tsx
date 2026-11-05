@@ -598,12 +598,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         data-testid={`session-row-${sessionId}`}
         data-session-id={sessionId}
         data-selected={Boolean(selected)}
-        className={`uam-sb-row relative flex ${activityLayout ? 'gap-2 px-2.5 py-1.5' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer${selected || childSelected || (isActive && !hasNavigationRoute) ? ' uam-sb-row--selected' : ''}`}
+        className={`uam-sb-row relative flex ${activityLayout ? 'gap-2 px-2.5 py-1.5' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer${selected || childSelected || (isActive && !hasNavigationRoute) ? ' uam-sb-row--selected' : ''}${selected ? ' uam-selected-item' : ''}`}
         style={{
           // Running activity rows recede a touch so chats that need the user stand out.
           opacity: activityLayout && lifecycleStatus?.type === 'processing' && !isActive ? 0.95 : undefined,
-          // Hover and selected backgrounds come from .uam-sb-row in sidebar.css so they share one box.
-          boxShadow: selected ? 'inset 2px 0 0 var(--accent)' : 'none',
+          // Hover, active and bulk-selected backgrounds come from sidebar.css / .uam-selected-item so they share one box.
         }}
         onPointerEnter={schedulePrefetch}
         onPointerLeave={cancelPrefetch}
@@ -652,7 +651,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           <div className="uam-sb-activity flex min-w-0 flex-1 flex-col gap-0.5">
             <div className="flex min-w-0 items-center gap-2 [&>img]:h-4">
               <CustomIcon icon={sessionSummary.customIcon} fallback={null} />
-              <span className="block min-w-0 flex-1 truncate text-[13px] leading-5" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
+              <span className="block min-w-0 flex-1 truncate text-[13px] leading-5" style={{ color: isActive || selected ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
               {lifecycleStatus?.type === 'processing' ? (
                 <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium tabular-nums" style={{ color: 'var(--info)' }}>
                   <CircleDashed size={12} className="uam-working-ring shrink-0" aria-hidden />
@@ -801,7 +800,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           />
         ) : (
           <div className="min-w-0 flex-1">
-            <span className="block truncate text-[13px]" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
+            <span className="block truncate text-[13px]" style={{ color: isActive || selected ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
             {!activityLayout && showWorktreePath && sessionSummary.worktreeDirectory && (
               <span className="flex min-w-0 items-center gap-1 text-[10px]" title={sessionSummary.worktreeDirectory} style={{ color: 'var(--text-3)' }}>
                 <span className="truncate">{sourceWorkspaceName}</span>

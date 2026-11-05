@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { act, Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { expect, it, vi } from 'vitest'
@@ -58,4 +59,31 @@ it('derives the robot from verified native lineage on any sidebar path, while un
     expect(host.querySelector('[data-session-id="lineage-parent"] [aria-label^="Provider:"]')).not.toBeNull()
     expect(host.querySelector('[data-session-id="lineage-parent"] [aria-label="Subagent"]')).toBeNull()
   } finally { act(() => root.unmount()); host.remove(); useAppStore.setState(initial, true) }
+})
+
+it('renders multi-selected rows with the shared Settings selected-item style instead of a curved accent edge', () => {
+  const initial = useAppStore.getState()
+  const now = new Date()
+  const sessions: Session[] = ['multi-a', 'multi-b', 'multi-active'].map(id => ({ id, name: id, viewMode: 'chat', folderId: null, createdAt: now, updatedAt: now }))
+  useAppStore.setState({ sessions, activeSessionId: 'multi-active', folders: [], acpBindingBySessionId: {}, cliBindingBySessionId: {} })
+  const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+  try {
+    act(() => root.render(<>{sessions.map(session => <SessionItem key={session.id} sessionId={session.id} session={session} familySessionIds={[session.id]} selected={session.id === 'multi-active' ? false : 'multi'} />)}</>))
+    for (const id of ['multi-a', 'multi-b']) {
+      const row = host.querySelector<HTMLElement>(`[data-session-id="${id}"]`)!
+      expect(row.classList.contains('uam-selected-item')).toBe(true)
+      expect(row.style.boxShadow).toBe('')
+      expect(row.querySelector('[aria-label="Selected for bulk actions"]')).not.toBeNull()
+    }
+    // The open (single) chat keeps its lighter active tint and has no selection line or bulk marker.
+    const active = host.querySelector<HTMLElement>('[data-session-id="multi-active"]')!
+    expect(active.classList.contains('uam-sb-row--selected')).toBe(true)
+    expect(active.classList.contains('uam-selected-item')).toBe(false)
+    expect(active.querySelector('[aria-label="Selected for bulk actions"]')).toBeNull()
+  } finally { act(() => root.unmount()); host.remove(); useAppStore.setState(initial, true) }
+  const css = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
+  // One shared rule (tint + straight inset line) used by Settings and the sidebar.
+  expect(css('../../index.css')).toContain('.uam-selected-item::before {')
+  expect(css('../settings/SettingsModal.tsx')).toContain('uam-settings-nav__indicator uam-selected-item')
+  expect(css('../settings/MemoryLibraryModal.tsx')).toContain('uam-settings-nav__indicator uam-selected-item')
 })
