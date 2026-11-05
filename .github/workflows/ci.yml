@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main, uam/v5-improvements]
+    branches: [main, uam/v5-improvements, uam/v5.1-improvements]
   workflow_dispatch:
 
 permissions:
