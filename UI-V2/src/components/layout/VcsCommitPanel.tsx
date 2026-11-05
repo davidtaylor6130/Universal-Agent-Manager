@@ -225,7 +225,7 @@ export function VcsCommitPanel() {
             executionHostId={session?.executionHostId}
           />
         ) : <p className="px-3 py-3 text-xs">Select a chat to review recorded edits.</p>
-      ) : <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      ) : <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         <div className="shrink-0 px-3 pt-3">
           {(status.warning || status.error || notice) && (
             <div role="status" className="uam-rv-alert mb-3 flex items-start gap-2" style={{ background: notice === 'Commit created.' ? 'var(--success-dim)' : status.error || notice ? 'var(--error-dim)' : 'var(--warning-dim)', border: '1px solid var(--border)', color: 'var(--text)' }}>
@@ -269,7 +269,8 @@ export function VcsCommitPanel() {
           {(loading || (!lineStatsReady && status.changedFiles.length > 0)) && <LoaderCircle size={13} role="img" aria-label="Loading VCS status" />}
           <span style={{ color: 'var(--text-3)' }}>{selectedFiles.length} selected</span>
         </div>
-        <div className="mx-3 min-h-0 flex-1 overflow-y-auto">
+        {/* Sized to its rows (scrolling once full) so the form stays attached directly below; the bottom padding keeps the last row's focus ring inside this clip. */}
+        <div className="mx-3 min-h-16 flex-initial overflow-y-auto pb-1">
           {status.changedFiles.length === 0 ? (
             <div className="px-3 py-6 text-center text-xs" style={{ color: 'var(--text-3)' }}>No changed files.</div>
           ) : status.changedFiles.map((file) => {
@@ -319,7 +320,7 @@ export function VcsCommitPanel() {
           })}
         </div>
 
-        <div className="shrink-0 p-3" style={{ borderTop: '1px solid var(--border)' }}>
+        <div className="flex flex-1 flex-col p-3" style={{ borderTop: '1px solid var(--border)' }}>
           <div className="mb-2 flex items-center gap-2">
             <input
               className="uam-rv-field min-w-0 flex-1"
@@ -336,7 +337,7 @@ export function VcsCommitPanel() {
             />
           </div>
           <textarea
-            className="uam-rv-field mb-2 h-16 w-full resize-none"
+            className="uam-rv-field mb-2 min-h-16 max-h-40 w-full flex-1 resize-none"
             placeholder="Description"
             aria-label="Commit description"
             value={description}
