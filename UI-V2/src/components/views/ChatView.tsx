@@ -1797,16 +1797,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       comparisonRef: repositoryComparisonRef,
     }).then((status) => {
       if (cancelled) return
-      // An unavailable chat baseline is shown as such, never as whole-workspace rows.
-      setRepositoryReview(session.id, !status?.available ? null
-        : status.error ? { ...status, changedFiles: [] }
-        : status.changedFiles.length > 0 ? status : null)
+      // Any read failure, including a lost remote connection, is shown as such, never as whole-workspace rows.
+      setRepositoryReview(session.id, status?.error ? { ...status, changedFiles: [] }
+        : status?.available && status.changedFiles.length > 0 ? status : null)
     })
     return () => { cancelled = true }
   }, [completedTurnKey, getVcsCommitStatus, repositoryComparisonRef, repositoryReviewRetry, session.id, workspaceDirectory])
   const svnRepositoryReview = repositoryChanges?.activeVcsType === 'svn'
-  // ponytail: native reports a missing/mismatched baseline only as text; every such message names the baseline.
-  const repositoryBaselineMissing = /baseline/i.test(repositoryChanges?.error ?? '')
+  const repositoryBaselineMissing = repositoryChanges?.baselineUnavailable === true
   useEffect(() => {
     let cancelled = false
     if (isCompanionContext() || remoteComputerUseDisabled || !workspaceDirectory) return

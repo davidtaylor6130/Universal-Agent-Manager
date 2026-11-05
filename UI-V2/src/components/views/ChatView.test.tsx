@@ -1444,12 +1444,19 @@ describe('ChatView', () => {
     }
   })
 
-  it.each(['svn', 'git-error'] as const)('labels SVN review honestly and offers Retry for other read failures (%s)', async (kind) => {
+  it.each(['svn', 'git-error', 'git-error-naming-baseline', 'ssh-failure'] as const)('labels SVN review honestly and offers Retry for other read failures (%s)', async (kind) => {
+    const errors = {
+      svn: '',
+      'git-error': 'fatal: Unable to create index.lock: File exists.',
+      // A path in a raw Git error can contain the word; only the native flag means the baseline is gone.
+      'git-error-naming-baseline': 'error: open("tests/baseline.json"): Permission denied',
+      'ssh-failure': 'ssh: connect to host build-box port 22: Connection refused',
+    }
     const status = {
-      available: true, vcsTypes: [kind === 'svn' ? 'svn' as const : 'git' as const], activeVcsType: kind === 'svn' ? 'svn' as const : 'git' as const,
+      available: kind !== 'ssh-failure', vcsTypes: [kind === 'svn' ? 'svn' as const : 'git' as const], activeVcsType: kind === 'svn' ? 'svn' as const : 'git' as const,
       workspaceDirectory: '/tmp/project', branchOrRevision: 'main',
       changedFiles: [{ path: 'src/wc.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false }],
-      lineStatsReady: true, warning: '', error: kind === 'svn' ? '' : 'fatal: Unable to create index.lock: File exists.',
+      lineStatsReady: true, warning: '', error: errors[kind],
     }
     const getVcsCommitStatus = vi.fn(() => Promise.resolve(status))
     const getVcsFileDiff = vi.fn(() => Promise.resolve('@@ -0,0 +1 @@\n+wc'))
@@ -1473,7 +1480,8 @@ describe('ChatView', () => {
         expect(dialog.textContent).not.toContain('Since this chat began')
       } else {
         expect(summary.textContent).not.toContain('Unavailable for this chat')
-        expect(summary.querySelector('[role="alert"]')?.textContent).toContain('index.lock')
+        expect(summary.querySelector('[role="alert"]')?.textContent).toContain(errors[kind])
+        expect(summary.querySelector('[role="tree"]')).toBeNull()
         const retry = [...summary.querySelectorAll('button')].find((button) => button.textContent === 'Retry') as HTMLButtonElement
         const summaryReads = () => (getVcsCommitStatus.mock.calls as unknown as [string, string, { requestId?: string }][]).filter(([, , options]) => options?.requestId?.startsWith('chat-summary:')).length
         expect(summaryReads()).toBe(1)
@@ -1486,8 +1494,28 @@ describe('ChatView', () => {
     }
   })
 
+  it('shows no summary for a workspace that simply has no repository', async () => {
+    const status = { available: false, vcsTypes: [], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: 'No Git or SVN repository detected for this workspace.', error: '' }
+    useAppStore.setState((state) => ({
+      repositoryReviewBySessionId: {},
+      getVcsCommitStatus: vi.fn(() => Promise.resolve(status)),
+      sessions: state.sessions.map((session) => ({ ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: undefined })),
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null, processingStartedAtMs: null, turnSerial: 2 } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
+      expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('replaces stale review counts with a clear state when the original chat baseline is unavailable', async () => {
-    const status = { available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [{ path: 'prior.ts', status: 'M', staged: false, additions: 9, deletions: 0, binary: false }], lineStatsReady: true, warning: '', error: 'The original chat baseline is unavailable.' }
+    const status = { available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [{ path: 'prior.ts', status: 'M', staged: false, additions: 9, deletions: 0, binary: false }], lineStatsReady: true, warning: '', error: 'The original chat baseline is unavailable.', baselineUnavailable: true }
     useAppStore.setState((state) => ({
       repositoryReviewBySessionId: { 'chat-1': { ...status, error: '' } },
       getVcsCommitStatus: vi.fn(() => Promise.resolve(status)),
@@ -1504,6 +1532,7 @@ describe('ChatView', () => {
     expect(summary.textContent).toContain('The original chat baseline is unavailable.')
     expect(summary.textContent).not.toContain('prior.ts')
     expect(summary.querySelector('[role="tree"]')).toBeNull()
+    expect([...summary.querySelectorAll('button')].some((button) => button.textContent === 'Retry')).toBe(false)
     expect(useAppStore.getState().repositoryReviewBySessionId['chat-1']?.changedFiles).toEqual([])
     } finally {
       act(() => root.unmount())

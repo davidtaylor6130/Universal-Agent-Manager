@@ -130,6 +130,7 @@ namespace
 		json["baseRef"] = status.base_ref;
 		json["warning"] = status.warning;
 		json["error"] = status.error;
+		json["baselineUnavailable"] = status.baseline_unavailable;
 		return json;
 	}
 

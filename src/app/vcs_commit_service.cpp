@@ -1351,9 +1351,17 @@ namespace uam
 			if (include_line_stats) ApplyGitComparisonDetails(git_root, comparison_ref, status.changed_files);
 		}
 
-		bool PrepareChatReviewIndex(GitReviewIndex& index, const std::string& ref, std::string* error_out)
+		bool PrepareChatReviewIndex(GitReviewIndex& index, const std::string& ref, std::string* error_out, bool* baseline_unavailable = nullptr)
 		{
-			ProcessExecutionResult result = index.Run({"read-tree", ref});
+			// The ref is what keeps the baseline's objects alive. Without it the comparison would only work until the next `git gc`.
+			ProcessExecutionResult result = index.Run({"for-each-ref", "--format=%(objectname)", "refs/uam/chat-baselines/"}, false);
+			if (CommandSucceeded(result) && ("\n" + result.output + "\n").find("\n" + ref + "\n") == std::string::npos)
+			{
+				if (baseline_unavailable) *baseline_unavailable = true;
+				if (error_out) *error_out = "This chat's repository baseline was removed from the repository.";
+				return false;
+			}
+			if (CommandSucceeded(result)) result = index.Run({"read-tree", ref});
 			if (CommandSucceeded(result)) result = index.Run({"add", "-A", "--", "."});
 			if (CommandSucceeded(result)) return true;
 			if (error_out) *error_out = CommandOutputOrError(result);
@@ -1363,9 +1371,13 @@ namespace uam
 		void PopulateChatComparisonDetails(const AppState& app, const ChatSession& chat, VcsCommitStatus& status, const std::filesystem::path& root, bool include_line_stats, RemoteVcsContext* remote = nullptr)
 		{
 			const std::string ref = SavedChatBaseline(app, chat, root, &status.error);
-			if (ref.empty()) return;
+			if (ref.empty())
+			{
+				status.baseline_unavailable = true;
+				return;
+			}
 			GitReviewIndex index(root, {}, remote);
-			if (!PrepareChatReviewIndex(index, ref, &status.error)) return;
+			if (!PrepareChatReviewIndex(index, ref, &status.error, &status.baseline_unavailable)) return;
 			const ProcessExecutionResult names = index.Run({"diff", "--cached", "--no-ext-diff", "--no-textconv", "--name-status", "-z", ref, "--"});
 			if (!CommandSucceeded(names))
 			{

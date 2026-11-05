@@ -49,6 +49,8 @@ namespace uam
 		bool line_stats_ready = true;
 		std::string warning;
 		std::string error;
+		/// The chat comparison has no usable baseline: Retry cannot help, unlike any other read failure in `error`.
+		bool baseline_unavailable = false;
 	};
 
 	struct VcsCommitResult

@@ -1,4 +1,7 @@
 #include "common/companion/protocol.h"
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include "common/provider/copilot_native_history.h"
 #include "core/chat_import_utils.h"
 #include "cef/uam_bridge_request.h"
@@ -2551,6 +2554,77 @@ UAM_TEST(VcsChatBaselineScopesEveryFileKindToTheChat)
 	UAM_ASSERT(git_output("diff --cached --name-only").find("stage.txt") != std::string::npos);
 	UAM_ASSERT(git_output("diff --cached --name-only").find("image.png") == std::string::npos);
 }
+
+UAM_TEST(VcsChatBaselineReportsARemovedRefAsUnavailableBeforeAndAfterGc)
+{
+	if (!GitAvailableForTests()) return;
+	TempDir temp("uam-chat-baseline-removed-ref");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "base\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add -A"));
+	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "removed-ref-chat";
+	chat.workspace_directory = repo.string();
+	const uam::VcsCommitService service;
+	std::string error;
+	UAM_ASSERT(service.CaptureChatBaseline(app, chat, &error));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "changed\n"));
+	const uam::VcsCommitStatus intact = service.Status(app, chat, uam::VcsType::Git, true, "chat");
+	UAM_ASSERT(intact.error.empty() && !intact.baseline_unavailable && intact.changed_files.size() == 1);
+
+	// The removal command the Changes documentation gives users, before and after the objects are pruned.
+	UAM_ASSERT(RunTestCommand("cd " + ShellQuoteForTest(repo.string()) + " && git for-each-ref --format='%(refname)' refs/uam/chat-baselines/ | xargs -n1 git update-ref -d"));
+	for (const bool pruned : {false, true})
+	{
+		if (pruned) UAM_ASSERT(RunGitForTest(repo, "-c gc.reflogExpire=now -c gc.pruneExpire=now gc --prune=now"));
+		const uam::VcsCommitStatus removed = service.Status(app, chat, uam::VcsType::Git, true, "chat");
+		UAM_ASSERT(removed.baseline_unavailable);
+		UAM_ASSERT(removed.changed_files.empty());
+		UAM_ASSERT(removed.error.find("baseline was removed") != std::string::npos);
+	}
+	// A chat that never had a baseline reports the same structured state.
+	ChatSession unrecorded = chat;
+	unrecorded.id = "never-captured-chat";
+	UAM_ASSERT(service.Status(app, unrecorded, uam::VcsType::Git, true, "chat").baseline_unavailable);
+}
+
+#ifndef _WIN32
+UAM_TEST(VcsChatBaselineKeepsARawGitFailureNamingABaselineFileRetryable)
+{
+	if (!GitAvailableForTests() || ::geteuid() == 0) return; // Root reads the unreadable file.
+	TempDir temp("uam-chat-baseline-raw-error");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo / "tests");
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "base\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add -A"));
+	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "raw-error-chat";
+	chat.workspace_directory = repo.string();
+	const uam::VcsCommitService service;
+	std::string error;
+	UAM_ASSERT(service.CaptureChatBaseline(app, chat, &error));
+	const fs::path unreadable = repo / "tests" / "baseline.json";
+	UAM_ASSERT(uam::io::WriteTextFile(unreadable, "{}\n"));
+	fs::permissions(unreadable, fs::perms::none);
+	const uam::VcsCommitStatus status = service.Status(app, chat, uam::VcsType::Git, true, "chat");
+	fs::permissions(unreadable, fs::perms::owner_all);
+	UAM_ASSERT(status.error.find("baseline.json") != std::string::npos);
+	UAM_ASSERT(!status.baseline_unavailable);
+}
+#endif
 
 UAM_TEST(AcpInitialRepositoryBaselineQueuesDurablyBeforeProviderLaunch)
 {
