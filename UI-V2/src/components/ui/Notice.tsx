@@ -20,7 +20,8 @@ export function Notice({
 }: {
   tone?: NoticeTone
   title?: string
-  dismissLabel: string
+  /** Required when dismissible. */
+  dismissLabel?: string
   dismissible?: boolean
   onDismiss?: () => void
   actions?: ReactNode
@@ -58,7 +59,7 @@ export function Notice({
           </Button>
         )}
         {actions && <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">{actions}</div>}
-        {dismissible && <IconButton
+        {dismissible && dismissLabel && <IconButton
           icon={<X size={13} />}
           label={dismissLabel}
           size="sm"

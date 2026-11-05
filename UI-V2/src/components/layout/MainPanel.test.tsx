@@ -29,7 +29,7 @@ vi.mock('@xterm/addon-fit', () => ({
   },
 }))
 
-import { MainPanel } from './MainPanel'
+import { BootstrapStateNotice, MainPanel } from './MainPanel'
 import { useAppStore } from '../../store/useAppStore'
 import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 import { assignChatToPane, chatGridLeaves, defaultChatGridLayout, readChatGridLayout, readChatViewMode, setChatInLeaf, splitChatLeaf, writeChatGridLayout, writeChatViewMode } from '../../utils/chatGridStorage'
@@ -110,6 +110,36 @@ describe('MainPanel', () => {
       },
       cliBindingBySessionId: {},
     })
+  })
+
+  it('shows the startup state error with an accessible, focus-keeping Retry (#622)', () => {
+    const retry = vi.fn(() => useAppStore.setState({ bootstrapStateLoading: true }))
+    useAppStore.setState({ bootstrapStateError: 'Startup state stayed behind', bootstrapStateLoading: false, retryBootstrapState: retry })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => { root.render(<BootstrapStateNotice />) })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Startup state stayed behind')
+    const button = () => host.querySelector('button[aria-label="Retry loading startup state"]') as HTMLButtonElement
+    button().focus()
+    act(() => { button().click() })
+    expect(retry).toHaveBeenCalledTimes(1)
+    expect(button().getAttribute('aria-busy')).toBe('true')
+    expect(button().getAttribute('aria-disabled')).toBe('true')
+    expect(button().disabled).toBe(false)
+    expect(document.activeElement).toBe(button())
+    act(() => { button().click() })
+    expect(retry).toHaveBeenCalledTimes(1)
+    // A Retry that fails the same way still changes the alert text so it is announced.
+    act(() => { useAppStore.setState({ bootstrapStateLoading: false }) })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Retry failed (attempt 1).')
+    act(() => { button().click() })
+    act(() => { useAppStore.setState({ bootstrapStateLoading: false }) })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Retry failed (attempt 2).')
+    act(() => { useAppStore.setState({ bootstrapStateError: '', bootstrapStateLoading: false }) })
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    act(() => root.unmount())
+    host.remove()
   })
 
   it('locks view switching while ACP or CLI output is active', () => {
