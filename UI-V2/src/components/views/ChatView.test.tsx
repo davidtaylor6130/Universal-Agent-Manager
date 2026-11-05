@@ -2432,7 +2432,7 @@ describe('ChatView', () => {
       try {
         if (kind === 'armed') {
           // Goal can only be armed between turns, so the turn starts after it is armed.
-          const setProcessing = (processing: boolean) => act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing } } })))
+          const setProcessing = (processing: boolean) => act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing } } })))
           setProcessing(false)
           openComposerOptions(host)
           act(() => goalMenuItem()!.click())
