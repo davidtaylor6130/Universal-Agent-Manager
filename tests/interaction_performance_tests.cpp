@@ -558,6 +558,65 @@ UAM_TEST(RuntimeStatePushBypassesRebuildWindowForPendingRequestsAndCliLaunches)
 	UAM_ASSERT_EQ(uam::RuntimeStateRebuildCountForTests(), rebuilds + 1);
 }
 
+namespace
+{
+	/// <summary>Follows the poll scheduler: sleeps until the deferred push is due, then ticks. Returns the wake-ups used.</summary>
+	int WakeUpsUntilDeferredPushPublishes(FakeStatePushClock& clock, uam::AppState& app)
+	{
+		int wake_ups = 0;
+		bool published = false;
+		while (!published && wake_ups < 20)
+		{
+			clock.Advance(std::chrono::milliseconds(uam::MillisecondsUntilDeferredStatePushDue()));
+			++wake_ups;
+			if (uam::DeferredStatePushDue()) published = uam::PushRuntimeStateUpdateIfChanged(nullptr, app);
+		}
+		return wake_ups;
+	}
+}
+
+UAM_TEST(DeferredStatePushThatComesDueInsideARebuildWindowDoesNotBusyPoll)
+{
+	FakeStatePushClock clock;
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "deferred-in-window";
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+	uam::PushStateUpdate(nullptr, app);
+
+	// t=0 publishes the summary, so its next publish is due at t=100.
+	app.chats.front().title = "first";
+	UAM_ASSERT(uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+	// t=30: an urgent rebuild restarts the rebuild window (until t=130) and defers the summary to t=100.
+	clock.Advance(std::chrono::milliseconds(30));
+	app.chats.front().title = "second";
+	UAM_ASSERT(!uam::PushRuntimeStateUpdateIfChanged(nullptr, app, true));
+	UAM_ASSERT_EQ(uam::MillisecondsUntilDeferredStatePushDue(), 70);
+	// t=100: the tick cannot rebuild yet; the scheduler must sleep to the window's end instead of polling every 1 ms.
+	clock.Advance(std::chrono::milliseconds(70));
+	UAM_ASSERT(uam::DeferredStatePushDue());
+	UAM_ASSERT(!uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT(!uam::DeferredStatePushDue());
+	UAM_ASSERT_EQ(uam::MillisecondsUntilDeferredStatePushDue(), 30);
+	UAM_ASSERT_EQ(WakeUpsUntilDeferredPushPublishes(clock, app), 1);
+	UAM_ASSERT(!uam::HasDeferredStatePush());
+
+	// A bridge push's per-chat window can end inside a later rebuild window: bridge at t=0, rebuild at t=62, due at t=100,
+	// rebuild window until t=162, so the summary publishes 162 ms after the previous publish.
+	clock.Advance(std::chrono::milliseconds(200));
+	app.chats.front().title = "bridge";
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	clock.Advance(std::chrono::milliseconds(62));
+	app.chats.front().title = "streamed";
+	UAM_ASSERT(!uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::MillisecondsUntilDeferredStatePushDue(), 38);
+	clock.Advance(std::chrono::milliseconds(38));
+	UAM_ASSERT(!uam::PushRuntimeStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::MillisecondsUntilDeferredStatePushDue(), 62);
+	UAM_ASSERT_EQ(WakeUpsUntilDeferredPushPublishes(clock, app), 1);
+}
+
 UAM_TEST(StatePushThrottlesBackgroundSummariesAndFlushesOnlyWhenDue)
 {
 	FakeStatePushClock clock;

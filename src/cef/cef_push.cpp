@@ -510,8 +510,9 @@ namespace uam
 		    now - g_last_runtime_state_rebuild_at < kChatSummaryMinPushInterval)
 		{
 			// Defer instead of dropping: the poll scheduler wakes when the window ends.
+			// A past-due deadline cannot publish before the window ends, so it moves out too; left in the past it makes the scheduler poll every 1 ms.
 			const auto due = g_last_runtime_state_rebuild_at + kChatSummaryMinPushInterval;
-			if (!g_state_push_deferred || due < g_deferred_state_push_due_at) g_deferred_state_push_due_at = due;
+			if (!g_state_push_deferred || due < g_deferred_state_push_due_at || g_deferred_state_push_due_at <= now) g_deferred_state_push_due_at = due;
 			g_state_push_deferred = true;
 			return false;
 		}
