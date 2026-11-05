@@ -1193,6 +1193,38 @@ describe('shared stored history content preservation', () => {
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ expandWorkTraces: oldExpanded }) }
   })
 
+  it('omits a textless recorded permission only when its tool row carries the action', () => {
+    const oldExpanded = useAppStore.getState().expandWorkTraces
+    useAppStore.setState({ expandWorkTraces: true })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    const render = (blocks: Array<Record<string, unknown>>) => {
+      const message = buildMessageFromCpp('fixture', { role: 'assistant', content: 'Final answer',
+        toolCalls: [{ id: 'linked', title: 'Linked tool', kind: 'read', status: 'completed', content: 'Stored output' }],
+        blocks: [{ type: 'tool_call', toolCallId: 'linked' }, ...blocks], createdAt: '2026-01-01T00:00:00Z' } as Parameters<typeof buildMessageFromCpp>[1], 0)
+      act(() => root.render(<PersistedMessageContent message={message} onSelectTool={vi.fn()} workingMode="verbose" />))
+    }
+    try {
+      render([{ type: 'permission_request', requestId: 'silent', toolCallId: 'linked' }])
+      expect(host.textContent).toContain('Linked tool')
+      expect(host.querySelectorAll('[role="note"]')).toHaveLength(0)
+      expect(host.textContent).not.toContain('Recorded permission request')
+
+      render([{ type: 'permission_request', requestId: 'unlinked' }, { type: 'user_input_request', requestId: 'question', toolCallId: 'linked' }])
+      expect(host.querySelectorAll('[role="note"]')).toHaveLength(2)
+      expect(host.textContent).toContain('Recorded permission request')
+      expect(host.textContent).toContain('Recorded question')
+      expect(host.textContent).toContain('Details are unavailable in this stored history.')
+
+      render([{ type: 'permission_request', requestId: 'dangling', toolCallId: 'no-such-tool' }])
+      expect(host.querySelectorAll('[role="note"]')).toHaveLength(1)
+      expect(host.textContent).toContain('Recorded permission request')
+
+      render([{ type: 'permission_request', requestId: 'detailed', toolCallId: 'linked', text: 'Recorded permission text' }])
+      expect(host.querySelectorAll('[role="note"]')).toHaveLength(1)
+      expect(host.textContent).toContain('Recorded permission text')
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ expandWorkTraces: oldExpanded }) }
+  })
+
   it('hides recorded permission and question requests with the collapsed work trace', () => {
     const oldExpanded = useAppStore.getState().expandWorkTraces
     useAppStore.setState({ expandWorkTraces: false })
