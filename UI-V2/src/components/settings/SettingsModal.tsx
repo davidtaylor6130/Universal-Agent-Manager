@@ -951,7 +951,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     else if (selectedSection === 'memory-store' && memoryRef.current) memoryRef.current.requestLeave(next)
     else if (selectedSection === 'shell-actions' && shellRef.current) shellRef.current.requestLeave(next)
     else if ((selectedSection === 'central-configuration' || selectedSection === 'agents') && centralRef.current) centralRef.current.requestLeave(next)
-    else if ((selectedSection === 'mcp-servers' && mcpDraftDirty) || (selectedSection === 'chat-data' && importFiltersDirty) || (selectedSection === 'remote-hosts' && remoteHostOptionsDirty)) { setDiscardExit(() => next); setConfirmDiscard(true) }
+    else if ((selectedSection === 'mcp-servers' && mcpDraftDirty) || (selectedSection === 'chat-data' && importFiltersDirty) || (SSH_ENABLED && selectedSection === 'remote-hosts' && remoteHostOptionsDirty)) { setDiscardExit(() => next); setConfirmDiscard(true) }
     else next()
   }
   const editorDirty = editorAssociationsDraft.some(item => {
@@ -1794,7 +1794,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (openRemoteHost) remoteHostBackRef.current?.focus()
     else if (lastOpenRemoteHostId.current) {
       const open = [...(dialogRef.current?.querySelectorAll<HTMLElement>('.uam-settings-page:not(.uam-settings-page--leaving) [data-host-open]') ?? [])].find((button) => button.dataset.hostOpen === lastOpenRemoteHostId.current)
-      ;(open ?? dialogRef.current?.querySelector<HTMLElement>('.uam-settings-page:not(.uam-settings-page--leaving) #remote-host-name'))?.focus()
+      ;(open ?? (SSH_ENABLED ? dialogRef.current?.querySelector<HTMLElement>('.uam-settings-page:not(.uam-settings-page--leaving) #remote-host-name') : null))?.focus()
     }
     lastOpenRemoteHostId.current = openRemoteHost?.id ?? null
   }, [openRemoteHost?.id])
@@ -3038,7 +3038,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   </div>
                 </div>
                   if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-3"><div className="uam-settings-frame uam-settings-frame--full flex-1 min-h-0 flex flex-col">{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden">{renderSectionContent()}</SettingsPageSwap></div></div>
-                  return <div className="uam-settings-scroll"><div className="uam-settings-frame" style={selectedSection === 'phone' ? { margin: '0 auto' } : undefined}>{header}{scopeBar}<SettingsPageSwap pageKey={openRemoteHost && selectedSection === 'remote-hosts' ? `remote-hosts:${openRemoteHost.id}` : selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
+                  return <div className="uam-settings-scroll"><div className="uam-settings-frame" style={selectedSection === 'phone' ? { margin: '0 auto' } : undefined}>{header}{scopeBar}<SettingsPageSwap pageKey={SSH_ENABLED && openRemoteHost && selectedSection === 'remote-hosts' ? `remote-hosts:${openRemoteHost.id}` : selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
                 })()}
               </>}</Swap>
             </div>
@@ -3099,11 +3099,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           </div>
         </Overlay>}
       </Presence>}
-      <ConfirmDialog open={confirmDiscard} tone="danger" title={selectedSection === 'chat-data' ? 'Discard import filter changes?' : selectedSection === 'remote-hosts' ? 'Discard host option changes?' : 'Discard MCP changes?'} label={selectedSection === 'chat-data' ? 'Discard unsaved import filters' : selectedSection === 'remote-hosts' ? 'Discard unsaved host options' : 'Discard unsaved MCP changes'}
+      <ConfirmDialog open={confirmDiscard} tone="danger" title={selectedSection === 'chat-data' ? 'Discard import filter changes?' : SSH_ENABLED && selectedSection === 'remote-hosts' ? 'Discard host option changes?' : 'Discard MCP changes?'} label={selectedSection === 'chat-data' ? 'Discard unsaved import filters' : SSH_ENABLED && selectedSection === 'remote-hosts' ? 'Discard unsaved host options' : 'Discard unsaved MCP changes'}
         cancelLabel="Keep editing" confirmLabel="Discard changes"
         onCancel={() => { setConfirmDiscard(false); dialogRef.current?.focus() }}
         onConfirm={() => { setMcpDraftDirty(false); setImportFiltersDirty(false); setConfirmDiscard(false); discardExit?.(); setDiscardExit(null) }}>
-        <p>{selectedSection === 'chat-data' ? 'The import filters have unsaved changes.' : selectedSection === 'remote-hosts' ? 'The host options have unsaved changes.' : 'The MCP server configuration has unsaved changes.'}</p>
+        <p>{selectedSection === 'chat-data' ? 'The import filters have unsaved changes.' : SSH_ENABLED && selectedSection === 'remote-hosts' ? 'The host options have unsaved changes.' : 'The MCP server configuration has unsaved changes.'}</p>
       </ConfirmDialog>
       <ConfirmDialog open={Boolean(pendingDelete)} title={`Delete ${pendingDelete?.kind === 'theme' ? 'theme' : 'editor group'}?`} label={pendingDelete ? `Delete ${pendingDelete.name}` : undefined}
         confirmLabel="Delete permanently" busy={themeSaving || editorSaving}
