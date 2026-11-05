@@ -2413,6 +2413,47 @@ describe('ChatView', () => {
     })
 
     it.each([
+      { kind: 'slash', draft: '/goal Ship it', sent: 'Ship it' },
+      { kind: 'native', draft: '/ralph Ship it', sent: '/ralph Ship it' },
+      { kind: 'armed', draft: 'Ship it', sent: 'Ship it' },
+    ])('asks in Claude Plan mode before a $kind goal steer creates its goal', async ({ kind, draft, sent }) => {
+      const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      const setGoal = vi.fn(() => Promise.resolve({ ok: true, goalId: 'goal-1' }))
+      useAppStore.setState((state) => ({ steerActiveTurnOnSend: true, goalTokenBudget: 0,
+        providers: state.providers.map((provider) => provider.id === 'claude-cli' ? { ...provider, nativeGoalCommand: '/ralph' } : provider),
+        sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+        acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], providerId: 'claude-cli', protocolKind: 'claude-code-stream-json',
+          processing: true, pendingPermission: null, currentModeId: 'plan',
+          availableModes: [{ id: 'default', name: 'Default', description: '' }, { id: 'plan', name: 'Plan', description: '' }] } },
+        setSessionApprovalMode, sendAcpPrompt, setGoal,
+      }))
+      const { host, done } = mount()
+      try {
+        if (kind === 'armed') {
+          // Goal can only be armed between turns, so the turn starts after it is armed.
+          const setProcessing = (processing: boolean) => act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing } } })))
+          setProcessing(false)
+          openComposerOptions(host)
+          act(() => goalMenuItem()!.click())
+          setProcessing(true)
+        }
+        const textarea = typeDraft(host, draft)
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Interrupt and steer"]')!.click(); await Promise.resolve() })
+        expect(setGoal).not.toHaveBeenCalled()
+        expect(sendAcpPrompt).not.toHaveBeenCalled()
+        expect(document.body.textContent).toContain('Claude Plan mode is read-only')
+        await act(async () => { [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Review each edit')!.click() })
+        expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'default')
+        expect(setGoal).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', sent, [], true, expect.any(Function))
+        expect(document.body.textContent).not.toContain('Claude Plan mode is read-only')
+        expect(textarea.value).toBe('')
+      } finally { done() }
+    })
+
+    it.each([
       { draft: '/ralph Ship it', sent: '/ralph Ship it' },
       { draft: '/goal Ship it', sent: 'Ship it' },
     ])('applies the labelled action to goal command $draft', async ({ draft, sent }) => {

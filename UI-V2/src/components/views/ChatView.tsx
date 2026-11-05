@@ -159,6 +159,8 @@ interface PendingClaudePlanPrompt {
   context: ComposerReferenceSubmission
   /** The original Send chose Steer; Plan-mode resolution keeps that action. */
   steerNow?: boolean
+  /** A goal steer creates its goal only after the Plan-mode choice. */
+  goal?: { objective: string; tokenBudget: number; executionOwner: 'uam' | 'provider'; sendFailure: string; disarm?: boolean }
 }
 
 const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
@@ -1567,11 +1569,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const createGoalAndSend = async (request: {
     objective: string; tokenBudget: number; executionOwner: 'uam' | 'provider'; prompt: string;
     attachments: Attachment[]; sendFailure: string; steerNow?: boolean; disarm?: boolean;
-  }) => {
+  }, planSubmission?: PendingClaudePlanPrompt) => {
     const submittedSessionId = session.id
-    const submittedDraft = draft
-    const submittedContext = captureComposerReferenceSubmission(submittedSessionId)
+    const submittedDraft = planSubmission?.draft ?? draft
+    const submittedContext = planSubmission?.context ?? captureComposerReferenceSubmission(submittedSessionId)
     if (!submittedContext) { setGoalError("The chat's workspace or provider changed, so this goal wasn't sent. Review the selected references, then send again."); return }
+    if (!planSubmission && request.steerNow && isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
+      const { prompt, attachments, steerNow: _steerNow, ...goal } = request
+      setClaudePlanPrompt({ prompt, draft, attachments, context: submittedContext, steerNow: true, goal })
+      return
+    }
     const generation = ++goalMutationGenerationRef.current
     const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === submittedSessionId && goalMutationGenerationRef.current === generation &&
       useAppStore.getState().sessions.find((chat) => chat.id === submittedSessionId)?.createdAt.getTime() === submittedContext.birth
@@ -3104,6 +3111,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         return
       }
       const readyAttachments = submission.attachments
+      if (submission.goal) {
+        // Retrying would create the goal again, so failures surface in the composer as for any goal send.
+        await createGoalAndSend({ ...submission.goal, prompt: submission.prompt, attachments: readyAttachments, steerNow: true }, submission)
+        setClaudePlanPrompt((current) => current === submission ? null : current)
+        return
+      }
       const ok = await (submission.steerNow
         ? sendCapturedComposerPrompt(submission.context, submission.prompt, readyAttachments, true)
         : sendCapturedComposerPrompt(submission.context, submission.prompt, readyAttachments.length ? readyAttachments : undefined))
