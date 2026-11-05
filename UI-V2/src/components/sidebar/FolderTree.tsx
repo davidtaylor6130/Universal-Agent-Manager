@@ -30,6 +30,7 @@ import { ChatSelectionContext, MenuDivider, SingleOnlyMenuItem, type ChatSelecti
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import { canNestCollection, collectionPath, collectionSubtreeIds } from '../../utils/collectionTree'
+import { fromViewportMenu } from '../../utils/modalFocus'
 import { isAbsoluteRemoteWorkspace, isRemoteDirectoryBrowseAvailable, isSshHost } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
 import { Overlay, usePresence } from '../ui/Overlay'
@@ -1473,6 +1474,8 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
     if (!menuOpen) return
     menuRef.current?.querySelector<HTMLButtonElement>('button:not([aria-disabled="true"])')?.focus()
     const onDown = (event: MouseEvent) => {
+      // Submenus are portaled outside menuRef; pressing one must not unmount it before its click lands.
+      if (fromViewportMenu(event)) return
       const target = event.target as Node
       if (!menuRef.current?.contains(target) && !menuTriggerRef.current?.contains(target)) { setMenuOpen(false); setMenuPoint(null) }
     }
@@ -1593,7 +1596,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
             </RowButton>
           </Tooltip>
         )}
-        <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>{folderCount}</span>
+        <span data-testid={`collection-count-${collection.id}`} className="text-[10px]" style={{ color: 'var(--text-3)' }}>{folderCount + childCount}</span>
         {!isCompanionContext() && <Tooltip label="Collection actions">
           {/* ui: raw button kept — unsized inline trigger that must keep its layout; IconButton imposes 26px */}<button ref={menuTriggerRef} type="button" aria-label={`Actions for ${collection.name}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => { setMenuPoint(null); setMenuOpen((open) => !open) }} style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}>
             <MoreHorizontal size={14} />

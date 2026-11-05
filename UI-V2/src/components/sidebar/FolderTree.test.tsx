@@ -608,6 +608,60 @@ describe('FolderTree', () => {
     }
   })
 
+  it('counts nested collections and workspaces directly inside a collection in its header badge', () => {
+    useAppStore.setState({
+      resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: false, references: [] },
+        { id: 'deep', name: 'Deep', parentId: 'services', collapsed: false, references: [] },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      const badge = (id: string) => host.querySelector(`[data-testid="collection-count-${id}"]`)?.textContent
+      expect(badge('homelab')).toBe('2')
+      expect(badge('services')).toBe('1')
+      expect(badge('deep')).toBe('0')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('moves a collection when its submenu target gets a full press and release', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
+    useAppStore.setState({
+      resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [] },
+        { id: 'services', name: 'Services', collapsed: false, references: [] },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      act(() => (host.querySelector('button[aria-label="Actions for Services"]') as HTMLButtonElement).click())
+      const menu = document.body.querySelector('[role="menu"][aria-label="Services actions"]') as HTMLElement
+      act(() => (Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('Move to collection')) as HTMLButtonElement).click())
+      const target = document.body.querySelector('[role="menu"][aria-label="Move Services to collection"] button') as HTMLButtonElement
+      // A real press reaches the document first; the submenu is portaled outside the parent menu and must survive it.
+      act(() => { target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })) })
+      expect(target.isConnected).toBe(true)
+      act(() => { target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true })) })
+      await act(async () => { target.click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections.find((collection) => collection.id === 'services')?.parentId).toBe('homelab')
+      expect(document.body.querySelector('[role="menu"][aria-label="Services actions"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('search still reaches workspaces referenced by nested collections', () => {
     useAppStore.setState({
       resourceCollections: [
