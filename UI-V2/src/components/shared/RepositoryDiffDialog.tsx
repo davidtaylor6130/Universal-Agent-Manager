@@ -8,6 +8,8 @@ import './review.css'
 import { UnifiedDiff } from './UnifiedDiff'
 import { getTopmostModal } from '../../utils/modalFocus'
 
+const NARROW_QUERY = '(max-width: 640px)'
+
 export function RepositoryDiffDialog({
   chatId,
   file,
@@ -39,6 +41,16 @@ export function RepositoryDiffDialog({
   const [layout, setLayout] = useState<'unified' | 'split'>(() => {
     try { return localStorage.getItem('uam-diff-layout') === 'unified' ? 'unified' : 'split' } catch { return 'split' }
   })
+  // Narrow screens always get one horizontally scrollable column; the remembered preference returns when wider.
+  const [narrow, setNarrow] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia(NARROW_QUERY).matches)
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const query = window.matchMedia(NARROW_QUERY)
+    const update = () => setNarrow(query.matches)
+    query.addEventListener?.('change', update)
+    return () => query.removeEventListener?.('change', update)
+  }, [])
+  const shownLayout = narrow ? 'unified' : layout
   const chooseLayout = (next: 'unified' | 'split') => {
     setLayout(next)
     try { localStorage.setItem('uam-diff-layout', next) } catch { /* The view still works when storage is unavailable. */ }
@@ -110,7 +122,7 @@ export function RepositoryDiffDialog({
             </div>}
           </div>
           <Button type="button" size="sm" variant="ghost" onClick={() => setInspection({ chatId, path: sourcePath ?? file.path })}>Inspect file</Button>
-          {!file.binary && <div role="group" aria-label="Diff layout" className="uam-rv-segmented">
+          {!file.binary && !narrow && <div role="group" aria-label="Diff layout" className="uam-rv-segmented">
             {/* ui: raw buttons kept — per-option Tooltip and aria-label ("... diff view") that SegmentedControl options cannot carry */}
             <Tooltip label="Unified diff view"><button type="button" aria-label="Unified diff view" aria-pressed={layout === 'unified'} onClick={() => chooseLayout('unified')}><Rows3 size={14} aria-hidden />Unified</button></Tooltip>
             <Tooltip label="Split diff view"><button type="button" aria-label="Split diff view" aria-pressed={layout === 'split'} onClick={() => chooseLayout('split')}><Columns2 size={14} aria-hidden />Split</button></Tooltip>
@@ -128,7 +140,7 @@ export function RepositoryDiffDialog({
           ) : diff.length === 0 ? (
             <div className="p-6 text-center text-sm" style={{ color: 'var(--text-2)' }}>No textual diff is available for this file.</div>
           ) : (
-            <UnifiedDiff key={`${chatId}:${file.path}:${comparisonRef ?? ""}`} diff={diff} path={file.path} layout={layout} />
+            <UnifiedDiff key={`${chatId}:${file.path}:${comparisonRef ?? ""}`} diff={diff} path={file.path} layout={shownLayout} />
           )}
         </div>
       </section>

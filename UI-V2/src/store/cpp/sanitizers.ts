@@ -1350,6 +1350,7 @@ export function sanitizeVcsCommitStatus(value: unknown): VcsCommitStatus | null 
         })
       : [],
     lineStatsReady: typeof value.lineStatsReady === 'boolean' ? value.lineStatsReady : true,
+    baselineUnavailable: value.baselineUnavailable === true,
     warning: stringOr(value.warning),
     error: stringOr(value.error),
   }

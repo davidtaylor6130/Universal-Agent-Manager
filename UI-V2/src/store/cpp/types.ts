@@ -898,6 +898,8 @@ export interface VcsCommitStatus {
   branchOrRevision: string
   changedFiles: VcsChangedFile[]
   lineStatsReady: boolean
+  /** The chat comparison has no usable baseline, so Retry cannot help. */
+  baselineUnavailable?: boolean
   warning: string
   error: string
 }

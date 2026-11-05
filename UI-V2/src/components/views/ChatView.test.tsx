@@ -1409,7 +1409,11 @@ describe('ChatView', () => {
     const status = {
       available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const,
       workspaceDirectory: '/tmp/project', branchOrRevision: 'main',
-      changedFiles: [{ path: 'src/chat.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false }],
+      changedFiles: [
+        { path: 'src/chat.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false },
+        // Touched by the chat without a net line delta (for example a permission-only change).
+        { path: 'scripts/run.sh', status: 'M', staged: false, additions: 0, deletions: 0, binary: false },
+      ],
       lineStatsReady: true, warning: '', error: '',
     }
     const getVcsCommitStatus = vi.fn(() => Promise.resolve(status))
@@ -1425,8 +1429,13 @@ describe('ChatView', () => {
     try {
     await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
     expect(getVcsCommitStatus).toHaveBeenCalledWith('chat-1', 'git', expect.objectContaining({ comparisonRef: 'chat' }))
+    const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+    expect(summary.textContent).toContain('Changes from this chat')
+    expect(summary.textContent).toContain('2 changed files · +1 / -0')
+    expect(summary.querySelector('[aria-label="Review changes to scripts/run.sh"]')).not.toBeNull()
     await act(async () => { (host.querySelector('[aria-label="Review changes to src/chat.ts"]') as HTMLButtonElement).click(); await Promise.resolve() })
     expect(getVcsFileDiff).toHaveBeenCalledWith('chat-1', 'src/chat.ts', 'git', 'chat')
+    expect(document.body.querySelector('[aria-label="Changes in src/chat.ts"]')?.textContent).toContain('Since this chat began')
     if (surface === 'companion') expect((host.querySelector('[aria-label="Open commit panel"]') as HTMLElement).style.display).toBe('none')
     } finally {
       act(() => root.unmount())
@@ -1435,8 +1444,78 @@ describe('ChatView', () => {
     }
   })
 
-  it('clears stale review counts when the original chat baseline is unavailable', async () => {
-    const status = { available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [{ path: 'prior.ts', status: 'M', staged: false, additions: 9, deletions: 0, binary: false }], lineStatsReady: true, warning: '', error: 'The original chat baseline is unavailable.' }
+  it.each(['svn', 'git-error', 'git-error-naming-baseline', 'ssh-failure'] as const)('labels SVN review honestly and offers Retry for other read failures (%s)', async (kind) => {
+    const errors = {
+      svn: '',
+      'git-error': 'fatal: Unable to create index.lock: File exists.',
+      // A path in a raw Git error can contain the word; only the native flag means the baseline is gone.
+      'git-error-naming-baseline': 'error: open("tests/baseline.json"): Permission denied',
+      'ssh-failure': 'ssh: connect to host build-box port 22: Connection refused',
+    }
+    const status = {
+      available: kind !== 'ssh-failure', vcsTypes: [kind === 'svn' ? 'svn' as const : 'git' as const], activeVcsType: kind === 'svn' ? 'svn' as const : 'git' as const,
+      workspaceDirectory: '/tmp/project', branchOrRevision: 'main',
+      changedFiles: [{ path: 'src/wc.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false }],
+      lineStatsReady: true, warning: '', error: errors[kind],
+    }
+    const getVcsCommitStatus = vi.fn(() => Promise.resolve(status))
+    const getVcsFileDiff = vi.fn(() => Promise.resolve('@@ -0,0 +1 @@\n+wc'))
+    useAppStore.setState((state) => ({
+      repositoryReviewBySessionId: {}, getVcsCommitStatus, getVcsFileDiff,
+      sessions: state.sessions.map((session) => ({ ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: undefined })),
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null, processingStartedAtMs: null, turnSerial: 2 } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
+      const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+      if (kind === 'svn') {
+        expect(summary.textContent).toContain('Working copy changes')
+        expect(summary.textContent).not.toContain('Changes from this chat')
+        await act(async () => { (summary.querySelector('[aria-label="Review changes to src/wc.ts"]') as HTMLElement).click(); await Promise.resolve() })
+        const dialog = document.body.querySelector('[aria-label="Changes in src/wc.ts"]') as HTMLElement
+        expect(dialog.textContent).toContain('Working copy')
+        expect(dialog.textContent).not.toContain('Since this chat began')
+      } else {
+        expect(summary.textContent).not.toContain('Unavailable for this chat')
+        expect(summary.querySelector('[role="alert"]')?.textContent).toContain(errors[kind])
+        expect(summary.querySelector('[role="tree"]')).toBeNull()
+        const retry = [...summary.querySelectorAll('button')].find((button) => button.textContent === 'Retry') as HTMLButtonElement
+        const summaryReads = () => (getVcsCommitStatus.mock.calls as unknown as [string, string, { requestId?: string }][]).filter(([, , options]) => options?.requestId?.startsWith('chat-summary:')).length
+        expect(summaryReads()).toBe(1)
+        await act(async () => { retry.click(); await Promise.resolve() })
+        expect(summaryReads()).toBe(2)
+      }
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('shows no summary for a workspace that simply has no repository', async () => {
+    const status = { available: false, vcsTypes: [], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: 'No Git or SVN repository detected for this workspace.', error: '' }
+    useAppStore.setState((state) => ({
+      repositoryReviewBySessionId: {},
+      getVcsCommitStatus: vi.fn(() => Promise.resolve(status)),
+      sessions: state.sessions.map((session) => ({ ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: undefined })),
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null, processingStartedAtMs: null, turnSerial: 2 } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
+      expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('replaces stale review counts with a clear state when the original chat baseline is unavailable', async () => {
+    const status = { available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [{ path: 'prior.ts', status: 'M', staged: false, additions: 9, deletions: 0, binary: false }], lineStatsReady: true, warning: '', error: 'The original chat baseline is unavailable.', baselineUnavailable: true }
     useAppStore.setState((state) => ({
       repositoryReviewBySessionId: { 'chat-1': { ...status, error: '' } },
       getVcsCommitStatus: vi.fn(() => Promise.resolve(status)),
@@ -1448,8 +1527,13 @@ describe('ChatView', () => {
     const root = createRoot(host)
     try {
     await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
-    expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
-    expect(useAppStore.getState().repositoryReviewBySessionId['chat-1']).toBeUndefined()
+    const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+    expect(summary.textContent).toContain('Unavailable for this chat.')
+    expect(summary.textContent).toContain('The original chat baseline is unavailable.')
+    expect(summary.textContent).not.toContain('prior.ts')
+    expect(summary.querySelector('[role="tree"]')).toBeNull()
+    expect([...summary.querySelectorAll('button')].some((button) => button.textContent === 'Retry')).toBe(false)
+    expect(useAppStore.getState().repositoryReviewBySessionId['chat-1']?.changedFiles).toEqual([])
     } finally {
       act(() => root.unmount())
       host.remove()
@@ -1547,7 +1631,7 @@ describe('ChatView', () => {
     expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
     await act(async () => useAppStore.setState({ goalsByChatId: { 'chat-1': [{ ...providerGoal, status: 'complete' }] } }))
     const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
-    expect(summary.textContent).toContain('Chat changes')
+    expect(summary.textContent).toContain('Changes from this chat')
     expect(summary.querySelector('[aria-label="Review changes to src/exact.ts"]')?.textContent).toContain('exact.ts')
     expect(summary.textContent).toContain('isolated Git checkpoint')
     expect(host.querySelector('[aria-label="Turn checkpoint"]')).toBeNull()
