@@ -43,8 +43,8 @@ namespace
 	std::chrono::steady_clock::time_point g_deferred_state_push_due_at{};
 	// Throttle decisions read this clock so unit tests can step time deterministically.
 	std::chrono::steady_clock::time_point (*g_state_push_clock)() = &std::chrono::steady_clock::now;
-	// Poll ticks run every 16 ms while a turn streams; rebuilding the full fingerprint on each one cost
-	// ~26% of the UI thread even though throttled summaries publish at most every 100 ms.
+	// Poll ticks run every 16 ms while a turn streams; rebuilding the full fingerprint on each one is wasted work
+	// because throttled summaries publish at most every 100 ms.
 	std::chrono::steady_clock::time_point g_last_runtime_state_rebuild_at{};
 	// Pending requests and CLI launch identities seen by the last poll rebuild; a change bypasses the window.
 	std::string g_last_runtime_urgent_signature;
