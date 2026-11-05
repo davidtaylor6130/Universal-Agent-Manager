@@ -1276,6 +1276,63 @@ describe('FolderTree', () => {
     Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: previousResizeObserver })
   })
 
+  it('confirms a single workspace delete with the shared sidebar delete confirmation', async () => {
+    const deleteFolder = vi.fn(async () => true)
+    useAppStore.setState({ deleteFolder })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const openDelete = () => {
+      act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
+      act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Delete folder'))!.click())
+      return document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label^="Delete workspace Project"]')!
+    }
+    const dialog = openDelete()
+    expect(dialog).toBeTruthy()
+    expect(dialog.textContent).toContain('Delete workspace and chats?')
+    expect(dialog.textContent).toMatch(/The workspace “Project” and \d+ chats? will be permanently deleted\. This cannot be undone\./)
+    expect(dialog.textContent).toContain('The folder on disk is kept.')
+    expect(dialog.textContent).toContain('Deleted chats cannot be restored from this app.')
+    expect(dialog.textContent).toContain('/tmp/project')
+    expect(Array.from(dialog.querySelectorAll('button')).map((button) => button.textContent)).toEqual(['Cancel', 'Delete workspace'])
+    expect(document.activeElement?.textContent).toBe('Cancel')
+    act(() => document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+    expect(deleteFolder).not.toHaveBeenCalled()
+    const again = openDelete()
+    await act(async () => Array.from(again.querySelectorAll('button')).find((button) => button.textContent === 'Delete workspace')!.click())
+    expect(deleteFolder).toHaveBeenCalledExactlyOnceWith('project')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('reads a one-workspace selection delete like the menu delete, omits zero chats and returns focus to the row', () => {
+    useAppStore.setState({ folders: [makeFolder(), { ...makeFolder(), id: 'empty', name: 'Empty', directory: '/tmp/empty' }] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const row = host.querySelector<HTMLElement>('[data-workspace-id="project"]')!
+    act(() => row.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspace"]')!.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Delete workspace Project and 7 chats"]')!
+    expect(dialog.textContent).toContain('The workspace “Project” and 7 chats will be permanently deleted.')
+    expect(dialog.textContent).toContain('/tmp/project')
+    act(() => document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(document.activeElement).toBe(row)
+
+    act(() => host.querySelector<HTMLElement>('[data-workspace-id="empty"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Delete folder'))!.click())
+    const empty = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Delete workspace Empty"]')!
+    expect(empty.textContent).toContain('The workspace “Empty” will be permanently deleted.')
+    expect(empty.textContent).not.toContain('0 chats')
+    act(() => Array.from(empty.querySelectorAll('button')).find((button) => button.textContent === 'Cancel')!.click())
+    expect(document.activeElement).toBe(host.querySelector('[data-workspace-id="empty"]'))
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('keeps folder rename and delete failures visible', async () => {
     const renameFolder = vi.fn(async () => false)
     const deleteFolder = vi.fn(async () => false)
@@ -1300,8 +1357,8 @@ describe('FolderTree', () => {
     act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
     const remove = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Delete folder'))!
     act(() => remove.click())
-    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Delete folder')!.click())
-    expect(document.body.querySelector('[aria-label="Delete folder and chats"]')?.textContent).toContain('workspace could not be deleted')
+    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Delete workspace')!.click())
+    expect(document.body.querySelector('[role="alertdialog"][aria-label^="Delete workspace "]')?.textContent).toContain('workspace could not be deleted')
 
     act(() => root.unmount())
     host.remove()
@@ -1677,9 +1734,9 @@ describe('FolderTree', () => {
       act(() => menuItem.click())
       expect(deleteFolders).not.toHaveBeenCalled()
       expect(deleteFolder).not.toHaveBeenCalled()
-      const dialog = document.body.querySelector(selectedTarget ? '[role="alertdialog"]' : '[role="alertdialog"][aria-label="Delete folder and chats"]')!
-      expect(dialog.textContent).toContain(selectedTarget ? '3 workspaces and 3 chats' : 'd')
-      const confirm = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === (selectedTarget ? 'Delete workspaces' : 'Delete folder'))!
+      const dialog = document.body.querySelector(selectedTarget ? '[role="alertdialog"][aria-label="Delete 3 selected workspaces"]' : '[role="alertdialog"][aria-label="Delete workspace d and 1 chat"]')!
+      expect(dialog.textContent).toContain(selectedTarget ? '3 workspaces and 3 chats' : 'The workspace “d” and 1 chat')
+      const confirm = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === (selectedTarget ? 'Delete workspaces' : 'Delete workspace'))!
       await act(async () => confirm.click())
       if (selectedTarget) {
         expect(deleteFolders).toHaveBeenCalledExactlyOnceWith(['a', 'b', 'c'])
@@ -1769,8 +1826,8 @@ describe('FolderTree', () => {
     const root = createRoot(host)
     act(() => root.render(<FolderTree searchQuery="" />))
     act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspaces"]')!.click())
-    const confirm = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Delete workspaces')!
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspace"]')!.click())
+    const confirm = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Delete workspace')!
     await act(async () => { confirm.click(); await Promise.resolve() })
     expect(document.body.querySelector('[role="alertdialog"] [role="progressbar"]')?.hasAttribute('aria-valuenow')).toBe(false)
     await act(async () => {
@@ -1799,8 +1856,8 @@ describe('FolderTree', () => {
     const root = createRoot(host)
     act(() => root.render(<FolderTree searchQuery="" />))
     act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspaces"]')!.click())
-    const confirm = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Delete workspaces')!
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspace"]')!.click())
+    const confirm = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Delete workspace')!
     const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')!
     confirm.focus()
     await act(async () => { confirm.click(); await Promise.resolve() })

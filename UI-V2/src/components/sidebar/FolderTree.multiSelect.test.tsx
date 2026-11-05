@@ -99,13 +99,62 @@ describe('chat multi-selection actions', () => {
     expect(menu('Actions for 3 selected chats')).not.toBeNull()
     act(() => item('Delete 3 chats').click())
     const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Delete 3 selected chats"]')!
-    expect(dialog.textContent).toContain('3 chats and 1 related branches will be permanently deleted')
+    expect(dialog.textContent).toContain('3 chats and 1 related branch will be permanently deleted')
     await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Delete chats')!.click(); await flush() })
     expect(sent('deleteSessions')).toEqual([{ chatIds: ['a', 'a-branch', 'b', 'c'] }])
     await act(async () => { held[0].onSuccess(JSON.stringify({ deletedChatIds: ['a', 'a-branch', 'b', 'c'], rejected: [], selectedChatId: 'keep' })); await flush() })
     expect(useAppStore.getState().sessions.map((session) => session.id)).toEqual(['keep'])
     expect(failures).toEqual([])
     expect(selectedIds()).toEqual([])
+  })
+
+  it('reads the same for one chat from its menu and as a one-item selection', async () => {
+    useAppStore.setState({ sessions: [...useAppStore.getState().sessions, chat('a-branch-2', 'project', { parentChatId: 'a', branchRootChatId: 'a' })] })
+    const open = () => document.body.querySelector<HTMLElement>('[role="alertdialog"]')!
+    const read = () => ({ label: open().getAttribute('aria-label'), text: open().textContent })
+    const cancel = () => act(() => Array.from(open().querySelectorAll('button')).find((button) => button.textContent === 'Cancel')!.click())
+    openChatMenu('a')
+    act(() => item('Delete').click())
+    const fromMenu = read()
+    cancel()
+    act(() => row('a').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    expect(selectedIds()).toEqual(['a'])
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected chat"]')!.click())
+    expect(read()).toEqual(fromMenu)
+    expect(fromMenu.label).toBe('Delete chat Chat a and its 2 related branches')
+    expect(fromMenu.text).toContain('The chat “Chat a” and its 2 related branches will be permanently deleted')
+
+    // A refused delete reads the same too.
+    const refuse = async (index: number) => {
+      await act(async () => { Array.from(open().querySelectorAll('button')).find((button) => button.textContent === 'Delete chat')!.click(); await flush() })
+      await act(async () => { held[index].onSuccess(JSON.stringify({ deletedChatIds: [], rejected: [{ id: 'a', error: 'Cannot delete chats while a selected runtime is still running.' }], selectedChatId: 'keep' })); await flush() })
+      return read()
+    }
+    const selectionFailure = await refuse(0)
+    expect(selectionFailure.text).toContain('The chat could not be deleted. Finish active work and try again.')
+    cancel()
+    openChatMenu('a')
+    act(() => item('Delete').click())
+    expect(await refuse(1)).toEqual(selectionFailure)
+  })
+
+  it('reads the same for one workspace from its menu and as a one-item selection, including a failure', async () => {
+    useAppStore.setState({ deleteFolder: async () => false, deleteFolders: async () => false, workspaceDeletionError: '' } as never)
+    const open = () => document.body.querySelector<HTMLElement>('[role="alertdialog"]')!
+    const read = () => ({ label: open().getAttribute('aria-label'), text: open().textContent })
+    const press = async (text: string) => { await act(async () => { Array.from(open().querySelectorAll('button')).find((button) => button.textContent === text)!.click(); await flush() }) }
+    act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-w1"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
+    act(() => item('Delete folder').click())
+    const fromMenu = read()
+    await press('Delete workspace')
+    const menuFailure = read()
+    await press('Cancel')
+    act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-w1"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspace"]')!.click())
+    expect(read()).toEqual(fromMenu)
+    await press('Delete workspace')
+    expect(read()).toEqual(menuFailure)
+    expect(menuFailure.text).toContain('The workspace could not be deleted. Try again.')
   })
 
   it('routes the Delete key on a selected row to the whole selection', () => {
@@ -245,7 +294,7 @@ describe('workspace multi-selection actions', () => {
   it('deletes accepted workspaces and reports each refused workspace by name', async () => {
     selectWorkspaces()
     act(() => item('Delete 2 workspaces').click())
-    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Delete selected workspaces"]')!
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Delete 2 selected workspaces"]')!
     await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Delete workspaces')!.click(); await flush() })
     expect(sent('deleteFolders')).toEqual([{ folderIds: ['w1', 'w2'] }])
     await act(async () => {
@@ -254,11 +303,31 @@ describe('workspace multi-selection actions', () => {
     })
     expect(useAppStore.getState().folders.map((folder) => folder.id)).toEqual(['project', 'w2'])
     expect(failures.map((failure) => [failure.message, failure.detail])).toEqual([['Could not delete 1 of 2 selected workspaces.', '“Workspace two”: Wait for the chat worktree operation to finish.']])
-    expect(document.body.querySelector('[role="alertdialog"][aria-label="Delete selected workspaces"]')).toBeNull()
+    expect(document.body.querySelector('[role="alertdialog"][aria-label="Delete 2 selected workspaces"]')).toBeNull()
   })
 })
 
 describe('collection multi-selection actions', () => {
+  it('reads the same for one collection from its menu and as a one-item selection, and reports a failure by name on both', async () => {
+    useAppStore.setState({ deleteResourceCollection: async () => false } as never)
+    const open = () => document.body.querySelector<HTMLElement>('[role="alertdialog"]')!
+    const read = () => ({ label: open().getAttribute('aria-label'), text: open().textContent })
+    const confirm = async () => { await act(async () => { Array.from(open().querySelectorAll('button')).find((button) => button.textContent === 'Delete collection')!.click(); await flush() }) }
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Actions for Favourites"]')!.click())
+    act(() => item('Delete').click())
+    const fromMenu = read()
+    await confirm()
+    act(() => host.querySelector<HTMLElement>('[data-collection-id="col"] button[aria-label="Favourites"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected collection"]')!.click())
+    expect(read()).toEqual(fromMenu)
+    await confirm()
+    expect(failures).toHaveLength(2)
+    expect([failures[1].message, failures[1].detail]).toEqual([failures[0].message, failures[0].detail])
+    expect(failures[0].message).toBe('Could not delete "Favourites".')
+    expect(failures[0].detail).toBe('Could not save the change. Refresh and try again.')
+    expect(useAppStore.getState().resourceCollections.map((collection) => collection.id)).toEqual(['col', 'col2'])
+  })
+
   it('disables rename with an explanation and deletes every selected collection after one confirmation', async () => {
     act(() => host.querySelector<HTMLElement>('[data-collection-id="col"] button[aria-label="Favourites"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
     act(() => host.querySelector<HTMLElement>('[data-collection-id="col2"] button[aria-label="Archive"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))

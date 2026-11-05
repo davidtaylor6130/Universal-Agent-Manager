@@ -12,8 +12,9 @@ import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import { SessionItem } from './SessionItem'
+import { DeleteConfirmDialog, chatDeleteFailure, countLabel, relatedBranchContents } from './DeleteConfirmDialog'
 import './sidebar.css'
-import { Button, ConfirmDialog, IconButton, MenuItem, MenuSelect, Notice, ProgressFill, RowButton, Tooltip, ViewportMenu } from '../ui'
+import { Button, IconButton, MenuItem, MenuSelect, Notice, ProgressFill, RowButton, Tooltip, ViewportMenu } from '../ui'
 import {
   type ChatSearchFilters,
   type ChatSearchFilterContext,
@@ -392,6 +393,12 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     () => sessions.filter((session) => session.folderId && pendingDeleteFolderIds?.includes(session.folderId)).length,
     [sessions, pendingDeleteFolderIds]
   )
+  // One confirmation for menu and selection deletes, so a single workspace reads the same either way.
+  const workspaceDeleteCount = pendingDeleteFolderIds ? pendingDeleteFolderIds.length : pendingDeleteFolder ? 1 : 0
+  const singleWorkspaceDelete = pendingDeleteFolderIds
+    ? (pendingDeleteFolderIds.length === 1 ? folders.find((folder) => folder.id === pendingDeleteFolderIds[0]) : undefined)
+    : pendingDeleteFolder ?? undefined
+  const workspaceDeleteChatCount = pendingDeleteFolderIds ? pendingDeleteWorkspaceChatCount : pendingDeleteChatCount
   const unsortedExpanded = searchModel.isSearching || !unsortedCollapsed
 
   const visibleSessionRows = useCallback(() => Array.from(
@@ -562,14 +569,15 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     workspaceDeleteInFlightRef.current = true
     setDeletingFolder(true)
     setDeleteFolderError('')
+    const failure = pendingDeleteFolderIds.length === 1 ? 'The workspace could not be deleted. Try again.' : 'The workspaces could not be deleted. Try again.'
     try {
       const ids = pendingDeleteFolderIds
       if (await deleteFolders(ids)) clearWorkspaceSelection()
       // Partial deletion: refused workspaces were reported by name and stay selected for another try.
       else if (ids.some((id) => !useAppStore.getState().folders.some((folder) => folder.id === id))) setPendingDeleteFolderIds(null)
-      else setDeleteFolderError(useAppStore.getState().workspaceDeletionError || 'The workspaces could not be deleted. Try again.')
+      else setDeleteFolderError(useAppStore.getState().workspaceDeletionError || failure)
     } catch (error) {
-      setDeleteFolderError(error instanceof Error && error.message.trim() ? error.message : 'The workspaces could not be deleted. Try again.')
+      setDeleteFolderError(error instanceof Error && error.message.trim() ? error.message : failure)
     } finally {
       workspaceDeleteInFlightRef.current = false
       setDeletingFolder(false)
@@ -887,7 +895,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         <div className="mx-1 mb-1 flex items-center gap-2 px-2.5 py-1" style={{ background: 'var(--surface-up)', borderBottom: '1px solid var(--border)' }}>
           <span className="min-w-0 flex-1 text-xs font-medium">{selectedFolderIds.size} {selectedFolderIds.size === 1 ? 'workspace' : 'workspaces'} selected</span>
           <Button size="sm" variant="ghost" disabled={deletingFolder} onClick={clearWorkspaceSelection}>Clear</Button>
-          <Button size="sm" variant="danger" disabled={deletingFolder} aria-label={`Delete ${selectedFolderIds.size} selected workspaces`} onClick={() => {
+          <Button size="sm" variant="danger" disabled={deletingFolder} aria-label={`Delete ${countLabel(selectedFolderIds.size, 'selected workspace')}`} onClick={() => {
             const visible = new Set(visibleFolderRows().map((row) => row.dataset.workspaceId))
             const ids = [...selectedFolderIds].filter((id) => visible.has(id))
             if (ids.length > 0) {
@@ -901,7 +909,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         <div className="mx-1 mb-1 flex items-center gap-2 px-2.5 py-1" style={{ background: 'var(--surface-up)', borderBottom: '1px solid var(--border)' }}>
           <span className="min-w-0 flex-1 text-xs font-medium">{selectedCollectionIds.size} {selectedCollectionIds.size === 1 ? 'collection' : 'collections'} selected</span>
           <Button size="sm" variant="ghost" onClick={() => setSelectedCollectionIds(new Set())}>Clear</Button>
-          <Button size="sm" variant="danger" aria-label={`Delete ${selectedCollectionIds.size} selected collections`} onClick={requestCollectionDelete}>Delete</Button>
+          <Button size="sm" variant="danger" aria-label={`Delete ${countLabel(selectedCollectionIds.size, 'selected collection')}`} onClick={requestCollectionDelete}>Delete</Button>
         </div>
       )}
       {!companionContext && selectedSessionIds.size > 0 && (
@@ -911,7 +919,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
           <Button
             size="sm"
             variant="danger"
-            aria-label={`Delete ${selectedSessionIds.size} selected chats`}
+            aria-label={`Delete ${countLabel(selectedSessionIds.size, 'selected chat')}`}
             onClick={requestBulkDelete}
           >
             Delete
@@ -1166,12 +1174,14 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         </div>
       )}
 
-      <ConfirmDialog
+      <DeleteConfirmDialog
         open={Boolean(pendingBulkDeleteIds)}
-        title="Delete selected chats?"
-        label={`Delete ${pendingBulkDeleteIds?.length ?? 0} selected chats`}
-        confirmLabel="Delete chats"
-        error={bulkDeleteFailed ? 'The chats could not be deleted. A chat may still be running.' : ''}
+        kind="chat"
+        count={pendingBulkDeleteIds?.length ?? 0}
+        name={pendingBulkDeleteIds?.length === 1 ? sessions.find((session) => session.id === pendingBulkDeleteIds[0])?.name : undefined}
+        contents={relatedBranchContents(pendingBulkDeleteIds?.length ?? 0, pendingBulkDeleteFamilyIds?.length ?? 0)}
+        returnFocusTo={() => rowFocusTarget('data-session-id', pendingBulkDeleteIds?.[0])}
+        error={bulkDeleteFailed ? chatDeleteFailure(pendingBulkDeleteIds?.length ?? 0) : ''}
         busy={bulkDeleting}
         onCancel={() => { if (!bulkDeleteInFlightRef.current) setPendingBulkDeleteIds(null) }}
         onConfirm={() => {
@@ -1195,25 +1205,24 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             }
           })()
         }}
-      >
-        {pendingBulkDeleteIds?.length ?? 0} chats{(pendingBulkDeleteFamilyIds?.length ?? 0) > (pendingBulkDeleteIds?.length ?? 0) ? ` and ${(pendingBulkDeleteFamilyIds?.length ?? 0) - (pendingBulkDeleteIds?.length ?? 0)} related branches` : ''} will be permanently deleted. This cannot be undone.
-      </ConfirmDialog>
+      />
 
-      <ConfirmDialog
+      <DeleteConfirmDialog
         open={Boolean(pendingDeleteCollections)}
-        title="Delete selected collections?"
-        label={`Delete ${pendingDeleteCollections?.length ?? 0} selected collections`}
-        confirmLabel="Delete collections"
+        kind="collection"
+        count={pendingDeleteCollections?.length ?? 0}
+        name={pendingDeleteCollections?.length === 1 ? pendingDeleteCollections[0].label : undefined}
         onCancel={() => setPendingDeleteCollections(null)}
         onConfirm={() => {
           const targets = pendingDeleteCollections ?? []
           setPendingDeleteCollections(null)
+          if (targets.length === 1) { void deleteCollection(targets[0]); return }
           void runForEach(targets, async ({ id }) => await useAppStore.getState().deleteResourceCollection(id) ? null : 'The collection could not be deleted.', 'Could not delete collections')
             .then((deleted) => setSelectedCollectionIds((current) => new Set([...current].filter((id) => !deleted.includes(id)))))
         }}
       >
-        {pendingDeleteCollections?.length ?? 0} collections will be permanently deleted. Workspaces remain, but these collections cannot be restored.
-      </ConfirmDialog>
+        <p className="mt-2">Workspaces remain, but {pendingDeleteCollections?.length === 1 ? 'this collection' : 'these collections'} cannot be restored.</p>
+      </DeleteConfirmDialog>
 
       {recoveryDialogOpen && (
         <WorkspaceFolderRecoveryModal
@@ -1366,40 +1375,38 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         />
       )}
 
-      <ConfirmDialog
-        open={!companionContext && Boolean(pendingDeleteFolderIds)}
-        title="Delete selected workspaces?"
-        label="Delete selected workspaces"
-        confirmLabel="Delete workspaces"
+      <DeleteConfirmDialog
+        open={!companionContext && workspaceDeleteCount > 0}
+        kind="workspace"
+        count={workspaceDeleteCount}
+        name={singleWorkspaceDelete?.name}
+        title={singleWorkspaceDelete && workspaceDeleteChatCount > 0 ? 'Delete workspace and chats?' : undefined}
+        contents={workspaceDeleteChatCount > 0 ? countLabel(workspaceDeleteChatCount, 'chat') : undefined}
         busy={deletingFolder}
         error={deleteFolderError || undefined}
-        onCancel={() => { setPendingDeleteFolderIds(null); setDeleteFolderError('') }}
-        onConfirm={() => { void confirmDeleteWorkspaces() }}
+        returnFocusTo={() => rowFocusTarget('data-workspace-id', pendingDeleteFolderIds?.[0] ?? pendingDeleteFolderId)}
+        onCancel={() => {
+          if (deletingFolder) return
+          setPendingDeleteFolderIds(null)
+          setPendingDeleteFolderId(null)
+          setDeleteFolderError('')
+        }}
+        onConfirm={() => { void (pendingDeleteFolderIds ? confirmDeleteWorkspaces() : confirmDeleteFolder()) }}
       >
-        <p>Delete {pendingDeleteFolderIds?.length ?? 0} {(pendingDeleteFolderIds?.length ?? 0) === 1 ? 'workspace' : 'workspaces'} and {pendingDeleteWorkspaceChatCount} {pendingDeleteWorkspaceChatCount === 1 ? 'chat' : 'chats'}? This cannot be undone. Workspace directories stay on disk.</p>
-        {deletingFolder && <>
-          <p role="status" aria-live="polite" className="mt-2">Deleting {pendingDeleteFolderIds?.length ?? 0} {(pendingDeleteFolderIds?.length ?? 0) === 1 ? 'workspace' : 'workspaces'} and {pendingDeleteWorkspaceChatCount} {pendingDeleteWorkspaceChatCount === 1 ? 'chat' : 'chats'}…</p>
-          <DeletionProgressBar label="Deleting workspaces" className="mt-2" />
-        </>}
-      </ConfirmDialog>
-      <ConfirmDialog
-        open={!companionContext && Boolean(pendingDeleteFolder)}
-        title="Delete folder and chats?"
-        label="Delete folder and chats"
-        confirmLabel="Delete folder"
-        busy={deletingFolder}
-        error={deleteFolderError || undefined}
-        onCancel={() => { if (deletingFolder) return; setPendingDeleteFolderId(null); setDeleteFolderError('') }}
-        onConfirm={() => { void confirmDeleteFolder() }}
-      >
-        <p>Delete "{pendingDeleteFolder?.name}" and {pendingDeleteChatCount === 1 ? '1 chat' : `${pendingDeleteChatCount} chats`}? The folder on disk is kept.</p>
-        {pendingDeleteChatCount > 0 && <p className="mt-2 text-xs" style={{ color: 'var(--error)' }}>Deleted chats cannot be restored from this app.</p>}
-        {deletingFolder && <DeletionProgressBar label="Deleting workspace" className="mt-2" />}
-      </ConfirmDialog>
+        <p className="mt-2">{singleWorkspaceDelete ? 'The folder on disk is kept.' : 'Workspace directories stay on disk.'}</p>
+        {singleWorkspaceDelete?.directory && <p className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>{singleWorkspaceDelete.directory}</p>}
+        {workspaceDeleteChatCount > 0 && <p className="mt-2 text-xs" style={{ color: 'var(--error)' }}>Deleted chats cannot be restored from this app.</p>}
+        {deletingFolder && <DeletionProgressBar label={workspaceDeleteCount === 1 ? 'Deleting workspace' : 'Deleting workspaces'} className="mt-2" />}
+      </DeleteConfirmDialog>
     </div>
     </ChatSelectionContext.Provider>
     </SubagentSearchMatches.Provider>
   )
+}
+
+/** One collection's delete, from its menu or as a one-item selection. */
+async function deleteCollection({ id, label }: BulkTarget) {
+  if (!await useAppStore.getState().deleteResourceCollection(id)) reportAppFailure(`Could not delete "${label}".`, 'Could not save the change. Refresh and try again.')
 }
 
 function FolderCollection({ collection, folderCount, hiddenPaneColors, selected, selectionTargets, onHeaderClick, onDeleteSelected, onFolderDrop, children }: {
@@ -1412,7 +1419,6 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
   const iconPicker = useCustomIconPicker()
   const toggle = useAppStore((state) => state.toggleResourceCollection)
   const rename = useAppStore((state) => state.renameResourceCollection)
-  const remove = useAppStore((state) => state.deleteResourceCollection)
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(collection.name)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -1563,16 +1569,16 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
         </div>
       </div>
       {iconPicker.dialog}
-      <ConfirmDialog
+      <DeleteConfirmDialog
         open={confirmingDelete}
-        title="Delete collection?"
-        label={`Delete ${collection.name} collection`}
-        confirmLabel="Delete collection"
+        kind="collection"
+        count={1}
+        name={collection.name}
         onCancel={() => setConfirmingDelete(false)}
-        onConfirm={() => { setConfirmingDelete(false); void remove(collection.id) }}
+        onConfirm={() => { setConfirmingDelete(false); void deleteCollection({ id: collection.id, label: collection.name }) }}
       >
-        “{collection.name}” will be permanently deleted. Workspaces remain, but this collection cannot be restored.
-      </ConfirmDialog>
+        <p className="mt-2">Workspaces remain, but this collection cannot be restored.</p>
+      </DeleteConfirmDialog>
     </div>
   )
 }
@@ -1607,6 +1613,12 @@ function PaneColorIcon({ Icon, colors, testId }: { Icon: LucideIcon; colors: str
       ))}
     </span>
   )
+}
+
+/** The sidebar row a delete confirmation returns focus to when its opening menu item has gone. */
+function rowFocusTarget(attribute: 'data-session-id' | 'data-workspace-id', id: string | null | undefined): HTMLElement | null {
+  if (!id) return null
+  return Array.from(document.querySelectorAll<HTMLElement>(`[${attribute}]`)).find((row) => row.getAttribute(attribute) === id) ?? null
 }
 
 // Determinate only when the backend reports per-item progress; otherwise the indeterminate sweep (no fake percentage).
@@ -2042,7 +2054,7 @@ const FolderRow = memo(function FolderRow({
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Change workspace icon" onClick={() => { setMenuPos(null); iconPicker.open('workspace', folder.id, folder.name) }} />
           <FolderMenuItem icon={<Monitor size={14} aria-hidden />} label="Change host icon" onClick={() => { setMenuPos(null); iconPicker.open('host', host?.id || 'local', host?.label || 'This computer') }} />
           {!isCompanionContext() && <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />}
-          {!isCompanionContext() && <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label={selected ? 'Delete selected workspaces' : 'Delete folder'} danger onClick={() => { setMenuPos(null); onDelete() }} />}
+          {!isCompanionContext() && <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label={selected ? 'Delete selected workspace' : 'Delete folder'} danger onClick={() => { setMenuPos(null); onDelete() }} />}
           </>}
         </ViewportMenu>
       )}

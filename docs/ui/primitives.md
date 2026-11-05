@@ -25,7 +25,7 @@ Import from `components/ui` (index.ts):
 - Swap (keyed cross-slide for content replaced in place, such as list and detail panes or Form/JSON views: outgoing slides out left while incoming slides in from the right.)
 - UsageGauge (`usedPercent`, `size`, `decorative`; the composer allowance half-dial, described below)
 - Overlay
-- ConfirmDialog (optional cancel label, middle secondary action, `dismissible={false}` for a choice that Escape or the backdrop must not answer, and `onDismiss` when the cancel button is itself a choice and Escape or the backdrop must only close)
+- ConfirmDialog (optional cancel label, middle secondary action, `dismissible={false}` for a choice that Escape or the backdrop must not answer, and `onDismiss` when the cancel button is itself a choice and Escape or the backdrop must only close; its message is the dialog's accessible description via `aria-describedby`, and `returnFocusTo` names the row to refocus on close when the opening control, such as a closed menu item, is gone)
 - MenuItem (icon, label, detail with `detailLayout` inline|stacked, `trailing` pill, shortcut, `selected` for a checkable menuitemradio, `checked` for a menuitemcheckbox, danger, disabled with `disabledReason` or `nativeDisabled`; ref and attribute passthrough; menus, context menus and the command palette)
 - SegmentedControl (options with value, label and icon, optional per-option `disabled`, `tooltip`, `ariaLabel` and `iconOnly`; one sliding highlight that stops under reduced motion or Motion Off)
 - RowButton (full-width list row; reset, hover and focus only, so row classes keep their look)

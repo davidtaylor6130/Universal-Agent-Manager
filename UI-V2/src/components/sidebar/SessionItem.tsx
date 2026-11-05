@@ -14,7 +14,8 @@ import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import type { Session } from '../../types/session'
-import { ConfirmDialog, IconButton, MenuItem, Tooltip, ViewportMenu } from '../ui'
+import { IconButton, MenuItem, Tooltip, ViewportMenu } from '../ui'
+import { DeleteConfirmDialog, chatDeleteFailure, relatedBranchContents } from './DeleteConfirmDialog'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import {
   chatGridLeaves,
@@ -575,10 +576,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         setConfirmDelete(false)
         rowRef.current?.focus()
       } else {
-        setDeleteError('The chat could not be deleted. Finish active work and try again.')
+        setDeleteError(chatDeleteFailure(1))
       }
     } catch {
-      setDeleteError('The chat could not be deleted. Finish active work and try again.')
+      setDeleteError(chatDeleteFailure(1))
     } finally {
       setDeleting(false)
     }
@@ -1013,20 +1014,18 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         </ViewportMenu>
       )}
       {iconPicker.dialog}
-      <ConfirmDialog
+      <DeleteConfirmDialog
         open={confirmDelete}
-        title="Delete chat?"
-        label={`Delete ${sessionName}`}
-        confirmLabel="Delete chat"
+        kind="chat"
+        count={1}
+        name={sessionName}
+        contents={relatedBranchContents(1, familySessionIds.length)}
         busy={deleting}
         error={deleteError}
+        returnFocusTo={() => rowRef.current}
         onCancel={() => { setConfirmDelete(false); setDeleteError('') }}
         onConfirm={() => { void confirmSessionDelete() }}
-      >
-        {familySessionIds.length > 1
-          ? `“${sessionName}” and its ${familySessionIds.length - 1} related branch${familySessionIds.length === 2 ? '' : 'es'} will be permanently deleted.`
-          : `“${sessionName}” will be permanently deleted.`} This cannot be undone.
-      </ConfirmDialog>
+      />
     </div>
   )
 })

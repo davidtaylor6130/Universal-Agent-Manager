@@ -495,7 +495,7 @@ describe('SessionItem status icons', () => {
       .find((button) => button.textContent?.includes('Delete'))!
     act(() => deleteAction.click())
     expect(deleteSessions).not.toHaveBeenCalled()
-    expect(document.body.querySelector('[role="alertdialog"][aria-label="Delete Chat 1"]')).toBeTruthy()
+    expect(document.body.querySelector('[role="alertdialog"][aria-label^="Delete chat Chat 1"]')).toBeTruthy()
     const confirm = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent === 'Delete chat')!
     await act(async () => confirm.click())
@@ -692,7 +692,7 @@ describe('SessionItem status icons', () => {
     const confirm = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Delete chat')!
     await act(async () => confirm.click())
 
-    expect(document.body.querySelector('[role="alertdialog"][aria-label="Delete Chat 1"]')?.textContent).toContain('could not be deleted')
+    expect(document.body.querySelector('[role="alertdialog"][aria-label^="Delete chat Chat 1"]')?.textContent).toContain('could not be deleted')
 
     act(() => root.unmount())
     host.remove()
