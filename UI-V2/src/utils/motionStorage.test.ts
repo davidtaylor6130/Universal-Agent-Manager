@@ -69,7 +69,7 @@ describe('motionStorage', () => {
 
   it('Motion Off stops fixed-duration animations through one shared rule, matching OS reduced motion', () => {
     expect(styles).toMatch(settleRule('\\[data-motion="off"\\] \\*'))
-    const reduced = styles.slice(styles.indexOf('@media (prefers-reduced-motion: reduce) {\n  *, *::before'))
+    const reduced = styles.slice(styles.search(/@media \(prefers-reduced-motion: reduce\) \{\s*\*, \*::before/))
     expect(reduced).toMatch(settleRule('\\*, \\*::before, \\*::after'))
     expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\) \{ :root \{ --motion-scale: 0; \} \}/)
     expect(styles.match(/@media \(prefers-reduced-motion: reduce\) \{\s*\*, \*::before/g)).toHaveLength(1)
