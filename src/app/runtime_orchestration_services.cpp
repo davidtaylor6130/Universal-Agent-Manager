@@ -19,6 +19,7 @@
 #include "common/chat/chat_ids.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/native_chat_identity.h"
+#include "common/chat/html_view.h"
 #include "common/chat/chat_repository.h"
 #include "common/chat/chat_message_page_index.h"
 #include "common/utils/hash_utils.h"
@@ -743,6 +744,55 @@ namespace
 		native_chat.updated_at = local_chat.updated_at;
 	}
 
+	// Native transcripts never contain UAM-published HTML views, so each view is carried onto an existing reply: its own
+	// message, the first reply of its turn, the first later reply, else the last earlier one. It never adds a row, because
+	// the length and canonical prefix checks compare against the native export. With no reply anywhere, local history stays
+	// and native rows are withheld until native has one.
+	// ponytail: a card moved off its turn stays moved, since nothing records its first turn; add a persisted home-turn field
+	// if exports that omit a reply and restore it later turn out to be common. Turns match by user-message ordinal.
+	void RetainLocalHtmlViews(const ChatSession& local_chat, ChatSession& native_chat)
+	{
+		std::vector<Message>& native = native_chat.messages;
+		const auto is_reply = [](const Message& message) { return message.role == MessageRole::Assistant; };
+		std::size_t turn = 0;
+		for (std::size_t local_index = 0; local_index < local_chat.messages.size(); ++local_index)
+		{
+			const Message& local = local_chat.messages[local_index];
+			if (local.role == MessageRole::User) ++turn;
+			for (std::size_t position = 0; position < local.blocks.size(); ++position)
+			{
+				const MessageBlock& view = local.blocks[position];
+				if (view.type != uam::html_view::kBlockType) continue;
+				const bool carried = std::ranges::any_of(native, [&](const Message& message)
+				{
+					return std::ranges::any_of(message.blocks, [&](const MessageBlock& block) { return block.type == view.type && block.request_id_json == view.request_id_json; });
+				});
+				if (carried) continue;
+				auto target = native.end();
+				if (local_index < native.size() && native[local_index].role == local.role && native[local_index].content == local.content && native[local_index].created_at == local.created_at)
+					target = native.begin() + static_cast<std::ptrdiff_t>(local_index);
+				if (target == native.end())
+				{
+					auto turn_begin = native.begin();
+					for (std::size_t seen = 0; seen < turn && turn_begin != native.end(); ++turn_begin)
+						if (turn_begin->role == MessageRole::User) ++seen;
+					target = std::find_if(turn_begin, native.end(), is_reply);
+				}
+				if (target == native.end())
+				{
+					const auto previous = std::find_if(native.rbegin(), native.rend(), is_reply);
+					if (previous == native.rend())
+					{
+						RetainCanonicalInputHistory(local_chat, native_chat);
+						return;
+					}
+					target = std::prev(previous.base());
+				}
+				target->blocks.insert(target->blocks.begin() + static_cast<std::ptrdiff_t>(std::min(position, target->blocks.size())), view);
+			}
+		}
+	}
+
 	void PreserveEquivalentLocalMessageDetails(const ChatSession& local_chat, ChatSession& native_chat)
 	{
 		if (!NativeReplacementPreservesAuthoredInputFacts(local_chat.messages, native_chat.messages))
@@ -849,6 +899,7 @@ namespace
 				}
 			}
 		}
+		RetainLocalHtmlViews(local_chat, native_chat);
 	}
 
 	bool ReconcileExistingNativeImport(const fs::path& data_root, const ChatSession& local_summary, ChatSession& native_chat)
@@ -2704,10 +2755,15 @@ bool ChatHistorySyncService::BuildNativeTranscriptCandidate(ChatSession& candida
 		return false;
 	ChatSession local;
 	local.messages = std::move(candidate.messages);
+	// Retaining local history (a view with no native reply to sit on) keeps these too.
+	local.messages_loaded = candidate.messages_loaded;
+	local.persisted_message_count = candidate.persisted_message_count;
+	local.persisted_messages_digest = candidate.persisted_messages_digest;
+	local.updated_at = candidate.updated_at;
 	candidate.messages = std::move(messages);
 	candidate.messages_loaded = true;
-	candidate.persisted_message_count = candidate.messages.size();
 	PreserveEquivalentLocalMessageDetails(local, candidate);
+	candidate.persisted_message_count = candidate.messages.size();
 	if (!candidate.messages.empty())
 	{
 		candidate.updated_at = SelectHistoryMetadataTimestamp(candidate.updated_at, candidate.messages.back().created_at);

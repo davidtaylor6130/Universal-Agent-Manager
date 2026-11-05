@@ -254,3 +254,15 @@ The [stream watch](providers/runtime-lifecycle.md#stream-watch) ships with loop 
 ## Active Chats inactivity settling
 
 **Pending David's decision.** Issue #629 asks that a chat leave [Active Chats](sidebar/active/active.md) only through Done, Clear all or Snooze. Current source also drops an entry after three days without new activity (`ACTIVE_CHAT_AUTO_DONE_MS` in the sidebar search model). Removing that window would return every older chat whose recorded interaction time was backfilled from its last update and never marked done, so the window is retained unchanged. Decide whether to remove it, together with a one-time settlement of backfilled chats, or keep it as a stated exception.
+## HTML view defaults
+
+**Open, pending David's decision.** Issue #642's [HTML views](chat/html-views.md) were implemented with these interim defaults:
+
+- The page limit is 131,072 bytes (128 KiB) and the title limit 120 bytes; each publish or preview control request may be up to 1 MiB so JSON escaping cannot hide the clear size error. Other control methods keep their 64 KiB request limit once the request is parsed, but the stdio line reader and the mailbox request-file check accept up to 1 MiB for any method, because they run before the method is known. Live state updates carry the page while its turn runs, so a much larger limit needs a delivery review.
+- The issue asked for `srcdoc`. In Chromium a `srcdoc` frame inherits the app's policy (`script-src 'self'`), so page scripts could never run, and the app's `frame-src 'none'` blocked `data:` frames. The card instead frames one packaged host page, `uam://app/html-view-frame.html`, served with its own no-network policy and still sandboxed without `allow-same-origin`; the app policy now allows framing only that page, and the renderer bridge binds only in the top-level UI frame.
+- One turn may publish at most 8 HTML views; a ninth request is rejected with an error the agent can read and changes nothing.
+- Both tools carry the MCP read-only hint, so Plan and read-only sessions can publish views: publishing only adds a display block to this chat's own transcript, bounded by the 8-view and 128 KiB limits above. Publishing requires an active structured turn; CLI View sessions are refused.
+- The inline card height is 360 px; Expand fills the pane height (window height minus 220 px, never under 360 px). There is no automatic sizing to content.
+- The preview returns static validation and blocked-content warnings only. Rendering the page to report runtime errors or a screenshot is **not done**: it needs an offscreen renderer owned by the native tool route.
+- Save as HTML file uses the existing folder picker and writes a unique title-based name, because no native Save As dialog exists. Open in browser writes a content-addressed copy under the system temporary folder with the restrictive policy prepended. The copy folder is refused if it is a link, not a folder or (outside Windows) owned by another user, and each new copy deletes view copies older than 24 hours.
+- Reduced motion and Motion Off stop the page's CSS animations and transitions; script-driven animation is not controlled.

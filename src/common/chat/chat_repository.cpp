@@ -1119,6 +1119,7 @@ namespace
 				SetNonEmptyString(block_obj, kMessageBlockTextField, block.text);
 				SetNonEmptyString(block_obj, kMessageBlockToolCallIdField, block.tool_call_id);
 				SetNonEmptyString(block_obj, kMessageBlockRequestIdField, block.request_id_json);
+				SetNonEmptyString(block_obj, "title", block.title);
 				if (block.compaction_tokens_before >= 0) uam::json::SetNumber(block_obj, "compaction_tokens_before", static_cast<double>(block.compaction_tokens_before));
 				if (block.compaction_tokens_after >= 0) uam::json::SetNumber(block_obj, "compaction_tokens_after", static_cast<double>(block.compaction_tokens_after));
 				uam::json::PushValue(block_arr, std::move(block_obj));
@@ -1284,6 +1285,7 @@ namespace
 				message_block.text = JsonStringOrEmpty(block.Find(kMessageBlockTextField));
 				message_block.tool_call_id = JsonStringOrEmpty(block.Find(kMessageBlockToolCallIdField));
 				message_block.request_id_json = JsonStringOrEmpty(block.Find(kMessageBlockRequestIdField));
+				message_block.title = JsonStringOrEmpty(block.Find("title"));
 				for (const std::pair<const char*, int64_t*> field : {std::pair{"compaction_tokens_before", &message_block.compaction_tokens_before}, std::pair{"compaction_tokens_after", &message_block.compaction_tokens_after}})
 				{
 					const double count = JsonNumberOrDefault(block.Find(field.first), -1.0);

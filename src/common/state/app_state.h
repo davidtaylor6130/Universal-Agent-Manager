@@ -299,6 +299,7 @@ namespace uam
 		std::string text;
 		std::string tool_call_id;
 		std::string request_id_json;
+		std::string title;
 		int64_t compaction_tokens_before = -1;
 		int64_t compaction_tokens_after = -1;
 	};

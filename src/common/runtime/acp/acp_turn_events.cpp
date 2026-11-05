@@ -2,6 +2,7 @@
 
 #include "common/runtime/acp/acp_stream_types.h"
 #include "common/provider/provider_ids.h"
+#include "common/chat/html_view.h"
 
 #include <algorithm>
 #include <vector>
@@ -44,7 +45,7 @@ bool MessageBlocksEqual(const std::vector<MessageBlock>& lhs, const std::vector<
 	}
 	for (std::size_t i = 0; i < lhs.size(); ++i)
 	{
-		if (lhs[i].type != rhs[i].type || lhs[i].text != rhs[i].text || lhs[i].tool_call_id != rhs[i].tool_call_id || lhs[i].request_id_json != rhs[i].request_id_json || lhs[i].compaction_tokens_before != rhs[i].compaction_tokens_before || lhs[i].compaction_tokens_after != rhs[i].compaction_tokens_after)
+		if (lhs[i].type != rhs[i].type || lhs[i].text != rhs[i].text || lhs[i].tool_call_id != rhs[i].tool_call_id || lhs[i].request_id_json != rhs[i].request_id_json || lhs[i].title != rhs[i].title || lhs[i].compaction_tokens_before != rhs[i].compaction_tokens_before || lhs[i].compaction_tokens_after != rhs[i].compaction_tokens_after)
 		{
 			return false;
 		}
@@ -55,6 +56,7 @@ bool MessageBlocksEqual(const std::vector<MessageBlock>& lhs, const std::vector<
 bool PersistableTurnEvent(const AcpTurnEventState& event)
 {
 	if (event.type == "context_compaction" || event.type == "context_compaction_interrupted") return true;
+	if (event.type == uam::html_view::kBlockType) return !event.text.empty() && !event.request_id_json.empty();
 	if (event.type == "context_compaction_summary") return !event.text.empty() && event.request_id_json.starts_with("opencode-message:");
 	if (uam::acp_stream_types::IsTextTurnEventType(event.type))
 	{
@@ -128,6 +130,7 @@ std::vector<MessageBlock> MessageBlocksFromTurnEvents(const AcpSessionState& ses
 		block.text = event.text;
 		block.tool_call_id = event.tool_call_id;
 		block.request_id_json = event.request_id_json;
+		block.title = event.title;
 		block.compaction_tokens_before = event.compaction_tokens_before;
 		block.compaction_tokens_after = event.compaction_tokens_after;
 		blocks.push_back(std::move(block));
@@ -210,6 +213,7 @@ void RestoreTurnEventsFromMessageBlocks(AcpSessionState& session, const Message&
 		event.text = block.text;
 		event.tool_call_id = block.tool_call_id;
 		event.request_id_json = block.request_id_json;
+		event.title = block.title;
 		event.compaction_tokens_before = block.compaction_tokens_before;
 		event.compaction_tokens_after = block.compaction_tokens_after;
 		session.turn_events.push_back(std::move(event));
@@ -438,3 +442,31 @@ void AppendPlanTurnEventIfNeeded(AcpSessionState& session)
 }
 
 } // namespace uam::acp_detail
+
+namespace uam
+{
+
+bool AppendAcpHtmlView(AcpSessionState& session, ChatSession& chat, const std::string& view_id, const std::string& title, const std::string& html)
+{
+	if (view_id.empty() || html.empty()) return false;
+	if (std::ranges::any_of(session.turn_events, [&](const AcpTurnEventState& event) { return event.type == html_view::kBlockType && event.request_id_json == view_id; }))
+		return false;
+	AcpTurnEventState event;
+	event.type = std::string(html_view::kBlockType);
+	event.text = html;
+	event.request_id_json = view_id;
+	event.title = title;
+	session.turn_events.push_back(std::move(event));
+	acp_detail::EnsureAssistantMessage(chat, session);
+	(void)acp_detail::SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
+	return true;
+}
+
+void RemoveAcpHtmlView(AcpSessionState& session, ChatSession& chat, const std::string& view_id)
+{
+	std::erase_if(session.turn_events, [&](const AcpTurnEventState& event) { return event.type == html_view::kBlockType && event.request_id_json == view_id; });
+	for (Message& message : chat.messages)
+		std::erase_if(message.blocks, [&](const MessageBlock& block) { return block.type == html_view::kBlockType && block.request_id_json == view_id; });
+}
+
+} // namespace uam

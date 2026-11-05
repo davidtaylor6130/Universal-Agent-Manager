@@ -187,6 +187,19 @@ class WindowsFileDialogService final : public IPlatformFileDialogService
 		return true;
 	}
 
+	bool OpenFileWithDefaultApplication(const std::filesystem::path& file_path, std::string* error_out = nullptr) const override
+	{
+		if (file_path.empty() || !uam::paths::IsRegularFileNoThrow(file_path))
+		{
+			if (error_out != nullptr) *error_out = "File is unavailable.";
+			return false;
+		}
+		const HINSTANCE result = ShellExecuteW(nullptr, L"open", file_path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+		if (reinterpret_cast<INT_PTR>(result) > 32) return true;
+		if (error_out != nullptr) *error_out = "Windows could not open the file.";
+		return false;
+	}
+
 	bool OpenFileInTextEditor(const std::filesystem::path& file_path, std::string* error_out = nullptr) const override
 	{
 		if (file_path.empty() || !uam::paths::IsRegularFileNoThrow(file_path))

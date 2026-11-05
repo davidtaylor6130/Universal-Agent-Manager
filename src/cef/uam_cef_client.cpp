@@ -57,19 +57,14 @@ bool UamCefClient::IsTrustedMainFrame(CefRefPtr<CefFrame> frame) const
 	return uam::cef::IsTrustedMainFrame(frame, m_trustedUiIndexUrl);
 }
 
-bool UamCefClient::ShouldCancelNavigationToUrl(const std::string& target_url) const
+bool UamCefClient::ShouldCancelNavigationToUrl(bool is_main_frame, const std::string& target_url) const
 {
-	if (uam::cef::IsTrustedUiUrl(target_url, m_trustedUiIndexUrl))
-	{
-		return false;
-	}
-
-	if (uam::cef::ShouldOpenExternally(target_url))
+	const uam::cef::NavigationDecision decision = uam::cef::DecideNavigation(is_main_frame, target_url, m_trustedUiIndexUrl);
+	if (decision == uam::cef::NavigationDecision::CancelAndOpenExternally)
 	{
 		(void)uam::cef::OpenUrlExternally(target_url);
 	}
-
-	return true;
+	return decision != uam::cef::NavigationDecision::Allow;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +72,7 @@ bool UamCefClient::ShouldCancelNavigationToUrl(const std::string& target_url) co
 // ---------------------------------------------------------------------------
 
 bool UamCefClient::OnBeforePopup(CefRefPtr<CefBrowser> /*browser*/,
-                                  CefRefPtr<CefFrame> /*frame*/,
+                                  CefRefPtr<CefFrame> frame,
                                   int /*popup_id*/,
                                   const CefString& target_url,
                                   const CefString& /*target_frame_name*/,
@@ -91,6 +86,9 @@ bool UamCefClient::OnBeforePopup(CefRefPtr<CefBrowser> /*browser*/,
                                   bool* /*no_javascript_access*/)
 {
 	CEF_REQUIRE_UI_THREAD();
+	// Subframes (HTML views) never open the system browser, even if their sandbox is later loosened.
+	if (frame && !frame->IsMain())
+		return true;
 	return uam::cef::CancelPopupAndOpenExternally(target_url.ToString(), [](const std::string& url) {
 		return uam::cef::OpenUrlExternally(url);
 	});
@@ -368,14 +366,13 @@ bool UamCefClient::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
 {
 	CEF_REQUIRE_UI_THREAD();
 	(void)browser;
-	(void)frame;
 
 	if (request == nullptr)
 	{
 		return true;
 	}
 
-	const bool cancel = ShouldCancelNavigationToUrl(request->GetURL());
+	const bool cancel = ShouldCancelNavigationToUrl(frame && frame->IsMain(), request->GetURL());
 	if (!cancel && frame && frame->IsMain()) ++m_recoveryGeneration;
 	if (!cancel && m_router) m_router->OnBeforeBrowse(browser, frame);
 	return cancel;
@@ -389,9 +386,8 @@ bool UamCefClient::OnOpenURLFromTab(CefRefPtr<CefBrowser> browser,
 {
 	CEF_REQUIRE_UI_THREAD();
 	(void)browser;
-	(void)frame;
 
-	return ShouldCancelNavigationToUrl(target_url.ToString());
+	return ShouldCancelNavigationToUrl(frame && frame->IsMain(), target_url.ToString());
 }
 
 void UamCefClient::ReloadInterface()

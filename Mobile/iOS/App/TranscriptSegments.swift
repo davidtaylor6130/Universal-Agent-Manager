@@ -2,7 +2,7 @@ import Foundation
 
 struct TranscriptSegment: Identifiable, Equatable
 {
-    enum Kind: String { case text, thought, tools, compaction, plan }
+    enum Kind: String { case text, thought, tools, compaction, plan, htmlView }
     let id: Int
     let kind: Kind
     var text = ""
@@ -38,6 +38,8 @@ enum TranscriptSegments
             case "context_compaction", "context_compaction_interrupted":
                 append(.compaction, text: block.text("type") == "context_compaction_interrupted" ? "Context compaction interrupted" : "Context compacted")
             case "plan": append(.plan, text: message.raw.text("planSummary"))
+            // The phone does not render agent HTML; it names the view and points to the desktop.
+            case "html_view": append(.htmlView, text: block.text("title").isEmpty ? "HTML view" : block.text("title"))
             default: break
             }
         }

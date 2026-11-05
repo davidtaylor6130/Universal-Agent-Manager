@@ -92,6 +92,8 @@ struct MessageBlock
 	std::string text;
 	std::string tool_call_id;
 	std::string request_id_json;
+	/// Display title for an html_view block; empty for every other block type.
+	std::string title;
 		int64_t compaction_tokens_before = -1;
 		int64_t compaction_tokens_after = -1;
 	bool operator==(const MessageBlock&) const = default;

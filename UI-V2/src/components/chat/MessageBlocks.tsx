@@ -1,4 +1,5 @@
 import { InlineSubagentGroup } from './InlineSubagentGroup'
+import { HtmlViewCard } from './HtmlViewCard'
 import { groupInlineSubagents, isInlineSubagentLaunch, managedLaunchRunId } from './inlineSubagents'
 // Message block renderers: thinking blocks, plan blocks, goal review,
 // persisted message content, attachment list, and turn timeline.
@@ -668,6 +669,7 @@ export function PersistedMessageBlocksContent({
             onSelectTool={id => onSelectTool(message.id, id)} />} />
         if (launchesOnly) return null
         const block = entry.entry
+        if (block.type === 'html_view') return <HtmlViewCard key={`html-view-${block.requestId}`} title={block.title} html={block.text} />
         if (block.type === 'context_compaction_summary') return null
         if (block.type === 'context_compaction' || block.type === 'context_compaction_interrupted') return <CompactionSeparator key={`compaction-${index}`} summary={block.text} tokensBefore={block.tokensBefore} tokensAfter={block.tokensAfter} interrupted={block.type === 'context_compaction_interrupted'} />
         if (block.type === 'assistant_text') {
@@ -1036,6 +1038,7 @@ export const TurnTimelineContent = memo(function TurnTimelineContent({
           onSelectTool={onSelectTool} renderNative={tools => <NativeSubagentTools active={active} tools={tools} sourceChatId={sourceChatId}
             onSelectTool={onSelectTool} />} />
         const event = entry.entry
+        if (event.type === 'html_view') return <HtmlViewCard key={`html-view-${event.requestId}`} title={event.title} html={event.text} />
         if (event.type === 'context_compaction_summary') return null
         if (event.type === 'context_compaction' || event.type === 'context_compaction_interrupted') return <CompactionSeparator key={`compaction-${index}`} summary={event.text} tokensBefore={event.tokensBefore} tokensAfter={event.tokensAfter} interrupted={event.type === 'context_compaction_interrupted'} />
         if (event.type === 'assistant_text') {

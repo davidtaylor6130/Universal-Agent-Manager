@@ -24,6 +24,8 @@
 #include "cef/uam_query_handler_async.h"
 #include "common/config/mcp_server_config.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/html_view.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/utils/diagnostic_log.h"
@@ -1172,11 +1174,12 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	{
 		const std::string name = tool.value("name", "");
 		const bool read_only = name == "agent_list" || name == "agent_status" || name == "agent_wait" || name == "skill_list" ||
-		    name == "skill_read" || name == "goal_get" || name == "user_question";
+		    name == "skill_read" || name == "goal_get" || name == "user_question" ||
+		    name == "html_view_preview" || name == "html_view_publish";
 		UAM_ASSERT_EQ(tool.contains("annotations") && tool["annotations"].value("readOnlyHint", false), read_only);
 		hinted += read_only ? 1 : 0;
 	}
-	UAM_ASSERT_EQ(hinted, std::size_t{7});
+	UAM_ASSERT_EQ(hinted, std::size_t{9});
 	const nlohmann::json read_only_goal = call(capability, "policy-read", "goal_get");
 	UAM_ASSERT(read_only_goal.value("ok", false));
 	UAM_ASSERT(!read_only_goal["result"].value("mutationToolsEnabled", true));
@@ -3241,4 +3244,233 @@ UAM_TEST(AgentRunSchedulerReusedSessionStartsNewRunUnlaunched)
 	UAM_ASSERT(&uam::acp_detail::EnsureAcpSessionForChat(app, app.chats.front()) == &session);
 	UAM_ASSERT_EQ(session.managed_agent_run_id, std::string("next-run"));
 	UAM_ASSERT(!session.managed_launch_attempted);
+}
+UAM_TEST(HtmlViewValidationRejectsOversizedEmptyAndMultilineInput)
+{
+	UAM_ASSERT(uam::html_view::ValidationError("Chart", "<!doctype html><p>ok</p>").empty());
+	UAM_ASSERT_EQ(uam::html_view::ValidationError("", "<p>x</p>"), std::string("HTML view title is required."));
+	UAM_ASSERT(!uam::html_view::ValidationError("Two\nlines", "<p>x</p>").empty());
+	UAM_ASSERT(!uam::html_view::ValidationError(std::string(121, 't'), "<p>x</p>").empty());
+	UAM_ASSERT_EQ(uam::html_view::ValidationError("Chart", "   "), std::string("HTML view document is empty."));
+	UAM_ASSERT(!uam::html_view::ValidationError("Chart", std::string("<p>\0</p>", 8)).empty());
+	UAM_ASSERT(uam::html_view::ValidationError("Chart", std::string(uam::html_view::kMaxHtmlBytes, 'a')).empty());
+	const std::string too_large = uam::html_view::ValidationError("Chart", std::string(uam::html_view::kMaxHtmlBytes + 1, 'a'));
+	UAM_ASSERT(too_large.find("the limit is 131072 bytes") != std::string::npos);
+	const auto warnings = uam::html_view::Diagnostics("<html><script src=\"https://cdn.example/x.js\"></script><script>fetch('/x')</script></html>");
+	UAM_ASSERT_EQ(warnings.size(), std::size_t{2});
+	UAM_ASSERT(uam::html_view::Diagnostics("<!doctype html><body><svg></svg></body>").empty());
+	const auto webrtc_warnings = uam::html_view::Diagnostics("<!doctype html><script>new RTCPeerConnection({})</script>");
+	UAM_ASSERT_EQ(webrtc_warnings.size(), std::size_t{1});
+	UAM_ASSERT(webrtc_warnings[0].find("RTCPeerConnection") != std::string::npos);
+	const auto frame_warnings = uam::html_view::Diagnostics("<!doctype html><iframe srcdoc=\"<p>x</p>\"></iframe>");
+	UAM_ASSERT_EQ(frame_warnings.size(), std::size_t{1});
+	UAM_ASSERT(frame_warnings[0].find("only an inline <iframe srcdoc> works") != std::string::npos);
+	// Copies opened outside UAM keep network off, with the policy after any doctype.
+	const std::string opened = uam::html_view::DocumentWithPolicy("<!DOCTYPE html><p>x</p>");
+	UAM_ASSERT(opened.starts_with("<!DOCTYPE html><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\""));
+	UAM_ASSERT(opened.find("connect-src 'none'") != std::string::npos);
+	UAM_ASSERT_EQ(uam::html_view::FileName(" Q3: sales/costs? "), std::string("Q3- sales-costs-.html"));
+	// A doctype later in the document, or hidden in a comment, must not let earlier script run before the policy.
+	for (const std::string payload : {"<script>fetch('https://x')</script><!doctype html>", "<!--<!doctype html>--><script>fetch('https://x')</script>"})
+		UAM_ASSERT(uam::html_view::DocumentWithPolicy(payload).starts_with("<meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\""));
+	UAM_ASSERT(uam::html_view::DocumentWithPolicy("  \n<!doctype html><p>x</p>").starts_with("  \n<!doctype html><meta charset=\"utf-8\"><meta http-equiv="));
+	// A leading UTF-8 byte order mark does not stop the doctype staying first.
+	UAM_ASSERT(uam::html_view::DocumentWithPolicy("\xEF\xBB\xBF<!doctype html><p>x</p>").starts_with("\xEF\xBB\xBF<!doctype html><meta charset="));
+	UAM_ASSERT(uam::html_view::DocumentWithPolicy("<!doctype html").starts_with("<meta charset=\"utf-8\"><meta http-equiv="));
+	// Titles stay on one line; saved names avoid Windows device names.
+	for (const std::string title : {"A\x7F" "B", "A\xE2\x80\xA8" "B", "A\xE2\x80\xA9" "B"})
+		UAM_ASSERT_EQ(uam::html_view::ValidationError(title, "<p>x</p>"), std::string("HTML view title must be a single line of text."));
+	UAM_ASSERT(uam::html_view::ValidationError("Caf\xC3\xA9 \xE2\x80\x94 chart", "<p>x</p>").empty());
+	for (const std::string reserved : {"NUL", "con", "Aux.txt", "prn.tar.gz", "COM1", "lpt9", "Con .x"})
+		UAM_ASSERT(uam::html_view::FileName(reserved).starts_with("_"));
+	for (const std::string ordinary : {"Console", "COM0", "COM10", "nullable", "LPT"})
+		UAM_ASSERT(!uam::html_view::FileName(ordinary).starts_with("_"));
+	UAM_ASSERT_EQ(uam::html_view::FileName("nul"), std::string("_nul.html"));
+}
+
+UAM_TEST(HtmlViewOpenedCopyFolderRefusesLinksAndExpiresOldCopies)
+{
+	TempDir temp("uam-html-view-copies");
+	const std::filesystem::path folder = temp.root / "uam-html-views";
+	UAM_ASSERT(uam::html_view::PrepareOpenedCopyFolder(folder));
+	UAM_ASSERT(uam::io::WriteTextFile(folder / "view-old.html", "old"));
+	UAM_ASSERT(uam::io::WriteTextFile(folder / "view-new.html", "new"));
+	UAM_ASSERT(uam::io::WriteTextFile(folder / "notes.html", "keep"));
+	const auto now = std::filesystem::file_time_type::clock::now();
+	std::filesystem::last_write_time(folder / "view-old.html", now - std::chrono::hours(25));
+	std::filesystem::last_write_time(folder / "notes.html", now - std::chrono::hours(25));
+	UAM_ASSERT(uam::html_view::PrepareOpenedCopyFolder(folder, now));
+	UAM_ASSERT(!std::filesystem::exists(folder / "view-old.html"));
+	UAM_ASSERT(std::filesystem::exists(folder / "view-new.html"));
+	UAM_ASSERT(std::filesystem::exists(folder / "notes.html"));
+	// A planted link or file in place of the folder is refused.
+	const std::filesystem::path elsewhere = temp.root / "elsewhere";
+	std::filesystem::create_directories(elsewhere);
+	const std::filesystem::path linked = temp.root / "linked-views";
+	std::error_code link_error;
+	std::filesystem::create_directory_symlink(elsewhere, linked, link_error);
+	if (!link_error) UAM_ASSERT(!uam::html_view::PrepareOpenedCopyFolder(linked));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "plain-file", "x"));
+	UAM_ASSERT(!uam::html_view::PrepareOpenedCopyFolder(temp.root / "plain-file"));
+}
+
+UAM_TEST(UiNavigationAllowsTheFrameHostOnlyInSubframesAndNeverOpensSubframeUrls)
+{
+	using uam::cef::NavigationDecision;
+	const std::string index(uam::cef::kUamUiIndexUrl);
+	const std::string frame_host(uam::cef::kHtmlViewFrameUrl);
+	const auto decide = [&](bool main, const std::string& url) { return uam::cef::DecideNavigation(main, url, index); };
+	UAM_ASSERT(decide(true, index) == NavigationDecision::Allow);
+	UAM_ASSERT(decide(true, index + "#/chat") == NavigationDecision::Allow);
+	UAM_ASSERT(decide(true, frame_host) == NavigationDecision::Cancel);
+	UAM_ASSERT(decide(false, frame_host) == NavigationDecision::Allow);
+	UAM_ASSERT(decide(false, frame_host + "?x#y") == NavigationDecision::Allow);
+	UAM_ASSERT(decide(false, index) == NavigationDecision::Cancel);
+	for (const std::string other : {"uam://app/assets/index.js", "uam://app/", "uam://app/html-view-frame.html/x", "uam://app/HTML-VIEW-FRAME.html", "about:blank", "file:///tmp/x.html"})
+	{
+		UAM_ASSERT(decide(true, other) == NavigationDecision::Cancel);
+		UAM_ASSERT(decide(false, other) == NavigationDecision::Cancel);
+	}
+	for (const std::string external : {"https://example.test/", "http://example.test/", "mailto:a@example.test", "tel:123"})
+	{
+		UAM_ASSERT(decide(true, external) == NavigationDecision::CancelAndOpenExternally);
+		UAM_ASSERT(decide(false, external) == NavigationDecision::Cancel);
+	}
+}
+
+UAM_TEST(HtmlViewFrameHostIsIsolatedFromTheUiBridge)
+{
+	// The frame host gets a no-network policy; the app may frame only that host page.
+	const std::string frame_policy = uam::cef::ContentSecurityPolicyForUiResource(uam::cef::kHtmlViewFrameResource);
+	UAM_ASSERT_EQ(frame_policy, std::string(uam::html_view::kContentSecurityPolicy));
+	for (const std::string_view directive : {"default-src 'none'", "connect-src 'none'", "img-src data: blob:", "frame-src 'none'", "form-action 'none'"})
+		UAM_ASSERT(frame_policy.find(directive) != std::string::npos);
+	UAM_ASSERT(frame_policy.find("'self'") == std::string::npos);
+	UAM_ASSERT(frame_policy.find("http") == std::string::npos);
+	UAM_ASSERT_EQ(uam::cef::ContentSecurityPolicyForUiResource("index.html"), std::string(uam::cef::kContentSecurityPolicy));
+	UAM_ASSERT(std::string_view(uam::cef::kContentSecurityPolicy).find("frame-src uam://app/html-view-frame.html") != std::string_view::npos);
+	UAM_ASSERT(std::string_view(uam::cef::kContentSecurityPolicy).find("'unsafe-inline'; img") != std::string_view::npos); // style only
+	UAM_ASSERT(std::string_view(uam::cef::kContentSecurityPolicy).find("script-src 'self';") != std::string_view::npos);
+	// The renderer bridge never binds in a subframe, even one that navigated to the UI index.
+	const std::string index(uam::cef::kUamUiIndexUrl);
+	UAM_ASSERT(uam::cef::ShouldBindUiBridge(true, index, index));
+	UAM_ASSERT(!uam::cef::ShouldBindUiBridge(false, index, index));
+	UAM_ASSERT(!uam::cef::ShouldBindUiBridge(true, "uam://app/html-view-frame.html", index));
+	UAM_ASSERT(!uam::cef::ShouldBindUiBridge(false, "about:srcdoc", index));
+}
+
+UAM_TEST(HtmlViewPublishAddsAPersistentBlockToTheLiveTurn)
+{
+	TempDir temp("uam-control-html-view");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat = ChatDomainService().CreateNewChat("", "claude-cli");
+	chat.id = "chat-html-view";
+	chat.uam_control_enabled = true;
+	chat.execution_host_id = "local";
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "Chart the results.";
+	chat.messages.push_back(user);
+	app.chats.push_back(std::move(chat));
+	auto owned_session = std::make_unique<uam::AcpSessionState>();
+	owned_session->chat_id = "chat-html-view";
+	owned_session->provider_id = "claude-cli";
+	owned_session->running = true;
+	owned_session->turn_user_message_index = 0;
+	uam::AcpSessionState* session = owned_session.get();
+	app.acp_sessions.push_back(std::move(owned_session));
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+	nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, *session, app.chats.front(), "session/new", setup, &error));
+	const std::string capability = app.uam_control_capabilities.front().id;
+	const int64_t now = uam::time::SystemEpochMillisecondsNow();
+	const auto call = [&](const std::string& id, const std::string& method, nlohmann::json arguments) {
+		return uam::UamControlService::HandleRequestForTests(app, capability, {{"requestId", id}, {"method", method}, {"arguments", std::move(arguments)}}, now);
+	};
+	const nlohmann::json tools = uam::UamControlService::ToolDefinitionsForTests();
+	for (const std::string name : {"html_view_preview", "html_view_publish"})
+	{
+		const auto tool = std::ranges::find(tools, name, [](const nlohmann::json& value) { return value.value("name", ""); });
+		UAM_ASSERT(tool != tools.end());
+		UAM_ASSERT((*tool)["inputSchema"]["required"] == nlohmann::json::array({"title", "html"}));
+		UAM_ASSERT(!(*tool)["inputSchema"].value("additionalProperties", true));
+	}
+	const std::string html = "<!doctype html><body><h1>Results</h1><script>document.body.dataset.ready = '1'</script></body>";
+
+	// Preview reports problems without publishing anything.
+	const nlohmann::json preview = call("preview-1", "html_view_preview", {{"title", "Results"}, {"html", "<img src=\"https://x/y.png\">"}});
+	UAM_ASSERT(preview.value("ok", false));
+	UAM_ASSERT(preview["result"].value("publishable", false));
+	UAM_ASSERT_EQ(preview["result"]["warnings"].size(), std::size_t{2});
+	const nlohmann::json preview_large = call("preview-2", "html_view_preview", {{"title", "Results"}, {"html", std::string(uam::html_view::kMaxHtmlBytes + 1, 'a')}});
+	UAM_ASSERT(!preview_large["result"].value("publishable", true));
+	UAM_ASSERT_EQ(preview_large["result"]["errors"].size(), std::size_t{1});
+
+	// Outside a turn and with bad input the request is rejected with a clear reason and no block.
+	UAM_ASSERT_EQ(call("idle", "html_view_publish", {{"title", "Results"}, {"html", html}}).value("error", ""),
+	              std::string("HTML views can only be published during an active turn."));
+	session->processing = true;
+	const nlohmann::json oversized = call("oversized", "html_view_publish", {{"title", "Results"}, {"html", std::string(uam::html_view::kMaxHtmlBytes + 1, 'a')}});
+	UAM_ASSERT(!oversized.value("ok", true));
+	UAM_ASSERT(oversized.value("error", "").find("the limit is 131072 bytes") != std::string::npos);
+	UAM_ASSERT(!call("extra", "html_view_publish", {{"title", "Results"}, {"html", html}, {"height", "900"}}).value("ok", true));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
+
+	const nlohmann::json published = call("publish-1", "html_view_publish", {{"title", " Results "}, {"html", html}});
+	UAM_ASSERT(published.value("ok", false));
+	const std::string view_id = published["result"].value("viewId", "");
+	UAM_ASSERT(view_id.starts_with("html-view:"));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{2});
+	const Message& assistant = app.chats.front().messages.back();
+	UAM_ASSERT(assistant.role == MessageRole::Assistant);
+	UAM_ASSERT_EQ(assistant.blocks.size(), std::size_t{1});
+	UAM_ASSERT_EQ(assistant.blocks.front().type, std::string("html_view"));
+	UAM_ASSERT_EQ(assistant.blocks.front().title, std::string("Results"));
+	UAM_ASSERT_EQ(assistant.blocks.front().text, html);
+	UAM_ASSERT_EQ(assistant.blocks.front().request_id_json, view_id);
+
+	// Later streamed text re-syncs blocks from turn events without dropping the view.
+	uam::acp_detail::AppendAssistantChunk(app.chats.front(), *session, "Here is the chart.");
+	UAM_ASSERT_EQ(app.chats.front().messages.back().blocks.size(), std::size_t{2});
+	UAM_ASSERT_EQ(app.chats.front().messages.back().blocks.front().type, std::string("html_view"));
+	UAM_ASSERT_EQ(app.chats.front().messages.back().blocks.back().type, std::string("assistant_text"));
+
+	// The block persists and reloads with its title, and restores into a resumed turn.
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, "chat-html-view");
+	UAM_ASSERT(loaded.has_value());
+	const MessageBlock& saved = loaded->messages.back().blocks.front();
+	UAM_ASSERT_EQ(saved.type, std::string("html_view"));
+	UAM_ASSERT_EQ(saved.title, std::string("Results"));
+	UAM_ASSERT_EQ(saved.text, html);
+	UAM_ASSERT_EQ(saved.request_id_json, view_id);
+	uam::AcpSessionState restored;
+	uam::acp_detail::RestoreTurnEventsFromMessageBlocks(restored, loaded->messages.back());
+	const std::vector<MessageBlock> round_trip = uam::acp_detail::MessageBlocksFromTurnEvents(restored);
+	UAM_ASSERT(round_trip == loaded->messages.back().blocks);
+
+	// One turn may publish at most kMaxViewsPerTurn views; a rejected request changes nothing.
+	for (std::size_t index = 2; index <= uam::html_view::kMaxViewsPerTurn; ++index)
+		UAM_ASSERT(call("publish-" + std::to_string(index), "html_view_publish", {{"title", "Results"}, {"html", html}}).value("ok", false));
+	const std::vector<MessageBlock> capped_blocks = app.chats.front().messages.back().blocks;
+	const std::size_t capped_events = session->turn_events.size();
+	const nlohmann::json over_cap = call("publish-over", "html_view_publish", {{"title", "Results"}, {"html", html}});
+	UAM_ASSERT(!over_cap.value("ok", true));
+	UAM_ASSERT(over_cap.value("error", "").find("already has 8 HTML views, the limit per turn") != std::string::npos);
+	UAM_ASSERT(app.chats.front().messages.back().blocks == capped_blocks);
+	UAM_ASSERT_EQ(session->turn_events.size(), capped_events);
+
+	// A CLI View session has no structured transcript: the request is refused.
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->running = true;
+	terminal->uam_control_session = std::make_shared<uam::AcpSessionState>();
+	terminal->uam_control_session->chat_id = "chat-html-view";
+	terminal->uam_control_session->provider_id = "claude-cli";
+	terminal->uam_control_session->uam_control_capability_id = capability;
+	app.cli_terminals.push_back(std::move(terminal));
+	app.acp_sessions.front()->uam_control_capability_id = "other";
+	UAM_ASSERT(call("terminal", "html_view_publish", {{"title", "Results"}, {"html", html}}).value("error", "").find("CLI View") != std::string::npos);
+	uam::UamControlService::Shutdown(app);
 }

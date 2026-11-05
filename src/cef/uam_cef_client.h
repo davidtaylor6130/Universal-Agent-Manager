@@ -166,7 +166,7 @@ class UamCefClient : public CefClient, public CefLifeSpanHandler, public CefLoad
 	void RecoverInterface(unsigned int generation);
 	void EnsureMessageRouter();
 	bool IsTrustedMainFrame(CefRefPtr<CefFrame> frame) const;
-	bool ShouldCancelNavigationToUrl(const std::string& target_url) const;
+	bool ShouldCancelNavigationToUrl(bool is_main_frame, const std::string& target_url) const;
 
 	IMPLEMENT_REFCOUNTING(UamCefClient);
 };
