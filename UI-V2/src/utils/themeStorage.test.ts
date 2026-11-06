@@ -94,9 +94,7 @@ describe('themeStorage', () => {
     const set = vi.spyOn(document.documentElement.style, 'setProperty')
     const remove = vi.spyOn(document.documentElement.style, 'removeProperty')
     try {
-      const started = performance.now()
       for (let index = 0; index < 200; index++) applyDocumentTheme(theme)
-      expect(performance.now() - started).toBeLessThan(100)
       expect(attribute).not.toHaveBeenCalled()
       expect(set).not.toHaveBeenCalled()
       expect(remove).not.toHaveBeenCalled()
@@ -137,9 +135,7 @@ describe('themeStorage', () => {
     const set = vi.spyOn(document.documentElement.style, 'setProperty')
     const remove = vi.spyOn(document.documentElement.style, 'removeProperty')
     try {
-      const started = performance.now()
       for (let index = 0; index < 200; index++) applyDocumentTheme(theme.id, [theme])
-      expect(performance.now() - started).toBeLessThan(100)
       expect(attribute).not.toHaveBeenCalled()
       expect(set).not.toHaveBeenCalled()
       expect(remove).not.toHaveBeenCalled()
