@@ -180,6 +180,7 @@ namespace uam::settings_frontend_json
 		settings_json["favoriteUamAgentIds"] = settings.favorite_uam_agent_ids;
 		settings_json["nativeImportExcludedTitlePrefixes"] = settings.native_import_excluded_title_prefixes;
 		settings_json["nativeImportExcludedDirectories"] = settings.native_import_excluded_directories;
+		settings_json["nativeImportStartupMaxAgeDays"] = settings.native_import_startup_max_age_days;
 		settings_json["uamAgentCycleShortcut"] = settings.uam_agent_cycle_shortcut;
 		settings_json["computerUseGloballyEnabled"] = settings.computer_use_globally_enabled;
 		settings_json["computerUseAllowlistEnabled"] = settings.computer_use_allowlist_enabled;

@@ -621,10 +621,17 @@ void UamQueryHandler::HandleSetNativeImportFilters(CefRefPtr<CefBrowser> browser
 		cb->Failure(400, "Import filters must be lists of text.");
 		return;
 	}
+	const std::optional<int> startup_max_age_days = uam::nlohmann_json::IntFieldStrict(payload, "startupMaxAgeDays");
+	if (payload.contains("startupMaxAgeDays") && (!startup_max_age_days || *startup_max_age_days < 0 || *startup_max_age_days > 3650))
+	{
+		cb->Failure(400, "The startup age limit must be a whole number of days from 0 to 3650.");
+		return;
+	}
 
 	const AppSettings previous = m_app.settings;
 	m_app.settings.native_import_excluded_title_prefixes = uam::nlohmann_json::TrimmedStringArrayField(payload, "titlePrefixes");
 	m_app.settings.native_import_excluded_directories = uam::nlohmann_json::TrimmedStringArrayField(payload, "directories");
+	if (startup_max_age_days) m_app.settings.native_import_startup_max_age_days = *startup_max_age_days;
 	uam::settings::NormalizeUamAgentPreferences(m_app.settings);
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
