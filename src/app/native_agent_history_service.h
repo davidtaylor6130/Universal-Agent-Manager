@@ -10,12 +10,13 @@
 
 namespace uam::native_agents
 {
-/// Worker-only local passive media admission; no remote snapshot or arbitrary
-/// caller candidate can produce this sealed genuine-reader result.
-std::optional<AdmittedLocalPassiveNativeHistory> LoadLocalPassiveHistoryForMedia(
+/// Worker-only passive media admission for a local child (no host) or the
+/// parent's exact SSH host; no arbitrary caller candidate can produce this
+/// sealed genuine-reader result.
+std::optional<AdmittedPassiveNativeHistory> LoadPassiveHistoryForMedia(
 	const std::filesystem::path& root, const ChatSession& source, const ProviderProfile& profile,
 	std::string_view reference, std::string_view expected_primary, std::string_view expected_summary,
-	std::string* error, std::stop_token stop_token = {});
+	const std::optional<ExecutionHost>& host, std::string* error, std::stop_token stop_token = {});
 
 std::optional<ChatSession> ParseHistorySnapshot(const ExecutionHost& host, const ChatSession& source,
 	std::string_view reference, const nlohmann::json& snapshot, std::string* error, std::stop_token stop_token = {});
