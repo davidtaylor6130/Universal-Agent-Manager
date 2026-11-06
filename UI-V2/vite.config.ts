@@ -46,6 +46,8 @@ export default defineConfig({
   test: {
     // Hosted macOS Intel runners have taken 760s for a suite that takes 150s on Linux; budgets stay in the tests.
     testTimeout: 30_000,
+    // Same rule as native CI: shared runners retry a missed wall-clock budget once; budgets stay unchanged.
+    retry: process.env.CI && process.argv.includes('.performance.test') ? 1 : 0,
     environment: 'jsdom',
     globals: true,
     include: ['src/**/*.test.{ts,tsx}'],
