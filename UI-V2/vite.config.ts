@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { argv } from 'node:process'
 import { buildFeatureDefines } from './src/config/featureDefines'
 
 const buildEnv = (globalThis as typeof globalThis & { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {}
@@ -47,7 +48,7 @@ export default defineConfig({
     // Hosted macOS Intel runners have taken 760s for a suite that takes 150s on Linux; budgets stay in the tests.
     testTimeout: 30_000,
     // Same rule as native CI: shared runners retry a missed wall-clock budget once; budgets stay unchanged.
-    retry: process.env.CI && process.argv.includes('.performance.test') ? 1 : 0,
+    retry: buildEnv.CI && argv.includes('.performance.test') ? 1 : 0,
     environment: 'jsdom',
     globals: true,
     include: ['src/**/*.test.{ts,tsx}'],
