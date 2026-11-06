@@ -5,3 +5,6 @@ declare module 'node:fs' {
 declare module 'node:path' {
   export function join(...paths: string[]): string
 }
+declare module 'node:process' {
+  export const argv: string[]
+}
