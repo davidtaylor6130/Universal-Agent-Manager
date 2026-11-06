@@ -2,8 +2,11 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <string>
+#include <string_view>
 #include <thread>
 
 namespace uam::native_history
@@ -23,19 +26,67 @@ namespace uam::native_history
 		inline std::atomic<unsigned> discovery_parser_owners{0};
 		inline constexpr unsigned kMaxDiscoveryParserOwners = 2;
 		// Explicit remote refreshes hold their owner through a slow SSH read; they
-		// must not starve local branch, managed-run or metadata preparation.
-		// ponytail: one budget for all hosts; per-host slots if one slow host starves others.
-		inline std::atomic<unsigned> remote_refresh_owners{0};
-		inline constexpr unsigned kMaxRemoteRefreshOwners = 2;
+		// must not starve local branch, managed-run or metadata preparation. Each
+		// host has its own slots and each read its own thread, so one slow host's
+		// reads only delay its own refreshes, and a total cap bounds all remote work.
+		// Admission refuses (busy) rather than queues.
+		// ponytail: two hung hosts fill the total cap; raise it if that is seen.
+		inline std::atomic<unsigned> remote_refresh_owners{0}; // Total; written under the mutex.
+		inline constexpr unsigned kMaxRemoteRefreshOwners = 4;
+		inline constexpr unsigned kMaxRemoteRefreshOwnersPerHost = 2;
+		struct RemoteRefreshHosts
+		{
+			std::mutex mutex;
+			std::map<std::string, unsigned, std::less<>> owners;
+		};
+		// ponytail: leaked on purpose. Detached cleanup workers can outlive static destruction at exit.
+		inline RemoteRefreshHosts& RemoteRefreshHostsState()
+		{
+			static RemoteRefreshHosts* const hosts = new RemoteRefreshHosts;
+			return *hosts;
+		}
+		inline bool TryAcquireRemoteRefresh(std::string_view host) noexcept
+		{
+			try
+			{
+				RemoteRefreshHosts& hosts = RemoteRefreshHostsState();
+				std::lock_guard lock(hosts.mutex);
+				if (remote_refresh_owners.load() >= kMaxRemoteRefreshOwners) return false;
+				auto found = hosts.owners.find(host);
+				if (found == hosts.owners.end()) found = hosts.owners.emplace(std::string(host), 0u).first;
+				if (found->second >= kMaxRemoteRefreshOwnersPerHost) return false;
+				++found->second;
+				remote_refresh_owners.fetch_add(1);
+				return true;
+			}
+			catch (...) { return false; }
+		}
+		inline void ReleaseRemoteRefresh(std::string_view host) noexcept
+		{
+			RemoteRefreshHosts& hosts = RemoteRefreshHostsState();
+			std::lock_guard lock(hosts.mutex);
+			const auto found = hosts.owners.find(host);
+			if (found != hosts.owners.end() && --found->second == 0) hosts.owners.erase(found);
+			remote_refresh_owners.fetch_sub(1);
+		}
+		inline unsigned RemoteRefreshOwnersOnHost(std::string_view host) noexcept
+		{
+			RemoteRefreshHosts& hosts = RemoteRefreshHostsState();
+			std::lock_guard lock(hosts.mutex);
+			const auto found = hosts.owners.find(host);
+			return found == hosts.owners.end() ? 0u : found->second;
+		}
 	}
 
 	/// Arm before admitting any payload, prepared file or transcript. CEF tasks
 	/// retain this one handle; even discarded tasks retire its value on a worker.
 	/// T must default-construct empty and have a nonthrowing destructor independent
 	/// of app/CEF lifetime. Mutable access must follow serial task handoffs.
+	/// `host` selects the per-host slots of RemoteRefresh; other pools ignore it.
 	template <typename T, NativeRefreshWorkerPool Pool = NativeRefreshWorkerPool::Shared>
-	std::shared_ptr<T> TryCreateWorkerOwnedNativeRefresh() noexcept
+	std::shared_ptr<T> TryCreateWorkerOwnedNativeRefresh(std::string_view host = {}) noexcept
 	{
+		constexpr bool per_host = Pool == NativeRefreshWorkerPool::RemoteRefresh;
 		auto& owners = []() -> std::atomic<unsigned>&
 		{
 			if constexpr (Pool == NativeRefreshWorkerPool::TerminalParser) return detail::terminal_parser_owners;
@@ -47,12 +98,24 @@ namespace uam::native_history
 		    ? detail::kMaxTerminalParserOwners : Pool == NativeRefreshWorkerPool::DiscoveryParser
 		        ? detail::kMaxDiscoveryParserOwners : Pool == NativeRefreshWorkerPool::RemoteRefresh
 		            ? detail::kMaxRemoteRefreshOwners : detail::kMaxRefreshOwners;
-		unsigned count = owners.load();
-		do
+		if constexpr (per_host)
 		{
-			if (count >= limit) return {};
+			if (!detail::TryAcquireRemoteRefresh(host)) return {};
 		}
-		while (!owners.compare_exchange_weak(count, count + 1));
+		else
+		{
+			unsigned count = owners.load();
+			do
+			{
+				if (count >= limit) return {};
+			}
+			while (!owners.compare_exchange_weak(count, count + 1));
+		}
+		const auto release = [counter = &owners](std::string_view key) noexcept
+		{
+			if constexpr (per_host) detail::ReleaseRemoteRefresh(key);
+			else counter->fetch_sub(1);
+		};
 
 		struct State
 		{
@@ -76,7 +139,7 @@ namespace uam::native_history
 				}
 				state->ready.notify_one();
 			});
-			worker = std::thread([state, counter = &owners]() noexcept
+			worker = std::thread([state, release, key = per_host ? std::string(host) : std::string()]() noexcept
 			{
 				std::unique_ptr<T> value;
 				{
@@ -85,7 +148,7 @@ namespace uam::native_history
 					value = std::move(state->value);
 				}
 				value.reset();
-				counter->fetch_sub(1);
+				release(key);
 			});
 			launched = true;
 			worker.detach();
@@ -97,7 +160,7 @@ namespace uam::native_history
 			// let the empty bootstrap exit before its joinable handle unwinds.
 			result.reset();
 			if (worker.joinable()) worker.join();
-			if (!launched) owners.fetch_sub(1);
+			if (!launched) release(host);
 			return {};
 		}
 	}

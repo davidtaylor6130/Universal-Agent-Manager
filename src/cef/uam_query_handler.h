@@ -26,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <thread>
 #include <vector>
 
 namespace uam::io { enum class AtomicWriteStage; }
@@ -123,6 +124,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 		ChatIconQueryIdentity query{-1, "", -1};
 		bool delivery_cancelled = false;
 		bool cache_filled = false; // The read finished and saved history now reflects it.
+		std::string execution_host_id; // Set for remote refresh reads on this host; empty for local reads.
 		struct Waiter { ChatIconQueryIdentity query; CefRefPtr<Callback> callback; std::function<void()> retry; };
 		std::vector<Waiter> waiters;
 	};
@@ -139,6 +141,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	    std::shared_ptr<NativeHistoryRequest> request = std::make_shared<NativeHistoryRequest>());
 	bool AwaitNativeHistoryRead(const std::string& key, CefRefPtr<Callback> cb, std::function<void()> retry);
 	void FinishNativeHistoryRead(const std::string& key, const std::shared_ptr<NativeHistoryRequest>& request);
+	// Stops remote refresh reads on a host whose helper connection is being replaced.
+	void StopNativeHistoryReadsOnHost(const std::string& host_id);
 	// Unacknowledged remote publication keeps ordinary reads detached from the old live graph.
 	struct UnconfirmedNativeMediaHistory
 	{
@@ -239,6 +243,10 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	std::function<bool(uam::io::AtomicWriteStage)> m_nativeMediaPublicationStageGateForTests;
 	std::function<bool(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion)> m_queuedPromptHistoryDispatcherForTests;
 	bool DispatchNativeMediaRefresh(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion, CefThreadId = TID_FILE_BACKGROUND);
+	// A remote refresh read holds its thread through a slow SSH call, so each gets its own instead of the serial file lane.
+	bool DispatchRemoteRefreshRead(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion);
+	struct RemoteRefreshReadThread { std::shared_ptr<std::atomic<bool>> finished; std::jthread thread; };
+	std::vector<RemoteRefreshReadThread> m_remoteRefreshReadThreads;
 	bool DispatchRemoteInstallStage(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion);
 	std::function<bool(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion)> m_attachmentPreviewDispatcherForTests;
 	bool DispatchManagedSubagentQuery(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion);

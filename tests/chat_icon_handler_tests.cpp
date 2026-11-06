@@ -41,6 +41,20 @@ using namespace uam_test;
 /// Executes the real icon handler and the scalar identity seam shared by CEF routing.
 struct ChatIconHandlerTestAccess
 {
+	static void SetRemoteReader(UamQueryHandler& handler, std::function<std::optional<ChatSession>(const ExecutionHost&, const ChatSession&, std::string*, std::stop_token)> reader)
+	{
+		handler.m_remoteNativeHistoryReaderForTests = std::move(reader);
+	}
+	static void StopHost(UamQueryHandler& handler, const std::string& host_id) { handler.StopNativeHistoryReadsOnHost(host_id); }
+	static void ObserveFileLaneDispatch(UamQueryHandler& handler, std::function<void(CefThreadId)> observer) { handler.m_nativeMediaDispatchThreadObserverForTests = std::move(observer); }
+	/// Reads recorded for this host, and how many of them have been told to stop.
+	static std::pair<int, int> HostReads(const UamQueryHandler& handler, const std::string& host_id)
+	{
+		std::pair<int, int> counts{0, 0};
+		for (const auto& [key, request] : handler.m_nativeHistoryRequests)
+			if (request->execution_host_id == host_id) { ++counts.first; if (request->stop_requested()) ++counts.second; }
+		return counts;
+	}
 	static void Set(UamQueryHandler& handler, CefRefPtr<UamQueryHandler::Callback> callback,
 	    const std::string& chat_id, const std::string& value, int browser = 1, std::string frame = "frame", int64_t query = 1)
 	{
@@ -4582,6 +4596,56 @@ UAM_TEST(RemoteNativeHistoryHandlerGeminiInlineOriginalsPublishAfterActualHelper
 	fixture.Settle(callback);
 }
 
+// Real threads: a read held on one host must not delay a read on another.
+UAM_TEST(RemoteNativeHistoryHandlerGeminiHeldReadDoesNotDelayAnotherHost)
+{
+	RemoteGeminiHistoryHandlerFixture fixture; fixture.EstablishText();
+	ExecutionHost other_host = fixture.host; other_host.id = "other-history-host"; other_host.ssh_alias = "other-history-fixture";
+	fixture.app.settings.execution_hosts.push_back(other_host);
+	ChatFolder other_folder; other_folder.id = "other-remote-folder"; other_folder.title = "Other remote project";
+	other_folder.directory = fixture.workspace; other_folder.execution_host_id = other_host.id;
+	fixture.app.folders.push_back(other_folder); UAM_ASSERT(ChatFolderStore::Save(fixture.app.data_root, fixture.app.folders));
+	ChatSession other = fixture.Current();
+	other.id = "remote-gemini-cef-other-owner"; other.branch_root_chat_id = other.id; other.folder_id = other_folder.id;
+	other.native_session_id = "99999999-9999-4999-8999-999999999999"; other.execution_host_id = other_host.id;
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, other));
+	const auto saved_other = ChatRepository::LoadLocalChat(fixture.app.data_root, other.id, true);
+	UAM_ASSERT(saved_other && saved_other->messages_loaded); fixture.app.chats.push_back(*saved_other);
+
+	std::promise<void> release;
+	const std::shared_future<void> released = release.get_future().share();
+	struct ReleaseOnExit { std::promise<void>& promise; ~ReleaseOnExit() { promise.set_value(); } } release_on_exit{release};
+	const auto held_reads = std::make_shared<std::atomic<int>>(0), other_reads = std::make_shared<std::atomic<int>>(0);
+	const std::string held_host = fixture.host.id;
+	ChatIconHandlerTestAccess::SetRemoteReader(*fixture.handler,
+	    [=](const ExecutionHost& host, const ChatSession&, std::string* error, std::stop_token stop) -> std::optional<ChatSession>
+	    {
+		    if (host.id == held_host)
+		    {
+			    held_reads->fetch_add(1);
+			    while (!stop.stop_requested() && released.wait_for(std::chrono::milliseconds(5)) != std::future_status::ready) {}
+		    }
+		    else other_reads->fetch_add(1);
+		    if (error) *error = "Fixture read finished.";
+		    return std::nullopt;
+	    });
+	const auto invoke = [&](const std::string& id)
+	{
+		CefRefPtr<RemoteHistoryQueryCallback> callback = new RemoteHistoryQueryCallback;
+		fixture.pending_callbacks.push_back(callback);
+		UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(*fixture.handler, "getChatMessages", {{"chatId", id}, {"refreshNative", true}}, callback));
+		return callback;
+	};
+	const auto held = invoke(fixture.owner_id);
+	RunCreationLoopUntil([&] { return held_reads->load() == 1; }, std::chrono::seconds(10));
+	UAM_ASSERT_EQ(held_reads->load(), 1);
+	const auto second = invoke(other.id);
+	RunCreationLoopUntil([&] { return second->Completed(); }, std::chrono::seconds(10));
+	UAM_ASSERT(second->Completed()); // Finished while the first host's read is still held.
+	UAM_ASSERT_EQ(other_reads->load(), 1); UAM_ASSERT_EQ(second->status, 502);
+	UAM_ASSERT(!held->Completed());
+}
+
 UAM_TEST(RemoteNativeHistoryHandlerGeminiOriginalStoreRefusalAndFreshRetry)
 {
 	RemoteGeminiHistoryHandlerFixture fixture; fixture.EstablishText();
@@ -4699,33 +4763,47 @@ namespace
 
 	struct ActualRemoteLoadedBoundary
 	{
-		// Both guards are constructed AFTER the owning fixture, so unwind releases
-		// blocked real queues before the fixture drains its actual callback futures.
-		HandlerBranchQueueRelease first_release, preparation_release;
-		std::shared_ptr<std::atomic<int>> first = std::make_shared<std::atomic<int>>(0);
-		std::shared_ptr<std::atomic<int>> preparation = std::make_shared<std::atomic<int>>(0);
+		// The guard is constructed AFTER the owning fixture, so unwind releases
+		// the blocked real queue before the fixture drains its actual callback futures.
+		HandlerBranchQueueRelease lane_release;
+		std::shared_ptr<std::atomic<int>> held = std::make_shared<std::atomic<int>>(0);
+		std::shared_ptr<std::atomic<int>> preparation_dispatched = std::make_shared<std::atomic<int>>(0);
 
 		CefRefPtr<RemoteHistoryQueryCallback> Start(RemoteGeminiHistoryHandlerFixture& fixture)
 		{
-			UAM_ASSERT(CefPostTask(TID_FILE_BACKGROUND, new InstructionQueueHold(first_release.promise.get_future().share(), first)));
-			RunCreationLoopUntil([this] { return first->load() == 1; }, std::chrono::seconds(3)); UAM_ASSERT_EQ(first->load(), 1);
+			UAM_ASSERT(CefPostTask(TID_FILE_BACKGROUND, new InstructionQueueHold(lane_release.promise.get_future().share(), held)));
+			RunCreationLoopUntil([this] { return held->load() == 1; }, std::chrono::seconds(3)); UAM_ASSERT_EQ(held->load(), 1);
+			// The read has its own thread; its UI continuation queues preparation behind the held file lane.
+			ChatIconHandlerTestAccess::ObserveFileLaneDispatch(*fixture.handler, [dispatched = preparation_dispatched](CefThreadId) { dispatched->fetch_add(1); });
 			const auto launches = fixture.Launches(); const auto callback = BeginActualRemoteRefresh(fixture);
-			// Real FIFO order: first hold -> native reader -> preparation hold.
-			UAM_ASSERT(CefPostTask(TID_FILE_BACKGROUND, new InstructionQueueHold(preparation_release.promise.get_future().share(), preparation)));
-			first_release.Release();
-			RunCreationLoopUntil([this] { return preparation->load() == 1; }, std::chrono::seconds(15)); UAM_ASSERT_EQ(preparation->load(), 1);
-			fixture.AssertPrivateTransport(launches); // This actual query's native load returned before the hold entered.
-			const auto ui = std::make_shared<std::atomic<int>>(0);
-			// Load worker posts its UI continuation before the next FIFO task enters;
-			// this real UI witness follows it and proves preparation was admitted.
-			UAM_ASSERT(CefPostTask(TID_UI, new CreationQueueWitness(ui, 1)));
-			RunCreationLoopUntil([ui] { return ui->load() == 1; }, std::chrono::seconds(3)); UAM_ASSERT_EQ(ui->load(), 1);
-			UAM_ASSERT_EQ(preparation->load(), 1); UAM_ASSERT_EQ(callback->successes + callback->failures, 0);
+			RunCreationLoopUntil([this] { return preparation_dispatched->load() == 1; }, std::chrono::seconds(15));
+			UAM_ASSERT_EQ(preparation_dispatched->load(), 1);
+			fixture.AssertPrivateTransport(launches); // This actual query's native load returned before preparation was queued.
+			UAM_ASSERT_EQ(callback->successes + callback->failures, 0);
 			UAM_ASSERT(!callback->Completed());
 			return callback;
 		}
-		void Release() { preparation_release.Release(); }
+		void Release() { lane_release.Release(); }
 	};
+}
+
+// A child refresh on an SSH host is stopped by that host's helper replacement, and only by that.
+UAM_TEST(RemoteNativeHistoryHandlerChildReadIsStoppedByItsHostOnly)
+{
+	RemoteOwnedControlsFixture fixture;
+	const std::string reference = uam::native_agents::BuildHistoryId("gemini-cli", fixture.native_id, "88888888-8888-4888-8888-888888888888", fixture.host.id);
+	UAM_ASSERT(!reference.empty());
+	CefRefPtr<RemoteHistoryQueryCallback> callback = new RemoteHistoryQueryCallback;
+	fixture.pending_callbacks.push_back(callback);
+	ChatIconHandlerTestAccess::OpenNative(*fixture.handler, {{"chatId", fixture.owner_id}, {"nativeSessionId", reference}, {"selectChat", false}, {"refreshHistory", true}}, callback);
+	UAM_ASSERT(!callback->Completed());
+	UAM_ASSERT_EQ(ChatIconHandlerTestAccess::HostReads(*fixture.handler, fixture.host.id), (std::pair<int, int>{1, 0}));
+	ChatIconHandlerTestAccess::StopHost(*fixture.handler, "other-host");
+	UAM_ASSERT_EQ(ChatIconHandlerTestAccess::HostReads(*fixture.handler, fixture.host.id), (std::pair<int, int>{1, 0}));
+	ChatIconHandlerTestAccess::StopHost(*fixture.handler, fixture.host.id);
+	UAM_ASSERT_EQ(ChatIconHandlerTestAccess::HostReads(*fixture.handler, fixture.host.id), (std::pair<int, int>{1, 1}));
+	RunCreationLoopUntil([&] { return callback->Completed(); }, std::chrono::seconds(15));
+	UAM_ASSERT(callback->Completed());
 }
 
 UAM_TEST(RemoteNativeHistoryHandlerGeminiLoadedOwnerDriftPreservesOriginalsAndRetries)

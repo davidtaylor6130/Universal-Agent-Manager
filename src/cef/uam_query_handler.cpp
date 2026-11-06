@@ -168,6 +168,7 @@ UamQueryHandler::~UamQueryHandler()
 	m_asyncLifetime.reset();
 	for (const std::pair<const std::string, std::shared_ptr<std::stop_source>>& request : m_titleRequests) request.second->request_stop();
 	for (const auto& request : m_nativeHistoryRequests) request.second->request_stop();
+	m_remoteRefreshReadThreads.clear(); // Joins the stopped reads; each read is also bounded by its own deadline.
 	for (const auto& install : m_remoteInstallStops)
 		if (const std::shared_ptr<std::stop_source> stop = install.second.lock()) stop->request_stop();
 #if UAM_ENABLE_MOBILE_COMPANION
@@ -657,6 +658,12 @@ void UamQueryHandler::FinishNativeHistoryRead(const std::string& key, const std:
 		m_retryReusesSavedRead = false;
 	}
 	m_dispatchingQuery = outer;
+}
+
+void UamQueryHandler::StopNativeHistoryReadsOnHost(const std::string& host_id)
+{
+	for (const auto& [key, request] : m_nativeHistoryRequests)
+		if (!host_id.empty() && request->execution_host_id == host_id) request->request_stop();
 }
 
 void UamQueryHandler::BeginChatIconQuery(Callback* callback, int browser_id, const std::string& frame_id, int64_t query_id)

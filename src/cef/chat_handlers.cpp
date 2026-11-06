@@ -688,6 +688,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	}
 	const std::string original_digest = uam::StateSerializer::MessageDigest(*chat, ChatDomainService().SelectedChatId(m_app) == chat->id);
 	const auto request = BeginNativeHistoryRead(chat_id, cb);
+	if (host_snapshot) request->execution_host_id = host_snapshot->id; // A helper reinstall stops this read.
 	auto transcript = std::make_shared<NativeChatTranscript>();
 	if (!DispatchNativeMediaRefresh(cb,
 	    [chat_snapshot, host_snapshot, provider_id, transcript, request, profile_snapshot,
@@ -874,6 +875,22 @@ bool UamQueryHandler::DispatchNativeMediaRefresh(CefRefPtr<Callback> cb, Managed
 		return m_nativeMediaRefreshDispatcherForTests(cb, std::move(worker), std::move(completion));
 	return CefPostTask(thread_id, new uam::query_handler_async::CefQueryWorkerTask(
 	    m_asyncLifetime, cb, std::move(worker), std::move(completion)));
+}
+
+bool UamQueryHandler::DispatchRemoteRefreshRead(CefRefPtr<Callback> cb, ManagedSubagentWorker worker, ManagedSubagentCompletion completion)
+{
+	if (m_nativeMediaRefreshDispatcherForTests) return DispatchNativeMediaRefresh(cb, std::move(worker), std::move(completion));
+	std::erase_if(m_remoteRefreshReadThreads, [](const RemoteRefreshReadThread& read) { return read.finished->load(); });
+	CefRefPtr<CefTask> task = new uam::query_handler_async::CefQueryWorkerTask(m_asyncLifetime, cb, std::move(worker), std::move(completion));
+	auto finished = std::make_shared<std::atomic<bool>>(false);
+	std::jthread thread([task, finished]() mutable
+	{
+		task->Execute();
+		task = nullptr;
+		finished->store(true);
+	});
+	m_remoteRefreshReadThreads.push_back({std::move(finished), std::move(thread)});
+	return true;
 }
 
 void UamQueryHandler::HandleRefreshLocalGeminiMedia(CefRefPtr<CefBrowser> browser, const ChatSession& chat,
@@ -1239,7 +1256,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 	};
 
 	// Reserve before stopping another request or retaining a transcript/payload.
-	auto work = uam::native_history::TryCreateWorkerOwnedNativeRefresh<Work, uam::native_history::NativeRefreshWorkerPool::RemoteRefresh>();
+	auto work = uam::native_history::TryCreateWorkerOwnedNativeRefresh<Work, uam::native_history::NativeRefreshWorkerPool::RemoteRefresh>(host.id);
 	if (!work) { cb->Failure(503, "Native history refresh is busy. Retry shortly."); return; }
 	const auto root = m_app.data_root;
 	const auto revision = ChatRepository::ChatStorageRevision(root, chat.id);
@@ -1275,6 +1292,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 	parse_identity.folder_id = chat.folder_id;
 	// HandleGetChatMessages admits one read per chat, so no prior request remains here.
 	const auto request = BeginNativeHistoryRead(id, cb);
+	request->execution_host_id = host.id; // A helper reinstall stops this read and frees its host slot.
 	const auto finish = [this, id, request]() { FinishNativeHistoryRead(id, request); };
 	// This identity-only check also serves postcommit response admission. New
 	// authored content is serialized from current live state, never an old page.
@@ -1316,7 +1334,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 	bool queued = false;
 	try
 	{
-		queued = DispatchNativeMediaRefresh(cb,
+		queued = DispatchRemoteRefreshRead(cb,
 		    [work, root, id, revision, summary_revision, metadata, original_digest, lineage, incarnation, parse_identity, host, request, reader = m_remoteNativeHistoryReaderForTests]()
 		    {
 			    if (request->stop_requested()) return AsyncFailure(409, "A newer history refresh was requested.");
