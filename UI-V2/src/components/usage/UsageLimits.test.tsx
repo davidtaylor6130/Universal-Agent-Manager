@@ -764,9 +764,22 @@ describe('UsageLimits overview', () => {
       expect(beside.tone).toBeNull()
       // Old alone, with a reset still to come.
       const aged = await callout([ready('codex-cli', { primary: win(20, hour, 300), updatedAt: now - 3 * day * 1000, ...stop })])
-      expect(aged.title).not.toContain('usage limit')
+      expect(aged.title).toBe('Codex last reported its usage limit')
+      expect(aged.body).toBe('Highest is Codex at 20% of its 5-hour window, resets in 1h.')
       expect(aged.tone).toBeNull()
-      // Kept through a failed read.
+      // Kept through a failed read: the headline does not claim room, and the list does not repeat it as fact.
+      const failed = await callout([{ ...ready('codex-cli', { primary: win(20, hour, 300), ...stop }), status: 'error', error: 'Timed out' }])
+      expect(failed.title).toBe('Codex last reported its usage limit')
+      expect(failed.tone).toBeNull()
+      // With no windows or only an unlimited row, it still does not claim room or that nothing was shared.
+      const oldSpend = await callout([ready('codex-cli', { spendControlReached: true, updatedAt: now - 3 * day * 1000 })])
+      expect(oldSpend.title).toBe('Codex last reported its spend limit')
+      expect(oldSpend.body).toBeUndefined()
+      expect((await callout([ready('codex-cli', { planType: 'pro', updatedAt: now - 3 * day * 1000, ...stop })])).title).toBe('Codex last reported its usage limit')
+      // A stop whose resets have all passed has lapsed, whatever another provider's window says.
+      expect((await callout([old, ready('claude-cli', { primary: { usedPercent: 50, resetsAt: null, windowDurationMinutes: null } })])).title).toBe('Allowances have room')
+      // A usage bar near its limit still says so.
+      expect((await callout([ready('codex-cli', { primary: win(85, hour, 300), updatedAt: now - 3 * day * 1000, ...stop })])).title).toBe('Codex is close to its limit')
       expect((await callout([{ ...ready('codex-cli', { primary: win(20, hour, 300), ...stop }), status: 'error', error: 'Timed out' }, claude])).more).toEqual([])
       // Current data with every reset passed; one window still running keeps the stop.
       const lapsed = await callout([ready('codex-cli', { primary: win(20, -hour, 300), ...stop })])
@@ -843,6 +856,20 @@ describe('UsageLimits overview', () => {
           await poll()
           expect(view.host.textContent).toContain('Bridge failed')
           expect(title(view.host)).not.toMatch(/first/)
+        } finally { view.close() }
+      })
+      it('says a stop was last reported when the bridge fails, and does not claim room', async () => {
+        const stopped = ready('codex-cli', { primary: win(20, hour, 300), rateLimitReachedType: 'workspace_member_usage_limit_reached' })
+        const view = await render([stopped])
+        const lede = () => view.host.querySelector('.uam-limits-lede')!
+        try {
+          expect(title(view.host)).toBe('Codex has reached its usage limit')
+          expect(lede().getAttribute('data-tone')).toBe('error')
+          window.cefQuery = request => request.onFailure(500, 'Bridge failed')
+          await poll()
+          expect(view.host.textContent).toContain('Bridge failed')
+          expect(title(view.host)).toBe('Codex last reported its usage limit')
+          expect(lede().getAttribute('data-tone')).toBeNull()
         } finally { view.close() }
       })
       it('remembers each provider\'s own last read', async () => {

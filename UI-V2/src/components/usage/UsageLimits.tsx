@@ -250,7 +250,11 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
   const resetLive = (row: WindowRow) => row.window!.resetsAt === null || row.window!.resetsAt * 1000 > now
   const capped = (entry: typeof entries[number], row: WindowRow) => isTimeWindow(row) && entry.rows.some(other => other !== row && isTimeWindow(other) && resetLive(other) && 100 - other.window!.usedPercent < MIN_LEFT_TO_USE_FIRST)
   // A stop needs the same proof as a recommendation: native keeps these fields through failed reads. It has no reset of its own, so it lapses with its provider's windows.
-  const currentStop = (entry: typeof entries[number]) => canRecommendFrom(entry.allowance, Boolean(account.error), now) && (!entry.rows.some(row => row.pace) || entry.rows.some(row => row.pace && resetLive(row))) ? reportedStop(entry.allowance?.limits) : null
+  const stopRunning = (entry: typeof entries[number]) => !entry.rows.some(row => row.pace) || entry.rows.some(row => row.pace && resetLive(row))
+  const currentStop = (entry: typeof entries[number]) => canRecommendFrom(entry.allowance, Boolean(account.error), now) && stopRunning(entry) ? reportedStop(entry.allowance?.limits) : null
+  // A stop on data too old to confirm is not repeated as fact, but the page must not claim room over it either.
+  const unconfirmed = entries.find(entry => reportedStop(entry.allowance?.limits) && stopRunning(entry) && !currentStop(entry))
+  const lastReported = unconfirmed && `${unconfirmed.name} last reported its ${reportedStop(unconfirmed.allowance?.limits)}`
   const useFirst = readable.filter(({ entry, row }) => canRecommendFrom(entry.allowance, Boolean(account.error), now) && !currentStop(entry) && !capped(entry, row) && (row.window!.resetsAt ?? 0) * 1000 > now && 100 - row.window!.usedPercent >= MIN_LEFT_TO_USE_FIRST)
     .sort((a, b) => neededRate(b.row, now) - neededRate(a.row, now) || a.row.window!.usedPercent - b.row.window!.usedPercent)[0]
   const stoppedEntry = useFirst ? undefined : entries.find(currentStop)
@@ -286,13 +290,14 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
       tone = tone === 'neutral' ? 'warning' : tone
       body = `${percent}% of its ${inSentence(row)} used${reset ? `, resets ${reset}` : ''}.`
     } else {
-      title = 'Allowances have room'
+      title = lastReported || 'Allowances have room'
       body = `Highest is ${entry.name} at ${percent}% of its ${inSentence(row)}${reset ? `, resets ${reset}` : ''}.`
     }
   } else if (readable.length) {
     title = 'Allowances are awaiting an update'
     body = 'Their reset times have passed.'
-  } else if (entries.some(entry => entry.rows.some(row => row.unlimited))) title = 'Allowances have room'
+  } else if (lastReported) title = lastReported
+  else if (entries.some(entry => entry.rows.some(row => row.unlimited))) title = 'Allowances have room'
   else if (account.loading && !account.data) title = 'Reading account allowances…'
   else if (remote) title = 'Allowances are read on this computer only'
   else {
