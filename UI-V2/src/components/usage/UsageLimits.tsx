@@ -58,11 +58,11 @@ function verdictText(pace: AllowancePace, now: number) {
   if (pace.verdict === 'ahead') return `ahead of pace · runs out ${approx(pace.runsOutAt!, now)}`
   return pace.verdict === 'on' ? 'on pace' : pace.verdict === 'under' ? 'plenty left' : null
 }
-/** The verdict beside the percent: a later run-out names only its weekday, the caret under the bar gives the time. */
+/** The verdict beside the percent: a later run-out names only its weekday or date, the caret under the bar gives the time. */
 function verdictShort(pace: AllowancePace, now: number) {
   if (pace.verdict !== 'ahead') return line([verdictText(pace, now)])
   const at = pace.runsOutAt!
-  return `Ahead · runs out ${at - now < DAY ? `in ~${span(at - now)}` : `~${weekday.format(at)}`}`
+  return `Ahead · runs out ${at - now < DAY ? `in ~${span(at - now)}` : `~${(at - now < WEEK ? weekday : date).format(at)}`}`
 }
 
 /**
@@ -92,7 +92,7 @@ function AllowanceRow({ row, now, awaitingUpdate = false, pending = false, off =
   const runsOut = pace.verdict === 'ahead' && pace.elapsedPercent !== null && percent > 0 ? pace.runsOutAt! : null
   // Share of the window at the run-out: the elapsed share scaled up to 100% used.
   const projection = runsOut === null ? null : { at: pace.elapsedPercent! * 100 / percent, tone: tone === 'error' ? 'error' as const : 'warning' as const,
-    label: `~${(runsOut - now < DAY ? clock : dayTime).format(runsOut)} · ${span(window.resetsAt! * 1000 - runsOut)} before reset` }
+    label: `~${runsOut - now < DAY ? clock.format(runsOut) : later(runsOut, now)} · ${span(window.resetsAt! * 1000 - runsOut)} before reset` }
   const Icon = VERDICT_ICON[pace.verdict]
   return <div className="uam-limit-row">
     <div className="uam-limit-row__label"><span className="uam-limit-row__name">{row.label}</span>
@@ -246,7 +246,8 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
     const window = row.window!, pace = row.pace!, reset = resetIn(window), percent = formatPercent(window.usedPercent)
     tone = barTone(window.usedPercent, pace)
     if (pace.verdict === 'ahead') {
-      title = `${entry.name} runs out first`
+      // "First" needs a second window in the running; on-pace windows are not projected to run out at all.
+      title = others.length ? `${entry.name} runs out first` : `${entry.name} is projected to run out`
       body = <>Its {inSentence(row)} is at <b style={{ color: TONE_TEXT[tone] }}>{percent}%</b> and will run out <b>{approx(pace.runsOutAt!, now)}</b>, {span(window.resetsAt! * 1000 - pace.runsOutAt!)} before it resets {reset}.</>
     } else if (window.usedPercent >= 80) {
       title = pace.verdict === 'out' ? `${entry.name} is used up` : `${entry.name} is close to its limit`
@@ -400,12 +401,17 @@ function span(ms: number) {
   return `${Math.round(hours / 24)}d`
 }
 const DAY = 86400000
+const WEEK = 7 * DAY
 const dayTime = new Intl.DateTimeFormat(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
 const weekday = new Intl.DateTimeFormat(undefined, { weekday: 'short' })
 const clock = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
-/** A future moment in words: relative within a day, otherwise its weekday and time. */
-const moment = (at: number, now: number) => at - now < DAY ? `in ${span(at - now)}` : dayTime.format(at)
-/** A projected moment, marked as approximate. */
-const approx = (at: number, now: number) => at - now < DAY ? `in ~${span(at - now)}` : `~${dayTime.format(at)}`
+const date = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' })
+const dateTime = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+/** A weekday can only mean the next one within a week; past that, a 30-day reset needs its date. */
+const later = (at: number, now: number) => (at - now < WEEK ? dayTime : dateTime).format(at)
+/** A future moment in words: relative within a day, otherwise its weekday or date and time. */
+const moment = (at: number, now: number) => at - now < DAY ? `in ${span(at - now)}` : later(at, now)
+/** A projected moment, marked as approximate, always saying how far off it is. */
+const approx = (at: number, now: number) => at - now < DAY ? `in ~${span(at - now)}` : `~${later(at, now)} (in ~${span(at - now)})`
 const relativeAgo = (at: number, now: number) => now - at < 60000 ? 'just now' : `${span(now - at)} ago`
 const compactTokens = (value: number) => value >= 1e6 ? `${+(value / 1e6).toFixed(1)}M` : value >= 1e3 ? `${+(value / 1e3).toFixed(1)}k` : `${value}`

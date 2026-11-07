@@ -410,6 +410,8 @@ describe('UsageLimits overview', () => {
   const dayTime = new Intl.DateTimeFormat(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
   const weekday = new Intl.DateTimeFormat(undefined, { weekday: 'short' })
   const clock = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
+  const dateTime = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+  const date = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' })
   const tokens = (providerId: UsageProviderId, totalTokens: number, available = true): UsageProvider => ({ ...EMPTY_USAGE_TOTALS, providerId, totalTokens, inputTokens: totalTokens, records: totalTokens ? 3 : 0, sessions: totalTokens ? 2 : 0, available, files: 1, errors: 0, invalidLines: 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 })
   const usage = (providers: UsageProvider[]): LimitsUsage => ({ providers, loading: false, collecting: false, error: '', days: 7 })
   async function render(providers: ProviderAllowanceSnapshot['providers'], history?: LimitsUsage, host = 'local') {
@@ -496,7 +498,7 @@ describe('UsageLimits overview', () => {
       expect(lede.querySelector('.uam-limits-lede__body')!.textContent).toBe('Its 5-hour window is at 96% and will run out in ~11m, 36m before it resets in 47m.')
       expect([...lede.querySelectorAll('.uam-limits-lede__more li')].map(li => li.textContent)).toEqual([
         'Gemini · Pro daily runs out in ~2h 39m, 6h 21m before it resets in 9h',
-        `Codex · Weekly runs out ~${dayTime.format(codexOut)}, 4d before it resets ${dayTime.format(now + 5 * day)}`,
+        `Codex · Weekly runs out ~${dayTime.format(codexOut)} (in ~32h), 4d before it resets ${dayTime.format(now + 5 * day)}`,
       ])
       expect(lede.querySelector('.uam-limits-lede__aside')!.textContent).toBe('9.8Mtokens in the past 7 days')
 
@@ -523,7 +525,7 @@ describe('UsageLimits overview', () => {
       expect(weekMeter.classList.contains('uam-meter--lg')).toBe(true)
       expect(Number(tick(codexWeek))).toBeCloseTo(2 / 7)
       expect(weekMeter.querySelector<HTMLElement>('.uam-meter__segments')!.style.getPropertyValue('--segments')).toBe('7')
-      expect(weekMeter.getAttribute('aria-valuetext')).toBe(`60% used · 29% of the window has passed · Ahead of pace · runs out ~${dayTime.format(codexOut)} · resets ${dayTime.format(now + 5 * day)}`)
+      expect(weekMeter.getAttribute('aria-valuetext')).toBe(`60% used · 29% of the window has passed · Ahead of pace · runs out ~${dayTime.format(codexOut)} (in ~32h) · resets ${dayTime.format(now + 5 * day)}`)
       const weekCaret = weekMeter.querySelector<HTMLElement>('.uam-meter__projection')!
       expect(weekCaret.textContent).toBe(`~${dayTime.format(codexOut)} · 4d before reset`)
       expect(Number(weekCaret.style.getPropertyValue('--at'))).toBeCloseTo(2 / 7 * 100 / 60)
@@ -570,7 +572,7 @@ describe('UsageLimits overview', () => {
       expect(rowOf(view.host, 'Gemini', 'Image requests').textContent).toContain('0% used')
 
       // Copilot: on pace (57% with 60% passed), and a spend-limit bar with no tick.
-      expect(rowOf(view.host, 'Copilot', 'Premium requests').textContent).toBe(`Premium requestsResets ${dayTime.format(now + 12 * day)}57% usedOn pace`)
+      expect(rowOf(view.host, 'Copilot', 'Premium requests').textContent).toBe(`Premium requestsResets ${dateTime.format(now + 12 * day)}57% usedOn pace`)
       const spend = rowOf(view.host, 'Copilot', 'Spend limit')
       expect(spend.textContent).toBe('Spend limit$2.40 of $10.0024% used')
       expect(spend.querySelector('[role="meter"]')!.getAttribute('aria-label')).toBe('Copilot spend limit usage')
@@ -585,6 +587,64 @@ describe('UsageLimits overview', () => {
       expect(opencode.querySelector('.uam-limit-card__facts')!.textContent).toBe('Account allowance is not available from this provider connection.')
       expect(card(view.host, 'Antigravity').querySelector('.uam-limit-card__meta')!.textContent).toBe('No usageNot signed in')
     } finally { view.close() }
+  })
+
+  it('dates a reset weeks away and claims no race when only one window is projected to run out', async () => {
+    // The 7 Nov report: a 30-day window 9d 13h 26m in at 80% and a weekly window 5d 18m in at 66%.
+    vi.useFakeTimers(); vi.setSystemTime(now)
+    const sec = now / 1000, minute = 60_000
+    const codexElapsed = (9 * 1440 + 13 * 60 + 26) * minute, codexStart = now - codexElapsed, codexReset = codexStart + 30 * 86_400_000
+    const codexOut = codexStart + codexElapsed * 100 / 80
+    const claudeReset = now + (2 * 1440 - 18) * minute
+    const view = await render([
+      { providerId: 'codex-cli', scope: 'local:codex', status: 'ready', error: '', limits: { ...allowance(sec), planType: 'free', primary: { usedPercent: 80, resetsAt: codexReset / 1000, windowDurationMinutes: 43200 } } },
+      { providerId: 'claude-cli', scope: 'local:claude', status: 'ready', error: '', limits: { ...allowance(sec), primary: null, secondary: { usedPercent: 66, resetsAt: claudeReset / 1000, windowDurationMinutes: 10080 } } },
+    ])
+    try {
+      const lede = view.host.querySelector<HTMLElement>('.uam-limits-lede')!
+      expect(lede.querySelector('.uam-limits-lede__title')!.textContent).toBe('Codex is projected to run out')
+      expect(lede.querySelector('.uam-limits-lede__body')!.textContent).toBe(`Its 30-day window is at 80% and will run out ~${dayTime.format(codexOut)} (in ~2d), 18d before it resets ${dateTime.format(codexReset)}.`)
+      expect(lede.querySelector('.uam-limits-lede__more')).toBeNull()
+      const row = rowOf(view.host, 'Codex', '30-day')
+      expect(row.querySelector('.uam-limit-row__reset')!.textContent).toBe(`Resets ${dateTime.format(codexReset)}`)
+      expect(row.querySelector('.uam-meter__projection')!.textContent).toBe(`~${dayTime.format(codexOut)} · 18d before reset`)
+      // Claude's straight line reaches 92% at its reset, so it is not in the running; a reset within the week keeps its weekday.
+      expect(rowOf(view.host, 'Claude', 'Weekly').textContent).toBe(`WeeklyResets ${dayTime.format(claudeReset)}66% usedPlenty left`)
+    } finally { view.close() }
+  })
+
+  it('dates a run-out more than a week away, beside the verdict and on the caret', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now)
+    const sec = now / 1000, day = 86_400_000, out = now + 10 * day
+    const view = await render([{ providerId: 'codex-cli', scope: 'local:codex', status: 'ready', error: '', limits: { ...allowance(sec), primary: { usedPercent: 50, resetsAt: sec + 20 * 86400, windowDurationMinutes: 43200 } } }])
+    try {
+      const row = rowOf(view.host, 'Codex', '30-day')
+      expect(row.querySelector('.uam-limit-row__value')!.textContent).toBe(`50% usedAhead · runs out ~${date.format(out)}`)
+      expect(row.querySelector('.uam-meter__projection')!.textContent).toBe(`~${dateTime.format(out)} · 10d before reset`)
+      expect(view.host.querySelector('.uam-limits-lede__body')!.textContent).toContain(`will run out ~${dateTime.format(out)} (in ~10d), 10d before it resets ${dateTime.format(now + 20 * day)}.`)
+    } finally { view.close() }
+  })
+
+  it('ranks windows of different lengths by when each runs out, not by length or percent', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now)
+    const sec = now / 1000
+    // A 30-day window 10 days in at 80% runs out in 2.5 days, whatever the weekly window beside it does.
+    const month = { ...allowance(sec), primary: { usedPercent: 80, resetsAt: sec + 20 * 86400, windowDurationMinutes: 43200 } }
+    const week = (usedPercent: number, daysIn: number) => ({ ...allowance(sec), primary: { usedPercent, resetsAt: sec + (7 - daysIn) * 86400, windowDurationMinutes: 10080 } })
+    const callout = async (weekly: AcpRateLimits) => {
+      const view = await render([
+        { providerId: 'codex-cli', scope: 'local:codex', status: 'ready', error: '', limits: month },
+        { providerId: 'claude-cli', scope: 'local:claude', status: 'ready', error: '', limits: weekly },
+      ])
+      const lede = view.host.querySelector('.uam-limits-lede')!
+      const shown = [lede.querySelector('.uam-limits-lede__title')!.textContent, lede.querySelector('.uam-limits-lede__more li b')!.textContent]
+      view.close(); clearProviderAllowanceCache()
+      return shown
+    }
+    // Weekly 5 days in at 90% runs out in about 0.6 days, before the 30-day window.
+    expect(await callout(week(90, 5))).toEqual(['Claude runs out first', 'Codex · 30-day'])
+    // Weekly 1 day in at 20% runs out in 4 days, after the 30-day window despite the sooner reset.
+    expect(await callout(week(20, 1))).toEqual(['Codex runs out first', 'Claude · Weekly'])
   })
 
   it('keeps a calm callout with no list when every window has room', async () => {
