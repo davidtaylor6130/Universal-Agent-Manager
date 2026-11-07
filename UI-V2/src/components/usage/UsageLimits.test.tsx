@@ -752,6 +752,41 @@ describe('UsageLimits overview', () => {
       // A used-up window on the stopped provider is not hidden by the stop in the headline.
       expect((await callout([codex({ spendControlReached: true, secondary: win(100, day, 10080) })])).more).toEqual([`Codex · Weekly is used up, resets ${dayTime.format(now + 86400000)}`])
     })
+    it('does not let a stop outlive its data or its windows', async () => {
+      const stop = { rateLimitReachedType: 'workspace_member_usage_limit_reached' }
+      const claude = ready('claude-cli', { primary: win(50, 5 * hour, 300) })
+      // Three days old, its reset two days past.
+      const old = ready('codex-cli', { primary: win(20, -2 * day, 300), updatedAt: now - 3 * day * 1000, ...stop })
+      expect((await callout([old])).title).toBe('Allowances are awaiting an update')
+      const beside = await callout([old, claude])
+      expect(beside.title).toBe('Use Claude first')
+      expect(beside.more).toEqual([])
+      expect(beside.tone).toBeNull()
+      // Old alone, with a reset still to come.
+      const aged = await callout([ready('codex-cli', { primary: win(20, hour, 300), updatedAt: now - 3 * day * 1000, ...stop })])
+      expect(aged.title).not.toContain('usage limit')
+      expect(aged.tone).toBeNull()
+      // Kept through a failed read.
+      expect((await callout([{ ...ready('codex-cli', { primary: win(20, hour, 300), ...stop }), status: 'error', error: 'Timed out' }, claude])).more).toEqual([])
+      // Current data with every reset passed; one window still running keeps the stop.
+      const lapsed = await callout([ready('codex-cli', { primary: win(20, -hour, 300), ...stop })])
+      expect(lapsed.title).toBe('Allowances are awaiting an update')
+      expect(lapsed.tone).toBeNull()
+      expect((await callout([ready('codex-cli', { primary: win(20, -hour, 300), secondary: win(20, day, 10080), ...stop })])).title).toBe('Codex has reached its usage limit')
+      // No windows to judge by: the stop stands.
+      expect((await callout([ready('codex-cli', { spendControlReached: true })])).title).toBe('Codex has reached its spend limit')
+    })
+    it('says under a minute rather than rounding the last seconds up', async () => {
+      const at = async (seconds: number) => {
+        const view = await render([ready('codex-cli', { primary: win(50, seconds, 300) })])
+        const shown = [view.host.querySelector('.uam-limits-lede__body')!.textContent, view.host.querySelector('.uam-limit-row__reset')!.textContent]
+        view.close(); clearProviderAllowanceCache()
+        return shown
+      }
+      expect(await at(1)).toEqual(['It has 50% of its 5-hour window left, resetting in under 1m.', 'Resets in under 1m'])
+      expect(await at(59)).toEqual(['It has 50% of its 5-hour window left, resetting in under 1m.', 'Resets in under 1m'])
+      expect(await at(60)).toEqual(['It has 50% of its 5-hour window left, resetting in 1m.', 'Resets in 1m'])
+    })
     it('recommends only from a current snapshot', async () => {
       const soon = { primary: win(20, hour, 300) }
       const other = ready('claude-cli', { primary: win(50, 5 * hour, 300) })
@@ -764,18 +799,65 @@ describe('UsageLimits overview', () => {
       expect(await title({ ...ready('codex-cli', soon), status: 'error', error: 'Timed out' })).toBe('Use Claude first')
       expect(await title({ ...ready('codex-cli', soon), status: 'unavailable' })).toBe('Use Claude first')
     })
-    it('does not let a failed read flip back to recommended while it reads again', async () => {
-      const providers = (status: 'ready' | 'error' | 'loading') => [{ ...ready('codex-cli', { primary: win(20, hour, 300) }), status, error: status === 'error' ? 'Timed out' : '' }]
-      const view = await render(providers('error'))
-      const title = () => view.host.querySelector('.uam-limits-lede__title')!.textContent
-      try {
-        expect(title()).not.toMatch(/first/)
-        // The native service clears the error and reports loading on each retry.
-        window.cefQuery = request => request.onSuccess(JSON.stringify({ executionHostId: 'local', refreshing: true, providers: providers('loading') }))
-        await act(async () => { await vi.advanceTimersByTimeAsync(31_000) })
-        expect(view.host.querySelector('.uam-limit-card__meta')!.textContent).not.toContain('Timed out')
-        expect(view.host.querySelector('.uam-limits-lede__title')!.textContent).not.toMatch(/first/)
-      } finally { view.close() }
+    describe('through a sequence of reads', () => {
+      const reply = (providers: ProviderAllowanceSnapshot['providers']) => { window.cefQuery = request => request.onSuccess(JSON.stringify({ executionHostId: 'local', refreshing: true, providers })) }
+      const poll = () => act(async () => { await vi.advanceTimersByTimeAsync(31_000) })
+      const title = (host: HTMLElement) => host.querySelector('.uam-limits-lede__title')!.textContent
+      const codex = (status: 'ready' | 'error' | 'loading') => ({ ...ready('codex-cli', { primary: win(20, hour, 300) }), status, error: status === 'error' ? 'Timed out' : '' })
+
+      it('does not let a failed read flip back to recommended while it reads again', async () => {
+        const view = await render([codex('error')])
+        try {
+          expect(view.host.textContent).toContain('Timed out')
+          expect(title(view.host)).not.toMatch(/first/)
+          // The native service clears the error and reports loading on each retry.
+          reply([codex('loading')])
+          await poll()
+          expect(view.host.textContent).not.toContain('Timed out')
+          expect(title(view.host)).not.toMatch(/first/)
+        } finally { view.close() }
+      })
+      it('keeps a read that failed after a good one out through its retry', async () => {
+        const view = await render([codex('ready')])
+        try {
+          expect(title(view.host)).toBe('Use Codex first')
+          reply([codex('error')])
+          await poll()
+          expect(view.host.textContent).toContain('Timed out')
+          expect(title(view.host)).not.toMatch(/first/)
+          reply([codex('loading')])
+          await poll()
+          expect(view.host.textContent).not.toContain('Timed out')
+          expect(title(view.host)).not.toMatch(/first/)
+          // A later good read brings it back.
+          reply([codex('ready')])
+          await poll()
+          expect(title(view.host)).toBe('Use Codex first')
+        } finally { view.close() }
+      })
+      it('drops the recommendation when the bridge fails after a good read', async () => {
+        const view = await render([codex('ready')])
+        try {
+          expect(title(view.host)).toBe('Use Codex first')
+          window.cefQuery = request => request.onFailure(500, 'Bridge failed')
+          await poll()
+          expect(view.host.textContent).toContain('Bridge failed')
+          expect(title(view.host)).not.toMatch(/first/)
+        } finally { view.close() }
+      })
+      it('remembers each provider\'s own last read', async () => {
+        // Claude would need more per hour, but its last read failed; Codex's succeeded.
+        const claude = (status: 'error' | 'loading') => ({ ...ready('claude-cli', { primary: win(10, hour, 300) }), status, error: status === 'error' ? 'Timed out' : '' })
+        const slowCodex = (status: 'ready' | 'loading') => ({ ...ready('codex-cli', { primary: win(50, 5 * hour, 300) }), status })
+        const view = await render([slowCodex('ready'), claude('error')])
+        try {
+          expect(title(view.host)).toBe('Use Codex first')
+          reply([slowCodex('loading'), claude('loading')])
+          await poll()
+          expect(view.host.textContent).not.toContain('Timed out')
+          expect(title(view.host)).toBe('Use Codex first')
+        } finally { view.close() }
+      })
     })
     it('holds the recommendation through an ordinary re-read, and drops it past the grace period', async () => {
       const providers = (status: 'ready' | 'loading') => [{ ...ready('codex-cli', { primary: win(20, 2 * hour, 300) }), status }]

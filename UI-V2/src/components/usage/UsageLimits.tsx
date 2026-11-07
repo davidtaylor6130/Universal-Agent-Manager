@@ -249,14 +249,16 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
   const readable = entries.flatMap(entry => entry.rows.filter(row => row.pace).map(row => ({ entry, row })))
   const resetLive = (row: WindowRow) => row.window!.resetsAt === null || row.window!.resetsAt * 1000 > now
   const capped = (entry: typeof entries[number], row: WindowRow) => isTimeWindow(row) && entry.rows.some(other => other !== row && isTimeWindow(other) && resetLive(other) && 100 - other.window!.usedPercent < MIN_LEFT_TO_USE_FIRST)
-  const useFirst = readable.filter(({ entry, row }) => canRecommendFrom(entry.allowance, Boolean(account.error), now) && !reportedStop(entry.allowance?.limits) && !capped(entry, row) && (row.window!.resetsAt ?? 0) * 1000 > now && 100 - row.window!.usedPercent >= MIN_LEFT_TO_USE_FIRST)
+  // A stop needs the same proof as a recommendation: native keeps these fields through failed reads. It has no reset of its own, so it lapses with its provider's windows.
+  const currentStop = (entry: typeof entries[number]) => canRecommendFrom(entry.allowance, Boolean(account.error), now) && (!entry.rows.some(row => row.pace) || entry.rows.some(row => row.pace && resetLive(row))) ? reportedStop(entry.allowance?.limits) : null
+  const useFirst = readable.filter(({ entry, row }) => canRecommendFrom(entry.allowance, Boolean(account.error), now) && !currentStop(entry) && !capped(entry, row) && (row.window!.resetsAt ?? 0) * 1000 > now && 100 - row.window!.usedPercent >= MIN_LEFT_TO_USE_FIRST)
     .sort((a, b) => neededRate(b.row, now) - neededRate(a.row, now) || a.row.window!.usedPercent - b.row.window!.usedPercent)[0]
-  const stoppedEntry = useFirst ? undefined : entries.find(entry => reportedStop(entry.allowance?.limits))
+  const stoppedEntry = useFirst ? undefined : entries.find(currentStop)
   // A reset that has passed says nothing about now, so its window cannot be called used up or close to its limit.
   const top = useFirst ?? readable.filter(({ row }) => resetLive(row)).sort((a, b) => b.row.window!.usedPercent - a.row.window!.usedPercent)[0]
   // What cannot be spent stays in view under the headline; ahead-of-pace windows speak on their own rows.
   const others = [
-    ...entries.filter(entry => reportedStop(entry.allowance?.limits)).map(entry => ({ entry, row: null })),
+    ...entries.filter(currentStop).map(entry => ({ entry, row: null })),
     ...readable.filter(({ row }) => resetLive(row) && row.pace!.verdict === 'out'),
   ].filter(item => stoppedEntry ? item.row || item.entry !== stoppedEntry : item.row !== top?.row).slice(0, 2)
   const resetIn = (window: AcpRateLimitWindow) => window.resetsAt !== null && window.resetsAt * 1000 > now ? moment(window.resetsAt * 1000, now) : null
@@ -436,6 +438,8 @@ function span(ms: number) {
   if (hours < 48) return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`
   return `${Math.round(hours / 24)}d`
 }
+/** How far off an exact moment is, without rounding the last seconds up to a minute. */
+const inSpan = (ms: number) => ms < 60000 ? 'in under 1m' : `in ${span(ms)}`
 const DAY = 86400000
 const WEEK = 7 * DAY
 const dayTime = new Intl.DateTimeFormat(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
@@ -446,14 +450,14 @@ const dateTime = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'sh
 /** A weekday can only mean the next one within a week; past that, a 30-day reset needs its date. */
 const later = (at: number, now: number) => (at - now < WEEK ? dayTime : dateTime).format(at)
 /** A future moment in words: relative within a day, otherwise its weekday or date and time. */
-const moment = (at: number, now: number) => at - now < DAY ? `in ${span(at - now)}` : later(at, now)
+const moment = (at: number, now: number) => at - now < DAY ? inSpan(at - now) : later(at, now)
 /** How far off a projected moment is: minutes only under 3 hours, and days rounded down so 60h beside a weekday reads ~2d. */
 function roughSpan(ms: number) {
   const hours = Math.floor(ms / 3600000)
   return hours < 3 ? span(ms) : hours < 48 ? `${hours}h` : `${Math.floor(hours / 24)}d`
 }
 /** A known reset that the reader may lose allowance to, always saying how far off it is. */
-const resetWhen = (at: number, now: number) => at - now < DAY ? `in ${span(at - now)}` : `${later(at, now)} (in ~${roughSpan(at - now)})`
+const resetWhen = (at: number, now: number) => at - now < DAY ? inSpan(at - now) : `${later(at, now)} (in ~${roughSpan(at - now)})`
 /** A projected moment, marked as approximate, always saying how far off it is. */
 const approx = (at: number, now: number) => at - now < DAY ? `in ~${roughSpan(at - now)}` : `~${later(at, now)} (in ~${roughSpan(at - now)})`
 const relativeAgo = (at: number, now: number) => now - at < 60000 ? 'just now' : `${span(now - at)} ago`
