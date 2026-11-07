@@ -131,6 +131,8 @@ function windowRows(provider: UsageProviderId, name: string, allowance: Provider
   return rows.every(row => !row.window && !row.unlimited && row.label === 'Allowance') ? rows.slice(0, 1) : rows
 }
 
+/** The share left to use per millisecond before the window resets. Only for a future reset. */
+const neededRate = (row: WindowRow, now: number) => (100 - row.window!.usedPercent) / (row.window!.resetsAt! * 1000 - now)
 /** Least share left, in percent, for a window to be worth using first; with less there is little to lose at its reset. */
 const MIN_LEFT_TO_USE_FIRST = 10
 /** A window whose provider reports its length. These nest: a 5-hour allowance is spent from the weekly one. Quotas with no length (model buckets, Copilot's chat and completions) stand alone. */
@@ -242,13 +244,13 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
     return { provider, name, allowance, rows: windowRows(provider, name, allowance, now), off }
   })
 
-  // Use it or lose it: the soonest reset among current windows with allowance left that can still be spent. A time window
+  // Use it or lose it: the most you need to use in the shortest time, among current windows with allowance left that can still be spent. A time window
   // is capped by any other time window on its provider that has run low, unless that one's reset has passed. On a tie, the most left.
   const readable = entries.flatMap(entry => entry.rows.filter(row => row.pace).map(row => ({ entry, row })))
   const resetLive = (row: WindowRow) => row.window!.resetsAt === null || row.window!.resetsAt * 1000 > now
   const capped = (entry: typeof entries[number], row: WindowRow) => isTimeWindow(row) && entry.rows.some(other => other !== row && isTimeWindow(other) && resetLive(other) && 100 - other.window!.usedPercent < MIN_LEFT_TO_USE_FIRST)
   const useFirst = readable.filter(({ entry, row }) => canRecommendFrom(entry.allowance, Boolean(account.error), now) && !reportedStop(entry.allowance?.limits) && !capped(entry, row) && (row.window!.resetsAt ?? 0) * 1000 > now && 100 - row.window!.usedPercent >= MIN_LEFT_TO_USE_FIRST)
-    .sort((a, b) => a.row.window!.resetsAt! - b.row.window!.resetsAt! || a.row.window!.usedPercent - b.row.window!.usedPercent)[0]
+    .sort((a, b) => neededRate(b.row, now) - neededRate(a.row, now) || a.row.window!.usedPercent - b.row.window!.usedPercent)[0]
   const stoppedEntry = useFirst ? undefined : entries.find(entry => reportedStop(entry.allowance?.limits))
   // A reset that has passed says nothing about now, so its window cannot be called used up or close to its limit.
   const top = useFirst ?? readable.filter(({ row }) => resetLive(row)).sort((a, b) => b.row.window!.usedPercent - a.row.window!.usedPercent)[0]

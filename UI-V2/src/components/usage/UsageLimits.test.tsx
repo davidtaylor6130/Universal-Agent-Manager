@@ -491,7 +491,7 @@ describe('UsageLimits overview', () => {
       const geminiOut = now - 15 * hour + 15 * hour * 100 / 85
       const codexOut = now - 2 * day + 2 * day * 100 / 60
 
-      // Callout: the soonest reset with allowance left (Claude's 5-hour resets sooner but has only 4% left), with the period token total aside.
+      // Callout: the highest rate needed with allowance left (Claude's 5-hour would need more but has only 4% left), with the period token total aside.
       const lede = view.host.querySelector<HTMLElement>('.uam-limits-lede')!
       expect(lede.dataset.tone).toBeUndefined()
       expect(lede.querySelector('.uam-limits-lede__title')!.textContent).toBe('Use Codex first')
@@ -658,26 +658,32 @@ describe('UsageLimits overview', () => {
     }
     beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(now) })
 
-    it('(a) ranks a weekly window resetting in 2 days above a 30-day window resetting in 20 days, despite its lower use', async () => {
-      const reset = now + (2 * 86400 - 18 * 60) * 1000
+    it('(a) ranks 34% left in 46 hours above 20% left in 490 hours', async () => {
       const shown = await callout([
-        ready('codex-cli', { primary: win(80, 20 * day + 10 * hour, 43200) }),
-        ready('claude-cli', { secondary: win(66, 2 * day - 18 * 60, 10080) }, { primaryLabel: '5-hour allowance', secondaryLabel: 'Weekly allowance' }),
+        ready('codex-cli', { primary: win(80, 490 * hour, 43200) }),
+        ready('claude-cli', { secondary: win(66, 46 * hour, 10080) }, { primaryLabel: '5-hour allowance', secondaryLabel: 'Weekly allowance' }),
       ])
       expect(shown.title).toBe('Use Claude first')
-      expect(shown.body).toBe(`It has 34% of its weekly allowance left, resetting ${dayTime.format(reset)} (in ~47h).`)
+      expect(shown.body).toBe(`It has 34% of its weekly allowance left, resetting ${dayTime.format(now + 46 * 3600000)} (in ~46h).`)
     })
-    it('(b) ranks 5 hours to reset with 50% left above a weekly window with 80% left resetting in 3 days, naming the one chosen', async () => {
+    it('(b) ranks 50% left in 5 hours above 80% left in 3 days, naming the one chosen', async () => {
       const shown = await callout([ready('claude-cli', { primary: win(50, 5 * hour, 300), secondary: win(20, 3 * day, 10080) })])
       expect(shown.title).toBe('Use Claude first')
       expect(shown.body).toBe('It has 50% of its 5-hour window left, resetting in 5h.')
     })
-    it('(c) does not let 1 hour to reset with 5% left beat 5 hours to reset with 50% left', async () => {
-      const shown = await callout([ready('codex-cli', { primary: win(95, hour, 300) }), ready('claude-cli', { primary: win(50, 5 * hour, 300) })])
-      expect(shown.title).toBe('Use Claude first')
+    it('(c) ranks by the rate needed, not by the most left or the soonest reset', async () => {
+      const fiveHours = ready('claude-cli', { primary: win(50, 5 * hour, 300) })
+      // 90% left in 10 hours needs 9% an hour, under the 10% an hour of 50% left in 5 hours, despite having more left.
+      expect((await callout([ready('codex-cli', { primary: win(10, 10 * hour, 600) }), fiveHours])).title).toBe('Use Claude first')
+      // 12% left in 2 hours needs 6% an hour, under 10% an hour, despite resetting sooner.
+      expect((await callout([ready('codex-cli', { primary: win(88, 2 * hour, 300) }), fiveHours])).title).toBe('Use Claude first')
+      // 5% left in 10 minutes needs 30% an hour, yet is under the minimum left.
+      expect((await callout([ready('codex-cli', { primary: win(95, 600, 300) }), fiveHours])).title).toBe('Use Claude first')
+      // A higher rate wins over a later reset.
+      expect((await callout([ready('codex-cli', { primary: win(50, 5 * hour, 300) }), ready('claude-cli', { primary: win(80, 2 * hour, 300) }) ])).title).toBe('Use Codex first')
     })
     it('counts exactly the minimum left as usable and just under it as not', async () => {
-      const other = ready('claude-cli', { primary: win(50, 5 * hour, 300) })
+      const other = ready('claude-cli', { primary: win(50, 6 * hour, 300) })
       expect((await callout([ready('codex-cli', { primary: win(90, hour, 300) }), other])).title).toBe('Use Codex first')
       expect((await callout([ready('codex-cli', { primary: win(90.1, hour, 300) }), other])).title).toBe('Use Claude first')
     })
@@ -788,8 +794,9 @@ describe('UsageLimits overview', () => {
         expect(title()).not.toMatch(/first/)
       } finally { view.close() }
     })
-    it('breaks a tie on reset by the most left', async () => {
-      expect((await callout([ready('codex-cli', { primary: win(60, 5 * hour, 300) }), ready('claude-cli', { primary: win(20, 5 * hour, 300) })])).title).toBe('Use Claude first')
+    it('breaks a tie on the rate needed by the most left', async () => {
+      // 20% left in 2 hours and 50% left in 5 hours both need 10% an hour.
+      expect((await callout([ready('codex-cli', { primary: win(80, 2 * hour, 300) }), ready('claude-cli', { primary: win(50, 5 * hour, 300) })])).title).toBe('Use Claude first')
     })
     it('lists at most two windows that cannot be spent, and not the one in the headline', async () => {
       const shown = await callout([ready('codex-cli', { primary: win(100, hour, 300) }), ready('claude-cli', { primary: win(100, hour, 300) }), ready('copilot-cli', { primary: win(100, hour, null) }), ready('antigravity-cli', { primary: win(50, day, 1440) })])

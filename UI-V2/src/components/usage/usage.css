@@ -316,7 +316,7 @@
   animation: uam-usage-grow-x var(--dur-base) var(--ease-out-soft) both;
 }
 
-/* Limits: a callout naming the soonest run-out, the section label with refresh and a small key, then one always-open
+/* Limits: a callout naming the allowance to use first, the section label with refresh and a small key, then one always-open
    card per provider. Each window row is name and reset | bar (the ProgressFill meter variant, lg) | percent and verdict;
    the fixed side columns keep bars aligned down the page. Unreadable providers are greyed cards, two to a row. */
 .uam-limits { gap: var(--sp-5); }
