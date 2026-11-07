@@ -750,8 +750,10 @@ describe('UsageLimits overview', () => {
       const soon = { primary: win(20, hour, 300) }
       const other = ready('claude-cli', { primary: win(50, 5 * hour, 300) })
       const title = async (codex: ProviderAllowanceSnapshot['providers'][number]) => (await callout([codex, other])).title
-      expect(await title(ready('codex-cli', { ...soon, updatedAt: now - 299_000 }))).toBe('Use Codex first')
-      expect(await title(ready('codex-cli', { ...soon, updatedAt: now - 300_000 }))).toBe('Use Claude first')
+      expect(await title(ready('codex-cli', { ...soon, updatedAt: now - 359_000 }))).toBe('Use Codex first')
+      expect(await title(ready('codex-cli', { ...soon, updatedAt: now - 360_000 }))).toBe('Use Claude first')
+      // Loading with no read seen yet, as at launch from the saved cache, is not known to be good.
+      expect(await title({ ...ready('codex-cli', soon), status: 'loading' })).toBe('Use Claude first')
       expect(await title(ready('codex-cli', { ...soon, updatedAt: now + 60_000 }))).toBe('Use Claude first')
       expect(await title({ ...ready('codex-cli', soon), status: 'error', error: 'Timed out' })).toBe('Use Claude first')
       expect(await title({ ...ready('codex-cli', soon), status: 'unavailable' })).toBe('Use Claude first')
@@ -767,6 +769,23 @@ describe('UsageLimits overview', () => {
         await act(async () => { await vi.advanceTimersByTimeAsync(31_000) })
         expect(view.host.querySelector('.uam-limit-card__meta')!.textContent).not.toContain('Timed out')
         expect(view.host.querySelector('.uam-limits-lede__title')!.textContent).not.toMatch(/first/)
+      } finally { view.close() }
+    })
+    it('holds the recommendation through an ordinary re-read, and drops it past the grace period', async () => {
+      const providers = (status: 'ready' | 'loading') => [{ ...ready('codex-cli', { primary: win(20, 2 * hour, 300) }), status }]
+      const view = await render(providers('ready'))
+      const title = () => view.host.querySelector('.uam-limits-lede__title')!.textContent
+      try {
+        expect(title()).toBe('Use Codex first')
+        // Past 5 minutes, before the next poll has started a read.
+        await act(async () => { await vi.advanceTimersByTimeAsync(301_000) })
+        expect(view.host.querySelector('.uam-limit-card__meta')!.textContent).toContain('Cached snapshot')
+        expect(title()).toBe('Use Codex first')
+        window.cefQuery = request => request.onSuccess(JSON.stringify({ executionHostId: 'local', refreshing: true, providers: providers('loading') }))
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+        expect(title()).toBe('Use Codex first')
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+        expect(title()).not.toMatch(/first/)
       } finally { view.close() }
     })
     it('breaks a tie on reset by the most left', async () => {

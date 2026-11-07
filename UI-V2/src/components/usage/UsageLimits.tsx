@@ -138,8 +138,14 @@ const isTimeWindow = (row: WindowRow) => !!row.pace && !!row.window!.windowDurat
 /** The provider's own stop, which holds whatever its windows say. */
 const reportedStop = (limits: AcpRateLimits | null | undefined) => limits?.spendControlReached ? 'spend limit' : limits?.rateLimitReachedType ? 'usage limit' : null
 const validUpdateTime = (limits: AcpRateLimits | null | undefined, now: number) => Boolean(limits && limits.updatedAt > 0 && limits.updatedAt <= now && Number.isFinite(new Date(limits.updatedAt).getTime()))
+const CACHED_AFTER_MS = 300000
 /** A cached rather than current snapshot: a failed refresh, a read not settled as ready, no valid time, or 5 minutes old. */
-const snapshotStale = (allowance: ProviderAllowance | undefined, refreshFailed: boolean, now: number) => refreshFailed || allowance?.status !== 'ready' || !validUpdateTime(allowance?.limits, now) || now - allowance!.limits!.updatedAt >= 300000
+const snapshotStale = (allowance: ProviderAllowance | undefined, refreshFailed: boolean, now: number) => refreshFailed || allowance?.status !== 'ready' || !validUpdateTime(allowance?.limits, now) || now - allowance!.limits!.updatedAt >= CACHED_AFTER_MS
+/** How long past the cached age a recommendation holds, to cover the 30-second poll and the read it starts. */
+const RE_READ_GRACE_MS = 60000
+/** Current enough to recommend from: read successfully, even if being read again, and within the grace period. A failed read stays out until one succeeds. */
+const canRecommendFrom = (allowance: ProviderAllowance | undefined, refreshFailed: boolean, now: number) => !refreshFailed && validUpdateTime(allowance?.limits, now) && now - allowance!.limits!.updatedAt < CACHED_AFTER_MS + RE_READ_GRACE_MS
+  && (allowance?.status === 'ready' || (allowance?.status === 'loading' && allowance.lastSettledStatus === 'ready'))
 
 /** A short reason for an unreadable allowance. The native message stays whole in the card footer. */
 function shortReason(allowance: ProviderAllowance | undefined, name: string): string {
@@ -241,7 +247,7 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
   const readable = entries.flatMap(entry => entry.rows.filter(row => row.pace).map(row => ({ entry, row })))
   const resetLive = (row: WindowRow) => row.window!.resetsAt === null || row.window!.resetsAt * 1000 > now
   const capped = (entry: typeof entries[number], row: WindowRow) => isTimeWindow(row) && entry.rows.some(other => other !== row && isTimeWindow(other) && resetLive(other) && 100 - other.window!.usedPercent < MIN_LEFT_TO_USE_FIRST)
-  const useFirst = readable.filter(({ entry, row }) => !snapshotStale(entry.allowance, Boolean(account.error), now) && !reportedStop(entry.allowance?.limits) && !capped(entry, row) && (row.window!.resetsAt ?? 0) * 1000 > now && 100 - row.window!.usedPercent >= MIN_LEFT_TO_USE_FIRST)
+  const useFirst = readable.filter(({ entry, row }) => canRecommendFrom(entry.allowance, Boolean(account.error), now) && !reportedStop(entry.allowance?.limits) && !capped(entry, row) && (row.window!.resetsAt ?? 0) * 1000 > now && 100 - row.window!.usedPercent >= MIN_LEFT_TO_USE_FIRST)
     .sort((a, b) => a.row.window!.resetsAt! - b.row.window!.resetsAt! || a.row.window!.usedPercent - b.row.window!.usedPercent)[0]
   const stoppedEntry = useFirst ? undefined : entries.find(entry => reportedStop(entry.allowance?.limits))
   // A reset that has passed says nothing about now, so its window cannot be called used up or close to its limit.
