@@ -316,7 +316,7 @@
   animation: uam-usage-grow-x var(--dur-base) var(--ease-out-soft) both;
 }
 
-/* Limits: a callout naming the soonest run-out, the section label with refresh and a small key, then one always-open
+/* Limits: a callout naming the allowance to use first, the section label with refresh and a small key, then one always-open
    card per provider. Each window row is name and reset | bar (the ProgressFill meter variant, lg) | percent and verdict;
    the fixed side columns keep bars aligned down the page. Unreadable providers are greyed cards, two to a row. */
 .uam-limits { gap: var(--sp-5); }
@@ -331,7 +331,6 @@
 .uam-limits-lede__more { display: grid; gap: 6px; margin: var(--sp-3) 0 0; padding: var(--sp-3) 0 0; border-top: 1px solid var(--border); list-style: none; }
 .uam-limits-lede__more li { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-sm); color: var(--text-2); }
 .uam-limits-lede__more b { font-weight: 500; color: var(--text); }
-.uam-limits-lede__when { font-weight: 500; font-variant-numeric: tabular-nums; color: var(--warning-text); }
 .uam-limits-lede__aside { margin: 0; text-align: right; white-space: nowrap; font-size: var(--fs-sm); color: var(--text-3); }
 .uam-limits-lede__aside strong { display: block; font-size: var(--fs-lg); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); }
 
@@ -373,9 +372,11 @@
 .uam-limits-facts dd { margin: 0; color: var(--text-2); }
 .uam-limit-context { display: flex; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-2); border-radius: var(--r-sm); font-size: var(--fs-sm); color: var(--text-2); }
 
-.uam-limit-row { display: grid; grid-template-columns: 10.5rem minmax(0, 1fr) 11rem; align-items: center; gap: var(--sp-5); padding: var(--sp-3) 0; border-top: 1px solid var(--border); }
+.uam-limit-row { display: grid; grid-template-columns: 10.5rem minmax(0, 1fr) 13rem; align-items: center; gap: var(--sp-5); padding: var(--sp-3) 0; border-top: 1px solid var(--border); }
 .uam-limit-card__head + .uam-limit-row { border-top: 0; }
 .uam-limit-row__label { display: grid; min-width: 0; }
+.uam-limit-row__title { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--sp-2); min-width: 0; }
+.uam-limit-row__marker { text-transform: none; }
 .uam-limit-row__name { font-size: var(--fs-base); font-weight: 500; color: var(--text); overflow-wrap: anywhere; }
 .uam-limit-row__reset { margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; color: var(--text-3); }
 .uam-limit-row__bar { position: relative; min-width: 0; padding: 6px 0; }
