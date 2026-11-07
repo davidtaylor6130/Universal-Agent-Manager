@@ -19,6 +19,7 @@
 #include "common/chat/chat_branching.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "computer_use_terminal_runtime_fixture.h"
+#include "app/chat_lifecycle_service.h"
 #include "include/cef_app.h"
 #include "include/cef_task.h"
 #include "include/cef_client.h"
@@ -969,6 +970,100 @@ UAM_TEST(ComputerUseGlobalSettingsSaveFailurePreservesCapturedAuthority)
 	const nlohmann::json receipt = nlohmann::json::parse(read->success_message);
 	UAM_ASSERT(receipt.at("computerUseGloballyEnabled").get<bool>());
 	UAM_ASSERT(!receipt.at("computerUseRevocationPending").get<bool>());
+}
+
+UAM_TEST(ChoosingAModelAfterSwitchAnywaySucceedsWhileTheHelperRetires)
+{
+	TempDir temp("uam-set-model-while-retiring");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ExecutionHost host;
+	host.id = "ssh-offline"; host.transport = "ssh"; host.ssh_alias = "offline"; host.platform = "linux";
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat = HandlerChat("retiring-model");
+	chat.provider_id = "gemini-cli";
+	chat.execution_host_id = host.id;
+	chat.remote_process_exists = true;
+	chat.remote_process_control_token = "old-helper-token";
+	chat.remote_active_turn_id = "uncertain-remote-turn";
+	app.chats.push_back(chat);
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "uam://app/index.html");
+	auto& handler = *handler_owner;
+	CefRefPtr<RecordingIconCallback> switched = new RecordingIconCallback;
+	UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(handler, "setChatProvider", {{"chatId", chat.id}, {"providerId", "claude-cli"}, {"allowUncertainDelivery", true}}, switched));
+	UAM_ASSERT_EQ(switched->successes, 1);
+	UAM_ASSERT(app.chats.front().remote_stop_cleanup_pending);
+	const uam::AcpSessionState* retiring = uam::FindAcpSessionForChat(app, chat.id);
+	UAM_ASSERT(retiring != nullptr && retiring->remote_stop_unconfirmed && uam::AcpStopInProgress(app, chat.id));
+	CefRefPtr<RecordingIconCallback> model = new RecordingIconCallback;
+	UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(handler, "setChatModel", {{"chatId", chat.id}, {"modelId", "sonnet"}}, model));
+	UAM_ASSERT_EQ(model->failures, 0);
+	UAM_ASSERT_EQ(model->successes, 1);
+	UAM_ASSERT_EQ(app.chats.front().model_id, std::string("sonnet"));
+	UAM_ASSERT(app.chats.front().remote_stop_cleanup_pending);
+}
+
+UAM_TEST(SetChatProviderBridgeNeedsExplicitUncertainDeliveryOverride)
+{
+	TempDir temp("uam-set-provider-uncertain-delivery");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat = HandlerChat("uncertain-delivery");
+	chat.provider_id = "gemini-cli";
+	chat.remote_active_turn_id = "uncertain-remote-turn";
+	app.chats.push_back(chat);
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "uam://app/index.html");
+	auto& handler = *handler_owner;
+	nlohmann::json payload = {{"chatId", chat.id}, {"providerId", "claude-cli"}};
+	CefRefPtr<RecordingIconCallback> refused = new RecordingIconCallback;
+	UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(handler, "setChatProvider", payload, refused));
+	UAM_ASSERT_EQ(refused->last_failure, 409);
+	UAM_ASSERT_EQ(app.chats.front().provider_id, std::string("gemini-cli"));
+	payload["allowUncertainDelivery"] = true;
+	CefRefPtr<RecordingIconCallback> accepted = new RecordingIconCallback;
+	UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(handler, "setChatProvider", payload, accepted));
+	UAM_ASSERT_EQ(accepted->successes, 1);
+	UAM_ASSERT_EQ(app.chats.front().provider_id, std::string("claude-cli"));
+	UAM_ASSERT(app.chats.front().remote_active_turn_id.empty() && !uam::ChatHasUncertainRemoteInput(app.chats.front()));
+}
+
+UAM_TEST(RenameRemoteFolderRefusesWhenIdleTerminalStopIsNotConfirmed)
+{
+	TempDir temp("uam-rename-folder-terminal-stop-fails");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {{"homelab", "Homelab", "/srv/homelab", false, "ssh-homelab"}};
+	ExecutionHost host;
+	host.id = "ssh-homelab"; host.ssh_alias = "homelab"; host.platform = "linux";
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat = HandlerChat("remote-stuck-terminal");
+	chat.folder_id = "homelab";
+	chat.execution_host_id = "ssh-homelab";
+	chat.workspace_directory = "/srv/homelab";
+	chat.native_session_id = "old-directory-session";
+	chat.messages.push_back({MessageRole::User, "Keep this conversation", "now"});
+	app.chats.push_back(chat);
+	ComputerUseTerminalRuntimeFixture runtime;
+	runtime.AddTerminal(app, chat.id);
+	app.cli_terminals.front()->attached_session_id = "old-directory-session";
+	app.cli_terminals.front()->lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+
+	UAM_ASSERT(!RenameFolderById(app, "homelab", "Homelab", "/srv/moved"));
+	UAM_ASSERT_EQ(runtime.StopCount(chat.id), 1);
+	UAM_ASSERT_EQ(app.folders.front().directory, std::string("/srv/homelab"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_directory, std::string("/srv/homelab"));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("old-directory-session"));
+	UAM_ASSERT(!app.chats.front().native_session_reset_pending);
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(temp.root, chat.id).has_value());
+
+	// The retried stop confirms the exit, as terminal cleanup does on a later poll.
+	runtime.ConfirmExit(chat.id);
+	UAM_ASSERT(uam::StopAndEraseCliTerminalForChat(app, chat.id, false));
+	UAM_ASSERT(RenameFolderById(app, "homelab", "Homelab", "/srv/moved"));
+	UAM_ASSERT(app.cli_terminals.empty());
+	UAM_ASSERT(app.chats.front().native_session_id.empty() && app.chats.front().native_session_reset_pending);
 }
 
 UAM_TEST(ComputerUseHandlerOffWriteFailureCannotRestoreConsent)

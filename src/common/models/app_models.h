@@ -395,6 +395,8 @@ struct Message
 	bool continues_turn = false;
 	bool acp_prompt_not_sent = false;
 	bool acp_prompt_discarded = false;
+	/// A removed row keeps its not-sent marker for history; only an unremoved one can still hold a queue.
+	bool AcpPromptAwaitsDecision() const { return acp_prompt_not_sent && !acp_prompt_discarded; }
 	/// Native event receipts are saved with their projected message before remote output is acknowledged.
 	std::vector<std::string> provider_event_ids;
 	/// Output-only authored-row correlation; never execution or control authority.

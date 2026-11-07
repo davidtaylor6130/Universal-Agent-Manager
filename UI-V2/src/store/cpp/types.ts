@@ -545,6 +545,7 @@ export interface CppAcpSession {
   turnAssistantMessageIndex?: number
   turnSerial?: number
   queueHeld?: boolean
+  providerSwitchOverride?: ProviderSwitchOverride
   unsentMessageIndices?: number[]
   recoverableUnsentMessageIndices?: number[]
   queuedPrompts?: AcpQueuedPrompt[]
@@ -1017,6 +1018,9 @@ export interface CliBinding {
   lastError: string
 }
 
+/** Native verdict on states the user cannot clear; every value except `none` and `warn` also lifts the provider lock. */
+export type ProviderSwitchOverride = 'none' | 'warn' | 'disconnected' | 'stranded' | 'stranded-disconnected'
+
 export interface AcpBinding {
   lastStopReason?: string
   timeoutStop?: AcpTimeoutStop
@@ -1060,6 +1064,7 @@ export interface AcpBinding {
   turnAssistantMessageIndex: number
   turnSerial: number
   queueHeld?: boolean
+  providerSwitchOverride?: ProviderSwitchOverride
   unsentMessageIndices?: number[]
   recoverableUnsentMessageIndices?: number[]
   queuedPrompts?: AcpQueuedPrompt[]

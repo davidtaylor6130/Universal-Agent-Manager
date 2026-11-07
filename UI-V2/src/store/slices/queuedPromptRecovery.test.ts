@@ -24,7 +24,7 @@ describe('restored queue admission', () => {
   it('sends the exact ordered identities and retains held prompts when native persistence fails', async () => {
     const { binding, actions } = fixture()
     vi.mocked(sendToCEF).mockResolvedValue({ ok: false, error: 'Save failed' })
-    await expect(actions.resumeQueuedAcpPrompts('chat', expected)).resolves.toBe(false)
+    await expect(actions.resumeQueuedAcpPrompts('chat', expected)).rejects.toThrow('Save failed')
     expect(sendToCEF).toHaveBeenCalledWith({ action: 'resumeQueuedAcpPrompts', payload: { chatId: 'chat', expected } })
     expect(binding.queueHeld).toBe(true)
     expect(binding.queuedPrompts[0]).toMatchObject({ attachments: [{ id: 'attachment' }], markdownStoreFiles: ['/skill.md'] })

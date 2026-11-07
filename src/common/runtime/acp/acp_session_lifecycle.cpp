@@ -2142,7 +2142,9 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		if (error_out != nullptr) *error_out = "The provider is stopping.";
 		return false;
 	}
-	if (!session.model_discovery_only && chat.routing_mode == "automatic")
+	// Attaching only to stop the old helper launches nothing, so routing admission and the new provider's launch gates do not apply.
+	const bool attach_only_to_stop = session.remote_stop_unconfirmed && chat.remote_stop_cleanup_pending;
+	if (!attach_only_to_stop && !session.model_discovery_only && chat.routing_mode == "automatic")
 	{
 		if (!ExecutionRoutingOwnsWork(app, chat) && chat.routing_assigned_connection_identity.empty())
 		{
@@ -2196,29 +2198,29 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	const ProviderProfile* selected_provider = ProviderResolutionService().ProviderForChat(app, chat);
-	if (selected_provider != nullptr && !selected_provider->supports_structured)
+	if (!attach_only_to_stop && selected_provider != nullptr && !selected_provider->supports_structured)
 	{
 		if (error_out != nullptr) *error_out = "This provider supports terminal chat only.";
 		return false;
 	}
-	if (const std::string update_error = ProviderCliLaunchBlockReason(app, provider.id, chat.execution_host_id); !update_error.empty())
+	if (const std::string update_error = attach_only_to_stop ? std::string{} : ProviderCliLaunchBlockReason(app, provider.id, chat.execution_host_id); !update_error.empty())
 	{
 		if (error_out != nullptr) *error_out = update_error;
 		return false;
 	}
-	if (!session.model_discovery_only && !ValidateCapturedAcpAgentPolicy(app, chat,
+	if (!attach_only_to_stop && !session.model_discovery_only && !ValidateCapturedAcpAgentPolicy(app, chat,
 	        session.active_uam_agent_id, session.active_uam_agent_definition_snapshot,
 	        session.active_uam_agent_execution_capability, error_out)) return false;
 	if (session.running)
 	{
 		return true;
 	}
-	if (!provider_availability::IsEnabled(app.settings, provider.id, chat.execution_host_id))
+	if (!attach_only_to_stop && !provider_availability::IsEnabled(app.settings, provider.id, chat.execution_host_id))
 	{
 		if (error_out != nullptr) *error_out = provider_availability::DisabledReason();
 		return false;
 	}
-	if (!session.goal_internal_session && !session.model_discovery_only && !PrepareCodexThreadForRuntimeLaunch(app, chat, error_out))
+	if (!attach_only_to_stop && !session.goal_internal_session && !session.model_discovery_only && !PrepareCodexThreadForRuntimeLaunch(app, chat, error_out))
 	{
 		return false;
 	}

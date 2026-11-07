@@ -1,4 +1,6 @@
 #include "test_harness.h"
+#include "common/chat/chat_message_page_index.h"
+#include "common/utils/hash_utils.h"
 #include "common/utils/diagnostic_log.h"
 #include "app/transcript_retention_service.h"
 #include "app/opencode_compaction_sync_service.h"
@@ -14290,7 +14292,7 @@ UAM_TEST(ProviderResumeWithSavedIdentityCompletesNativeReset)
 	UAM_ASSERT(!uam::acp_detail::SetChatNativeSessionIdIfChanged(chat, "same-native"));
 }
 
-UAM_TEST(ProviderSwitchKeepsHeldQueuedInputForResume)
+UAM_TEST(ProviderSwitchRefusesHeldQueuedInput)
 {
 	TempDir temp("uam-provider-switch-held-input");
 	uam::AppState app;
@@ -14304,32 +14306,20 @@ UAM_TEST(ProviderSwitchKeepsHeldQueuedInputForResume)
 	chat.acp_queue_held = true;
 	chat.messages.push_back(Message{MessageRole::User, "Earlier."});
 	uam::AcpQueuedUserPromptState queued;
-	queued.id = "held-follow-up";
-	queued.revision = 1;
 	queued.text = "Held follow-up.";
 	chat.acp_queued_prompts.push_back(queued);
 	app.chats.push_back(chat);
-	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::Changed);
-	const ChatSession& switched = app.chats.front();
-	UAM_ASSERT_EQ(switched.provider_id, std::string("claude-cli"));
-	UAM_ASSERT(switched.acp_queue_held && switched.native_session_reset_pending);
-	UAM_ASSERT_EQ(switched.acp_queued_prompts.size(), static_cast<std::size_t>(1));
-	std::optional<ChatSession> reopened = ChatRepository::LoadLocalChat(temp.root, chat.id);
-	UAM_ASSERT(reopened.has_value() && reopened->acp_queue_held);
-	UAM_ASSERT_EQ(reopened->acp_queued_prompts.size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(reopened->acp_queued_prompts.front().text, std::string("Held follow-up."));
-
-	// Resume still reaches the held prompt under the new provider.
-	uam::AcpSessionState& session = uam::acp_detail::EnsureAcpSessionForChat(app, app.chats.front());
-	UAM_ASSERT(session.queue_held);
-	UAM_ASSERT_EQ(session.queued_user_prompts.size(), static_cast<std::size_t>(1));
-	std::string error;
-	UAM_ASSERT(uam::ResumeQueuedAcpPrompts(app, chat.id, {{"held-follow-up", 1}}, &error));
-	UAM_ASSERT(!session.queue_held);
-	PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::QueueHeld);
+	const ChatSession& kept = app.chats.front();
+	UAM_ASSERT_EQ(kept.provider_id, std::string("gemini-cli"));
+	UAM_ASSERT_EQ(kept.native_session_id, std::string("gemini-native"));
+	UAM_ASSERT(kept.acp_queue_held && !kept.native_session_reset_pending && kept.provider_handoff_context.empty());
+	UAM_ASSERT_EQ(kept.acp_queued_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.status_line.find("held queued input") != std::string::npos);
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(temp.root, chat.id).has_value());
 }
 
-UAM_TEST(ProviderSwitchKeepsStorageProblemQueueHoldAndJournal)
+UAM_TEST(ProviderSwitchRefusesStorageProblemQueueHoldWithoutTouchingJournal)
 {
 	for (const bool storage_error : {true, false})
 	{
@@ -14355,12 +14345,353 @@ UAM_TEST(ProviderSwitchKeepsStorageProblemQueueHoldAndJournal)
 			std::ofstream out(journal, std::ios::binary);
 			out << journal_bytes;
 		}
-		// Saves are refused in this state, so the switch fails with the provider, hold and journal intact.
-		UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::SaveFailed);
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::QueueHeld);
 		UAM_ASSERT_EQ(app.chats.front().provider_id, std::string("gemini-cli"));
 		UAM_ASSERT(app.chats.front().acp_queue_held && !app.chats.front().native_session_reset_pending);
 		UAM_ASSERT_EQ(ReadFile(journal), journal_bytes);
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(temp.root, chat.id).has_value());
 	}
+}
+
+namespace
+{
+	struct DisconnectedSwitchFixture
+	{
+		TempDir temp{"uam-provider-switch-disconnected"};
+		uam::AppState app;
+		uam::AcpSessionState* session = nullptr;
+		DisconnectedSwitchFixture()
+		{
+			app.data_root = temp.root;
+			app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+			ExecutionHost host;
+			host.id = "ssh-offline"; host.transport = "ssh"; host.ssh_alias = "offline"; host.platform = "linux";
+			app.settings.execution_hosts.push_back(host);
+			ChatSession chat;
+			chat.id = "chat-switch-disconnected";
+			chat.provider_id = "gemini-cli";
+			chat.execution_host_id = host.id;
+			chat.workspace_directory = "/srv/project";
+			chat.native_session_id = "gemini-native";
+			chat.remote_process_exists = true;
+			chat.remote_process_control_token = "old-helper-token";
+			chat.remote_delivered_stdout_cursor = 42;
+			chat.remote_structured_protocol = "acp";
+			chat.remote_turn_reconnect_pending = true;
+			chat.remote_active_turn_id = "turn-offline";
+			chat.messages.push_back(Message{MessageRole::User, "Run this once."});
+			chat.remote_turn_user_message_index = 0;
+			app.chats.push_back(chat);
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+			auto owned = std::make_unique<uam::AcpSessionState>();
+			owned->chat_id = chat.id;
+			owned->provider_id = chat.provider_id;
+			owned->processing = true;
+			owned->recovering_remote_turn = true;
+			owned->running = false;
+			owned->reconnect_pending = true;
+			session = owned.get();
+			app.acp_sessions.push_back(std::move(owned));
+		}
+		ChatSession& Chat() { return app.chats.front(); }
+	};
+}
+
+UAM_TEST(ProviderSwitchReachesTheOverrideFromADisconnectedRecovery)
+{
+	DisconnectedSwitchFixture fixture;
+	ChatSession& chat = fixture.Chat();
+	UAM_ASSERT(uam::ProviderSwitchOverrideNeeded(fixture.app, chat) == uam::ProviderSwitchOverride::Disconnected);
+	// Not active-work refused: the same refusal as Warn, and nothing changes without the override.
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::UncertainDelivery);
+	// ChatView strips this exact sentence from its own dialog, so changing it here must change it there.
+	UAM_ASSERT(fixture.app.status_line.ends_with(" Accept this in the switch dialog in the desktop app."));
+	UAM_ASSERT_EQ(chat.provider_id, std::string("gemini-cli"));
+	UAM_ASSERT(chat.remote_turn_reconnect_pending && fixture.session->processing);
+	// An attached transport can still be stopped, so it stays ordinary active work.
+	fixture.session->running = true;
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "claude-cli", true), uam::ChatProviderSwitchResult::ActiveRuntime);
+	fixture.session->running = false;
+
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "claude-cli", true), uam::ChatProviderSwitchResult::Changed);
+	UAM_ASSERT_EQ(chat.provider_id, std::string("claude-cli"));
+	UAM_ASSERT(!uam::ChatHasUncertainRemoteInput(chat));
+	// The old helper keeps its slot and authority until a confirmed stop; the host may be offline.
+	UAM_ASSERT(chat.remote_process_exists && chat.remote_stop_cleanup_pending);
+	UAM_ASSERT_EQ(chat.remote_process_control_token, std::string("old-helper-token"));
+	const uam::AcpSessionState* retiring = uam::FindAcpSessionForChat(fixture.app, chat.id);
+	UAM_ASSERT(retiring != nullptr && retiring->remote_stop_unconfirmed && retiring->recovering_remote_process && retiring->reconnect_pending && !retiring->processing);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value() && saved->remote_stop_cleanup_pending && saved->remote_process_exists);
+
+	// remote_stop_unconfirmed offline is not a dead end, and that turn was already given up, so no second warning.
+	UAM_ASSERT(uam::ProviderSwitchOverrideNeeded(fixture.app, chat) == uam::ProviderSwitchOverride::None);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "codex-cli"), uam::ChatProviderSwitchResult::Changed);
+	UAM_ASSERT(chat.remote_stop_cleanup_pending);
+}
+
+UAM_TEST(SendIsRefusedDuringRetirementEvenWhileTheBaselineIsPending)
+{
+	DisconnectedSwitchFixture fixture;
+	ChatSession& chat = fixture.Chat();
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "claude-cli", true), uam::ChatProviderSwitchResult::Changed);
+	fixture.app.settings.execution_hosts.front().runner_status = "ready";
+	fixture.app.settings.execution_hosts.front().runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+	// A chat with history only starts a baseline when one was saved earlier.
+	const fs::path saved_baseline = fixture.app.data_root / "repository-review" / (uam::hashing::Hex64(uam::hashing::Fnv1a64(chat.id)) + ".json");
+	fs::create_directories(saved_baseline.parent_path());
+	UAM_ASSERT(uam::io::WriteTextFile(saved_baseline, "{}"));
+	std::string error;
+	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(fixture.app, chat, &error) == uam::ChatBaselineReadiness::Pending);
+	error.clear();
+	UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, chat.id, "Too early.", &error));
+	UAM_ASSERT(error.find("stopping the previous process") != std::string::npos);
+	// No receipt to turn into an interrupted row later, so a further switch needs no warning either.
+	UAM_ASSERT(chat.acp_queued_prompts.empty());
+	const uam::AcpSessionState* retiring = uam::FindAcpSessionForChat(fixture.app, chat.id);
+	UAM_ASSERT(retiring != nullptr && retiring->queued_user_prompts.empty());
+	UAM_ASSERT(uam::ProviderSwitchOverrideNeeded(fixture.app, chat) == uam::ProviderSwitchOverride::None);
+	(void)uam::WaitForChatRepositoryBaseline(fixture.app.repository_baseline_preparations.at(chat.id), {}, &error);
+}
+
+UAM_TEST(OrdinaryProviderSwitchRetiresAnIdleHelperAndForgetsAGoneOne)
+{
+	for (const bool helper : {true, false})
+	{
+		DisconnectedSwitchFixture fixture;
+		ChatSession& chat = fixture.Chat();
+		std::erase_if(fixture.app.acp_sessions, [](const auto&) { return true; });
+		chat.remote_turn_reconnect_pending = false;
+		chat.remote_active_turn_id.clear();
+		chat.remote_process_exists = helper;
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::Changed);
+		UAM_ASSERT_EQ(chat.remote_stop_cleanup_pending, helper);
+		UAM_ASSERT_EQ(chat.remote_process_exists, helper);
+		UAM_ASSERT_EQ(uam::FindAcpSessionForChat(fixture.app, chat.id) != nullptr, helper);
+		UAM_ASSERT_EQ(chat.remote_process_control_token.empty(), !helper);
+		UAM_ASSERT_EQ(chat.remote_delivered_stdout_cursor, helper ? std::uintmax_t{42} : std::uintmax_t{0});
+		UAM_ASSERT_EQ(chat.remote_structured_protocol.empty(), !helper);
+	}
+}
+
+UAM_TEST(ProviderSwitchOverrideKeepsStrandedInputTextAndDoesNotReplayIt)
+{
+	for (const bool held : {true, false})
+	{
+		DisconnectedSwitchFixture fixture;
+		ChatSession& chat = fixture.Chat();
+		chat.acp_queue_held = held;
+		fixture.session->queue_held = held;
+		uam::AcpQueuedUserPromptState dispatched;
+		dispatched.id = "dispatched";
+		dispatched.text = "Run this once.";
+		dispatched.prepared_for_delivery = true;
+		dispatched.prepared_user_message_count = 1;
+		uam::AcpQueuedUserPromptState receipt;
+		receipt.id = "receipt";
+		receipt.text = "Direct receipt with no row.";
+		receipt.direct_admission = true;
+		chat.acp_queued_prompts = {dispatched, receipt};
+		chat.acp_dispatched_queued_prompt_count = 1;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		UAM_ASSERT(uam::ProviderSwitchRefusalReason(fixture.app, chat) == nullptr);
+		UAM_ASSERT(uam::ProviderSwitchOverrideNeeded(fixture.app, chat) == uam::ProviderSwitchOverride::StrandedInput);
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::UncertainDelivery);
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{2});
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "claude-cli", true), uam::ChatProviderSwitchResult::Changed);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		// Neither prompt can dispatch on restart, and each text survives exactly once.
+		UAM_ASSERT(saved->acp_queued_prompts.empty() && saved->acp_dispatched_queued_prompt_count == 0 && !saved->acp_queue_held);
+		std::size_t dispatched_rows = 0, receipt_rows = 0;
+		for (const Message& row : saved->messages)
+		{
+			dispatched_rows += row.content == dispatched.text;
+			if (row.content != receipt.text) continue;
+			++receipt_rows;
+			UAM_ASSERT(row.acp_prompt_not_sent && row.interrupted && row.provider.empty());
+		}
+		UAM_ASSERT_EQ(dispatched_rows, std::size_t{1});
+		UAM_ASSERT_EQ(receipt_rows, std::size_t{1});
+		// That saved row is unsent, and Remove waits on the helper's stop, so it must not trap the chat.
+		UAM_ASSERT(uam::ProviderSwitchRefusalReason(fixture.app, chat) == nullptr);
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "codex-cli"), uam::ChatProviderSwitchResult::Changed);
+		UAM_ASSERT_EQ(chat.provider_id, std::string("codex-cli"));
+	}
+}
+
+UAM_TEST(ProviderSwitchStillRefusesVisibleHeldInputAndNamesItOverALiveSession)
+{
+	DisconnectedSwitchFixture fixture;
+	ChatSession& chat = fixture.Chat();
+	chat.acp_queue_held = true;
+	fixture.session->queue_held = true;
+	uam::AcpQueuedUserPromptState visible;
+	visible.text = "Visible and removable.";
+	chat.acp_queued_prompts = {visible};
+	fixture.session->queued_user_prompts = {visible};
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "claude-cli", true), uam::ChatProviderSwitchResult::QueueHeld);
+	UAM_ASSERT(fixture.app.status_line.find("held queued input") != std::string::npos);
+	fixture.session->running = true;
+	fixture.app.status_line.clear();
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "claude-cli", true), uam::ChatProviderSwitchResult::QueueHeld);
+	UAM_ASSERT(fixture.app.status_line.find("held queued input") != std::string::npos);
+	UAM_ASSERT_EQ(chat.provider_id, std::string("gemini-cli"));
+	fixture.session->running = false;
+}
+
+UAM_TEST(UnheldDispatchedPromptWithoutMarkersCannotPassSilentlyOrReplay)
+{
+	TempDir temp("uam-provider-switch-unheld-dispatched");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-unheld-dispatched";
+	chat.provider_id = "gemini-cli";
+	chat.workspace_directory = temp.root.string();
+	uam::AcpQueuedUserPromptState dispatched;
+	dispatched.text = "Already dispatched.";
+	chat.acp_queued_prompts = {dispatched};
+	chat.acp_dispatched_queued_prompt_count = 1;
+	Message row{MessageRole::User, "Already dispatched."}; // A local dispatch appends its row first, still marked not sent.
+	row.acp_prompt_not_sent = true;
+	chat.messages.push_back(row);
+	app.chats.push_back(chat);
+	const auto digest = [&app]
+	{
+		std::uint64_t hash = uam::hashing::kFnv1a64OffsetBasis;
+		for (const Message& message : app.chats.front().messages) uam::chat_pages::AppendMessageDigest(hash, message);
+		return uam::chat_pages::FinishMessageDigest(hash, app.chats.front().messages.size());
+	};
+	// The row looks removable, but Remove refuses while the dispatch is unresolved, so the switch must not send the user there.
+	UAM_ASSERT(uam::ChatHasUnsentAcpPrompt(app, app.chats.front()));
+	std::string error;
+	UAM_ASSERT(!uam::DiscardUnsentAcpMessage(app, chat.id, 0, digest(), &error));
+	UAM_ASSERT(uam::ProviderSwitchRefusalReason(app, app.chats.front()) == nullptr);
+	UAM_ASSERT(uam::ProviderSwitchOverrideNeeded(app, app.chats.front()) == uam::ProviderSwitchOverride::StrandedInput);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::UncertainDelivery);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli", true), uam::ChatProviderSwitchResult::Changed);
+	UAM_ASSERT(app.chats.front().acp_queued_prompts.empty() && app.chats.front().acp_dispatched_queued_prompt_count == 0);
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
+	// With the dispatch resolved, the row's Remove works and a further switch is an ordinary refusal again.
+	UAM_ASSERT(uam::ProviderSwitchRefusalReason(app, app.chats.front()) != nullptr);
+	error.clear();
+	UAM_ASSERT(uam::DiscardUnsentAcpMessage(app, chat.id, 0, digest(), &error));
+}
+
+UAM_TEST(IdleHelperWhoseStopWentUnconfirmedNeedsNoRunTwiceWarning)
+{
+	DisconnectedSwitchFixture fixture;
+	ChatSession& chat = fixture.Chat();
+	chat.remote_turn_reconnect_pending = false;
+	chat.remote_active_turn_id.clear();
+	fixture.session->processing = false;
+	fixture.session->recovering_remote_turn = false;
+	fixture.session->remote_stop_unconfirmed = true;
+	UAM_ASSERT(uam::AcpRemoteRecoveryIsDisconnected(fixture.app, chat));
+	UAM_ASSERT(uam::ProviderSwitchOverrideNeeded(fixture.app, chat) == uam::ProviderSwitchOverride::None);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::Changed);
+	UAM_ASSERT(chat.remote_stop_cleanup_pending && chat.remote_process_exists);
+}
+
+UAM_TEST(LocalRunningQueuedDispatchKeepsActiveWorkAndNoOverride)
+{
+	TempDir temp("uam-provider-switch-local-running-dispatch");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-local-running-dispatch";
+	chat.provider_id = "gemini-cli";
+	chat.workspace_directory = temp.root.string();
+	uam::AcpQueuedUserPromptState dispatched;
+	dispatched.text = "Running now.";
+	chat.acp_queued_prompts = {dispatched};
+	chat.acp_dispatched_queued_prompt_count = 1;
+	app.chats.push_back(chat);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->processing = true;
+	session->running = true;
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(uam::ProviderSwitchOverrideNeeded(app, app.chats.front()) == uam::ProviderSwitchOverride::None);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli", true), uam::ChatProviderSwitchResult::ActiveRuntime);
+	app.acp_sessions.front()->running = false;
+	app.acp_sessions.front()->processing = false;
+}
+
+UAM_TEST(UnremovableUnsentRowInDisconnectedRecoveryWarnsInsteadOfRefusing)
+{
+	DisconnectedSwitchFixture fixture;
+	ChatSession& chat = fixture.Chat();
+	// An old not-sent row, then a later delivered turn: Remove is disabled while the recovery processes and Stop refuses it.
+	Message old_row{MessageRole::User, "Old unsent row."};
+	old_row.acp_prompt_not_sent = true;
+	chat.messages.insert(chat.messages.begin(), old_row);
+	chat.remote_turn_user_message_index = 1;
+	UAM_ASSERT(uam::ChatHasUnsentAcpPrompt(fixture.app, chat));
+	UAM_ASSERT(uam::ProviderSwitchRefusalReason(fixture.app, chat) == nullptr);
+	UAM_ASSERT(uam::ProviderSwitchOverrideNeeded(fixture.app, chat) == uam::ProviderSwitchOverride::Disconnected);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::UncertainDelivery);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "claude-cli", true), uam::ChatProviderSwitchResult::Changed);
+	UAM_ASSERT_EQ(chat.messages.front().content, old_row.content);
+}
+
+UAM_TEST(FailedOverrideSaveLeavesTheSessionAndChatUnchanged)
+{
+	DisconnectedSwitchFixture fixture;
+	ChatSession& chat = fixture.Chat();
+	uam::AcpToolCallState tool;
+	tool.id = "tool-live";
+	tool.status = "in_progress";
+	fixture.session->tool_calls.push_back(tool);
+	const fs::path good_root = fixture.app.data_root;
+	fixture.app.data_root = good_root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(fixture.app.data_root, "blocked"));
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "claude-cli", true), uam::ChatProviderSwitchResult::SaveFailed);
+	UAM_ASSERT_EQ(chat.provider_id, std::string("gemini-cli"));
+	UAM_ASSERT_EQ(chat.remote_active_turn_id, std::string("turn-offline"));
+	UAM_ASSERT(uam::FindAcpSessionForChat(fixture.app, chat.id) == fixture.session);
+	UAM_ASSERT_EQ(fixture.session->tool_calls.front().status, std::string("in_progress"));
+	UAM_ASSERT(fixture.session->processing);
+	fixture.app.data_root = good_root;
+}
+
+UAM_TEST(InteractionResponsesCountAsUncertainDelivery)
+{
+	uam::AppState app;
+	ChatSession chat;
+	UAM_ASSERT(uam::ProviderSwitchOverrideNeeded(app, chat) == uam::ProviderSwitchOverride::None);
+	chat.remote_interaction_responses.emplace_back();
+	UAM_ASSERT(uam::ProviderSwitchOverrideNeeded(app, chat) == uam::ProviderSwitchOverride::Warn);
+}
+
+UAM_TEST(ProviderSwitchOverrideSettlesTheAbandonedTurnAndBlocksItsGoal)
+{
+	DisconnectedSwitchFixture fixture;
+	ChatSession& chat = fixture.Chat();
+	Message assistant{MessageRole::Assistant, "Partial."};
+	ToolCall tool;
+	tool.id = "tool-1";
+	tool.status = "in_progress";
+	assistant.tool_calls.push_back(tool);
+	chat.messages.push_back(assistant);
+	fixture.session->turn_assistant_message_index = 1;
+	Goal goal;
+	goal.id = "goal-1";
+	goal.status = GoalStatus::Active;
+	chat.goals.push_back(goal);
+	chat.active_goal_id = goal.id;
+	chat.goal_iteration_goal_id = goal.id;
+	chat.goal_iteration_turn_kind = "work";
+	chat.goal_iteration_repair_attempts = 2;
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "claude-cli", true), uam::ChatProviderSwitchResult::Changed);
+	UAM_ASSERT(chat.messages[1].interrupted);
+	UAM_ASSERT(chat.messages[1].tool_calls.front().status != "in_progress");
+	UAM_ASSERT(chat.goal_iteration_goal_id.empty() && chat.goal_iteration_turn_kind.empty() && chat.goal_iteration_repair_attempts == 0);
+	UAM_ASSERT(chat.goals.front().status == GoalStatus::Blocked);
 }
 
 UAM_TEST(ProviderSwitchWaitsForPendingEmptyHeldSend)

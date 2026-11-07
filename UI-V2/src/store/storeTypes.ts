@@ -247,7 +247,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   renameSession: (id: string, name: string) => void
   /** `quiet` leaves failure reporting to a caller that names each chat. */
   setSessionPinned: (id: string, pinned: boolean, options?: { quiet?: boolean }) => Promise<boolean>
-  setSessionProvider: (id: string, providerId: string) => Promise<boolean>
+  /** `onFailure` receives the native refusal reason, such as held queued input, when the bridge rejects the change. `allowUncertainDelivery` is the user's choice after the may-run-twice warning. */
+  setSessionProvider: (id: string, providerId: string, onFailure?: (reason: string) => void, allowUncertainDelivery?: boolean) => Promise<boolean>
   setSessionModel: (id: string, modelId: string) => Promise<boolean>
   setSessionReviewerModel: (id: string, modelId: string) => Promise<boolean>
   setSessionApprovalMode: (id: string, modeId: string) => Promise<boolean>

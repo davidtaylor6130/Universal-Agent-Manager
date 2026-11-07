@@ -1191,7 +1191,8 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		cb->Success(nlohmann::json{{"modelId", model_id}, {"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}, {"serviceTierExplicit", service_tier_explicit}}.dump());
 		return;
 	}
-	if (!uam::EnsureAcpStopProgress(m_app, chat->id))
+	// A retiring helper belongs to the previous provider, and this chat's new provider has no process to wait for.
+	if (!uam::ChatIsRetiringRemoteHelper(*chat) && !uam::EnsureAcpStopProgress(m_app, chat->id))
 	{
 		cb->Failure(409, "The runtime is stopping; retry shortly.");
 		return;
@@ -1359,7 +1360,7 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 		cb->Success(nlohmann::json{{"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}, {"serviceTierExplicit", service_tier_explicit}}.dump());
 		return;
 	}
-	if (!uam::EnsureAcpStopProgress(m_app, chat->id))
+	if (!uam::ChatIsRetiringRemoteHelper(*chat) && !uam::EnsureAcpStopProgress(m_app, chat->id))
 	{
 		cb->Failure(409, "The runtime is stopping; retry shortly.");
 		return;
@@ -1404,7 +1405,7 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 	const std::string chat_id = ProviderSwitchChatIdFromPayload(payload);
 	const std::string provider_id = ProviderSwitchProviderIdFromPayload(payload);
 
-	switch (uam::SwitchChatProvider(m_app, chat_id, provider_id))
+	switch (uam::SwitchChatProvider(m_app, chat_id, provider_id, uam::query_handler_internal::ProviderSwitchAllowsUncertainDelivery(payload)))
 	{
 	case uam::ChatProviderSwitchResult::UnsupportedProvider:
 		cb->Failure(400, "Unsupported provider: " + provider_id);
@@ -1420,6 +1421,10 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 		return;
 	case uam::ChatProviderSwitchResult::SaveFailed:
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat provider."));
+		return;
+	case uam::ChatProviderSwitchResult::QueueHeld:
+	case uam::ChatProviderSwitchResult::UncertainDelivery:
+		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "Resume or discard the held queued input before changing provider."));
 		return;
 	case uam::ChatProviderSwitchResult::Changed:
 	case uam::ChatProviderSwitchResult::Unchanged:

@@ -70,6 +70,12 @@ inline bool AcpSessionHasActiveTurn(const AcpSessionState& session)
 	       session.prompt_request_id != 0;
 }
 
+/// A native reset waiting on the previous helper's confirmed stop: that helper must never receive input or project output.
+inline bool ChatIsRetiringRemoteHelper(const ChatSession& chat)
+{
+	return chat.native_session_reset_pending && chat.remote_stop_cleanup_pending;
+}
+
 inline bool AcpSessionHasCancelableWork(const AcpSessionState& session)
 {
 	return AcpSessionHasActiveTurn(session) || session.cancel_request_id != 0;

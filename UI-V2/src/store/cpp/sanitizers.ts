@@ -1017,6 +1017,7 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     turnAssistantMessageIndex: finiteNumberOr(value.turnAssistantMessageIndex, -1),
     turnSerial: finiteNumberOr(value.turnSerial, 0),
     queueHeld: booleanOr(value.queueHeld),
+    providerSwitchOverride: value.providerSwitchOverride === 'warn' || value.providerSwitchOverride === 'disconnected' || value.providerSwitchOverride === 'stranded' || value.providerSwitchOverride === 'stranded-disconnected' ? value.providerSwitchOverride : 'none',
     unsentMessageIndices: Array.isArray(value.unsentMessageIndices) ? value.unsentMessageIndices.filter((index): index is number => typeof index === 'number' && Number.isSafeInteger(index) && index >= 0) : [],
     recoverableUnsentMessageIndices: Array.isArray(value.recoverableUnsentMessageIndices) ? value.recoverableUnsentMessageIndices.filter((index): index is number => typeof index === 'number' && Number.isSafeInteger(index) && index >= 0) : [],
     queuedPrompts: Array.isArray(value.queuedPrompts)

@@ -1,6 +1,8 @@
 #include "common/usage/antigravity_accounting.h"
 #include "remote/remote_workspace_terminal.h"
 #include "remote/runner_startup.h"
+#include "app/chat_lifecycle_service.h"
+#include "app/execution_routing_integration.h"
 #include "test_harness.h"
 #include "bootstrap_metadata/windows_command_assertions.h"
 #include "runner_bootstrap_probe_cases.h"
@@ -5400,7 +5402,7 @@ namespace
 		std::string version;
 		const std::string token = "private-admission-authority";
 
-		RemoteAdmissionFixture()
+		explicit RemoteAdmissionFixture(const std::string& helper_preamble = {})
 		{
 			IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
 			runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
@@ -5466,7 +5468,7 @@ namespace
 			app.acp_sessions.push_back(std::move(owned));
 			const std::string inherited_path = uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
 			const std::string spec = uam::remote::BuildProcessProxySpec("acp-" + app.chats.front().id,
-			    temp.root, {"/bin/sh", "-c", "while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$UAM_TEST_INPUT_LOG\"; done"},
+			    temp.root, {"/bin/sh", "-c", helper_preamble + "while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$UAM_TEST_INPUT_LOG\"; done"},
 			    {{"UAM_TEST_INPUT_LOG", input_log.string()}}, false, token);
 			UAM_ASSERT(service.StartStdioProcess(*session, temp.root,
 			    {runner.string(), "proxy", "--alias", host.ssh_alias, "--platform", "linux", "--version", version}, &error,
@@ -8113,6 +8115,304 @@ UAM_TEST(AcpRemoteClaudeResolvedModelReportDoesNotRestartAliasLaunch)
 		UAM_ASSERT_EQ(chat.remote_restart_pending, launched != "opus");
 		if (!restarted) fixture.AwaitSave();
 	}
+}
+#endif
+
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI && UAM_ENABLE_RUNTIME_CLAUDE_CLI && (defined(__APPLE__) || defined(__linux__))
+static void VerifyProviderSwitchStopsTheOldHelper(const bool automatic, const bool mapped = true)
+{
+	// The provider the runner starts after the switch; it records exactly what it is given.
+	TempDir provider_bin("uam-switch-new-provider");
+	const fs::path new_provider_input = provider_bin.root / "new-provider-input.jsonl";
+	UAM_ASSERT(uam::io::WriteTextFile(provider_bin.root / "claude",
+	    "#!/bin/sh\n"
+	    "printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"new-provider-session\"}'\n"
+	    "while IFS= read -r line; do\n"
+	    "  printf '%s\\n' \"$line\" >> \"" + new_provider_input.string() + "\"\n"
+	    "  case \"$line\" in *'\"initialize\"'*)\n"
+	    "    id=$(printf '%s' \"$line\" | sed -E -n 's/.*\"request_id\":(\"[^\"]*\"|[0-9]+).*/\\1/p')\n"
+	    "    printf '{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":%s,\"response\":{}}}\\n' \"$id\" ;;\n"
+	    "  esac\n"
+	    "done\n"));
+	fs::permissions(provider_bin.root / "claude", fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	const std::string inherited_path = uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
+	ScopedEnvVar runner_path("PATH", provider_bin.root.string() + ":" + inherited_path);
+	// The old helper leaves output for replay and ignores the polite stop, so the first confirmation can be made to fail.
+	RemoteAdmissionFixture fixture("trap '' TERM; printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Stale old helper output.\"}]}}'; ");
+	auto& app = fixture.app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession& chat = app.chats.front();
+	const std::size_t rows_before = chat.messages.size();
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	ScopedEnvVar ssh_path("PATH", fixture.temp.root.string() + ":" + provider_bin.root.string() + ":" + inherited_path);
+	ScopedEnvVar test_runner("UAM_TEST_RUNNER", fixture.runner.string());
+	ScopedEnvVar test_socket("UAM_TEST_SOCKET", fixture.socket.string());
+
+	// Routing compares the provider's identity, so an automatic chat must not be admitted just to stop its old helper.
+	if (automatic)
+	{
+		const ExecutionHost& host = app.settings.execution_hosts.front();
+		const ProviderProfile* claude = ProviderProfileStore::FindById(app.provider_profiles, "claude-cli");
+		const ProviderProfile* gemini = ProviderProfileStore::FindById(app.provider_profiles, "gemini-cli");
+		UAM_ASSERT(claude != nullptr && gemini != nullptr);
+		app.folders.push_back({"routed", "Routed", chat.workspace_directory, false, host.id});
+		chat.folder_id = "routed";
+		chat.routing_mode = "automatic";
+		chat.routing_assigned_connection_identity = uam::ExecutionRoutingConnectionIdentity(host);
+		chat.routing_assigned_provider_configuration_identity = uam::ExecutionRoutingProviderIdentity(app, *gemini, host.id);
+		uam::CliProviderVersionState version;
+		version.provider_id = claude->id;
+		version.execution_host = host;
+		version.checked = version.supported = true;
+		version.installed_version = "2.0.0";
+		app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(claude->id, host.id)] = version;
+		app.settings.execution_routing.enabled = true;
+		ExecutionRoutingHostPolicy policy;
+		policy.host_id = host.id;
+		policy.enabled = true;
+		policy.max_active_turns = 1;
+		policy.provider_confirmations.push_back({claude->id, uam::ExecutionRoutingConnectionIdentity(host), uam::ExecutionRoutingProviderIdentity(app, *claude, host.id)});
+		if (mapped)
+		{
+			app.folders.push_back({"source", "Source", "/source/repo", false, "local"});
+			chat.routing_source_folder_id = "source";
+			chat.routing_source_directory = "/source/repo";
+			policy.workspace_mappings.push_back({"source", "/source/repo", "routed"});
+		}
+		app.settings.execution_routing.hosts.push_back(policy);
+	}
+	// Lose the transport while the old helper keeps running: this is a host going away mid-turn.
+	chat.remote_process_exists = true;
+	chat.remote_process_control_token = fixture.token;
+	chat.remote_turn_reconnect_pending = true;
+	chat.remote_active_turn_id = "old-provider-turn";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	service.CloseStdioProcessInput(*fixture.session);
+	int exit_code = -1;
+	const auto proxy_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (!service.PollStdioProcessExited(*fixture.session, &exit_code) && std::chrono::steady_clock::now() < proxy_deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	service.StopStdioProcess(*fixture.session, true);
+	service.CloseStdioProcessHandles(*fixture.session);
+	fixture.session->running = fixture.session->session_ready = false;
+	fixture.session->processing = fixture.session->recovering_remote_turn = true;
+	fixture.session = nullptr; // The switch erases it.
+
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::UncertainDelivery);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli", true), uam::ChatProviderSwitchResult::Changed);
+	UAM_ASSERT(chat.remote_stop_cleanup_pending && chat.remote_process_exists);
+
+	// A prompt cannot launch or deliver until the old helper is confirmed gone.
+	std::string error;
+	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "Too early for the new provider.", &error));
+	UAM_ASSERT(error.find("stopping the previous process") != std::string::npos);
+	error.clear();
+	// The target being disabled on this host must not stop the old helper being attached and stopped.
+	const auto settings_availability = app.settings.provider_availability;
+	UAM_ASSERT(uam::provider_availability::Parse(nlohmann::json::array({{{"providerId", "claude-cli"}, {"executionHostId", chat.execution_host_id}, {"enabled", false}}}), app.settings.provider_availability));
+	UAM_ASSERT(!uam::provider_availability::IsEnabled(app.settings, "claude-cli", chat.execution_host_id));
+	const auto until = [&](const std::function<bool()>& done, int seconds)
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+		while (!done() && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		return done();
+	};
+	// The stop is written, then its confirmation never arrives: a dropped link or a passed deadline.
+	UAM_ASSERT(until([&] { return !app.pending_acp_remote_stops.empty(); }, 15));
+	app.pending_acp_remote_stops.front()->deadline_time_s = 0.0;
+	UAM_ASSERT(until([&] { return app.pending_acp_remote_stops.empty(); }, 5));
+	const uam::AcpSessionState* retrying = uam::FindAcpSessionForChat(app, chat.id);
+	UAM_ASSERT(retrying != nullptr && retrying->remote_stop_unconfirmed);
+	UAM_ASSERT(chat.remote_stop_cleanup_pending);
+	UAM_ASSERT(retrying->reconnect_pending && retrying->recovering_remote_process); // It retries by itself; Send cannot stay refused.
+	UAM_ASSERT(until([&] { return !chat.remote_stop_cleanup_pending; }, 30));
+	app.settings.provider_availability = settings_availability;
+	UAM_ASSERT_EQ(chat.messages.size(), rows_before); // Replayed old-helper output produced no row.
+	// A confirmed retry leaves no stale banner from the first unconfirmed stop.
+	if (const uam::AcpSessionState* settled = uam::FindAcpSessionForChat(app, chat.id)) UAM_ASSERT(settled->last_error.find("Remote stop could not be confirmed") == std::string::npos);
+	UAM_ASSERT(!chat.remote_process_exists && chat.remote_process_control_token.empty() && chat.remote_delivered_stdout_cursor == 0 && chat.remote_structured_protocol.empty());
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "First prompt for the new provider.", &error));
+	if (automatic && !mapped)
+	{
+		// A pending repository route re-arms its own retry, so the dispatched prompt reaches a verdict instead of being stranded.
+		UAM_ASSERT(until([&]
+		{
+			const uam::AcpSessionState* routed = uam::FindAcpSessionForChat(app, chat.id);
+			return routed != nullptr && routed->last_error.find("no longer matches the source repository") != std::string::npos;
+		}, 20));
+		return;
+	}
+	// Delivery is not asserted here: the base (20572dca7) also ends an automatic-routed remote first launch with its input held
+	// ("Provider launch lost its owned full-save receipt") with no provider switch, so that is a separate existing bug.
+	if (automatic) return;
+	UAM_ASSERT(until([&] { return fs::exists(new_provider_input) && ReadFile(new_provider_input).find("First prompt for the new provider.") != std::string::npos; }, 20));
+	// Delivery reached the new process, and the old helper never saw it.
+	const std::string old_input = fs::exists(fixture.input_log) ? ReadFile(fixture.input_log) : std::string{};
+	UAM_ASSERT(old_input.find("First prompt for the new provider.") == std::string::npos);
+	UAM_ASSERT(old_input.find("Too early for the new provider.") == std::string::npos);
+	for (const Message& row : chat.messages) UAM_ASSERT(row.content.find("Stale old helper output.") == std::string::npos);
+	(void)uam::StopAcpSession(app, chat.id);
+	(void)until([&] { return !uam::AcpStopInProgress(app, chat.id); }, 5);
+}
+
+UAM_TEST(ProviderSwitchStopsTheOldHelperBeforeTheNewProviderReceivesInput)
+{
+	VerifyProviderSwitchStopsTheOldHelper(false);
+}
+
+UAM_TEST(RemovingTheLastHeldPromptKeepsRetiringTheHelperUntilTheHostReturns)
+{
+	TempDir provider_bin("uam-switch-remove-provider");
+	const fs::path provider_input = provider_bin.root / "provider-input.jsonl";
+	UAM_ASSERT(uam::io::WriteTextFile(provider_bin.root / "claude",
+	    "#!/bin/sh\n"
+	    "printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"new-provider-session\"}'\n"
+	    "while IFS= read -r line; do\n"
+	    "  printf '%s\\n' \"$line\" >> \"" + provider_input.string() + "\"\n"
+	    "  case \"$line\" in *'\"initialize\"'*)\n"
+	    "    id=$(printf '%s' \"$line\" | sed -E -n 's/.*\"request_id\":(\"[^\"]*\"|[0-9]+).*/\\1/p')\n"
+	    "    printf '{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":%s,\"response\":{}}}\\n' \"$id\" ;;\n"
+	    "  esac\n"
+	    "done\n"));
+	fs::permissions(provider_bin.root / "claude", fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	const std::string inherited_path = uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
+	ScopedEnvVar runner_path("PATH", provider_bin.root.string() + ":" + inherited_path);
+	RemoteAdmissionFixture fixture;
+	auto& app = fixture.app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession& chat = app.chats.front();
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	ScopedEnvVar ssh_path("PATH", fixture.temp.root.string() + ":" + provider_bin.root.string() + ":" + inherited_path);
+	ScopedEnvVar test_runner("UAM_TEST_RUNNER", fixture.runner.string());
+	ScopedEnvVar test_socket("UAM_TEST_SOCKET", fixture.socket.string());
+	service.CloseStdioProcessInput(*fixture.session);
+	int exit_code = -1;
+	const auto proxy_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (!service.PollStdioProcessExited(*fixture.session, &exit_code) && std::chrono::steady_clock::now() < proxy_deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	service.StopStdioProcess(*fixture.session, true);
+	service.CloseStdioProcessHandles(*fixture.session);
+	fixture.session->running = fixture.session->session_ready = false;
+	fixture.session = nullptr;
+	std::erase_if(app.acp_sessions, [](const auto&) { return true; });
+	uam::AcpQueuedUserPromptState visible;
+	visible.id = "visible";
+	visible.revision = 1;
+	visible.text = "Queued, then removed.";
+	chat.acp_queued_prompts = {visible};
+	chat.remote_process_exists = true;
+	chat.remote_process_control_token = fixture.token;
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const auto poll = [&]
+	{
+		(void)uam::PollAllAcpSessions(app);
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	};
+	// The host is down: every attach to stop the old helper fails.
+	const fs::path fake_ssh = fixture.temp.root / "ssh";
+	const std::string working_ssh = ReadFile(fake_ssh);
+	UAM_ASSERT(uam::io::WriteTextFile(fake_ssh, "#!/bin/sh\nexit 255\n"));
+	fs::permissions(fake_ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::Changed);
+	UAM_ASSERT(chat.remote_stop_cleanup_pending && chat.acp_queue_held);
+	for (int i = 0; i < 100; ++i) poll();
+	UAM_ASSERT(chat.remote_stop_cleanup_pending);
+	// Resume could only turn the prompt into an interrupted row now, so it refuses and keeps it.
+	std::string error;
+	UAM_ASSERT(!uam::ResumeQueuedAcpPrompts(app, chat.id, {{visible.id, visible.revision}}, &error));
+	UAM_ASSERT(error.find("stopping the previous process") != std::string::npos);
+	UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{1});
+	UAM_ASSERT(chat.acp_queue_held);
+	error.clear();
+	UAM_ASSERT(uam::RemoveQueuedAcpPrompt(app, chat.id, 0, &error));
+	UAM_ASSERT(chat.acp_queued_prompts.empty());
+	// The host returns; the stop must still finish by itself, or Send stays refused forever.
+	UAM_ASSERT(uam::io::WriteTextFile(fake_ssh, working_ssh));
+	fs::permissions(fake_ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	const auto until = [&](const std::function<bool()>& done, int seconds)
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+		while (!done() && std::chrono::steady_clock::now() < deadline) poll();
+		return done();
+	};
+	UAM_ASSERT(until([&] { return !chat.remote_stop_cleanup_pending; }, 30));
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "First prompt after the host returned.", &error));
+	UAM_ASSERT(until([&] { return fs::exists(provider_input) && ReadFile(provider_input).find("First prompt after the host returned.") != std::string::npos; }, 20));
+	(void)uam::StopAcpSession(app, chat.id);
+	(void)until([&] { return !uam::AcpStopInProgress(app, chat.id); }, 5);
+}
+
+UAM_TEST(UnheldQueuedPromptBesideAStrandedDispatchSurvivesTheHelperStop)
+{
+	RemoteAdmissionFixture fixture;
+	auto& app = fixture.app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession& chat = app.chats.front();
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const std::string inherited_path = uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
+	ScopedEnvVar ssh_path("PATH", fixture.temp.root.string() + ":" + inherited_path);
+	ScopedEnvVar test_runner("UAM_TEST_RUNNER", fixture.runner.string());
+	ScopedEnvVar test_socket("UAM_TEST_SOCKET", fixture.socket.string());
+	// The old helper keeps running with no attached session, as after an app restart has not yet restored it.
+	service.CloseStdioProcessInput(*fixture.session);
+	int exit_code = -1;
+	const auto proxy_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (!service.PollStdioProcessExited(*fixture.session, &exit_code) && std::chrono::steady_clock::now() < proxy_deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	service.StopStdioProcess(*fixture.session, true);
+	service.CloseStdioProcessHandles(*fixture.session);
+	fixture.session->running = fixture.session->session_ready = false;
+	fixture.session = nullptr;
+	std::erase_if(app.acp_sessions, [](const auto&) { return true; });
+	uam::AcpQueuedUserPromptState dispatched;
+	dispatched.id = "dispatched";
+	dispatched.text = "Already dispatched.";
+	dispatched.prepared_for_delivery = true;
+	dispatched.prepared_user_message_count = 1;
+	chat.messages.push_back(Message{MessageRole::User, "Already dispatched."});
+	uam::AcpQueuedUserPromptState visible;
+	visible.id = "visible";
+	visible.text = "Queued behind it and never sent.";
+	chat.acp_queued_prompts = {dispatched, visible};
+	chat.acp_dispatched_queued_prompt_count = 1;
+	chat.remote_process_exists = true;
+	chat.remote_process_control_token = fixture.token;
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli", true), uam::ChatProviderSwitchResult::Changed);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+	while (chat.remote_stop_cleanup_pending && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(!chat.remote_stop_cleanup_pending);
+	const auto has_text = [&visible](const ChatSession& value)
+	{
+		return std::ranges::any_of(value.acp_queued_prompts, [&visible](const auto& prompt) { return prompt.text == visible.text; }) ||
+		    std::ranges::any_of(value.messages, [&visible](const Message& row) { return row.content == visible.text; });
+	};
+	UAM_ASSERT(has_text(chat));
+	UAM_ASSERT(chat.acp_queue_held); // Never sent automatically under the new provider; Resume or Remove decides.
+	UAM_ASSERT_EQ(chat.acp_dispatched_queued_prompt_count, std::size_t{0});
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value() && has_text(*saved));
+}
+
+UAM_TEST(AutomaticRoutedProviderSwitchStillStopsTheOldHelper)
+{
+	VerifyProviderSwitchStopsTheOldHelper(true);
+}
+
+UAM_TEST(AutomaticRoutedSendDoesNotStrandOnAPendingRepositoryRoute)
+{
+	VerifyProviderSwitchStopsTheOldHelper(true, false);
 }
 #endif
 
