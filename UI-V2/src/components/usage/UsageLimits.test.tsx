@@ -511,7 +511,7 @@ describe('UsageLimits overview', () => {
       // Codex header: plan chip, tokens and freshness. Rows: plenty left, then weekly ahead with notches and a caret.
       expect(card(view.host, 'Codex').querySelector('.uam-limit-card__head')!.textContent).toBe('Codexplus2.1M tokensUpdated just now')
       const codexFive = rowOf(view.host, 'Codex', '5-hour')
-      expect(codexFive.textContent).toBe('5-hourResets in 2h38% usedPlenty left')
+      expect(codexFive.textContent).toBe('5-hourUse firstResets in 2h38% usedPlenty left')
       expect(Number(tick(codexFive))).toBeCloseTo(0.6)
       expect(codexFive.querySelector('.uam-meter__segments')).toBeNull()
       expect(codexFive.querySelector('.uam-meter__projection')).toBeNull()
@@ -605,7 +605,7 @@ describe('UsageLimits overview', () => {
       const row = rowOf(view.host, 'Codex', '30-day')
       expect(row.querySelector('.uam-limit-row__reset')!.textContent).toBe(`Resets ${dateTime.format(codexReset)}`)
       expect(row.querySelector('.uam-meter__projection')!.textContent).toBe(`~${dayTime.format(codexOut)} at this pace`)
-      expect(rowOf(view.host, 'Claude', 'Weekly').textContent).toBe(`WeeklyResets ${dayTime.format(claudeReset)}66% usedPlenty left`)
+      expect(rowOf(view.host, 'Claude', 'Weekly').textContent).toBe(`WeeklyUse firstResets ${dayTime.format(claudeReset)}66% usedPlenty left`)
     } finally { view.close() }
   })
 
@@ -696,16 +696,112 @@ describe('UsageLimits overview', () => {
       expect(await none([ready('codex-cli', { primary: win(95, hour, 300) })])).toBe('Codex is close to its limit')
       // No known future reset: nothing would be lost by waiting, so only the room text is true.
       expect(await none([ready('codex-cli', { primary: { usedPercent: 50, resetsAt: null, windowDurationMinutes: null } })])).toBe('Allowances have room')
-      expect(await none([ready('codex-cli', { primary: win(50, -hour, 300) })])).toBe('Allowances have room')
+      // A reset exactly now has passed, as one earlier has.
+      expect(await none([ready('codex-cli', { primary: win(50, 0, 300) })])).toBe('Allowances are awaiting an update')
+      expect(await none([ready('codex-cli', { primary: win(50, -hour, 300) })])).toBe('Allowances are awaiting an update')
     })
-    it('leaves out a provider whose read failed or whose provider reports it stopped', async () => {
+    it('lets a time window that has run low cap the others on its provider', async () => {
+      const claude = (weekly: number) => ready('claude-cli', { primary: win(20, hour, 300), secondary: win(weekly, 2 * day, 10080) }, { primaryLabel: '5-hour allowance', secondaryLabel: 'Weekly allowance' })
+      const codex = ready('codex-cli', { primary: win(60, 3 * day, 10080) })
+      for (const weekly of [90.1, 99, 99.96]) expect((await callout([claude(weekly), codex])).title).toBe('Use Codex first')
+      expect((await callout([claude(99)])).title).toBe('Claude is close to its limit')
+      // Exactly the minimum left does not cap: the 5-hour window resets first.
+      expect((await callout([claude(90), codex])).body).toBe('It has 80% of its 5-hour allowance left, resetting in 1h.')
+    })
+    it('does not let a used-up quota stop the provider\'s independent quotas', async () => {
+      const gemini = await callout([ready('gemini-cli', { updatedAt: now }, { windows: [
+        { id: 'pro', label: 'gemini-2.5-pro · REQUESTS', usedPercent: 100, resetsAt: sec + hour, windowDurationMinutes: null },
+        { id: 'flash', label: 'gemini-2.5-flash · REQUESTS', usedPercent: 20, resetsAt: sec + 12 * hour, windowDurationMinutes: null },
+      ] })])
+      expect(gemini.title).toBe('Use Gemini first')
+      expect(gemini.body).toBe('It has 80% of its gemini-2.5-flash · REQUESTS left, resetting in 12h.')
+      expect(gemini.more).toEqual(['Gemini · gemini-2.5-pro · REQUESTS is used up, resets in 1h'])
+      const copilot = await callout([ready('copilot-cli', { primary: win(100, hour, null), secondary: win(10, 3 * day, null) }, { primaryLabel: 'Chat allowance', secondaryLabel: 'Completions allowance' })])
+      expect(copilot.title).toBe('Use Copilot first')
+      expect(copilot.body).toContain('It has 90% of its completions allowance left')
+    })
+    it('names the bucket when a model bucket is used up or close to its limit', async () => {
+      const bucket = async (usedPercent: number) => (await callout([ready('gemini-cli', {}, { windows: [{ id: 'pro', label: 'gemini-2.5-pro · REQUESTS', usedPercent, resetsAt: sec + hour, windowDurationMinutes: null }] })])).title
+      expect(await bucket(100)).toBe('Gemini is used up on gemini-2.5-pro · REQUESTS')
+      expect(await bucket(95)).toBe('Gemini is close to its limit on gemini-2.5-pro · REQUESTS')
+    })
+    it('does not treat a window whose reset has passed as used up or close to its limit', async () => {
+      const shown = await callout([ready('claude-cli', { primary: win(20, hour, 300), secondary: win(100, -hour, 10080) })])
+      expect(shown.title).toBe('Use Claude first')
+      expect(shown.more).toEqual([])
+      expect((await callout([ready('codex-cli', { primary: win(85, -hour, 43200) })])).title).toBe('Allowances are awaiting an update')
+      expect((await callout([ready('codex-cli', { primary: win(100, -hour, 43200) })])).title).toBe('Allowances are awaiting an update')
+    })
+    it('headlines a provider\'s own stop, and lists it when another provider is recommended', async () => {
+      const codex = (stop: Partial<AcpRateLimits>) => ready('codex-cli', { primary: win(20, hour, 300), ...stop })
+      const spend = await callout([codex({ spendControlReached: true })])
+      expect(spend.title).toBe('Codex has reached its spend limit')
+      expect(spend.tone).toBe('error')
+      expect(spend.more).toEqual([])
+      expect((await callout([codex({ rateLimitReachedType: 'workspace_member_usage_limit_reached' })])).title).toBe('Codex has reached its usage limit')
+      const other = await callout([codex({ rateLimitReachedType: 'workspace_member_usage_limit_reached' }), ready('claude-cli', { primary: win(50, 5 * hour, 300) })])
+      expect(other.title).toBe('Use Claude first')
+      expect(other.more).toEqual(['Codex has reached its usage limit'])
+      expect(other.tone).toBe('error')
+      // A used-up window on the stopped provider is not hidden by the stop in the headline.
+      expect((await callout([codex({ spendControlReached: true, secondary: win(100, day, 10080) })])).more).toEqual([`Codex · Weekly is used up, resets ${dayTime.format(now + 86400000)}`])
+    })
+    it('recommends only from a current snapshot', async () => {
+      const soon = { primary: win(20, hour, 300) }
       const other = ready('claude-cli', { primary: win(50, 5 * hour, 300) })
-      const soon = win(20, hour, 300)
-      expect((await callout([{ ...ready('codex-cli', { primary: soon }), status: 'error', error: 'Timed out' }, other])).title).toBe('Use Claude first')
-      expect((await callout([ready('codex-cli', { primary: soon, spendControlReached: true }), other])).title).toBe('Use Claude first')
-      expect((await callout([ready('codex-cli', { primary: soon, rateLimitReachedType: 'primary' }), other])).title).toBe('Use Claude first')
-      // A background refresh keeps the recommendation steady.
-      expect((await callout([{ ...ready('codex-cli', { primary: soon }), status: 'loading' }, other])).title).toBe('Use Codex first')
+      const title = async (codex: ProviderAllowanceSnapshot['providers'][number]) => (await callout([codex, other])).title
+      expect(await title(ready('codex-cli', { ...soon, updatedAt: now - 299_000 }))).toBe('Use Codex first')
+      expect(await title(ready('codex-cli', { ...soon, updatedAt: now - 300_000 }))).toBe('Use Claude first')
+      expect(await title(ready('codex-cli', { ...soon, updatedAt: now + 60_000 }))).toBe('Use Claude first')
+      expect(await title({ ...ready('codex-cli', soon), status: 'error', error: 'Timed out' })).toBe('Use Claude first')
+      expect(await title({ ...ready('codex-cli', soon), status: 'unavailable' })).toBe('Use Claude first')
+    })
+    it('does not let a failed read flip back to recommended while it reads again', async () => {
+      const providers = (status: 'ready' | 'error' | 'loading') => [{ ...ready('codex-cli', { primary: win(20, hour, 300) }), status, error: status === 'error' ? 'Timed out' : '' }]
+      const view = await render(providers('error'))
+      const title = () => view.host.querySelector('.uam-limits-lede__title')!.textContent
+      try {
+        expect(title()).not.toMatch(/first/)
+        // The native service clears the error and reports loading on each retry.
+        window.cefQuery = request => request.onSuccess(JSON.stringify({ executionHostId: 'local', refreshing: true, providers: providers('loading') }))
+        await act(async () => { await vi.advanceTimersByTimeAsync(31_000) })
+        expect(view.host.querySelector('.uam-limit-card__meta')!.textContent).not.toContain('Timed out')
+        expect(view.host.querySelector('.uam-limits-lede__title')!.textContent).not.toMatch(/first/)
+      } finally { view.close() }
+    })
+    it('breaks a tie on reset by the most left', async () => {
+      expect((await callout([ready('codex-cli', { primary: win(60, 5 * hour, 300) }), ready('claude-cli', { primary: win(20, 5 * hour, 300) })])).title).toBe('Use Claude first')
+    })
+    it('lists at most two windows that cannot be spent, and not the one in the headline', async () => {
+      const shown = await callout([ready('codex-cli', { primary: win(100, hour, 300) }), ready('claude-cli', { primary: win(100, hour, 300) }), ready('copilot-cli', { primary: win(100, hour, null) }), ready('antigravity-cli', { primary: win(50, day, 1440) })])
+      expect(shown.title).toBe('Use Antigravity first')
+      expect(shown.more).toHaveLength(2)
+      expect((await callout([ready('codex-cli', { primary: win(100, hour, 300) })])).more).toEqual([])
+    })
+    it('shows the countdown icon only with a recommendation', async () => {
+      const icon = async (usedPercent: number) => {
+        const view = await render([ready('codex-cli', { primary: win(usedPercent, hour, 300) })])
+        const found = [view.host.querySelector('.uam-limits-lede__icon .lucide-timer') !== null, view.host.querySelector('.uam-limits-lede__icon .lucide-gauge') !== null]
+        view.close(); clearProviderAllowanceCache()
+        return found
+      }
+      expect(await icon(50)).toEqual([true, false])
+      expect(await icon(95)).toEqual([false, true])
+    })
+    it('marks the recommended row once and keeps it in view when it sorts past the first two buckets', async () => {
+      const bucket = (id: string, resetsIn: number) => ({ id, label: `${id} · REQUESTS`, usedPercent: 20, resetsAt: sec + resetsIn, windowDurationMinutes: null })
+      const view = await render([ready('gemini-cli', {}, { windows: [bucket('a', 9 * hour), bucket('b', 9 * hour), bucket('c', 9 * hour), bucket('d', hour)] })])
+      try {
+        const marked = [...view.host.querySelectorAll('.uam-limit-row')].filter(row => row.querySelector('.uam-limit-row__marker'))
+        expect(marked).toHaveLength(1)
+        expect(marked[0].querySelector('.uam-limit-row__name')!.textContent).toBe('d · REQUESTS')
+        expect(marked[0].querySelector('.uam-limit-row__marker')!.textContent).toBe('Use first')
+        expect(marked[0].closest('.uam-limits-more')).toBeNull()
+        expect(view.host.querySelector('.uam-limits-more')!.textContent).toContain('1 more model allowance')
+        expect(view.host.querySelector('.uam-limits-more')!.textContent).toContain('c · REQUESTS')
+      } finally { view.close() }
+      const none = await render([ready('codex-cli', { primary: win(95, hour, 300) })])
+      try { expect(none.host.querySelector('.uam-limit-row__marker')).toBeNull() } finally { none.close() }
     })
     it('keeps a window ahead of pace on its row when it resets weeks away', async () => {
       const view = await render([ready('codex-cli', { primary: win(80, 20 * day, 43200) }), ready('claude-cli', { secondary: win(66, 2 * day, 10080) })])
@@ -715,11 +811,7 @@ describe('UsageLimits overview', () => {
         expect(rowOf(view.host, 'Codex', '30-day').querySelector('.uam-meter__projection')!.textContent).toContain('at this pace')
       } finally { view.close() }
     })
-    it('names the model bucket, and reads as a sentence with provider-declared names', async () => {
-      expect((await callout([{ providerId: 'gemini-cli', scope: 'local:gemini', status: 'ready', error: '', limits: null, windows: [
-        { id: 'pro', label: 'Pro daily', usedPercent: 85, resetsAt: sec + 9 * hour, windowDurationMinutes: 1440 },
-        { id: 'flash', label: 'Flash daily', usedPercent: 20, resetsAt: sec + 12 * hour, windowDurationMinutes: 1440 },
-      ] }])).title).toBe('Use Gemini Pro daily first')
+    it('reads as a sentence with provider-declared names', async () => {
       const copilot = await callout([ready('copilot-cli', { primary: win(80, 20 * day, 43200) }, { primaryLabel: 'Premium requests' })])
       expect(copilot.title).toBe('Use Copilot first')
       expect(copilot.body).toBe(`It has 20% of its Premium requests left, resetting ${dateTime.format(now + 20 * 86400000)} (in ~20d).`)

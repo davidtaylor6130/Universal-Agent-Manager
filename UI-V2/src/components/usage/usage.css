@@ -375,6 +375,8 @@
 .uam-limit-row { display: grid; grid-template-columns: 10.5rem minmax(0, 1fr) 13rem; align-items: center; gap: var(--sp-5); padding: var(--sp-3) 0; border-top: 1px solid var(--border); }
 .uam-limit-card__head + .uam-limit-row { border-top: 0; }
 .uam-limit-row__label { display: grid; min-width: 0; }
+.uam-limit-row__title { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--sp-2); min-width: 0; }
+.uam-limit-row__marker { text-transform: none; }
 .uam-limit-row__name { font-size: var(--fs-base); font-weight: 500; color: var(--text); overflow-wrap: anywhere; }
 .uam-limit-row__reset { margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; color: var(--text-3); }
 .uam-limit-row__bar { position: relative; min-width: 0; padding: 6px 0; }
