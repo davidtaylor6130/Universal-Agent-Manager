@@ -55,14 +55,14 @@ const line = (parts: (string | null | undefined)[]) => {
 /** The plain-words pace verdict, spoken in full. */
 function verdictText(pace: AllowancePace, now: number) {
   if (pace.verdict === 'out') return 'used up'
-  if (pace.verdict === 'ahead') return `ahead of pace · runs out ${approx(pace.runsOutAt!, now)}`
+  if (pace.verdict === 'ahead') return `ahead of pace · would run out ${approx(pace.runsOutAt!, now)}`
   return pace.verdict === 'on' ? 'on pace' : pace.verdict === 'under' ? 'plenty left' : null
 }
 /** The verdict beside the percent: a later run-out names only its weekday or date, the caret under the bar gives the time. */
 function verdictShort(pace: AllowancePace, now: number) {
   if (pace.verdict !== 'ahead') return line([verdictText(pace, now)])
   const at = pace.runsOutAt!
-  return `Ahead · runs out ${at - now < DAY ? `in ~${span(at - now)}` : `~${(at - now < WEEK ? weekday : date).format(at)}`}`
+  return `Ahead · would run out ${at - now < DAY ? `in ~${roughSpan(at - now)}` : `~${(at - now < WEEK ? weekday : date).format(at)}`}`
 }
 
 /**
@@ -92,7 +92,7 @@ function AllowanceRow({ row, now, awaitingUpdate = false, pending = false, off =
   const runsOut = pace.verdict === 'ahead' && pace.elapsedPercent !== null && percent > 0 ? pace.runsOutAt! : null
   // Share of the window at the run-out: the elapsed share scaled up to 100% used.
   const projection = runsOut === null ? null : { at: pace.elapsedPercent! * 100 / percent, tone: tone === 'error' ? 'error' as const : 'warning' as const,
-    label: `~${runsOut - now < DAY ? clock.format(runsOut) : later(runsOut, now)} · ${span(window.resetsAt! * 1000 - runsOut)} before reset` }
+    label: `~${runsOut - now < DAY ? clock.format(runsOut) : later(runsOut, now)} at this pace` }
   const Icon = VERDICT_ICON[pace.verdict]
   return <div className="uam-limit-row">
     <div className="uam-limit-row__label"><span className="uam-limit-row__name">{row.label}</span>
@@ -110,14 +110,14 @@ function AllowanceRow({ row, now, awaitingUpdate = false, pending = false, off =
   </div>
 }
 
-type WindowRow = { id: string; label: string; meterLabel: string; window: AcpRateLimitWindow | null; pace?: AllowancePace; unknownReset?: boolean; missingLabel?: string; unlimited?: boolean; period?: boolean }
+type WindowRow = { id: string; label: string; meterLabel: string; window: AcpRateLimitWindow | null; pace?: AllowancePace; unknownReset?: boolean; missingLabel?: string; unlimited?: boolean; period?: boolean; bucket?: boolean }
 
 /** Provider windows in display order, each with its pace. Model allowances replace primary/secondary when the provider reports them. */
 function windowRows(provider: UsageProviderId, name: string, allowance: ProviderAllowance | undefined, now: number): WindowRow[] {
   const limits = allowance?.limits ?? undefined
   const modelWindows = allowance?.windows ?? []
   const paced = (row: WindowRow): WindowRow => row.window && isValidPercent(row.window.usedPercent) ? { ...row, pace: allowancePace(row.window, now) } : row
-  if (modelWindows.length) return modelWindows.map(window => paced({ id: window.id, label: window.label, meterLabel: `${name} ${window.label} usage`, window, unknownReset: true }))
+  if (modelWindows.length) return modelWindows.map(window => paced({ id: window.id, label: window.label, meterLabel: `${name} ${window.label} usage`, window, unknownReset: true, bucket: true }))
   // ponytail: plan-name match is an inference; drop it once Codex reports a real secondary window for Pro.
   const noFiveHourCap = CODEX_ENABLED && provider === CODEX_CLI_PROVIDER_ID && !limits?.secondary && /pro/i.test(limits?.planType ?? '')
   const rows: WindowRow[] = (['primary', 'secondary'] as const).map(key => {
@@ -131,9 +131,10 @@ function windowRows(provider: UsageProviderId, name: string, allowance: Provider
   return rows.every(row => !row.window && !row.unlimited && row.label === 'Allowance') ? rows.slice(0, 1) : rows
 }
 
-/** Most pressing first: used up, then the earliest projected run-out, then the most used. Readable windows only. */
-const urgency = (row: WindowRow) => row.pace!.verdict === 'out' ? 0 : row.pace!.verdict === 'ahead' ? 1 : 2
-const pressing = (a: WindowRow, b: WindowRow) => urgency(a) - urgency(b) || (a.pace!.runsOutAt ?? 0) - (b.pace!.runsOutAt ?? 0) || b.window!.usedPercent - a.window!.usedPercent
+/** Least share left, in percent, for a window to be worth using first; with less there is little to lose at its reset. */
+const MIN_LEFT_TO_USE_FIRST = 10
+/** Windows with nothing to recommend: used up first, then the most used. */
+const fallbackOrder = (a: WindowRow, b: WindowRow) => Number(b.pace!.verdict === 'out') - Number(a.pace!.verdict === 'out') || b.window!.usedPercent - a.window!.usedPercent
 
 /** A short reason for an unreadable allowance. The native message stays whole in the card footer. */
 function shortReason(allowance: ProviderAllowance | undefined, name: string): string {
@@ -175,13 +176,13 @@ function periodTokens(usage: LimitsUsage | undefined, provider: UsageProviderId)
   return usage.collecting ? { short: 'Reading…', detail: 'Still reading history.' } : { short: 'No usage', detail: `No usage ${phrase}.` }
 }
 
-/** A window's name inside a sentence: generated period names read "its weekly window"; provider names keep their case. */
-const inSentence = (row: WindowRow) => row.period ? `${row.label.toLowerCase()} window` : row.label
+/** A window's name inside a sentence: "its weekly window", "its weekly allowance"; provider names such as Pro daily keep their case. */
+const inSentence = (row: WindowRow) => row.period ? `${row.label.toLowerCase()} window` : / allowance$/.test(row.label) ? row.label.toLowerCase() : row.label
 
 /**
  * Account allowances with each provider's token use beside them. Allowances belong to accounts and are read on this
  * computer, so the page has no machine headings whatever machine is selected; tokens follow the selected machine and period.
- * A callout names the soonest projected run-out, then one always-open card per provider shows every window.
+ * A callout says which allowance to use first, then one always-open card per provider shows every window.
  */
 export function UsageLimits({ executionHostId, usage }: { executionHostId: string; usage?: LimitsUsage }) {
   const allMachines = executionHostId === ALL_MACHINES_HOST_ID
@@ -230,10 +231,15 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
     return { provider, name, allowance, rows: windowRows(provider, name, allowance, now), off }
   })
 
-  // Every readable window across providers, most pressing first: the callout's headline, then up to two more.
-  const ranked = entries.flatMap(entry => entry.rows.filter(row => row.pace).map(row => ({ entry, row }))).sort((a, b) => pressing(a.row, b.row))
-  const top = ranked[0]
-  const others = ranked.slice(1).filter(({ row }) => row.pace!.verdict === 'ahead' || row.pace!.verdict === 'out').slice(0, 2)
+  // Use it or lose it: the soonest reset among windows with allowance left that the provider will still honour. One used-up
+  // window stops the whole provider, since a 5-hour allowance cannot be spent once the weekly one is gone. On a tie, the most left.
+  const readable = entries.flatMap(entry => entry.rows.filter(row => row.pace).map(row => ({ entry, row })))
+  const stopped = (entry: typeof entries[number]) => !(entry.allowance?.status === 'ready' || entry.allowance?.status === 'loading') || !!entry.allowance.limits?.spendControlReached || !!entry.allowance.limits?.rateLimitReachedType || entry.rows.some(row => row.pace?.verdict === 'out')
+  const useFirst = readable.filter(({ entry, row }) => !stopped(entry) && (row.window!.resetsAt ?? 0) * 1000 > now && 100 - row.window!.usedPercent >= MIN_LEFT_TO_USE_FIRST)
+    .sort((a, b) => a.row.window!.resetsAt! - b.row.window!.resetsAt! || a.row.window!.usedPercent - b.row.window!.usedPercent)[0]
+  const top = useFirst ?? [...readable].sort((a, b) => fallbackOrder(a.row, b.row))[0]
+  // Used-up windows stay in view under the headline; ahead-of-pace windows speak on their own rows.
+  const others = readable.filter(item => item.row !== top?.row && item.row.pace!.verdict === 'out').slice(0, 2)
   const resetIn = (window: AcpRateLimitWindow) => window.resetsAt !== null && window.resetsAt * 1000 > now ? moment(window.resetsAt * 1000, now) : null
   const shownUsage = usage?.providers?.filter(row => providers.includes(row.providerId))
   const periodTotal = shownUsage?.reduce((sum, row) => sum + row.totalTokens, 0)
@@ -244,13 +250,15 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
   if (top) {
     const { entry, row } = top
     const window = row.window!, pace = row.pace!, reset = resetIn(window), percent = formatPercent(window.usedPercent)
-    tone = barTone(window.usedPercent, pace)
-    if (pace.verdict === 'ahead') {
-      // "First" needs a second window in the running; on-pace windows are not projected to run out at all.
-      title = others.length ? `${entry.name} runs out first` : `${entry.name} is projected to run out`
-      body = <>Its {inSentence(row)} is at <b style={{ color: TONE_TEXT[tone] }}>{percent}%</b> and will run out <b>{approx(pace.runsOutAt!, now)}</b>, {span(window.resetsAt! * 1000 - pace.runsOutAt!)} before it resets {reset}.</>
+    // A model bucket speaks for itself, not for the provider's other buckets.
+    const bucket = row.bucket ? ` on ${row.label}` : ''
+    if (useFirst) {
+      title = `Use ${entry.name}${row.bucket ? ` ${row.label}` : ''} first`
+      if (others.length) tone = 'error'
+      body = <>It has <b>{formatPercent(100 - window.usedPercent)}%</b> of its {inSentence(row)} left, resetting <b>{resetWhen(window.resetsAt! * 1000, now)}</b>.</>
     } else if (window.usedPercent >= 80) {
-      title = pace.verdict === 'out' ? `${entry.name} is used up` : `${entry.name} is close to its limit`
+      title = pace.verdict === 'out' ? `${entry.name} is used up${bucket}` : `${entry.name} is close to its limit${bucket}`
+      tone = barTone(window.usedPercent, pace)
       tone = tone === 'neutral' ? 'warning' : tone
       body = `${percent}% of its ${inSentence(row)} used${reset ? `, resets ${reset}` : ''}.`
     } else {
@@ -271,15 +279,13 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
 
   return <div className={column}>
     <Card className="uam-limits-lede" data-tone={tone === 'neutral' ? undefined : tone}>
-      <span className="uam-limits-lede__icon" aria-hidden>{top?.row.pace!.verdict === 'ahead' ? <Timer size={17} /> : <Gauge size={17} />}</span>
+      <span className="uam-limits-lede__icon" aria-hidden>{useFirst ? <Timer size={17} /> : <Gauge size={17} />}</span>
       <div className="min-w-0">
         <h2 className="uam-limits-lede__title">{title}</h2>
         {body && <p className="uam-limits-lede__body">{body}</p>}
         {others.length > 0 && <ul className="uam-limits-lede__more">{others.map(({ entry, row }) => {
-          const reset = resetIn(row.window!), pace = row.pace!
-          return <li key={`${entry.provider}:${row.id}`}><ProviderLogo providerId={entry.provider} size={14} /><span><b>{entry.name} · {row.label}</b> {pace.verdict === 'out'
-            ? <>is used up{reset ? `, resets ${reset}` : ''}</>
-            : <>runs out <span className="uam-limits-lede__when">{approx(pace.runsOutAt!, now)}</span>, {span(row.window!.resetsAt! * 1000 - pace.runsOutAt!)} before it resets {reset}</>}</span></li>
+          const reset = resetIn(row.window!)
+          return <li key={`${entry.provider}:${row.id}`}><ProviderLogo providerId={entry.provider} size={14} /><span><b>{entry.name} · {row.label}</b> is used up{reset ? `, resets ${reset}` : ''}</span></li>
         })}</ul>}
       </div>
       {showTotal && <p className="uam-limits-lede__aside"><strong>{formatUsageCount(periodTotal!)}</strong>tokens {usage ? PERIOD_PHRASE[usage.days] : ''}{where}</p>}
@@ -293,7 +299,7 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
       </>}
     </div>
     {entries.some(entry => entry.rows.some(row => row.pace)) && <ul className="uam-limits-key" aria-hidden>
-      <li><b />Used</li><li><i />Time passed in the window</li><li><u />Projected run-out</li>
+      <li><b />Used</li><li><i />Time passed in the window</li><li><u />Run-out at this pace</li>
     </ul>}
     <Reveal open={!!account.error}><Notice tone="warning" title={account.error} dismissLabel="Dismiss allowance error" dismissible={false}>{account.data ? 'Showing the last snapshot.' : null}</Notice></Reveal>
     <div className="uam-limits-cards">
@@ -411,7 +417,14 @@ const dateTime = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'sh
 const later = (at: number, now: number) => (at - now < WEEK ? dayTime : dateTime).format(at)
 /** A future moment in words: relative within a day, otherwise its weekday or date and time. */
 const moment = (at: number, now: number) => at - now < DAY ? `in ${span(at - now)}` : later(at, now)
+/** How far off a projected moment is: minutes only under 3 hours, and days rounded down so 60h beside a weekday reads ~2d. */
+function roughSpan(ms: number) {
+  const hours = Math.floor(ms / 3600000)
+  return hours < 3 ? span(ms) : hours < 48 ? `${hours}h` : `${Math.floor(hours / 24)}d`
+}
+/** A known reset that the reader may lose allowance to, always saying how far off it is. */
+const resetWhen = (at: number, now: number) => at - now < DAY ? `in ${span(at - now)}` : `${later(at, now)} (in ~${roughSpan(at - now)})`
 /** A projected moment, marked as approximate, always saying how far off it is. */
-const approx = (at: number, now: number) => at - now < DAY ? `in ~${span(at - now)}` : `~${later(at, now)} (in ~${span(at - now)})`
+const approx = (at: number, now: number) => at - now < DAY ? `in ~${roughSpan(at - now)}` : `~${later(at, now)} (in ~${roughSpan(at - now)})`
 const relativeAgo = (at: number, now: number) => now - at < 60000 ? 'just now' : `${span(now - at)} ago`
 const compactTokens = (value: number) => value >= 1e6 ? `${+(value / 1e6).toFixed(1)}M` : value >= 1e3 ? `${+(value / 1e3).toFixed(1)}k` : `${value}`
