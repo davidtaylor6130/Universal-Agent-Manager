@@ -5,6 +5,12 @@
 #include <string>
 #include <utility>
 
+namespace uam::cef
+{
+	/// <summary>Serves the packaged UI. Null until the CEF context is initialised; the hidden HTML view browsers register it in their own context.</summary>
+	CefRefPtr<CefSchemeHandlerFactory> UiSchemeHandlerFactory();
+}
+
 /// <summary>
 /// CefApp implementation for both the browser (main) process and renderer subprocesses.
 /// Implements CefRenderProcessHandler so CefMessageRouterRendererSide is created in the

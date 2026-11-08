@@ -20,6 +20,7 @@ These are repository entry points inspected for the documentation trial, not an 
 | Shell actions | [Service](../../src/app/shell_action_service.cpp), [settings](../../UI-V2/src/components/settings/ShellActionsSettings.tsx) | [Settings tests](../../UI-V2/src/components/settings/ShellActionsSettings.test.tsx) |
 | Voice | [Bridge](../../src/cef/dictation_handlers.cpp), [settings](../../src/common/config/voice_input_settings.h) | [Voice tests](../../tests/voice_input_tests.cpp) |
 | Phone | [Server](../../src/cef/companion_server.cpp), [browser UI](../../UI-V2/src/components/companion/CompanionShell.tsx) | [Integration checks](../../tests/companion_integration.py) |
+| HTML views | [Runtime check](../../src/cef/html_view_render_check.cpp), [frame host](../../UI-V2/public/html-view-frame.html) | [Real app check](../../tests/html_view_render_check_cef.py), [control tests](../../tests/core_agent_control_tests.cpp) |
 | Memory | [Service](../../src/app/memory_service.cpp), [store](../../src/common/memory/memory_library_store.cpp) | [Policy tests](../../tests/memory_policy_tests.cpp) |
 | Storage root | [Startup](../../src/app/application.cpp), [platform defaults](../../src/common/paths/app_paths.cpp) | [Confirmed storage decision](../documentation-review.md#data-root) |
 | Build exclusions | [CMake](../../CMakeLists.txt), [feature macros](../../src/common/config/build_features.h) | [Configurator checks](../../tools/build-configurator/test_configurator.py) |

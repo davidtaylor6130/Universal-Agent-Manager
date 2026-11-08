@@ -38,6 +38,8 @@ namespace uam::cef
 	/// Sandboxed host page for agent HTML views. It gets its own restrictive policy instead of the app's.
 	inline constexpr std::string_view kHtmlViewFrameResource = "html-view-frame.html";
 	inline constexpr std::string_view kHtmlViewFrameUrl = "uam://app/html-view-frame.html";
+	/// Embedder for the hidden runtime check. It frames the host page exactly as the visible card does.
+	inline constexpr std::string_view kHtmlViewProbeUrl = "uam://app/html-view-probe.html";
 	/// Page script reaches the network through these whatever the frame's policy says: `connect-src` does not cover WebRTC, and
 	/// CEF 146 ignores the `webrtc 'block'` directive and the WebRTC IP-handling switch. UAM uses no WebRTC, so no frame gets them.
 	inline constexpr std::array<const char*, 3> kRendererGlobalsRemoved = {"RTCPeerConnection", "webkitRTCPeerConnection", "RTCIceTransport"};

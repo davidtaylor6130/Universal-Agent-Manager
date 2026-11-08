@@ -23,6 +23,7 @@
 #include "app/managed_subagent_control_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/chat/html_view.h"
+#include "common/chat/html_view_render_check.h"
 #include "common/config/approval_modes.h"
 #include "common/config/central_provider_configuration.h"
 #include "common/config/settings_normalization.h"
@@ -1388,6 +1389,7 @@ namespace uam
 		bool RetireCapabilityDirectory(AppState& app, UamControlCapability& capability)
 		{
 			RetireAgentWait(app, capability);
+			if (app.html_view_render_checker) app.html_view_render_checker->Cancel(capability.id);
 			const bool writing = std::ranges::any_of(app.uam_wait_retirements, [&](const auto& wait)
 			{ return wait->directory == capability.directory && wait->response_future.valid(); });
 			if (!writing) (void)paths::RemoveTreeWithoutFollowingLinksNoThrow(capability.directory);
@@ -1728,6 +1730,23 @@ namespace uam
 				result.result["resultDelivery"] = "held";
 				result.result["resultDeliveryReason"] = "activation_changed";
 			}
+			// The view is saved first, so a check that times out or fails cannot undo the publish.
+			if (result.ok && IsHtmlViewMethod(method) && result.result.value("publishable", true))
+			{
+				if (app.html_view_render_checker)
+				{
+					app.html_view_render_checker->Start(capability_snapshot.id, arguments.at("html").get<std::string>(),
+					    [directory = capability_snapshot.directory, request_id, tool_result = std::move(result.result)](html_view::RenderCheckResult check) mutable
+					    {
+						    tool_result["runtimeCheck"] = html_view::RenderCheckJson(check);
+						    (void)WriteResponse(directory, request_id, {{"ok", true}, {"result", std::move(tool_result)}});
+					    });
+					return {{"pendingRenderCheck", true}};
+				}
+				html_view::RenderCheckResult unavailable;
+				unavailable.not_run_reason = "no renderer is available.";
+				result.result["runtimeCheck"] = html_view::RenderCheckJson(unavailable);
+			}
 			nlohmann::json response = result.ok
 			                              ? nlohmann::json{{"ok", true}, {"result", std::move(result.result)}}
 			                              : reject(std::move(result.error));
@@ -1778,9 +1797,9 @@ namespace uam
 			    {"title", {{"type", "string"}, {"description", "Short single-line title shown on the card (at most 120 bytes)."}}},
 			    {"html", {{"type", "string"}, {"description", "Complete self-contained HTML document (at most 131072 bytes). Inline all CSS, scripts, images (data: URLs) and data."}}}};
 			nlohmann::json html_view_preview = ToolSchema("html_view_preview", html_view_properties, {"title", "html"});
-			html_view_preview["description"] = "Check an HTML view before publishing. Returns publishable, size, validation errors and warnings about content the sandbox blocks (remote resources, network APIs, storage, frames, pop-ups). Publishes nothing; no screenshot is produced.";
+			html_view_preview["description"] = "Check an HTML view before publishing. Returns publishable, size, validation errors, warnings about content the sandbox blocks (remote resources, network APIs, storage, frames, pop-ups) and runtimeCheck: the console errors and uncaught exceptions from rendering the page in a hidden sandbox. runtimeCheck.completed is false when the check timed out or could not run. Publishes nothing; no screenshot is produced.";
 			nlohmann::json html_view_publish = ToolSchema("html_view_publish", html_view_properties, {"title", "html"});
-			html_view_publish["description"] = "Show a self-contained HTML page (chart, table, diagram, mockup, small interactive view) as a sandboxed card in this chat's current turn, above your text reply. Scripts run only inside the sandbox; network, storage, cookies, pop-ups and the UAM app are unreachable. Rejected when over 131072 bytes, empty, in CLI View or outside an active turn. Call html_view_preview first to see warnings.";
+			html_view_publish["description"] = "Show a self-contained HTML page (chart, table, diagram, mockup, small interactive view) as a sandboxed card in this chat's current turn, above your text reply. Scripts run only inside the sandbox; network, storage, cookies, pop-ups and the UAM app are unreachable. Rejected when over 131072 bytes, empty, in CLI View or outside an active turn. The result's runtimeCheck lists console errors and uncaught exceptions from a hidden render so you can fix the page; runtimeCheck.completed is false when that check timed out or could not run, and the view is still published. Call html_view_preview first to check a page without publishing it.";
 			nlohmann::json tools = nlohmann::json::array({
 			    std::move(html_view_preview),
 			    std::move(html_view_publish),
@@ -1855,7 +1874,7 @@ namespace uam
 			    !uam::io::WriteTextFile(capability / "requests" / (id + ".json"), request_text)) return std::nullopt;
 			const std::filesystem::path response_path = capability / "responses" / (id + ".json");
 			const int max_attempts = method == "computer_use_request" || method == "goal_create" || method == "user_question" || method == "chat_create"
-			    ? 4000 : 400;
+			    ? 4000 : IsHtmlViewMethod(method) ? 800 : 400; // HTML views wait for their bounded runtime check.
 			for (int attempt = 0; !cancel.stop_requested(); ++attempt)
 			{
 				if (aborted()) break;
@@ -2080,6 +2099,7 @@ namespace uam
 
 	void UamControlService::Shutdown(AppState& app)
 	{
+		if (app.html_view_render_checker) app.html_view_render_checker->Cancel({});
 		for (const auto& session : app.acp_sessions)
 			if (session) ManagedParentContinuationService::Revoke(app, session->chat_id, "control_shutdown");
 		for (auto& capability : app.uam_control_capabilities) RetireAgentWait(app, capability);
@@ -2239,6 +2259,7 @@ namespace uam
 	bool UamControlService::DeclinePendingApprovalForSession(AppState& app, const AcpSessionState& session, std::string_view reason)
 	{
 		if (session.uam_control_capability_id.empty()) return false;
+		if (app.html_view_render_checker) app.html_view_render_checker->Cancel(session.uam_control_capability_id);
 		const auto capability = std::ranges::find(app.uam_control_capabilities, session.uam_control_capability_id,
 		                                          &UamControlCapability::id);
 		if (capability == app.uam_control_capabilities.end() || !capability->pending_approval.has_value()) return false;
@@ -2535,7 +2556,7 @@ namespace uam
 				}
 				(void)uam::paths::RemoveFileNoThrow(file);
 				if (!response.value("pendingApproval", false) && !response.value("pendingAgentWait", false) &&
-				    !response.value("pendingChatCreate", false))
+				    !response.value("pendingChatCreate", false) && !response.value("pendingRenderCheck", false))
 					(void)WriteResponse(capability_directory, request_id, response);
 				changed = true;
 			}

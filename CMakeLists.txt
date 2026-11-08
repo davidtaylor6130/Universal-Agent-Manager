@@ -712,6 +712,7 @@ add_library(uam_app_objects OBJECT
   src/cef/resource_collection_handlers.cpp
   src/cef/memory_handlers.cpp
   src/cef/html_view_handlers.cpp
+  src/cef/html_view_render_check.cpp
   src/cef/workspace_handlers.cpp
   src/cef/vcs_handlers.cpp
   src/cef/terminal_handlers.cpp
