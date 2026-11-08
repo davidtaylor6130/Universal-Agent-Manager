@@ -880,6 +880,7 @@ UAM_TEST(HelperInstallRefusalKeepsRunningBackgroundScan)
 	ChatSession busy = HandlerChat("refusal-busy-chat");
 	busy.execution_host_id = host.id;
 	busy.remote_process_exists = true;
+	busy.remote_active_turn_id = "refusal-active-turn";
 	app.chats.push_back(busy);
 	const auto entered = std::make_shared<std::promise<std::stop_token>>();
 	std::future<std::stop_token> scan_stop = entered->get_future();
@@ -900,7 +901,7 @@ UAM_TEST(HelperInstallRefusalKeepsRunningBackgroundScan)
 	ChatIconHandlerTestAccess::InstallRemoteHost(*handler, {{"id", host.id}, {"label", host.label}, {"sshAlias", host.ssh_alias}, {"runnerDirectory", ""}}, refused, 51);
 	UAM_ASSERT_EQ(refused->failures, 1);
 	UAM_ASSERT_EQ(refused->status, 409);
-	UAM_ASSERT(refused->body.find("chat-process") != std::string::npos);
+	UAM_ASSERT(refused->body.find("Private handler fixture") != std::string::npos);
 	UAM_ASSERT(!running.stop_requested());
 	UAM_ASSERT(app.startup_native_import_service->BackgroundScanPendingOnHost(host.id));
 	handler.reset();
@@ -3485,11 +3486,12 @@ UAM_TEST(ChatCreateDeliveredEditColdEmptySkillsRemovesReloadedMissingSnapshots)
 	const auto reloaded = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.source_id, true);
 	UAM_ASSERT(reloaded && reloaded->messages_loaded && reloaded->messages.size() == 3);
 	UAM_ASSERT_EQ(reloaded->messages[2].markdown_store_files, fixture.files);
-	UAM_ASSERT_EQ(reloaded->messages[2].markdown_store_prompt_blocks, (std::vector<std::string>{fixture.blocks[0]}));
+	// Saved history keeps the empty block in its slot so each file stays paired with its snapshot.
+	UAM_ASSERT_EQ(reloaded->messages[2].markdown_store_prompt_blocks, (std::vector<std::string>{fixture.blocks[0], ""}));
 	UAM_ASSERT_EQ(reloaded->messages[2].attachments, fixture.source_messages[2].attachments);
 	UAM_ASSERT_EQ(reloaded->messages[0], fixture.source_messages[0]);
 	UAM_ASSERT_EQ(reloaded->messages[1], fixture.source_messages[1]);
-	// Adopt the actual two-file/one-block reload without repairing or resaving it.
+	// Adopt the actual two-file reload, with its missing second snapshot, without repairing or resaving it.
 	fixture.Source() = *reloaded;
 	fixture.source_messages = reloaded->messages;
 	fixture.source_primary = source_primary;

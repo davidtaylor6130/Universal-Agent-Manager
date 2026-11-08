@@ -1845,12 +1845,18 @@ if(UAM_BUILD_TESTS)
 
   # Explicitly built connected bridge fixtures use the real handler/router sources.
   # This target inherits compile/link settings only, never app packaging or startup.
+  # CI turns the option on so the default build compiles the three connected handler programs and CTest runs them.
+  option(UAM_BUILD_CONNECTED_HANDLER_TESTS "Build the connected chat, goal and remote-refresh handler test programs by default and register them with CTest." OFF)
+  set(UAM_CONNECTED_HANDLER_TEST_SCOPE EXCLUDE_FROM_ALL)
+  if(UAM_BUILD_CONNECTED_HANDLER_TESTS)
+    set(UAM_CONNECTED_HANDLER_TEST_SCOPE "")
+  endif()
   get_target_property(UAM_ICON_HANDLER_TEST_SOURCES universal_agent_manager SOURCES)
   list(REMOVE_ITEM UAM_ICON_HANDLER_TEST_SOURCES src/main.cpp "${CMAKE_BINARY_DIR}/uam-package-inputs-$<CONFIG>.cpp")
   set(UAM_CONNECTED_HANDLER_TEST_SOURCES ${UAM_ICON_HANDLER_TEST_SOURCES})
   list(REMOVE_ITEM UAM_CONNECTED_HANDLER_TEST_SOURCES
     src/common/platform/platform_pty_macos.cpp src/common/platform/platform_pty_windows.cpp)
-  add_executable(uam_chat_icon_handler_tests EXCLUDE_FROM_ALL
+  add_executable(uam_chat_icon_handler_tests ${UAM_CONNECTED_HANDLER_TEST_SCOPE}
     tests/chat_icon_handler_tests.cpp tests/companion_connection_handler_tests.cpp tests/memory_settings_handler_tests.cpp tests/computer_use_terminal_runtime_fixture.cpp ${UAM_CONNECTED_HANDLER_TEST_SOURCES})
   set_target_properties(uam_chat_icon_handler_tests PROPERTIES
     CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "Tests")
@@ -1883,7 +1889,7 @@ endif()
         "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_chat_icon_handler_tests>/chrome_elf.dll")
   endif()
   # Actual goal bridge timing fixtures keep their selectable inventory separate.
-  add_executable(uam_goal_handler_timing_tests EXCLUDE_FROM_ALL
+  add_executable(uam_goal_handler_timing_tests ${UAM_CONNECTED_HANDLER_TEST_SCOPE}
     tests/goal_handler_timing_tests.cpp ${UAM_ICON_HANDLER_TEST_SOURCES})
   set_target_properties(uam_goal_handler_timing_tests PROPERTIES
     CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "Tests")
@@ -1904,11 +1910,10 @@ endif()
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_goal_handler_timing_tests>/chrome_elf.dll")
   endif()
-  # Keep this opt-in executable outside the standard CTest inventory until built.
 
   # Safe data/injected remote-publication controls: no CEF browser startup,
   # provider launch, SSH transport, helper build or desktop packaging dependency.
-  add_executable(uam_remote_refresh_feedback_tests EXCLUDE_FROM_ALL
+  add_executable(uam_remote_refresh_feedback_tests ${UAM_CONNECTED_HANDLER_TEST_SCOPE}
     tests/remote_refresh_feedback_test_main.cpp tests/remote_refresh_feedback_tests.cpp
     tests/native_media_chat_save_tests.cpp tests/chat_publication_tests.cpp tests/native_refresh_lifetime_tests.cpp ${UAM_ICON_HANDLER_TEST_SOURCES})
   set_target_properties(uam_remote_refresh_feedback_tests PROPERTIES
@@ -1929,6 +1934,22 @@ endif()
         "${cef_binary_SOURCE_DIR}/Release/libcef.dll" "$<TARGET_FILE_DIR:uam_remote_refresh_feedback_tests>/libcef.dll"
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_remote_refresh_feedback_tests>/chrome_elf.dll")
+  endif()
+  if(UAM_BUILD_CONNECTED_HANDLER_TESTS)
+    # The chat and goal programs run every case in one process when given no names. The remote-refresh program needs
+    # exact names, so the shared runner lists its inventory and runs the cases in isolated processes.
+    add_test(NAME uam_chat_icon_handler_tests COMMAND uam_chat_icon_handler_tests)
+    add_test(NAME uam_goal_handler_timing_tests COMMAND uam_goal_handler_timing_tests)
+    add_test(NAME uam_remote_refresh_feedback_tests
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/run_native_tests.py" "$<TARGET_FILE:uam_remote_refresh_feedback_tests>" --jobs 2)
+    # CI runs this label in its own step so a failure gets one fresh retry.
+    set_tests_properties(uam_chat_icon_handler_tests uam_goal_handler_timing_tests uam_remote_refresh_feedback_tests PROPERTIES LABELS connected_handler)
+    if(APPLE)
+      # macOS Unix sockets have a 104-byte path limit; the default TMPDIR can exceed it.
+      set_tests_properties(uam_goal_handler_timing_tests PROPERTIES ENVIRONMENT "TMPDIR=/tmp")
+      # The chat program's CEF cases start the app bundle's helper, so the app must be built before CTest runs them.
+      set_tests_properties(uam_chat_icon_handler_tests PROPERTIES ENVIRONMENT "TMPDIR=/tmp;UAM_TEST_CEF_APP_BUNDLE=$<TARGET_BUNDLE_DIR:universal_agent_manager>")
+    endif()
   endif()
 
   add_executable(uam_managed_subagent_handler_tests EXCLUDE_FROM_ALL
