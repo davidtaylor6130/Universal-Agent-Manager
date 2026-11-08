@@ -53,12 +53,10 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
   // The branch this dialog preselected; the reason shows only while that automatic choice stands.
   const [autoPicked, setAutoPicked] = useState<string>()
   const id = useId()
-  const contextFolder = useRef(folderId)
   const busyRetried = useRef(false)
 
   useEffect(() => {
     if (unavailableReason) return
-    if (contextFolder.current !== folderId) { contextFolder.current = folderId; setContext(undefined); setListed(false); busyRetried.current = false }
     let cancelled = false
     let busyRetry: ReturnType<typeof setTimeout> | undefined
     setLoading(true)

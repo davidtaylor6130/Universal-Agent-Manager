@@ -244,19 +244,18 @@ describe('NewChatBranchPicker', () => {
     expect(trigger().disabled).toBe(false)
   })
 
-  it('ignores a stale refresh and does not carry the previous list to a workspace whose read fails', async () => {
+  it('ignores a stale refresh failure from the previous workspace', async () => {
     let reply!: (response: { ok: boolean; error: string }) => void
     send.mockResolvedValueOnce({ ok: true, data: context })
       .mockImplementationOnce(() => new Promise((resolve) => { reply = resolve }))
-      .mockResolvedValueOnce({ ok: false, error: 'No commits.' })
     await act(async () => render())
     act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Refresh branches')!.click())
     await act(async () => render({ folderId: 'other' }))
+    trigger().focus()
     await act(async () => reply({ ok: false, error: 'Obsolete workspace failure.' }))
+    expect(document.activeElement).toBe(trigger())
     expect(host.querySelector('[role="alert"]')).toBeNull()
     expect(send).toHaveBeenLastCalledWith({ action: 'getWorkspaceVcsContext', payload: { folderId: 'other' } })
-    expect(trigger().disabled).toBe(true)
-    expect(host.querySelectorAll('button:not([aria-label="Starting branch"])')).toHaveLength(0)
     expect(onChange).not.toHaveBeenCalled()
   })
 

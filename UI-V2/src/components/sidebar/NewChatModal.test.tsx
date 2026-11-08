@@ -412,9 +412,8 @@ describe('NewChatModal', () => {
   })
 
   it.each([
-    ['fails', () => Promise.resolve({ fail: true })],
+    ['fails, as in a repository with no commits', () => Promise.resolve({ fail: true })],
     ['never finishes', () => new Promise(() => {})],
-    ['reports no commits', () => Promise.resolve({ success: { vcs: 'git', currentBranch: 'main', currentCommit: '', detached: false, localBranches: [] } })],
     ['reports a detached HEAD', () => Promise.resolve({ success: { vcs: 'git', currentBranch: '', detached: true } })],
   ] as const)('creates with the inherited base when the branch read %s', async (_label, outcome) => {
     const requests: Array<{ action: string; payload: Record<string, unknown> }> = []

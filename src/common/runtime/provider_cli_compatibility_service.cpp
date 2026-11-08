@@ -755,7 +755,7 @@ void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, bool
 			if (!uam::execution_hosts::SameConnection(state.execution_host, host)) state = {};
 			state.provider_id = provider_id;
 			state.execution_host = host;
-			state.check_error.clear();
+			// A prior failure stands while the provider waits; the probe clears it when it actually starts.
 			state.message = ProviderTitleMessage("Waiting to check installed ", ProviderTitle(app, provider_id), " version...");
 			app.runtime_cli_version_check_queue.push_back(target);
 		}
