@@ -2486,6 +2486,33 @@ UAM_TEST(VcsChatBaselinePersistsAllContentWithoutChangingSourceIndexOrBranch)
 	UAM_ASSERT(!service.CaptureChatBaseline(app, chat, &error));
 }
 
+UAM_TEST(VcsChatBaselineLookupPassesThroughSvnCheckoutToGit)
+{
+	UAM_ASSERT(GitAvailableForTests());
+	TempDir temp("uam-baseline-svn-in-git");
+	const fs::path repo = temp.root / "repo";
+	const fs::path svn_child = repo / "vendor";
+	fs::create_directories(svn_child / ".svn");
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "-c user.email=uam@example.test -c user.name=UAM commit --allow-empty -m initial"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "baseline-svn-child";
+	chat.workspace_directory = svn_child.string();
+	std::string error;
+	// A lookup ending at either marker would stop at vendor/.svn and report no repository.
+	const uam::ChatBaselineReadiness readiness = uam::PrepareChatRepositoryBaseline(app, chat, &error);
+	UAM_ASSERT(readiness != uam::ChatBaselineReadiness::Unavailable);
+	if (readiness == uam::ChatBaselineReadiness::Pending)
+		UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) != uam::ChatBaselineReadiness::Failed);
+	ChatSession svn_only = chat;
+	svn_only.id = "baseline-svn-only";
+	svn_only.workspace_directory = (temp.root / "svn-only").string();
+	fs::create_directories(temp.root / "svn-only" / ".svn");
+	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, svn_only, &error) == uam::ChatBaselineReadiness::Unavailable);
+}
+
 UAM_TEST(VcsChatBaselineScopesEveryFileKindToTheChat)
 {
 	if (!GitAvailableForTests()) return;

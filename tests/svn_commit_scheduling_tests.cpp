@@ -323,6 +323,39 @@ UAM_TEST(SvnReadOnlyCommandsAvoidPromptsWithoutAllowingWritesOrDiffHelpers)
 	}
 }
 
+UAM_TEST(NearestVcsRootKindsAndProbeStopAreHonoured)
+{
+	TempDir temp("uam-vcs-root-kinds");
+	const fs::path git = temp.root / "git";
+	const fs::path svn = git / "svn";
+	const fs::path source = svn / "src";
+	fs::create_directories(git / ".git");
+	fs::create_directories(svn / ".svn");
+	fs::create_directories(source);
+
+	const uam::paths::NearestVcsRoot nearest = uam::paths::FindNearestVcsRoot(source);
+	UAM_ASSERT(nearest.svn && !nearest.git);
+	UAM_ASSERT_EQ(nearest.root, svn);
+
+	const uam::paths::NearestVcsRoot git_only = uam::paths::FindNearestVcsRoot(source, uam::paths::VcsRootKinds::GitOnly);
+	UAM_ASSERT(git_only.git && git_only.svn);
+	UAM_ASSERT_EQ(git_only.root, git);
+
+	const uam::paths::NearestVcsRoot no_git = uam::paths::FindNearestVcsRoot(temp.root / "absent", uam::paths::VcsRootKinds::GitOnly);
+	UAM_ASSERT(!no_git.git && !no_git.svn && !no_git.stop && no_git.root.empty());
+
+	int probes = 0;
+	const uam::paths::NearestVcsRoot stopped = uam::paths::FindNearestVcsRoot(source, uam::paths::VcsRootKinds::GitOnly, [&](const fs::path&)
+	{
+		++probes;
+		uam::paths::VcsMarkers markers;
+		markers.stop = probes == 2;
+		return markers;
+	});
+	UAM_ASSERT(stopped.stop && !stopped.git && stopped.root.empty());
+	UAM_ASSERT_EQ(probes, 2);
+}
+
 UAM_TEST(NearestVcsRootLabelsGitNestedInsideSvnCheckoutAsGit)
 {
 	TempDir temp("uam-nearest-vcs-root");

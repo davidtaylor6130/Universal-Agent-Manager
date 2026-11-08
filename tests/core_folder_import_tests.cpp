@@ -2449,6 +2449,80 @@ UAM_TEST(ImportedWorktreeFoldersPreserveProviderWorkingDirectories)
 	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(worktree), worktree));
 }
 
+namespace
+{
+	void WriteLinkedWorktreeFixture(const fs::path& main, const fs::path& linked)
+	{
+		const fs::path registration = main / ".git" / "worktrees" / "fixture";
+		fs::create_directories(registration);
+		fs::create_directories(linked);
+		UAM_ASSERT(uam::io::WriteTextFile(linked / ".git", "gitdir: " + registration.string() + "\n"));
+		UAM_ASSERT(uam::io::WriteTextFile(registration / "gitdir", (linked / ".git").string() + "\n"));
+		UAM_ASSERT(uam::io::WriteTextFile(registration / "commondir", "../..\n"));
+	}
+}
+
+UAM_TEST(ImportedWorktreeLookupPassesThroughSvnCheckoutToGit)
+{
+	TempDir temp("uam-wt-svn");
+	const fs::path main = temp.root / "main", linked = temp.root / "linked";
+	WriteLinkedWorktreeFixture(main, linked);
+	fs::create_directories(main / "vendor");
+	fs::create_directories(linked / "vendor" / ".svn");
+	// A lookup ending at either marker would stop at vendor/.svn and keep the linked path.
+	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(linked / "vendor"), main / "vendor"));
+}
+
+UAM_TEST(ImportedWorkspaceContainmentStopsAtNearestGitOrSvnRootInclusively)
+{
+	TempDir temp("uam-import-vcs-boundary");
+	for (const std::string marker : {".git", ".svn"})
+	{
+		const fs::path outer = temp.root / ("outer" + marker);
+		const fs::path checkout = outer / "checkout";
+		const fs::path workspace = checkout / "src";
+		fs::create_directories(workspace);
+		fs::create_directories(checkout / marker);
+		fs::create_directories(outer / "plain" / "child");
+		const std::vector<ChatFolder> at_root{{"root", "Root", checkout.string(), false, "local"}};
+		const std::vector<ChatFolder> above_root{{"outer", "Outer", outer.string(), false, "local"}};
+		UAM_ASSERT(uam::ImportedWorkspaceMatchesFolder(workspace, checkout));
+		UAM_ASSERT(!uam::ImportedWorkspaceMatchesFolder(workspace, outer));
+		UAM_ASSERT(uam::FindImportedWorkspaceFolder(at_root, workspace) != nullptr);
+		UAM_ASSERT(uam::FindImportedWorkspaceFolder(above_root, workspace) == nullptr);
+		// Containment continues to any registered ancestor when no marker intervenes.
+		UAM_ASSERT(uam::ImportedWorkspaceMatchesFolder(outer / "plain" / "child", outer));
+		UAM_ASSERT(uam::FindImportedWorkspaceFolder(above_root, outer / "plain" / "child") != nullptr);
+	}
+}
+
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+UAM_TEST(ClaudeWorktreeDiscoveryPassesThroughSvnCheckoutToGitRegistrations)
+{
+	TempDir temp("uam-wt-svn-claude");
+	const fs::path main = temp.root / "main", linked = temp.root / "linked";
+	WriteLinkedWorktreeFixture(main, linked);
+	fs::create_directories(main / "vendor" / ".svn");
+	fs::create_directories(linked / "vendor" / ".svn");
+	ScopedEnvVar claude_env("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	std::string encoded = (linked / "vendor").string();
+	for (char& character : encoded)
+		if (!std::isalnum(static_cast<unsigned char>(character))) character = '-';
+	const fs::path project = temp.root / "claude" / "projects" / encoded;
+	fs::create_directories(project);
+	const nlohmann::json user = {{"uuid", "user-1"}, {"type", "user"}, {"cwd", (linked / "vendor").string()}, {"message", {{"role", "user"}, {"content", "Linked SVN child"}}}};
+	UAM_ASSERT(uam::io::WriteTextFile(project / "claude-session.jsonl", user.dump() + "\n"));
+	ChatFolder folder;
+	folder.id = "vendor-folder";
+	folder.title = "Vendor";
+	folder.directory = (main / "vendor").string();
+	const auto discovery = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, nullptr, {}, 0, false, {}, {}, uam::provider_ids::kClaudeCli);
+	if (!discovery.result.success) throw TestFailure(uam::strings::Join(discovery.result.errors, " "));
+	// A lookup ending at vendor/.svn would never read the Git registrations that name the linked project.
+	UAM_ASSERT_EQ(discovery.chats.size(), static_cast<std::size_t>(1));
+}
+#endif
+
 UAM_TEST(ImportCodexRolloutsForFolderIsWorkspaceScopedAndIdempotent)
 {
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
