@@ -16,7 +16,7 @@ import {
   rememberOptimisticFields,
   rememberPendingRequest,
 } from '../cpp/reconcile'
-import { sanitizeVcsStorageSettings, sanitizeProviderAvailability, sanitizeVoiceInputSettings } from '../cpp/sanitizers'
+import { DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS, sanitizeVcsStorageSettings, sanitizeProviderAvailability, sanitizeVoiceInputSettings } from '../cpp/sanitizers'
 import type { NewChatWorktreeContext, VcsSettingsRequest, StorageSettingsRequest, ProviderAvailabilityRequest, VoiceInputSettingsRequest } from '../cpp/types'
 import type { AppState, ZustandSet, ZustandGet } from '../storeTypes'
 
@@ -149,7 +149,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
     steerActiveTurnOnSend: false,
     nativeImportExcludedTitlePrefixes: [] as string[],
     nativeImportExcludedDirectories: [] as string[],
-    nativeImportStartupMaxAgeDays: 0,
+    nativeImportStartupMaxAgeDays: DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS,
     gitEnabled: true,
     svnEnabled: true,
     isNewChatModalOpen: false,

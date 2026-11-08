@@ -6,6 +6,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { EMPTY_STARTUP_NATIVE_IMPORT_STATUS, type StartupNativeImportPage } from '../../types/startupNativeImports'
 import { SUPPORTED_CLI_PROVIDER_IDS, fallbackProviderForId } from '../../utils/providerMetadata'
 import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
+import { sanitizeCppSettings } from '../../store/cpp/sanitizers'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const page = (phase: StartupNativeImportPage['phase'] = 'scanning', generation = 'explicit-1'): StartupNativeImportPage => ({
@@ -99,6 +100,15 @@ describe('Chat Data import filters', () => {
       expect(field.value).toBe('/srv/draft')
     } finally { act(() => filterRoot.unmount()); filterHost.remove() }
     expect(dirty).toHaveBeenLastCalledWith(false)
+  })
+})
+
+describe('Startup import age limit default', () => {
+  it('uses 30 days when the app sent no usable value and keeps a chosen 0', () => {
+    expect(sanitizeCppSettings(null).nativeImportStartupMaxAgeDays).toBe(30)
+    expect(sanitizeCppSettings({}).nativeImportStartupMaxAgeDays).toBe(30)
+    expect(sanitizeCppSettings({ nativeImportStartupMaxAgeDays: 'soon' }).nativeImportStartupMaxAgeDays).toBe(30)
+    expect(sanitizeCppSettings({ nativeImportStartupMaxAgeDays: 0 }).nativeImportStartupMaxAgeDays).toBe(0)
   })
 })
 

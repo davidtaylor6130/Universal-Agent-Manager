@@ -80,6 +80,7 @@ import { SSH_ENABLED } from '../../config/buildFeatures'
 // Memory settings constants (re-exported so useAppStore.ts and slices can use them)
 // ---------------------------------------------------------------------------
 
+export const DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS = 30
 export const DEFAULT_MEMORY_IDLE_DELAY_SECONDS = 60
 export const MIN_MEMORY_IDLE_DELAY_SECONDS = 30
 export const MAX_MEMORY_IDLE_DELAY_SECONDS = 3600
@@ -1808,7 +1809,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       favoriteUamAgentIds: [],
       nativeImportExcludedTitlePrefixes: [],
       nativeImportExcludedDirectories: [],
-      nativeImportStartupMaxAgeDays: 0,
+      nativeImportStartupMaxAgeDays: DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS,
       uamAgentCycleShortcut: 'shift+tab',
       computerUseAllowlistEnabled: false,
       computerUseAllowedApplications: [],
@@ -1873,7 +1874,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
   const nativeImportExcludedTitlePrefixes = importRules(value.nativeImportExcludedTitlePrefixes)
   const nativeImportExcludedDirectories = importRules(value.nativeImportExcludedDirectories)
   const startupAge = value.nativeImportStartupMaxAgeDays
-  const nativeImportStartupMaxAgeDays = typeof startupAge === 'number' && Number.isFinite(startupAge) ? Math.min(3650, Math.max(0, Math.round(startupAge))) : 0
+  const nativeImportStartupMaxAgeDays = typeof startupAge === 'number' && Number.isFinite(startupAge) ? Math.min(3650, Math.max(0, Math.round(startupAge))) : DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS
   const executionHosts: NonNullable<CppSettings['executionHosts']> = [{
     id: 'local', label: 'This computer', transport: 'local' as const, sshAlias: '',
     runnerStatus: 'ready' as const, runnerVersion: '', platform: '', architecture: '', lastSeenAt: '',

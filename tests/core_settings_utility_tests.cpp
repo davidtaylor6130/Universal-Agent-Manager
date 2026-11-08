@@ -2905,8 +2905,8 @@ UAM_TEST(SettingsStorePersistsNativeImportFilters)
 	const nlohmann::json frontend = uam::settings_frontend_json::SerializeCommonSettingsFields(loaded);
 	UAM_ASSERT_EQ(frontend["nativeImportExcludedTitlePrefixes"], nlohmann::json::array({"[automation]", "Run the nightly"}));
 	UAM_ASSERT_EQ(frontend["nativeImportExcludedDirectories"], nlohmann::json::array({"C:\\scratch", "/home/you/tmp"}));
-	UAM_ASSERT_EQ(AppSettings{}.native_import_startup_max_age_days, 0);
-	UAM_ASSERT_EQ(frontend["nativeImportStartupMaxAgeDays"], 0);
+	UAM_ASSERT_EQ(AppSettings{}.native_import_startup_max_age_days, 30);
+	UAM_ASSERT_EQ(frontend["nativeImportStartupMaxAgeDays"], 30);
 	settings.native_import_startup_max_age_days = 45;
 	UAM_ASSERT(SettingsStore::Save(settings_file, settings));
 	SettingsStore::Load(settings_file, loaded);
@@ -2916,6 +2916,35 @@ UAM_TEST(SettingsStorePersistsNativeImportFilters)
 	UAM_ASSERT(SettingsStore::Save(settings_file, settings));
 	SettingsStore::Load(settings_file, loaded);
 	UAM_ASSERT_EQ(loaded.native_import_startup_max_age_days, 3650);
+}
+
+// The limit shipped off and every save wrote it, so only the new key records that a user chose 0.
+UAM_TEST(SettingsStoreAppliesStartupImportAgeDefaultUntilAValueIsChosen)
+{
+	TempDir temp("uam-native-import-age-default");
+	const fs::path settings_file = temp.root / "settings.txt";
+	const auto load_text = [&](const std::string& text)
+	{
+		UAM_ASSERT(uam::io::WriteTextFile(settings_file, text));
+		AppSettings loaded;
+		SettingsStore::Load(settings_file, loaded);
+		return loaded.native_import_startup_max_age_days;
+	};
+	UAM_ASSERT_EQ(load_text("show_provider_icons_in_sidebar=1\n"), 30);
+	UAM_ASSERT_EQ(load_text("native_import_startup_max_age_days=0\n"), 30);
+	UAM_ASSERT_EQ(load_text("native_import_startup_max_age_days=45\n"), 45);
+
+	AppSettings explicit_off;
+	explicit_off.native_import_startup_max_age_days = 0;
+	UAM_ASSERT(SettingsStore::Save(settings_file, explicit_off));
+	AppSettings loaded;
+	SettingsStore::Load(settings_file, loaded);
+	UAM_ASSERT_EQ(loaded.native_import_startup_max_age_days, 0);
+	// A second save keeps the choice rather than restoring the default.
+	UAM_ASSERT(SettingsStore::Save(settings_file, loaded));
+	AppSettings reloaded;
+	SettingsStore::Load(settings_file, reloaded);
+	UAM_ASSERT_EQ(reloaded.native_import_startup_max_age_days, 0);
 }
 
 UAM_TEST(SettingsStorePersistsOrderedUamAgentPreferences)

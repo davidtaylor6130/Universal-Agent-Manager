@@ -299,6 +299,8 @@ UAM_TEST(OpenCodeStreamStartupSelectionRetainsOwnedSpool)
 		uam::AppState app;
 		app.data_root = fixture.temp.root / "private data";
 		app.folders.push_back({"workspace", "Private", fixture.chat.workspace_directory, false, "local"});
+		// The fixture has a fixed past date; this case is about spool ownership, not the startup age limit.
+		app.settings.native_import_startup_max_age_days = 0;
 		auto source = fixture.Export();
 		const fs::path path = *source;
 		uam::StartupNativeImportService service([&source, chat = fixture.chat](const uam::StartupNativeImportScanRequest&, std::stop_token)

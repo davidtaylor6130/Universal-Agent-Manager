@@ -271,6 +271,8 @@ The [stream watch](providers/runtime-lifecycle.md#stream-watch) ships with loop 
 
 Issue #688 asks for the Send during a running turn preference to apply in both Chat and CLI View. CLI View is the provider's own terminal interface ([CLI terminal view](providers/terminal-view/terminal-view.md)) and has no UAM composer or Send action: keystrokes go straight to the native CLI, which decides itself whether input queues or steers. The preference therefore applies to the Chat composer only. Decide whether CLI View needs a UAM-owned input control or provider-specific key mapping; no terminal input change is made until decided.
 
-## Startup import age default
+## Startup import untitled sessions
 
-Issue #631 asks which native sessions startup import should leave alone by default. The startup age limit in Chat Data Import filters ([policy](chat/native-imports.md)) ships off (0 days) until David chooses a default; candidates include a fixed age such as 30 days, the date the workspace was added to UAM, or treating provider default titles specially. Explicit discovery is unaffected whatever the default.
+Issue #631 also asks whether startup import should treat sessions that still have a provider's default name, such as OpenCode's "New session - ...", specially. This is undecided: they are currently imported like any other session within the age limit, and a title filter can exclude them.
+
+**Age limit default resolved by David, 2026-11-07.** The startup age limit defaults to 30 days for anyone who has not saved a value ([policy](chat/native-imports.md)). Settings written before that decision recorded 0 on every save, so a saved 0 from those builds counts as no choice; a positive value is kept.
