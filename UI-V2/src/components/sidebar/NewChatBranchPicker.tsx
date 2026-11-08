@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { CircleX, LoaderCircle } from 'lucide-react'
+import { LoaderCircle } from 'lucide-react'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { sanitizeGitBaseBranch } from '../../store/cpp/sanitizers'
 import { useAppStore } from '../../store/useAppStore'
@@ -46,19 +46,31 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
 }) {
   const [context, setContext] = useState<BranchContext>()
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [settled, setSettled] = useState(false)
   const [attempt, setAttempt] = useState(0)
+  // Refresh appears only after a real list was shown, then stays mounted to keep keyboard focus.
+  const [listed, setListed] = useState(false)
   // The branch this dialog preselected; the reason shows only while that automatic choice stands.
   const [autoPicked, setAutoPicked] = useState<string>()
   const id = useId()
+  const busyRetried = useRef(false)
 
   useEffect(() => {
     if (unavailableReason) return
     let cancelled = false
+    let busyRetry: ReturnType<typeof setTimeout> | undefined
     setLoading(true)
-    setError('')
-    void sendToCEF({ action: 'getWorkspaceVcsContext', payload: { folderId } }).then((response) => {
+    setSettled(false)
+    // An unreadable branch list is an expected state, so it is not logged as an error.
+    void sendToCEF({ action: 'getWorkspaceVcsContext', payload: { folderId } }, false).then((response) => {
       if (cancelled) return
+      if (response.code === 429 && !busyRetried.current) {
+        // Native shares four context-read slots; one silent re-read covers a momentary busy reply.
+        busyRetried.current = true
+        busyRetry = setTimeout(() => setAttempt((previous) => previous + 1), 1000)
+        return
+      }
+      busyRetried.current = false
       const next = response.ok ? branchContext(response.data) : undefined
       if (next?.vcs === 'git' && !next.detached) {
         // Native lists newest commit first; other chats' worktree branches trail and are never preferred.
@@ -66,18 +78,20 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
         next.localBranches = rankBranches(next.localBranches, worktrees)
         next.preferred = preferredStartingBranch(next.localBranches, worktrees, defaultBranch, next.currentBranch)
       }
-      setContext(next)
-      setError(next ? '' : response.error || 'The workspace branch list could not be read. Try again.')
+      // Branch choice is optional: an unreadable result keeps any list already shown and otherwise stays quiet.
+      setContext((previous) => next ?? previous)
+      if (next?.vcs === 'git' && !next.detached) setListed(true)
+      setSettled(true)
       setLoading(false)
     }).catch(() => {
       if (cancelled) return
-      setError('The workspace branch list could not be read. Try again.')
+      setSettled(true)
       setLoading(false)
     })
-    return () => { cancelled = true }
+    return () => { cancelled = true; clearTimeout(busyRetry) }
   }, [folderId, unavailableReason, attempt, defaultBranch])
 
-  const ready = !unavailableReason && !loading && !error && context?.vcs === 'git' && !context.detached
+  const ready = !unavailableReason && !loading && context?.vcs === 'git' && !context.detached
   const attachedContext = context?.vcs === 'git' && !context.detached ? context : undefined
   const selectedValue = value === undefined ? 'default' : value === '' ? 'head' : `branch:${value}`
   // Keep the chosen policy visible while a read is pending, including the render
@@ -110,14 +124,14 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
     }
   }, [disabled, ready, attachedContext, value, defaultBranch, onChange])
   useEffect(() => {
-    if (loading || unavailableReason || value === undefined || (!context && !error)) return
+    if (loading || unavailableReason || value === undefined || (!context && !settled)) return
     if (!ready || (value !== '' && !attachedContext?.localBranches.some((branch) => branch.name === value))) onChange(undefined)
-  }, [loading, unavailableReason, value, context, error, ready, attachedContext, onChange])
+  }, [loading, unavailableReason, value, context, settled, ready, attachedContext, onChange])
   const message = unavailableReason || (loading ? 'Loading branches…' : context?.vcs === 'svn'
     ? 'SVN workspaces do not support Git branch selection.'
     : context?.vcs === '' ? 'This workspace has no enabled Git repository.'
-    : context?.detached ? 'Branch selection requires an attached Git branch.'
-    : error ? '' : "The chat's isolated worktree starts from the chosen branch.")
+    : attachedContext ? "The chat's isolated worktree starts from the chosen branch."
+    : 'This chat starts from the default or current branch.')
 
   return (
     <div className="space-y-1.5" aria-busy={loading || undefined}>
@@ -143,9 +157,8 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
         {!loading && ready && value !== undefined && value === autoPicked && (
           <p style={{ color: 'var(--text-3)' }}>Preselected: furthest ahead (newest commit).</p>
         )}
-        {error && !loading && <p role="alert" className="flex items-center gap-1.5" style={{ color: 'var(--error)' }}><CircleX size={12} aria-hidden />{error}</p>}
       </div>
-      {!unavailableReason && (
+      {!unavailableReason && listed && (
         <Button
           variant="secondary"
           size="sm"
@@ -154,7 +167,7 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
           aria-busy={loading || undefined}
           onClick={() => { if (!disabled && !loading) setAttempt((previous) => previous + 1) }}
         >
-          {loading && attempt > 0 ? 'Refreshing branches…' : error ? 'Retry branches' : 'Refresh branches'}
+          {loading && attempt > 0 ? 'Refreshing branches…' : 'Refresh branches'}
         </Button>
       )}
     </div>

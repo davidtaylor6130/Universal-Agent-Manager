@@ -46,7 +46,7 @@ describe('NewChatBranchPicker', () => {
     send.mockResolvedValue({ ok: true, data: { ...context, currentBranch: 'feature/base', currentCommit: 'b'.repeat(40) } })
     await act(async () => render())
     expect(send).toHaveBeenCalledOnce()
-    expect(send).toHaveBeenCalledWith({ action: 'getWorkspaceVcsContext', payload: { folderId: 'project' } })
+    expect(send).toHaveBeenCalledWith({ action: 'getWorkspaceVcsContext', payload: { folderId: 'project' } }, false)
     expect(onChange).not.toHaveBeenCalled()
     choose('feature/base')
     expect(onChange).toHaveBeenLastCalledWith('feature/base')
@@ -124,19 +124,21 @@ describe('NewChatBranchPicker', () => {
   it.each([
     [{ vcs: '', localBranches: [] }, 'no enabled Git repository'],
     [{ vcs: 'svn' }, 'SVN workspaces'],
-    [{ ...context, detached: true, currentBranch: '' }, 'attached Git branch'],
-    [{ ...context, localBranches: [] }, 'could not be read'],
-    [{ ...context, localBranches: [{ name: 'main', commit: 'invalid' }] }, 'could not be read'],
-    [{ ...context, currentCommit: 'b'.repeat(40) }, 'could not be read'],
+    [{ ...context, detached: true, currentBranch: '' }, 'starts from the default or current branch'],
+    [{ ...context, localBranches: [] }, 'starts from the default or current branch'],
+    [{ ...context, localBranches: [{ name: 'main', commit: 'invalid' }] }, 'starts from the default or current branch'],
+    [{ ...context, currentCommit: 'b'.repeat(40) }, 'starts from the default or current branch'],
   ])('keeps unsupported or uncertain context display-only: %j', async (data, message) => {
     send.mockResolvedValue({ ok: true, data })
     await act(async () => render())
     expect(trigger().disabled).toBe(true)
     expect(host.textContent).toContain(message)
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(host.querySelectorAll('button:not([aria-label="Starting branch"])')).toHaveLength(0)
     expect(onChange).not.toHaveBeenCalled()
   })
 
-  it('shows loading, reports an unborn/read failure and retries without requesting creation', async () => {
+  it('shows loading, then stays quiet with no error or retry when the first read fails', async () => {
     let reply!: (response: { ok: boolean; error: string }) => void
     send.mockImplementationOnce(() => new Promise((resolve) => { reply = resolve }))
     act(() => render())
@@ -145,11 +147,46 @@ describe('NewChatBranchPicker', () => {
     expect(host.querySelector('[role="status"] .animate-spin')).not.toBeNull()
     expect(host.querySelector('[aria-busy="true"]')).not.toBeNull()
     await act(async () => reply({ ok: false, error: 'Could not read local Git branches.' }))
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not read local Git branches.')
-    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Retry branches')!.click())
-    expect(trigger().disabled).toBe(false)
-    expect(send.mock.calls.every(([request]) => request.action === 'getWorkspaceVcsContext')).toBe(true)
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(host.textContent).not.toContain('Could not read')
+    expect(host.textContent).toContain('starts from the default or current branch')
+    expect(host.querySelectorAll('button:not([aria-label="Starting branch"])')).toHaveLength(0)
+    expect(trigger().disabled).toBe(true)
+    expect(send).toHaveBeenCalledOnce()
     expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('re-reads once silently after a busy reply and then offers the branches', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      send.mockResolvedValueOnce({ ok: false, code: 429, error: 'Repository context is busy. Try again shortly.' })
+      await act(async () => render())
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      expect(host.textContent).toContain('Loading branches')
+      expect(send).toHaveBeenCalledTimes(1)
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+      expect(send).toHaveBeenCalledTimes(2)
+      expect(trigger().disabled).toBe(false)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('gives up quietly after a second busy reply', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      send.mockResolvedValue({ ok: false, code: 429, error: 'Repository context is busy. Try again shortly.' })
+      await act(async () => render())
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      expect(send).toHaveBeenCalledTimes(2)
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      expect(host.textContent).toContain('starts from the default or current branch')
+    } finally { vi.useRealTimers() }
+  })
+
+  it('stays quiet when the bridge request itself rejects', async () => {
+    send.mockRejectedValue(new Error('bridge unavailable'))
+    await act(async () => render())
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(host.textContent).toContain('starts from the default or current branch')
   })
 
   it('ignores a late result from the previous workspace', async () => {
@@ -163,40 +200,42 @@ describe('NewChatBranchPicker', () => {
     expect(document.body.querySelector('[role="listbox"]')?.textContent).not.toContain('obsolete')
   })
 
-  it.each([false, true])('retains Retry focus during loading and after success=%s', async (success) => {
+  it.each([false, true])('retains Refresh focus during loading and after success=%s', async (success) => {
     let reply!: (response: { ok: boolean; error?: string; data?: typeof context }) => void
-    send.mockResolvedValueOnce({ ok: false, error: 'Could not read branches.' })
+    send.mockResolvedValueOnce({ ok: true, data: context })
       .mockImplementationOnce(() => new Promise((resolve) => { reply = resolve }))
     await act(async () => render())
-    const retry = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Retry branches')!
-    retry.focus()
-    act(() => retry.click())
-    expect(document.activeElement).toBe(retry)
-    expect(retry.isConnected).toBe(true)
-    expect(retry.getAttribute('aria-disabled')).toBe('true')
+    const refresh = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Refresh branches')!
+    refresh.focus()
+    act(() => refresh.click())
+    expect(document.activeElement).toBe(refresh)
+    expect(refresh.isConnected).toBe(true)
+    expect(refresh.getAttribute('aria-disabled')).toBe('true')
     expect(trigger().disabled).toBe(true)
-    act(() => retry.click())
+    act(() => refresh.click())
     expect(send).toHaveBeenCalledTimes(2)
 
     await act(async () => reply(success ? { ok: true, data: context } : { ok: false, error: 'Still unavailable.' }))
-    expect(document.activeElement).toBe(retry)
-    expect(retry.textContent).toBe(success ? 'Refresh branches' : 'Retry branches')
-    expect(trigger().disabled).toBe(!success)
-    await act(async () => retry.click())
+    expect(document.activeElement).toBe(refresh)
+    expect(refresh.textContent).toBe('Refresh branches')
+    // A failed refresh keeps the list already shown, with no error.
+    expect(trigger().disabled).toBe(false)
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    await act(async () => refresh.click())
     expect(send).toHaveBeenCalledTimes(3)
-    expect(document.activeElement).toBe(retry)
+    expect(document.activeElement).toBe(refresh)
     expect(onChange).not.toHaveBeenCalled()
     expect(send.mock.calls.every(([request]) => request.action === 'getWorkspaceVcsContext')).toBe(true)
   })
 
-  it('does not steal focus when the user leaves Retry while discovery is pending', async () => {
+  it('does not steal focus when the user leaves Refresh while discovery is pending', async () => {
     let reply!: (response: { ok: boolean; data: typeof context }) => void
-    send.mockResolvedValueOnce({ ok: false, error: 'Could not read branches.' })
+    send.mockResolvedValueOnce({ ok: true, data: context })
       .mockImplementationOnce(() => new Promise((resolve) => { reply = resolve }))
     await act(async () => render())
-    const retry = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Retry branches')!
-    retry.focus()
-    act(() => retry.click())
+    const refresh = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Refresh branches')!
+    refresh.focus()
+    act(() => refresh.click())
     const other = document.createElement('button')
     host.appendChild(other)
     other.focus()
@@ -205,20 +244,20 @@ describe('NewChatBranchPicker', () => {
     expect(trigger().disabled).toBe(false)
   })
 
-  it('ignores a stale retry without moving focus in the replacement workspace', async () => {
+  it('ignores a stale refresh failure from the previous workspace', async () => {
     let reply!: (response: { ok: boolean; error: string }) => void
-    send.mockResolvedValueOnce({ ok: false, error: 'Could not read branches.' })
+    send.mockResolvedValueOnce({ ok: true, data: context })
       .mockImplementationOnce(() => new Promise((resolve) => { reply = resolve }))
+      .mockImplementationOnce(() => new Promise(() => {}))
     await act(async () => render())
-    const retry = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Retry branches')!
-    retry.focus()
-    act(() => retry.click())
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Refresh branches')!.click())
     await act(async () => render({ folderId: 'other' }))
-    trigger().focus()
     await act(async () => reply({ ok: false, error: 'Obsolete workspace failure.' }))
-    expect(document.activeElement).toBe(trigger())
+    // The replacement read is still pending, so the stale reply must not end its loading state.
+    expect(host.textContent).toContain('Loading branches')
+    expect(host.querySelector('[aria-busy="true"]')).not.toBeNull()
     expect(host.querySelector('[role="alert"]')).toBeNull()
-    expect(send).toHaveBeenLastCalledWith({ action: 'getWorkspaceVcsContext', payload: { folderId: 'other' } })
+    expect(send).toHaveBeenLastCalledWith({ action: 'getWorkspaceVcsContext', payload: { folderId: 'other' } }, false)
     expect(onChange).not.toHaveBeenCalled()
   })
 
