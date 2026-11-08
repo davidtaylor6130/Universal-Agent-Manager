@@ -8,7 +8,7 @@ import { subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { subscribeSubagentNavigation } from '../../utils/subagentNavigation'
 import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
-import { PanelLeftClose, PanelLeftOpen, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCheck, CheckCircle2, AlertTriangle, ArrowUpRight, Info, X, XCircle, ChartNoAxesCombined } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCheck, CheckCircle2, AlertTriangle, ArrowUpRight, Info, X, CircleAlert, ChartNoAxesCombined } from 'lucide-react'
 import './panels.css'
 
 /** GitHub mark (lucide dropped brand icons). */
@@ -624,7 +624,7 @@ function NotificationsPanel({
                 <div key={`group-${group.label}`} className="uam-np-group">{group.label}</div>,
                 ...group.items.map((notification) => {
                   const tone = notification.failure ? 'error' : notification.warning ? 'warning' : notification.notice === 'success' ? 'success' : 'info'
-                  const ToneIcon = tone === 'error' ? XCircle : tone === 'warning' ? AlertTriangle : tone === 'success' ? CheckCircle2 : Info
+                  const ToneIcon = tone === 'error' ? CircleAlert : tone === 'warning' ? AlertTriangle : tone === 'success' ? CheckCircle2 : Info
                   const time = new Date(notification.time)
                   const exactTime = time.toLocaleString()
                   const fullDetail = [notification.failure?.message, notification.detail].filter(Boolean).join(' · ')

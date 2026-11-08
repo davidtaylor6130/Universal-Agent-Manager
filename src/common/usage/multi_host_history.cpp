@@ -181,7 +181,7 @@ namespace uam::usage
 					};
 					const std::function<bool(const AccountingRecord&)> append = [&](const AccountingRecord& entry)
 					{
-						if (cancelled && cancelled()) return false;
+						if (cancelled && cancelled()) { error = "Usage collection was cancelled."; return false; }
 						batch.push_back(entry);
 						return batch.size() < 2048 || flush();
 					};
@@ -298,6 +298,7 @@ namespace uam::usage
 		bool local_collecting = true;
 		try
 		{
+			RemoveAbandonedRemoteViews(m_dataRoot);
 			while (!stop.stop_requested())
 			{
 				std::vector<ExecutionHost> hosts;

@@ -421,3 +421,15 @@ UAM_TEST(UsageMultiHostStreamedFactReuseRevalidatesRegressedAndRollingBounds)
 		UAM_ASSERT(rejected.value("collectionError", "").find("scope") != std::string::npos);
 	}
 }
+
+UAM_TEST(MultiHostHistoryStartRemovesRemoteViewsLeftByAnEarlierRun)
+{
+	TempDir temp("uam-multi-host-stale-view");
+	const fs::path stale = temp.root / "usage" / "remote" / "scope" / "receipt-view.tmp.1";
+	fs::create_directories(stale.parent_path());
+	UAM_ASSERT(uam::io::WriteTextFile(stale, "x"));
+	fs::last_write_time(stale, fs::file_time_type::clock::now() - std::chrono::hours(25));
+	uam::usage::MultiHostHistory history(temp.root, EmptyLocal(temp.root), {}, {});
+	for (int attempt = 0; attempt < 3000 && fs::exists(stale); ++attempt) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	UAM_ASSERT(!fs::exists(stale));
+}

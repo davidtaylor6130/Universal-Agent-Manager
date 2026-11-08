@@ -1,4 +1,4 @@
-import { ArrowUpCircle, ArrowUpRight, Check, CheckCircle2, Copy, Download, Loader2, RefreshCw, RotateCcw, TriangleAlert, X } from 'lucide-react'
+import { ArrowUpCircle, ArrowUpRight, Check, CheckCircle2, CircleAlert, Copy, Download, Loader2, RefreshCw, RotateCcw, TriangleAlert, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -208,7 +208,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
               const helper = Boolean(__UAM_FEATURE_SSH__ && target?.remoteHostId)
               return (
                 <article key={key} className="uam-update-row uam-update-row--error flex min-w-0 max-w-full items-center gap-1.5 rounded-lg px-2 py-1.5">
-                  <X size={14} aria-hidden className="shrink-0" style={{ color: 'var(--error)' }} />
+                  <CircleAlert size={14} aria-hidden className="shrink-0" style={{ color: 'var(--error)' }} />
                   <span className="min-w-0 flex-1 truncate text-sm font-medium" style={{ color: 'var(--error)' }}>{`${result.name} update failed`}</span>
                   <IconButton size="sm" icon={<Copy size={14} />} label={`Copy ${result.name} update logs`} onClick={() => { void navigator.clipboard?.writeText(result.output || result.message) }} />
                   {target && (
@@ -260,7 +260,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
               const rowClass = cx('uam-update-row flex min-w-0 max-w-full items-center gap-1.5 rounded-lg px-2 py-1.5', failed && 'uam-update-row--error')
               const content = failed ? (
                 <>
-                  <X size={14} aria-hidden className="shrink-0" style={{ color: 'var(--error)' }} />
+                  <CircleAlert size={14} aria-hidden className="shrink-0" style={{ color: 'var(--error)' }} />
                   <span className="min-w-0 flex-1 truncate text-sm font-medium" style={{ color: 'var(--error)' }}>{`${update.name} update failed`}</span>
                   {outcome.output && (
                     <IconButton size="sm" icon={<Copy size={14} />} label={`Copy ${update.name} update logs`} onClick={() => { void navigator.clipboard?.writeText(outcome.output ?? '') }} />

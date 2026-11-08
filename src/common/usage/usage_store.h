@@ -34,6 +34,10 @@ namespace uam::usage
 		bool Visit(const std::function<bool(const AccountingRecord&)>& visitor, std::string& error, const std::function<bool()>& cancelled = {}) const;
 	};
 	std::shared_ptr<const ReceiptSnapshot> ReadReceiptSnapshot(const std::filesystem::path& path, std::string& error, const std::function<bool()>& cancelled = {});
+	/// <summary>Removes receipt snapshots and combined-machine stores a previous run left behind once they are a day old.</summary>
+	void RemoveAbandonedScratch(const std::filesystem::path& data_root);
+	/// <summary>Removes pinned remote views and partial downloads a previous run left behind; call before this run pins or fetches any, because a pin inherits its source's age.</summary>
+	void RemoveAbandonedRemoteViews(const std::filesystem::path& data_root);
 
 	struct SourceRecord
 	{
