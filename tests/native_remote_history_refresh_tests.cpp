@@ -14,7 +14,7 @@ namespace
 		const std::string id = "33333333-3333-4333-8333-333333333333";
 		const std::string workspace = uam::paths::Utf8PathString(temp.root / "workspace");
 		std::string claude_text, copilot_text, gemini_text;
-		fs::path copilot_events;
+		fs::path copilot_events, claude_file, gemini_file;
 		NativeRemoteHistoryFixture()
 		{
 			fs::create_directories(uam::paths::PathFromUtf8(workspace));
@@ -24,7 +24,8 @@ namespace
 			    {"message", {{"role", "user"}, {"content", "Native terminal question"}}}}).dump() + "\n" +
 			    nlohmann::json({{"type", "assistant"}, {"uuid", "assistant"}, {"parentUuid", "user"}, {"sessionId", id}, {"cwd", workspace},
 			    {"message", {{"role", "assistant"}, {"content", "Native Claude answer"}}}}).dump() + "\n";
-			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "claude" / "projects" / encoded / (id + ".jsonl"), claude_text));
+			claude_file = temp.root / "claude" / "projects" / encoded / (id + ".jsonl");
+			UAM_ASSERT(uam::io::WriteTextFile(claude_file, claude_text));
 			copilot_text = nlohmann::json({{"id", "start"}, {"type", "session.start"}, {"data", {{"sessionId", id}, {"context", {{"cwd", workspace}}}}}}).dump() + "\n" +
 			    nlohmann::json({{"id", "user"}, {"type", "user.message"}, {"data", {{"content", "Native terminal question"}}}}).dump() + "\n" +
 			    nlohmann::json({{"id", "assistant"}, {"type", "assistant.message"}, {"data", {{"content", "Native Copilot answer"}}}}).dump() + "\n";
@@ -35,7 +36,8 @@ namespace
 			    {"messages", nlohmann::json::array({{{"type", "user"}, {"content", "Native terminal question"}},
 			        {{"type", "gemini"}, {"content", "Native Gemini answer"}, {"thoughts", nlohmann::json::array({"Native thought"})}}})}}).dump();
 			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "gemini" / ".gemini" / "tmp" / "project" / ".project_root", workspace));
-			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "gemini" / ".gemini" / "tmp" / "project" / "chats" / ("session-2026-10-16T12-00-" + id.substr(0, 8) + ".json"), gemini_text));
+			gemini_file = temp.root / "gemini" / ".gemini" / "tmp" / "project" / "chats" / ("session-2026-10-16T12-00-" + id.substr(0, 8) + ".json");
+			UAM_ASSERT(uam::io::WriteTextFile(gemini_file, gemini_text));
 		}
 		nlohmann::json Request(const std::string& provider) const
 		{
@@ -68,6 +70,67 @@ UAM_TEST(RemoteNativeHistoryReadsExactProviderSessionAndWorkspace)
 		uam::remote::native_history::Snapshot snapshot;
 		std::string read_error;
 		UAM_ASSERT(!uam::remote::native_history::Load("copilot-cli", fixture.id, fixture.workspace, snapshot, read_error));
+	}
+}
+
+// Every way past the snapshot limit reports the limit, not a missing or foreign history.
+UAM_TEST(RemoteNativeHistoryOversizedSnapshotsReportTheLimit)
+{
+	using namespace uam::remote::native_history;
+	const auto assert_refused = [](const NativeRemoteHistoryFixture& fixture, const std::string& provider, const std::string& agent = {})
+	{
+		Snapshot snapshot;
+		std::string error;
+		UAM_ASSERT(!Load(provider, fixture.id, fixture.workspace, snapshot, error, agent));
+		UAM_ASSERT_EQ(error, std::string(kSnapshotTooLargeError));
+		UAM_ASSERT(!snapshot.ready);
+	};
+	{
+		NativeRemoteHistoryFixture fixture;
+		fs::resize_file(fixture.copilot_events, kMaxSnapshotBytes + 1);
+		assert_refused(fixture, "copilot-cli");
+	}
+	{
+		NativeRemoteHistoryFixture fixture;
+		fs::resize_file(fixture.claude_file, kMaxSnapshotBytes + 1);
+		assert_refused(fixture, "claude-cli");
+	}
+	{
+		NativeRemoteHistoryFixture fixture;
+		const fs::path child = fixture.claude_file.parent_path() / fixture.id / "subagents" / "agent-child.jsonl";
+		UAM_ASSERT(uam::io::WriteTextFile(child, "{}"));
+		fs::resize_file(child, kMaxSnapshotBytes + 1);
+		assert_refused(fixture, "claude-cli", "child");
+	}
+	{
+		NativeRemoteHistoryFixture fixture;
+		fs::resize_file(fixture.gemini_file, kMaxSnapshotBytes + 1);
+		assert_refused(fixture, "gemini-cli");
+	}
+	{
+		// Exactly the limit fits alone; the required workspace.yaml takes it over.
+		NativeRemoteHistoryFixture fixture;
+		const std::string prefix = R"({"type":"assistant.message","data":{"content":")", suffix = "\"}}\n";
+		fixture.copilot_text += prefix + std::string(kMaxSnapshotBytes - fixture.copilot_text.size() - prefix.size() - suffix.size(), 'x') + suffix;
+		UAM_ASSERT(uam::io::WriteTextFile(fixture.copilot_events, fixture.copilot_text));
+		UAM_ASSERT_EQ(fs::file_size(fixture.copilot_events), kMaxSnapshotBytes);
+		assert_refused(fixture, "copilot-cli");
+	}
+	{
+		// Each candidate fits; together they do not.
+		NativeRemoteHistoryFixture fixture;
+		const std::string half = nlohmann::json({{"sessionId", fixture.id}, {"messages", nlohmann::json::array()}, {"pad", std::string(kMaxSnapshotBytes / 2, 'x')}}).dump();
+		UAM_ASSERT(uam::io::WriteTextFile(fixture.gemini_file, half));
+		UAM_ASSERT(uam::io::WriteTextFile(fixture.gemini_file.parent_path() / (fixture.id + ".json"), half));
+		assert_refused(fixture, "gemini-cli");
+	}
+	{
+		// Claude sums every project directory holding this session ID.
+		NativeRemoteHistoryFixture fixture;
+		const std::string half(kMaxSnapshotBytes / 2 + 1, 'x');
+		UAM_ASSERT(uam::io::WriteTextFile(fixture.claude_file, half));
+		UAM_ASSERT(uam::io::WriteTextFile(fixture.claude_file.parent_path().parent_path() / "other-project" / (fixture.id + ".jsonl"), half));
+		assert_refused(fixture, "claude-cli");
 	}
 }
 

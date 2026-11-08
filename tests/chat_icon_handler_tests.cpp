@@ -5047,9 +5047,9 @@ namespace
 			ChatIconHandlerTestAccess::OpenNative(*fixture.handler, {{"chatId", parent_id}, {"nativeSessionId", reference}, {"selectChat", false}, {"refreshHistory", true}}, callback);
 			return callback;
 		}
-		CefRefPtr<RemoteHistoryQueryCallback> Await(CefRefPtr<RemoteHistoryQueryCallback> callback) const
+		CefRefPtr<RemoteHistoryQueryCallback> Await(CefRefPtr<RemoteHistoryQueryCallback> callback, std::chrono::seconds limit = std::chrono::seconds(15)) const
 		{
-			RunCreationLoopUntil([callback] { return callback->Completed(); }, std::chrono::seconds(15));
+			RunCreationLoopUntil([callback] { return callback->Completed(); }, limit);
 			UAM_ASSERT(callback->Completed()); UAM_ASSERT_EQ(callback->successes + callback->failures, 1);
 			return callback;
 		}
@@ -5206,6 +5206,88 @@ UAM_TEST(RemoteNativeHistoryHandlerGeminiChildMalformedJournalSavesNothing)
 	UAM_ASSERT(!fs::exists(child.Primary()));
 	UAM_ASSERT(ChatDomainService().FindChatById(fixture.app, child.reference) == nullptr);
 	fixture.Settle(refused);
+}
+
+namespace
+{
+	// One byte past the documented SSH snapshot limit, kept sparse so the test
+	// costs no disk. The asserted reason shows the size check refused it.
+	void GrowPastSnapshotLimit(const RemoteGeminiChildJournal& child)
+	{
+		fs::resize_file(child.File(), uam::remote::native_history::kMaxSnapshotBytes + 1);
+	}
+
+	void AssertOversizedRefusal(CefRefPtr<RemoteHistoryQueryCallback> refused)
+	{
+		UAM_ASSERT_EQ(refused->successes, 0); UAM_ASSERT_EQ(refused->failures, 1); UAM_ASSERT_EQ(refused->status, 502);
+		UAM_ASSERT_EQ(refused->body, std::string(uam::remote::native_history::kSnapshotTooLargeError));
+	}
+}
+
+// An SSH journal over the snapshot limit is refused with its reason, publishes
+// nothing, and leaves the helper able to serve the same child once it fits.
+UAM_TEST(RemoteNativeHistoryHandlerGeminiChildOversizedJournalRefusedAndRetryable)
+{
+	RemoteOwnedControlsFixture fixture;
+	RemoteGeminiChildJournal child(fixture); child.Write(true);
+	GrowPastSnapshotLimit(child);
+	const auto chats = fixture.app.chats.size();
+	const auto before = fixture.Launches();
+	const auto refused = child.Open();
+	fixture.AssertPrivateTransport(before); // The real helper applied the limit.
+	AssertOversizedRefusal(refused);
+	fixture.Settle(refused);
+	AwaitRemoteCandidateCapacity();
+	UAM_ASSERT(!fs::exists(child.Primary()));
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatSummaryFilePath(fixture.app.data_root, child.reference)));
+	UAM_ASSERT(ChatDomainService().FindChatById(fixture.app, child.reference) == nullptr);
+	UAM_ASSERT_EQ(fixture.app.chats.size(), chats);
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(fixture.app), fixture.unrelated_id);
+	UAM_ASSERT_EQ(fs::file_size(child.File()), uam::remote::native_history::kMaxSnapshotBytes + 1); // The journal is only read.
+	child.Write(true);
+	const auto retry = child.Open();
+	RequireRemoteChildOpened(child, retry); (void)child.AssertSaved(); fixture.Settle(retry);
+}
+
+// A saved child whose journal outgrows the limit keeps its saved copy and originals.
+UAM_TEST(RemoteNativeHistoryHandlerGeminiChildOversizedRefreshRetainsSaved)
+{
+	RemoteOwnedControlsFixture fixture;
+	RemoteGeminiChildJournal child(fixture); child.Write(true);
+	const auto opened = child.Open(); RequireRemoteChildOpened(child, opened); fixture.Settle(opened);
+	const auto key = child.AssertSaved();
+	AwaitRemoteCandidateCapacity();
+	const auto primary = ReadFile(child.Primary()); UAM_ASSERT(!primary.empty());
+	const auto revision = ChatRepository::ChatStorageRevision(fixture.app.data_root, child.reference);
+	GrowPastSnapshotLimit(child);
+	const auto refused = child.Open();
+	AssertOversizedRefusal(refused);
+	fixture.Settle(refused);
+	AwaitRemoteCandidateCapacity();
+	UAM_ASSERT_EQ(ReadFile(child.Primary()), primary);
+	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(fixture.app.data_root, child.reference), revision);
+	UAM_ASSERT_EQ(child.AssertSaved(), key);
+}
+
+// The limit is inclusive: a journal of exactly 64 MiB crosses the helper and saves whole.
+UAM_TEST(RemoteNativeHistoryHandlerGeminiChildJournalAtSnapshotLimitOpens)
+{
+	RemoteOwnedControlsFixture fixture;
+	RemoteGeminiChildJournal child(fixture); child.Write(true);
+	const std::string answer = "Remote child answer";
+	const std::size_t padding = uam::remote::native_history::kMaxSnapshotBytes - child.bytes.size();
+	child.bytes.insert(child.bytes.find(answer) + answer.size(), padding, 'x');
+	UAM_ASSERT(uam::io::WriteTextFile(child.File(), child.bytes));
+	UAM_ASSERT_EQ(fs::file_size(child.File()), uam::remote::native_history::kMaxSnapshotBytes);
+	const auto opened = child.Await(child.Begin(), std::chrono::seconds(120)); // Leaves the 60-second read deadline as the only limit.
+	RequireRemoteChildOpened(child, opened);
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, child.reference, true);
+	UAM_ASSERT(saved && saved->messages_loaded); UAM_ASSERT_EQ(saved->messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(saved->messages.back().content.size(), answer.size() + padding);
+	UAM_ASSERT_EQ(saved->messages.front().attachments.size(), std::size_t{1});
+	const auto original = uam::native_assets::ReadOwned(fixture.app.data_root, child.reference, saved->messages.front().attachments.front().native_asset_key);
+	UAM_ASSERT(original.ok); UAM_ASSERT_EQ(original.bytes, fixture.original);
+	fixture.Settle(opened);
 }
 
 // A shorter readable SSH journal must not replace the fuller saved child or its originals.
