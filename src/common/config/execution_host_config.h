@@ -119,6 +119,12 @@ namespace uam::execution_hosts
 		       left.instruction_file == right.instruction_file && left.instruction_text == right.instruction_text;
 	}
 
+	/// <summary>True when an SSH host saves instructions; saved inline guidance, even empty, replaces the legacy file.</summary>
+	inline bool HasInstructions(const ExecutionHost& host)
+	{
+		return host.id != kLocalHostId && (host.instruction_text ? !host.instruction_text->empty() : !host.instruction_file.empty());
+	}
+
 	inline bool IsPortableId(std::string_view value)
 	{
 		return !value.empty() && value.size() <= 64 &&

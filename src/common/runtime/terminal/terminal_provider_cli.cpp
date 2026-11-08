@@ -432,8 +432,8 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 	    (chat.provider_id == uam::provider_ids::kCodexCli && !chat.native_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id)) return true;
 	const bool remote = host.id != uam::execution_hosts::kLocalHostId;
 	const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
-	const std::string directory = uam::paths::Utf8PathString(CliProviderContextDirectory(app, chat, host));
-	const std::string context_path = uam::execution_hosts::JoinRemotePath(host.platform, directory, "conversation.md");
+	const std::string requested_directory = uam::paths::Utf8PathString(CliProviderContextDirectory(app, chat, host));
+	std::string directory = requested_directory;
 	const std::string snapshot = "Use the saved conversation below as context. Do not repeat its tool actions.\n\n" + chat.provider_handoff_context;
 	std::unique_ptr<uam::remote::RunnerClient> client;
 	if (remote)
@@ -446,7 +446,11 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 			error = "Update the remote runner before carrying provider context into CLI View.";
 			return false;
 		}
+		std::filesystem::path chosen;
+		if (!client->ProviderContextLocation(uam::paths::PathFromUtf8(directory), chosen, &error, stop_token)) return false;
+		directory = uam::paths::Utf8PathString(chosen);
 	}
+	const std::string context_path = uam::execution_hosts::JoinRemotePath(host.platform, directory, "conversation.md");
 	const auto stage = [&](const std::string& path, const std::string& content)
 	{
 		if (stop_token.stop_requested()) { error = "Provider context preparation was cancelled."; return false; }
@@ -455,7 +459,8 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 		error = "Could not save provider conversation context. Retry when storage is available.";
 		return false;
 	};
-	const ProviderHandoffCliContext location{host.id, directory, ContextConnectionIdentity(host)};
+	// Cleanup records the requested folder, which the helper maps to where the context actually went.
+	const ProviderHandoffCliContext location{host.id, requested_directory, ContextConnectionIdentity(host)};
 	if (!chat.provider_handoff_context.empty() && !uam::ranges::Contains(chat.provider_handoff_cli_contexts, location))
 	{
 		chat.provider_handoff_cli_contexts.push_back(location);
@@ -541,9 +546,9 @@ bool PrepareConfiguredCliProviderHandoff(AppState& app, ChatSession& chat, const
 	std::unique_ptr<uam::remote::RunnerClient> client;
 	if (!bundle.local_directory.empty() && host.id != uam::execution_hosts::kLocalHostId)
 	{
-		target = workspace / ".UAM" / "provider-setup" / bundle.local_directory.filename();
 		client = std::make_unique<uam::remote::RunnerClient>(PlatformServicesFactory::Instance().process_service,
 		    host);
+		if (!client->ProviderConfigurationLocation(bundle.local_directory, workspace, target, &error, stop_token)) return false;
 		if (!client->InstallProviderConfiguration(bundle.local_directory, target, &error, stop_token)) return false;
 	}
 	if (!PrepareCliProviderConversation(app, chat, host, argv, environment, launch_channel, error, stop_token, uam::paths::Utf8PathString(target), native_servers)) return false;
@@ -601,7 +606,7 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 	    uam::paths::Utf8PathString(CliProviderContextDirectory(app, chat, host)), ContextConnectionIdentity(host)};
 	const bool prepare_cleanup = !chat.messages_loaded && !chat.provider_handoff_context.empty() &&
 	    !uam::ranges::Contains(chat.provider_handoff_cli_contexts, location);
-	if (!launch_option_override && terminal.context_preparation == nullptr && (host.id == uam::execution_hosts::kLocalHostId || environment.empty()) && (!prepare_history || history_prepared) && !uam::central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, host.id, "shared-setup", app.settings.central_provider_configuration.enabled) && uam::mcp_server_config::SelectForWorkspace(uam::host_scoped_settings::McpServers(app.settings, host.id), uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), host.id).empty() && (chat.workspace_source_directory.empty() || uam::mcp_server_config::SelectForWorkspace(uam::host_scoped_settings::McpServers(app.settings, host.id), chat.workspace_source_directory, host.id).empty()) && !chat.uam_control_enabled && (chat.provider_handoff_context.empty() || (chat.provider_id == uam::provider_ids::kCodexCli && !chat.native_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id)))
+	if (!launch_option_override && !uam::execution_hosts::HasInstructions(host) && terminal.context_preparation == nullptr && (host.id == uam::execution_hosts::kLocalHostId || environment.empty()) && (!prepare_history || history_prepared) && !uam::central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, host.id, "shared-setup", app.settings.central_provider_configuration.enabled) && uam::mcp_server_config::SelectForWorkspace(uam::host_scoped_settings::McpServers(app.settings, host.id), uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), host.id).empty() && (chat.workspace_source_directory.empty() || uam::mcp_server_config::SelectForWorkspace(uam::host_scoped_settings::McpServers(app.settings, host.id), chat.workspace_source_directory, host.id).empty()) && !chat.uam_control_enabled && (chat.provider_handoff_context.empty() || (chat.provider_id == uam::provider_ids::kCodexCli && !chat.native_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id)))
 		return true;
 	const std::function<std::string()> capture_baseline = [&]() { return nlohmann::json::array({chat.id, chat.provider_id, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), ContextConnectionIdentity(host), host.instruction_file, host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr), chat.uam_control_enabled, chat.uam_agent_id, chat.provider_handoff_context, chat.native_session_id, chat.provider_handoff_session_id, ChatRepository::ChatMetadataFingerprint(app.data_root, chat), chat.model_id, chat.reasoning_effort, chat.service_tier, chat.service_tier_explicit, CheckedProviderConfigurationVersion(app, chat.provider_id, host), argv, environment, uam::central_configuration::Serialize(app.settings.central_provider_configuration), uam::mcp_server_config::Serialize(uam::host_scoped_settings::McpServers(app.settings, host.id))}).dump(); };
 	const std::string baseline = capture_baseline();

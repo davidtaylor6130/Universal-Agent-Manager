@@ -6,6 +6,8 @@
 class GeminiCliProviderRuntime final : public IProviderRuntime
 {
   public:
+	// Gemini only loads include-directory memory in a trusted folder, and --acp never asks for trust.
+	bool DeliversHostInstructionsInFirstPrompt() const override { return true; }
 	const char* AcpProtocolKind() const override { return "gemini-acp"; }
 	const char* GetAcpDisplayName() const override { return "Gemini ACP"; }
 	bool IsGenericAcpSession() const override

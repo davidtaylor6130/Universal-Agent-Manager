@@ -1,3 +1,4 @@
+#include "common/provider/provider_setup_location.h"
 #include "common/provider/provider_setup.h"
 #include "remote/runner_proxy.h"
 
@@ -489,9 +490,7 @@ namespace uam::remote
 			if (!spec->context_provider_id.empty())
 			{
 				if (!spec->context_directory.is_absolute() ||
-				    spec->context_directory.parent_path().filename() != "context" ||
-				    spec->context_directory.parent_path().parent_path().filename() != ".UAM" ||
-				    spec->context_directory.parent_path().parent_path().parent_path().lexically_normal() != spec->working_directory.lexically_normal() ||
+				    (!uam::provider_setup::IsManagedWorkspaceResource(spec->context_directory, "context", spec->working_directory) && !uam::provider_setup::IsHelperContextResource(spec->context_directory)) ||
 				    (spec->context_provider_id != uam::provider_ids::kCodexCli && spec->context_provider_id != uam::provider_ids::kClaudeCli &&
 				     spec->context_provider_id != uam::provider_ids::kOpenCodeCli && spec->context_provider_id != uam::provider_ids::kGeminiCli && spec->context_provider_id != uam::provider_ids::kCopilotCli)) return 2;
 				std::string error;
@@ -504,7 +503,7 @@ namespace uam::remote
 			if (!spec->configuration_directory.empty())
 			{
 				const std::filesystem::path& directory = spec->configuration_directory;
-				if (directory.parent_path().filename() != "provider-setup" || directory.parent_path().parent_path().filename() != ".UAM" || directory.parent_path().parent_path().parent_path().lexically_normal() != spec->working_directory.lexically_normal()) return 2;
+				if (!uam::provider_setup::IsAllowedConfigurationDirectory(directory, spec->working_directory)) return 2;
 				std::string error;
 				if (!uam::provider_setup::Apply(spec->configuration_provider, directory, spec->working_directory, spec->argv, spec->environment, error, spec->session_mcp_servers))
 				{ std::cerr << error << '\n'; return 70; }
@@ -568,7 +567,7 @@ namespace uam::remote
 			if (chdir(spec->working_directory.c_str()) != 0) return 2;
 			for (const std::pair<std::string, std::string>& entry : spec->environment)
 				if (setenv(entry.first.c_str(), entry.second.c_str(), 1) != 0) return 70;
-			if (!private_launch || (spec->context_provider_id.empty() && spec->configuration_directory.empty())) AddInteractiveCliPaths();
+			AddInteractiveCliPaths();
 			std::vector<char*> native_arguments;
 			native_arguments.reserve(spec->argv.size() + 1);
 			for (std::string& argument : spec->argv) native_arguments.push_back(argument.data());
@@ -692,8 +691,8 @@ namespace uam::remote
 		std::filesystem::path configuration_directory;
 		if (!spec->attach_only && !spec->configuration_directory.empty())
 		{
-			configuration_directory = spec->working_directory / ".UAM" / "provider-setup" / spec->configuration_directory.filename();
-			if (!client.InstallProviderConfiguration(spec->configuration_directory, configuration_directory, &error))
+			if (!client.ProviderConfigurationLocation(spec->configuration_directory, spec->working_directory, configuration_directory, &error) ||
+			    !client.InstallProviderConfiguration(spec->configuration_directory, configuration_directory, &error))
 			{
 				std::cerr << error << '\n';
 				std::cerr << kRemoteStartupFailurePrefix << spec->delivery_token << " configuration\n";

@@ -1571,6 +1571,8 @@ int main(int argc, char** argv)
 					    {"stdoutBase64", uam::base64::Encode(chunk)}, {"stderrBase64", ""}, {"stdoutCursor", chunked_offset}, {"stderrCursor", std::uint64_t{0}}};
 				}
 			}
+			// Every request gets a canned result here, so this fake cannot answer a launch setup location.
+			if (request.value("type", "") == "hello") response["capabilities"]["providerConfigurationLocation"] = false;
 			if (argc == 5 && std::string_view(argv[4]) == "--without-central-config" && request.value("type", "") == "hello")
 				response["capabilities"]["centralProviderConfiguration"] = false;
 			if (argc == 5 && std::string_view(argv[4]).starts_with("--reject-config-start=") && request.value("type", "") == "process.start")

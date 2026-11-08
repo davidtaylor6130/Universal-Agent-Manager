@@ -10,6 +10,7 @@ namespace uam::codex
 	{
 		std::string pending;
 		bool configured = false;
+		bool resume_applied = false;
 	};
 
 	/// <summary>Deliver complete central instructions through native thread setup, without OS argv limits.</summary>
@@ -45,6 +46,14 @@ namespace uam::codex
 		}
 		next.pending.append(input);
 		std::size_t consumed = 0;
+		// After a resume only a real JSON frame can still be a replacement thread/start.
+		const auto stop_inspecting = [&]()
+		{
+			output.append(next.pending, consumed, std::string::npos);
+			next.pending.clear();
+			next.configured = true;
+			return true;
+		};
 		while (true)
 		{
 			const std::size_t end = next.pending.find('\n', consumed);
@@ -53,6 +62,7 @@ namespace uam::codex
 			nlohmann::json request = nlohmann::json::parse(line, nullptr, false);
 			if (request.is_discarded() || !request.is_object())
 			{
+				if (next.resume_applied) return stop_inspecting();
 				error = "Codex startup input is not a JSON request.";
 				return false;
 			}
@@ -64,17 +74,28 @@ namespace uam::codex
 				error = "Codex thread setup parameters are invalid.";
 				return false;
 			}
+			const bool resume = method != request.end() && method->is_string() && *method == "thread/resume";
 			if (ApplySetupInstructions(request, instructions))
 			{
 				output += request.dump() + "\n";
+				// A rejected saved thread is retried with thread/start on this process, which needs the instructions too.
+				if (resume && !next.resume_applied)
+				{
+					next.resume_applied = true;
+					consumed = end + 1;
+					continue;
+				}
 				output.append(next.pending, end + 1, std::string::npos);
 				next.pending.clear();
 				next.configured = true;
 				return true;
 			}
+			// A turn means the resumed thread was accepted.
+			if (next.resume_applied && method != request.end() && method->is_string() && *method == "turn/start") return stop_inspecting();
 			output.append(next.pending, consumed, end + 1 - consumed);
 			consumed = end + 1;
 		}
+		if (next.resume_applied && consumed < next.pending.size() && next.pending[consumed] != '{') return stop_inspecting();
 		next.pending.erase(0, consumed);
 		return true;
 	}

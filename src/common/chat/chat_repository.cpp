@@ -1594,6 +1594,7 @@ namespace
 		    lhs.last_prompt_agent_definition_hash != rhs.last_prompt_agent_definition_hash ||
 	    lhs.provider_handoff_context != rhs.provider_handoff_context ||
 	    lhs.provider_handoff_session_id != rhs.provider_handoff_session_id ||
+	    lhs.host_instructions_delivery != rhs.host_instructions_delivery ||
 	    lhs.provider_handoff_cli_contexts != rhs.provider_handoff_cli_contexts ||
 		    lhs.agent_run_id != rhs.agent_run_id || lhs.command_safety_tier != rhs.command_safety_tier ||
 		    lhs.computer_use_backend != rhs.computer_use_backend ||
@@ -1624,6 +1625,7 @@ namespace
 		       lhs.native_session_reset_pending == rhs.native_session_reset_pending &&
 		       lhs.provider_handoff_context == rhs.provider_handoff_context &&
 		       lhs.provider_handoff_session_id == rhs.provider_handoff_session_id &&
+		       lhs.host_instructions_delivery == rhs.host_instructions_delivery &&
 		       lhs.remote_restart_pending == rhs.remote_restart_pending &&
 		       lhs.remote_recovery_enabled == rhs.remote_recovery_enabled &&
 		       lhs.remote_recovery_state == rhs.remote_recovery_state &&
@@ -2057,6 +2059,7 @@ namespace
 		chat.native_session_reset_pending = JsonBoolOrDefault(root.Find("native_session_reset_pending"), false);
 		chat.provider_handoff_context = JsonStringOrEmpty(root.Find("provider_handoff_context"));
 		chat.provider_handoff_session_id = JsonStringOrEmpty(root.Find("provider_handoff_session_id"));
+	chat.host_instructions_delivery = JsonStringOrEmpty(root.Find("host_instructions_delivery"));
 		chat.remote_recovery_enabled = JsonBoolOrDefault(root.Find("remote_recovery_enabled"), false);
 		chat.remote_recovery_state = JsonStringOrEmpty(root.Find("remote_recovery_state"));
 		chat.routing_mode = JsonStringOrEmpty(root.Find("routing_mode"));
@@ -2296,6 +2299,7 @@ namespace
 		chat.last_prompt_agent_definition_hash = JsonStringOrEmpty(root.Find(kChatLastPromptAgentDefinitionHashField));
 	chat.provider_handoff_context = JsonStringOrEmpty(root.Find("provider_handoff_context"));
 	chat.provider_handoff_session_id = JsonStringOrEmpty(root.Find("provider_handoff_session_id"));
+	chat.host_instructions_delivery = JsonStringOrEmpty(root.Find("host_instructions_delivery"));
 	if (const JsonValue* contexts = uam::json::ArrayOrNull(root.Find("provider_handoff_cli_contexts")))
 	{
 		for (const JsonValue& context : contexts->array_value)
@@ -4055,6 +4059,7 @@ try
 	uam::json::SetBool(root, "native_session_reset_pending", chat.native_session_reset_pending);
 	uam::json::SetString(root, "provider_handoff_context", chat.provider_handoff_context);
 	uam::json::SetString(root, "provider_handoff_session_id", chat.provider_handoff_session_id);
+	uam::json::SetString(root, "host_instructions_delivery", chat.host_instructions_delivery);
 	uam::json::SetBool(root, "remote_recovery_enabled", chat.remote_recovery_enabled);
 	uam::json::SetString(root, "remote_recovery_state", chat.remote_recovery_state);
 	uam::json::SetString(root, "routing_mode", chat.routing_mode);
@@ -4201,6 +4206,7 @@ try
 	uam::json::SetString(root, kChatLastPromptAgentDefinitionHashField, chat.last_prompt_agent_definition_hash);
 	uam::json::SetString(root, "provider_handoff_context", chat.provider_handoff_context);
 	uam::json::SetString(root, "provider_handoff_session_id", chat.provider_handoff_session_id);
+	uam::json::SetString(root, "host_instructions_delivery", chat.host_instructions_delivery);
 	JsonValue contexts = uam::json::Array();
 	for (const ProviderHandoffCliContext& location : chat.provider_handoff_cli_contexts)
 	{
@@ -5457,6 +5463,7 @@ namespace
 		hydrated.last_prompt_agent_definition_hash = summary.last_prompt_agent_definition_hash;
 		hydrated.provider_handoff_context = summary.provider_handoff_context;
 		hydrated.provider_handoff_session_id = summary.provider_handoff_session_id;
+		hydrated.host_instructions_delivery = summary.host_instructions_delivery;
 		hydrated.provider_handoff_cli_contexts = summary.provider_handoff_cli_contexts;
 		hydrated.agent_run_id = summary.agent_run_id;
 		hydrated.managed_followup_incarnation = summary.managed_followup_incarnation;
@@ -5484,6 +5491,7 @@ namespace
 		hydrated.native_session_reset_pending = summary.native_session_reset_pending;
 		hydrated.provider_handoff_context = summary.provider_handoff_context;
 		hydrated.provider_handoff_session_id = summary.provider_handoff_session_id;
+		hydrated.host_instructions_delivery = summary.host_instructions_delivery;
 		hydrated.remote_recovery_enabled = summary.remote_recovery_enabled;
 		hydrated.remote_recovery_state = summary.remote_recovery_state;
 		hydrated.remote_process_control_token = summary.remote_process_control_token;

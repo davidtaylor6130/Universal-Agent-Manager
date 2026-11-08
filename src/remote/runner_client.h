@@ -82,6 +82,10 @@ namespace uam::remote
 		/// interrupt is polled while the handshake waits, like PollProcess interrupts.
 		bool Connect(std::string* error_out = nullptr, std::stop_token stop_token = {}, const std::function<bool()>& interrupt = {});
 		bool IsConnected() const { return m_connected; }
+		/// <summary>Asks the helper where this bundle should install; a helper that cannot choose keeps the workspace folder.</summary>
+		bool ProviderConfigurationLocation(const std::filesystem::path& source, const std::filesystem::path& workspace, std::filesystem::path& target, std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// <summary>Asks the helper where handoff context can live; a helper that cannot choose keeps the requested folder.</summary>
+		bool ProviderContextLocation(const std::filesystem::path& requested, std::filesystem::path& directory, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool InstallProviderConfiguration(const std::filesystem::path& source, const std::filesystem::path& target, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool SupportsProviderNativeContext() const { return m_providerNativeContext; }
 		bool PrepareProviderContext(const std::filesystem::path& directory, std::string* error_out = nullptr, std::stop_token stop_token = {});
@@ -164,7 +168,7 @@ namespace uam::remote
 		bool ReadUsageAccountingFile(const std::filesystem::path& path, nlohmann::json& progress, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool ReadUsageAccounting(nlohmann::json& snapshot, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool ReadTextFile(const std::filesystem::path& remote_path, std::string& text,
-		                  std::string* error_out = nullptr, std::stop_token stop_token = {});
+		                  std::string* error_out = nullptr, std::stop_token stop_token = {}, bool allow_linked_ancestors = false);
 		/// Reads one exact immutable native transcript, releasing its bounded runner snapshot on success or cancellation.
 		bool ReadNativeHistory(const std::string& provider, const std::string& session, const std::string& workspace,
 		    nlohmann::json& snapshot, std::string* error_out = nullptr, std::stop_token stop_token = {}, const std::string& agent_id = {});
@@ -216,6 +220,8 @@ namespace uam::remote
 		bool m_providerNativeContext = false;
 		bool m_centralProviderConfiguration = false;
 		bool m_geminiThinkingConfiguration = false;
+		bool m_hostInstructionsOnlyConfiguration = false;
+		bool m_providerConfigurationLocation = false;
 		bool m_claudeTerminalFastConfiguration = false;
 		bool m_processOutputAcknowledgement = false;
 		std::unordered_map<std::string, std::string> m_processControlTokens;

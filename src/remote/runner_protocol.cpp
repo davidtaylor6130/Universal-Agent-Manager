@@ -190,6 +190,8 @@ namespace uam::remote
 		                          {"providerNativeContext", state != nullptr},
 		                          {"centralProviderConfiguration", state != nullptr},
 		                          {"geminiThinkingConfiguration", state != nullptr},
+		                          {"hostInstructionsOnlyConfiguration", state != nullptr},
+		                          {"providerConfigurationLocation", state != nullptr},
 		                          {"claudeTerminalFastConfiguration", state != nullptr},
 		                          {"processExecution", state != nullptr}}}};
 	}

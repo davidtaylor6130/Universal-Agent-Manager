@@ -1628,6 +1628,8 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	}
 	session.codex_approvals_reviewer.clear();
 	session.provider_protocol_instructions.clear();
+	session.pending_host_instructions_delivery.clear();
+	session.goal_host_instructions_delivery.clear();
 	session.initialized = false;
 	session.session_ready = false;
 	session.load_session_supported = false;
@@ -2737,7 +2739,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 					const uam::provider_setup::Environment runtime_environment = ProviderRuntimeRegistry::ResolveById(provider.id).BuildStructuredLaunchEnvironment(provider, launch_chat);
 					result->environment.insert(result->environment.end(), runtime_environment.begin(), runtime_environment.end());
 					result->environment.insert(result->environment.end(), launch_environment.begin(), launch_environment.end());
-					result->success = PrepareProviderConfiguration(result->root, configuration_settings, launch_chat, result->host, workspace_root, result->bundle, result->error, central_native ? &central_instructions : nullptr, configuration_provider_version, !launch_control_servers.empty()) && (result->bundle.local_directory.empty() || uam::provider_setup::Apply(provider.id, result->bundle.local_directory, workspace_root, result->argv, result->environment, result->error, launch_control_servers, &result->instructions));
+					result->success = PrepareProviderConfiguration(result->root, configuration_settings, launch_chat, result->host, workspace_root, result->bundle, result->error, central_native ? &central_instructions : nullptr, configuration_provider_version, !launch_control_servers.empty(), ProviderRuntimeRegistry::ResolveById(provider.id).DeliversHostInstructionsInFirstPrompt()) && (result->bundle.local_directory.empty() || uam::provider_setup::Apply(provider.id, result->bundle.local_directory, workspace_root, result->argv, result->environment, result->error, launch_control_servers, &result->instructions));
 				}
 				catch (const std::exception& exception) { result->error = std::string("Local configuration preparation failed: ") + exception.what(); }
 				catch (...) { result->error = "Local configuration preparation failed."; }
@@ -2802,7 +2804,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			*error_out = session.last_error;
 		return false;
 	}
-	if (!prepared && !session.model_discovery_only && !session.recovering_remote_turn && !session.recovering_remote_process && (!PrepareProviderConfiguration(app.data_root, configuration_settings, launch_chat, *execution_host, workspace_root, configuration_bundle, startup_error, session.active_uam_agent_execution_capability == "uam-central-native-setup" ? &session.active_uam_agent_instructions : nullptr, configuration_provider_version, !launch_control_servers.empty()) || (!remote && !configuration_bundle.local_directory.empty() && !uam::provider_setup::Apply(provider.id, configuration_bundle.local_directory, workspace_root, launch_argv, launch_environment, startup_error, launch_control_servers, &session.provider_protocol_instructions))))
+	if (!prepared && !session.model_discovery_only && !session.recovering_remote_turn && !session.recovering_remote_process && (!PrepareProviderConfiguration(app.data_root, configuration_settings, launch_chat, *execution_host, workspace_root, configuration_bundle, startup_error, session.active_uam_agent_execution_capability == "uam-central-native-setup" ? &session.active_uam_agent_instructions : nullptr, configuration_provider_version, !launch_control_servers.empty(), ProviderRuntimeRegistry::ResolveById(provider.id).DeliversHostInstructionsInFirstPrompt()) || (!remote && !configuration_bundle.local_directory.empty() && !uam::provider_setup::Apply(provider.id, configuration_bundle.local_directory, workspace_root, launch_argv, launch_environment, startup_error, launch_control_servers, &session.provider_protocol_instructions))))
 	{
 		session.lifecycle_state = kAcpLifecycleError;
 		session.last_error = startup_error;
@@ -3902,6 +3904,17 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 	if (session.remote_context_preparation != nullptr) session.remote_context_preparation->cancel.request_stop();
 	session.remote_context_preparation.reset();
 	session.claude_input_preparation.reset();
+	if (!session.pending_host_instructions_delivery.empty())
+	{
+		if (session.goal_internal_session) session.goal_host_instructions_delivery = std::move(session.pending_host_instructions_delivery);
+		else
+		{
+			chat.host_instructions_delivery = std::move(session.pending_host_instructions_delivery);
+			local_delivery_save_needed = true;
+			if (remote) ScheduleChatSave(app, chat, 0.0);
+		}
+		session.pending_host_instructions_delivery.clear();
+	}
 	if (!remote && local_delivery_save_needed && session.defer_prompt_save)
 		ScheduleChatSave(app, chat, 0.0);
 	else if (!remote && local_delivery_save_needed && !SaveChatQuietly(app, chat))
@@ -4312,7 +4325,9 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			FailAcpTurnOrSession(session, &chat, "The SSH host no longer exists.");
 			return true;
 		}
-		if ((host->instruction_text ? !host->instruction_text->empty() : !host->instruction_file.empty()) || memory_budget > 0)
+		// Inline guidance arrives with the launch; only a legacy file can become unreadable between turns.
+		const bool capture_host_text = ProviderRuntimeRegistry::ResolveById(session.provider_id).DeliversHostInstructionsInFirstPrompt() && execution_hosts::HasInstructions(*host);
+		if ((!host->instruction_text && !host->instruction_file.empty()) || memory_budget > 0 || capture_host_text)
 		{
 			std::shared_ptr<RemoteContextPreparation>& preparation = session.remote_context_preparation;
 			if (preparation != nullptr && (!execution_hosts::SameConnection(preparation->host, *host) ||
@@ -4327,6 +4342,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 				preparation = std::make_shared<RemoteContextPreparation>();
 				preparation->host = *host; preparation->workspace = workspace; preparation->prompt = prompt;
 				preparation->memory_budget = memory_budget;
+				preparation->capture_host_text = capture_host_text;
 				preparation->memory_level = memory_policy::Resolve(app.settings, chat);
 				RemoteContextTask task;
 				task.state = preparation;
@@ -4335,7 +4351,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 					uam::platform::LowerCurrentThreadToBackgroundPriority();
 					std::stop_callback canceled(shutdown, [state]() { state->cancel.request_stop(); });
 					(void)remote::ResolveHostContext(PlatformServicesFactory::Instance().process_service,
-					    state->host, state->workspace, memory_budget, state->context, state->error, state->cancel.get_token());
+					    state->host, state->workspace, memory_budget, state->context, state->error, state->cancel.get_token(), state->capture_host_text ? &state->host_text : nullptr);
 					state->finished.store(true, std::memory_order_release);
 				});
 				app.remote_context_tasks.push_back(std::move(task));
@@ -4350,6 +4366,17 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 				return true;
 			}
 			context = preparation->context;
+			if (capture_host_text)
+			{
+				// Compared on every turn so a resumed session gets text it never received, and a saved edit reaches it once.
+				const std::string delivery = session.session_id + ":" + provider_setup::Digest(preparation->host_text);
+				session.pending_host_instructions_delivery.clear();
+				if ((session.goal_internal_session ? session.goal_host_instructions_delivery : chat.host_instructions_delivery) != delivery)
+				{
+					context = remote::WrapHostInstructions(preparation->host_text) + context;
+					session.pending_host_instructions_delivery = delivery;
+				}
+			}
 		}
 	}
 	if (!session.queued_skill_spans.empty())

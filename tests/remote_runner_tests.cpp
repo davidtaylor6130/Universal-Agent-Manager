@@ -2,6 +2,7 @@
 #include "remote/remote_workspace_terminal.h"
 #include "remote/runner_startup.h"
 #include "app/chat_lifecycle_service.h"
+#include "app/provider_configuration_service.h"
 #include "app/execution_routing_integration.h"
 #include "test_harness.h"
 #include "bootstrap_metadata/windows_command_assertions.h"
@@ -169,6 +170,7 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 		if (mode == "native-result-missing" && type == "opencode.native") response.erase("result");
 		if (type == "configuration.prepare") response["result"]["missing"] = nlohmann::json::array();
 		if (mode == "old-gemini-options" && type == "hello") response["capabilities"].erase("geminiThinkingConfiguration");
+		if (mode == "old-host-instructions" && type == "hello") response["capabilities"].erase("hostInstructionsOnlyConfiguration");
 		if (mode == "old-claude-options" && type == "hello") response["capabilities"].erase("claudeTerminalFastConfiguration");
 		if (mode == "old-context-capability" && type == "hello") response["capabilities"].erase("providerNativeContext");
 		if (mode == "handshake-version" && type == "hello") response["runnerVersion"] = "incompatible";
@@ -3633,6 +3635,71 @@ UAM_TEST(RemoteTerminalPrivateContextConsumesOnceAndPreservesExecutingHostConfig
 #endif
 }
 
+UAM_TEST(RemoteTerminalConfiguredLaunchRetainsExecutingHostCliDiscovery)
+{
+#if defined(__APPLE__)
+	TempDir temp("uam-configured-cli-path");
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path root = fs::canonical(temp.root);
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+	const fs::path socket = temp.root / "runner.sock";
+	const fs::path home = root / "home";
+	const fs::path executable = home / ".local/bin/uam-private-cli-fixture";
+	UAM_ASSERT(uam::io::WriteTextFile(executable, "#!/bin/sh\nprintf 'native:%s' \"$UAM_FIXTURE_AUTH\"\n"));
+	fs::permissions(executable, fs::perms::owner_all);
+	ScopedEnvVar helper_home("HOME", home.string());
+	AppSettings settings;
+	ChatSession chat;
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	ExecutionHost host;
+	host.id = "ssh-test";
+	host.transport = "ssh";
+	host.instruction_text = "Host marker";
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(root / "controller", settings, chat, host, root, bundle, error));
+	uam::platform::StdioProcessPlatformFields server;
+	UAM_ASSERT(service.StartStdioProcess(server, temp.root, {runner.string(), "serve", "--socket", socket.string()}, &error));
+	struct Guard
+	{
+		uam::platform::StdioProcessPlatformFields& process;
+		~Guard()
+		{
+			auto& service = PlatformServicesFactory::Instance().process_service;
+			service.StopStdioProcess(process, true);
+			service.CloseStdioProcessHandles(process);
+		}
+	} server_guard{server};
+	for (int attempt = 0; attempt < 100 && !fs::exists(socket); ++attempt) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	UAM_ASSERT(fs::exists(socket));
+	uam::remote::RunnerClient client(service, {runner.string(), "bridge", "--socket", socket.string()});
+	UAM_ASSERT(client.Connect(&error));
+	fs::path target;
+	UAM_ASSERT(client.ProviderConfigurationLocation(bundle.local_directory, root, target, &error));
+	UAM_ASSERT(client.InstallProviderConfiguration(bundle.local_directory, target, &error));
+	const std::string channel = "configured-cli-environment";
+	UAM_ASSERT(client.OpenChannel(channel, &error, false, 60000));
+	const std::string spec = uam::remote::BuildProcessProxySpec("terminal", temp.root,
+	    {"uam-private-cli-fixture"}, {{"HOME", home.string()}, {"PATH", "/usr/bin:/bin"}, {"UAM_FIXTURE_AUTH", "leased"}}, false, {}, 0, 0, {}, {}, "opencode-cli", target.string());
+	UAM_ASSERT(client.WriteChannel(channel, "desktopToRemote", spec, &error));
+	uam::platform::StdioProcessPlatformFields terminal;
+	UAM_ASSERT(service.StartStdioProcess(terminal, temp.root, {runner.string(), "terminal", "--channel", channel, "--socket", socket.string()}, &error));
+	Guard terminal_guard{terminal};
+	std::string output;
+	std::array<char, 4096> buffer{};
+	int exit_code = -1;
+	for (int attempt = 0; attempt < 300; ++attempt)
+	{
+		const auto count = service.ReadStdioProcessStdout(terminal, buffer.data(), buffer.size(), &error);
+		if (count > 0) output.append(buffer.data(), static_cast<std::size_t>(count));
+		if (service.PollStdioProcessExited(terminal, &exit_code)) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT_EQ(exit_code, 0);
+	UAM_ASSERT_EQ(output, std::string("native:leased"));
+#endif
+}
+
 UAM_TEST(RemoteTerminalPrivateEnvironmentRetainsExecutingHostCliDiscovery)
 {
 #if defined(__APPLE__)
@@ -4122,6 +4189,31 @@ UAM_TEST(RemoteContextReadUsesTargetFilesAndRejectsUnsafeOrUnboundedInputs)
 #endif
 	}
 }
+
+#if !defined(_WIN32)
+UAM_TEST(RemoteProjectMemoryAllowsALinkAboveTheWorkspaceButNotInsideIt)
+{
+	TempDir temp("uam-target-memory-link");
+	const fs::path root = fs::canonical(temp.root);
+	const fs::path real = root / "real";
+	UAM_ASSERT(uam::io::WriteTextFile(real / ".UAM/Lessons/User_Lessons/lesson.md", "Category: Lessons\n## Memory\nLinked workspace lesson"));
+	const fs::path linked = root / "linked";
+	fs::create_directory_symlink(real, linked);
+	uam::remote::RunnerState state;
+	const nlohmann::json read = uam::remote::HandleRunnerRequest({{"id", "memory"}, {"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(linked)}, {"budget", 512}}, "4.9.0", &state);
+	UAM_ASSERT(read.value("ok", false));
+	UAM_ASSERT_EQ(read["result"].value("text", ""), "- Linked workspace lesson\n");
+	const nlohmann::json detailed = uam::remote::HandleRunnerRequest({{"id", "details"}, {"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(linked)}, {"budget", 2048}, {"detailReferences", true}}, "4.9.0", &state);
+	UAM_ASSERT(detailed.value("ok", false));
+	UAM_ASSERT(detailed["result"].value("text", "").find("[details:") != std::string::npos);
+	const fs::path other = root / "other";
+	UAM_ASSERT(uam::io::WriteTextFile(other / "Lessons/User_Lessons/lesson.md", "Category: Lessons\n## Memory\nRedirected lesson"));
+	fs::remove_all(real / ".UAM");
+	fs::create_directory_symlink(other, real / ".UAM");
+	const nlohmann::json refused = uam::remote::HandleRunnerRequest({{"id", "refused"}, {"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(linked)}, {"budget", 512}}, "4.9.0", &state);
+	UAM_ASSERT_EQ(refused["error"].value("code", ""), "unsafe_path");
+}
+#endif
 
 UAM_TEST(RemoteProjectMemoryReadsOnlyTheSelectedTargetAndUsesTheRecallBudget)
 {
@@ -7978,6 +8070,24 @@ UAM_TEST(RemoteConfigurationRequiredThinkingAndFastRejectOlderSameProtocolHelper
 		std::istringstream requests(ReadFile(log)); std::string line; int prepares = 0;
 		while (std::getline(requests, line)) if (nlohmann::json::parse(line).value("type", "") == "configuration.prepare") ++prepares;
 		UAM_ASSERT_EQ(prepares, available ? 1 : 0);
+	}
+}
+
+UAM_TEST(RemoteHostOnlyConfigurationRequiresACapableHelper)
+{
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	for (const bool available : {true, false})
+	{
+		TempDir temp("uam-host-only-old-helper");
+		ScopedEnvVar log_env("UAM_TEST_CREATE_LOG", (temp.root / "requests.jsonl").string());
+		ScopedEnvVar mode_env("UAM_TEST_CREATE_MODE", available ? "healthy" : "old-host-instructions");
+		nlohmann::json manifest{{"format", 1}, {"mcpOnly", false}, {"hostInstructionsOnly", true}, {"files", nlohmann::json::object()}};
+		const auto source = temp.root / uam::provider_setup::Digest(manifest.dump());
+		std::vector<std::string> missing; std::string error;
+		UAM_ASSERT(uam::provider_setup::Prepare(source, manifest, missing, error));
+		uam::remote::RunnerClient client(service, {service.ResolveCurrentExecutablePath().string(), "--uam-test-remote-opencode-create"}, "development", uam::remote::kRunnerProtocolVersion);
+		UAM_ASSERT_EQ(client.InstallProviderConfiguration(source, temp.root / "target", &error), available);
+		if (!available) UAM_ASSERT(error.find("Update the SSH helper") != std::string::npos);
 	}
 }
 
