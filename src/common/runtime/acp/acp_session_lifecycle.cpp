@@ -483,6 +483,21 @@ namespace
 				{
 					chat.remote_process_exists = false;
 					chat.remote_structured_protocol.clear();
+					// Nothing started, so a delivery marker would leave no control able to retry the unsent row.
+					const auto last_input = static_cast<std::size_t>(std::max(task->cold_input_last, 0));
+					if (task->cold_processing && task->cold_input_last >= 0 && last_input < chat.messages.size() &&
+					    chat.messages[last_input].acp_prompt_not_sent && chat.messages[last_input].interrupted &&
+					    chat.acp_dispatched_queued_prompt_count == 1 && !chat.acp_queued_prompts.empty() &&
+					    chat.acp_queued_prompts.front().prepared_for_delivery &&
+					    chat.acp_queued_prompts.front().claude_quota_continuation_id.empty())
+					{
+						chat.acp_queued_prompts.erase(chat.acp_queued_prompts.begin());
+						chat.acp_dispatched_queued_prompt_count = 0;
+						session.last_error = "The provider launch was given up before it started. The message was not sent.";
+						CompletePromptTurn(session, kAcpLifecycleError);
+						if (chat.acp_queued_prompts.empty() && session.queued_user_prompts.empty())
+							session.queue_held = chat.acp_queue_held = false;
+					}
 				}
 				ScheduleChatSave(app, chat, 0.0);
 			}
@@ -657,6 +672,17 @@ bool AcpLaunchConfigurationFinished(const AcpSessionState& session)
 {
 	return session.pending_local_launch && !session.pending_local_launch->cold_start && !session.pending_local_launch->process &&
 	    session.pending_local_launch->finished.load(std::memory_order_acquire);
+}
+
+void AdvancePendingAcpColdLaunchQueue(AcpSessionState& session, const ChatSession& chat,
+    const std::deque<AcpQueuedUserPromptState>& bound_raw, const std::string& bound_queue)
+{
+	// Only the drain that bound this launch may move its queue snapshot past the head it removed.
+	const auto task = session.pending_local_launch;
+	if (!task || !task->cold_start || !task->cold_bound || task->cold_attempted ||
+	    task->cold_serial != session.turn_serial || task->cold_raw != bound_raw || task->cold_queue != bound_queue) return;
+	task->cold_raw = session.queued_user_prompts;
+	task->cold_queue = ChatRepository::QueueAdmissionFingerprint(chat);
 }
 
 bool HasPendingAcpColdLaunch(const AcpSessionState& session)
