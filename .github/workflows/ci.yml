@@ -246,7 +246,8 @@ jobs:
           evict-old-files: 2d
           save: ${{ github.event_name == 'push' }}
       - run: npm --prefix UI-V2 ci
-      - run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$GITHUB_WORKSPACE/Builds/remote-artifacts"
+      # The connected chat, goal and remote-refresh handler programs build with the app and run in their own step.
+      - run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DUAM_BUILD_TESTS=ON -DUAM_BUILD_CONNECTED_HANDLER_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$GITHUB_WORKSPACE/Builds/remote-artifacts"
       - run: cmake --build Builds/tests --config Release --target uam_core_tests --parallel 4
       # The helper builds run in parallel. Configure validates helpers only when packaging them, so the job configures
       # with packaging off (compile flags are identical), compiles the core test binary, waits for the helper
@@ -281,7 +282,10 @@ jobs:
         with:
           path: Builds/tests/_deps
           key: ${{ runner.os }}-${{ matrix.arch }}-uam-ninja-deps-${{ hashFiles('CMakeLists.txt') }}
-      - run: ctest --test-dir Builds/tests -C Release --output-on-failure -E "^uam_core_tests$"
+      - run: ctest --test-dir Builds/tests -C Release --output-on-failure -E "^uam_core_tests$" -LE connected_handler
+      # A failed program gets one fresh retry, as a failed core case does. Windows CI does not build these programs.
+      - name: Run connected handler tests
+        run: ctest --test-dir Builds/tests -C Release --output-on-failure -L connected_handler --repeat until-pass:2 --no-tests=error
       # macOS ARM core cases run in the core-shard jobs; macOS Intel runs only on pushes, with every case.
       - name: Run native core tests
         if: matrix.name != 'macOS ARM'

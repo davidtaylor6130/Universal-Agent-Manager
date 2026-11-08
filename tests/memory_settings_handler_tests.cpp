@@ -94,7 +94,13 @@ UAM_TEST(MemorySettingsHandlerGetPrimaryOnlyAdvancesFenceWithoutSaving)
 	const auto first = fixture.Dispatch("getMemorySettings");
 	const auto second = fixture.Dispatch("getMemorySettings");
 	UAM_ASSERT(first->body.at("primaryValidated").get<bool>());
-	UAM_ASSERT_EQ(first->body.at("values").size(), std::size_t{12});
+	// nlohmann::json objects iterate in key order, so the expected list is sorted.
+	std::vector<std::string> keys;
+	for (const auto& [key, value] : first->body.at("values").items()) keys.push_back(key);
+	UAM_ASSERT_EQ(keys, (std::vector<std::string>{"acpSetupInactivityTimeoutSeconds", "acpTurnOutputLimitMiB",
+	    "activeTurnInactivityTimeoutSeconds", "goalMaxLoopIterations", "goalTokenBudget", "memoryEnabledDefault",
+	    "memoryIdleDelaySeconds", "memoryLevelDefault", "memoryRecallBudgetBytes", "memoryWorkerBindings",
+	    "permissionReviewerModelId", "permissionReviewerProviderId", "streamLoopRepeatLimit"}));
 	UAM_ASSERT_EQ(first->body.at("scope"), second->body.at("scope"));
 	UAM_ASSERT_EQ(second->body.at("revision").get<std::uint64_t>(), revision + 2);
 	UAM_ASSERT_EQ(ReadFile(path), before);

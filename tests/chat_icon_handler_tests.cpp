@@ -3485,11 +3485,12 @@ UAM_TEST(ChatCreateDeliveredEditColdEmptySkillsRemovesReloadedMissingSnapshots)
 	const auto reloaded = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.source_id, true);
 	UAM_ASSERT(reloaded && reloaded->messages_loaded && reloaded->messages.size() == 3);
 	UAM_ASSERT_EQ(reloaded->messages[2].markdown_store_files, fixture.files);
-	UAM_ASSERT_EQ(reloaded->messages[2].markdown_store_prompt_blocks, (std::vector<std::string>{fixture.blocks[0]}));
+	// Saved history keeps the empty block in its slot so each file stays paired with its snapshot.
+	UAM_ASSERT_EQ(reloaded->messages[2].markdown_store_prompt_blocks, (std::vector<std::string>{fixture.blocks[0], ""}));
 	UAM_ASSERT_EQ(reloaded->messages[2].attachments, fixture.source_messages[2].attachments);
 	UAM_ASSERT_EQ(reloaded->messages[0], fixture.source_messages[0]);
 	UAM_ASSERT_EQ(reloaded->messages[1], fixture.source_messages[1]);
-	// Adopt the actual two-file/one-block reload without repairing or resaving it.
+	// Adopt the actual two-file reload, with its missing second snapshot, without repairing or resaving it.
 	fixture.Source() = *reloaded;
 	fixture.source_messages = reloaded->messages;
 	fixture.source_primary = source_primary;
