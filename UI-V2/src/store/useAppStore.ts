@@ -29,6 +29,7 @@ import {
   sanitizeCppAppState,
   sanitizeMemoryActivity,
   defaultEditorFileAssociations,
+  DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS,
 } from './cpp/sanitizers'
 export {
   DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
@@ -378,7 +379,7 @@ function deserializeState(
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
     nativeImportExcludedTitlePrefixes: cpp.settings.nativeImportExcludedTitlePrefixes ?? [],
     nativeImportExcludedDirectories: cpp.settings.nativeImportExcludedDirectories ?? [],
-    nativeImportStartupMaxAgeDays: cpp.settings.nativeImportStartupMaxAgeDays ?? 0,
+    nativeImportStartupMaxAgeDays: cpp.settings.nativeImportStartupMaxAgeDays ?? DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS,
     uamAgentCycleShortcut: cpp.settings.uamAgentCycleShortcut ?? 'shift+tab',
     computerUseEnabled: cpp.settings.computerUseGloballyEnabled,
     computerUseRevocationPending: cpp.settings.computerUseRevocationPending,

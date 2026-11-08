@@ -107,7 +107,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kFavoriteUamAgentIdsKey = "favorite_uam_agent_ids";
 	constexpr std::string_view kNativeImportExcludedTitlePrefixesKey = "native_import_excluded_title_prefixes";
 	constexpr std::string_view kNativeImportExcludedDirectoriesKey = "native_import_excluded_directories";
-	constexpr std::string_view kNativeImportStartupMaxAgeDaysKey = "native_import_startup_max_age_days";
+	constexpr std::string_view kNativeImportStartupAgeLimitDaysKey = "native_import_startup_age_limit_days";
 	constexpr std::string_view kUamAgentCycleShortcutKey = "uam_agent_cycle_shortcut";
 	constexpr std::string_view kComputerUseGloballyEnabledKey = "computer_use_globally_enabled";
 	constexpr std::string_view kComputerUseAllowlistEnabledKey = "computer_use_allowlist_enabled";
@@ -115,6 +115,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 
 	constexpr std::string_view kLegacyGeminiYoloModeKey = "gemini_yolo_mode";
 	constexpr std::string_view kLegacyGeminiExtraFlagsKey = "gemini_extra_flags";
+	// Written on every save while the limit shipped off, so a saved 0 under this key does not record a choice.
+	constexpr std::string_view kLegacyNativeImportStartupMaxAgeDaysKey = "native_import_startup_max_age_days";
 
 	std::string NormalizeProviderId(std::string_view value);
 
@@ -746,7 +748,7 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
 		WriteEncodedSetting(lines, kNativeImportExcludedTitlePrefixesKey, EncodeFavoriteUamAgentIds(normalized.native_import_excluded_title_prefixes));
 		WriteEncodedSetting(lines, kNativeImportExcludedDirectoriesKey, EncodeFavoriteUamAgentIds(normalized.native_import_excluded_directories));
-		WriteSettingValue(lines, kNativeImportStartupMaxAgeDaysKey, normalized.native_import_startup_max_age_days);
+		WriteSettingValue(lines, kNativeImportStartupAgeLimitDaysKey, normalized.native_import_startup_max_age_days);
 		WriteEncodedSetting(lines, kUamAgentCycleShortcutKey, normalized.uam_agent_cycle_shortcut);
 		WriteBoolSetting(lines, kComputerUseGloballyEnabledKey, normalized.computer_use_globally_enabled);
 		WriteBoolSetting(lines, kComputerUseAllowlistEnabledKey, normalized.computer_use_allowlist_enabled);
@@ -1222,9 +1224,13 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		{
 			DecodeFavoriteUamAgentIds(decoded_value, settings.native_import_excluded_directories);
 		}
-		else if (key == kNativeImportStartupMaxAgeDaysKey)
+		else if (key == kNativeImportStartupAgeLimitDaysKey)
 		{
 			settings.native_import_startup_max_age_days = uam::parse::IntOr(value, settings.native_import_startup_max_age_days);
+		}
+		else if (key == kLegacyNativeImportStartupMaxAgeDaysKey)
+		{
+			if (const int legacy_days = uam::parse::IntOr(value, 0); legacy_days > 0) settings.native_import_startup_max_age_days = legacy_days;
 		}
 		else if (key == kUamAgentCycleShortcutKey)
 		{

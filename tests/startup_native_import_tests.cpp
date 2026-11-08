@@ -781,12 +781,14 @@ UAM_TEST(StartupImportLeavesOldSessionsForExplicitDiscovery)
 		return ids;
 	};
 	{
-		// Off by default: startup offers every session.
+		// An explicit 0 turns the limit off: startup offers every session.
+		app.settings.native_import_startup_max_age_days = 0;
 		uam::StartupNativeImportService service(FixtureScanner(local), remote);
 		service.Initialize(app); WaitForStartup(service, app);
 		UAM_ASSERT_EQ(offered_ids(service), (std::set<std::string>{"recent", "old", "untimed", "garbled", "remote-old", "remote-recent"}));
 	}
-	app.settings.native_import_startup_max_age_days = 30;
+	// The rest of this case runs on the default limit, with no value chosen.
+	app.settings.native_import_startup_max_age_days = AppSettings{}.native_import_startup_max_age_days;
 	uam::StartupNativeImportService service(FixtureScanner(local), remote);
 	service.Initialize(app); WaitForStartup(service, app);
 	// Startup offers recent sessions and sessions without a readable time; nothing is saved.
