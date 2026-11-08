@@ -451,6 +451,17 @@ struct NativeGoalBinding
 	bool operator==(const NativeGoalBinding&) const = default;
 };
 
+/// Who made a goal or attention decision. "model:<id>" is only for a parsed reply from that model;
+/// "filter" is a deterministic UAM rule; "fallback" is UAM stopping or accepting a state with no model
+/// decision available; "unknown" is a decision saved before sources were recorded; empty means none yet.
+inline constexpr char kDecisionSourceModelPrefix[] = "model:";
+inline constexpr char kDecisionSourceFilter[] = "filter";
+inline constexpr char kDecisionSourceFallback[] = "fallback";
+inline constexpr char kDecisionSourceUnknown[] = "unknown";
+std::string ModelDecisionSource(std::string_view model_id);
+/// Unrecognized saved values become "unknown" so they can never read as a model review.
+std::string NormalizeDecisionSource(std::string_view source);
+
 /// <summary>
 /// A thread-level goal that persists the agent across turns until it
 /// self-detects completion or gets stuck (>= 3 consecutive blocker turns).
@@ -467,6 +478,7 @@ struct Goal
 	std::string last_blocker;                // description of current blocker
 	std::string last_blocker_kind;           // machine-readable blocker category
 	std::string last_diagnostic;             // durable goal-loop diagnostic reason
+	std::string last_decision_source;        // see kDecisionSource*; empty until an automatic decision exists
 	std::vector<std::string> completed_items;
 	std::vector<std::string> remaining_items;
 	std::string current_step;
@@ -746,6 +758,8 @@ struct ChatSession
 	std::string last_opened_at;
 	/// Nonempty until an explicit interaction acknowledges this exact update.
 	std::string attention_revision;
+	/// Source of the latest attention flag; kept after acknowledgement as its record.
+	std::string attention_source;
 	/// Set when the user marks the chat done in Active chats; newer activity reopens it.
 	std::string settled_at;
 	/// Snooze affects sidebar attention only; the provider and queued inputs remain owned.

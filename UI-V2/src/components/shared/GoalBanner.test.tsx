@@ -24,7 +24,7 @@ const goal: Goal = {
   updatedAt: new Date('2026-01-01T00:00:00Z'),
 }
 
-function renderGoal(overrides: Partial<Goal> = {}, onEdit = vi.fn(async () => true)) {
+function renderGoal(overrides: Partial<Goal> = {}, onEdit = vi.fn(async () => true), attentionSource?: string) {
   const host = document.createElement('div')
   document.body.appendChild(host)
   const root = createRoot(host)
@@ -36,6 +36,7 @@ function renderGoal(overrides: Partial<Goal> = {}, onEdit = vi.fn(async () => tr
       onResume={() => {}}
       onRemove={() => {}}
       onEdit={onEdit}
+      attentionSource={attentionSource}
     />,
   ))
   return { host, root, onEdit }
@@ -162,6 +163,34 @@ describe('GoalBanner', () => {
 		expect(host.textContent).toContain('The completion review was invalid.')
 		expect(host.textContent).toContain('Current step: Continue processing the files')
 
+		act(() => root.unmount())
+	})
+
+	it.each([
+		['model:reviewer-1', 'Last decision: Model review · reviewer-1'],
+		['model:', 'Last decision: Model review · model not reported'],
+		['filter', 'Last decision: UAM rule · not a model decision'],
+		['fallback', 'Last decision: Fallback · no model decision'],
+		['unknown', 'Last decision: Unknown · source not recorded'],
+		['reviewer-1', 'Last decision: Unknown · source not recorded'],
+	])('reports decision source %s without inventing a model review', (lastDecisionSource, expected) => {
+		const { host, root } = renderGoal({ lastDecisionSource })
+		expect(host.textContent).toContain(expected)
+		if (!lastDecisionSource.startsWith('model:')) expect(host.textContent).not.toContain('Model review')
+		act(() => root.unmount())
+	})
+
+	it('omits the decision row until a decision exists', () => {
+		const { host, root } = renderGoal()
+		expect(host.textContent).not.toContain('Last decision')
+		expect(host.textContent).not.toContain('Last attention flag')
+		act(() => root.unmount())
+	})
+
+	it('reports the attention flag source with the shared labels', () => {
+		const { host, root } = renderGoal({}, undefined, 'filter')
+		expect(host.textContent).toContain('Last attention flag: UAM rule · not a model decision')
+		expect(host.textContent).not.toContain('Model review ·')
 		act(() => root.unmount())
 	})
 

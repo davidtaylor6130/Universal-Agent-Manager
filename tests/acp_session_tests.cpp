@@ -2911,6 +2911,7 @@ UAM_TEST(IterationTurnInactivityBlocksItsOwnerGoal)
 	const Goal* goal = uam::GoalService::FindGoalById(app, owner.id, goal_id);
 	UAM_ASSERT(goal != nullptr);
 	UAM_ASSERT_EQ(goal->status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(goal->last_decision_source, std::string("fallback"));
 	const std::optional<ChatSession> saved_owner =
 	    ChatRepository::LoadLocalChat(temp.root, owner.id);
 	UAM_ASSERT(saved_owner.has_value());
@@ -3238,6 +3239,7 @@ UAM_TEST(RemoteCodexSourceExitSettlesWithoutAnAttachReconnect)
 	    app, app.chats.front().id, goal_id);
 	UAM_ASSERT(goal != nullptr);
 	UAM_ASSERT_EQ(goal->status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(goal->last_decision_source, std::string("fallback"));
 }
 
 UAM_TEST(KeepAwakeCoversLiveWorkButReleasesStaleStructuredWaits)
@@ -11872,6 +11874,7 @@ UAM_TEST(AcpOptInRestartRecoveryBlocksMissingTurnWithoutReplayingAndRetainsGoal)
 	const Goal* retained = uam::GoalService::FindGoalById(app, chat.id, goal_id);
 	UAM_ASSERT(retained != nullptr);
 	UAM_ASSERT_EQ(retained->status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(retained->last_decision_source, std::string("fallback"));
 	UAM_ASSERT_EQ(retained->objective, std::string("Keep this goal after host restart."));
 	UAM_ASSERT(!session->processing);
 	UAM_ASSERT(!app.chats.front().remote_process_exists);
@@ -14692,6 +14695,7 @@ UAM_TEST(ProviderSwitchOverrideSettlesTheAbandonedTurnAndBlocksItsGoal)
 	UAM_ASSERT(chat.messages[1].tool_calls.front().status != "in_progress");
 	UAM_ASSERT(chat.goal_iteration_goal_id.empty() && chat.goal_iteration_turn_kind.empty() && chat.goal_iteration_repair_attempts == 0);
 	UAM_ASSERT(chat.goals.front().status == GoalStatus::Blocked);
+	UAM_ASSERT_EQ(chat.goals.front().last_decision_source, std::string("fallback"));
 }
 
 UAM_TEST(ProviderSwitchWaitsForPendingEmptyHeldSend)

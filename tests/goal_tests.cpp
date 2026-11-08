@@ -1,8 +1,10 @@
 #include "test_harness.h"
+#include "cef/state_serializer.h"
 #include "app/agent_run_ledger.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/provider/provider_runtime.h"
+#include <functional>
 #include <limits>
 
 using namespace uam_test;
@@ -261,6 +263,44 @@ UAM_TEST(CodexNativeReplacementNotificationRetiresOwnershipWithoutControls)
 	UAM_ASSERT(session.codex_goal_pending_requests.empty());
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Paused);
 	UAM_ASSERT_EQ(app.chats.front().goals.front().last_diagnostic, "native_goal_binding_replaced");
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_decision_source, std::string("fallback"));
+}
+
+UAM_TEST(CodexNativeStartAtBudgetReportsTheBudgetRule)
+{
+	TempDir temp("native-goal-start-budget");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	uam::AcpSessionState session;
+	ConfigureCodexNativeGoalFixture(session, chat);
+	chat.goals.front().tokens_used = chat.goals.front().token_budget;
+	chat.goals.front().last_decision_source = "fallback";
+	app.chats.push_back(chat);
+	std::string error;
+	UAM_ASSERT(!uam::acp_detail::StartCodexNativeGoal(app, session, app.chats.front(), app.chats.front().goals.front(), true, &error, false));
+	UAM_ASSERT_EQ(error, std::string("The goal token budget is exhausted."));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_diagnostic, std::string("native_goal_budget_exhausted"));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_decision_source, std::string("filter"));
+}
+
+UAM_TEST(CodexNativeClearedNotificationIsNotAttributedToAnEarlierDecision)
+{
+	TempDir temp("native-goal-cleared");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	uam::AcpSessionState session;
+	ConfigureCodexNativeGoalFixture(session, chat);
+	session.codex_goal_created_at = 100;
+	session.codex_goal_updated_at = 101;
+	session.codex_goal_native_active = true;
+	chat.goals.front().last_decision_source = "model:earlier-reviewer";
+	app.chats.push_back(chat);
+	ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpHandleMessage(app, session, app.chats.front(),
+		{{"method", "thread/goal/cleared"}, {"params", {{"threadId", session.session_id}}}}, nullptr);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_diagnostic, std::string("native_goal_cleared"));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_decision_source, std::string("fallback"));
 }
 
 UAM_TEST(CodexNativeBindingRoundTripsAndCorruptVersionsHold)
@@ -464,6 +504,7 @@ UAM_TEST(CodexNativeCompletionRemainsUnverifiedAndRetainsActualUsage)
 	UAM_ASSERT_EQ(chat.goals.front().status, GoalStatus::Paused);
 	UAM_ASSERT_EQ(chat.goals.front().tokens_used, static_cast<std::int64_t>(50));
 	UAM_ASSERT_EQ(chat.goals.front().last_diagnostic, std::string("native_goal_complete_unverified"));
+	UAM_ASSERT_EQ(chat.goals.front().last_decision_source, std::string("fallback"));
 	UAM_ASSERT_EQ(chat.goals.front().last_verification, std::string("Previous verified evidence"));
 	UAM_ASSERT(chat.active_goal_id.empty());
 	UAM_ASSERT(session.goal_resume_suppressed);
@@ -496,6 +537,7 @@ UAM_TEST(CodexNativeBudgetExhaustionHoldsButZeroRemainsUnlimited)
 	UAM_ASSERT(uam::acp_detail::ApplyCodexNativeGoalReceipt(session, chat, NativeGoalFixtureSnapshot(chat, "active", 80)));
 	UAM_ASSERT_EQ(chat.goals.front().status, GoalStatus::Paused);
 	UAM_ASSERT_EQ(chat.goals.front().tokens_used, static_cast<std::int64_t>(100));
+	UAM_ASSERT_EQ(chat.goals.front().last_decision_source, std::string("filter"));
 	uam::AcpSessionState unlimited_session;
 	ChatSession unlimited;
 	ConfigureCodexNativeGoalFixture(unlimited_session, unlimited, 0);
@@ -980,12 +1022,12 @@ UAM_TEST(GoalServiceStatusBlockerAndTokenUpdatesMarkParentAndClearActive)
 	UAM_ASSERT(app.chats_with_unseen_updates.contains(chat.id));
 	UAM_ASSERT_EQ(app.chats.front().active_goal_id, goal_id);
 
-	uam::GoalService::RecordBlocker(app, chat.id, goal_id, "Need user credentials.");
-	uam::GoalService::RecordBlocker(app, chat.id, goal_id, "Need user credentials.");
+	uam::GoalService::RecordBlocker(app, chat.id, goal_id, "Need user credentials.", kDecisionSourceFallback);
+	uam::GoalService::RecordBlocker(app, chat.id, goal_id, "Need user credentials.", kDecisionSourceFallback);
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
 	UAM_ASSERT_EQ(app.chats.front().active_goal_id, goal_id);
 	uam::GoalService::RecordTurnCompletion(app, chat.id, goal_id, 1);
-	uam::GoalService::RecordBlocker(app, chat.id, goal_id, "Need user credentials.");
+	uam::GoalService::RecordBlocker(app, chat.id, goal_id, "Need user credentials.", kDecisionSourceFallback);
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
 	UAM_ASSERT(app.chats.front().active_goal_id.empty());
 
@@ -1008,7 +1050,7 @@ UAM_TEST(GoalServicePersistsBlockerKind)
 
 	uam::GoalService::RecordBlocker(app, chat.id, goal_id,
 	                                "The remote turn no longer exists.",
-	                                "remote_connection");
+	                                kDecisionSourceFallback, "remote_connection");
 	UAM_ASSERT_EQ(app.chats.front().goals.front().last_blocker_kind,
 	              std::string("remote_connection"));
 }
@@ -1075,9 +1117,9 @@ UAM_TEST(GoalServiceSetActiveGoalReactivatesBlockedGoal)
 
 	std::string goal_id;
 	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Resume a blocked OpenCode goal.", 0, &goal_id));
-	uam::GoalService::RecordBlocker(app, chat.id, goal_id, "Same blocker.");
-	uam::GoalService::RecordBlocker(app, chat.id, goal_id, "Same blocker.");
-	uam::GoalService::RecordBlocker(app, chat.id, goal_id, "Same blocker.");
+	uam::GoalService::RecordBlocker(app, chat.id, goal_id, "Same blocker.", kDecisionSourceFallback);
+	uam::GoalService::RecordBlocker(app, chat.id, goal_id, "Same blocker.", kDecisionSourceFallback);
+	uam::GoalService::RecordBlocker(app, chat.id, goal_id, "Same blocker.", kDecisionSourceFallback);
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
 	UAM_ASSERT(app.chats.front().active_goal_id.empty());
 
@@ -2338,6 +2380,7 @@ UAM_TEST(AcpGoalReviewBudgetStopsEveryDecisionAndRepairBeforeAdmission)
 		UAM_ASSERT_EQ(fixture.ReviewedGoal().tokens_used, std::int64_t{100});
 		UAM_ASSERT_EQ(fixture.ReviewedGoal().status, GoalStatus::Blocked);
 		UAM_ASSERT_EQ(fixture.ReviewedGoal().last_blocker_kind, std::string("token_budget"));
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().last_decision_source, std::string("filter"));
 		UAM_ASSERT_EQ(fixture.ReviewedGoal().loop_count, 0);
 		UAM_ASSERT(fixture.app.chats.front().active_goal_id.empty());
 		UAM_ASSERT_EQ(fixture.app.chats.front().goals[1].tokens_used, std::int64_t{17});
@@ -2800,6 +2843,7 @@ UAM_TEST(AcpInvalidGoalReviewRetriesOnceThenBlocksInsteadOfCompleting)
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
 	UAM_ASSERT(app.chats.front().active_goal_id.empty());
 	UAM_ASSERT_EQ(app.chats.front().goals.front().last_diagnostic, std::string("goal_blocked_invalid_review"));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_decision_source, std::string("fallback"));
 	UAM_ASSERT(!raw_session->diagnostics.empty());
 	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("goal_blocked_invalid_review"));
 }
@@ -3223,6 +3267,7 @@ UAM_TEST(AcpGoalWatchdogResumesStalledLoopAndBlocksAfterRepeatedResumes)
 	raw_session->last_runtime_activity_time_s = 1.0;
 	UAM_ASSERT(uam::ResumeStalledGoalLoopForTests(app, *raw_session, app.chats.front(), 100.0));
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_decision_source, std::string("fallback"));
 	UAM_ASSERT(app.chats.front().active_goal_id.empty());
 }
 
@@ -3417,6 +3462,7 @@ UAM_TEST(GoalRestartDuringTurnReplacesOnePendingContinuation)
 	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
 	app.chats.front().goals.front().tokens_used = 100;
 	app.chats.front().goals.front().completed_items = {"old result"};
+	app.chats.front().goals.front().last_decision_source = "model:old-reviewer";
 	auto session = std::make_unique<uam::AcpSessionState>();
 	session->chat_id = chat.id;
 	session->processing = true;
@@ -3427,6 +3473,7 @@ UAM_TEST(GoalRestartDuringTurnReplacesOnePendingContinuation)
 	UAM_ASSERT(uam::acp_detail::ResumeGoal(app, chat.id, goal_id, &error, true));
 	UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, 0);
 	UAM_ASSERT(app.chats.front().goals.front().completed_items.empty());
+	UAM_ASSERT(app.chats.front().goals.front().last_decision_source.empty());
 	UAM_ASSERT_EQ(app.chats.front().goal_pending_continuation_id, goal_id);
 	const std::string first = app.chats.front().goal_command_revision;
 	UAM_ASSERT(uam::acp_detail::ResumeGoal(app, chat.id, goal_id, &error, true));
@@ -4176,4 +4223,228 @@ UAM_TEST(GoalPromptCompactionPreservesDistinctTasksAndVerificationRules)
 	UAM_ASSERT(terminal.find("lastBlocker") == std::string::npos);
 	UAM_ASSERT(terminal.find("remainingItems") == std::string::npos);
 	UAM_ASSERT(terminal.find("Do not reactivate") != std::string::npos);
+}
+
+namespace
+{
+	/// Runs one completed review turn and returns the goal it left behind.
+	Goal RunReviewForDecisionSource(const TempDir& temp, const std::string& review, const std::function<void(uam::AppState&, ChatSession&, Goal&)>& prepare = {}, const std::string& turn_model = {})
+	{
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "decision-source-chat";
+		chat.provider_id = "codex-cli";
+		chat.model_id = "worker-model";
+		chat.active_goal_id = "decision-source-goal";
+		Goal goal;
+		goal.id = chat.active_goal_id;
+		goal.objective = "Report who decided.";
+		goal.execution_owner = "uam";
+		if (prepare) prepare(app, chat, goal);
+		chat.goals.push_back(goal);
+		chat.messages.push_back({MessageRole::Assistant, review});
+		app.chats.push_back(chat);
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.goal_review_turn = true;
+		session.goal_review_goal_id = goal.id;
+		session.goal_turn_model_id = turn_model;
+		session.goal_review_repair_attempts = 1; // No further repair: an invalid reply must stop here.
+		session.turn_assistant_message_index = 0;
+		UAM_ASSERT(uam::acp_detail::HandleGoalReviewCompletion(app, session, app.chats.front(), nullptr));
+		return app.chats.front().goals.front();
+	}
+
+	const std::string kContinueReview = R"({"decision":"continue","reason":"More work.","nextPrompt":"Do the next step.","progressUpdate":{"remaining":["Do the next step."],"currentStep":"Do the next step."}})";
+}
+
+UAM_TEST(GoalDecisionSourceNamesAModelOnlyForAParsedReview)
+{
+	TempDir temp("uam-decision-source-paths");
+	const Goal complete = RunReviewForDecisionSource(temp, R"({"decision":"complete","reason":"Verified.","evidence":["Tests passed"]})");
+	UAM_ASSERT_EQ(complete.status, GoalStatus::Complete);
+	UAM_ASSERT_EQ(complete.last_decision_source, std::string("model:worker-model"));
+
+	const Goal blocked = RunReviewForDecisionSource(temp, R"({"decision":"blocked","reason":"Needs access.","blockerKind":"user_permission_approval"})");
+	UAM_ASSERT_EQ(blocked.last_decision_source, std::string("model:worker-model"));
+
+	const Goal small_model = RunReviewForDecisionSource(temp, R"({"decision":"complete","reason":"Verified.","evidence":["Tests passed"]})", [](uam::AppState&, ChatSession& chat, Goal& goal) {
+		chat.small_model_mode = true;
+		goal.reviewer_model_id = "reviewer-model";
+	});
+	UAM_ASSERT_EQ(small_model.last_decision_source, std::string("model:reviewer-model"));
+
+	// The chat's model selection can change during the turn; the turn's own model reviewed it.
+	const Goal turn_model = RunReviewForDecisionSource(temp, R"({"decision":"complete","reason":"Verified.","evidence":["Tests passed"]})", {}, "turn-model");
+	UAM_ASSERT_EQ(turn_model.last_decision_source, std::string("model:turn-model"));
+
+	// A model said continue, but UAM's own rules stopped the goal: the verdict is the rule's.
+	const Goal capped = RunReviewForDecisionSource(temp, kContinueReview, [](uam::AppState& app, ChatSession&, Goal& goal) {
+		app.settings.goal_max_loop_iterations = 5;
+		goal.loop_count = 5;
+	});
+	UAM_ASSERT_EQ(capped.last_diagnostic, std::string("goal_blocked_max_loop_iterations_reached"));
+	UAM_ASSERT_EQ(capped.last_decision_source, std::string("filter"));
+
+	const Goal repeated = RunReviewForDecisionSource(temp, kContinueReview, [](uam::AppState&, ChatSession&, Goal& goal) {
+		goal.last_next_prompt = "Do the next step.";
+		goal.same_next_prompt_count = 2;
+	});
+	UAM_ASSERT_EQ(repeated.status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(repeated.last_decision_source, std::string("filter"));
+
+	const Goal invalid = RunReviewForDecisionSource(temp, "Not a review at all.");
+	UAM_ASSERT_EQ(invalid.status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(invalid.last_decision_source, std::string("fallback"));
+}
+
+UAM_TEST(GoalDecisionSourceLeavesManualVerdictsUnattributed)
+{
+	uam::AppState app;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "decision-source-user";
+	app.chats.push_back(chat);
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Stay honest.", 0, &goal_id));
+	Goal& goal = app.chats.front().goals.front();
+	goal.last_decision_source = "model:reviewer";
+
+	// A pause does not replace the automatic verdict.
+	UAM_ASSERT(uam::GoalService::UpdateGoalStatus(app, chat.id, goal_id, GoalStatus::Paused, true));
+	UAM_ASSERT_EQ(goal.last_decision_source, std::string("model:reviewer"));
+	// UAM's own status change keeps the source its path recorded.
+	UAM_ASSERT(uam::GoalService::UpdateGoalStatus(app, chat.id, goal_id, GoalStatus::Blocked));
+	UAM_ASSERT_EQ(goal.last_decision_source, std::string("model:reviewer"));
+	UAM_ASSERT(uam::GoalService::UpdateGoalStatus(app, chat.id, goal_id, GoalStatus::Complete, true));
+	UAM_ASSERT(goal.last_decision_source.empty());
+}
+
+UAM_TEST(GoalDecisionSourcePersistsAndOlderSavesClaimNoSource)
+{
+	TempDir temp("uam-decision-source-persist");
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "decision-source-saved";
+	Goal goal;
+	goal.id = "saved-goal";
+	goal.objective = "Survive a reload.";
+	goal.status = GoalStatus::Blocked;
+	goal.last_blocker = "Stopped.";
+	goal.last_decision_source = "model:reviewer";
+	chat.goals.push_back(goal);
+	chat.attention_revision = "attention-1";
+	chat.attention_source = "filter";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->goals.front().last_decision_source, std::string("model:reviewer"));
+	UAM_ASSERT_EQ(saved->attention_source, std::string("filter"));
+
+	// A turn-end flag normally reaches disk through the summary overlay alone.
+	ChatSession overlaid = chat;
+	overlaid.attention_revision = "attention-2";
+	overlaid.attention_source = "fallback";
+	UAM_ASSERT(ChatRepository::SaveLastOpenedAt(temp.root, overlaid));
+	const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(restored.has_value());
+	UAM_ASSERT_EQ(restored->attention_revision, std::string("attention-2"));
+	UAM_ASSERT_EQ(restored->attention_source, std::string("fallback"));
+
+	const fs::path file = temp.root / "chats" / (chat.id + ".json");
+	std::error_code ignored;
+	fs::remove(temp.root / "chat-summaries" / (chat.id + ".json"), ignored);
+	std::string text;
+	UAM_ASSERT(uam::io::TryReadTextFile(file, text));
+	const nlohmann::json current = nlohmann::json::parse(text);
+	const auto load_edited = [&](const std::function<void(nlohmann::json&)>& edit) {
+		nlohmann::json document = current;
+		edit(document);
+		UAM_ASSERT(uam::io::WriteTextFile(file, document.dump()));
+		const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+		UAM_ASSERT(loaded.has_value());
+		return *loaded;
+	};
+
+	const ChatSession legacy = load_edited([](nlohmann::json& document) {
+		document["goals"][0].erase("lastDecisionSource");
+		document.erase("attention_source");
+	});
+	UAM_ASSERT_EQ(legacy.goals.front().last_decision_source, std::string("unknown"));
+	UAM_ASSERT_EQ(legacy.attention_source, std::string("unknown"));
+
+	const ChatSession legacy_undecided = load_edited([](nlohmann::json& document) {
+		nlohmann::json& saved_goal = document["goals"][0];
+		saved_goal.erase("lastDecisionSource");
+		saved_goal["status"] = "paused";
+		saved_goal["lastBlocker"] = "";
+		document.erase("attention_source");
+		document["attention_revision"] = "";
+	});
+	UAM_ASSERT(legacy_undecided.goals.front().last_decision_source.empty());
+
+	// A paused native stop holds only a diagnostic, and still claims no source.
+	const ChatSession legacy_diagnostic = load_edited([](nlohmann::json& document) {
+		nlohmann::json& saved_goal = document["goals"][0];
+		saved_goal.erase("lastDecisionSource");
+		saved_goal["status"] = "paused";
+		saved_goal["lastBlocker"] = "";
+		saved_goal["lastDiagnostic"] = "native_goal_complete_unverified";
+	});
+	UAM_ASSERT_EQ(legacy_diagnostic.goals.front().last_decision_source, std::string("unknown"));
+	UAM_ASSERT(legacy_undecided.attention_source.empty());
+
+	const ChatSession tampered = load_edited([](nlohmann::json& document) {
+		document["goals"][0]["lastDecisionSource"] = "reviewer";
+		document["attention_source"] = "ai";
+	});
+	UAM_ASSERT_EQ(tampered.goals.front().last_decision_source, std::string("unknown"));
+	UAM_ASSERT_EQ(tampered.attention_source, std::string("unknown"));
+
+	const ChatSession user_cleared = load_edited([](nlohmann::json& document) { document["goals"][0]["lastDecisionSource"] = ""; });
+	UAM_ASSERT(user_cleared.goals.front().last_decision_source.empty());
+}
+
+UAM_TEST(ChatAttentionReportsItsRuleSourceThroughAcknowledgementAndState)
+{
+	uam::AppState app;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "attention-source";
+	Goal goal;
+	goal.id = "attention-goal";
+	goal.objective = "Report sources.";
+	goal.last_decision_source = "fallback";
+	chat.goals.push_back(goal);
+	app.chats.push_back(chat);
+
+	ChatDomainService().MarkChatNeedsAttention(app, chat.id);
+	UAM_ASSERT_EQ(app.chats.front().attention_source, std::string("filter"));
+
+	const nlohmann::json state = uam::StateSerializer::Serialize(app);
+	UAM_ASSERT_EQ(state.at("chats").at(0).value("attentionSource", ""), std::string("filter"));
+	UAM_ASSERT_EQ(state.at("chats").at(0).at("goals").at(0).value("lastDecisionSource", ""), std::string("fallback"));
+
+	const std::string revision = app.chats.front().attention_revision;
+	UAM_ASSERT(ChatDomainService().AcknowledgeChatAttention(app, chat.id, revision));
+	UAM_ASSERT(app.chats.front().attention_revision.empty());
+	UAM_ASSERT_EQ(app.chats.front().attention_source, std::string("filter"));
+}
+
+UAM_TEST(GoalDecisionSourceReportsAFailedResumeAsFallback)
+{
+	TempDir temp("uam-decision-source-resume");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli, false);
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Finish.", 100, &goal_id));
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
+	app.chats.front().goals.front().last_decision_source = "model:earlier-reviewer";
+	app.chats.front().goal_pending_continuation_id = goal_id;
+	app.chats.front().imported_read_only = true;
+	UAM_ASSERT(uam::acp_detail::PollPendingGoalIterations(app));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_decision_source, std::string("fallback"));
 }

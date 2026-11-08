@@ -145,6 +145,7 @@ export interface Session {
   interactionAt?: Date | null
   lastOpenedAt?: Date
   attentionRevision?: string
+  attentionSource?: string
   /** ISO time the user marked this chat done in Active chats. */
   settledAt?: string
   snoozedUntilMs?: number

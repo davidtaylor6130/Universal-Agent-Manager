@@ -311,6 +311,7 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 			goal->last_blocker.clear();
 			goal->last_blocker_kind.clear();
 			goal->last_diagnostic.clear();
+			goal->last_decision_source.clear();
 			goal->last_verification.clear();
 			goal->completed_items.clear();
 			goal->remaining_items.clear();
@@ -482,7 +483,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		if (Goal* goal = GoalService::FindGoalById(app, owner_chat_id, goal_id); goal != nullptr)
 		{
 			goal->last_diagnostic = "goal_blocked_invalid_review";
-			GoalService::RecordBlocker(app, owner_chat_id, goal_id, "Goal reviewer did not return valid JSON after one repair attempt.");
+			GoalService::RecordBlocker(app, owner_chat_id, goal_id, "Goal reviewer did not return valid JSON after one repair attempt.", kDecisionSourceFallback);
 			(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
 		}
 		AppendGoalLoopDiagnostic(session, "goal_blocked_invalid_review", goal_id, review_text);
@@ -495,7 +496,15 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		return true;
 	}
 
-	const GoalService::ReviewDecision& decision = *parsed;
+	GoalService::ReviewDecision decision = *parsed;
+	// Only a reply that parsed as a review reaches here, so this is the sole model attribution.
+	if (const Goal* reviewed_goal = GoalService::FindGoalById(app, owner_chat_id, goal_id); reviewed_goal != nullptr)
+	{
+		const ChatSession* reviewer_chat = GoalOwnerChat(app, chat);
+		// The turn's own model outranks the chat's current selection, which can change during the turn.
+		decision.source = ModelDecisionSource(uam::strings::NonEmptyOrFallback(session.goal_turn_model_id, uam::strings::NonEmptyOrFallback(
+		    GoalService::ReviewerModelId(reviewer_chat != nullptr ? *reviewer_chat : chat, *reviewed_goal), session.current_model_id)));
+	}
 	if (decision.decision == "complete")
 	{
 		if (Goal* goal = GoalService::FindGoalById(app, owner_chat_id, goal_id); goal != nullptr)
@@ -520,7 +529,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		}
 		constexpr const char* blocker = "Maximum goal loop iterations reached";
 		active_goal.last_diagnostic = "goal_blocked_max_loop_iterations_reached";
-		GoalService::RecordBlocker(app, owner_chat_id, goal_id, blocker);
+		GoalService::RecordBlocker(app, owner_chat_id, goal_id, blocker, kDecisionSourceFilter);
 		(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
 		AppendGoalLoopDiagnostic(session, "goal_blocked_max_loop_iterations_reached", goal_id, blocker);
 		if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
@@ -538,7 +547,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 			ApplyGoalProgressUpdate(*goal, decision);
 			goal->last_blocker_kind = decision.blocker_kind;
 		}
-		GoalService::RecordBlocker(app, owner_chat_id, goal_id, decision.reason);
+		GoalService::RecordBlocker(app, owner_chat_id, goal_id, decision.reason, decision.source);
 		if (GoalBlockerStopsImmediately(decision.blocker_kind))
 		{
 			(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
@@ -591,7 +600,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 	}
 	if (active_goal->same_next_prompt_count >= 3)
 	{
-		GoalService::RecordBlocker(app, owner_chat_id, goal_id, "Goal reviewer repeated the same next prompt.");
+		GoalService::RecordBlocker(app, owner_chat_id, goal_id, "Goal reviewer repeated the same next prompt.", kDecisionSourceFilter);
 		(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
 		AppendGoalLoopDiagnostic(session, "goal_blocked_repeated_next_prompt", goal_id, follow_up);
 		if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
@@ -734,7 +743,7 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 		AppendGoalLoopDiagnostic(session, "queue_review_failed", goal_id, queue_error);
 		ClearGoalReviewState(session);
 		GoalService::RecordBlocker(app, owner_chat_id, goal_id,
-		                           uam::strings::NonEmptyOrFallback(queue_error, "The private goal review could not start."));
+		                           uam::strings::NonEmptyOrFallback(queue_error, "The private goal review could not start."), kDecisionSourceFallback);
 		(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
 		if (ChatSession* owner = ChatDomainService().FindChatById(app, owner_chat_id); owner != nullptr) SaveChatQuietly(app, *owner);
 	}
@@ -775,7 +784,7 @@ bool ResumeStalledGoalLoopIfNeeded(AppState& app, AcpSessionState& session, Chat
 	if (session.goal_auto_resume_attempts >= 3)
 	{
 		const std::string goal_id = active_goal->id;
-		GoalService::RecordBlocker(app, chat.id, goal_id, "Goal loop stalled and could not be auto-resumed.");
+		GoalService::RecordBlocker(app, chat.id, goal_id, "Goal loop stalled and could not be auto-resumed.", kDecisionSourceFallback);
 		(void)GoalService::UpdateGoalStatus(app, chat.id, goal_id, GoalStatus::Blocked);
 		AppendGoalLoopDiagnostic(session, "goal_blocked_auto_resume_exhausted", goal_id);
 		SaveChatQuietly(app, chat);
@@ -866,7 +875,7 @@ namespace
 			{
 				if (!goal_id.empty())
 				{
-					GoalService::RecordBlocker(app, owner_chat_id, goal_id, "Goal reviewer turn completed but could not be consumed.");
+					GoalService::RecordBlocker(app, owner_chat_id, goal_id, "Goal reviewer turn completed but could not be consumed.", kDecisionSourceFallback);
 					if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
 					if (browser)
 					{
@@ -1045,7 +1054,7 @@ bool PollPendingGoalIterations(AppState& app)
 		if (!ResumeGoal(app, id, goal_id, &error))
 		{
 			(void)GoalService::UpdateGoalStatus(app, id, goal_id, GoalStatus::Blocked);
-			if (Goal* goal = GoalService::FindGoalById(app, id, goal_id)) goal->last_diagnostic = error;
+			if (Goal* goal = GoalService::FindGoalById(app, id, goal_id)) { goal->last_diagnostic = error; goal->last_decision_source = kDecisionSourceFallback; }
 			(void)SaveChatQuietly(app, *chat);
 		}
 		changed = true;
