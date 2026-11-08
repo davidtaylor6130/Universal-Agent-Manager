@@ -824,6 +824,14 @@ namespace uam
 			{
 				return false;
 			}
+			// A helper update on this host owns its runner until it commits or rolls back; recovery reattach would
+			// otherwise race the install (#771); it retries once the host is ready again.
+			// The wait does not use a reconnect attempt; Settings shows the host as installing.
+			if (RemoteReconnectHeldForHelperInstall(chat, session.recovering_remote_turn || session.recovering_remote_process))
+			{
+				session.reconnect_not_before_time_s = now_seconds + kAcpReconnectBaseDelaySeconds;
+				return false;
+			}
 			if (!session.recovering_remote_turn && !session.recovering_remote_process &&
 			    !ValidateQueuedReplayBeforeLaunch(app, session, chat)) return true;
 			if (chat.routing_mode == "automatic" && !ExecutionRoutingOwnsWork(app, chat) && !session.queued_user_prompts.empty())
@@ -5307,6 +5315,27 @@ For desktop observation and input, use only the provider's built-in controller; 
 		GoalService::RecordBlocker(app, owner_chat_id, goal_id, "The provider was switched while a remote turn could not be confirmed.");
 		(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
 		if (ChatSession* owner = ChatDomainService().FindChatById(app, owner_chat_id)) acp_detail::SaveChatQuietly(app, *owner);
+	}
+
+	namespace
+	{
+		RemoteHelperInstallProbe& HelperInstallProbe()
+		{
+			static RemoteHelperInstallProbe probe = nullptr;
+			return probe;
+		}
+	}
+
+	void SetRemoteHelperInstallProbe(RemoteHelperInstallProbe probe)
+	{
+		HelperInstallProbe() = probe;
+	}
+
+	bool RemoteReconnectHeldForHelperInstall(const ChatSession& chat, bool recovery)
+	{
+		// Only an install running in this process holds; a status saved by an interrupted one must not (#771).
+		const RemoteHelperInstallProbe probe = HelperInstallProbe();
+		return chat.execution_host_id != execution_hosts::kLocalHostId && probe != nullptr && probe(chat.execution_host_id, recovery);
 	}
 
 	void ForgetStoppedRemoteProcess(ChatSession& chat)

@@ -795,6 +795,7 @@ namespace uam::remote
 			case BootstrapProbeStatus::Succeeded:
 				break;
 			}
+			result.transport_failed = probe.status == BootstrapProbeStatus::TransportFailed || probe.status == BootstrapProbeStatus::TimedOut;
 			return false;
 		}
 		std::istringstream values(probe.output);

@@ -40,6 +40,8 @@ UAM_TEST(RemoteRunnerBootstrapPreservesInjectedProbeFailuresPrivately)
 		UAM_ASSERT(!ProbeBootstrapPlatform(plan, result, execute));
 		UAM_ASSERT_EQ(calls, failed_index + 1);
 		UAM_ASSERT_EQ(result.error, expected);
+		// Only these mean the SSH connection itself failed; the UI shows its connection hint for them alone (#771).
+		UAM_ASSERT_EQ(result.transport_failed, status == BootstrapProbeStatus::TransportFailed || status == BootstrapProbeStatus::TimedOut);
 		UAM_ASSERT(result.platform.empty());
 		UAM_ASSERT(result.architecture.empty());
 		UAM_ASSERT(!result.install_lease);
@@ -54,6 +56,7 @@ UAM_TEST(RemoteRunnerBootstrapPreservesInjectedProbeFailuresPrivately)
 	}));
 	UAM_ASSERT_EQ(calls, std::size_t{2});
 	UAM_ASSERT_EQ(result.error, std::string("Remote setup platform probe command failed (exit 23)."));
+	UAM_ASSERT(!result.transport_failed);
 }
 
 UAM_TEST(RemoteRunnerBootstrapParsesOnlySuccessfulProbeOutput)
@@ -104,6 +107,8 @@ UAM_TEST(RemoteRunnerBootstrapSeparatesUnsupportedAndMalformedProbeOutput)
 		}));
 		UAM_ASSERT_EQ(calls, std::size_t{1});
 		UAM_ASSERT_EQ(result.error, expected);
+		// Malformed output reached the host, so it is not a connection failure.
+		UAM_ASSERT(!result.transport_failed);
 		UAM_ASSERT(result.platform.empty());
 		UAM_ASSERT(result.architecture.empty());
 	}

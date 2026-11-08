@@ -54,6 +54,8 @@ namespace uam::remote
 		bool recovery_required = false;
 		bool activation_attempted = false;
 		bool rollback_confirmed = false;
+		// The first SSH contact (the platform probe) failed, so the connection itself is the likely problem.
+		bool transport_failed = false;
 		bool PreviousInstallationConfirmed() const
 		{
 			return !recovery_required && (!activation_attempted || rollback_confirmed);
