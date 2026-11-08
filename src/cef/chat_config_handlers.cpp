@@ -1489,16 +1489,19 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat mode."));
 		return;
 	}
+	uam::permission_log::RecordChange(chat->id, PermissionChangeSource(), previous_mode_id, chat->approval_mode, chat->command_safety_tier, chat->command_safety_tier);
 
 	if (!defer_live_update && session != nullptr && session->running)
 	{
 		std::string acp_error;
 		if (!uam::SetAcpSessionMode(m_app, chat->id, effective_mode_id, &acp_error, previous_mode_id))
 		{
+			const std::string rejected = chat->approval_mode;
 			chat->approval_mode = previous_mode_id;
 			chat->updated_at = previous_updated_at;
 			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat mode reverted.", "Chat mode changed in UI, but failed to revert.");
-			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP mode."));
+			uam::permission_log::RecordChange(chat->id, uam::permission_log::kSourceRollback, rejected, chat->approval_mode, chat->command_safety_tier, chat->command_safety_tier);
+			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP mode.") + (uam::provider_chat_defaults::ProviderManagesOwnPermissions(chat->provider_id) ? "" : " " + uam::permission_log::RollbackNotice(*chat)));
 			return;
 		}
 	}
@@ -1983,6 +1986,7 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist command safety tier."));
 		return;
 	}
+	uam::permission_log::RecordChange(previous_chat, *chat, PermissionChangeSource());
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
 	if (session != nullptr && session->running && !AcpSessionBlocksModelChange(*session) &&
 	    CommandSafetyTierNeedsLiveUpdate(previous_chat, *chat))
@@ -1990,10 +1994,13 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 		std::string acp_error;
 		if (!uam::SetAcpSessionMode(m_app, chat->id, requested_effective_mode, &acp_error, std::nullopt, previous))
 		{
+			// The send failed synchronously; the session may already have restored the tier.
+			const std::string rejected = chat->command_safety_tier;
 			chat->command_safety_tier = previous;
 			chat->updated_at = previous_updated_at;
 			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat permissions reverted.", "Chat permissions changed in UI, but failed to revert.");
-			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP permissions."));
+			uam::permission_log::RecordChange(chat->id, uam::permission_log::kSourceRollback, chat->approval_mode, chat->approval_mode, rejected, chat->command_safety_tier);
+			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP permissions.") + " " + uam::permission_log::RollbackNotice(*chat));
 			return;
 		}
 	}

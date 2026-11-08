@@ -31,6 +31,7 @@ import {
   SUPPORTED_CLI_PROVIDER_IDS,
   fallbackProviderForId,
   normalizeCliProviderIdAlias,
+  permissionTierForProvider,
   providerCapabilities,
   providerMetadataForId,
 } from '../../utils/providerMetadata'
@@ -1735,6 +1736,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return false
       }
       const defaults = sanitizeProviderChatDefaults(current.providerChatDefaults[requestedProviderId] ?? null)
+      const targetCapabilities = providerCapabilities(requestedProviderId, current.providers.find((provider) => provider.id === requestedProviderId))
+      const sourceProviderId = previousSession.providerId ?? DEFAULT_PROVIDER_ID
+      const sourceCapabilities = providerCapabilities(sourceProviderId, current.providers.find((provider) => provider.id === sourceProviderId))
       const optimisticUpdatedAt = new Date()
 
       const applyProvider = () => {
@@ -1748,8 +1752,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               reasoningEffort: defaults.reasoningEffort,
               serviceTier: providerCapabilities(requestedProviderId).hasServiceTier ? defaults.serviceTier : '',
               serviceTierExplicit: providerCapabilities(requestedProviderId).hasServiceTier && defaults.serviceTier !== '',
-              approvalMode: defaults.approvalMode,
-              commandSafetyTier: defaults.commandSafetyTier,
+              // The chat keeps its own permission level (#754); only a level the provider cannot apply drops to Default.
+              commandSafetyTier: permissionTierForProvider(previousSession.commandSafetyTier, sourceCapabilities, targetCapabilities),
               smallModelMode: defaults.smallModelMode,
               updatedAt: optimisticUpdatedAt,
             } : s
@@ -2054,6 +2058,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
 		if (isLatestPendingRequest(requestKey, response.requestId)) {
 		  pendingRequestIdsByKey.delete(requestKey)
+		  if (response.error) reportAppFailure(response.error, '')
         }
 
         return false

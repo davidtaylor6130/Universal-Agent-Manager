@@ -33,6 +33,7 @@
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/app_time.h"
 #include "common/provider/excluded_provider_data.h"
+#include "common/config/provider_chat_defaults.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_attention_kind.h"
@@ -2590,7 +2591,7 @@ namespace uam
 		j["supportsCli"] = profile.supports_cli;
 		j["supportsStructured"] = profile.supports_structured;
 		j["structuredProtocol"] = profile.structured_protocol;
-		j["structuredPermissionControl"] = profile.supports_structured && profile.id != uam::provider_ids::kAntigravityCli ? "uam" : "provider";
+		j["structuredPermissionControl"] = profile.supports_structured && !uam::provider_chat_defaults::ProviderManagesOwnPermissions(profile.id) ? "uam" : "provider";
 		j["terminalPermissionControl"] = "provider";
 		j["nativeGoalCommand"] = profile.native_goal_command;
 		// Without native steering, Steer stops the running turn and sends the steer first.

@@ -354,6 +354,44 @@ UAM_TEST(ChatRepositoryMigratesLegacyYoloModeToCommandSafetyTier)
 	UAM_ASSERT_EQ(rewritten_json.value("commandSafetyTier", ""), std::string("yolo"));
 }
 
+UAM_TEST(ChatRepositoryLogsPermissionMigrationOncePerChat)
+{
+	TempDir temp("uam-chat-permission-migration-log");
+	const fs::path chats_dir = temp.root / "chats";
+	fs::create_directories(chats_dir);
+	UAM_ASSERT(uam::io::WriteTextFile(chats_dir / "legacy-permission-log.json", R"({
+  "id": "legacy-permission-log",
+  "provider_id": "codex-cli",
+  "approval_mode": "default",
+  "auto_approve_commands": true,
+  "title": "Legacy Permission Log",
+  "created_at": "2026-01-01 00:00:00",
+  "updated_at": "2026-01-01 00:00:01",
+  "messages": []
+})"));
+	UAM_ASSERT(uam::io::WriteTextFile(chats_dir / "legacy-permission-yolo.json", R"({
+  "id": "legacy-permission-yolo",
+  "provider_id": "codex-cli",
+  "approval_mode": "yolo",
+  "title": "Legacy Yolo Log",
+  "created_at": "2026-01-01 00:00:00",
+  "updated_at": "2026-01-01 00:00:02",
+  "messages": []
+})"));
+	const fs::path log = temp.root / "permission.log";
+	std::string log_error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, log_error));
+	struct StopLog { ~StopLog() { uam::diagnostics::StopFileLog(); } } stop_log;
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChats(temp.root).size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChats(temp.root).size(), static_cast<std::size_t>(2));
+	uam::diagnostics::FlushFileLog();
+	const std::string written = uam::io::ReadTextFile(log);
+	UAM_ASSERT(uam::strings::Contains(written, "[permission] chat=legacy-permission-yolo source=migration commandSafetyTier=(empty)->yolo approvalMode=yolo->default"));
+	const std::string entry = "[permission] chat=legacy-permission-log source=migration commandSafetyTier=autoApproveCommands->yolo";
+	UAM_ASSERT(uam::strings::Contains(written, entry));
+	UAM_ASSERT_EQ(written.find(entry), written.rfind(entry));
+}
+
 UAM_TEST(ChatRepositoryMigratesLegacyAutoApproveBooleanToCommandSafetyTier)
 {
 	TempDir temp("uam-chat-auto-approve-migration");

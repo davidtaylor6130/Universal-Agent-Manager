@@ -31,6 +31,7 @@
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
+#include "common/security/permission_change_log.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
@@ -1807,6 +1808,8 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 	chat->provider_handoff_session_id.clear();
 	chat->provider_id = provider->id;
 	uam::provider_chat_defaults::ApplyToChat(app.settings, *chat);
+	// The chat keeps its own permission level and memory; only model, reasoning and speed come from the new provider's defaults.
+	uam::provider_chat_defaults::KeepPermissionLevel(*chat, previous_chat);
 	chat->memory_level = previous_chat.memory_level;
 	chat->memory_enabled = previous_chat.memory_enabled;
 	for (Goal& goal : chat->goals)
@@ -1861,6 +1864,7 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 		}
 		return ChatProviderSwitchResult::SaveFailed;
 	}
+	uam::permission_log::RecordChange(previous_chat, *chat, uam::permission_log::kSourceSwitch);
 
 	(void)ComputerUseService::SetControlState(app, chat->id, "stopped");
 	if (session != nullptr && session->running) (void)StopAcpSession(app, chat->id);

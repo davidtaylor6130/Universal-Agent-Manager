@@ -15,6 +15,7 @@
 #include "common/config/execution_host_config.h"
 #include "common/memory/memory_levels.h"
 #include "common/security/command_safety.h"
+#include "common/security/permission_change_log.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
@@ -2325,6 +2326,7 @@ namespace
 		    persisted_command_safety_tier.empty() && legacy_auto_approve_commands ? "yolo" : persisted_command_safety_tier);
 		chat.computer_use_backend = uam::computer_use::BackendPreference(
 		    JsonStringOrEmpty(root.Find(kChatComputerUseBackendField)));
+		const std::string persisted_approval_mode = chat.approval_mode;
 		if (chat.approval_mode == uam::approval_modes::kLegacyYoloApprovalMode)
 		{
 			chat.approval_mode = uam::approval_modes::kDefaultApprovalMode;
@@ -2335,6 +2337,9 @@ namespace
 			chat.approval_mode = uam::approval_modes::kDefaultApprovalMode;
 			chat.command_safety_tier = uam::approval_modes::kAcceptEditsApprovalMode;
 		}
+		// An absent tier field with no legacy flag reads as off; that is a default, not a migration.
+		const std::string migrated_from_tier = persisted_command_safety_tier.empty() && legacy_auto_approve_commands ? "autoApproveCommands" : persisted_command_safety_tier;
+		uam::permission_log::RecordMigrationOnce(chat.id, persisted_approval_mode, chat.approval_mode, !migrated_from_tier.empty() ? migrated_from_tier : persisted_approval_mode != chat.approval_mode ? std::string() : chat.command_safety_tier, chat.command_safety_tier);
 		chat.model_id = JsonStringOrEmpty(root.Find(kChatModelIdField));
 		chat.reviewer_model_id = JsonStringOrEmpty(root.Find(kChatReviewerModelIdField));
 		chat.reasoning_effort = JsonStringOrEmpty(root.Find(kChatReasoningEffortField));

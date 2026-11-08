@@ -26,6 +26,8 @@
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/utils/diagnostic_log.h"
+#include "common/security/permission_change_log.h"
+#include "common/config/provider_chat_defaults.h"
 #include "common/utils/time_utils.h"
 #include "common/utils/uuid.h"
 
@@ -182,7 +184,9 @@ UAM_TEST(ChatProviderSwitchPreservesHistoryStopsIdleRuntimesAndClearsIdentity)
 	const ChatSession& changed = app.chats.front();
 	UAM_ASSERT_EQ(changed.provider_id, target_provider_id);
 	UAM_ASSERT_EQ(changed.model_id, std::string("target-model"));
-	UAM_ASSERT_EQ(changed.approval_mode, std::string("plan"));
+	// The chat keeps its own permission level; the target's Settings default (Plan, YOLO) does not replace it.
+	UAM_ASSERT_EQ(changed.approval_mode, std::string("default"));
+	UAM_ASSERT_EQ(changed.command_safety_tier, std::string("off"));
 	UAM_ASSERT_EQ(changed.messages.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(changed.messages.front().content, std::string("Preserve this history."));
 	UAM_ASSERT_EQ(changed.messages.front().provider, source_provider_id);
@@ -202,6 +206,153 @@ UAM_TEST(ChatProviderSwitchPreservesHistoryStopsIdleRuntimesAndClearsIdentity)
 	UAM_ASSERT_EQ(saved.front().provider_handoff_context, changed.provider_handoff_context);
 	UAM_ASSERT(saved.front().provider_handoff_context.find("Preserve this history.") != std::string::npos);
 	UAM_ASSERT(saved.front().provider_handoff_session_id.empty());
+}
+
+UAM_TEST(ChatProviderSwitchKeepsChatPermissionLevelAndLogsLoweredLevel)
+{
+	TempDir temp("uam-provider-switch-permission");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const fs::path log = temp.root / "permission.log";
+	std::string log_error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, log_error));
+	struct StopLog { ~StopLog() { uam::diagnostics::StopFileLog(); } } stop_log;
+	for (const ProviderProfile& profile : app.provider_profiles)
+		app.settings.provider_chat_defaults[profile.id] = ProviderChatDefaults{"", "plan", "yolo", true, "", ""};
+	const std::vector<const ProviderProfile*> uam_managed = [&]
+	{
+		std::vector<const ProviderProfile*> result;
+		for (const ProviderProfile& profile : app.provider_profiles)
+			if (profile.supports_structured && !uam::provider_chat_defaults::ProviderManagesOwnPermissions(profile.id)) result.push_back(&profile);
+		return result;
+	}();
+	UAM_ASSERT(uam_managed.size() >= 2);
+
+	// #754: a Default chat switched to a provider whose Settings default is YOLO stays on Default.
+	ChatSession default_chat;
+	default_chat.id = "chat-default-level";
+	default_chat.provider_id = uam_managed[0]->id;
+	default_chat.approval_mode = "default";
+	default_chat.command_safety_tier = "off";
+	ChatSession review_chat;
+	review_chat.id = "chat-review-level";
+	review_chat.provider_id = uam_managed[0]->id;
+	review_chat.approval_mode = "plan";
+	review_chat.command_safety_tier = "aiReview";
+	app.chats = {default_chat, review_chat};
+
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, default_chat.id, uam_managed[1]->id), uam::ChatProviderSwitchResult::Changed);
+	UAM_ASSERT_EQ(app.chats[0].command_safety_tier, std::string("off"));
+	UAM_ASSERT_EQ(app.chats[0].approval_mode, std::string("default"));
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, review_chat.id, uam_managed[1]->id), uam::ChatProviderSwitchResult::Changed);
+	UAM_ASSERT_EQ(app.chats[1].command_safety_tier, std::string("aiReview"));
+	UAM_ASSERT_EQ(app.chats[1].approval_mode, std::string("plan"));
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, default_chat.id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->command_safety_tier, std::string("off"));
+	UAM_ASSERT_EQ(saved->approval_mode, std::string("default"));
+
+	// A provider that answers its own permission prompts cannot show UAM's levels, so the chat drops to Default, never higher.
+	if (const ProviderProfile* antigravity = ProviderProfileStore::FindById(app.provider_profiles, uam::provider_ids::kAntigravityCli); antigravity != nullptr)
+	{
+		for (const std::string tier : {"yolo", "acceptEdits"})
+		{
+			ChatSession lowered_chat;
+			lowered_chat.id = "chat-lowered-" + tier;
+			lowered_chat.provider_id = uam_managed[0]->id;
+			lowered_chat.command_safety_tier = tier;
+			app.chats.push_back(lowered_chat);
+			UAM_ASSERT_EQ(uam::SwitchChatProvider(app, lowered_chat.id, antigravity->id), uam::ChatProviderSwitchResult::Changed);
+			UAM_ASSERT_EQ(app.chats.back().command_safety_tier, std::string("off"));
+			uam::diagnostics::FlushFileLog();
+			UAM_ASSERT(uam::strings::Contains(uam::io::ReadTextFile(log), "[permission] chat=chat-lowered-" + tier + " source=switch commandSafetyTier=" + tier + "->off"));
+		}
+	}
+	// Leaving such a provider must not reveal a level its chip never showed.
+	if (const ProviderProfile* antigravity = ProviderProfileStore::FindById(app.provider_profiles, uam::provider_ids::kAntigravityCli); antigravity != nullptr)
+	{
+		ChatSession hidden_chat;
+		hidden_chat.id = "chat-hidden-yolo";
+		hidden_chat.provider_id = antigravity->id;
+		hidden_chat.command_safety_tier = "yolo";
+		app.chats.push_back(hidden_chat);
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(app, hidden_chat.id, uam_managed[0]->id), uam::ChatProviderSwitchResult::Changed);
+		UAM_ASSERT_EQ(app.chats.back().command_safety_tier, std::string("off"));
+	}
+	uam::diagnostics::FlushFileLog();
+	const std::string written = uam::io::ReadTextFile(log);
+	// Kept levels are not changes, so nothing is logged for them.
+	UAM_ASSERT(!uam::strings::Contains(written, "chat=chat-default-level"));
+	UAM_ASSERT(!uam::strings::Contains(written, "chat=chat-review-level"));
+}
+
+UAM_TEST(AcpSetModeFailureNamesRestoredPermissionLevelAndLogsRollback)
+{
+	TempDir temp("uam-set-mode-rollback");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const fs::path log = temp.root / "permission.log";
+	std::string log_error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, log_error));
+	struct StopLog { ~StopLog() { uam::diagnostics::StopFileLog(); } } stop_log;
+
+	const auto reject_mode_change = [&](const std::string& chat_id, const std::string& saved_approval_mode, const std::string& saved_tier, std::optional<std::string> previous_approval_mode, std::optional<std::string> previous_tier) -> uam::AcpSessionState*
+	{
+		ChatSession chat;
+		chat.id = chat_id;
+		chat.provider_id = uam::provider_ids::kGeminiCli;
+		chat.approval_mode = saved_approval_mode;
+		chat.command_safety_tier = saved_tier;
+		app.chats = {chat};
+		app.acp_sessions.clear();
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->session_id = "native";
+		session->running = true;
+		session->session_ready = true;
+		session->lifecycle_state = "ready";
+		session->current_mode_id = saved_approval_mode;
+		session->mode_change_request_id = 7;
+		session->pending_request_methods[7] = "session/set_mode";
+		session->mode_change_previous_id = "default";
+		session->mode_change_previous_chat_id = std::move(previous_approval_mode);
+		session->mode_change_previous_command_safety_tier = std::move(previous_tier);
+		session->mode_change_requested_id = saved_approval_mode;
+		uam::AcpSessionState* raw = session.get();
+		app.acp_sessions.push_back(std::move(session));
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw, app.chats.front(),
+		    R"({"jsonrpc":"2.0","id":7,"error":{"code":-32603,"message":"Mode change refused"}})"));
+		return raw;
+	};
+
+	// Default to Plan is the change Gemini and OpenCode send as set_mode today.
+	uam::AcpSessionState* plan = reject_mode_change("chat-plan-rollback", "plan", "off", std::string("default"), std::nullopt);
+	UAM_ASSERT_EQ(app.chats.front().approval_mode, std::string("default"));
+	UAM_ASSERT(uam::strings::Contains(plan->last_error, "Mode change refused"));
+	UAM_ASSERT(uam::strings::Contains(plan->last_error, "The change was not applied; this chat is not in Plan mode and its permission level is Default."));
+
+	// Neither of those providers launches differently by tier today, so this case guards the shared handler for the YOLO to Default path in #754.
+	uam::AcpSessionState* tier = reject_mode_change("chat-tier-rollback", "default", "off", std::nullopt, std::string("yolo"));
+	UAM_ASSERT_EQ(app.chats.front().command_safety_tier, std::string("yolo"));
+	UAM_ASSERT(uam::strings::Contains(tier->last_error, "The change was not applied; this chat is not in Plan mode and its permission level is YOLO."));
+
+	uam::diagnostics::FlushFileLog();
+	const std::string written = uam::io::ReadTextFile(log);
+	UAM_ASSERT(uam::strings::Contains(written, "[permission] chat=chat-plan-rollback source=rollback approvalMode=plan->default"));
+	UAM_ASSERT(uam::strings::Contains(written, "[permission] chat=chat-tier-rollback source=rollback commandSafetyTier=off->yolo"));
+}
+
+UAM_TEST(PermissionChangeLogNamesSourceAndOmitsUnchangedFields)
+{
+	UAM_ASSERT_EQ(uam::permission_log::FormatChange("chat-1", "companion", "default", "plan", "off", "off"),
+	    std::string("[permission] chat=chat-1 source=companion approvalMode=default->plan"));
+	UAM_ASSERT_EQ(uam::permission_log::FormatChange("chat-1", uam::permission_log::kSourceUser, "default", "default", "yolo", "off"),
+	    std::string("[permission] chat=chat-1 source=user commandSafetyTier=yolo->off"));
+	UAM_ASSERT_EQ(uam::permission_log::FormatChange("chat\nid", uam::permission_log::kSourceMigration, "", "default", "low", "aiReview"),
+	    std::string("[permission] chat=chat id source=migration commandSafetyTier=low->aiReview approvalMode=(empty)->default"));
 }
 
 UAM_TEST(ChatProviderSwitchRebindsOrConvertsProviderManagedGoals)

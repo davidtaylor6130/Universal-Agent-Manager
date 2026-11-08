@@ -50,6 +50,16 @@ inline std::string NormalizeTier(std::string_view value)
 	return TierName(ParseTier(value));
 }
 
+/// <summary>The permission level name the composer shows for a tier.</summary>
+inline std::string TierDisplayName(std::string_view value)
+{
+	const Tier tier = ParseTier(value);
+	if (tier == Tier::AcceptEdits) return "Accept Edits";
+	if (tier == Tier::AiReview) return "AI Review";
+	if (tier == Tier::Yolo) return "YOLO";
+	return "Default";
+}
+
 inline std::string RiskLevelName(RiskLevel risk)
 {
 	if (risk == RiskLevel::Allowed) return "allowed";

@@ -36,7 +36,7 @@ import type { Provider } from '../../types/provider'
 import type { Goal } from '../../types/goal'
 import { RemoteDirectoryBrowser } from '../sidebar/RemoteDirectoryBrowser'
 import { GoalBanner } from '../shared/GoalBanner'
-import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerDisabledOn, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
+import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, permissionTierForProvider, providerCapabilities, providerDisabledOn, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusScenes'
 import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
@@ -307,6 +307,9 @@ function ProviderHandoffDialog({
   blockedReason,
   override = 'none',
   activeGoal = false,
+  loweredPermissionNotice,
+  targetManagesPermissions = false,
+  computerUseOn = false,
   onCancel,
   onConfirm,
 }: {
@@ -315,6 +318,10 @@ function ProviderHandoffDialog({
   blockedReason?: string
   override?: ProviderSwitchOverride
   activeGoal?: boolean
+  /** Says why the switch lowers this chat's permission level to Default, when it does. */
+  loweredPermissionNotice?: string
+  targetManagesPermissions?: boolean
+  computerUseOn?: boolean
   onCancel: () => void
   /** Resolves true on success, or a refusal reason to show instead of the generic failure. */
   onConfirm: () => Promise<boolean | string>
@@ -354,15 +361,19 @@ function ProviderHandoffDialog({
             <li>Chat messages and recorded tool results</li>
             <li>Chat title and workspace</li>
             <li>Selected UAM agent and goals</li>
+            <li>{loweredPermissionNotice || targetManagesPermissions ? 'Memory setting' : 'Permission level and memory setting'}</li>
           </ul>
         </div>
         <div>
           <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--yellow)' }}>Reset for {targetName}</div>
           <ul className="list-disc space-y-1 pl-5">
             <li>Native session and provider-specific live tool state</li>
-            <li>Model, reasoning or speed, permission, safety, and memory defaults</li>
+            <li>Model, reviewer model, reasoning, speed and small model mode, from {targetName}'s defaults</li>
+            {targetManagesPermissions && !loweredPermissionNotice && <li>Permission prompts, which {targetName} answers itself</li>}
+            {COMPUTER_USE_ENABLED && computerUseOn && <li>Computer Use, which turns off</li>}
           </ul>
         </div>
+        {loweredPermissionNotice && <Notice tone="warning" title="Permission level lowered" dismissible={false}>{loweredPermissionNotice}</Notice>}
         <p className="text-xs" style={{ color: 'var(--text-3)' }}>Anything the current provider did not record in UAM will not transfer.</p>
         {blockedReason && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--yellow)', color: 'var(--yellow)' }}>{blockedReason}</div>}
         {uncertainDelivery && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--yellow)', color: 'var(--yellow)' }}>UAM cannot confirm whether the provider received this chat's latest message. If it did, switching may run that prompt twice.{override.startsWith('stranded') && ' A held message has not been sent and will not be sent; its text stays in this chat.'}{override.endsWith('disconnected') && ' The previous provider keeps running until the host can be reached. UAM then stops it, and new messages wait for that.'}{activeGoal && ' The active goal will be blocked.'} Cancel to leave this chat unchanged.</div>}
@@ -2468,6 +2479,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   )
   const selectedUamAgentId = configuredUamAgentId || session.uamAgentId || 'build'
   const permissionsManagedByUam = currentProviderCapabilities.structuredPermissionControl === 'uam'
+  const providerHandoffTargetCapabilities = providerHandoffTarget ? providerCapabilities(providerHandoffTarget.id, providerHandoffTarget) : null
+  const providerHandoffLoweredPermissionNotice = providerHandoffTargetCapabilities
+    && permissionTierForProvider(session.commandSafetyTier, currentProviderCapabilities, providerHandoffTargetCapabilities) !== (session.commandSafetyTier ?? 'off')
+    ? `${providerHandoffTargetCapabilities.structuredPermissionControl === 'provider' ? providerShortName(providerHandoffTarget!, providerHandoffTarget!.id) : currentProviderName} answers its own permission prompts, so this chat's ${PERMISSION_MODES.find((mode) => mode.id === permissionModeForTier(session.commandSafetyTier ?? 'off'))?.name} level changes to Default.`
+    : undefined
   useEffect(() => {
     if (!isClaudeProvider(currentProvider, currentProviderId) || currentModeId !== 'plan') {
       setClaudePlanPrompt(null)
@@ -3108,7 +3124,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setSubmitting(true)
     try {
       const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(submittedSessionId, 'default')
-      if (!modeOk) { if (ownsFeedback()) setSlashNotice(noticeFor('Failed to change provider mode.', 'error')); return }
+      if (!modeOk) return
       if (!composerReferenceSubmissionIsCurrent(submission.context)) {
         refuseStaleSubmission()
         return
@@ -3452,6 +3468,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           blockedReason={providerHandoffBlockedReason}
           override={acp?.providerSwitchOverride}
           activeGoal={Boolean(activeGoal)}
+          loweredPermissionNotice={providerHandoffLoweredPermissionNotice}
+          targetManagesPermissions={providerHandoffTargetCapabilities?.structuredPermissionControl === 'provider'}
+          computerUseOn={computerUseMode}
           onCancel={() => setProviderHandoffTargetId('')}
           onConfirm={async () => {
             let refusal = ''

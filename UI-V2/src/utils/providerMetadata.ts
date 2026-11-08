@@ -348,6 +348,15 @@ export function providerCapabilities(providerId: string, provider?: Provider): P
   } : metadata.capabilities
 }
 
+/**
+ * The permission tier a chat keeps across a provider switch. A provider that answers its own prompts cannot show
+ * or change UAM's levels, so any level above Default becomes Default ('off') when that provider is the target, or
+ * the source, whose chat may hold a level its user could not see. Mirrors the native KeepPermissionLevel.
+ */
+export function permissionTierForProvider<Tier extends 'off' | 'acceptEdits' | 'aiReview' | 'yolo'>(tier: Tier | undefined, source: Pick<ProviderCapabilities, 'structuredPermissionControl'>, target: Pick<ProviderCapabilities, 'structuredPermissionControl'>): Tier | 'off' {
+  return !tier || source.structuredPermissionControl === 'provider' || target.structuredPermissionControl === 'provider' ? 'off' : tier
+}
+
 export function fallbackProviderForId(providerId: string): Provider {
   const metadata = providerMetadataForId(providerId)
   return {
