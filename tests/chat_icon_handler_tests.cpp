@@ -880,6 +880,7 @@ UAM_TEST(HelperInstallRefusalKeepsRunningBackgroundScan)
 	ChatSession busy = HandlerChat("refusal-busy-chat");
 	busy.execution_host_id = host.id;
 	busy.remote_process_exists = true;
+	busy.remote_active_turn_id = "refusal-active-turn";
 	app.chats.push_back(busy);
 	const auto entered = std::make_shared<std::promise<std::stop_token>>();
 	std::future<std::stop_token> scan_stop = entered->get_future();
@@ -900,7 +901,7 @@ UAM_TEST(HelperInstallRefusalKeepsRunningBackgroundScan)
 	ChatIconHandlerTestAccess::InstallRemoteHost(*handler, {{"id", host.id}, {"label", host.label}, {"sshAlias", host.ssh_alias}, {"runnerDirectory", ""}}, refused, 51);
 	UAM_ASSERT_EQ(refused->failures, 1);
 	UAM_ASSERT_EQ(refused->status, 409);
-	UAM_ASSERT(refused->body.find("chat-process") != std::string::npos);
+	UAM_ASSERT(refused->body.find("Private handler fixture") != std::string::npos);
 	UAM_ASSERT(!running.stop_requested());
 	UAM_ASSERT(app.startup_native_import_service->BackgroundScanPendingOnHost(host.id));
 	handler.reset();
