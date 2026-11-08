@@ -309,7 +309,7 @@ function ProviderHandoffDialog({
   activeGoal = false,
   loweredPermissionNotice,
   targetManagesPermissions = false,
-  computerUseOn = false,
+  extraResetItem,
   onCancel,
   onConfirm,
 }: {
@@ -321,7 +321,7 @@ function ProviderHandoffDialog({
   /** Says why the switch lowers this chat's permission level to Default, when it does. */
   loweredPermissionNotice?: string
   targetManagesPermissions?: boolean
-  computerUseOn?: boolean
+  extraResetItem?: string
   onCancel: () => void
   /** Resolves true on success, or a refusal reason to show instead of the generic failure. */
   onConfirm: () => Promise<boolean | string>
@@ -370,7 +370,7 @@ function ProviderHandoffDialog({
             <li>Native session and provider-specific live tool state</li>
             <li>Model, reviewer model, reasoning, speed and small model mode, from {targetName}'s defaults</li>
             {targetManagesPermissions && !loweredPermissionNotice && <li>Permission prompts, which {targetName} answers itself</li>}
-            {COMPUTER_USE_ENABLED && computerUseOn && <li>Computer Use, which turns off</li>}
+            {extraResetItem && <li>{extraResetItem}</li>}
           </ul>
         </div>
         {loweredPermissionNotice && <Notice tone="warning" title="Permission level lowered" dismissible={false}>{loweredPermissionNotice}</Notice>}
@@ -3470,7 +3470,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           activeGoal={Boolean(activeGoal)}
           loweredPermissionNotice={providerHandoffLoweredPermissionNotice}
           targetManagesPermissions={providerHandoffTargetCapabilities?.structuredPermissionControl === 'provider'}
-          computerUseOn={computerUseMode}
+          extraResetItem={COMPUTER_USE_ENABLED && computerUseMode ? 'Computer Use, which turns off' : undefined}
           onCancel={() => setProviderHandoffTargetId('')}
           onConfirm={async () => {
             let refusal = ''
