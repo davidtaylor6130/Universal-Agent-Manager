@@ -2042,6 +2042,7 @@ namespace
 		{
 			native.last_opened_at = local.last_opened_at;
 			native.attention_revision = local.attention_revision;
+			native.attention_source = local.attention_source;
 			native.last_stop_reason = local.last_stop_reason;
 			native.goal_command_revision = local.goal_command_revision;
 			native.goal_pending_continuation_id = local.goal_pending_continuation_id;
@@ -2434,7 +2435,7 @@ namespace
 		auto value = nlohmann::json::parse(metadata, nullptr, false);
 		if (!value.is_object()) return {};
 		for (const char* key : {"model_id", "reasoning_effort", "service_tier", "service_tier_explicit", "updated_at",
-		                       "last_opened_at", "interaction_at", "attention_revision", "settled_at", "snoozed_until_ms",
+		                       "last_opened_at", "interaction_at", "attention_revision", "attention_source", "settled_at", "snoozed_until_ms",
 		                       "title", "pinned", "custom_icon", "folder_id"})
 			value.erase(key);
 		return value.dump();

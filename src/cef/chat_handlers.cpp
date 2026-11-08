@@ -282,6 +282,7 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 		metadata.last_opened_at = selected_chat->last_opened_at;
 		metadata.interaction_at = selected_chat->interaction_at;
 		metadata.attention_revision = selected_chat->attention_revision;
+		metadata.attention_source = selected_chat->attention_source;
 		metadata.settled_at = selected_chat->settled_at;
 		metadata.snoozed_until_ms = selected_chat->snoozed_until_ms;
 		const std::filesystem::path data_root = m_app.data_root;
@@ -2682,6 +2683,7 @@ void UamQueryHandler::HandleSetChatSnoozedUntil(CefRefPtr<CefBrowser> browser, c
 	metadata.last_opened_at = chat->last_opened_at;
 	metadata.interaction_at = chat->interaction_at;
 	metadata.attention_revision = chat->attention_revision;
+	metadata.attention_source = chat->attention_source;
 	metadata.settled_at = chat->settled_at;
 	const std::int64_t previous_until = chat->snoozed_until_ms;
 	metadata.snoozed_until_ms = until_ms;

@@ -498,6 +498,7 @@ namespace uam
 			w.Set("createdAt", session.created_at);
 			w.Set("updatedAt", session.updated_at);
 			w.Set("attentionRevision", session.attention_revision);
+			w.Set("attentionSource", session.attention_source);
 			w.Set("managedSubagentRevision", session.managed_subagent_revision);
 			w.Set("interactionAt", session.interaction_at);
 			w.Set("settledAt", session.settled_at);
@@ -1650,6 +1651,7 @@ namespace uam
 			w.Set("routingWaitReason", routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second);
 			w.Set("routingUnresolvedReservation", app.execution_routing_restored_unresolved_chat_ids.contains(chat.id));
 			w.Set("attentionRevision", ChatDomainService().AttentionRevision(app, chat));
+			w.Set("attentionSource", chat.attention_source);
 			w.Object("cliTerminal", [&](auto& terminal) { WriteChatTerminalSummary(terminal, app, chat); });
 			if (FindAcpSessionForChat(app, chat.id) == nullptr)
 			{
@@ -1681,6 +1683,7 @@ namespace uam
 					goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
 					goal_json["lastBlockerKind"] = goal.last_blocker_kind.empty() ? nullptr : nlohmann::json(goal.last_blocker_kind);
 					goal_json["lastDiagnostic"] = goal.last_diagnostic.empty() ? nullptr : nlohmann::json(goal.last_diagnostic);
+					goal_json["lastDecisionSource"] = goal.last_decision_source.empty() ? nullptr : nlohmann::json(goal.last_decision_source);
 					goal_json["pendingContinuation"] = chat.goal_pending_continuation_id == goal.id;
 					goal_json["completedItems"] = goal.completed_items;
 					goal_json["remainingItems"] = goal.remaining_items;
@@ -2155,6 +2158,7 @@ namespace uam
 				chat_json = SerializeFingerprintSession(app, chat, catalog_cache, chat.id == selected_chat_id);
 			}
 			chat_json["attentionRevision"] = ChatDomainService().AttentionRevision(app, chat);
+			chat_json["attentionSource"] = chat.attention_source;
 			const auto managed_count = managed_counts.find(chat.id);
 			chat_json["managedSubagentCount"] = managed_count == managed_counts.end() ? 0 : managed_count->second;
 			uam::icons::AddFrontendAsset(chat_json, app.data_root, chat.custom_icon);
@@ -2322,6 +2326,7 @@ namespace uam
 				goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
 				goal_json["lastBlockerKind"] = goal.last_blocker_kind.empty() ? nullptr : nlohmann::json(goal.last_blocker_kind);
 				goal_json["lastDiagnostic"] = goal.last_diagnostic.empty() ? nullptr : nlohmann::json(goal.last_diagnostic);
+				goal_json["lastDecisionSource"] = goal.last_decision_source.empty() ? nullptr : nlohmann::json(goal.last_decision_source);
 					goal_json["pendingContinuation"] = session.goal_pending_continuation_id == goal.id;
 				goal_json["completedItems"] = goal.completed_items;
 				goal_json["remainingItems"] = goal.remaining_items;

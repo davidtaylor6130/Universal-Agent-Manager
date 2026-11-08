@@ -551,6 +551,7 @@ UAM_TEST(AntigravityUamGoalUnknownUsageHoldsInsteadOfInventingRemainingBudget)
 	UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Blocked);
 	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{0});
 	UAM_ASSERT_EQ(fixture.CurrentGoal().last_diagnostic, std::string("antigravity_goal_usage_unknown"));
+	UAM_ASSERT_EQ(fixture.CurrentGoal().last_decision_source, std::string("filter"));
 	std::string error;
 	UAM_ASSERT(!fixture.runtime.OnAcpValidateGoalResume(fixture.Chat(), fixture.CurrentGoal(), fixture.app.settings, false, error));
 	// FlushPendingGoalContinuations records its failure text in last_diagnostic.
@@ -2079,4 +2080,25 @@ UAM_TEST(AntigravityConnectedGoalReviewDoesNotAddSharedTextTokenEstimates)
 	UAM_ASSERT(!fixture.Session().running);
 	UAM_ASSERT(!fs::exists(missing.parent_path()));
 }
+
+UAM_TEST(AntigravityUamGoalFailedResultIsNotReportedAsAUsageRule)
+{
+	AntigravityUamGoalFixture fixture;
+	fixture.Prepare();
+	fixture.Step(1, nullptr);
+	UAM_ASSERT(fixture.runtime.OnAcpHandleMessage(fixture.app, fixture.Session(), fixture.Chat(), {{"event", "result"}, {"result", {{"conversation_id", fixture.Session().session_id}, {"status", "FAILED"}, {"num_turns", 9}, {"response", "Stand-in failure"}}}}, nullptr));
+	UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(fixture.CurrentGoal().last_decision_source, std::string("fallback"));
+}
+
+UAM_TEST(AntigravityUamGoalChangedConversationHoldIsNotAUsageRule)
+{
+	AntigravityUamGoalFixture fixture;
+	fixture.Prepare();
+	fixture.Session().session_id = "11111111-2222-4333-8444-555555555555";
+	UAM_ASSERT(fixture.runtime.OnAcpHandleMessage(fixture.app, fixture.Session(), fixture.Chat(), {{"event", "init"}, {"conversation_id", "99999999-2222-4333-8444-555555555555"}}, nullptr));
+	UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(fixture.CurrentGoal().last_decision_source, std::string("fallback"));
+}
+
 #endif

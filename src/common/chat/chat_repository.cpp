@@ -1669,7 +1669,7 @@ namespace
 
 	bool ChatScalarFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
-		return lhs.interaction_at == rhs.interaction_at && lhs.attention_revision == rhs.attention_revision && lhs.last_stop_reason == rhs.last_stop_reason &&
+		return lhs.interaction_at == rhs.interaction_at && lhs.attention_revision == rhs.attention_revision && lhs.attention_source == rhs.attention_source && lhs.last_stop_reason == rhs.last_stop_reason &&
 		       lhs.goal_command_revision == rhs.goal_command_revision &&
 		       lhs.goal_pending_continuation_id == rhs.goal_pending_continuation_id &&
 		       ChatIdentityFieldsEquivalentForRecovery(lhs, rhs) &&
@@ -2225,6 +2225,8 @@ namespace
 		chat.last_opened_at = JsonStringOrEmpty(root.Find(kChatLastOpenedAtField));
 		chat.interaction_at = JsonStringOrEmpty(root.Find("interaction_at"));
 		chat.attention_revision = JsonStringOrEmpty(root.Find("attention_revision"));
+		if (const JsonValue* attention_source = root.Find("attention_source"); attention_source != nullptr) chat.attention_source = NormalizeDecisionSource(JsonStringOrEmpty(attention_source));
+		else if (!chat.attention_revision.empty()) chat.attention_source = kDecisionSourceUnknown;
 		chat.settled_at = JsonStringOrEmpty(root.Find("settled_at"));
 		chat.snoozed_until_ms = NonNegativeInt64FieldOrZero(root.Find("snoozed_until_ms"));
 		chat.last_stop_reason = JsonStringOrEmpty(root.Find("last_stop_reason"));
@@ -2550,6 +2552,9 @@ namespace
 				}
 				goal.worker_model_id = JsonStringOrEmpty(goal_obj.Find("workerModelId"));
 				goal.reviewer_model_id = JsonStringOrEmpty(goal_obj.Find("reviewerModelId"));
+				// Goals saved before sources existed report their earlier verdicts as unknown, never guessed.
+				if (const JsonValue* decision_source = goal_obj.Find("lastDecisionSource"); decision_source != nullptr) goal.last_decision_source = NormalizeDecisionSource(JsonStringOrEmpty(decision_source));
+				else if (goal.status == GoalStatus::Blocked || goal.status == GoalStatus::Complete || !goal.last_blocker.empty() || !goal.last_diagnostic.empty() || !goal.last_next_prompt.empty()) goal.last_decision_source = kDecisionSourceUnknown;
 				goal.creator = JsonStringOrEmpty(goal_obj.Find("creator")) == "model" ? "model" : "user";
 				goal.creator_provider_id = goal.creator == "model" ? JsonStringOrEmpty(goal_obj.Find("creatorProviderId")) : "";
 				goal.creator_agent_id = goal.creator == "model" ? JsonStringOrEmpty(goal_obj.Find("creatorAgentId")) : "";
@@ -4166,6 +4171,7 @@ try
 	uam::json::SetString(root, kChatLastOpenedAtField, uam::strings::NonEmptyOrFallback(chat.last_opened_at, chat.updated_at));
 	uam::json::SetString(root, "interaction_at", chat.interaction_at);
 	uam::json::SetString(root, "attention_revision", chat.attention_revision);
+	uam::json::SetString(root, "attention_source", chat.attention_source);
 	uam::json::SetString(root, "settled_at", chat.settled_at);
 	uam::json::SetNumber(root, "snoozed_until_ms", static_cast<double>(chat.snoozed_until_ms));
 	uam::json::SetString(root, "last_stop_reason", chat.last_stop_reason);
@@ -4283,6 +4289,7 @@ try
 			uam::json::SetString(goal_obj, "lastBlocker", goal.last_blocker);
 			uam::json::SetString(goal_obj, "lastBlockerKind", goal.last_blocker_kind);
 			uam::json::SetString(goal_obj, "lastDiagnostic", goal.last_diagnostic);
+			uam::json::SetString(goal_obj, "lastDecisionSource", goal.last_decision_source);
 			uam::json::SetValue(goal_obj, "completedItems", StringArrayToJson(goal.completed_items));
 			uam::json::SetValue(goal_obj, "remainingItems", StringArrayToJson(goal.remaining_items));
 			uam::json::SetString(goal_obj, "currentStep", goal.current_step);
@@ -5076,6 +5083,7 @@ try
 		persisted->last_opened_at = metadata.last_opened_at;
 		persisted->interaction_at = metadata.interaction_at;
 		persisted->attention_revision = metadata.attention_revision;
+		persisted->attention_source = metadata.attention_source;
 		persisted->settled_at = metadata.settled_at;
 		persisted->snoozed_until_ms = metadata.snoozed_until_ms;
 		return PrepareChatSave(data_root, *persisted, *revision);
@@ -5086,6 +5094,7 @@ try
 	uam::json::SetString(*summary, kChatLastOpenedAtField, metadata.last_opened_at);
 	uam::json::SetString(*summary, "interaction_at", metadata.interaction_at);
 	uam::json::SetString(*summary, "attention_revision", metadata.attention_revision);
+	uam::json::SetString(*summary, "attention_source", metadata.attention_source);
 	uam::json::SetString(*summary, "settled_at", metadata.settled_at);
 	uam::json::SetNumber(*summary, "snoozed_until_ms", static_cast<double>(metadata.snoozed_until_ms));
 	std::shared_ptr<PreparedChatSave> prepared = std::make_shared<PreparedChatSave>();
@@ -5133,6 +5142,7 @@ try
 	                     uam::strings::NonEmptyOrFallback(chat.last_opened_at, chat.updated_at));
 	uam::json::SetString(*summary, "interaction_at", chat.interaction_at);
 	uam::json::SetString(*summary, "attention_revision", chat.attention_revision);
+	uam::json::SetString(*summary, "attention_source", chat.attention_source);
 	uam::json::SetString(*summary, "settled_at", chat.settled_at);
 	uam::json::SetNumber(*summary, "snoozed_until_ms", static_cast<double>(chat.snoozed_until_ms));
 	return uam::io::WriteTextFile(summary_path, SerializeArchiveDocument(*summary, summary_archive)) || (allow_full_save && SaveChat(data_root, chat));
@@ -5414,6 +5424,7 @@ namespace
 		if (uam::time::HistoryTimestampIsAfter(summary.last_opened_at, hydrated.last_opened_at))
 			hydrated.last_opened_at = summary.last_opened_at;
 		hydrated.attention_revision = summary.attention_revision;
+		hydrated.attention_source = summary.attention_source;
 		hydrated.settled_at = summary.settled_at;
 		hydrated.snoozed_until_ms = summary.snoozed_until_ms;
 		hydrated.last_stop_reason = summary.last_stop_reason;
@@ -5537,6 +5548,7 @@ namespace
 		{
 			if (uam::time::HistoryTimestampIsAfter(summary.chat->last_opened_at, chat.last_opened_at)) chat.last_opened_at = summary.chat->last_opened_at;
 			chat.attention_revision = summary.chat->attention_revision;
+			chat.attention_source = summary.chat->attention_source;
 			chat.interaction_at = summary.chat->interaction_at;
 			chat.settled_at = summary.chat->settled_at;
 			chat.snoozed_until_ms = summary.chat->snoozed_until_ms;

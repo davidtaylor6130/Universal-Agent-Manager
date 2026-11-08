@@ -149,6 +149,7 @@ export interface CppChat {
   interactionAt?: string
   lastOpenedAt?: string
   attentionRevision?: string
+  attentionSource?: string
   settledAt?: string
   snoozedUntilMs?: number
   messageCount?: number
@@ -194,6 +195,7 @@ export interface CppGoal {
   lastBlocker?: string
 	lastBlockerKind?: string
   lastDiagnostic?: string
+  lastDecisionSource?: string
   pendingContinuation?: boolean
   completedItems?: string[]
   remainingItems?: string[]

@@ -3730,6 +3730,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               onEdit={displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' ? handleEditGoal : undefined}
               workerModelLabel={displayedGoalWorkerLabel}
               reviewerModelLabel={displayedGoalReviewerLabel}
+              attentionSource={session.attentionSource}
               editing={goalEditing}
               onEditingChange={setGoalEditing}
             />

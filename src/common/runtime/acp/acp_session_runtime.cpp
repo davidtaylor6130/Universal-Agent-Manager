@@ -710,7 +710,7 @@ namespace uam
 			    active_goal != nullptr &&
 			    (chat.goal_iteration_goal_id.empty() || active_goal->id == chat.goal_iteration_goal_id))
 			{
-				GoalService::RecordBlocker(app, owner_chat_id, active_goal->id, message);
+				GoalService::RecordBlocker(app, owner_chat_id, active_goal->id, message, kDecisionSourceFallback);
 				(void)GoalService::UpdateGoalStatus(app, owner_chat_id, active_goal->id, GoalStatus::Blocked);
 				AppendGoalLoopDiagnostic(session, "goal_blocked_setup_reconnect_exhausted", active_goal->id, message);
 				if (ChatSession* owner = ChatDomainService().FindChatById(app, owner_chat_id);
@@ -1008,7 +1008,7 @@ namespace uam
 			if (goal != nullptr && goal->status != GoalStatus::Complete &&
 			    goal->status != GoalStatus::Blocked)
 			{
-				GoalService::RecordBlocker(app, owner_chat_id, goal->id, message);
+				GoalService::RecordBlocker(app, owner_chat_id, goal->id, message, kDecisionSourceFallback);
 				(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal->id,
 				                                    GoalStatus::Blocked);
 				AppendGoalLoopDiagnostic(session, "goal_blocked_turn_inactivity_timeout",
@@ -5332,7 +5332,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const Goal* active_goal = GoalService::FindActiveGoal(app, owner_chat_id);
 		if (active_goal == nullptr) return;
 		const std::string goal_id = active_goal->id;
-		GoalService::RecordBlocker(app, owner_chat_id, goal_id, "The provider was switched while a remote turn could not be confirmed.");
+		GoalService::RecordBlocker(app, owner_chat_id, goal_id, "The provider was switched while a remote turn could not be confirmed.", kDecisionSourceFallback);
 		(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
 		if (ChatSession* owner = ChatDomainService().FindChatById(app, owner_chat_id)) acp_detail::SaveChatQuietly(app, *owner);
 	}
@@ -8148,7 +8148,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					     active_goal->id == chat.goal_iteration_goal_id))
 					{
 						GoalService::RecordBlocker(app, goal_owner_chat_id, active_goal->id,
-						                           session.last_error, "remote_connection");
+						                           session.last_error, kDecisionSourceFallback, "remote_connection");
 						(void)GoalService::UpdateGoalStatus(
 						    app, goal_owner_chat_id, active_goal->id, GoalStatus::Blocked);
 						if (ChatSession* owner = ChatDomainService().FindChatById(app, goal_owner_chat_id);
@@ -8241,7 +8241,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 						    (chat.goal_iteration_goal_id.empty() || active_goal->id == chat.goal_iteration_goal_id))
 						{
 							const std::string blocker = uam::strings::NonEmptyOrFallback(session.last_error, std::string(RuntimeDisplayName(session)) + " process exited during a goal turn.");
-							GoalService::RecordBlocker(app, goal_owner_chat_id, active_goal->id, blocker,
+							GoalService::RecordBlocker(app, goal_owner_chat_id, active_goal->id, blocker, kDecisionSourceFallback,
 							                           remote_turn_recovery ? "remote_connection" : "");
 							(void)GoalService::UpdateGoalStatus(app, goal_owner_chat_id, active_goal->id, GoalStatus::Blocked);
 							AppendGoalLoopDiagnostic(session, "goal_blocked_process_exit", active_goal->id, blocker);

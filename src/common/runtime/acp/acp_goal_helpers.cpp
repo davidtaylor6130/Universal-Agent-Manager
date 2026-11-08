@@ -328,6 +328,7 @@ bool StartCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& 
 	if (goal.token_budget > 0 && goal.tokens_used >= goal.token_budget)
 	{
 		if (error_out != nullptr) *error_out = "The goal token budget is exhausted.";
+		goal.last_decision_source = kDecisionSourceFilter;
 		HoldCodexGoal(app, session, chat, goal.id, "native_goal_budget_exhausted");
 		return false;
 	}
@@ -659,6 +660,8 @@ bool ApplyCodexNativeGoalReceipt(AcpSessionState& session, ChatSession& chat, co
 		if (((mode == CodexGoalReceiptMode::Preparing && status == "paused") || status == "active") && (goal.token_budget <= 0 || total_used < goal.token_budget)) return true;
 		goal.status = status == "blocked" ? GoalStatus::Blocked : GoalStatus::Paused;
 		goal.last_diagnostic = status == "complete" ? "native_goal_complete_unverified" : "native_goal_" + status;
+		// A running status only reaches here over budget, which is UAM's rule; any other status came from the provider, which UAM did not review.
+		goal.last_decision_source = status == "active" || (mode == CodexGoalReceiptMode::Preparing && status == "paused") ? kDecisionSourceFilter : kDecisionSourceFallback;
 		chat.active_goal_id.clear();
 		chat.goal_pending_continuation_id.clear();
 		session.goal_resume_suppressed = true;
@@ -1105,6 +1108,7 @@ bool PreservesGoalPlan(const Goal& goal, const GoalService::ReviewDecision& deci
 
 void ApplyGoalProgressUpdate(Goal& goal, const GoalService::ReviewDecision& decision)
 {
+	goal.last_decision_source = decision.source;
 	if (decision.has_progress_update && PreservesGoalPlan(goal, decision))
 	{
 		goal.completed_items = decision.completed_items;

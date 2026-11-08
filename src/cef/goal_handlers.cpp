@@ -57,7 +57,7 @@ namespace
 				    b.initial_delivery->user_message_created_at, static_cast<int>(b.initial_delivery->state), b.initial_delivery->turn_id});
 			}
 			goals.push_back({goal.id, goal.objective, static_cast<int>(goal.status), goal.token_budget, goal.tokens_used,
-			    goal.blocked_turn_count, goal.last_blocker, goal.last_blocker_kind, goal.last_diagnostic,
+			    goal.blocked_turn_count, goal.last_blocker, goal.last_blocker_kind, goal.last_diagnostic, goal.last_decision_source,
 			    goal.completed_items, goal.remaining_items, goal.current_step, goal.last_verification, goal.last_next_prompt,
 			    goal.same_next_prompt_count, goal.last_assistant_text, goal.same_assistant_text_count, goal.loop_count,
 			    goal.created_at, goal.updated_at, goal.execution_owner, goal.provider_command, binding,

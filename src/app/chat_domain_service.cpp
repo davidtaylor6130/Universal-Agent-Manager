@@ -1202,6 +1202,8 @@ void ChatDomainService::MarkChatNeedsAttention(uam::AppState& app, const std::st
 	}
 	chat->snoozed_until_ms = 0;
 	chat->attention_revision = uam::chat_ids::NewChatId();
+	// ponytail: every trigger (turn end, failure, permission, tool update) is a UAM rule; a model-backed attention decision (#363) adds a source argument.
+	chat->attention_source = kDecisionSourceFilter;
 	app.chats_with_unseen_updates.insert(chat_id);
 	// Runs from provider output on the poll thread: never fall back to a synchronous full transcript save.
 	// A caller that has just queued an ordinary background save of this chat leaves these fields to that save.
