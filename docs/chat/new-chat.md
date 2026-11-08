@@ -10,6 +10,6 @@ Branch choice is optional and never blocks creation. Detached HEAD, an unborn re
 
 ## Create chat availability
 
-A version check that failed, timed out or is still running does not show that a provider's CLI cannot run, so it never disables Create chat or turns the chat into a terminal chat; the dialog notes a failed check neutrally and launch applies its normal version gate. Create chat is disabled only for a confirmed cause, such as a CLI confirmed missing, an incompatible version with no terminal fallback, an unavailable computer or a missing workspace, and the dialog footer names that cause beside the button.
+A version check that failed, timed out or is still running does not show that a provider's CLI cannot run, so it never disables Create chat or turns the chat into a terminal chat; the dialog notes a failed check neutrally and launch applies its normal version gate. OpenCode, GitHub Copilot and a named Gemini thinking level depend on a successful check, so after a failed one they stop at launch with a message pointing to Settings > CLI Version. Create chat is disabled only for a confirmed cause, such as a CLI confirmed missing, an incompatible version with no terminal fallback, an unavailable computer or a missing workspace, and the dialog footer names that cause beside the button.
 
 [Chat Defaults](../settings/chat-defaults.md) · [Workspaces](../workspaces/workspaces.md) · [Lifecycle](lifecycle.md).

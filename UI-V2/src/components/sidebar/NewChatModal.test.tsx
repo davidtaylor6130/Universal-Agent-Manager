@@ -469,6 +469,32 @@ describe('NewChatModal', () => {
     }
   })
 
+  it.each([
+    ['no workspace', () => ({ folders: [], newChatFolderId: null }), 'Choose a workspace to create this chat.', 'status'],
+    ['a workspace without a folder', () => ({ folders: useAppStore.getState().folders.map((folder) => ({ ...folder, directory: '' })) }), 'This workspace has no folder. Choose another workspace.', 'status'],
+    ['a missing computer', () => ({ executionHosts: [] }), 'This computer is no longer available. Choose another computer.', 'alert'],
+    ['a relative remote path', () => ({
+      folders: useAppStore.getState().folders.map((folder) => ({ ...folder, executionHostId: 'lab', directory: 'relative/path' })),
+      executionHosts: [...useAppStore.getState().executionHosts, { id: 'lab', label: 'Home lab', transport: 'ssh' as const, sshAlias: 'home-lab', runnerStatus: 'ready' as const, runnerVersion: '0.1.0', platform: 'linux', architecture: 'arm64', lastSeenAt: '' }],
+    }), 'Enter an absolute workspace path.', 'status'],
+  ] as const)('names %s beside a disabled Create chat', (_label, state, expected, role) => {
+    useAppStore.setState(state())
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
+      expect(create.disabled).toBe(true)
+      const reason = document.getElementById(create.getAttribute('aria-describedby')!)
+      expect(reason?.textContent).toBe(expected)
+      expect(reason?.getAttribute('role')).toBe(role)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it.each(['installing', 'known-incompatible'] as const)(
     'identifies terminal fallback for provider readiness %s',
     async (status) => {
