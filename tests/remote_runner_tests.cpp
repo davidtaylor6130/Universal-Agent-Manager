@@ -8247,9 +8247,6 @@ static void VerifyProviderSwitchStopsTheOldHelper(const bool automatic, const bo
 		}, 20));
 		return;
 	}
-	// Delivery is not asserted here: the base (20572dca7) also ends an automatic-routed remote first launch with its input held
-	// ("Provider launch lost its owned full-save receipt") with no provider switch, so that is a separate existing bug.
-	if (automatic) return;
 	UAM_ASSERT(until([&] { return fs::exists(new_provider_input) && ReadFile(new_provider_input).find("First prompt for the new provider.") != std::string::npos; }, 20));
 	// Delivery reached the new process, and the old helper never saw it.
 	const std::string old_input = fs::exists(fixture.input_log) ? ReadFile(fixture.input_log) : std::string{};
@@ -8413,6 +8410,204 @@ UAM_TEST(AutomaticRoutedProviderSwitchStillStopsTheOldHelper)
 UAM_TEST(AutomaticRoutedSendDoesNotStrandOnAPendingRepositoryRoute)
 {
 	VerifyProviderSwitchStopsTheOldHelper(true, false);
+}
+
+enum class AutomaticSendInterruption { None, HoldRaised, QueueChanged };
+
+static void VerifyAutomaticRoutedRemoteSend(const AutomaticSendInterruption interruption)
+{
+	const bool lose_launch_ownership = interruption != AutomaticSendInterruption::None;
+	// The provider the runner starts; it records exactly what it is given.
+	TempDir provider_bin("uam-automatic-send-provider");
+	const fs::path provider_input = provider_bin.root / "provider-input.jsonl";
+	UAM_ASSERT(uam::io::WriteTextFile(provider_bin.root / "claude",
+	    "#!/bin/sh\n"
+	    "printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"automatic-session\"}'\n"
+	    "while IFS= read -r line; do\n"
+	    "  printf '%s\\n' \"$line\" >> \"" + provider_input.string() + "\"\n"
+	    "  case \"$line\" in *'\"initialize\"'*)\n"
+	    "    id=$(printf '%s' \"$line\" | sed -E -n 's/.*\"request_id\":(\"[^\"]*\"|[0-9]+).*/\\1/p')\n"
+	    "    printf '{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":%s,\"response\":{}}}\\n' \"$id\" ;;\n"
+	    "  esac\n"
+	    "done\n"));
+	fs::permissions(provider_bin.root / "claude", fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	const std::string inherited_path = uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
+	ScopedEnvVar runner_path("PATH", provider_bin.root.string() + ":" + inherited_path);
+	RemoteAdmissionFixture fixture;
+	auto& app = fixture.app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession& chat = app.chats.front();
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	ScopedEnvVar ssh_path("PATH", fixture.temp.root.string() + ":" + provider_bin.root.string() + ":" + inherited_path);
+	ScopedEnvVar test_runner("UAM_TEST_RUNNER", fixture.runner.string());
+	ScopedEnvVar test_socket("UAM_TEST_SOCKET", fixture.socket.string());
+
+	// Retire the fixture's own process so the send below is a plain first launch: no switch, no helper, no reset.
+	std::string error;
+	UAM_ASSERT(service.WriteToStdioProcess(*fixture.session, uam::remote::kRemoteStopControlLine.data(), uam::remote::kRemoteStopControlLine.size(), &error));
+	int exit_code = -1;
+	const auto proxy_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!service.PollStdioProcessExited(*fixture.session, &exit_code) && std::chrono::steady_clock::now() < proxy_deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	service.StopStdioProcess(*fixture.session, true);
+	service.CloseStdioProcessHandles(*fixture.session);
+	fixture.session->running = fixture.session->session_ready = false;
+	fixture.session = nullptr;
+	std::erase_if(app.acp_sessions, [](const auto&) { return true; });
+
+	const ExecutionHost& host = app.settings.execution_hosts.front();
+	const ProviderProfile* claude = ProviderProfileStore::FindById(app.provider_profiles, "claude-cli");
+	UAM_ASSERT(claude != nullptr);
+	app.folders.push_back({"routed", "Routed", chat.workspace_directory, false, host.id});
+	app.folders.push_back({"source", "Source", "/source/repo", false, "local"});
+	chat.provider_id = claude->id;
+	chat.native_session_id.clear();
+	chat.folder_id = "routed";
+	chat.routing_mode = "automatic";
+	chat.routing_source_folder_id = "source";
+	chat.routing_source_directory = "/source/repo";
+	chat.routing_assigned_connection_identity = uam::ExecutionRoutingConnectionIdentity(host);
+	chat.routing_assigned_provider_configuration_identity = uam::ExecutionRoutingProviderIdentity(app, *claude, host.id);
+	uam::CliProviderVersionState version;
+	version.provider_id = claude->id;
+	version.execution_host = host;
+	version.checked = version.supported = true;
+	version.installed_version = "2.0.0";
+	app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(claude->id, host.id)] = version;
+	app.settings.execution_routing.enabled = true;
+	ExecutionRoutingHostPolicy policy;
+	policy.host_id = host.id;
+	policy.enabled = true;
+	policy.max_active_turns = 1;
+	policy.provider_confirmations.push_back({claude->id, uam::ExecutionRoutingConnectionIdentity(host), uam::ExecutionRoutingProviderIdentity(app, *claude, host.id)});
+	policy.workspace_mappings.push_back({"source", "/source/repo", "routed"});
+	app.settings.execution_routing.hosts.push_back(policy);
+	chat.messages.clear(); // A first Send: no earlier rows.
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+
+	const bool admitted = uam::SendAcpPrompt(app, chat.id, "Prompt on an automatic-routed chat.", &error);
+	UAM_ASSERT(admitted);
+	if (lose_launch_ownership)
+	{
+		const auto poll_until = [&](const std::function<bool()>& done)
+		{
+			const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+			while (!done() && std::chrono::steady_clock::now() < limit)
+			{
+				(void)uam::PollAllAcpSessions(app);
+				std::this_thread::sleep_for(std::chrono::milliseconds(2));
+			}
+			return done();
+		};
+		const auto launch_pending = [&]
+		{
+			const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat.id);
+			return session != nullptr && uam::acp_detail::HasPendingAcpColdLaunch(*session);
+		};
+		UAM_ASSERT(poll_until(launch_pending));
+		const bool queue_changed = interruption == AutomaticSendInterruption::QueueChanged;
+		// Either change before the launch starts takes its ownership away, including after the drain's own removal.
+		if (queue_changed) UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Second prompt queued during the launch.", &error));
+		else chat.acp_queue_held = true;
+		UAM_ASSERT(poll_until([&] { return !launch_pending(); }));
+		uam::FlushPendingChatSaves(app);
+		const uam::AcpSessionState* given_up = uam::FindAcpSessionForChat(app, chat.id);
+		UAM_ASSERT(given_up != nullptr && given_up->last_error.find("given up before it started") != std::string::npos);
+		UAM_ASSERT(!fs::exists(provider_input));
+		if (queue_changed)
+		{
+			// The input behind it is kept and stays held; nothing is sent on its behalf.
+			UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{1});
+			UAM_ASSERT_EQ(chat.acp_queued_prompts.front().text, std::string("Second prompt queued during the launch."));
+			UAM_ASSERT(chat.acp_queue_held && chat.acp_dispatched_queued_prompt_count == 0);
+			UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
+			(void)uam::StopAcpSession(app, chat.id);
+			return;
+		}
+		UAM_ASSERT(chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0 && !chat.acp_queue_held);
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
+		UAM_ASSERT(uam::RecoverableUnsentAcpMessageIndices(app, chat) == std::vector<int>{0});
+		UAM_ASSERT(uam::RetryFailedAcpMessage(app, chat.id, 0, &error));
+	}
+	bool delivered = false;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	while (!delivered && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		delivered = fs::exists(provider_input) && ReadFile(provider_input).find("Prompt on an automatic-routed chat.") != std::string::npos;
+	}
+	UAM_ASSERT(delivered);
+	// Delivered exactly once, with nothing left held or offered for Retry.
+	const auto settle_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!chat.acp_queued_prompts.empty() && std::chrono::steady_clock::now() < settle_deadline)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	const std::string received = ReadFile(provider_input);
+	const std::string prompt_text = "Prompt on an automatic-routed chat.";
+	UAM_ASSERT_EQ(received.find(prompt_text), received.rfind(prompt_text));
+	UAM_ASSERT(!chat.acp_queue_held && chat.acp_queued_prompts.empty());
+	UAM_ASSERT(uam::RecoverableUnsentAcpMessageIndices(app, chat).empty());
+	(void)uam::StopAcpSession(app, chat.id);
+	const auto stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (uam::AcpStopInProgress(app, chat.id) && std::chrono::steady_clock::now() < stop_deadline)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+}
+
+UAM_TEST(AutomaticRoutedRemoteSendDeliversWithoutAProviderSwitch)
+{
+	VerifyAutomaticRoutedRemoteSend(AutomaticSendInterruption::None);
+}
+
+UAM_TEST(RetryDeliversARemoteSendHeldBecauseItsLaunchNeverStarted)
+{
+	VerifyAutomaticRoutedRemoteSend(AutomaticSendInterruption::HoldRaised);
+}
+
+UAM_TEST(QueueChangeDuringARemoteLaunchStillGivesTheLaunchUpAndKeepsTheInput)
+{
+	VerifyAutomaticRoutedRemoteSend(AutomaticSendInterruption::QueueChanged);
+}
+
+UAM_TEST(RestartOffersRetryForARemoteSendSavedAsHeldBeforeItsLaunchStarted)
+{
+	for (const bool never_started : {true, false})
+	{
+		decltype(uam::AppState::acp_sessions) restarted_without; // Outlives the fixture, whose teardown still closes this session.
+		InjectedRemoteAdmissionFixture fixture;
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		restarted_without.swap(app.acp_sessions);
+		chat.native_session_id.clear();
+		chat.remote_process_exists = !never_started; // Without this proof the marker stays, because delivery may be uncertain.
+		chat.messages.clear();
+		chat.messages.push_back({.role = MessageRole::User, .content = "Held before its launch started."});
+		chat.messages.back().acp_prompt_not_sent = chat.messages.back().interrupted = true;
+		uam::AcpQueuedUserPromptState marker;
+		marker.text = chat.messages.back().content;
+		marker.append_user_message = false;
+		marker.direct_admission = marker.prepared_for_delivery = true;
+		marker.prepared_user_message_count = 1;
+		chat.acp_queued_prompts = {marker};
+		chat.acp_dispatched_queued_prompt_count = 1;
+		chat.acp_queue_held = true;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		(void)uam::RestoreRemoteAcpSessionsAfterRestart(app);
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.empty(), never_started);
+		UAM_ASSERT_EQ(chat.acp_queue_held, !never_started);
+		if (never_started) UAM_ASSERT(uam::RecoverableUnsentAcpMessageIndices(app, chat) == std::vector<int>{0});
+		fixture.AwaitSave();
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.empty(), never_started);
+	}
 }
 #endif
 

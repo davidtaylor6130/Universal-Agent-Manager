@@ -371,6 +371,9 @@ bool StageAcpColdLaunch(AppState& app, AcpSessionState& session, ChatSession& ch
 void BindPendingAcpColdLaunch(AppState& app, AcpSessionState& session, ChatSession& chat, bool quota_settlement = false);
 bool RebindPendingAcpQuotaConfiguration(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool HasPendingAcpColdLaunch(const AcpSessionState& session);
+// Drain binds its admitted head while it is still queued, then removes it; this carries that one owned step.
+void AdvancePendingAcpColdLaunchQueue(AcpSessionState& session, const ChatSession& chat,
+    const std::deque<AcpQueuedUserPromptState>& bound_raw, const std::string& bound_queue);
 bool AcpLaunchConfigurationFinished(const AcpSessionState& session);
 void PinDurableAdmissionRoot(AppState& app, const std::string& chat_id);
 bool ShouldDeferLocalAcpConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat);

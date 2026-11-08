@@ -1155,6 +1155,21 @@ namespace uam
 			}
 			if (initial_restore && !chat.imported_read_only)
 			{
+				// A launch given up before it started left this marker in an earlier run; its unsent row carries Retry.
+				if (chat.execution_host_id != uam::execution_hosts::kLocalHostId && chat.acp_queue_held &&
+				    chat.acp_dispatched_queued_prompt_count == 1 && !chat.acp_queued_prompts.empty() &&
+				    chat.acp_queued_prompts.front().prepared_for_delivery && !chat.acp_queued_prompts.front().append_user_message &&
+				    chat.acp_queued_prompts.front().claude_quota_continuation_id.empty() && !chat.remote_process_exists &&
+				    !ChatHasUncertainRemoteInput(chat) && ChatRepository::HydrateChatMessages(app.data_root, chat))
+				{
+					const auto latest_user = std::ranges::find(chat.messages.rbegin(), chat.messages.rend(), MessageRole::User, &Message::role);
+					if (latest_user != chat.messages.rend() && latest_user->acp_prompt_not_sent && latest_user->interrupted && !latest_user->acp_prompt_discarded)
+					{
+						chat.acp_queued_prompts.erase(chat.acp_queued_prompts.begin());
+						chat.acp_dispatched_queued_prompt_count = 0;
+						acp_detail::ScheduleChatSave(app, chat, 0.0);
+					}
+				}
 				const std::size_t dispatched = std::min(chat.acp_dispatched_queued_prompt_count, chat.acp_queued_prompts.size());
 				const bool held_prepared = chat.acp_queue_held && std::ranges::any_of(
 				    chat.acp_queued_prompts.begin(), chat.acp_queued_prompts.begin() + static_cast<std::ptrdiff_t>(dispatched),
@@ -4983,6 +4998,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 			ScheduleChatSave(app, chat, 0.0);
 			return false;
 		}
+		// A cold launch bound above captured the queue with this head still in it.
+		std::optional<std::pair<std::deque<AcpQueuedUserPromptState>, std::string>> cold_bound_queue;
+		if (HasPendingAcpColdLaunch(session))
+			cold_bound_queue.emplace(session.queued_user_prompts, ChatRepository::QueueAdmissionFingerprint(chat));
 		for (std::size_t index = 0; index < batch.size(); ++index)
 		{
 			session.queued_user_prompts.pop_front();
@@ -5005,6 +5024,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				acp_detail::ScheduleChatSave(app, chat, 0.0);
 			}
 		}
+		if (cold_bound_queue) AdvancePendingAcpColdLaunchQueue(session, chat, cold_bound_queue->first, cold_bound_queue->second);
 		return true;
 	}
 
