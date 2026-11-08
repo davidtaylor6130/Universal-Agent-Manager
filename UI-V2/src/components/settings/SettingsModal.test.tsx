@@ -891,6 +891,53 @@ describe('SettingsModal memory settings', () => {
     await act(async () => {})
     expect(document.body.textContent).not.toContain('Install helper on colima?')
     expect(failures.at(-1)?.message).toContain('This UAM build does not contain a runner for linux/s390x.')
+    expect(failures.at(-1)?.detail).toBe('')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('adds the SSH connection hint only to SSH-stage failures', async () => {
+    const refusal = '“Homelab notes” has a turn in progress on this host. Stop it or let it finish, then update the helper. (chat-process)'
+    let failureCode = 409
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: { id: string; label: string; sshAlias: string } }
+      if (parsed.action === 'previewRemoteHost') {
+        onSuccess(JSON.stringify({
+          host: { id: parsed.payload.id, label: parsed.payload.label, transport: 'ssh', sshAlias: parsed.payload.sshAlias, runnerStatus: 'ready', runnerVersion: '5.0.0', platform: 'linux', architecture: 'x64', lastSeenAt: '' },
+          preview: '1. Check remote platform',
+        }))
+        return
+      }
+      onFailure(failureCode, failureCode === 409 ? refusal : 'ssh: connect to host homelab port 22: Connection refused')
+    }
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+    const alias = host.querySelector('input[aria-label="SSH config alias"]') as HTMLInputElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(alias, 'homelab')
+      alias.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click()
+    })
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
+    })
+
+    await act(async () => {})
+    expect(failures.at(-1)?.message).toBe(refusal)
+    expect(failures.at(-1)?.detail).toBe('')
+
+    failureCode = 502
+    await act(async () => {
+      Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click()
+    })
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
+    })
+    await act(async () => {})
+    expect(failures.at(-1)?.detail).toBe('Check the SSH connection and try again.')
 
     act(() => root.unmount())
     host.remove()

@@ -1061,7 +1061,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setRemoteMessage(null)
     if (!response.ok) {
       setRemotePreview(null)
-      reportAppFailure(response.error || 'Remote helper setup failed.', 'Check the SSH connection and try again.')
+      // Only an SSH-stage failure (502) or a lost request without a code is a connection problem; refusals name their own fix.
+      const connectionHint = response.code === undefined || response.code === 502 ? 'Check the SSH connection and try again.' : ''
+      reportAppFailure(response.error || 'Remote helper setup failed.', connectionHint)
       return
     }
     reportAppNotice(`${remotePreview.host.label} is ready.`, 'success')

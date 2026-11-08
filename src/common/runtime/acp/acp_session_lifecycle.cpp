@@ -2263,9 +2263,10 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		if (error_out != nullptr) *error_out = "Managed agent runs are never relaunched automatically.";
 		return false;
 	}
+	// Recovery may reach a helper not yet known ready, but never one this process is installing (#771).
 	if (execution_host == nullptr ||
 	    (remote && !uam::remote::CanAttemptRunnerConnection(*execution_host) &&
-	     !session.recovering_remote_turn && !session.recovering_remote_process))
+	     ((!session.recovering_remote_turn && !session.recovering_remote_process) || RemoteReconnectHeldForHelperInstall(chat, true))))
 	{
 		const std::string startup_error = remote ? "The selected remote runner is not ready. Recheck it in Settings."
 		                                         : "The selected execution host no longer exists.";

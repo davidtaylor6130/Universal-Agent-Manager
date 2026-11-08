@@ -77,6 +77,12 @@ void AbandonUncertainRemoteTurn(AppState& app, ChatSession& chat, const std::str
 void BlockActiveGoalForAbandonedTurn(AppState& app, ChatSession& chat);
 /// The helper is gone, so its token, cursors and protocol no longer describe anything.
 void ForgetStoppedRemoteProcess(ChatSession& chat);
+/// <summary>Reports whether a helper install for a host is running in this process; registered by the install handler.</summary>
+/// A recovery reattach is let through while the install only waits for busy work; a plain relaunch waits throughout.
+using RemoteHelperInstallProbe = bool (*)(std::string_view host_id, bool recovery);
+void SetRemoteHelperInstallProbe(RemoteHelperInstallProbe probe);
+/// <summary>True while this chat's host installs its helper in this process: a remote reconnect waits instead of racing it (#771).</summary>
+bool RemoteReconnectHeldForHelperInstall(const ChatSession& chat, bool recovery);
 /// Attaches to the old helper only to stop it, retrying until the host answers; a new launch waits for that confirmation.
 void RetireRemoteHelper(AppState& app, ChatSession& chat);
 /// <summary>Latest legacy draft authorized for explicit fresh-session retry without replaying any earlier draft.</summary>
