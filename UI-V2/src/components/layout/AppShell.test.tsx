@@ -1386,12 +1386,19 @@ describe('AppShell', () => {
         return new DOMRect(0, 0, ['Dismiss alert', 'Copy message'].includes(this.getAttribute('aria-label') ?? '') ? 26 : 140, 26)
       return nativeRect.call(this)
     })
+    // jsdom cannot tell how focus arrived; .focus() here stands for keyboard focus unless a test says otherwise.
+    const focusOrigin = { keyboard: true }
+    const matches = Element.prototype.matches
+    vi.spyOn(Element.prototype, 'matches').mockImplementation(function (this: Element, selector: string) {
+      return selector === ':focus-visible' ? focusOrigin.keyboard : matches.call(this, selector)
+    })
     const host = document.createElement('div')
     document.body.append(host)
     const root = createRoot(host)
     await act(async () => root.render(<AppShell />))
     return {
       host,
+      focusOrigin,
       alertSurface: () => host.querySelector<HTMLElement>('[data-testid="transient-alert"]'),
       bell: () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => /^(?:[0-9]+ alerts?|No new alerts)$/.test(button.getAttribute('aria-label') ?? ''))!,
       layoutRects,
@@ -1598,6 +1605,90 @@ describe('AppShell', () => {
       expect(panel.textContent).toContain('Disk full')
       expect(panel.textContent).toContain('Name in use')
     } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('releases a notice held through Copy when the pointer leaves, and resumes with the time left', async () => {
+    vi.useFakeTimers()
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { alertSurface, focusOrigin, settle, cleanup } = await mountShell()
+    // Chromium reports a button focused by a mouse click as not :focus-visible.
+    focusOrigin.keyboard = false
+    try {
+      act(() => reportAppFailure('Could not save.', 'Disk full'))
+      const item = () => alertSurface()!.querySelector<HTMLElement>('[data-testid="transient-alert-item"]')!
+      const fill = () => item().querySelector<HTMLElement>('.uam-transient-alert__countdown')!
+      settle(1000)
+      act(() => { item().dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
+      expect(fill().style.animationPlayState).toBe('paused')
+      settle(20000)
+      const copy = item().querySelector<HTMLButtonElement>('[aria-label="Copy message"]')!
+      await act(async () => { copy.focus(); copy.click(); await Promise.resolve() })
+      expect(document.activeElement).toBe(copy)
+      expect(item().dataset.held).toBe('true')
+
+      act(() => { item().dispatchEvent(new MouseEvent('mouseout', { bubbles: true })) })
+      expect(item().dataset.held).toBeUndefined()
+      expect(fill().style.animationPlayState).toBe('running')
+      settle(3900)
+      expect(item().dataset.state).toBe('open')
+      settle(200)
+      expect(alertSurface()?.querySelector('[data-testid="transient-alert-item"]')?.getAttribute('data-state') ?? 'closed').toBe('closed')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps holding a keyboard-focused notice after the pointer leaves until focus moves away', async () => {
+    vi.useFakeTimers()
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { alertSurface, settle, cleanup } = await mountShell()
+    try {
+      act(() => reportAppFailure('Could not save.', 'Disk full'))
+      const item = () => alertSurface()!.querySelector<HTMLElement>('[data-testid="transient-alert-item"]')!
+      settle(1000)
+      act(() => { item().dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
+      const copy = item().querySelector<HTMLButtonElement>('[aria-label="Copy message"]')!
+      act(() => copy.focus())
+      act(() => { item().dispatchEvent(new MouseEvent('mouseout', { bubbles: true })) })
+      settle(20000)
+      expect(item().dataset.held).toBe('true')
+      act(() => copy.blur())
+      expect(item().dataset.held).toBeUndefined()
+      settle(3900)
+      expect(item().dataset.state).toBe('open')
+      settle(200)
+      expect(alertSurface()?.querySelector('[data-testid="transient-alert-item"]')?.getAttribute('data-state') ?? 'closed').toBe('closed')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows a revealed collapsed notice at the time already used rather than replaying its fill', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { alertSurface, settle, cleanup } = await mountShell()
+    // jsdom has no Web Animations; the first fill is the one that collapses.
+    const fills = new Map<Element, { currentTime: number | null }>()
+    Object.defineProperty(Element.prototype, 'getAnimations', { configurable: true, value(this: Element) {
+      if (!this.classList.contains('uam-transient-alert__countdown')) return []
+      if (!fills.has(this)) fills.set(this, { currentTime: 0 })
+      return [fills.get(this)]
+    } })
+    try {
+      for (const n of [1, 2, 3, 4, 5]) act(() => reportAppNotice(`Notice ${n}`))
+      const oldest = alertSurface()!.querySelector<HTMLElement>('.uam-transient-alert-slot[hidden] .uam-transient-alert__countdown')!
+      settle(2000)
+      act(() => alertSurface()!.querySelector<HTMLButtonElement>(':scope > button[aria-expanded]')!.click())
+      expect(alertSurface()!.querySelector('.uam-transient-alert-slot[hidden]')).toBeNull()
+      expect(fills.get(oldest)?.currentTime).toBe(2000)
+    } finally {
+      delete (Element.prototype as { getAnimations?: unknown }).getAnimations
       cleanup()
       vi.useRealTimers()
     }
