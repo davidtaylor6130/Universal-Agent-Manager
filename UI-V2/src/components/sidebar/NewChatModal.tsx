@@ -206,7 +206,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
       if (provider.supportsCli === false) issues.push('This provider does not support terminal chat. Choose another provider or check Settings.')
       if (routingMode !== 'automatic' && !isRemote && (provider.supportsStructured !== false || readiness) && (['checking', 'installing', 'known-incompatible', 'unavailable'].includes(status) || Boolean(readiness?.checkError))) {
         // Native reports a confirmed-missing CLI with its generic check-failure text.
-        const message = confirmedUnavailable ? `${provider.name} is not installed or not on PATH.` : readiness?.checkError || readiness?.message || ({
+        const message = confirmedUnavailable ? `${provider.name} is not installed or not on PATH.` : status === 'installing' ? 'Installing the provider CLI.' : readiness?.checkError || readiness?.message || ({
           unknown: 'Provider readiness has not been checked.',
           checking: 'Checking provider compatibility.',
           installing: 'Installing the provider CLI.',
@@ -216,7 +216,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           unavailable: 'The provider CLI is unavailable.',
         } as Record<string, string>)[status]
         readinessOnlyInforms = status === 'checking' || checkFailed
-        issues.push(status === 'checking' ? message : `${message}${provider.id === COPILOT_CLI_PROVIDER_ID && status === 'known-incompatible' ? ' Terminal fallback is also unavailable.' : ''}${checkFailed ? ' You can still create this chat.' : ''} Check Settings > CLI Version.`)
+        issues.push(status === 'checking' ? message : `${message}${provider.id === COPILOT_CLI_PROVIDER_ID && status === 'known-incompatible' ? ' Terminal fallback is also unavailable.' : ''} Check Settings > CLI Version.`)
       }
     }
     return { structuredBlocked, terminalBlocked, issues, blockingIssue: issues[issues.length - (readinessOnlyInforms ? 2 : 1)] }

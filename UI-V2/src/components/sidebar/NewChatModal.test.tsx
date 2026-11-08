@@ -468,6 +468,23 @@ describe('NewChatModal', () => {
     }
   })
 
+  it('reports an install in progress, not the failed check before it', () => {
+    useAppStore.setState({ cliVersionManager: { providers: [{ providerId: 'gemini-cli', installedVersion: '', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'installing', message: 'Could not check Gemini CLI version.', checkError: 'Could not check Gemini CLI version.', running: true, lastCommand: '', lastOutput: '' }] } })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal companion />))
+      const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
+      expect(create.disabled).toBe(true)
+      expect(document.getElementById(create.getAttribute('aria-describedby')!)?.textContent).toContain('Installing the provider CLI.')
+      expect(host.textContent).not.toContain('Could not check')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('names the reason beside a disabled Create chat', () => {
     useAppStore.setState({ cliVersionManager: { providers: [{ providerId: 'gemini-cli', installedVersion: '', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'unavailable', message: 'Could not check Gemini CLI version.', running: false, lastCommand: '', lastOutput: '' }] } })
     const host = document.createElement('div')
