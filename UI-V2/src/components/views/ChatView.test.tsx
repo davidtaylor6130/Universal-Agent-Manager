@@ -5055,7 +5055,7 @@ describe('ChatView', () => {
     expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'plan')
 
     const permission = document.body.querySelector('button[aria-label="Permissions"]') as HTMLButtonElement
-    expect(permission.textContent).toContain('AI Review')
+    expect(permission.textContent).toContain('AI review')
     act(() => permission.click())
     const yolo = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('YOLO')) as HTMLButtonElement
     await act(async () => { yolo.click(); await Promise.resolve() })
@@ -5125,13 +5125,13 @@ describe('ChatView', () => {
     expect(permissionMenu?.textContent).toContain('Default')
     expect(permissionMenu?.textContent).not.toContain('Plan')
     expect(permissionMenu?.textContent).toContain('YOLO')
-    expect(permissionMenu?.textContent).toContain('AI Review')
-    expect(permissionMenu?.textContent).toContain('Accept Edits')
+    expect(permissionMenu?.textContent).toContain('AI review')
+    expect(permissionMenu?.textContent).toContain('Accept edits')
     expect(permissionMenu?.querySelector('svg')).not.toBeNull()
     expect(textarea.parentElement?.querySelector('[role="status"]')).toBeNull()
     expect(setSessionApprovalMode).not.toHaveBeenCalled()
 
-    const slashAiReview = Array.from(permissionMenu?.querySelectorAll('[role="option"]') ?? []).find((option) => option.textContent?.includes('AI Review')) as HTMLButtonElement
+    const slashAiReview = Array.from(permissionMenu?.querySelectorAll('[role="option"]') ?? []).find((option) => option.textContent?.includes('AI review')) as HTMLButtonElement
     await act(async () => { slashAiReview.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'aiReview')
     expect(host.textContent).not.toContain('Permission mode changed')
@@ -7095,7 +7095,7 @@ describe('ChatView', () => {
     expect(permissionButton.textContent).toContain('Default')
     expect(permissionButton.disabled).toBe(false)
     act(() => permissionButton.click())
-    const reviewOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('AI Review'))!
+    const reviewOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('AI review'))!
     act(() => reviewOption.click())
     expect(document.body.textContent).not.toContain('Accept Edits')
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'aiReview')

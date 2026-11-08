@@ -12,11 +12,14 @@ interface PermissionState {
   speechRecognition: string
   localNetwork: string
 }
+// Native replies with one check per permission ({ available, error }); older hosts sent plain booleans.
+type ComputerPermissionCheck = boolean | { available?: boolean; error?: string }
 interface ComputerPermissions {
-  screenRecording: boolean
-  accessibility: boolean
+  screenRecording: ComputerPermissionCheck
+  accessibility: ComputerPermissionCheck
   error?: string
 }
+const isGranted = (check: ComputerPermissionCheck | undefined) => typeof check === 'object' ? check?.available === true : check === true
 const labels: Record<string, string> = {
   allowed: 'Allowed', denied: 'Denied', restricted: 'Restricted', not_requested: 'Not requested',
   system_managed: 'Check system settings', unsupported: 'Unavailable',
@@ -59,8 +62,8 @@ export function PermissionsSettings() {
     { id: 'microphone', label: 'Microphone', purpose: 'Voice input', status: permissions?.microphone, helper: false },
     { id: 'speechRecognition', label: 'Speech recognition', purpose: 'Apple dictation', status: permissions?.speechRecognition, helper: false },
     ...(COMPUTER_USE_ENABLED ? [
-      { id: 'screenRecording', label: 'Screen recording', purpose: 'Computer Use', status: computer ? computer.screenRecording ? 'allowed' : 'denied' : undefined, helper: true },
-      { id: 'accessibility', label: 'Accessibility', purpose: 'Computer Use', status: computer ? computer.accessibility ? 'allowed' : 'denied' : undefined, helper: true },
+      { id: 'screenRecording', label: 'Screen recording', purpose: 'Computer Use', status: computer ? isGranted(computer.screenRecording) ? 'allowed' : 'denied' : undefined, helper: true },
+      { id: 'accessibility', label: 'Accessibility', purpose: 'Computer Use', status: computer ? isGranted(computer.accessibility) ? 'allowed' : 'denied' : undefined, helper: true },
     ] : []),
   ]
   const toneFor = (status?: string): StatusTone => status === 'allowed' ? 'success' : status === 'denied' || status === 'restricted' ? 'error' : status === 'system_managed' ? 'warning' : 'neutral'

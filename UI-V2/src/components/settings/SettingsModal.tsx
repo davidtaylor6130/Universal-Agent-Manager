@@ -1994,7 +1994,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     permissionReviewerProviderId,
                     'AI permission reviewer provider',
                     [
-                      { id: '', label: 'Not configured', detail: 'AI Review always falls back to you.' },
+                      { id: '', label: 'Not configured', detail: 'AI review always falls back to you.' },
                       ...providers.filter((provider) => providerSupportsTextWorkers(provider.id)).map((provider) => ({ id: provider.id, label: providerDisplayName(provider, provider.id), detail: provider.name ?? provider.id })),
                     ],
                     (providerId) => void setMemorySettings({ permissionReviewerProviderId: providerId, permissionReviewerModelId: '' }),
@@ -3028,10 +3028,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               </Notice>
             </div></Reveal>
             <div className="w-full min-h-0 flex-1 flex flex-col">
-              <Swap swapKey={themeDraft ? 'theme' : 'page'} className="flex-1 min-h-0 flex flex-col">{themeDraft ? <div className="overflow-y-auto">
+              <Swap swapKey={themeDraft ? 'theme' : 'page'} className="flex-1 min-h-0 flex flex-col">{themeDraft ? <div className="uam-settings-scroll"><div className="uam-settings-frame">
                 <div className="shrink-0 flex items-center justify-between gap-3 mb-5"><h2 tabIndex={-1} data-theme-step className="text-lg font-semibold">{['Theme name and base','Theme palette','Review theme'][themeStep]}</h2><IconButton icon={<X size={16}/>} label="Close theme editor" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}/></div>
                 {renderThemeEditor()}
-              </div> : <>
+              </div></div> : <>
                 {(() => {
                   const fullHeight = selectedSection === 'memory-store' || selectedSection === 'markdown-store'
                   const header = <div className="uam-settings-page-header w-full">
