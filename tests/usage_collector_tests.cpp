@@ -245,3 +245,15 @@ UAM_TEST(UsageCollectorParksCollectionWhenUnreadAndResumesOnTheNextExport)
 	(void)collector.ExportReceipts();
 	UAM_ASSERT(wait_for_new_receipts(parked));
 }
+
+UAM_TEST(UsageCollectorStartRemovesScratchLeftByAnEarlierRun)
+{
+	TempDir temp("uam-usage-collector-scratch");
+	const fs::path stale = temp.root / "usage" / "receipts.jsonl.tmp.1";
+	fs::create_directories(stale.parent_path());
+	UAM_ASSERT(uam::io::WriteTextFile(stale, "x"));
+	fs::last_write_time(stale, fs::file_time_type::clock::now() - std::chrono::hours(25));
+	const uam::usage::Collector collector(temp.root, std::vector<uam::usage::HistorySource>{}, {}, true);
+	for (int attempt = 0; attempt < 3000 && fs::exists(stale); ++attempt) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	UAM_ASSERT(!fs::exists(stale));
+}

@@ -82,6 +82,8 @@ namespace uam::usage
 		const std::function<bool()> cancelled = [stop]() { return stop.stop_requested(); };
 		try
 		{
+			// Owned snapshots and combined stores are deleted with their owner; an app that exits without that leaves them behind.
+			if (m_exportAccounting) RemoveAbandonedScratch(m_dataRoot);
 			std::string saved;
 			if (!m_dataRoot.empty() && io::TryReadTextFile(m_dataRoot / "usage" / "snapshot-v1.json", saved, 64 * 1024 * 1024))
 			{

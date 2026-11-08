@@ -4,6 +4,10 @@
 #include "common/usage/antigravity_accounting.h"
 #include <sqlite3.h>
 #include <unordered_set>
+#include <csignal>
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 
 using namespace uam_test;
 
@@ -438,3 +442,46 @@ UAM_TEST(UsageStoreStreamedFactsIdentityIgnoresHeadersAndTracksMutableUsage)
 	UAM_ASSERT(cost);
 	UAM_ASSERT(cost->facts_fingerprint != tokens->facts_fingerprint);
 }
+
+UAM_TEST(UsageScratchCleanupRemovesOnlyDayOldReceiptSnapshotsAndCombinedStores)
+{
+	TempDir temp("uam-usage-scratch");
+	const fs::path usage = temp.root / "usage";
+	fs::create_directories(usage / "combined-1-1" / "usage");
+	fs::create_directories(usage / "combined-2-2");
+	fs::create_directories(usage / "remote" / "scope");
+	for (const char* name : {"receipts.jsonl.tmp.1", "receipts.jsonl.tmp.2", "history-index-v1.sqlite", "snapshot-v1.json", "remote/scope/receipt-view.tmp.1", "remote/scope/receipt-view.tmp.2", "remote/scope/snapshot-v3.jsonl", "remote/scope/snapshot-v3.jsonl.download-1"}) UAM_ASSERT(uam::io::WriteTextFile(usage / name, "x"));
+	const fs::file_time_type old = fs::file_time_type::clock::now() - std::chrono::hours(25);
+	for (const char* name : {"receipts.jsonl.tmp.1", "combined-1-1", "remote", "history-index-v1.sqlite", "snapshot-v1.json", "remote/scope/receipt-view.tmp.1", "remote/scope/snapshot-v3.jsonl", "remote/scope/snapshot-v3.jsonl.download-1"}) fs::last_write_time(usage / name, old);
+	uam::usage::RemoveAbandonedScratch(temp.root);
+	uam::usage::RemoveAbandonedRemoteViews(temp.root);
+	UAM_ASSERT(!fs::exists(usage / "receipts.jsonl.tmp.1")); UAM_ASSERT(!fs::exists(usage / "combined-1-1")); UAM_ASSERT(!fs::exists(usage / "remote/scope/receipt-view.tmp.1")); UAM_ASSERT(!fs::exists(usage / "remote/scope/snapshot-v3.jsonl.download-1"));
+	// Fresh copies may belong to a running collector; durable stores and remote caches are never scratch.
+	for (const char* name : {"receipts.jsonl.tmp.2", "combined-2-2", "remote", "history-index-v1.sqlite", "snapshot-v1.json", "remote/scope/receipt-view.tmp.2", "remote/scope/snapshot-v3.jsonl"}) UAM_ASSERT(fs::exists(usage / name));
+}
+
+#if !defined(_WIN32)
+UAM_TEST(UsageReceiptSnapshotWriteFailureReportsTheSystemErrorInsteadOfAnInterruptedStream)
+{
+	TempDir temp("uam-usage-write-failure");
+	const uam::usage::Store store(temp.root);
+	std::vector<uam::usage::Record> records;
+	for (int index = 0; index < 200; ++index) records.push_back(StoreEvent("write-failure-" + std::to_string(index)));
+	std::vector<uam::usage::SourceRecord> references;
+	for (const uam::usage::Record& record : records) references.push_back({&record, "fixture", 0});
+	std::string error;
+	UAM_ASSERT(store.Import(references, error));
+	// A file size limit makes receipt writes fail as a full disk would, while the existing index stays readable.
+	rlimit previous{};
+	UAM_ASSERT(getrlimit(RLIMIT_FSIZE, &previous) == 0);
+	void (*previous_handler)(int) = std::signal(SIGXFSZ, SIG_IGN);
+	rlimit limited = previous; limited.rlim_cur = 4096;
+	UAM_ASSERT(setrlimit(RLIMIT_FSIZE, &limited) == 0);
+	const std::shared_ptr<const uam::usage::ReceiptSnapshot> snapshot = store.WriteReceiptSnapshot(kStoreAsOf, uam::usage::EmptyHistoryMetadata(), error);
+	setrlimit(RLIMIT_FSIZE, &previous); std::signal(SIGXFSZ, previous_handler);
+	UAM_ASSERT(!snapshot);
+	UAM_ASSERT(error.find("Could not save accounting snapshot: Failed to write temporary file") == 0);
+	UAM_ASSERT(error.find("interrupted") == std::string::npos);
+	for (const fs::directory_entry& entry : fs::directory_iterator(temp.root / "usage")) UAM_ASSERT(!entry.path().filename().string().starts_with("receipts.jsonl.tmp."));
+}
+#endif

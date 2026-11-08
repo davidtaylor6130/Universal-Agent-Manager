@@ -178,6 +178,12 @@ namespace uam::usage
 				return status == SQLITE_DONE;
 			}
 			std::size_t Duplicates() const { return m_duplicates; }
+			std::string Error() const
+			{
+				if (!m_database) return "temporary storage is unavailable.";
+				const int code = sqlite3_errcode(m_database.get());
+				return code == SQLITE_OK || code == SQLITE_ROW || code == SQLITE_DONE ? "the temporary index is invalid." : sqlite3_errmsg(m_database.get());
+			}
 		private:
 			struct Group
 			{
@@ -235,6 +241,45 @@ namespace uam::usage
 			std::size_t m_duplicates = 0;
 		};
 
+	}
+
+	namespace
+	{
+		// Each sweep runs before its own worker creates anything of that kind, so a day-old match belongs to an earlier run.
+		void SweepDayOldScratch(const std::filesystem::path& folder, const std::string& files, std::string_view folders)
+		{
+			std::error_code error;
+			for (std::filesystem::directory_iterator it(folder, std::filesystem::directory_options::skip_permission_denied, error), end; !error && it != end; it.increment(error))
+			{
+				const std::string name = paths::Utf8PathString(it->path().filename());
+				std::error_code status_error;
+				const std::filesystem::file_status status = std::filesystem::symlink_status(it->path(), status_error);
+				const bool scratch = (name.starts_with(files) && std::filesystem::is_regular_file(status)) || (!folders.empty() && name.starts_with(folders) && std::filesystem::is_directory(status));
+				if (status_error || !scratch) continue;
+				const std::filesystem::file_time_type modified = std::filesystem::last_write_time(it->path(), status_error);
+				if (!status_error && std::filesystem::file_time_type::clock::now() - modified >= std::chrono::hours(24)) std::filesystem::remove_all(it->path(), status_error);
+			}
+		}
+	}
+
+	void RemoveAbandonedScratch(const std::filesystem::path& data_root)
+	{
+		if (data_root.empty() || paths::IsLinkOrReparsePointNoThrow(data_root / "usage")) return;
+		SweepDayOldScratch(data_root / "usage", std::string("receipts.jsonl") + io::kTempWritePathSuffix, "combined-");
+	}
+
+	void RemoveAbandonedRemoteViews(const std::filesystem::path& data_root)
+	{
+		const std::filesystem::path remote = data_root / "usage" / "remote";
+		if (data_root.empty() || paths::IsLinkOrReparsePointNoThrow(data_root / "usage") || paths::IsLinkOrReparsePointNoThrow(remote)) return;
+		std::error_code error;
+		for (std::filesystem::directory_iterator it(remote, std::filesystem::directory_options::skip_permission_denied, error), end; !error && it != end; it.increment(error))
+		{
+			std::error_code status_error;
+			if (!std::filesystem::is_directory(std::filesystem::symlink_status(it->path(), status_error)) || status_error) continue;
+			SweepDayOldScratch(it->path(), std::string("receipt-view") + io::kTempWritePathSuffix, "");
+			SweepDayOldScratch(it->path(), "snapshot-v3.jsonl.download-", "");
+		}
 	}
 
 	Store::Store(std::filesystem::path data_root) : m_path(data_root.empty() ? std::filesystem::path{} : data_root / "usage" / "history-index-v1.sqlite") {}
@@ -430,7 +475,9 @@ namespace uam::usage
 			const std::function<bool(const nlohmann::json&, bool)> write = [&](const nlohmann::json& row, bool fact)
 			{
 				const std::string line = row.dump() + "\n";
-				if (line.size() > 512 * 1024 || line.size() > static_cast<std::uint64_t>(kMaxExactTokenCount) - snapshot->bytes || !append(line)) return false;
+				if (line.size() > 512 * 1024 || line.size() > static_cast<std::uint64_t>(kMaxExactTokenCount) - snapshot->bytes) { error = "Accounting snapshot exceeds its size limit."; return false; }
+				// The writer records the system error (for example a full disk); report it rather than a generic stream failure.
+				if (!append(line)) { error = "Could not save accounting snapshot: " + written.error; return false; }
 				hashing::UpdateFnv1a64(hash, line); snapshot->bytes += line.size();
 				if (fact) { hashing::UpdateFnv1a64(facts_hash, line); snapshot->facts_bytes += line.size(); }
 				return true;
@@ -438,7 +485,7 @@ namespace uam::usage
 			return write({{"version", 3}, {"range", "all-recorded"}, {"asOfMs", generated_ms}, {"metadata", metadata}}, false) &&
 			    VisitLifetimeRecords(generated_ms, [&](const AccountingRecord& entry) { return write(EncodeAccountingRecord(entry), true); }, error, cancelled);
 		}), {}, written);
-		if (!success) { if (error.empty()) error = "Could not save accounting snapshot."; return {}; }
+		if (!success) { if (error.empty()) error = written.error.empty() ? "Could not save accounting snapshot." : "Could not save accounting snapshot: " + written.error; return {}; }
 
 		snapshot->fingerprint = hashing::Hex64Padded(hash);
 		snapshot->facts_fingerprint = hashing::Hex64Padded(facts_hash);
@@ -490,7 +537,9 @@ namespace uam::usage
 		{
 			if (entry.record.provider_id != provider_ids::kAntigravityCli || !entry.record.dedupe_key.starts_with(kAntigravityAccountingPrefix)) return true;
 			const std::optional<AntigravityUsageCandidate> candidate = DecodeAntigravityAccountingRecord(entry.record);
-			return candidate && aliases.Add(*candidate);
+			if (!candidate) { error = "Usage accounting record is corrupt or invalid."; return false; }
+			if (aliases.Add(*candidate)) return true;
+			error = "Could not resolve accounting aliases: " + aliases.Error(); return false;
 		}, error, cancelled) || !aliases.Finish(cancelled))
 		{ if (error.empty()) error = "Could not resolve accounting aliases."; return std::nullopt; }
 		std::size_t duplicates = aliases.Duplicates();
@@ -509,7 +558,9 @@ namespace uam::usage
 		{
 			return VisitLifetimeRecords(generated_ms, [&](const AccountingRecord& entry)
 			{
-				return entry.record.provider_id == provider_ids::kAntigravityCli && entry.record.dedupe_key.starts_with(kAntigravityAccountingPrefix) ? true : visitor(entry.record);
+				if (entry.record.provider_id == provider_ids::kAntigravityCli && entry.record.dedupe_key.starts_with(kAntigravityAccountingPrefix)) return true;
+				if (visitor(entry.record)) return true;
+				error = "Usage accounting totals exceed supported limits."; return false;
 			}, error, cancelled) && aliases.Visit(visitor, cancelled);
 		}, generated_ms, duplicates);
 		if (!ledger && error.empty()) error = "Usage accounting totals exceed supported limits.";
@@ -526,7 +577,7 @@ namespace uam::usage
 		if (sqlite3_exec(database.get(), "BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS imported_facts(scope TEXT,identity TEXT,created INTEGER,data TEXT,PRIMARY KEY(scope,identity)) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS imported_stats(duplicates INTEGER); INSERT INTO imported_stats SELECT 0 WHERE NOT EXISTS(SELECT 1 FROM imported_stats)", nullptr, nullptr, nullptr) != SQLITE_OK)
 		{ error = "Could not prepare combined usage accounting."; return false; }
 		sqlite3_stmt* raw = nullptr;
-		if (sqlite3_prepare_v2(database.get(), "INSERT INTO imported_facts VALUES(?1,?2,?3,?4) ON CONFLICT(scope,identity) DO UPDATE SET created=excluded.created,data=excluded.data WHERE excluded.created<imported_facts.created", -1, &raw, nullptr) != SQLITE_OK) return false;
+		if (sqlite3_prepare_v2(database.get(), "INSERT INTO imported_facts VALUES(?1,?2,?3,?4) ON CONFLICT(scope,identity) DO UPDATE SET created=excluded.created,data=excluded.data WHERE excluded.created<imported_facts.created", -1, &raw, nullptr) != SQLITE_OK) { error = "Could not prepare combined usage accounting."; return false; }
 		Statement statement(raw, sqlite3_finalize);
 		for (const AccountingRecord& entry : records)
 		{
@@ -538,9 +589,9 @@ namespace uam::usage
 			if (host_scope.empty())
 			{
 				sqlite3_stmt* duplicate_raw = nullptr;
-				if (sqlite3_prepare_v2(database.get(), "UPDATE imported_stats SET duplicates=duplicates+1 WHERE EXISTS(SELECT 1 FROM imported_facts WHERE scope='' AND identity=?1)", -1, &duplicate_raw, nullptr) != SQLITE_OK) return false;
+				if (sqlite3_prepare_v2(database.get(), "UPDATE imported_stats SET duplicates=duplicates+1 WHERE EXISTS(SELECT 1 FROM imported_facts WHERE scope='' AND identity=?1)", -1, &duplicate_raw, nullptr) != SQLITE_OK) { error = "Could not prepare combined usage accounting."; return false; }
 				Statement duplicate(duplicate_raw, sqlite3_finalize); sqlite3_bind_text(duplicate.get(), 1, entry.identity.c_str(), -1, SQLITE_TRANSIENT);
-				if (sqlite3_step(duplicate.get()) != SQLITE_DONE) return false;
+				if (sqlite3_step(duplicate.get()) != SQLITE_DONE) { error = "Could not merge usage accounting."; return false; }
 			}
 			sqlite3_reset(statement.get()); sqlite3_clear_bindings(statement.get());
 			sqlite3_bind_text(statement.get(), 1, host_scope.c_str(), -1, SQLITE_TRANSIENT);
