@@ -1613,7 +1613,7 @@ describe('AppShell', () => {
   it('releases a notice held through Copy when the pointer leaves, and resumes with the time left', async () => {
     vi.useFakeTimers()
     useAppStore.setState({ updateChecksEnabled: false })
-    const { alertSurface, focusOrigin, settle, cleanup } = await mountShell()
+    const { alertSurface, bell, focusOrigin, settle, cleanup } = await mountShell()
     // Chromium reports a button focused by a mouse click as not :focus-visible.
     focusOrigin.keyboard = false
     try {
@@ -1636,6 +1636,29 @@ describe('AppShell', () => {
       expect(item().dataset.state).toBe('open')
       settle(200)
       expect(alertSurface()?.querySelector('[data-testid="transient-alert-item"]')?.getAttribute('data-state') ?? 'closed').toBe('closed')
+      // Copy unmounts when the notice closes; focus goes to the bell rather than the document.
+      expect(document.activeElement).toBe(bell())
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('holds a mouse-focused notice once a key is pressed inside it', async () => {
+    vi.useFakeTimers()
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { alertSurface, focusOrigin, settle, cleanup } = await mountShell()
+    focusOrigin.keyboard = false
+    try {
+      act(() => reportAppFailure('Could not save.', 'Disk full'))
+      const item = () => alertSurface()!.querySelector<HTMLElement>('[data-testid="transient-alert-item"]')!
+      const copy = item().querySelector<HTMLButtonElement>('[aria-label="Copy message"]')!
+      act(() => copy.focus())
+      expect(item().dataset.held).toBeUndefined()
+      act(() => { copy.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', bubbles: true })) })
+      expect(item().dataset.held).toBe('true')
+      settle(20000)
+      expect(item().dataset.state).toBe('open')
     } finally {
       cleanup()
       vi.useRealTimers()
