@@ -199,6 +199,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     const terminalBlocked = !provider || provider.supportsCli === false ||
       (routingMode !== 'automatic' && !isRemote && (confirmedUnavailable || (provider.id === COPILOT_CLI_PROVIDER_ID && status === 'known-incompatible')))
     const issues: string[] = []
+    let readinessOnlyInforms = false
     if (!provider) issues.push('No provider is available. Enable one in Settings > Providers.')
     else {
       if (provider.supportsStructured === false) issues.push(provider.supportsCli !== false ? 'This provider supports terminal chat only.' : 'This provider does not support structured chat. Choose another provider or check Settings.')
@@ -214,10 +215,11 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           'known-incompatible': 'This provider version is incompatible with structured chat.',
           unavailable: 'The provider CLI is unavailable.',
         } as Record<string, string>)[status]
+        readinessOnlyInforms = status === 'checking' || checkFailed
         issues.push(status === 'checking' ? message : `${message}${provider.id === COPILOT_CLI_PROVIDER_ID && status === 'known-incompatible' ? ' Terminal fallback is also unavailable.' : ''}${checkFailed ? ' You can still create this chat.' : ''} Check Settings > CLI Version.`)
       }
     }
-    return { structuredBlocked, terminalBlocked, issues }
+    return { structuredBlocked, terminalBlocked, issues, blockingIssue: issues[issues.length - (readinessOnlyInforms ? 2 : 1)] }
   }
   const availability = providerAvailability(selectedProvider)
   const structuredCreationBlocked = Boolean(hostIssue) || availability.structuredBlocked
@@ -308,7 +310,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 
   const remoteWorkspaceIssue = isRemote && !canCreate ? 'Enter an absolute workspace path.' : ''
   // Every disabled Create names its cause in the footer. A stale worktree choice already shows its error there.
-  const createBlockedFault = hostIssue || (providerBlocksCreate ? availability.issues[availability.issues.length - 1] ?? 'This provider cannot create chats here. Choose another provider.' : '')
+  const createBlockedFault = hostIssue || (providerBlocksCreate ? availability.blockingIssue ?? 'This provider cannot create chats here. Choose another provider.' : '')
   const createBlockedReason = sourceContextInvalid ? '' : createBlockedFault || remoteWorkspaceIssue ||
     (!isRemote && !canCreate ? selectedFolder ? 'This workspace has no folder. Choose another workspace.' : 'Choose a workspace to create this chat.' : '')
   const createWorkspace = async () => {

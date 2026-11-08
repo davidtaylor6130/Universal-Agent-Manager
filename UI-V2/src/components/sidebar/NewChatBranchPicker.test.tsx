@@ -46,7 +46,7 @@ describe('NewChatBranchPicker', () => {
     send.mockResolvedValue({ ok: true, data: { ...context, currentBranch: 'feature/base', currentCommit: 'b'.repeat(40) } })
     await act(async () => render())
     expect(send).toHaveBeenCalledOnce()
-    expect(send).toHaveBeenCalledWith({ action: 'getWorkspaceVcsContext', payload: { folderId: 'project' } })
+    expect(send).toHaveBeenCalledWith({ action: 'getWorkspaceVcsContext', payload: { folderId: 'project' } }, false)
     expect(onChange).not.toHaveBeenCalled()
     choose('feature/base')
     expect(onChange).toHaveBeenLastCalledWith('feature/base')
@@ -248,14 +248,16 @@ describe('NewChatBranchPicker', () => {
     let reply!: (response: { ok: boolean; error: string }) => void
     send.mockResolvedValueOnce({ ok: true, data: context })
       .mockImplementationOnce(() => new Promise((resolve) => { reply = resolve }))
+      .mockImplementationOnce(() => new Promise(() => {}))
     await act(async () => render())
     act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Refresh branches')!.click())
     await act(async () => render({ folderId: 'other' }))
-    trigger().focus()
     await act(async () => reply({ ok: false, error: 'Obsolete workspace failure.' }))
-    expect(document.activeElement).toBe(trigger())
+    // The replacement read is still pending, so the stale reply must not end its loading state.
+    expect(host.textContent).toContain('Loading branches')
+    expect(host.querySelector('[aria-busy="true"]')).not.toBeNull()
     expect(host.querySelector('[role="alert"]')).toBeNull()
-    expect(send).toHaveBeenLastCalledWith({ action: 'getWorkspaceVcsContext', payload: { folderId: 'other' } })
+    expect(send).toHaveBeenLastCalledWith({ action: 'getWorkspaceVcsContext', payload: { folderId: 'other' } }, false)
     expect(onChange).not.toHaveBeenCalled()
   })
 

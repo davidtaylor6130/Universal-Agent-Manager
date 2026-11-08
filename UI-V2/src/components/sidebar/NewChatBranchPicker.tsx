@@ -61,7 +61,8 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
     let busyRetry: ReturnType<typeof setTimeout> | undefined
     setLoading(true)
     setSettled(false)
-    void sendToCEF({ action: 'getWorkspaceVcsContext', payload: { folderId } }).then((response) => {
+    // An unreadable branch list is an expected state, so it is not logged as an error.
+    void sendToCEF({ action: 'getWorkspaceVcsContext', payload: { folderId } }, false).then((response) => {
       if (cancelled) return
       if (response.code === 429 && !busyRetried.current) {
         // Native shares four context-read slots; one silent re-read covers a momentary busy reply.
