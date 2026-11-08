@@ -6,6 +6,7 @@
 #include "common/provider/provider_runtime.h"
 #include <functional>
 #include <limits>
+#include <source_location>
 
 using namespace uam_test;
 
@@ -97,17 +98,54 @@ namespace
 			{"tokenBudget", chat.goals.front().token_budget > 0 ? nlohmann::json(chat.goals.front().token_budget - 20) : nlohmann::json(nullptr)}};
 	}
 
-	int WaitForGoalTimingActivation(uam::AppState& app, uam::AcpSessionState& session)
+	// Background saves and provider processes have no fixed duration, especially on hosted CI runners.
+	constexpr std::chrono::seconds kGoalWaitLimit{30};
+
+	void WaitUntilGoalReady(const std::function<bool()>& ready)
 	{
-		for (int attempt = 0; attempt < 200; ++attempt)
-		{
-			for (const std::pair<const std::string, uam::AcpSessionState::CodexGoalOwner>& pending : session.codex_goal_pending_requests)
-				if (pending.second.action == uam::AcpSessionState::CodexGoalOwner::Action::Activate) return std::stoi(pending.first);
-			uam::FlushPendingChatSaves(app);
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + kGoalWaitLimit;
+		while (!ready() && std::chrono::steady_clock::now() < deadline)
 			std::this_thread::sleep_for(std::chrono::milliseconds(2));
-		}
-		UAM_ASSERT(false);
-		return 0;
+	}
+
+	void WaitForGoalSaves(uam::AppState& app, const std::function<bool()>& ready)
+	{
+		WaitUntilGoalReady([&]()
+		{
+			uam::FlushPendingChatSaves(app);
+			return ready();
+		});
+	}
+
+	void FailGoalWait(std::string_view waiting_for, const uam::AppState& app, const uam::AcpSessionState& session, const std::source_location& where)
+	{
+		const std::string message = std::string(waiting_for) + " (limit " + std::to_string(kGoalWaitLimit.count()) + "s, initial turn pending: " +
+			(session.codex_goal_initial_turn_pending.has_value() ? "yes" : "no") + ", resume suppressed: " + (session.goal_resume_suppressed ? "yes" : "no") +
+			", goal diagnostic: '" + app.chats.front().goals.front().last_diagnostic + "')";
+		uam_test::Fail(message.c_str(), where.file_name(), static_cast<int>(where.line()));
+	}
+
+	// A failed or disowned save clears the pending turn without sending it, so that ends the wait at once.
+	int WaitForGoalInitialTurn(uam::AppState& app, uam::AcpSessionState& session, const std::source_location where = std::source_location::current())
+	{
+		WaitForGoalSaves(app, [&]() { return session.codex_goal_initial_turn_request_id != 0 || !session.codex_goal_initial_turn_pending.has_value(); });
+		if (session.codex_goal_initial_turn_request_id == 0) FailGoalWait("initial goal turn/start was not sent", app, session, where);
+		return session.codex_goal_initial_turn_request_id;
+	}
+
+	int WaitForGoalTimingActivation(uam::AppState& app, uam::AcpSessionState& session, const std::source_location where = std::source_location::current())
+	{
+		const auto activation = [&]()
+		{
+			const auto found = std::ranges::find_if(session.codex_goal_pending_requests, [](const std::pair<const std::string, uam::AcpSessionState::CodexGoalOwner>& pending)
+			{
+				return pending.second.action == uam::AcpSessionState::CodexGoalOwner::Action::Activate;
+			});
+			return found == session.codex_goal_pending_requests.end() ? 0 : std::stoi(found->first);
+		};
+		WaitForGoalSaves(app, [&]() { return activation() != 0 || !session.codex_goal_initial_turn_pending.has_value(); });
+		if (activation() == 0) FailGoalWait("goal activation request was not sent", app, session, where);
+		return activation();
 	}
 
 
@@ -453,11 +491,7 @@ UAM_TEST(CodexNativeBindingSaveFailurePreventsInitialWork)
 	session.codex_goal_pending_requests["42"] = owner;
 	app.chats.push_back(chat);
 	UAM_ASSERT(uam::acp_detail::HandleCodexGoalResult(app, session, app.chats.front(), "thread/goal/set", "42", {{"goal", NativeGoalFixtureSnapshot(chat, "paused", 0)}}));
-	for (int attempt = 0; attempt < 200 && session.codex_goal_initial_turn_pending.has_value(); ++attempt)
-	{
-		uam::FlushPendingChatSaves(app);
-		std::this_thread::sleep_for(std::chrono::milliseconds(2));
-	}
+	WaitForGoalSaves(app, [&]() { return !session.codex_goal_initial_turn_pending.has_value(); });
 	UAM_ASSERT(!session.codex_goal_initial_turn_pending.has_value());
 	UAM_ASSERT_EQ(session.codex_goal_initial_turn_request_id, 0);
 	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
@@ -626,12 +660,7 @@ UAM_TEST(CodexNativeProtocolControlsUseRemainingBudgetWithoutDuplicateLoops)
 	uam::acp_detail::HandleAcpResponse(app, session, app.chats.front(), {{"id", query_id + 1}, {"result", {{"cleared", false}}}});
 	UAM_ASSERT_EQ(session.pending_request_methods.at(query_id + 2), std::string("thread/goal/set"));
 	uam::acp_detail::HandleAcpResponse(app, session, app.chats.front(), {{"id", query_id + 2}, {"result", {{"goal", NativeGoalFixtureSnapshot(chat, "paused", 0)}}}});
-	for (int attempt = 0; attempt < 200 && session.codex_goal_initial_turn_request_id == 0; ++attempt)
-	{
-		uam::FlushPendingChatSaves(app);
-		std::this_thread::sleep_for(std::chrono::milliseconds(2));
-	}
-	const int first_turn_request = session.codex_goal_initial_turn_request_id;
+	const int first_turn_request = WaitForGoalInitialTurn(app, session);
 	UAM_ASSERT_EQ(session.pending_request_methods.at(first_turn_request), std::string("turn/start"));
 	uam::acp_detail::HandleAcpResponse(app, session, app.chats.front(), {{"id", first_turn_request}, {"result", {{"turn", {{"id", "native-turn-1"}}}}}});
 	const int activate_request = WaitForGoalTimingActivation(app, session);
@@ -678,12 +707,7 @@ UAM_TEST(CodexNativeProtocolControlsUseRemainingBudgetWithoutDuplicateLoops)
 	UAM_ASSERT(uam::acp_detail::StartCodexNativeGoal(app, session, app.chats.front(), app.chats.front().goals.front(), true, &error));
 	uam::acp_detail::HandleAcpResponse(app, session, app.chats.front(), {{"id", resume_id}, {"result", {{"goal", NativeGoalFixtureSnapshot(chat, "paused", 30)}}}});
 	uam::acp_detail::HandleAcpResponse(app, session, app.chats.front(), {{"id", resume_id + 1}, {"result", {{"goal", NativeGoalFixtureSnapshot(chat, "paused", 30)}}}});
-	for (int attempt = 0; attempt < 200 && session.codex_goal_initial_turn_request_id == 0; ++attempt)
-	{
-		uam::FlushPendingChatSaves(app);
-		std::this_thread::sleep_for(std::chrono::milliseconds(2));
-	}
-	const int resume_turn_request = session.codex_goal_initial_turn_request_id;
+	const int resume_turn_request = WaitForGoalInitialTurn(app, session);
 	UAM_ASSERT_EQ(session.pending_request_methods.at(resume_turn_request), std::string("turn/start"));
 	uam::acp_detail::HandleAcpResponse(app, session, app.chats.front(), {{"id", resume_turn_request}, {"result", {{"turn", {{"id", "native-resume-2"}}}}}});
 	const int resume_activation = WaitForGoalTimingActivation(app, session);
@@ -691,11 +715,7 @@ UAM_TEST(CodexNativeProtocolControlsUseRemainingBudgetWithoutDuplicateLoops)
 	UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, static_cast<std::int64_t>(50));
 	UAM_ASSERT_EQ(session.codex_goal_created_at, static_cast<std::int64_t>(100));
 	std::string wire;
-	for (int attempt = 0; attempt < 100; ++attempt)
-	{
-		if (uam::io::TryReadTextFile(temp.root / "wire.jsonl", wire) && std::count(wire.begin(), wire.end(), '\n') >= 10) break;
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	}
+	WaitUntilGoalReady([&]() { return uam::io::TryReadTextFile(temp.root / "wire.jsonl", wire) && std::count(wire.begin(), wire.end(), '\n') >= 10; });
 	std::istringstream lines(wire);
 	std::vector<nlohmann::json> requests;
 	for (std::string line; std::getline(lines, line);) requests.push_back(nlohmann::json::parse(line));
@@ -1337,11 +1357,11 @@ UAM_TEST(AcpGoalPromptWaitsForConfirmedRemoteFreshSessionStop)
 	    "reviewer-model", true));
 	UAM_ASSERT(raw_session->remote_stop_pending);
 	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("Review the completed work."));
-	for (int attempt = 0; attempt < 100 && !app.pending_acp_remote_stops.empty(); ++attempt)
+	WaitUntilGoalReady([&]()
 	{
 		(void)uam::PollAllAcpSessions(app);
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	}
+		return app.pending_acp_remote_stops.empty();
+	});
 	UAM_ASSERT(app.pending_acp_remote_stops.empty());
 	UAM_ASSERT(raw_session->reconnect_pending);
 	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("Review the completed work."));
@@ -1375,11 +1395,11 @@ UAM_TEST(AcpGoalPromptRecoversAnUnconfirmedRemoteFreshSessionStop)
 	UAM_ASSERT(uam::acp_detail::QueueGoalInternalPrompt(
 	    app, *raw_session, app.chats.front(), "Review after cleanup.", true,
 	    "reviewer-model", true));
-	for (int attempt = 0; attempt < 100 && !app.pending_acp_remote_stops.empty(); ++attempt)
+	WaitUntilGoalReady([&]()
 	{
 		(void)uam::PollAllAcpSessions(app);
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	}
+		return app.pending_acp_remote_stops.empty();
+	});
 	UAM_ASSERT(raw_session->remote_stop_unconfirmed);
 	UAM_ASSERT(raw_session->recovering_remote_turn);
 	UAM_ASSERT(raw_session->reconnect_pending);
@@ -1436,12 +1456,12 @@ UAM_TEST(GoalRemovalPreservesCurrentRemoteTurn)
 	UAM_ASSERT(app.pending_acp_remote_stops.empty());
 	UAM_ASSERT(uam::GoalService::FindGoalById(app, chat.id, goal_id) == nullptr);
 	(void)uam::StopAcpSession(app, chat.id);
-	for (int attempt = 0; attempt < 100 && !app.pending_acp_remote_stops.empty(); ++attempt)
+	WaitUntilGoalReady([&]()
 	{
 		(void)uam::PollAllAcpSessions(app);
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	}
-
+		return app.pending_acp_remote_stops.empty();
+	});
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
 }
 
 UAM_TEST(GoalRemovalPreservesPendingLegacyRemoteChildStops)
@@ -2694,11 +2714,11 @@ UAM_TEST(AcpGoalReviewUndeliveredStartupRetryStartsANewUsageReceipt)
 	const std::vector<std::string> argv{"/bin/sh", "-c", "exit 1"};
 #endif
 	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, temp.root, argv, &error));
-	for (int attempt = 0; attempt < 200 && session.crash_restart_attempts == 0; ++attempt)
+	WaitUntilGoalReady([&]()
 	{
 		(void)uam::PollAllAcpSessions(fixture.app);
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	}
+		return session.crash_restart_attempts != 0;
+	});
 	UAM_ASSERT_EQ(session.crash_restart_attempts, 1);
 	UAM_ASSERT_EQ(session.turn_serial, 2);
 	UAM_ASSERT(session.goal_review_turn);
@@ -3601,13 +3621,7 @@ UAM_TEST(CodexNativeGoalPausedAckDoesNotBlockOrStartBeforeDurability)
 	UAM_ASSERT(elapsed < std::chrono::milliseconds(100));
 	UAM_ASSERT_EQ(turn_before_durable, 0);
 	UAM_ASSERT_EQ(session.codex_goal_initial_turn_request_id, 0);
-	for (int attempt = 0; attempt < 200 && session.codex_goal_initial_turn_request_id == 0; ++attempt)
-	{
-		uam::FlushPendingChatSaves(app);
-		std::this_thread::sleep_for(std::chrono::milliseconds(2));
-	}
-	UAM_ASSERT(session.codex_goal_initial_turn_request_id != 0);
-	const int delivered = session.codex_goal_initial_turn_request_id;
+	const int delivered = WaitForGoalInitialTurn(app, session);
 	UAM_ASSERT_EQ(session.pending_request_methods.at(delivered), std::string("turn/start"));
 	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, app.chats.front().id);
 	UAM_ASSERT(saved.has_value() && saved->goals.front().native_binding.has_value());
@@ -3669,13 +3683,7 @@ namespace
 	{
 		const int paused_set = BeginGoalTimingPausedSet(app, session);
 		uam::acp_detail::HandleAcpResponse(app, session, app.chats.front(), {{"id", paused_set}, {"result", {{"goal", NativeGoalFixtureSnapshot(app.chats.front(), "paused", 0)}}}});
-		for (int attempt = 0; attempt < 200 && session.codex_goal_initial_turn_request_id == 0; ++attempt)
-		{
-			uam::FlushPendingChatSaves(app);
-			std::this_thread::sleep_for(std::chrono::milliseconds(2));
-		}
-		const int initial_turn = session.codex_goal_initial_turn_request_id;
-		UAM_ASSERT(initial_turn != 0);
+		const int initial_turn = WaitForGoalInitialTurn(app, session);
 		UAM_ASSERT_EQ(session.pending_request_methods.at(initial_turn), std::string("turn/start"));
 		uam::acp_detail::HandleAcpResponse(app, session, app.chats.front(), {{"id", initial_turn}, {"result", {{"turn", {{"id", "timing-native-turn"}}}}}});
 		const int activation = WaitForGoalTimingActivation(app, session);
@@ -3683,7 +3691,7 @@ namespace
 		return activation;
 	}
 
-	std::chrono::steady_clock::duration GoalReceiptUnderHeldPublication(const TempDir& temp, const std::function<void()>& receipt)
+	std::chrono::steady_clock::duration GoalReceiptUnderHeldPublication(const TempDir& temp, const std::function<void()>& receipt, const std::chrono::milliseconds hold = std::chrono::milliseconds(350))
 	{
 		ChatSession blocker;
 		blocker.id = "goal-postinitial-unrelated-publication";
@@ -3696,7 +3704,7 @@ namespace
 			(void)ChatRepository::PublishPreparedChatSave(publication, true, nullptr, [&]()
 			{
 				locked.set_value();
-				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				std::this_thread::sleep_for(hold);
 				return true;
 			});
 		});
@@ -3707,6 +3715,30 @@ namespace
 		holder.join();
 		return elapsed;
 	}
+}
+
+UAM_TEST(CodexNativeGoalInitialTurnIsSentOnceAfterSlowDurableSave)
+{
+	TempDir temp("native-goal-slow-save");
+	uam::AppState app;
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back();
+	PrepareGoalTimingFixture(app, session, temp);
+	CodexGoalIncarnationFixtureTransport transport(session, temp);
+	const int paused_set = BeginGoalTimingPausedSet(app, session);
+	int delivered = 0;
+	(void)GoalReceiptUnderHeldPublication(temp, [&]()
+	{
+		uam::acp_detail::HandleAcpResponse(app, session, app.chats.front(), {{"id", paused_set}, {"result", {{"goal", NativeGoalFixtureSnapshot(app.chats.front(), "paused", 0)}}}});
+		delivered = WaitForGoalInitialTurn(app, session);
+	}, std::chrono::milliseconds(800));
+	UAM_ASSERT_EQ(session.pending_request_methods.at(delivered), std::string("turn/start"));
+	UAM_ASSERT_EQ(std::ranges::count_if(session.pending_request_methods, [](const std::pair<const int, std::string>& request) { return request.second == "turn/start"; }), 1);
+	const int requests = session.next_request_id;
+	for (int repeat = 0; repeat < 3; ++repeat)
+		uam::acp_detail::StartPendingCodexNativeGoalTurn(app, session, app.chats.front());
+	UAM_ASSERT_EQ(session.codex_goal_initial_turn_request_id, delivered);
+	UAM_ASSERT_EQ(session.next_request_id, requests);
 }
 
 UAM_TEST(CodexNativeGoalActivationAckKeepsAccountingWithoutBlocking)
@@ -3728,13 +3760,11 @@ UAM_TEST(CodexNativeGoalActivationAckKeepsAccountingWithoutBlocking)
 	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
 	const int request_count = session.next_request_id;
-	for (int attempt = 0; attempt < 200; ++attempt)
+	WaitForGoalSaves(app, [&]()
 	{
-		uam::FlushPendingChatSaves(app);
 		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, app.chats.front().id);
-		if (saved.has_value() && saved->goals.front().tokens_used == 30) break;
-		std::this_thread::sleep_for(std::chrono::milliseconds(2));
-	}
+		return saved.has_value() && saved->goals.front().tokens_used == 30;
+	});
 	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, app.chats.front().id);
 	UAM_ASSERT(saved.has_value() && saved->goals.front().native_binding.has_value());
 	UAM_ASSERT_EQ(saved->goals.front().native_binding->last_native_tokens_used, static_cast<std::int64_t>(10));
@@ -3771,13 +3801,11 @@ UAM_TEST(CodexNativeGoalStopAcksKeepOwnershipWithoutBlocking)
 		UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
 		UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, static_cast<std::int64_t>(clear ? 30 : 50));
 		UAM_ASSERT_EQ(app.chats.front().goals.front().native_binding.has_value(), !clear);
-		for (int attempt = 0; attempt < 200; ++attempt)
+		WaitForGoalSaves(app, [&]()
 		{
-			uam::FlushPendingChatSaves(app);
 			const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, app.chats.front().id);
-			if (saved.has_value() && saved->goals.front().native_binding.has_value() == !clear && saved->goals.front().tokens_used == (clear ? 30 : 50)) break;
-			std::this_thread::sleep_for(std::chrono::milliseconds(2));
-		}
+			return saved.has_value() && saved->goals.front().native_binding.has_value() == !clear && saved->goals.front().tokens_used == (clear ? 30 : 50);
+		});
 		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, app.chats.front().id);
 		UAM_ASSERT(saved.has_value());
 		UAM_ASSERT_EQ(saved->goals.front().native_binding.has_value(), !clear);
@@ -3802,12 +3830,7 @@ namespace
 		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "Private fixture blocks full native goal save"));
 		const int paused_set = BeginGoalTimingPausedSet(app, session);
 		uam::acp_detail::HandleAcpResponse(app, session, app.chats.front(), {{"id", paused_set}, {"result", {{"goal", NativeGoalFixtureSnapshot(app.chats.front(), "paused", 0)}}}});
-		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-		while (session.codex_goal_initial_turn_pending.has_value() && std::chrono::steady_clock::now() < deadline)
-		{
-			uam::FlushPendingChatSaves(app);
-			std::this_thread::yield();
-		}
+		WaitForGoalSaves(app, [&]() { return !session.codex_goal_initial_turn_pending.has_value(); });
 		UAM_ASSERT(!session.codex_goal_initial_turn_pending.has_value());
 		UAM_ASSERT_EQ(session.codex_goal_initial_turn_request_id, 0);
 		UAM_ASSERT(session.goal_resume_suppressed);
@@ -3871,16 +3894,10 @@ UAM_TEST(CodexNativeGoalExplicitRetryDeliversFailedObjectiveExactlyOnce)
 		const int paused_set = session.next_request_id - 1;
 		UAM_ASSERT_EQ(session.pending_request_methods.at(paused_set), std::string("thread/goal/set"));
 		uam::acp_detail::HandleAcpResponse(app, session, app.chats.front(), {{"id", paused_set}, {"result", {{"goal", NativeGoalFixtureSnapshot(app.chats.front(), "paused", 0)}}}});
-		for (int attempt = 0; attempt < 200 && session.codex_goal_initial_turn_request_id == 0; ++attempt)
-		{
-			uam::FlushPendingChatSaves(app);
-			std::this_thread::sleep_for(std::chrono::milliseconds(2));
-		}
-		const int delivered = session.codex_goal_initial_turn_request_id;
-		UAM_ASSERT(delivered != 0);
+		const int delivered = WaitForGoalInitialTurn(app, session);
 		std::string wire;
 		nlohmann::json delivered_frame;
-		for (int attempt = 0; attempt < 100; ++attempt)
+		WaitUntilGoalReady([&]()
 		{
 			(void)uam::io::TryReadTextFile(temp.root / "wire.jsonl", wire);
 			std::istringstream lines(wire);
@@ -3889,9 +3906,8 @@ UAM_TEST(CodexNativeGoalExplicitRetryDeliversFailedObjectiveExactlyOnce)
 				const nlohmann::json frame = nlohmann::json::parse(line, nullptr, false);
 				if (frame.is_object() && frame.value("id", -1) == delivered) delivered_frame = frame;
 			}
-			if (!delivered_frame.is_null()) break;
-			std::this_thread::sleep_for(std::chrono::milliseconds(2));
-		}
+			return !delivered_frame.is_null();
+		});
 		UAM_ASSERT(delivered_frame.is_object());
 		UAM_ASSERT_EQ(delivered_frame["method"], nlohmann::json("turn/start"));
 		UAM_ASSERT_EQ(delivered_frame["params"]["input"].size(), static_cast<std::size_t>(1));
@@ -3994,13 +4010,7 @@ UAM_TEST(CodexNativeGoalPausedNotificationPreservesAcceptedDelivery)
 	CodexGoalIncarnationFixtureTransport transport(session, temp);
 	const int paused_set = BeginGoalTimingPausedSet(app, session);
 	uam::acp_detail::HandleAcpResponse(app, session, app.chats.front(), {{"id", paused_set}, {"result", {{"goal", NativeGoalFixtureSnapshot(app.chats.front(), "paused", 0)}}}});
-	for (int attempt = 0; attempt < 200 && session.codex_goal_initial_turn_request_id == 0; ++attempt)
-	{
-		uam::FlushPendingChatSaves(app);
-		std::this_thread::sleep_for(std::chrono::milliseconds(2));
-	}
-	const int initial = session.codex_goal_initial_turn_request_id;
-	UAM_ASSERT(initial != 0);
+	const int initial = WaitForGoalInitialTurn(app, session);
 	uam::acp_detail::HandleAcpResponse(app, session, app.chats.front(), {{"id", initial}, {"result", {{"turn", {{"id", "accepted-before-notification"}}}}}});
 	UAM_ASSERT(session.codex_goal_initial_turn_pending.has_value());
 	UAM_ASSERT_EQ(session.codex_goal_initial_turn_pending->action, uam::AcpSessionState::CodexGoalOwner::Action::Activate);
@@ -4010,11 +4020,7 @@ UAM_TEST(CodexNativeGoalPausedNotificationPreservesAcceptedDelivery)
 		{{"method", "thread/goal/updated"}, {"params", {{"threadId", session.session_id}, {"goal", updated}}}}, nullptr);
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
 	UAM_ASSERT_EQ(app.chats.front().active_goal_id, app.chats.front().goals.front().id);
-	for (int attempt = 0; attempt < 100; ++attempt)
-	{
-		uam::FlushPendingChatSaves(app);
-		std::this_thread::sleep_for(std::chrono::milliseconds(2));
-	}
+	WaitForGoalSaves(app, [&]() { return !session.codex_goal_initial_turn_pending.has_value(); });
 	const Goal& goal = app.chats.front().goals.front();
 	UAM_ASSERT(goal.native_binding.has_value() && goal.native_binding->initial_delivery.has_value());
 	UAM_ASSERT_EQ(goal.native_binding->initial_delivery->state, NativeGoalInitialDelivery::State::Accepted);
@@ -4068,11 +4074,7 @@ UAM_TEST(CodexNativeGoalResumeSaveFailurePreservesAcceptedWitness)
 	const int paused_set = session.next_request_id - 1;
 	UAM_ASSERT_EQ(session.pending_request_methods.at(paused_set), std::string("thread/goal/set"));
 	uam::acp_detail::HandleAcpResponse(app, session, app.chats.front(), {{"id", paused_set}, {"result", {{"goal", NativeGoalFixtureSnapshot(app.chats.front(), "paused", 0)}}}});
-	for (int attempt = 0; attempt < 200 && session.codex_goal_initial_turn_pending.has_value(); ++attempt)
-	{
-		uam::FlushPendingChatSaves(app);
-		std::this_thread::sleep_for(std::chrono::milliseconds(2));
-	}
+	WaitForGoalSaves(app, [&]() { return !session.codex_goal_initial_turn_pending.has_value(); });
 	UAM_ASSERT(!session.codex_goal_initial_turn_pending.has_value());
 	UAM_ASSERT_EQ(session.codex_goal_initial_turn_request_id, 0);
 	UAM_ASSERT_EQ(app.chats.front().goals.front().native_binding->initial_delivery, std::optional<NativeGoalInitialDelivery>(accepted));
@@ -4092,13 +4094,7 @@ namespace
 	{
 		const int paused_set = BeginGoalTimingPausedSet(app, session);
 		uam::acp_detail::HandleAcpResponse(app, session, app.chats.front(), {{"id", paused_set}, {"result", {{"goal", NativeGoalFixtureSnapshot(app.chats.front(), "paused", 0)}}}});
-		for (int attempt = 0; attempt < 200 && session.codex_goal_initial_turn_request_id == 0; ++attempt)
-		{
-			uam::FlushPendingChatSaves(app);
-			std::this_thread::sleep_for(std::chrono::milliseconds(2));
-		}
-		UAM_ASSERT(session.codex_goal_initial_turn_request_id != 0);
-		return session.codex_goal_initial_turn_request_id;
+		return WaitForGoalInitialTurn(app, session);
 	}
 }
 
@@ -4167,11 +4163,7 @@ UAM_TEST(CodexNativeGoalPendingReceiptsRejectChangedDeliveryConfiguration)
 			if (changed == 0) app.chats.front().workspace_directory = (temp.root / "different-workspace").string();
 			if (changed == 1) app.chats.front().model_id = "different-goal-model";
 			if (changed == 2) app.chats.front().uam_agent_id = "different-desired-agent";
-			for (int attempt = 0; attempt < 100; ++attempt)
-			{
-				uam::FlushPendingChatSaves(app);
-				std::this_thread::sleep_for(std::chrono::milliseconds(2));
-			}
+			WaitForGoalSaves(app, [&]() { return !session.codex_goal_initial_turn_pending.has_value(); });
 			UAM_ASSERT(!session.codex_goal_initial_turn_pending.has_value());
 			UAM_ASSERT_EQ(session.next_request_id, requests);
 			UAM_ASSERT_EQ(session.codex_goal_initial_turn_request_id, 0);
