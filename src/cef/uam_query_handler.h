@@ -13,6 +13,7 @@
 #if UAM_ENABLE_MOBILE_COMPANION
 #include "cef/companion_server.h"
 #endif
+#include "common/security/permission_change_log.h"
 #include <memory>
 #include <stop_token>
 
@@ -136,6 +137,13 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	std::map<std::string, CefRefPtr<CefTask>> m_promotableHistoryReads;
 	bool m_retryReusesSavedRead = false; // Set only while a waiter retries after a finished read.
 	ChatIconQueryIdentity m_dispatchingQuery{-1, "", -1};
+	// True while DispatchAction runs a phone companion request, so a permission change is logged with its source.
+	bool m_dispatchingCompanion = false;
+#if UAM_ENABLE_MOBILE_COMPANION
+	std::string_view PermissionChangeSource() const { return m_dispatchingCompanion ? uam::permission_log::kSourceCompanion : uam::permission_log::kSourceUser; }
+#else
+	std::string_view PermissionChangeSource() const { return uam::permission_log::kSourceUser; }
+#endif
 	// Registers the read and wraps cb so a cancelled request receives no history.
 	std::shared_ptr<NativeHistoryRequest> BeginNativeHistoryRead(const std::string& key, CefRefPtr<Callback>& cb,
 	    std::shared_ptr<NativeHistoryRequest> request = std::make_shared<NativeHistoryRequest>());

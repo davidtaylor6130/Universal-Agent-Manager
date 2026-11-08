@@ -4388,7 +4388,7 @@ describe('useAppStore Gemini CLI slice', () => {
     })
   })
 
-  it('applies generic ACP reasoning and permission defaults', async () => {
+  it('keeps the chat permission level and applies generic ACP reasoning defaults', async () => {
     const now = new Date()
     window.cefQuery = ({ onSuccess }) => onSuccess('{}')
     useAppStore.setState({
@@ -4402,7 +4402,8 @@ describe('useAppStore Gemini CLI slice', () => {
         viewMode: 'chat',
         folderId: 'default',
         providerId: 'gemini-cli',
-        commandSafetyTier: 'high',
+        approvalMode: 'default',
+        commandSafetyTier: 'off',
         createdAt: now,
         updatedAt: now,
       }],
@@ -4410,7 +4411,7 @@ describe('useAppStore Gemini CLI slice', () => {
         'opencode-cli': {
           modelId: 'reasoner',
           approvalMode: 'plan',
-          commandSafetyTier: 'low',
+          commandSafetyTier: 'yolo',
           memoryEnabled: true,
           memoryLevel: 'strict',
           reasoningEffort: 'high',
@@ -4427,8 +4428,9 @@ describe('useAppStore Gemini CLI slice', () => {
       modelId: 'reasoner',
       reasoningEffort: 'high',
       serviceTier: '',
-      approvalMode: 'plan',
-      commandSafetyTier: 'aiReview',
+      // #754: a Default chat stays on Default even though OpenCode's Settings default is YOLO.
+      approvalMode: 'default',
+      commandSafetyTier: 'off',
     })
   })
 
@@ -5259,7 +5261,7 @@ describe('useAppStore Gemini CLI slice', () => {
     window.cefQuery = ({ request, onSuccess, onFailure }) => {
       requests.push(JSON.parse(request))
       if (rejectNext) {
-        onFailure(409, 'ACP is busy')
+        onFailure(409, 'ACP is busy. The change was not applied; this chat is in Plan mode and its permission level is Default.')
         return
       }
       onSuccess('{}')
@@ -5284,9 +5286,16 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().sessions[0].approvalMode).toBe('plan')
 
     rejectNext = true
+    const dispatched = vi.spyOn(window, 'dispatchEvent').mockReturnValue(true)
+    dispatched.mockClear()
     await expect(useAppStore.getState().setSessionApprovalMode('chat-1', 'default')).resolves.toBe(false)
+    const reported = dispatched.mock.calls.map(([event]) => event).filter((event) => event.type === 'uam-app-failure')
+    dispatched.mockRestore()
     expect(requests[1].payload).toEqual({ chatId: 'chat-1', modeId: 'default' })
     expect(useAppStore.getState().sessions[0].approvalMode).toBe('plan')
+    // The toast shows the message only, so the level still in force must be in the message.
+    expect(reported).toHaveLength(1)
+    expect((reported[0] as CustomEvent<{ message: string }>).detail.message).toContain('its permission level is Default.')
 
     await expect(useAppStore.getState().setSessionApprovalMode('chat-1', 'yolo')).resolves.toBe(false)
     expect(requests).toHaveLength(2)

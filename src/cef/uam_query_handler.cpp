@@ -191,6 +191,8 @@ bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 		const std::string action = request.at("action").get<std::string>();
 		nlohmann::json payload = request.value("payload", nlohmann::json::object());
 		if (action == "getProviderAllowances") uam::companion::ApplyKeychainPromptPolicy(action, payload, CompanionAllowsKeychainPrompts());
+		m_dispatchingCompanion = true;
+		struct CompanionDispatchReset { bool& flag; ~CompanionDispatchReset() { flag = false; } } reset{m_dispatchingCompanion};
 		if (!DispatchAction(action, browser, payload, callback))
 			callback->Failure(404, "Unknown companion action.");
 	});

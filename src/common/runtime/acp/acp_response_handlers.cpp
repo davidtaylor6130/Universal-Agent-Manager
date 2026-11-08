@@ -1,6 +1,7 @@
 #include "app/agent_run_scheduler.h"
 #include "app/provider_configuration_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/security/permission_change_log.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 
@@ -637,6 +638,8 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			if (RollbackAcpModeChange(session, chat))
 			{
 				SaveChatQuietly(app, chat);
+				// The chip already shows the restored level; the error says so, so the change is not silent.
+				formatted_error += " " + uam::permission_log::RollbackNotice(chat);
 			}
 		}
 		if (method == uam::acp_methods::kSessionSetModel && id == session.model_change_request_id)

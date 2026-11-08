@@ -1205,6 +1205,39 @@ describe('ChatView', () => {
     }
   })
 
+  it.each([
+    ['yolo', "Codex answers its own permission prompts, so this chat's YOLO level changes to Default.", 'Permission prompts, which Codex answers itself'],
+    ['off', 'Permission prompts, which Codex answers itself', 'Permission level lowered'],
+  ] as const)('tells the truth about a %s chat switching to a provider that answers its own prompts', (tier, shown, hidden) => {
+    const previousProviders = useAppStore.getState().providers
+    useAppStore.setState((state) => ({
+      providers: state.providers.map((provider) => provider.id === 'codex-cli' ? { ...provider, structuredPermissionControl: 'provider' as const } : provider),
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, commandSafetyTier: tier } : session),
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [] } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      act(() => { (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click() })
+      act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+      act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+      const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Switch from Gemini to Codex"]')
+      expect(dialog?.textContent).toContain(shown)
+      expect(dialog?.textContent).not.toContain(hidden)
+      expect(dialog?.textContent).toContain('Memory setting')
+      expect(dialog?.textContent).not.toContain('Permission level and memory setting')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState((state) => ({
+        providers: previousProviders,
+        sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, commandSafetyTier: undefined } : session),
+      }))
+    }
+  })
+
   it('confirms provider handoff before changing anything', async () => {
     const originalSetSessionModel = useAppStore.getState().setSessionModel
     const setSessionModel = vi.fn().mockResolvedValue(true)
@@ -1249,6 +1282,11 @@ describe('ChatView', () => {
     expect(dialog?.textContent).toContain('Selected UAM agent and goals')
     expect(dialog?.textContent).toContain('Native session and provider-specific live tool state')
     expect(dialog?.textContent).not.toContain('agent defaults')
+    // #754: the chat keeps its permission level and memory; only model, reasoning and speed reset.
+    expect(dialog?.textContent).toContain('Permission level and memory setting')
+    expect(dialog?.textContent).toContain("Model, reviewer model, reasoning, speed and small model mode, from Codex's defaults")
+    expect(dialog?.textContent).not.toContain('memory defaults')
+    expect(dialog?.textContent).not.toContain('Permission level lowered')
     expect(dialog?.textContent).toContain('Anything the current provider did not record in UAM will not transfer.')
     expect(setSessionProvider).not.toHaveBeenCalled()
 

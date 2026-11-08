@@ -1,4 +1,5 @@
 #include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
+#include "common/security/permission_change_log.h"
 #include "common/provider/copilot/cli/copilot_child_lifecycle.h"
 #include "common/provider/copilot/cli/copilot_mcp_presentation.h"
 #include "common/provider/copilot/cli/copilot_managed_read_policy.h"
@@ -211,6 +212,7 @@ bool ConfirmPlanImplementation(AppState& app, AcpSessionState& session, ChatSess
 		return false;
 	}
 	session.current_mode_id = uam::approval_modes::kDefaultApprovalMode;
+	uam::permission_log::RecordChange(chat.id, uam::permission_log::kSourcePlanApproval, prior_policy, chat.approval_mode, chat.command_safety_tier, chat.command_safety_tier);
 	return true;
 }
 

@@ -1,6 +1,7 @@
 #include "common/runtime/acp/acp_session_internal.h"
 
 #include "common/config/approval_modes.h"
+#include "common/security/permission_change_log.h"
 #include "common/utils/time_utils.h"
 
 namespace uam::acp_detail
@@ -85,6 +86,8 @@ bool RollbackAcpModeChange(AcpSessionState& session, ChatSession& chat)
 {
 	const bool persisted_request_is_current =
 	    uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier) == session.mode_change_requested_id;
+	const std::string rejected_approval_mode = chat.approval_mode;
+	const std::string rejected_tier = chat.command_safety_tier;
 	bool chat_changed = false;
 	if (persisted_request_is_current && session.mode_change_previous_chat_id.has_value())
 	{
@@ -98,6 +101,8 @@ bool RollbackAcpModeChange(AcpSessionState& session, ChatSession& chat)
 	}
 	session.current_mode_id = session.mode_change_previous_id;
 	ClearAcpModeChangeRequest(session);
+	if (chat_changed)
+		uam::permission_log::RecordChange(chat.id, uam::permission_log::kSourceRollback, rejected_approval_mode, chat.approval_mode, rejected_tier, chat.command_safety_tier);
 	return chat_changed;
 }
 
