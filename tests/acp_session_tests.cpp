@@ -13421,6 +13421,164 @@ UAM_TEST(AcpRejectedModelChangeRestoresPersistedAndRuntimeModel)
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);
 }
 
+namespace
+{
+	std::optional<nlohmann::json> ReadWiredAcpRequest(IPlatformProcessService& process, uam::AcpSessionState& session, const std::string& method)
+	{
+		std::string wire;
+		std::string error;
+		char buffer[4096];
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			const std::ptrdiff_t count = process.ReadStdioProcessStdout(session, buffer, sizeof(buffer), &error);
+			if (count > 0) wire.append(buffer, static_cast<std::size_t>(count));
+			else std::this_thread::yield();
+			for (std::size_t newline = wire.find('\n'); newline != std::string::npos; newline = wire.find('\n'))
+			{
+				const nlohmann::json request = nlohmann::json::parse(wire.substr(0, newline), nullptr, false);
+				wire.erase(0, newline + 1);
+				if (!request.is_discarded() && request.value("method", "") == method) return request;
+			}
+		}
+		return std::nullopt;
+	}
+
+	std::unique_ptr<uam::AcpSessionState> ReadyGeminiGoalSession(const std::string& chat_id, const std::string& current_model_id)
+	{
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat_id;
+		session->provider_id = "gemini-cli";
+		session->protocol_kind = "gemini-acp";
+		session->session_id = "session-1";
+		session->running = true;
+		session->initialized = true;
+		session->session_ready = true;
+		session->current_model_id = current_model_id;
+		return session;
+	}
+}
+
+UAM_TEST(SetAcpSessionModelSendsTheSessionsOwnGoalTurnModel)
+{
+	TempDir temp("uam-acp-goal-model-alias");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-goal-model-alias";
+	chat.provider_id = "gemini-cli";
+	chat.model_id = "saved-model";
+	app.chats.push_back(std::move(chat));
+	auto session = ReadyGeminiGoalSession("chat-goal-model-alias", "saved-model");
+	session->goal_turn_model_id = "goal-model";
+	uam::AcpSessionState* raw_session = session.get();
+	IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+	std::string error;
+	UAM_ASSERT(process.StartStdioProcess(*raw_session, temp.root, uam_test::StdioCatArgv(), &error));
+	app.acp_sessions.push_back(std::move(session));
+
+	// The argument refers to the field this call would otherwise clear.
+	UAM_ASSERT(uam::SetAcpSessionModel(app, "chat-goal-model-alias", raw_session->goal_turn_model_id, &error));
+	const std::optional<nlohmann::json> request = ReadWiredAcpRequest(process, *raw_session, "session/set_model");
+	process.StopStdioProcess(*raw_session, true);
+	process.CloseStdioProcessHandles(*raw_session);
+
+	UAM_ASSERT(request.has_value());
+	if (request) UAM_ASSERT_EQ((*request)["params"].value("modelId", ""), std::string("goal-model"));
+	UAM_ASSERT_EQ(raw_session->current_model_id, std::string("goal-model"));
+	UAM_ASSERT_EQ(raw_session->model_change_requested_id, std::string("goal-model"));
+	// Relaunch, resume and prompt delivery read this for the rest of the turn.
+	UAM_ASSERT_EQ(raw_session->goal_turn_model_id, std::string("goal-model"));
+}
+
+UAM_TEST(SetAcpSessionModelDropsAGoalTurnModelTheCallerReplaced)
+{
+	TempDir temp("uam-acp-goal-model-replaced");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-goal-model-replaced";
+	chat.provider_id = "gemini-cli";
+	app.chats.push_back(std::move(chat));
+	auto session = ReadyGeminiGoalSession("chat-goal-model-replaced", "saved-model");
+	session->goal_turn_model_id = "goal-model";
+	uam::AcpSessionState* raw_session = session.get();
+	IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+	std::string error;
+	UAM_ASSERT(process.StartStdioProcess(*raw_session, temp.root, uam_test::StdioCatArgv(), &error));
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::SetAcpSessionModel(app, "chat-goal-model-replaced", "user-model", &error));
+	const std::optional<nlohmann::json> request = ReadWiredAcpRequest(process, *raw_session, "session/set_model");
+	process.StopStdioProcess(*raw_session, true);
+	process.CloseStdioProcessHandles(*raw_session);
+
+	UAM_ASSERT(request.has_value());
+	if (request) UAM_ASSERT_EQ((*request)["params"].value("modelId", ""), std::string("user-model"));
+	UAM_ASSERT(raw_session->goal_turn_model_id.empty());
+}
+
+UAM_TEST(GoalTurnSendAsksARequestProviderForTheLockedWorkerModel)
+{
+	TempDir temp("uam-acp-goal-send-model");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.active_provider_id = "gemini-cli";
+	app.settings.central_provider_configuration.enabled = false;
+	app.settings.provider_chat_defaults["gemini-cli"].feature_preference = "provider";
+	ChatSession chat;
+	chat.id = "chat-goal-send-model";
+	chat.provider_id = "gemini-cli";
+	chat.workspace_directory = temp.root.string();
+	chat.model_id = "saved-model";
+	chat.small_model_mode = true;
+	Goal goal;
+	goal.id = "goal-1";
+	goal.status = GoalStatus::Active;
+	goal.worker_model_id = "goal-model";
+	goal.loop_count = 1;
+	chat.goals.push_back(std::move(goal));
+	chat.active_goal_id = "goal-1";
+	app.chats.push_back(std::move(chat));
+	auto session = ReadyGeminiGoalSession("chat-goal-send-model", "saved-model");
+	uam::AcpModelState model;
+	model.id = "goal-model";
+	session->available_models.push_back(std::move(model));
+	uam::AcpSessionState* raw_session = session.get();
+	IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+	std::string error;
+	UAM_ASSERT(process.StartStdioProcess(*raw_session, temp.root, uam_test::StdioCatArgv(), &error));
+	raw_session->process_execution_host_id = app.chats.front().execution_host_id;
+	raw_session->last_process_id = uam::acp_detail::AcpProcessHandleLabel(*raw_session);
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-goal-send-model", "Continue the goal", {}, {}, false, &error));
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (raw_session->model_change_request_id == 0 && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, *raw_session, app.chats.front());
+		std::this_thread::yield();
+	}
+	const std::optional<nlohmann::json> request = ReadWiredAcpRequest(process, *raw_session, "session/set_model");
+	UAM_ASSERT(request.has_value());
+	if (request)
+	{
+		UAM_ASSERT_EQ((*request)["params"].value("modelId", ""), std::string("goal-model"));
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), nlohmann::json({{"jsonrpc", "2.0"}, {"id", (*request)["id"]}, {"result", nlohmann::json::object()}}).dump()));
+		AwaitPromptAdmission(app, *raw_session, app.chats.front());
+		UAM_ASSERT(ReadWiredAcpRequest(process, *raw_session, "session/prompt").has_value());
+	}
+	process.StopStdioProcess(*raw_session, true);
+	process.CloseStdioProcessHandles(*raw_session);
+
+	UAM_ASSERT_EQ(raw_session->goal_turn_model_id, std::string("goal-model"));
+	UAM_ASSERT_EQ(app.chats.front().model_id, std::string("saved-model"));
+}
+
 UAM_TEST(AcpModeChangeFailuresRestorePersistedAndRuntimeMode)
 {
 	TempDir temp("uam-acp-mode-change-rollback");
