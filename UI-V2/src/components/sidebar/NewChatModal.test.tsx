@@ -56,8 +56,7 @@ describe('NewChatModal', () => {
         requests.push(query)
         if (query.action !== 'getWorkspaceVcsContext') { onSuccess(JSON.stringify({ chatId: 'created-fixture' })); return }
         reads += 1
-        if (reads === 1) { onFailure(409, 'Could not read local branches.'); return }
-        if (reads === 2) { onSuccess(JSON.stringify(context)); return }
+        if (reads === 1) { onSuccess(JSON.stringify(context)); return }
         finishRefresh = () => {
           if (result === 'read-failure') onFailure(409, 'Branches are unavailable.')
           else onSuccess(JSON.stringify(result === 'detached'
@@ -72,7 +71,6 @@ describe('NewChatModal', () => {
       const trigger = () => host.querySelector<HTMLButtonElement>('[aria-label="Starting branch"]')!
       try {
         await act(async () => root.render(<NewChatModal />))
-        await act(async () => button('Retry branches').click())
         act(() => trigger().click())
         act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((entry) => entry.textContent?.startsWith(choice))!.click())
         const refresh = button('Refresh branches')
@@ -82,13 +80,13 @@ describe('NewChatModal', () => {
         expect(trigger().textContent).toContain(choice)
         expect(document.activeElement).toBe(refresh)
         if (result !== 'pending-create') await act(async () => finishRefresh())
-        const keepsChoice = result === 'unchanged' || result === 'pending-create' || (result === 'removed' && choice !== 'feature/base')
+        const keepsChoice = result === 'unchanged' || result === 'pending-create' || result === 'read-failure' || (result === 'removed' && choice !== 'feature/base')
         expect(trigger().textContent).toContain(keepsChoice ? choice : 'Use default (main)')
         expect(document.activeElement).toBe(refresh)
-        expect(requests.map((query) => query.action)).toEqual(Array(3).fill('getWorkspaceVcsContext'))
+        expect(requests.map((query) => query.action)).toEqual(Array(2).fill('getWorkspaceVcsContext'))
         await act(async () => button('Create chat').click())
         const payload = requests.at(-1)!.payload
-        expect(requests.map((query) => query.action)).toEqual([...Array(3).fill('getWorkspaceVcsContext'), 'createSession'])
+        expect(requests.map((query) => query.action)).toEqual([...Array(2).fill('getWorkspaceVcsContext'), 'createSession'])
         expect(payload).toMatchObject({ folderId: 'project', providerId: 'gemini-cli' })
         if (keepsChoice) expect(payload).toMatchObject({ gitBaseBranch: choice === 'feature/base' ? choice : '', workspaceDirectory: '/tmp/project' })
         else expect(payload).not.toHaveProperty('gitBaseBranch')
@@ -388,12 +386,95 @@ describe('NewChatModal', () => {
     },
   )
 
-  it.each(['checking', 'installing', 'known-incompatible'] as const)(
+  it.each([
+    ['failed', { status: 'unavailable', installedVersion: '', message: 'Could not check Gemini CLI version.', checkError: 'Could not check Gemini CLI version.' }],
+    ['in progress', { status: 'checking', installedVersion: '', message: 'Checking installed Gemini CLI version...', checkError: '', running: true }],
+  ] as const)('keeps structured creation available while a version check is %s', async (_label, readiness) => {
+    const addSession = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ addSession, cliVersionManager: { providers: [{ providerId: 'gemini-cli', selectedVersion: '', availableVersions: [], preferredVersion: '', running: false, lastCommand: '', lastOutput: '', ...readiness }] } })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
+      expect(create.disabled).toBe(false)
+      expect(host.textContent).toContain(readiness.message)
+      expect(host.textContent).not.toContain('Creates a terminal chat.')
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      await act(async () => create.click())
+      expect(addSession).toHaveBeenCalledOnce()
+      expect(addSession.mock.calls[0][5]).toBe('chat')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it.each([
+    ['fails', () => Promise.resolve({ fail: true })],
+    ['never finishes', () => new Promise(() => {})],
+    ['reports no commits', () => Promise.resolve({ success: { vcs: 'git', currentBranch: 'main', currentCommit: '', detached: false, localBranches: [] } })],
+    ['reports a detached HEAD', () => Promise.resolve({ success: { vcs: 'git', currentBranch: '', detached: true } })],
+  ] as const)('creates with the inherited base when the branch read %s', async (_label, outcome) => {
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const query = JSON.parse(request)
+      requests.push(query)
+      if (query.action !== 'getWorkspaceVcsContext') { onSuccess(JSON.stringify({ chatId: 'created-fixture' })); return }
+      void outcome().then((result) => {
+        const settled = result as { fail?: boolean; success?: unknown }
+        if (settled.fail) onFailure(409, 'Could not read local Git branches.')
+        else onSuccess(JSON.stringify(settled.success))
+      })
+    }
+    useAppStore.setState({ addSession: originalAddSession, gitEnabled: true, gitAutoWorktree: true, gitDefaultBaseBranch: 'main', isNewChatModalOpen: true })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<NewChatModal />))
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      expect(host.textContent).not.toContain('Retry branches')
+      expect(host.textContent).not.toContain('Could not read')
+      const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
+      expect(create.disabled).toBe(false)
+      await act(async () => create.click())
+      const payload = requests.find((query) => query.action === 'createSession')!.payload
+      expect(payload).toMatchObject({ folderId: 'project' })
+      expect(payload).not.toHaveProperty('gitBaseBranch')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      delete window.cefQuery
+    }
+  })
+
+  it('names the reason beside a disabled Create chat', () => {
+    useAppStore.setState({ cliVersionManager: { providers: [{ providerId: 'gemini-cli', installedVersion: '', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'unavailable', message: 'Gemini CLI is not installed or not on PATH.', running: false, lastCommand: '', lastOutput: '' }] } })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
+      expect(create.disabled).toBe(true)
+      const reason = document.getElementById(create.getAttribute('aria-describedby')!)
+      expect(reason?.textContent).toContain('Gemini CLI is not installed or not on PATH.')
+      expect(reason?.getAttribute('role')).toBe('alert')
+      expect(host.textContent?.match(/not installed or not on PATH/g)).toHaveLength(1)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it.each(['installing', 'known-incompatible'] as const)(
     'identifies terminal fallback for provider readiness %s',
     async (status) => {
       const addSession = vi.fn().mockResolvedValue(false)
       useAppStore.setState({ addSession })
-      useAppStore.setState({ cliVersionManager: { providers: [{ providerId: 'gemini-cli', installedVersion: '0.1.0', selectedVersion: '1.0.0', availableVersions: [{ version: '1.0.0', preferred: true }], preferredVersion: '1.0.0', status, message: 'Provider needs attention.', running: status === 'checking' || status === 'installing', lastCommand: '', lastOutput: '' }] } })
+      useAppStore.setState({ cliVersionManager: { providers: [{ providerId: 'gemini-cli', installedVersion: '0.1.0', selectedVersion: '1.0.0', availableVersions: [{ version: '1.0.0', preferred: true }], preferredVersion: '1.0.0', status, message: 'Provider needs attention.', running: status === 'installing', lastCommand: '', lastOutput: '' }] } })
       const host = document.createElement('div')
       document.body.appendChild(host)
       const root = createRoot(host)

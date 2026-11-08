@@ -191,10 +191,13 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const providerAvailability = (provider: Provider | undefined) => {
     const readiness = routingMode !== 'automatic' && !isRemote ? cliVersionManager.providers.find((item) => item.providerId === provider?.id) : undefined
     const status = readiness?.status ?? 'unknown'
+    // A check that failed, timed out or is still running says nothing about whether the CLI runs; launch keeps its own version gate.
+    const checkFailed = status === 'unavailable' && Boolean(readiness?.checkError)
+    const confirmedUnavailable = status === 'unavailable' && !checkFailed
     const structuredBlocked = !provider || provider.supportsStructured === false ||
-      (routingMode !== 'automatic' && !isRemote && ['checking', 'installing', 'known-incompatible', 'unavailable'].includes(status))
+      (routingMode !== 'automatic' && !isRemote && (confirmedUnavailable || ['installing', 'known-incompatible'].includes(status)))
     const terminalBlocked = !provider || provider.supportsCli === false ||
-      (routingMode !== 'automatic' && !isRemote && (status === 'unavailable' || (provider.id === COPILOT_CLI_PROVIDER_ID && status === 'known-incompatible')))
+      (routingMode !== 'automatic' && !isRemote && (confirmedUnavailable || (provider.id === COPILOT_CLI_PROVIDER_ID && status === 'known-incompatible')))
     const issues: string[] = []
     if (!provider) issues.push('No provider is available. Enable one in Settings > Providers.')
     else {
@@ -210,7 +213,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           'known-incompatible': 'This provider version is incompatible with structured chat.',
           unavailable: 'The provider CLI is unavailable.',
         } as Record<string, string>)[status]
-        issues.push(`${message}${provider.id === COPILOT_CLI_PROVIDER_ID && status === 'known-incompatible' ? ' Terminal fallback is also unavailable.' : ''} Check Settings > CLI Version.`)
+        issues.push(status === 'checking' ? message : `${message}${provider.id === COPILOT_CLI_PROVIDER_ID && status === 'known-incompatible' ? ' Terminal fallback is also unavailable.' : ''}${checkFailed ? ' You can still create this chat.' : ''} Check Settings > CLI Version.`)
       }
     }
     return { structuredBlocked, terminalBlocked, issues }
@@ -219,6 +222,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const structuredCreationBlocked = Boolean(hostIssue) || availability.structuredBlocked
   const terminalCreationBlocked = Boolean(hostIssue) || availability.terminalBlocked
   const terminalFallback = !companion && structuredCreationBlocked && !terminalCreationBlocked
+  const providerBlocksCreate = companion ? availability.structuredBlocked : availability.structuredBlocked && availability.terminalBlocked
 
   const handleCreate = async () => {
     if (creatingChatRef.current || !canCreate || (companion ? structuredCreationBlocked : structuredCreationBlocked && terminalCreationBlocked)) return
@@ -302,6 +306,10 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     : selectedFolder !== null && Boolean(selectedWorkspace))
 
   const remoteWorkspaceIssue = isRemote && !canCreate ? 'Enter an absolute workspace path.' : ''
+  // Every disabled Create names its cause in the footer. A stale worktree choice already shows its error there.
+  const createBlockedFault = hostIssue || (providerBlocksCreate ? availability.issues[availability.issues.length - 1] ?? 'This provider cannot create chats here. Choose another provider.' : '')
+  const createBlockedReason = sourceContextInvalid ? '' : createBlockedFault || remoteWorkspaceIssue ||
+    (!isRemote && !canCreate ? selectedFolder ? 'This workspace has no folder. Choose another workspace.' : 'Choose a workspace to create this chat.' : '')
   const createWorkspace = async () => {
     if (creatingWorkspace) return
     setCreatingWorkspace(true)
@@ -430,8 +438,6 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             onChange={(hostId) => { if (hostId === AUTOMATIC_HOST_OPTION) { if (newChatWorktreeContext) setNewChatModalOpen(true, folderId, null); setSourceContextInvalid(false); setChatError(''); setRoutingMode('automatic') } else { setRoutingMode('explicit'); chooseHost(hostId) } }}
           />
           </div>
-          {hostIssue && <p role="alert" className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--error)' }}><CircleAlert size={12} aria-hidden />{hostIssue}</p>}
-
           {/* Folder */}
           {folders.some((folder) => (folder.executionHostId || 'local') === executionHostId) && (
             <div>
@@ -558,7 +564,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
               }}
             />
           </Card>
-          {availability.issues.length > 0 && <p role={structuredCreationBlocked && terminalCreationBlocked ? 'alert' : undefined} className="flex items-center gap-1.5 text-xs" style={{ color: structuredCreationBlocked && terminalCreationBlocked ? 'var(--error)' : 'var(--text-2)' }}>{structuredCreationBlocked && terminalCreationBlocked && <CircleAlert size={12} aria-hidden />}{availability.issues[availability.issues.length - 1]}</p>}
+          {availability.issues.length > 0 && !providerBlocksCreate && <p className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-2)' }}>{availability.issues[availability.issues.length - 1]}</p>}
           {terminalFallback && <p role="status" className="flex items-center gap-2 text-xs" style={{ color: 'var(--text)' }}><SquareTerminal size={14} aria-hidden />Creates a terminal chat. Structured chat is unavailable.</p>}
 
           <div role="group" aria-label="Model and reasoning" className="space-y-3">
@@ -598,12 +604,14 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           className="flex shrink-0 items-center justify-end gap-2 px-5 py-3"
           style={{ borderTop: '1px solid var(--border)' }}
         >
+          {createBlockedReason && <p id="new-chat-create-blocked" role={createBlockedFault ? 'alert' : 'status'} className="mr-auto flex min-w-0 items-center gap-1.5 text-xs" style={{ color: createBlockedFault ? 'var(--error)' : 'var(--text-2)' }}>{createBlockedFault && <CircleAlert size={12} aria-hidden className="shrink-0" />}{createBlockedReason}</p>}
           <Button variant="ghost" size="md" disabled={creatingChat} onClick={requestClose}>Cancel</Button>
           <Button
             variant="primary"
             size="md"
             onClick={() => void handleCreate()}
             disabled={creatingChat || !canCreate || (companion ? structuredCreationBlocked : structuredCreationBlocked && terminalCreationBlocked)}
+            aria-describedby={createBlockedReason ? 'new-chat-create-blocked' : undefined}
             aria-busy={creatingChat || undefined}
           >
             {creatingChat ? 'Creating…' : 'Create chat'}
