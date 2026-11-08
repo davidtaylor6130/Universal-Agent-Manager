@@ -614,7 +614,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             size="md"
             onClick={() => void handleCreate()}
             disabled={creatingChat || !canCreate || (companion ? structuredCreationBlocked : structuredCreationBlocked && terminalCreationBlocked)}
-            aria-describedby={createBlockedReason ? 'new-chat-create-blocked' : undefined}
+            disabledReason={createBlockedReason || undefined}
             aria-busy={creatingChat || undefined}
           >
             {creatingChat ? 'Creating…' : 'Create chat'}
