@@ -54,15 +54,24 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
   const [autoPicked, setAutoPicked] = useState<string>()
   const id = useId()
   const contextFolder = useRef(folderId)
+  const busyRetried = useRef(false)
 
   useEffect(() => {
     if (unavailableReason) return
-    if (contextFolder.current !== folderId) { contextFolder.current = folderId; setContext(undefined); setListed(false) }
+    if (contextFolder.current !== folderId) { contextFolder.current = folderId; setContext(undefined); setListed(false); busyRetried.current = false }
     let cancelled = false
+    let busyRetry: ReturnType<typeof setTimeout> | undefined
     setLoading(true)
     setSettled(false)
     void sendToCEF({ action: 'getWorkspaceVcsContext', payload: { folderId } }).then((response) => {
       if (cancelled) return
+      if (response.code === 429 && !busyRetried.current) {
+        // Native shares four context-read slots; one silent re-read covers a momentary busy reply.
+        busyRetried.current = true
+        busyRetry = setTimeout(() => setAttempt((previous) => previous + 1), 1000)
+        return
+      }
+      busyRetried.current = false
       const next = response.ok ? branchContext(response.data) : undefined
       if (next?.vcs === 'git' && !next.detached) {
         // Native lists newest commit first; other chats' worktree branches trail and are never preferred.
@@ -80,7 +89,7 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
       setSettled(true)
       setLoading(false)
     })
-    return () => { cancelled = true }
+    return () => { cancelled = true; clearTimeout(busyRetry) }
   }, [folderId, unavailableReason, attempt, defaultBranch])
 
   const ready = !unavailableReason && !loading && context?.vcs === 'git' && !context.detached

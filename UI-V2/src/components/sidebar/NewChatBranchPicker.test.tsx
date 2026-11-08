@@ -156,6 +156,32 @@ describe('NewChatBranchPicker', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
+  it('re-reads once silently after a busy reply and then offers the branches', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      send.mockResolvedValueOnce({ ok: false, code: 429, error: 'Repository context is busy. Try again shortly.' })
+      await act(async () => render())
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      expect(host.textContent).toContain('Loading branches')
+      expect(send).toHaveBeenCalledTimes(1)
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+      expect(send).toHaveBeenCalledTimes(2)
+      expect(trigger().disabled).toBe(false)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('gives up quietly after a second busy reply', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      send.mockResolvedValue({ ok: false, code: 429, error: 'Repository context is busy. Try again shortly.' })
+      await act(async () => render())
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      expect(send).toHaveBeenCalledTimes(2)
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      expect(host.textContent).toContain('starts from the default or current branch')
+    } finally { vi.useRealTimers() }
+  })
+
   it('stays quiet when the bridge request itself rejects', async () => {
     send.mockRejectedValue(new Error('bridge unavailable'))
     await act(async () => render())

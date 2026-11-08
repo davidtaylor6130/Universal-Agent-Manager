@@ -451,7 +451,7 @@ describe('NewChatModal', () => {
   })
 
   it('names the reason beside a disabled Create chat', () => {
-    useAppStore.setState({ cliVersionManager: { providers: [{ providerId: 'gemini-cli', installedVersion: '', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'unavailable', message: 'Gemini CLI is not installed or not on PATH.', running: false, lastCommand: '', lastOutput: '' }] } })
+    useAppStore.setState({ cliVersionManager: { providers: [{ providerId: 'gemini-cli', installedVersion: '', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'unavailable', message: 'Could not check Gemini CLI version.', running: false, lastCommand: '', lastOutput: '' }] } })
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -461,6 +461,7 @@ describe('NewChatModal', () => {
       expect(create.disabled).toBe(true)
       const reason = document.getElementById(create.getAttribute('aria-describedby')!)
       expect(reason?.textContent).toContain('Gemini CLI is not installed or not on PATH.')
+      expect(reason?.textContent).not.toContain('Could not check')
       expect(reason?.getAttribute('role')).toBe('alert')
       expect(host.textContent?.match(/not installed or not on PATH/g)).toHaveLength(1)
     } finally {

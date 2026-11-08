@@ -204,7 +204,8 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
       if (provider.supportsStructured === false) issues.push(provider.supportsCli !== false ? 'This provider supports terminal chat only.' : 'This provider does not support structured chat. Choose another provider or check Settings.')
       if (provider.supportsCli === false) issues.push('This provider does not support terminal chat. Choose another provider or check Settings.')
       if (routingMode !== 'automatic' && !isRemote && (provider.supportsStructured !== false || readiness) && (['checking', 'installing', 'known-incompatible', 'unavailable'].includes(status) || Boolean(readiness?.checkError))) {
-        const message = readiness?.checkError || readiness?.message || ({
+        // Native reports a confirmed-missing CLI with its generic check-failure text.
+        const message = confirmedUnavailable ? `${provider.name} is not installed or not on PATH.` : readiness?.checkError || readiness?.message || ({
           unknown: 'Provider readiness has not been checked.',
           checking: 'Checking provider compatibility.',
           installing: 'Installing the provider CLI.',
