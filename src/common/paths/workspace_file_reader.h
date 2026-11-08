@@ -25,6 +25,7 @@ namespace uam::workspace_files
 	struct TextFile
 	{
 		bool ok = false;
+		bool too_large = false;
 		std::string path;
 		std::string text;
 		std::string error;
@@ -112,7 +113,7 @@ namespace uam::workspace_files
 		    (before.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
 		{ result.error = "Only regular text files can be inspected."; return result; }
 		if (before.nFileSizeHigh != 0 || before.nFileSizeLow > limit)
-		{ result.error = binary_attachment ? "Image attachment is limited to 25 MiB." : "File preview is limited to 1 MiB."; return result; }
+		{ result.too_large = true; result.error = binary_attachment ? "Image attachment is limited to 25 MiB." : "File preview is limited to 1 MiB."; return result; }
 		result.text.resize(before.nFileSizeLow);
 		DWORD count = 0;
 		char extra = 0;
@@ -143,7 +144,7 @@ namespace uam::workspace_files
 		if (fstat(*directory, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size < 0)
 		{ result.error = "Only regular text files can be inspected."; return result; }
 		if (static_cast<std::uintmax_t>(before.st_size) > limit)
-		{ result.error = binary_attachment ? "Image attachment is limited to 25 MiB." : "File preview is limited to 1 MiB."; return result; }
+		{ result.too_large = true; result.error = binary_attachment ? "Image attachment is limited to 25 MiB." : "File preview is limited to 1 MiB."; return result; }
 		result.text.resize(static_cast<std::size_t>(before.st_size));
 		std::size_t offset = 0;
 		while (offset < result.text.size())
