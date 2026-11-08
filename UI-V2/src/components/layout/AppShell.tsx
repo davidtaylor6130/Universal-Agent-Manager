@@ -93,23 +93,35 @@ let reraisedAlertSerial = 0
 
 function TransientAlertItem({ alert, visible, collapsed, hovered, onHover, onAction, onDismiss, messageMaxHeight }: { alert: StackedAlert; visible: boolean; collapsed: boolean; hovered: boolean; onHover: (id: string, on: boolean) => void; onAction: (action: TransientAlert['action']) => void; onDismiss: (id: string) => void; messageMaxHeight: number }) {
   const ref = useRef<HTMLDivElement>(null)
-  // Hover or focus holds only this notice's countdown. A hidden (no-fit) surface or a collapsed notice never holds, since it
-  // cannot be left (a hidden notice may never get its blur). Hover lives in the stack by id so a repeat's remount keeps it.
+  // Hover or keyboard focus holds only this notice's countdown. A mouse click leaves focus on what it pressed (Copy), so
+  // only :focus-visible focus or a key press inside (not a Cmd/Ctrl shortcut such as copy) counts, else the notice stays
+  // held after the pointer leaves. A hidden (no-fit) surface or a
+  // collapsed notice never holds, since it cannot be left (a hidden notice may never get its blur). Hover lives in the
+  // stack by id so a repeat's remount keeps it.
   const [focused, setFocused] = useState(false)
   const held = visible && !collapsed && (hovered || focused)
   const copyText = [alert.message, alert.detail].filter(Boolean).join('\n')
   // Expiry pauses while this notice is held and resumes with the time left; a repeat (count change) restarts it visibly.
   const remaining = useRef(ALERT_EXPIRY_MS)
+  const runningSince = useRef(0)
   useEffect(() => { remaining.current = ALERT_EXPIRY_MS }, [alert.count])
   useEffect(() => {
     if (held || alert.leaving) return
-    const started = Date.now()
+    runningSince.current = Date.now()
     const timer = window.setTimeout(() => onDismiss(alert.id), remaining.current)
     return () => {
       window.clearTimeout(timer)
-      remaining.current = Math.max(0, remaining.current - (Date.now() - started))
+      remaining.current = Math.max(0, remaining.current - (Date.now() - runningSince.current))
+      runningSince.current = 0
     }
   }, [held, alert.leaving, alert.count, alert.id, onDismiss])
+  // display:none cancels the fill's CSS animation, so revealing a collapsed notice replays it from full while its timer
+  // kept running; seek the fill to the time already used.
+  useLayoutEffect(() => {
+    if (collapsed || !runningSince.current) return
+    const fill = ref.current?.querySelector('.uam-transient-alert__countdown')?.getAnimations?.()[0]
+    if (fill) fill.currentTime = ALERT_EXPIRY_MS - remaining.current + Date.now() - runningSince.current
+  }, [collapsed])
   // A focused control is about to unmount; hand focus to the bell rather than dropping it to the document.
   const finish = (run: () => void) => {
     const hadFocus = ref.current?.contains(document.activeElement)
@@ -126,8 +138,8 @@ function TransientAlertItem({ alert, visible, collapsed, hovered, onHover, onAct
   return <div className="uam-transient-alert-slot" data-alert-id={alert.id} data-state={alert.leaving ? 'closed' : 'open'} hidden={collapsed}>
     <div ref={ref} data-testid="transient-alert-item" data-state={alert.leaving ? 'closed' : 'open'} data-held={held || undefined}
       onMouseEnter={() => onHover(alert.id, true)} onMouseLeave={() => onHover(alert.id, false)}
-      onFocus={() => setFocused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false) }}
-      onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); finish(() => onDismiss(alert.id)) } }}
+      onFocus={(event) => setFocused(event.target.matches(':focus-visible'))} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false) }}
+      onKeyDown={(event) => { if (!event.metaKey && !event.ctrlKey) setFocused(true); if (event.key === 'Escape') { event.stopPropagation(); finish(() => onDismiss(alert.id)) } }}
       className="uam-transient-alert relative flex items-center gap-2 rounded-md py-1 pl-3 pr-1 text-xs"
       style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}>
       <span tabIndex={0} role="region" aria-label="Notification message" className="min-w-0 flex-1" style={{ outlineOffset: 'var(--focus-inset)', overflowWrap: 'anywhere', whiteSpace: 'pre-line', userSelect: 'text', WebkitUserSelect: 'text', overflowY: 'auto', maxHeight: messageMaxHeight, color: alert.tone === 'error' ? 'var(--error)' : 'var(--text)' }}>
