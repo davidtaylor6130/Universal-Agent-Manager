@@ -225,6 +225,93 @@ UAM_TEST(ManagedSnapshotIgnoresEmptyAncestorGitDirectory)
 	UAM_ASSERT(blocked.message.find("Source Git metadata could not be verified") != std::string::npos);
 }
 
+UAM_TEST(ManagedSnapshotClassificationKeepsGitPrecedenceAndStrictMarkers)
+{
+	TempDir temp("uam-snapshot-classification");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.git_snapshot_svn = false;
+	app.settings.git_snapshot_plain_folders = false;
+	const auto reason = [&](const fs::path& source)
+	{
+		fs::create_directories(source);
+		ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+		chat.workspace_directory = source.string();
+		return uam::ManagedSnapshotDisabledReason(app, chat);
+	};
+	const std::string svn = "Managed Git snapshots for SVN workspaces are disabled in VCS settings.";
+	const std::string plain = "Managed Git snapshots for plain folders are disabled in VCS settings.";
+
+	// Git classification returns no reason. A nearer .svn must not hide an enclosing Git repository.
+	fs::create_directories(temp.root / "git" / ".git");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "git" / ".git" / "HEAD", "ref: refs/heads/main\n"));
+	fs::create_directories(temp.root / "git" / "checkout" / ".svn");
+	UAM_ASSERT_EQ(reason(temp.root / "git" / "checkout"), std::string{});
+
+	// Bare repositories count as Git through each accepted marker combination.
+	fs::create_directories(temp.root / "bare" / "objects");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "bare" / "HEAD", "ref: refs/heads/main\n"));
+	UAM_ASSERT_EQ(reason(temp.root / "bare" / "src"), std::string{});
+	fs::create_directories(temp.root / "bare-refs" / "refs");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "bare-refs" / "HEAD", "ref: refs/heads/main\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "bare-refs" / "config", "[core]\n"));
+	UAM_ASSERT_EQ(reason(temp.root / "bare-refs" / "src"), std::string{});
+	fs::create_directories(temp.root / "bare-objects" / "objects");
+	fs::create_directories(temp.root / "bare-objects" / "refs");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "bare-objects" / "config", "[core]\n"));
+	UAM_ASSERT_EQ(reason(temp.root / "bare-objects" / "src"), std::string{});
+	fs::create_directories(temp.root / "head-only");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "head-only" / "HEAD", "not a repository\n"));
+	UAM_ASSERT_EQ(reason(temp.root / "head-only" / "src"), plain);
+
+	// An empty .git is ignored, so the walk keeps looking and reports what lies above it.
+	fs::create_directories(temp.root / "empty-git" / ".git");
+	UAM_ASSERT_EQ(reason(temp.root / "empty-git" / "src"), plain);
+	fs::create_directories(temp.root / "svn-above-empty" / ".svn");
+	fs::create_directories(temp.root / "svn-above-empty" / "checkout" / ".git");
+	UAM_ASSERT_EQ(reason(temp.root / "svn-above-empty" / "checkout"), svn);
+
+	fs::create_directories(temp.root / "svn" / ".svn");
+	UAM_ASSERT_EQ(reason(temp.root / "svn" / "deep" / "child"), svn);
+	UAM_ASSERT_EQ(reason(temp.root / "plain" / "child"), plain);
+
+#if !defined(_WIN32)
+	// Markers are not followed, so a dangling link still counts rather than falling through to a plain folder.
+	fs::create_directories(temp.root / "dangling-git");
+	fs::create_symlink(temp.root / "missing-git-target", temp.root / "dangling-git" / ".git");
+	UAM_ASSERT_EQ(reason(temp.root / "dangling-git" / "src"), std::string{});
+	fs::create_directories(temp.root / "dangling-svn");
+	fs::create_symlink(temp.root / "missing-svn-target", temp.root / "dangling-svn" / ".svn");
+	UAM_ASSERT_EQ(reason(temp.root / "dangling-svn" / "src"), svn);
+	if (::geteuid() != 0)
+	{
+		// An unreadable marker stays Unknown, so it is neither a plain folder nor reported as Git metadata.
+		const fs::path locked = temp.root / "locked";
+		fs::create_directories(locked);
+		fs::permissions(locked, fs::perms::none);
+		const std::string locked_reason = reason(locked);
+		ChatSession locked_chat = ChatDomainService().CreateNewChat("", "codex-cli");
+		locked_chat.workspace_directory = locked.string();
+		const std::string locked_message = uam::GitWorktreeService().CreateForChat(app, locked_chat).message;
+		fs::permissions(locked, fs::perms::owner_all);
+		UAM_ASSERT_EQ(locked_reason, std::string{});
+		UAM_ASSERT(locked_message.find("Source workspace is not an available directory") != std::string::npos);
+
+		// An existing .git that cannot be listed still counts as Git and keeps strict validation.
+		const fs::path unreadable_git = temp.root / "unreadable-git";
+		fs::create_directories(unreadable_git / ".git");
+		fs::permissions(unreadable_git / ".git", fs::perms::none);
+		const std::string unreadable_reason = reason(unreadable_git);
+		ChatSession unreadable_chat = ChatDomainService().CreateNewChat("", "codex-cli");
+		unreadable_chat.workspace_directory = unreadable_git.string();
+		const std::string unreadable_message = uam::GitWorktreeService().CreateForChat(app, unreadable_chat).message;
+		fs::permissions(unreadable_git / ".git", fs::perms::owner_all);
+		UAM_ASSERT_EQ(unreadable_reason, std::string{});
+		UAM_ASSERT(unreadable_message.find("Source Git metadata could not be verified") != std::string::npos);
+	}
+#endif
+}
+
 UAM_TEST(ManagedSnapshotIndependentOptInAndRealGitRemainAvailable)
 {
 	const ScopedCleanSvnStatus clean_svn;

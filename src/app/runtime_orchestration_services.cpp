@@ -3866,29 +3866,26 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 	{
 		const fs::path location = uam::paths::NormalizeExistingPath(uam::ResolveImportedWorkspaceFolderDirectory(uam::paths::PathFromUtf8(folder.directory)));
 		// Include registered linked checkouts without parsing unrelated Claude project histories.
-		for (fs::path root = location; !root.empty(); root = root.parent_path())
+		// Only Git registers linked checkouts, so an SVN checkout on the way up does not end the lookup.
+		if (const uam::paths::NearestVcsRoot repository = uam::paths::FindNearestVcsRoot(location, uam::paths::VcsRootKinds::GitOnly); repository.git)
 		{
-			if (uam::paths::PathExistsNoThrow(root / ".git"))
+			const fs::path& root = repository.root;
+			std::error_code error;
+			const fs::path registrations = root / ".git" / "worktrees";
+			for (fs::directory_iterator it(registrations, error), end; !error && it != end; it.increment(error))
 			{
-				std::error_code error;
-				const fs::path registrations = root / ".git" / "worktrees";
-				for (fs::directory_iterator it(registrations, error), end; !error && it != end; it.increment(error))
+				std::string pointer;
+				if (!uam::io::TryReadTextFile(it->path() / "gitdir", pointer, 16384)) continue;
+				const fs::path relative = location.lexically_relative(root);
+				const fs::path linked_root = uam::paths::PathFromUtf8(uam::strings::Trim(pointer)).parent_path();
+				const fs::path linked = relative == "." ? linked_root : linked_root / relative;
+				if (uam::ImportedWorkspaceMatchesFolder(linked, uam::paths::PathFromUtf8(folder.directory)))
 				{
-					std::string pointer;
-					if (!uam::io::TryReadTextFile(it->path() / "gitdir", pointer, 16384)) continue;
-					const fs::path relative = location.lexically_relative(root);
-					const fs::path linked_root = uam::paths::PathFromUtf8(uam::strings::Trim(pointer)).parent_path();
-					const fs::path linked = relative == "." ? linked_root : linked_root / relative;
-					if (uam::ImportedWorkspaceMatchesFolder(linked, uam::paths::PathFromUtf8(folder.directory)))
-					{
-						project_names.insert(encode_project(uam::paths::Utf8PathString(linked.lexically_normal())));
-						const fs::path alias = uam::paths::PathFromUtf8(folder.directory) / linked.lexically_relative(location);
-						project_names.insert(encode_project(uam::paths::Utf8PathString(alias.lexically_normal())));
-					}
+					project_names.insert(encode_project(uam::paths::Utf8PathString(linked.lexically_normal())));
+					const fs::path alias = uam::paths::PathFromUtf8(folder.directory) / linked.lexically_relative(location);
+					project_names.insert(encode_project(uam::paths::Utf8PathString(alias.lexically_normal())));
 				}
-				break;
 			}
-			if (root == root.parent_path()) break;
 		}
 	}
 	fs::path project;

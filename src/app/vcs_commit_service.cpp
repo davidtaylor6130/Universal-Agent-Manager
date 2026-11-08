@@ -2111,17 +2111,9 @@ namespace uam
 			if (!host || host->runner_status != "ready" || host->runner_protocol_version < 3) return ChatBaselineReadiness::Unavailable;
 		}
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
-		if (uam::paths::IsControllerLocalWorkspace(chat))
-		{
-			std::filesystem::path ancestor = workspace;
-			while (!ancestor.empty() && !uam::paths::PathExistsNoThrow(ancestor / ".git"))
-			{
-				const std::filesystem::path parent = ancestor.parent_path();
-				if (parent == ancestor) return ChatBaselineReadiness::Unavailable;
-				ancestor = parent;
-			}
-			if (ancestor.empty()) return ChatBaselineReadiness::Unavailable;
-		}
+		// Baselines are Git-only, so an SVN checkout inside a Git repository still has one.
+		if (uam::paths::IsControllerLocalWorkspace(chat) && !uam::paths::FindNearestVcsRoot(workspace, uam::paths::VcsRootKinds::GitOnly).git)
+			return ChatBaselineReadiness::Unavailable;
 		auto found = app.repository_baseline_preparations.find(chat.id);
 		bool failed = false;
 		if (found != app.repository_baseline_preparations.end())

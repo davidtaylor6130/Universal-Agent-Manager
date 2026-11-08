@@ -322,41 +322,48 @@ namespace uam
 
 		enum class LocalSnapshotSource { Unknown, Git, Svn, Plain };
 
+		/// Stricter than the default probe: does not follow links, counts bare repositories, ignores empty .git folders,
+		/// and stops with an unknown result when a marker's status cannot be read, so such a source is never treated as plain.
+		paths::VcsMarkers ProbeSnapshotSourceMarkers(const std::filesystem::path& directory)
+		{
+			paths::VcsMarkers found;
+			bool markers[5]{};
+			std::filesystem::file_status git_status;
+			const char* names[] = {".git", "HEAD", "objects", "refs", "config"};
+			for (std::size_t index = 0; index < 5; ++index)
+			{
+				std::error_code error;
+				const std::filesystem::file_status status = std::filesystem::symlink_status(directory / names[index], error);
+				if (error && error != std::errc::no_such_file_or_directory) { found.stop = true; return found; }
+				markers[index] = std::filesystem::exists(status);
+				if (index == 0) git_status = status;
+			}
+			// An empty .git directory is not a repository to Git either, so it must not turn every folder below it
+			// into one. An unreadable one keeps strict Git validation and its metadata error.
+			if (markers[0] && std::filesystem::is_directory(git_status))
+			{
+				std::error_code error;
+				markers[0] = !std::filesystem::is_empty(directory / ".git", error) || error;
+			}
+			// Broken Git markers and bare repositories must retain normal Git validation.
+			if (markers[0] || (markers[1] && markers[2]) || ((markers[1] || markers[2]) && markers[3] && markers[4])) { found.git = true; return found; }
+			std::error_code error;
+			const std::filesystem::file_status status = std::filesystem::symlink_status(directory / ".svn", error);
+			if (error && error != std::errc::no_such_file_or_directory) { found.stop = true; return found; }
+			found.svn = std::filesystem::exists(status);
+			return found;
+		}
+
 		LocalSnapshotSource ClassifyLocalSnapshotSource(const std::filesystem::path& source)
 		{
 			std::error_code source_error;
 			const std::filesystem::path physical = std::filesystem::canonical(source, source_error);
 			if (source_error || !paths::IsDirectoryNoThrow(physical)) return LocalSnapshotSource::Unknown;
-			bool svn = false;
-			for (std::filesystem::path directory = physical; !directory.empty(); directory = directory.parent_path())
-			{
-				bool markers[5]{};
-				std::filesystem::file_status git_status;
-				const char* names[] = {".git", "HEAD", "objects", "refs", "config"};
-				for (std::size_t index = 0; index < 5; ++index)
-				{
-					std::error_code error;
-					const std::filesystem::file_status status = std::filesystem::symlink_status(directory / names[index], error);
-					if (error && error != std::errc::no_such_file_or_directory) return LocalSnapshotSource::Unknown;
-					markers[index] = std::filesystem::exists(status);
-					if (index == 0) git_status = status;
-				}
-				// An empty .git directory is not a repository to Git either, so it must not turn every folder below it
-				// into one. An unreadable one keeps strict Git validation and its metadata error.
-				if (markers[0] && std::filesystem::is_directory(git_status))
-				{
-					std::error_code error;
-					markers[0] = !std::filesystem::is_empty(directory / ".git", error) || error;
-				}
-				// Broken Git markers and bare repositories must retain normal Git validation.
-				if (markers[0] || (markers[1] && markers[2]) || ((markers[1] || markers[2]) && markers[3] && markers[4])) return LocalSnapshotSource::Git;
-				std::error_code error;
-				const std::filesystem::file_status status = std::filesystem::symlink_status(directory / ".svn", error);
-				if (error && error != std::errc::no_such_file_or_directory) return LocalSnapshotSource::Unknown;
-				svn = svn || std::filesystem::exists(status);
-				if (directory == directory.parent_path()) break;
-			}
-			return svn ? LocalSnapshotSource::Svn : LocalSnapshotSource::Plain;
+			// Any enclosing Git repository outranks an SVN marker nearer the source.
+			const paths::NearestVcsRoot nearest = paths::FindNearestVcsRoot(physical, paths::VcsRootKinds::GitOnly, &ProbeSnapshotSourceMarkers);
+			if (nearest.stop) return LocalSnapshotSource::Unknown;
+			if (nearest.git) return LocalSnapshotSource::Git;
+			return nearest.svn ? LocalSnapshotSource::Svn : LocalSnapshotSource::Plain;
 		}
 
 		std::filesystem::path WorktreeRootForChat(const AppState& app, const std::filesystem::path& source_root, const std::string& relative_name)

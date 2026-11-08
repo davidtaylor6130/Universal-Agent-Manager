@@ -325,22 +325,48 @@ namespace uam::paths
 		return ec || relative.empty() ? std::nullopt : std::optional<std::filesystem::path>{relative};
 	}
 
-	struct NearestVcsRoot
+	struct VcsMarkers
 	{
-		std::filesystem::path root;
 		bool git = false;
 		bool svn = false;
+		/// Set by a probe to end the walk early, for example on an unreadable marker. The root stays empty.
+		bool stop = false;
 	};
 
-	/// The nearest directory holding a .git or .svn marker owns the path, so Git nested in an SVN checkout is Git.
-	inline NearestVcsRoot FindNearestVcsRoot(const std::filesystem::path& start)
+	struct NearestVcsRoot : VcsMarkers
 	{
+		std::filesystem::path root;
+	};
+
+	/// GitOrSvn ends the walk at the first .git or .svn. GitOnly ends it only at Git, passing through SVN checkouts;
+	/// the result's svn flag then reports whether any SVN marker was passed on the way.
+	enum class VcsRootKinds { GitOrSvn, GitOnly };
+
+	inline VcsMarkers ProbeVcsMarkers(const std::filesystem::path& directory)
+	{
+		return {PathExistsNoThrow(directory / ".git"), PathExistsNoThrow(directory / ".svn")};
+	}
+
+	/// The nearest directory holding a marker of the requested kinds owns the path, so by default Git nested in an SVN
+	/// checkout is Git. A custom probe decides what one directory reports, for callers with stricter rules or their own early stop.
+	template <typename Probe = decltype(&ProbeVcsMarkers)>
+	inline NearestVcsRoot FindNearestVcsRoot(const std::filesystem::path& start, VcsRootKinds kinds = VcsRootKinds::GitOrSvn, Probe probe = &ProbeVcsMarkers)
+	{
+		NearestVcsRoot result;
 		for (std::filesystem::path directory = start; !directory.empty(); directory = directory.parent_path())
 		{
-			NearestVcsRoot found{directory, PathExistsNoThrow(directory / ".git"), PathExistsNoThrow(directory / ".svn")};
-			if (found.git || found.svn) return found;
+			const VcsMarkers seen = probe(directory);
+			result.git = seen.git;
+			result.svn = result.svn || seen.svn;
+			result.stop = seen.stop;
+			if (seen.stop) return result;
+			if (seen.git || (seen.svn && kinds == VcsRootKinds::GitOrSvn))
+			{
+				result.root = directory;
+				return result;
+			}
 			if (directory == directory.parent_path()) break;
 		}
-		return {};
+		return result;
 	}
 } // namespace uam::paths
