@@ -130,7 +130,7 @@ The provider implementation work preserves all six providers and excludes accoun
 
 | Remaining boundary | Decision required |
 |---|---|
-| Antigravity stream input accepts text but lacks image and interactive permission callbacks | Keep explicit CLI limits or investigate the separate SDK while proving native authentication, session and Terminal View continuity. |
+| Antigravity stream input lacks interactive permission callbacks (images now use [workspace paths](providers/attachments.md#antigravity-images)) | Keep explicit CLI limits or investigate the separate SDK while proving native authentication, session and Terminal View continuity. |
 | Antigravity legacy Accept Edits approval with an Off tier differs from common effective-mode checks | Retain the explicit legacy launch behavior while checking native reported-mode and resume matching; decide a canonical migration without widening captured Plan/read-only restrictions. |
 | Gemini and Antigravity structured manual compaction lack a safe exposed control | Retain native automatic/TUI controls or design an agreed UAM equivalent without sending command text as an ordinary model prompt. |
 | Native media delivery and portable acceptance remain incomplete | Guarded local Gemini import/refresh, owned previews and portable originals have local routes, and selected-row Retry supports local Claude/Codex originals, conditional Copilot vision blobs and conditional ordinary OpenCode ACP images; remaining callers/providers, pre-batch cleanup and live/platform acceptance stay open without granting path or fetch authority from metadata. |

@@ -35,7 +35,7 @@ bool PrepareCliProviderHandoffAsync(AppState& app, CliTerminalState& terminal, C
 /// <summary>Removes only owned context files after runtime shutdown; false keeps deletion retryable.</summary>
 bool RemoveCliProviderHandoff(AppState& app, const ChatSession& chat, std::string& error, std::stop_token stop_token = {});
 /// <summary>Durably stages cleanup independently of chat deletion and retries it outside the UI thread.</summary>
-bool StageCliProviderContextCleanup(AppState& app, const ChatSession& chat);
+bool StageCliProviderContextCleanup(AppState& app, const ChatSession& chat, const std::vector<ChatSession>& survivors);
 void RetryCliProviderContextCleanup(AppState& app, double now_s);
 void RepairCliTerminalIdentityForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const ProviderProfile& provider);
 CliTerminalState& EnsureCliTerminalForChat(AppState& app, const ChatSession& chat);

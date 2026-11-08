@@ -15950,6 +15950,123 @@ UAM_TEST(ClaudePromptReadsImagesFromEffectiveWorkspace)
 #endif
 }
 
+UAM_TEST(AntigravityTurnChecksImagesOffThreadThenSendsTheirWorkspacePaths)
+{
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI && !defined(_WIN32)
+	const auto turn = [](const std::optional<std::string>& bytes, std::string& wire, bool first_worktree_send = false, const std::string& worktree_copy_blocker = {})
+	{
+		wire.clear();
+		TempDir temp("uam-antigravity-image-turn");
+		const fs::path workspace = temp.root / "active";
+		const std::string relative = ".UAM/attachments/antigravity-images/1-0-a.png";
+		const fs::path source = temp.root / "source";
+		fs::create_directories((first_worktree_send ? source : workspace) / ".UAM/attachments/antigravity-images");
+		fs::create_directories(workspace);
+		if (bytes) UAM_ASSERT(uam::io::WriteBinaryFile((first_worktree_send ? source : workspace) / relative, *bytes));
+		if (!worktree_copy_blocker.empty()) UAM_ASSERT(uam::io::WriteTextFile(workspace / worktree_copy_blocker, "file where a folder is needed"));
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatFolder folder;
+		folder.id = "folder";
+		folder.directory = workspace.string();
+		app.folders.push_back(folder);
+		ChatSession chat;
+		chat.id = "antigravity-images";
+		chat.provider_id = uam::provider_ids::kAntigravityCli;
+		chat.folder_id = folder.id;
+		if (first_worktree_send)
+		{
+			chat.workspace_directory = source.string();
+			chat.workspace_source_directory = temp.root.string(); // The Git top level, above the workspace.
+			chat.workspace_isolation_kind = "gitWorktree";
+			chat.workspace_worktree_directory = workspace.string();
+		}
+		Message user;
+		user.role = MessageRole::User;
+		MessageAttachment image;
+		image.name = "a.png";
+		image.kind = "image";
+		image.mime_type = "image/png";
+		image.path = relative;
+		user.attachments.push_back(image);
+		chat.messages.push_back(user);
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "antigravity-stream-json";
+		session.session_ready = true;
+		session.processing = true;
+		session.turn_first_user_message_index = 0;
+		session.turn_user_message_index = 0;
+		session.queued_prompt = "Describe image";
+		const fs::path wire_path = temp.root / "wire.txt";
+		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+		std::string error;
+		UAM_ASSERT(process.StartStdioProcess(session, workspace, {"/bin/sh", "-c", "cat > \"$0\"", wire_path.string()}, &error));
+		session.running = true;
+		bool sent = uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+		UAM_ASSERT(!sent);
+		UAM_ASSERT_EQ(app.claude_input_tasks.size(), std::size_t{1});
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!sent && std::chrono::steady_clock::now() < deadline)
+		{
+			std::this_thread::yield();
+			sent = uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+		}
+		UAM_ASSERT(sent);
+		const std::string turn_error = session.last_error;
+		while (turn_error.empty() && wire.empty() && std::chrono::steady_clock::now() < deadline)
+		{
+			std::this_thread::yield();
+			(void)uam::io::TryReadTextFile(wire_path, wire);
+		}
+		if (!turn_error.empty())
+		{
+			// End of input lets cat flush anything a refused turn wrongly wrote.
+			process.CloseStdioProcessInput(session);
+			while (!process.PollStdioProcessExited(session) && std::chrono::steady_clock::now() < deadline)
+				std::this_thread::yield();
+		}
+		process.StopStdioProcess(session, true);
+		process.CloseStdioProcessHandles(session);
+		(void)uam::io::TryReadTextFile(wire_path, wire);
+		if (turn_error.empty())
+		{
+			UAM_ASSERT(wire.find(relative + "\\\"") != std::string::npos);
+			UAM_ASSERT(wire.find((workspace / relative).string()) != std::string::npos);
+			UAM_ASSERT(fs::exists(workspace / relative));
+		}
+		return turn_error;
+	};
+
+	std::string wire;
+	std::string actual_png;
+	UAM_ASSERT(uam::base64::Decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", actual_png));
+	UAM_ASSERT(turn(actual_png, wire).empty());
+	UAM_ASSERT(wire.find("Describe image") != std::string::npos);
+	UAM_ASSERT(wire.find("file viewing tool") != std::string::npos);
+
+	UAM_ASSERT(turn(actual_png, wire, true).empty());
+	UAM_ASSERT(wire.find("Describe image") != std::string::npos);
+
+	const std::string blocked_copy = turn(actual_png, wire, true, ".UAM");
+	UAM_ASSERT(blocked_copy.find("Could not copy the attached image into this chat's worktree: a.png") != std::string::npos);
+	UAM_ASSERT(wire.empty());
+
+	const std::string missing_from_both = turn(std::nullopt, wire, true);
+	UAM_ASSERT(missing_from_both.find("Could not read attached image: a.png") != std::string::npos);
+	UAM_ASSERT(wire.empty());
+
+	const std::string missing = turn(std::nullopt, wire);
+	UAM_ASSERT(missing.find("Could not read attached image: a.png") != std::string::npos);
+	UAM_ASSERT(wire.empty());
+
+	const std::string unsupported = turn(std::string("not an image"), wire);
+	UAM_ASSERT(unsupported.find("Unsupported image") != std::string::npos);
+	UAM_ASSERT(wire.empty());
+#endif
+}
+
 UAM_TEST(CentralSetupQueuesNativeAgentInstructionsForAllProvidersAndSsh)
 {
 	TempDir temp("uam-central-agent-queue");

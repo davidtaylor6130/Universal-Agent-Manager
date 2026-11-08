@@ -19,6 +19,7 @@
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
+#include "common/utils/range_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/env_utils.h"
@@ -33,6 +34,7 @@
 #include <nlohmann/json.hpp>
 
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <string>
@@ -366,16 +368,88 @@ bool RemoveCliProviderHandoff(AppState& app, const ChatSession& chat, std::strin
 	return true;
 }
 
-bool StageCliProviderContextCleanup(AppState& app, const ChatSession& chat)
+static bool IsLocalHostId(const std::string& host_id)
 {
-	if (chat.provider_handoff_cli_contexts.empty()) return true;
-	if (AcpStopInProgress(app, chat.id)) return false;
-	if (const CliTerminalState* terminal = FindCliTerminalForChat(app, chat.id); terminal != nullptr && terminal->running) return false;
+	return host_id.empty() || host_id == uam::execution_hosts::kLocalHostId;
+}
+
+// Staged copies live at <workspace>/.UAM/attachments/<chat id>/<file>. A branch inherits its
+// parent's paths, so any such copy stays while a surviving chat still references it.
+static std::vector<std::string> AttachmentCopiesToRemove(const AppState& app, const ChatSession& chat, const std::vector<ChatSession>& survivors)
+{
+	std::vector<std::string> copies;
+	const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+	if (!IsLocalHostId(chat.execution_host_id) && host == nullptr) return copies;
+	constexpr std::string_view root = ".UAM/attachments/";
+	const std::string workspace = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat));
+	if (workspace.empty()) return copies;
+	for (const std::string& linked : chat.linked_files)
+	{
+		std::string portable = linked;
+		std::ranges::replace(portable, '\\', '/');
+		const std::size_t folder_end = portable.find('/', root.size());
+		if (!portable.starts_with(root) || folder_end == std::string::npos || portable.find('/', folder_end + 1) != std::string::npos ||
+		    portable.find("/../") != std::string::npos || portable.ends_with("/..")) continue;
+		const auto references = [&](const ChatSession& other) { return other.id != chat.id && uam::ranges::Contains(other.linked_files, linked); };
+		if (std::ranges::any_of(survivors, references) || std::ranges::any_of(app.excluded_provider_chats, references)) continue;
+		// An image attached before the first send also has its original copy in the source checkout.
+		for (const std::string& root : {workspace, uam::paths::PreIsolationWorkspaceDirectory(app, chat)})
+			if (!root.empty())
+				copies.push_back(IsLocalHostId(chat.execution_host_id)
+				    ? uam::paths::Utf8PathString(uam::paths::PathFromUtf8(root) / uam::paths::PathFromUtf8(portable))
+				    : uam::execution_hosts::JoinRemotePath(host->platform, root, portable));
+	}
+	return copies;
+}
+
+bool StageCliProviderContextCleanup(AppState& app, const ChatSession& chat, const std::vector<ChatSession>& survivors)
+{
+	std::vector<std::string> copies = AttachmentCopiesToRemove(app, chat, survivors);
+	if (chat.provider_handoff_cli_contexts.empty() && copies.empty()) return true;
+	if (!chat.provider_handoff_cli_contexts.empty())
+	{
+		if (AcpStopInProgress(app, chat.id)) return false;
+		if (const CliTerminalState* terminal = FindCliTerminalForChat(app, chat.id); terminal != nullptr && terminal->running) return false;
+	}
 	ChatSession intent;
 	intent.id = chat.id;
 	intent.provider_id = chat.provider_id;
 	intent.provider_handoff_cli_contexts = chat.provider_handoff_cli_contexts;
+	intent.execution_host_id = chat.execution_host_id;
+	intent.linked_files = std::move(copies);
 	return ChatRepository::SaveChat(app.data_root / "runtime-context-cleanup", intent);
+}
+
+static bool RemoveAttachmentCopies(const AppState& app, const ChatSession& intent, std::string& error, std::stop_token stop_token)
+{
+	if (intent.linked_files.empty()) return true;
+	if (IsLocalHostId(intent.execution_host_id))
+	{
+		for (const std::string& copy : intent.linked_files)
+		{
+			const std::filesystem::path path = uam::paths::PathFromUtf8(copy);
+			std::error_code remove_error;
+			(void)uam::paths::RemoveFileNoThrow(path, &remove_error);
+			if (remove_error)
+				LogCliDiagnosticEvent(app, "provider_context_cleanup", "attachment_copy_left", nullptr, "chat_id=" + intent.id);
+			std::error_code ignored;
+			std::filesystem::remove(path.parent_path(), ignored); // Fails while other files remain.
+		}
+		return true;
+	}
+	// ponytail: a removed host, or a removal the reached host refuses, leaves the copy without a retry.
+	const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, intent.execution_host_id);
+	if (host == nullptr) return true;
+	uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, *host);
+	if (!client.Connect(&error, stop_token)) return false;
+	for (std::size_t index = 0; index < intent.linked_files.size(); ++index)
+	{
+		std::string remove_error;
+		if (client.RemoveFile("chat-delete-" + std::to_string(index), uam::paths::PathFromUtf8(intent.linked_files[index]), &remove_error)) continue;
+		if (!client.IsConnected()) { error = remove_error; return false; }
+		LogCliDiagnosticEvent(app, "provider_context_cleanup", "attachment_copy_left", nullptr, "chat_id=" + intent.id + ", " + remove_error);
+	}
+	return true;
 }
 
 void RetryCliProviderContextCleanup(AppState& app, double now_s)
@@ -405,7 +479,7 @@ void RetryCliProviderContextCleanup(AppState& app, double now_s)
 		    {
 			    if (stop.stop_requested()) break;
 			    std::string error;
-			    if (RemoveCliProviderHandoff(cleanup, intent, error, stop))
+			    if (RemoveCliProviderHandoff(cleanup, intent, error, stop) && RemoveAttachmentCopies(cleanup, intent, error, stop))
 			    {
 				    // The repository logs the delete outcome, including failure.
 				    (void)ChatRepository::DeleteChatStorageFiles(pending_root, intent.id, "context_cleanup_intent");

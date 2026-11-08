@@ -37,6 +37,8 @@ namespace uam::claude_input
 	/// owned-only mode cannot select the controller-local legacy path reader.
 	nlohmann::json BuildSavedImageRetry(const std::filesystem::path& data_root, const std::string& admitted_owner, const std::filesystem::path& workspace, const std::string& prompt, const std::vector<MessageAttachment>& attachments, std::string& error, std::stop_token cancel = {}, SavedImageSourcePolicy policy = SavedImageSourcePolicy::LocalCompatible, std::size_t max_wire_bytes = 4 * 1024 * 1024);
 	using ImageSourceReader = std::function<bool(const MessageAttachment&, std::string&, std::size_t, std::string&)>;
+	/// Checks that each image exists on its host and is a supported format, for providers that open the file themselves.
+	bool CheckImageFiles(const std::vector<MessageAttachment>& images, std::string& error, std::stop_token cancel, const ImageSourceReader& reader);
 	/// Same bounded image preparation, with bytes supplied by a host-owned local or SSH reader.
 	nlohmann::json BuildWithReader(const std::string& prompt, const std::vector<MessageAttachment>& images, std::string& error, bool prepare_delivery, std::stop_token cancel, const ImageSourceReader& reader, std::size_t max_wire_bytes = 4 * 1024 * 1024);
 } // namespace uam::claude_input
