@@ -32,6 +32,7 @@
 #include "shell_action_service.h"
 #include "theme_service.h"
 #include "uam_control_service.h"
+#include "cef/html_view_render_check.h"
 #include "memory_service.h"
 
 #include "common/constants/app_constants.h"
@@ -1010,6 +1011,12 @@ bool Application::InitializeCef(CefMainArgs main_args)
 		uam_cef_globals::g_client = client;
 	}
 
+	if (!m_managementNode)
+	{
+		settings.windowless_rendering_enabled = true;
+		m_app.html_view_render_checker = uam::cef::CreateHtmlViewRenderChecker();
+	}
+
 	if (!CefInitialize(main_args, settings, cef_app.get(), nullptr))
 	{
 		uam::diagnostics::Write("CefInitialize failed.");
@@ -1103,6 +1110,19 @@ void Application::Shutdown()
 
 	if (m_cefInitialized)
 	{
+		// UamControlService::Shutdown cancelled the checks; their hidden browsers must close before CefShutdown.
+		const auto render_check_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+		while (m_app.html_view_render_checker && !m_app.html_view_render_checker->Idle() && std::chrono::steady_clock::now() < render_check_deadline)
+		{
+			CefDoMessageLoopWork();
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		}
+		if (m_app.html_view_render_checker && !m_app.html_view_render_checker->Idle())
+		{
+			uam::diagnostics::Write("[HTML view check] A hidden browser did not close before shutdown.");
+			if (m_dataRootLock != nullptr) uam::diagnostics::StopFileLog(); // Writes are queued, and _Exit would drop this one.
+			std::_Exit(uam::platform::ApplicationRestartRequested() ? uam::platform::RequestedRestartExitCode() : m_exitCode);
+		}
 #if UAM_ENABLE_MOBILE_COMPANION
 		// Server destruction is asynchronous. Keep CEF alive until the owned worker
 		// has released its runtime, callback and browser references.

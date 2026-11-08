@@ -327,7 +327,13 @@ namespace
 		return frame != nullptr && uam::cef::ShouldBindUiBridge(frame->IsMain(), frame->GetURL().ToString(), trusted_ui_index_url);
 	}
 
+	CefRefPtr<CefSchemeHandlerFactory> g_uiSchemeHandlerFactory;
 } // namespace
+
+CefRefPtr<CefSchemeHandlerFactory> uam::cef::UiSchemeHandlerFactory()
+{
+	return g_uiSchemeHandlerFactory;
+}
 
 // Forward declaration — Application owns AppState and provides access to the browser ref.
 // We use a global pointer set by Application::InitializeCef().
@@ -415,8 +421,8 @@ void UamCefApp::OnContextInitialized()
 	const std::filesystem::path exe_dir = CefGetPath(PK_DIR_EXE, exe_dir_string)
 	                                          ? uam::paths::PathFromUtf8(exe_dir_string.ToString())
 	                                          : std::filesystem::path(".");
-	if (!CefRegisterSchemeHandlerFactory(
-	        "uam", "app", new UamUiSchemeHandlerFactory(uam::cef::ResolveTrustedUiRoot(exe_dir))))
+	g_uiSchemeHandlerFactory = new UamUiSchemeHandlerFactory(uam::cef::ResolveTrustedUiRoot(exe_dir));
+	if (!CefRegisterSchemeHandlerFactory("uam", "app", g_uiSchemeHandlerFactory))
 	{
 		FailStartup("Failed to register the bundled UAM UI scheme.");
 		return;

@@ -25,6 +25,7 @@
 #include "common/config/mcp_server_config.h"
 #include "common/chat/chat_repository.h"
 #include "common/chat/html_view.h"
+#include "common/chat/html_view_render_check.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
@@ -3436,6 +3437,184 @@ UAM_TEST(UiNavigationAllowsTheFrameHostOnlyInSubframesAndNeverOpensSubframeUrls)
 	}
 }
 
+UAM_TEST(HtmlViewProbeNavigationAllowsOnlyThePageHostInTheHiddenBrowser)
+{
+	using uam::cef::NavigationDecision;
+	const std::string probe(uam::cef::kHtmlViewProbeUrl);
+	const std::string frame_host(uam::cef::kHtmlViewFrameUrl);
+	const auto decide = [&](bool main, const std::string& url) { return uam::cef::DecideNavigation(main, url, probe); };
+	UAM_ASSERT(decide(true, probe) == NavigationDecision::Allow);
+	UAM_ASSERT(decide(false, frame_host) == NavigationDecision::Allow);
+	UAM_ASSERT(decide(true, frame_host) != NavigationDecision::Allow);
+	for (const std::string blocked : {std::string(uam::cef::kUamUiIndexUrl), probe + "/x", std::string("https://example.test/"), std::string("file:///etc/hosts"), std::string("about:blank"), std::string("data:text/html,x")})
+	{
+		UAM_ASSERT(decide(true, blocked) != NavigationDecision::Allow);
+		UAM_ASSERT(decide(false, blocked) != NavigationDecision::Allow);
+	}
+}
+
+namespace
+{
+	/// Stands in for the hidden browser: the test ends each check by hand.
+	struct RecordingRenderChecker final : uam::html_view::RenderChecker
+	{
+		struct Check { std::string owner; std::string html; uam::html_view::RenderCheckDone done; };
+		std::vector<Check> started;
+		std::vector<std::string> cancelled;
+		void Start(std::string owner, std::string html, uam::html_view::RenderCheckDone done) override { started.push_back({std::move(owner), std::move(html), std::move(done)}); }
+		void Cancel(std::string_view owner) override { cancelled.emplace_back(owner); }
+		bool Idle() const override { return started.empty(); }
+	};
+
+	struct HtmlViewControlFixture
+	{
+		TempDir temp{"uam-control-html-runtime"};
+		uam::AppState app;
+		uam::AcpSessionState* session = nullptr;
+		std::shared_ptr<RecordingRenderChecker> checker = std::make_shared<RecordingRenderChecker>();
+		std::string capability;
+		std::filesystem::path directory;
+
+		HtmlViewControlFixture()
+		{
+			app.data_root = temp.root;
+			ChatSession chat = ChatDomainService().CreateNewChat("", "claude-cli");
+			chat.id = "chat-html-runtime";
+			chat.uam_control_enabled = true;
+			chat.execution_host_id = "local";
+			Message user;
+			user.role = MessageRole::User;
+			user.content = "Chart the results.";
+			chat.messages.push_back(user);
+			app.chats.push_back(std::move(chat));
+			auto owned_session = std::make_unique<uam::AcpSessionState>();
+			owned_session->chat_id = "chat-html-runtime";
+			owned_session->provider_id = "claude-cli";
+			owned_session->running = true;
+			owned_session->processing = true;
+			owned_session->turn_user_message_index = 0;
+			session = owned_session.get();
+			app.acp_sessions.push_back(std::move(owned_session));
+			std::string error;
+			UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+			nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+			UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, *session, app.chats.front(), "session/new", setup, &error));
+			capability = app.uam_control_capabilities.front().id;
+			directory = app.uam_control_capabilities.front().directory;
+			app.html_view_render_checker = checker;
+		}
+
+		nlohmann::json Call(const std::string& id, const std::string& method, const std::string& html)
+		{
+			return uam::UamControlService::HandleRequestForTests(app, capability, {{"requestId", id}, {"method", method}, {"arguments", {{"title", "Results"}, {"html", html}}}}, uam::time::SystemEpochMillisecondsNow());
+		}
+
+		nlohmann::json Reply(const std::string& id) const
+		{
+			std::string text;
+			UAM_ASSERT(uam::io::TryReadTextFile(directory / "responses" / (id + ".json"), text));
+			return nlohmann::json::parse(text);
+		}
+	};
+}
+
+UAM_TEST(HtmlViewPublishReturnsThrownPageErrorsThroughTheToolResult)
+{
+	HtmlViewControlFixture fixture;
+	const std::string html = "<!doctype html><script>throw new Error('boom')</script>";
+	const nlohmann::json pending = fixture.Call("publish-error", "html_view_publish", html);
+	UAM_ASSERT(pending.value("pendingRenderCheck", false));
+	UAM_ASSERT_EQ(fixture.checker->started.size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.checker->started.front().owner, fixture.capability);
+	UAM_ASSERT_EQ(fixture.checker->started.front().html, html);
+	// The card is already saved while the check runs.
+	UAM_ASSERT_EQ(fixture.app.chats.front().messages.back().blocks.front().type, std::string("html_view"));
+	uam::html_view::RenderCheckResult check;
+	check.status = uam::html_view::RenderCheckStatus::Completed;
+	uam::html_view::AddRenderCheckError(check, "Uncaught Error: boom", 3);
+	fixture.checker->started.front().done(std::move(check));
+	const nlohmann::json reply = fixture.Reply("publish-error");
+	UAM_ASSERT(reply.value("ok", false));
+	UAM_ASSERT(reply["result"].value("published", false));
+	const nlohmann::json runtime = reply["result"]["runtimeCheck"];
+	UAM_ASSERT(runtime.value("completed", false));
+	UAM_ASSERT_EQ(runtime["errors"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(runtime["errors"][0].value("message", ""), std::string("Uncaught Error: boom"));
+	UAM_ASSERT_EQ(runtime["errors"][0].value("line", 0), 3);
+	UAM_ASSERT(runtime.value("summary", "").find("1 runtime error.") != std::string::npos);
+}
+
+UAM_TEST(HtmlViewPublishReportsNoErrorsForACleanPage)
+{
+	HtmlViewControlFixture fixture;
+	UAM_ASSERT(fixture.Call("publish-clean", "html_view_publish", "<!doctype html><p>ok</p>").value("pendingRenderCheck", false));
+	uam::html_view::RenderCheckResult check;
+	check.status = uam::html_view::RenderCheckStatus::Completed;
+	fixture.checker->started.front().done(std::move(check));
+	const nlohmann::json runtime = fixture.Reply("publish-clean")["result"]["runtimeCheck"];
+	UAM_ASSERT(runtime.value("completed", false));
+	UAM_ASSERT(runtime["errors"].empty());
+	UAM_ASSERT(runtime.value("summary", "").find("no runtime errors") != std::string::npos);
+}
+
+UAM_TEST(HtmlViewPublishSurvivesATimeoutAndSaysTheCheckDidNotComplete)
+{
+	HtmlViewControlFixture fixture;
+	UAM_ASSERT(fixture.Call("publish-hung", "html_view_publish", "<script>while(true){}</script>").value("pendingRenderCheck", false));
+	uam::html_view::RenderCheckResult check;
+	check.status = uam::html_view::RenderCheckStatus::TimedOut;
+	fixture.checker->started.front().done(std::move(check));
+	const nlohmann::json reply = fixture.Reply("publish-hung");
+	UAM_ASSERT(reply.value("ok", false));
+	UAM_ASSERT(reply["result"].value("published", false));
+	UAM_ASSERT_EQ(reply["result"]["runtimeCheck"].value("status", ""), std::string("timed_out"));
+	UAM_ASSERT(!reply["result"]["runtimeCheck"].value("completed", true));
+	UAM_ASSERT(reply["result"]["runtimeCheck"].value("summary", "").starts_with("The runtime check did not complete: the page did not finish within 5 seconds"));
+}
+
+UAM_TEST(HtmlViewPreviewChecksPublishablePagesAndSkipsRejectedOnes)
+{
+	HtmlViewControlFixture fixture;
+	UAM_ASSERT(fixture.Call("preview-good", "html_view_preview", "<p>x</p>").value("pendingRenderCheck", false));
+	const nlohmann::json rejected = fixture.Call("preview-bad", "html_view_preview", "   ");
+	UAM_ASSERT(rejected.value("ok", false));
+	UAM_ASSERT(!rejected["result"].value("publishable", true));
+	UAM_ASSERT(!rejected["result"].contains("runtimeCheck"));
+	UAM_ASSERT_EQ(fixture.checker->started.size(), std::size_t{1}); // A page that cannot be published is never rendered.
+	UAM_ASSERT_EQ(fixture.app.chats.front().messages.size(), std::size_t{1}); // Preview publishes nothing.
+}
+
+UAM_TEST(HtmlViewRenderChecksEndWithTheirTurnCapabilityAndTheApp)
+{
+	HtmlViewControlFixture fixture;
+	UAM_ASSERT(uam::UamControlService::DeclinePendingApprovalForSession(fixture.app, *fixture.session, "cancelled") == false);
+	UAM_ASSERT_EQ(fixture.checker->cancelled, std::vector<std::string>({fixture.capability}));
+	fixture.checker->cancelled.clear();
+	uam::UamControlService::RevokeForSession(fixture.app, *fixture.session);
+	UAM_ASSERT_EQ(fixture.checker->cancelled, std::vector<std::string>({fixture.capability}));
+	fixture.checker->cancelled.clear();
+	uam::UamControlService::Shutdown(fixture.app);
+	UAM_ASSERT_EQ(fixture.checker->cancelled, std::vector<std::string>({std::string()}));
+}
+
+UAM_TEST(HtmlViewRenderCheckReplyStaysInsideTheResponseLimit)
+{
+	uam::html_view::RenderCheckResult check;
+	check.status = uam::html_view::RenderCheckStatus::Completed;
+	// Worst case for JSON growth: quotes and control bytes, cut inside a multi-byte character.
+	const std::string hostile = std::string(uam::html_view::kMaxRenderCheckErrorBytes - 1, '"') + "\xE2\x82\xAC" + std::string(4096, '\x01');
+	for (int index = 0; index < 25; ++index) uam::html_view::AddRenderCheckError(check, hostile, index);
+	const nlohmann::json json = uam::html_view::RenderCheckJson(check);
+	UAM_ASSERT_EQ(json["errors"].size(), uam::html_view::kMaxRenderCheckErrors);
+	UAM_ASSERT_EQ(json.value("omittedErrors", std::size_t{0}), std::size_t{5});
+	UAM_ASSERT_EQ(json["errors"][0].value("message", "").size(), uam::html_view::kMaxRenderCheckErrorBytes - 1); // Never a partial character.
+	UAM_ASSERT(json.value("summary", "").find("25 runtime errors.") != std::string::npos);
+	UAM_ASSERT(json.dump().size() < 64U * 1024U); // A strict dump also throws on invalid UTF-8.
+	uam::html_view::RenderCheckResult controls;
+	uam::html_view::AddRenderCheckError(controls, std::string(100, '\x01') + "x\ny", 0);
+	UAM_ASSERT(uam::html_view::RenderCheckJson(controls)["errors"][0].value("message", "").find('\x01') == std::string::npos);
+}
+
 UAM_TEST(HtmlViewFrameHostIsIsolatedFromTheUiBridge)
 {
 	// The frame host gets a no-network policy; the app may frame only that host page.
@@ -3518,6 +3697,8 @@ UAM_TEST(HtmlViewPublishAddsAPersistentBlockToTheLiveTurn)
 
 	const nlohmann::json published = call("publish-1", "html_view_publish", {{"title", " Results "}, {"html", html}});
 	UAM_ASSERT(published.value("ok", false));
+	UAM_ASSERT(!published["result"]["runtimeCheck"].value("completed", true)); // No renderer here, and the publish still succeeds.
+	UAM_ASSERT(published["result"]["runtimeCheck"].value("summary", "").starts_with("The runtime check did not complete"));
 	const std::string view_id = published["result"].value("viewId", "");
 	UAM_ASSERT(view_id.starts_with("html-view:"));
 	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{2});

@@ -38,6 +38,7 @@ namespace uam
 {
 	namespace claude_preinput { class Observation; }
 	namespace acp_detail { struct ColdRetryBinding; }
+	namespace html_view { class RenderChecker; }
 
 	class StartupNativeImportService;
 	class StorageRetentionService;
@@ -1381,6 +1382,8 @@ namespace uam
 		std::unordered_map<std::string, std::shared_ptr<ManagedInitialRuntimeOwner>> managed_initial_runtime_owners;
 		bool managed_initial_shutdown = false;
 		std::vector<UamControlCapability> uam_control_capabilities;
+		/// Renders published HTML views to report their runtime errors. Null outside the desktop app.
+		std::shared_ptr<html_view::RenderChecker> html_view_render_checker;
 		/// A chat_create whose first prompt is sent after control requests finish; its reply and audit wait for that send.
 		struct UamChatCreateLaunch
 		{

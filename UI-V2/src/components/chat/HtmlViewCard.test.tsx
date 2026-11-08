@@ -29,6 +29,16 @@ afterEach(() => {
 })
 
 describe('HtmlViewCard isolation', () => {
+  it('hidden runtime check uses the same frame host and sandbox as the card, with no script of its own', () => {
+    const probe = new DOMParser().parseFromString(readFileSync(resolve(root, 'UI-V2/public/html-view-probe.html'), 'utf8'), 'text/html')
+    const frame = probe.querySelector('iframe')!
+    expect(frame.getAttribute('sandbox')).toBe(HTML_VIEW_SANDBOX)
+    expect(frame.getAttribute('src')).toBe('html-view-frame.html')
+    expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer')
+    expect(frame.style.height).toBe('360px') // The card's inline height, so the page sees the same viewport.
+    expect(probe.querySelectorAll('script, iframe:not([sandbox])')).toHaveLength(0)
+  })
+
   it('loads the frame host in an opaque-origin sandbox instead of srcdoc', () => {
     const { host, unmount } = mount(<HtmlViewCard title="Chart" html="<p>hi</p>" />)
     const frame = host.querySelector('iframe')!
