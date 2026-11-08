@@ -7192,7 +7192,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return true;
 	}
 
-	bool SetAcpSessionModel(AppState& app, const std::string& chat_id, const std::string& model_id, std::string* error_out, std::optional<std::string> previous_chat_model_id)
+	bool SetAcpSessionModel(AppState& app, const std::string& chat_id, std::string model_id, std::string* error_out, std::optional<std::string> previous_chat_model_id)
 	{
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
 		if (session == nullptr || !session->running)
@@ -7224,7 +7224,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		{
-			session->goal_turn_model_id.clear();
+			// A goal turn switching to its own model still needs it for relaunch, resume and prompt delivery.
+			if (session->goal_turn_model_id != model_id) session->goal_turn_model_id.clear();
 			const IProviderRuntime& sm_runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
 			const std::string previous_model_id = session->current_model_id;
 			session->current_model_id = model_id;
