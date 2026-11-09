@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/vcs/vcs_provider_declaration.h"
+
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -87,15 +89,7 @@ inline std::string Lower(std::string text)
 	return text;
 }
 
-struct Options
-{
-	std::string_view short_switches;
-	std::string_view short_values;
-	std::string_view switches;
-	std::string_view values;
-	bool require_git_helper_suppression = false;
-	bool require_svn_internal_diff = false;
-};
+using Options = vcs::ReadOnlyCommandOptions;
 
 inline bool Arguments(const std::vector<std::string>& words, std::size_t first, const Options& allowed,
 	bool operands = true, bool powershell = false)
@@ -167,39 +161,17 @@ inline bool IsReadOnlyCommand(std::string_view command)
 	if (executable == "which") return Arguments(words, 1, {"as", "", "--all|--skip-alias|--skip-functions|--skip-dot|--skip-tilde|--show-dot|--show-tilde", ""});
 	if (executable == "where" || executable == "type") return Arguments(words, 1, {"", "", "", ""});
 	if (Lower(executable) == "get-content") return Arguments(words, 1, {"", "", "-raw|-force|-wait|-asbytestream", "-path|-literalpath|-totalcount|-tail|-encoding|-readcount|-delimiter"}, true, true);
-	if (executable == "svn")
+	for (const vcs::VcsProviderDeclaration* provider : vcs::kVcsProviderDeclarations)
 	{
-		// Only literal local-or-repository reads. Diffs must use the internal engine so no configured diff-cmd runs;
-		// --config-dir/--config-option and every write subcommand stay unrecognized.
-		if (words.size() < 2) return false;
-		const std::string& action = words[1];
-		constexpr std::string_view common = "--non-interactive|--quiet|--verbose|--xml|--incremental";
-		const auto with = [&](std::string_view switches, std::string_view values, bool internal_diff = false)
-		{
-			const std::string all = std::string(common) + (switches.empty() ? "" : "|") + std::string(switches);
-			Options options{"qvRu", "rcl", all, values};
-			options.require_svn_internal_diff = internal_diff;
-			return Arguments(words, 2, options);
-		};
-		if (Named("status|stat|st", action)) return with("--show-updates|--no-ignore|--ignore-externals", "--depth|--changelist|--cl");
-		if (action == "info") return with("--no-newline|--recursive|--include-externals", "--show-item|--depth|--revision|--changelist|--cl");
-		if (Named("log", action)) return with("--stop-on-copy|--use-merge-history|--with-all-revprops|--with-no-revprops", "--limit|--revision|--search|--search-and|--depth|--with-revprop");
-		if (Named("list|ls", action)) return with("--recursive|--include-externals|--human-readable", "--depth|--revision");
-		if (action == "cat") return with("--ignore-keywords", "--revision");
-		if (Named("blame|praise|annotate|ann", action)) return with("--use-merge-history|--force", "--revision");
-		if (Named("propget|pget|pg|proplist|plist|pl", action)) return with("--recursive|--revprop|--strict|--no-newline|--show-inherited-props", "--depth|--revision|--changelist|--cl");
-		if (Named("diff|di", action)) return with("--internal-diff|--summarize|--git|--ignore-properties|--properties-only|--show-copies-as-adds|--notice-ancestry|--patch-compatible|--force", "--revision|--change|--depth|--changelist|--cl|--old|--new", true);
+		if (executable != provider->executable) continue;
+		std::size_t subcommand = 1;
+		if (!provider->optional_leading_flag.empty() && subcommand < words.size() && words[subcommand] == provider->optional_leading_flag) ++subcommand;
+		if (subcommand == words.size()) return false;
+		const std::string& action = words[subcommand++];
+		for (const vcs::ReadOnlyCommand& rule : provider->read_only_commands)
+			if (Named(rule.actions, action)) return Arguments(words, subcommand, rule.options);
 		return false;
 	}
-	if (executable != "git") return false;
-
-	std::size_t subcommand = 1;
-	if (subcommand < words.size() && words[subcommand] == "--no-pager") ++subcommand;
-	if (subcommand == words.size()) return false;
-	const std::string& action = words[subcommand++];
-	if (action == "status") return Arguments(words, subcommand, {"bsz", "u", "--short|--branch|--show-stash|--porcelain|--porcelain=1|--porcelain=2|--long|--verbose|--ignored|--no-renames", "--untracked-files|--ignore-submodules|--column"});
-	if (action == "diff") return Arguments(words, subcommand, {"abcpRsuwz", "UGOS", "--stat|--numstat|--shortstat|--name-only|--name-status|--summary|--check|--quiet|--exit-code|--cached|--staged|--no-index|--no-ext-diff|--no-textconv|--no-color|--color=never|--color=auto|--color=always|--ignore-space-at-eol|--ignore-all-space|--ignore-space-change|--word-diff|--word-diff=plain|--word-diff=color|--word-diff=porcelain", "--unified|--diff-filter|--word-diff-regex|--relative", true});
-	if (action == "log" || action == "show") return Arguments(words, subcommand, {"abcgmprsuwz", "nUGOS", "--oneline|--stat|--numstat|--shortstat|--name-only|--name-status|--summary|--no-patch|--patch|--no-ext-diff|--no-textconv|--no-color|--color=never|--color=auto|--color=always|--all|--decorate|--no-decorate|--reverse|--first-parent|--merges|--no-merges|--date-order|--topo-order", "--max-count|--skip|--since|--until|--author|--committer|--grep|--format|--pretty|--date|--unified|--diff-filter", true});
 	return false;
 }
 }
