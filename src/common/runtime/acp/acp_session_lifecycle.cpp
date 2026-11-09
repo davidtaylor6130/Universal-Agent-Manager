@@ -2363,12 +2363,14 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			if (error_out) *error_out = session.last_error;
 			return false;
 		};
-		if (checked && prepared && !version.check_error.empty()) return fail_version(version.check_error);
+		// A local failed check was retried by this launch and then proceeds with the version unknown.
+		// Over SSH it usually means the host did not answer, so it stops here.
+		if (checked && prepared && remote && !version.check_error.empty()) return fail_version(version.check_error);
 		if (checked && version.check_error.empty() && version.installed_version.empty() && ProviderRuntimeRegistry::Resolve(provider).RequiresStructuredCliVersion(provider))
 			return fail_version("The CLI version check returned no usable protocol identity.");
 		if (checked && needs_option_version && version.check_error.empty() && !version.supported)
 			return fail_version("The installed CLI does not satisfy the native version manager's compatibility policy.");
-		if (checked && version.check_error.empty())
+		if (checked && (version.check_error.empty() || (prepared && !remote)))
 		{
 			std::erase(app.runtime_cli_version_check_queue, std::pair<std::string, std::string>{configuration_provider_id, execution_host->id});
 			if (prepared && prepared->version_only)
@@ -3230,7 +3232,14 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	{
 		session.last_error = uam::strings::NonEmptyOrFallback(
 		    setup_error, "The provider could not verify session setup. No task input was sent.");
-		return FailAcpSessionSetupWrite(app, session, chat, session.last_error);
+		const std::string rejection = session.last_error;
+		(void)FailAcpSessionSetupWrite(app, session, chat, rejection);
+		// Setup repeats every poll while the process runs, and a process that failed preflight cannot be used.
+		// Queued input is held, because a relaunch would start and be rejected again without counting as a failed reconnect.
+		// With no queue there is nothing to hold, and the failed message keeps its Retry.
+		if (session.queued_user_prompts.empty()) InvalidateAcpTransport(app, session, chat, rejection);
+		else HoldAcpTransportForExplicitRecovery(app, session, chat, rejection);
+		return false;
 	}
 
 	const int id = session.next_request_id++;

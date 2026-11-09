@@ -188,7 +188,9 @@ namespace uam
 			const std::string provider_id = provider_ids::CanonicalCliProviderLookupId(provider.id);
 			auto& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider_id, execution_host->id)];
 			const bool checked = version.checked && execution_hosts::SameConnection(version.execution_host, *execution_host);
-			if (checked && (!version.check_error.empty() || !version.supported))
+			// A local failed check proceeds with the version unknown and named thinking stays Default; a CLI View open does not retry it.
+			const bool local_check_failed = !version.check_error.empty() && execution_host->id == uam::execution_hosts::kLocalHostId;
+			if (checked && !local_check_failed && (!version.check_error.empty() || !version.supported))
 				return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, version.check_error.empty()
 				    ? "The installed CLI does not satisfy the native version manager's compatibility policy." : version.check_error);
 			if (!checked)

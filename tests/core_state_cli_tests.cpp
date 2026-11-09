@@ -1665,6 +1665,25 @@ UAM_TEST(ProviderRuntimeCompatibilityBlocksPendingAndKnownBadVersions)
 	}
 }
 
+UAM_TEST(ProviderRuntimeCompatibilitySeparatesFailedCheckFromMissingCli)
+{
+	for (const char* provider : {"copilot-cli", "opencode-cli"})
+	{
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(provider);
+		if (!runtime.IsEnabled()) continue;
+		uam::AppState app;
+		uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[provider];
+		state.checked = true;
+		state.message = "Could not check this CLI's version.";
+		UAM_ASSERT(!runtime.LocalCliCompatibilityError(app).empty()); // Confirmed missing: no check error recorded.
+		state.check_error = state.message;
+		UAM_ASSERT(runtime.LocalCliCompatibilityError(app).empty());
+		state.check_error.clear();
+		state.installed_version = "0.0.1";
+		UAM_ASSERT(runtime.LocalCliCompatibilityError(app).find("or newer") != std::string::npos);
+	}
+}
+
 UAM_TEST(RemoteCliUpdateReportsBlockingPidsWithoutTrustingRemoteText)
 {
 	const std::string probe = "[UAM CLI PATH] /usr/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n[UAM CLI RUNNING] 1\n";
