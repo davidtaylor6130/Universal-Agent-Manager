@@ -9119,6 +9119,14 @@ describe('ChatView', () => {
     expect(text.match(/Settled answer\./g)).toHaveLength(1)
   })
 
+  it('keeps a stale-anchored completed row holding more than the live turn text', () => {
+    const text = renderTurnAfterFollowUp({
+      processing: true, followUp: false, turnUserMessageIndex: -1, turnAssistantMessageIndex: -1,
+      assistantContent: 'OK, here is the longer imported answer.', turnEvents: [{ type: 'assistant_text', text: 'OK' }],
+    })
+    expect(text).toContain('OK, here is the longer imported answer.')
+  })
+
   it('keeps the recorded row and placeholder when the turn events no longer hold the row text', () => {
     const text = renderTurnAfterFollowUp({
       processing: true, assistantContent: 'Status update.',
