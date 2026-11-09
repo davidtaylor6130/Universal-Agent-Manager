@@ -87,6 +87,6 @@ namespace uam::vcs
 	inline constexpr VcsProviderDeclaration kGitProviderDeclaration{"git", "Git", "git", "--no-pager", kGitReadOnlyCommands, kGitCapabilities};
 	inline constexpr VcsProviderDeclaration kSvnProviderDeclaration{"svn", "SVN", "svn", "", kSvnReadOnlyCommands, kSvnCapabilities};
 
-	/// <summary>Every declared system. The first entry is the default for unknown or unavailable selections.</summary>
+	/// <summary>Every declared system, read by the literal command filter.</summary>
 	inline constexpr std::array<const VcsProviderDeclaration*, 2> kVcsProviderDeclarations = {&kGitProviderDeclaration, &kSvnProviderDeclaration};
 } // namespace uam::vcs
