@@ -26,10 +26,17 @@
 #include "remote/runner_service_posix.h"
 #include "injected_acp_input.h"
 
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <set>
 
 #if defined(__APPLE__)
 #include <sys/wait.h>
+#endif
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
 #endif
 
 using namespace uam_test;
@@ -56,8 +63,70 @@ namespace
 	}
 }
 
+// One provider child for the proxy cases, so macOS and Windows run the same program.
+std::optional<int> RunProxyProviderFixture(int argc, char** argv)
+{
+	if (argc < 3 || std::string_view(argv[1]) != "--uam-test-proxy-provider") return std::nullopt;
+#if defined(_WIN32)
+	(void)_setmode(_fileno(stdin), _O_BINARY);
+	(void)_setmode(_fileno(stdout), _O_BINARY);
+#endif
+	const std::string_view mode = argv[2];
+	if (mode == "exit") return std::atoi(argv[3]);
+	if (mode == "print")
+	{
+		for (int index = 3; index < argc; ++index)
+		{
+			std::fputs(argv[index], stdout);
+			std::fputc('\n', stdout);
+		}
+		return 0;
+	}
+	if (mode == "mark")
+	{
+		std::ofstream marker(argv[3], std::ios::binary | std::ios::app);
+		marker << 'x';
+		marker.close();
+		if (argc == 4) return 0;
+		while (std::fgetc(stdin) != EOF) {}
+		std::fputs(argv[4], stdout);
+		return 0;
+	}
+	if (mode == "cat")
+	{
+		for (int character = std::fgetc(stdin); character != EOF; character = std::fgetc(stdin))
+		{
+			std::fputc(character, stdout);
+			std::fflush(stdout);
+		}
+		return 0;
+	}
+	if (mode == "echo-lines")
+	{
+		std::string line;
+		for (int character = std::fgetc(stdin); character != EOF; character = std::fgetc(stdin))
+		{
+			if (character != '\n')
+			{
+				line.push_back(static_cast<char>(character));
+				continue;
+			}
+			std::fputs(argv[3], stdout);
+			std::fputs(line.c_str(), stdout);
+			std::fputc('\n', stdout);
+			std::fflush(stdout);
+			line.clear();
+		}
+		if (argc > 4) std::this_thread::sleep_for(std::chrono::seconds(std::atoi(argv[4])));
+		return 0;
+	}
+	return 64;
+}
+
 std::optional<int> RunRemoteCodexSetupFixture(int argc, char** argv)
 {
+	// Dispatched from here so a new proxy fixture needs no change to the shared test main.
+	if (const std::optional<int> result = RunProxyProviderFixture(argc, argv)) return result;
 	if (argc < 2 || std::string_view(argv[1]) != "--uam-test-codex-setup") return std::nullopt;
 	std::string line;
 	while (std::getline(std::cin, line)) std::cout << line << std::endl;
@@ -2733,119 +2802,232 @@ UAM_TEST(RemoteGitInitialCommitDoesNotRequireAnExistingIndexFile)
 	UAM_ASSERT(vcs.Status(app, chat, uam::VcsType::Git, true, "chat").error.empty());
 }
 
+#endif
+
+#if defined(__APPLE__) || defined(_WIN32)
+namespace
+{
+	// These loops end on success. Windows gets a longer bound for slow hosted runners; other platforms keep theirs.
+	constexpr int ProxyPollAttempts(int posix_attempts)
+	{
+#if defined(_WIN32)
+		(void)posix_attempts;
+		return 3000;
+#else
+		return posix_attempts;
+#endif
+	}
+
+	std::vector<std::string> ProxyProvider(std::initializer_list<std::string> arguments)
+	{
+		std::vector<std::string> command = {
+		    PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string(),
+		    "--uam-test-proxy-provider"};
+		command.insert(command.end(), arguments);
+		return command;
+	}
+
+	fs::path RunnerBesideTests()
+	{
+		const fs::path directory =
+		    PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().parent_path();
+#if defined(_WIN32)
+		return directory / "uam-runner.exe";
+#else
+		return directory / "uam-runner";
+#endif
+	}
+
+	// Puts a stand-in `ssh` first on PATH that opens the given runner bridge, and returns that PATH.
+	std::vector<std::pair<std::string, std::string>> InstallFakeSsh(
+	    const fs::path& directory, const fs::path& runner, const std::string& bridge_arguments)
+	{
+#if defined(_WIN32)
+		UAM_ASSERT(uam::io::WriteTextFile(
+		    directory / "ssh.cmd", "@\"" + runner.string() + "\" " + bridge_arguments + "\r\n"));
+		const char separator = ';';
+#else
+		const fs::path script = directory / "ssh";
+		UAM_ASSERT(uam::io::WriteTextFile(
+		    script, "#!/bin/sh\nexec \"" + runner.string() + "\" " + bridge_arguments + "\n"));
+		fs::permissions(script, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		const char separator = ':';
+#endif
+		return {{"PATH", directory.string() + separator + uam::env::GetNonEmptyString("PATH").value_or("")}};
+	}
+
+	// A private helper service reached through the stand-in `ssh`, as a controller reaches a saved host.
+	struct ProxyTestHost
+	{
+		struct ServiceProcess
+		{
+			uam::platform::StdioProcessPlatformFields fields;
+			~ServiceProcess()
+			{
+				auto& processes = PlatformServicesFactory::Instance().process_service;
+				processes.StopStdioProcess(fields, true);
+				processes.CloseStdioProcessHandles(fields);
+			}
+		};
+
+#if defined(_WIN32)
+		ScopedEnvVar service_namespace;
+#endif
+		fs::path root;
+		fs::path runner = RunnerBesideTests();
+		std::string version = std::string(uam::constants::kAppVersion).substr(1);
+		ServiceProcess service;
+		std::vector<std::string> bridge;
+		std::vector<std::pair<std::string, std::string>> environment;
+
+		explicit ProxyTestHost(const fs::path& directory)
+		    :
+#if defined(_WIN32)
+		      service_namespace("UAM_RUNNER_SERVICE_NAMESPACE", directory.string()),
+#endif
+		      root(directory)
+		{
+			auto& processes = PlatformServicesFactory::Instance().process_service;
+			std::string error;
+#if defined(_WIN32)
+			bridge = {runner.string(), "bridge"};
+			UAM_ASSERT(processes.StartStdioProcess(service.fields, root, {runner.string(), "serve"}, &error));
+			processes.CloseStdioProcessInput(service.fields);
+			environment = InstallFakeSsh(root, runner, "bridge");
+#else
+			const std::string socket = (root / "runner.sock").string();
+			bridge = {runner.string(), "bridge", "--socket", socket};
+			UAM_ASSERT(processes.StartStdioProcess(
+			    service.fields, root, {runner.string(), "serve", "--socket", socket}, &error));
+			environment = InstallFakeSsh(root, runner, "bridge --socket \"" + socket + "\"");
+#endif
+			bool ready = false;
+			for (int attempt = 0; attempt < 600 && !ready; ++attempt)
+			{
+				uam::remote::RunnerClient probe(processes, bridge, version);
+				ready = probe.Connect(&error);
+				if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			}
+			if (!ready) throw TestFailure("The private runner service did not start: " + error);
+		}
+
+		void StartProxy(uam::platform::StdioProcessPlatformFields& proxy, const std::string& spec,
+		                std::initializer_list<std::string> extra_arguments = {}) const
+		{
+			auto& processes = PlatformServicesFactory::Instance().process_service;
+			std::vector<std::string> argv = {runner.string(), "proxy", "--alias", "test-host",
+			                                 "--platform", "linux", "--version", version};
+			argv.insert(argv.end(), extra_arguments);
+			auto proxy_environment = environment;
+			proxy_environment.emplace_back(uam::remote::kRemoteProcessSpecEnvironment, spec);
+			std::string error;
+			UAM_ASSERT(processes.StartStdioProcess(proxy, root, argv, &error, proxy_environment));
+		}
+
+		// Runs one proxy to its exit, acknowledging output and the source exit as the app does.
+		int RunProxy(const std::string& spec, std::string& output) const
+		{
+			auto& processes = PlatformServicesFactory::Instance().process_service;
+			uam::platform::StdioProcessPlatformFields proxy;
+			StartProxy(proxy, spec);
+			std::string error;
+			std::array<char, 256> buffer{};
+			int exit_code = -1;
+			bool source_exit_acknowledged = false;
+			for (int attempt = 0; attempt < ProxyPollAttempts(500); ++attempt)
+			{
+				const std::ptrdiff_t count = processes.ReadStdioProcessStdout(
+				    proxy, buffer.data(), buffer.size(), &error);
+				if (count > 0) output.append(buffer.data(), static_cast<std::size_t>(count));
+				for (std::size_t marker = output.find(uam::remote::kRemoteOutputMarkerPrefix);
+				     marker != std::string::npos;
+				     marker = output.find(uam::remote::kRemoteOutputMarkerPrefix))
+				{
+					const std::size_t end = output.find('\n', marker);
+					if (end == std::string::npos) break;
+					const std::string ack = std::string(uam::remote::kRemoteOutputAckPrefix) +
+					    output.substr(marker + uam::remote::kRemoteOutputMarkerPrefix.size(),
+					                  end - marker - uam::remote::kRemoteOutputMarkerPrefix.size()) + "\n";
+					UAM_ASSERT(processes.WriteToStdioProcess(proxy, ack.data(), ack.size(), &error));
+					output.erase(marker, end - marker + 1);
+				}
+				const std::size_t source_exit = output.find(uam::remote::kRemoteSourceExitPrefix);
+				if (!source_exit_acknowledged && source_exit != std::string::npos)
+				{
+					const std::size_t end = output.find('\n', source_exit);
+					if (end != std::string::npos)
+					{
+						const std::string ack = std::string(uam::remote::kRemoteSourceExitAckPrefix) +
+						    output.substr(source_exit + uam::remote::kRemoteSourceExitPrefix.size(),
+						                  end - source_exit - uam::remote::kRemoteSourceExitPrefix.size()) + "\n";
+						UAM_ASSERT(processes.WriteToStdioProcess(proxy, ack.data(), ack.size(), &error));
+						source_exit_acknowledged = true;
+					}
+				}
+				if (processes.PollStdioProcessExited(proxy, &exit_code)) break;
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+			processes.CloseStdioProcessHandles(proxy);
+			return exit_code;
+		}
+	};
+
+	// Sends the stop line, then requires a clean exit and the helper's acknowledged outcome.
+	void AssertProxyStopAcknowledged(uam::platform::StdioProcessPlatformFields& proxy, const std::string& delivery_token)
+	{
+		auto& service = PlatformServicesFactory::Instance().process_service;
+		std::string error;
+		UAM_ASSERT(service.WriteToStdioProcess(
+		    proxy, uam::remote::kRemoteStopControlLine.data(),
+		    uam::remote::kRemoteStopControlLine.size(), &error));
+		int exit_code = -1;
+		for (int attempt = 0; attempt < ProxyPollAttempts(300) &&
+		     !service.PollStdioProcessExited(proxy, &exit_code); ++attempt)
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		std::array<char, 256> buffer{};
+		const std::ptrdiff_t read = service.ReadStdioProcessStdout(
+		    proxy, buffer.data(), buffer.size(), &error);
+		const std::ptrdiff_t diagnostic_read = service.ReadStdioProcessStderr(
+		    proxy, buffer.data(), buffer.size(), &error);
+		const std::string diagnostics = diagnostic_read > 0
+		    ? std::string(buffer.data(), static_cast<std::size_t>(diagnostic_read)) : std::string{};
+		service.CloseStdioProcessHandles(proxy);
+		if (exit_code != 0) throw TestFailure("Remote stop proxy exit=" + std::to_string(exit_code) +
+		    " stderr=" + diagnostics + " transport=" + error);
+		UAM_ASSERT(read <= 0);
+		// Only the outcomes the helper acknowledges count; a missing, unknown or failed one is not a stop.
+		const std::string outcome = std::string(uam::remote::kRemoteStopOutcomePrefix) + delivery_token + " ";
+		UAM_ASSERT(diagnostics.find(outcome + "graceful\n") != std::string::npos ||
+		           diagnostics.find(outcome + "forced\n") != std::string::npos);
+	}
+}
+
 UAM_TEST(RemoteRunnerProxyUsesTheConfiguredVersionAndAttachOnlyNeverStartsOrDuplicates)
 {
 	TempDir temp("uam-runner-proxy-reattach");
-	const fs::path runner =
-	    PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()
-	        .parent_path() / "uam-runner";
-	const fs::path socket = temp.root / "runner.sock";
-	const std::string configured_version =
-	    std::string(uam::constants::kAppVersion).substr(1);
+	const ProxyTestHost host(temp.root);
 	auto& process_service = PlatformServicesFactory::Instance().process_service;
-	uam::platform::StdioProcessPlatformFields runner_service;
 	std::string error;
-	UAM_ASSERT(process_service.StartStdioProcess(
-	    runner_service, temp.root,
-	    {runner.string(), "serve", "--socket", socket.string()}, &error));
-	struct ServiceGuard
-	{
-		uam::platform::StdioProcessPlatformFields& process;
-		~ServiceGuard()
-		{
-			PlatformServicesFactory::Instance().process_service.StopStdioProcess(process, true);
-			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(process);
-		}
-	} service_guard{runner_service};
-	for (int attempt = 0; attempt < 100 && !fs::exists(socket); ++attempt)
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	UAM_ASSERT(fs::exists(socket));
-
-	const fs::path fake_ssh = temp.root / "ssh";
-	UAM_ASSERT(uam::io::WriteTextFile(
-	    fake_ssh,
-	    "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge --socket \"$UAM_TEST_SOCKET\"\n"));
-	fs::permissions(fake_ssh, fs::perms::owner_read | fs::perms::owner_write |
-	                              fs::perms::owner_exec);
-	const std::string inherited_path =
-	    uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
-	const std::vector<std::pair<std::string, std::string>> proxy_environment = {
-	    {"PATH", temp.root.string() + ":" + inherited_path},
-	    {"UAM_TEST_RUNNER", runner.string()}, {"UAM_TEST_SOCKET", socket.string()}};
 	const auto run_proxy = [&](const std::string& spec, std::string& output)
-	{
-		uam::platform::StdioProcessPlatformFields proxy;
-		std::string error;
-		auto environment = proxy_environment;
-		environment.emplace_back(uam::remote::kRemoteProcessSpecEnvironment, spec);
-		UAM_ASSERT(process_service.StartStdioProcess(
-		    proxy, temp.root,
-		    {runner.string(), "proxy", "--alias", "test-host", "--platform", "linux",
-		     "--version", configured_version},
-		    &error, environment));
-		std::array<char, 256> buffer{};
-		int exit_code = -1;
-		bool source_exit_acknowledged = false;
-		for (int attempt = 0; attempt < 500; ++attempt)
-		{
-			const std::ptrdiff_t read = process_service.ReadStdioProcessStdout(
-			    proxy, buffer.data(), buffer.size(), &error);
-			if (read > 0) output.append(buffer.data(), static_cast<std::size_t>(read));
-			for (std::size_t marker = output.find(uam::remote::kRemoteOutputMarkerPrefix);
-			     marker != std::string::npos;
-			     marker = output.find(uam::remote::kRemoteOutputMarkerPrefix))
-			{
-				const std::size_t end = output.find('\n', marker);
-				if (end == std::string::npos) break;
-				const std::string ack = std::string(uam::remote::kRemoteOutputAckPrefix) +
-				    output.substr(marker + uam::remote::kRemoteOutputMarkerPrefix.size(),
-				                  end - marker - uam::remote::kRemoteOutputMarkerPrefix.size()) + "\n";
-				UAM_ASSERT(process_service.WriteToStdioProcess(
-				    proxy, ack.data(), ack.size(), &error));
-				output.erase(marker, end - marker + 1);
-			}
-			const std::size_t source_exit = output.find(uam::remote::kRemoteSourceExitPrefix);
-			if (!source_exit_acknowledged && source_exit != std::string::npos)
-			{
-				const std::size_t end = output.find('\n', source_exit);
-				if (end != std::string::npos)
-				{
-					const std::string ack = std::string(uam::remote::kRemoteSourceExitAckPrefix) +
-					    output.substr(source_exit + uam::remote::kRemoteSourceExitPrefix.size(),
-					                  end - source_exit - uam::remote::kRemoteSourceExitPrefix.size()) + "\n";
-					UAM_ASSERT(process_service.WriteToStdioProcess(
-					    proxy, ack.data(), ack.size(), &error));
-					source_exit_acknowledged = true;
-				}
-			}
-			if (process_service.PollStdioProcessExited(proxy, &exit_code)) break;
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
-		}
-		process_service.CloseStdioProcessHandles(proxy);
-		return exit_code;
-	};
+	{ return host.RunProxy(spec, output); };
 
 	const fs::path missing_marker = temp.root / "missing-started";
 	std::string output;
 	UAM_ASSERT_EQ(run_proxy(uam::remote::BuildProcessProxySpec(
 	                            "missing-session", temp.root,
-	                            {"/usr/bin/touch", missing_marker.string()}, {}, true),
+	                            ProxyProvider({"mark", missing_marker.string()}), {}, true),
 	                        output),
 	              70);
 	UAM_ASSERT(!fs::exists(missing_marker));
 
 	const fs::path starts = temp.root / "starts";
-	const std::vector<std::string> command = {
-	    "/bin/sh", "-c",
-	    "printf x >> '" + starts.string() + "'; cat >/dev/null; printf recovered"};
-	uam::remote::RunnerClient client(
-	    process_service, {runner.string(), "bridge", "--socket", socket.string()},
-	    configured_version);
+	const std::vector<std::string> command = ProxyProvider({"mark", starts.string(), "recovered"});
+	uam::remote::RunnerClient client(process_service, host.bridge, host.version);
 	UAM_ASSERT(client.Connect(&error));
 	const std::string existing_token = "existing-process-token";
 	UAM_ASSERT(client.StartProcess("existing-session", temp.root, command, {}, &error,
 	                               false, existing_token));
-	for (int attempt = 0; attempt < 100 && !fs::exists(starts); ++attempt)
+	for (int attempt = 0; attempt < ProxyPollAttempts(100) && !fs::exists(starts); ++attempt)
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	UAM_ASSERT(fs::exists(starts));
 	UAM_ASSERT(client.CloseProcessInput("existing-session", &error));
@@ -2870,14 +3052,13 @@ UAM_TEST(RemoteRunnerProxyUsesTheConfiguredVersionAndAttachOnlyNeverStartsOrDupl
 	    "\nrecovered"));
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(starts), std::string("x"));
 
-	const std::vector<std::string> rewind_command = {
-	    "/bin/sh", "-c", "printf 'batch-one\\nbatch-two\\n'"};
+	const std::vector<std::string> rewind_command = ProxyProvider({"print", "batch-one", "batch-two"});
 	UAM_ASSERT(client.Connect(&error));
 	const std::string rewind_token = "rewind-process-token";
 	UAM_ASSERT(client.StartProcess(
 	    "rewind-session", temp.root, rewind_command, {}, &error, false, rewind_token));
 	uam::remote::ProcessPollResult committed;
-	for (int attempt = 0; attempt < 100; ++attempt)
+	for (int attempt = 0; attempt < ProxyPollAttempts(100); ++attempt)
 	{
 		UAM_ASSERT(client.PollProcess("rewind-session", committed, &error));
 		if (!committed.standard_output.empty() && !committed.running) break;
@@ -2898,12 +3079,13 @@ UAM_TEST(RemoteRunnerProxyUsesTheConfiguredVersionAndAttachOnlyNeverStartsOrDupl
 	                        output),
 	              0);
 	const std::string expected_replayed_output = "batch-two\n";
-	if (output.find(expected_replayed_output) == std::string::npos ||
+	if (output.find("batch-one") != std::string::npos ||
+	    output.find(expected_replayed_output) == std::string::npos ||
 	    output.find(std::string(uam::remote::kRemoteSourceExitPrefix) +
 	                rewind_token + " 0\n") == std::string::npos)
 		throw TestFailure("Unexpected replayed proxy output: " + nlohmann::json(output).dump());
 
-	const std::vector<std::string> source_exit_command = {"/bin/sh", "-c", "exit 70"};
+	const std::vector<std::string> source_exit_command = ProxyProvider({"exit", "70"});
 	UAM_ASSERT(client.Connect(&error));
 	UAM_ASSERT(client.StartProcess(
 	    "source-exit-session", temp.root, source_exit_command, {}, &error, false,
@@ -2925,50 +3107,16 @@ UAM_TEST(RemoteRunnerProxyUsesTheConfiguredVersionAndAttachOnlyNeverStartsOrDupl
 UAM_TEST(RemoteRunnerProxyRelaysRealProviderStdioWithoutBlockingTheAppTransport)
 {
 	TempDir temp("uam-runner-proxy");
-	const fs::path runner =
-	    PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()
-	        .parent_path() / "uam-runner";
-	const fs::path socket = temp.root / "runner.sock";
+	const ProxyTestHost host(temp.root);
 	auto& service = PlatformServicesFactory::Instance().process_service;
-	uam::platform::StdioProcessPlatformFields runner_service;
 	std::string error;
-	UAM_ASSERT(service.StartStdioProcess(
-	    runner_service, temp.root,
-	    {runner.string(), "serve", "--socket", socket.string()}, &error));
-	struct ServiceGuard
-	{
-		uam::platform::StdioProcessPlatformFields& process;
-		~ServiceGuard()
-		{
-			PlatformServicesFactory::Instance().process_service.StopStdioProcess(process, true);
-			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(process);
-		}
-	} service_guard{runner_service};
-	for (int attempt = 0; attempt < 100 && !fs::exists(socket); ++attempt)
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	UAM_ASSERT(fs::exists(socket));
-
-	const fs::path fake_ssh = temp.root / "ssh";
-	UAM_ASSERT(uam::io::WriteTextFile(
-	    fake_ssh,
-	    "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge --socket \"$UAM_TEST_SOCKET\"\n"));
-	fs::permissions(fake_ssh, fs::perms::owner_read | fs::perms::owner_write |
-	                              fs::perms::owner_exec);
-	const std::string inherited_path =
-	    uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
-	const std::string runner_version = std::string(uam::constants::kAppVersion).substr(1);
 	const std::string delivery_token = "test-delivery-token";
 	const std::string spec = uam::remote::BuildProcessProxySpec(
 	    "acp-proxy-test", temp.root,
-	    {"/bin/sh", "-c", "while IFS= read -r line; do printf 'reply:%s\\n' \"$line\"; done"},
+	    ProxyProvider({"echo-lines", "reply:"}),
 	    {}, false, delivery_token);
 	uam::platform::StdioProcessPlatformFields proxy;
-	UAM_ASSERT(service.StartStdioProcess(
-	    proxy, temp.root, {runner.string(), "proxy", "--alias", "test-host",
-	                       "--platform", "linux", "--version", runner_version}, &error,
-	    {{uam::remote::kRemoteProcessSpecEnvironment, spec},
-	     {"PATH", temp.root.string() + ":" + inherited_path},
-	     {"UAM_TEST_RUNNER", runner.string()}, {"UAM_TEST_SOCKET", socket.string()}}));
+	host.StartProxy(proxy, spec);
 
 	std::string output;
 	std::array<char, 256> buffer{};
@@ -2995,7 +3143,7 @@ UAM_TEST(RemoteRunnerProxyRelaysRealProviderStdioWithoutBlockingTheAppTransport)
 		const std::string input = "line-" + std::to_string(message) + "\n";
 		UAM_ASSERT(service.WriteToStdioProcess(proxy, input.data(), input.size(), &error));
 		const std::string expected = "reply:line-" + std::to_string(message) + "\n";
-		for (int attempt = 0; attempt < 300 && output.find(expected) == std::string::npos;
+		for (int attempt = 0; attempt < ProxyPollAttempts(300) && output.find(expected) == std::string::npos;
 		     ++attempt)
 		{
 			const std::ptrdiff_t read = service.ReadStdioProcessStdout(
@@ -3022,7 +3170,7 @@ UAM_TEST(RemoteRunnerProxyRelaysRealProviderStdioWithoutBlockingTheAppTransport)
 	service.CloseStdioProcessInput(proxy);
 
 	int exit_code = -1;
-	for (int attempt = 0; attempt < 500; ++attempt)
+	for (int attempt = 0; attempt < ProxyPollAttempts(500); ++attempt)
 	{
 		const std::ptrdiff_t read = service.ReadStdioProcessStdout(
 		    proxy, buffer.data(), buffer.size(), &error);
@@ -3039,8 +3187,7 @@ UAM_TEST(RemoteRunnerProxyRelaysRealProviderStdioWithoutBlockingTheAppTransport)
 
 	// Closing the local proxy transport is a detach, not authority to close the
 	// helper-owned provider stdin. A fresh bridge must reach the same process.
-	uam::remote::RunnerClient reattached(
-	    service, {runner.string(), "bridge", "--socket", socket.string()}, runner_version);
+	uam::remote::RunnerClient reattached(service, host.bridge, host.version);
 	reattached.SetProcessControlToken("acp-proxy-test", delivery_token);
 	UAM_ASSERT(reattached.Connect(&error));
 	uam::remote::ProcessPollResult still_running;
@@ -3049,7 +3196,7 @@ UAM_TEST(RemoteRunnerProxyRelaysRealProviderStdioWithoutBlockingTheAppTransport)
 	UAM_ASSERT(reattached.WriteProcess("acp-proxy-test", "after-reconnect\n", &error));
 	UAM_ASSERT(reattached.CloseProcessInput("acp-proxy-test", &error));
 	std::string recovered_output;
-	for (int attempt = 0; attempt < 300; ++attempt)
+	for (int attempt = 0; attempt < ProxyPollAttempts(300); ++attempt)
 	{
 		uam::remote::ProcessPollResult polled;
 		UAM_ASSERT(reattached.PollProcess("acp-proxy-test", polled, &error));
@@ -3065,12 +3212,9 @@ UAM_TEST(RemoteRunnerProxyRelaysRealProviderStdioWithoutBlockingTheAppTransport)
 UAM_TEST(RemoteRunnerProxyPreservesFragmentedNativeFramesAndControlReceipts)
 {
 	TempDir temp("uam-runner-framed-proxy");
+	const ProxyTestHost host(temp.root);
 	auto& service = PlatformServicesFactory::Instance().process_service;
-	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
-	const fs::path socket = temp.root / "runner.sock";
-	uam::platform::StdioProcessPlatformFields daemon;
 	std::string error;
-	UAM_ASSERT(service.StartStdioProcess(daemon, temp.root, {runner.string(), "serve", "--socket", socket.string()}, &error));
 	struct ProcessGuard
 	{
 		uam::platform::StdioProcessPlatformFields& process;
@@ -3080,23 +3224,13 @@ UAM_TEST(RemoteRunnerProxyPreservesFragmentedNativeFramesAndControlReceipts)
 			service.StopStdioProcess(process, true);
 			service.CloseStdioProcessHandles(process);
 		}
-	} daemon_guard{daemon};
-	for (int attempt = 0; attempt < 100 && !fs::exists(socket); ++attempt)
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	UAM_ASSERT(fs::exists(socket));
-	const fs::path ssh = temp.root / "ssh";
-	UAM_ASSERT(uam::io::WriteTextFile(ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge --socket \"$UAM_TEST_SOCKET\"\n"));
-	fs::permissions(ssh, fs::perms::owner_all);
+	};
 	const std::string token = "framed-proxy-private-token";
 	const std::string spec = uam::remote::BuildProcessProxySpec("framed-proxy", temp.root,
-	    {"/bin/sh", "-c", "exec cat", "--headless", "--stdio"}, {}, false, token);
+	    ProxyProvider({"cat", "--headless", "--stdio"}), {}, false, token);
 	uam::platform::StdioProcessPlatformFields proxy;
-	UAM_ASSERT(service.StartStdioProcess(proxy, temp.root,
-	    {runner.string(), "proxy", "--alias", "test-host", "--platform", "linux", "--version", std::string(uam::constants::kAppVersion).substr(1), "--protocol", "3"},
-	    &error, {{uam::remote::kRemoteProcessSpecEnvironment, spec},
-	        {"PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin")},
-	        {"UAM_TEST_RUNNER", runner.string()}, {"UAM_TEST_SOCKET", socket.string()}}));
 	ProcessGuard proxy_guard{proxy};
+	host.StartProxy(proxy, spec, {"--protocol", "3"});
 	const std::string body = nlohmann::json{{"id", 1}, {"method", "test"}, {"params", {{"text", std::string(18000, 'x') + "\nlast"}}}}.dump();
 	const std::string frame = "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
 	// A small final read used to trigger the legacy line protocol flush after an
@@ -3114,7 +3248,7 @@ UAM_TEST(RemoteRunnerProxyPreservesFragmentedNativeFramesAndControlReceipts)
 	const std::string marker = std::string(uam::remote::kRemoteOutputMarkerPrefix) + token + " ";
 	const std::string receipt = std::string(uam::remote::kRemoteInputReceiptPrefix) + token + " second-frame\n";
 	bool received = false;
-	for (int attempt = 0; attempt < 500; ++attempt)
+	for (int attempt = 0; attempt < ProxyPollAttempts(500); ++attempt)
 	{
 		const auto count = service.ReadStdioProcessStdout(proxy, bytes.data(), bytes.size(), &error);
 		if (count > 0) output.append(bytes.data(), static_cast<std::size_t>(count));
@@ -3136,7 +3270,7 @@ UAM_TEST(RemoteRunnerProxyPreservesFragmentedNativeFramesAndControlReceipts)
 	}
 	UAM_ASSERT(received);
 	UAM_ASSERT_EQ(output, expected);
-	uam::remote::RunnerClient client(service, {runner.string(), "bridge", "--socket", socket.string()}, std::string(uam::constants::kAppVersion).substr(1));
+	uam::remote::RunnerClient client(service, host.bridge, host.version);
 	client.SetProcessControlToken("framed-proxy", token);
 	UAM_ASSERT(client.Connect(&error));
 	UAM_ASSERT(client.StopProcess("framed-proxy", &error));
@@ -3146,50 +3280,99 @@ UAM_TEST(RemoteRunnerProxyPreservesFragmentedNativeFramesAndControlReceipts)
 UAM_TEST(RemoteRunnerProxyStopsAndRemovesTheProviderOnlyOnTheExplicitControlLine)
 {
 	TempDir temp("uam-runner-proxy-stop");
-	const fs::path runner =
-	    PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()
-	        .parent_path() / "uam-runner";
-	const fs::path fake_ssh = temp.root / "ssh";
-	UAM_ASSERT(uam::io::WriteTextFile(
-	    fake_ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
-	fs::permissions(fake_ssh, fs::perms::owner_read | fs::perms::owner_write |
-	                              fs::perms::owner_exec);
-	const std::string inherited_path =
-	    uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
+	const fs::path runner = RunnerBesideTests();
+	auto proxy_environment = InstallFakeSsh(temp.root, runner, "bridge-direct");
 	const std::string runner_version = std::string(uam::constants::kAppVersion).substr(1);
 	const std::string spec = uam::remote::BuildProcessProxySpec(
 	    "acp-proxy-stop", temp.root,
-	    {"/bin/sh", "-c", "if IFS= read -r line; then printf 'unexpected:%s\\n' \"$line\"; fi; sleep 10"},
+	    ProxyProvider({"echo-lines", "unexpected:", "10"}),
 	    {}, false, "proxy-stop-token");
 	uam::platform::StdioProcessPlatformFields proxy;
 	std::string error;
 	auto& service = PlatformServicesFactory::Instance().process_service;
+	proxy_environment.emplace_back(uam::remote::kRemoteProcessSpecEnvironment, spec);
 	UAM_ASSERT(service.StartStdioProcess(
 	    proxy, temp.root, {runner.string(), "proxy", "--alias", "test-host",
 	                       "--platform", "linux", "--version", runner_version}, &error,
-	    {{uam::remote::kRemoteProcessSpecEnvironment, spec},
-	     {"PATH", temp.root.string() + ":" + inherited_path},
-	     {"UAM_TEST_RUNNER", runner.string()}}));
-	UAM_ASSERT(service.WriteToStdioProcess(
-	    proxy, uam::remote::kRemoteStopControlLine.data(),
-	    uam::remote::kRemoteStopControlLine.size(), &error));
-	int exit_code = -1;
-	for (int attempt = 0; attempt < 300 &&
-	     !service.PollStdioProcessExited(proxy, &exit_code); ++attempt)
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	std::array<char, 256> buffer{};
-	const std::ptrdiff_t read = service.ReadStdioProcessStdout(
-	    proxy, buffer.data(), buffer.size(), &error);
-	const std::ptrdiff_t diagnostic_read = service.ReadStdioProcessStderr(
-	    proxy, buffer.data(), buffer.size(), &error);
-	const std::string diagnostics = diagnostic_read > 0
-	    ? std::string(buffer.data(), static_cast<std::size_t>(diagnostic_read)) : std::string{};
-	service.CloseStdioProcessHandles(proxy);
-	if (exit_code != 0) throw TestFailure("Remote stop proxy exit=" + std::to_string(exit_code) +
-	    " stderr=" + diagnostics + " transport=" + error);
-	UAM_ASSERT(read <= 0);
+	    proxy_environment));
+	AssertProxyStopAcknowledged(proxy, "proxy-stop-token");
 }
 
+UAM_TEST(RemoteRunnerProxyStopsThroughTheHelperServiceWithAnAcknowledgedOutcome)
+{
+	TempDir temp("uam-proxy-service-stop");
+	const ProxyTestHost host(temp.root);
+	const std::string session = "acp-proxy-service-stop";
+	const std::string token = "proxy-service-stop-token";
+	uam::platform::StdioProcessPlatformFields proxy;
+	host.StartProxy(proxy, uam::remote::BuildProcessProxySpec(
+	    session, temp.root, ProxyProvider({"echo-lines", "unexpected:"}), {}, false, token));
+	AssertProxyStopAcknowledged(proxy, token);
+	uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, host.bridge, host.version);
+	client.SetProcessControlToken(session, token);
+	std::string error;
+	UAM_ASSERT(client.Connect(&error));
+	uam::remote::ProcessPollResult removed;
+	UAM_ASSERT(!client.PollProcess(session, removed, &error));
+	UAM_ASSERT(error.find("does not exist") != std::string::npos);
+}
+
+UAM_TEST(RemoteProxyKeepsWindowsDriveAndUncWorkspacePathsIntact)
+{
+	const std::vector<std::string> argv = {"codex", "--version"};
+	for (const std::string& text : {std::string("C:\\Project space\\app"), std::string("\\\\server\\share\\work tree")})
+	{
+		const fs::path workspace = uam::paths::PathFromUtf8(text);
+		const std::string spec = uam::remote::BuildProcessProxySpec("terminal", workspace, argv, {});
+		std::string decoded;
+		UAM_ASSERT(uam::base64::Decode(spec, decoded));
+		UAM_ASSERT_EQ(nlohmann::json::parse(decoded).value("cwd", ""), text);
+		const std::vector<std::string> windows_host =
+		    uam::remote::BuildRemoteTerminalSshArgv("test-host", "windows", "1.2.3", workspace, argv);
+		UAM_ASSERT(!windows_host.empty());
+		UAM_ASSERT(windows_host.back().find(spec) != std::string::npos);
+		// A Windows path is not a valid working directory on a Linux host.
+		UAM_ASSERT(uam::remote::BuildRemoteTerminalSshArgv("test-host", "linux", "1.2.3", workspace, argv).empty());
+#if defined(_WIN32)
+		UAM_ASSERT(uam::remote::BuildRemoteMcpControlLine("channel", workspace, argv, {})
+		               .starts_with(uam::remote::kRemoteMcpControlPrefix));
+#endif
+	}
+}
+
+#if defined(_WIN32)
+UAM_TEST(WindowsControllerProxyStartsProvidersInDriveLetterAndUncWorkspaces)
+{
+	TempDir temp("uam-win-proxy-workspace");
+	// Process paths are long paths, so an 8.3 TEMP spelling cannot form the admin-share path below.
+	const fs::path root = fs::canonical(temp.root);
+	// The service runs outside the workspace, so the marker appears there only if the requested directory was used.
+	const fs::path workspace = root / "workspace";
+	fs::create_directory(workspace);
+	const ProxyTestHost host(root);
+	const auto start_in = [&](const std::string& session, const fs::path& directory)
+	{
+		std::string output;
+		UAM_ASSERT_EQ(host.RunProxy(uam::remote::BuildProcessProxySpec(
+		                                session, directory, ProxyProvider({"mark", session + "-started"}),
+		                                {}, false, session + "-token"),
+		                            output),
+		              0);
+		UAM_ASSERT(fs::exists(workspace / (session + "-started")));
+	};
+	start_in("drive-workspace", workspace);
+	const std::string drive_path = workspace.string();
+	const fs::path unc_path = "\\\\localhost\\" + drive_path.substr(0, 1) + "$" + drive_path.substr(2);
+	std::error_code unavailable;
+	const bool share_available = fs::is_directory(unc_path, unavailable);
+	// Hosted CI must run the UNC start; a developer machine can lack the administrative share.
+	UAM_ASSERT(share_available || !uam::env::GetNonEmptyString("GITHUB_ACTIONS").has_value());
+	if (share_available) start_in("unc-workspace", unc_path);
+}
+#endif
+#endif
+
+#if defined(__APPLE__)
 UAM_TEST(RemoteRunnerMcpShimRelaysTheActualUamControlProtocolOverTheSharedService)
 {
 	TempDir temp("uam-runner-mcp-relay");
