@@ -1722,6 +1722,80 @@ namespace uam
 			{
 				return RemoteOutput(context, workspace, {"git", "rev-parse", "--show-toplevel"}, &root);
 			}
+
+			void PopulateLocalStatus(const VcsStatusRequest& request, const std::filesystem::path& workspace, const std::filesystem::path& root, VcsCommitStatus& status) const override
+			{
+				const std::string ref = uam::strings::Trim(request.comparison_ref);
+				if (ref == "chat") PopulateChatComparisonDetails(request.app, request.chat, status, root, request.include_line_stats);
+				else if (!ref.empty() && !IsCommitId(ref)) status.error = "The saved chat comparison point is invalid.";
+				else if (!ref.empty()) PopulateGitComparisonDetails(status, workspace, root, request.include_line_stats, ref);
+				else PopulateGitStatusDetails(status, workspace, root, request.include_line_stats, request.context_only);
+			}
+
+			void PopulateRemoteStatus(RemoteVcsContext& context, const VcsStatusRequest& request, const std::string& root, VcsCommitStatus& status) const override
+			{
+				const bool include_line_stats = request.include_line_stats;
+				const bool context_only = request.context_only;
+				const std::string comparison_ref(request.comparison_ref);
+				const std::string& git_root = root.empty() ? status.workspace_directory : root;
+				if (!RemoteOutput(context, git_root, {"git", "branch", "--show-current"},
+				                  &status.branch_or_revision) && context_only) status.error = "Could not read the Git branch.";
+				if (context_only) return;
+				if (status.branch_or_revision.empty())
+					RemoteOutput(context, git_root, {"git", "rev-parse", "--short", "HEAD"},
+					             &status.branch_or_revision);
+
+				if (context_only) return;
+				std::string output;
+				if (comparison_ref.empty())
+				{
+					if (!RemoteOutput(context, git_root,
+					                  {"git", "status", "--porcelain=v1", "-z",
+					                   "--untracked-files=all"}, &output, &status.error, true))
+						return;
+					status.changed_files = ParseGitStatus(output);
+					if (include_line_stats)
+						ApplyRemoteGitLineStats(context, git_root, status.changed_files);
+					return;
+				}
+
+				if (comparison_ref == "chat")
+				{
+					PopulateChatComparisonDetails(request.app, request.chat, status, uam::paths::PathFromUtf8(git_root), include_line_stats, &context);
+					ApplyRemoteGitFingerprints(context, git_root, status.changed_files);
+					return;
+				}
+
+				if (!IsCommitId(comparison_ref))
+				{
+					status.error = "The saved chat comparison point is invalid.";
+					return;
+				}
+				if (!RemoteOutput(context, git_root,
+				                  {"git", "rev-parse", "--verify", comparison_ref + "^{commit}"},
+				                  &output, &status.error)) return;
+				if (!RemoteOutput(context, git_root,
+				                  {"git", "diff", "--name-status", "-z", comparison_ref, "--"},
+				                  &output, &status.error, true)) return;
+				status.changed_files = ParseGitNameStatus(output);
+				std::string porcelain;
+				if (RemoteOutput(context, git_root,
+				                 {"git", "status", "--porcelain=v1", "-z",
+				                  "--untracked-files=all"}, &porcelain, nullptr, true))
+				{
+					for (const VcsChangedFile& working_file : ParseGitStatus(porcelain))
+					{
+						auto existing = std::ranges::find_if(status.changed_files,
+						    [&](const VcsChangedFile& file) { return file.path == working_file.path; });
+						if (existing != status.changed_files.end()) existing->staged = working_file.staged;
+						else if (working_file.status == "??") status.changed_files.push_back(working_file);
+					}
+				}
+				if (include_line_stats)
+					ApplyRemoteGitComparisonDetails(context, git_root, comparison_ref,
+					                                status.changed_files);
+				return;
+			}
 		};
 
 		class SvnVcsProvider final : public VcsProvider
@@ -1739,6 +1813,30 @@ namespace uam
 			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string&) const override
 			{
 				return CommandSucceeded(RemoteSvnRunner(context, workspace)({"info", "--non-interactive", "--show-item", "revision", "--", "."}));
+			}
+
+			void PopulateLocalStatus(const VcsStatusRequest& request, const std::filesystem::path& workspace, const std::filesystem::path&, VcsCommitStatus& status) const override
+			{
+				if (!PopulateSvnStatusDetails(LocalSvnRunner(workspace), status, request.include_line_stats, request.context_only) || !request.include_line_stats) return;
+				for (VcsChangedFile& file : status.changed_files)
+				{
+					if (!IsSvnUnversioned(file)) continue;
+					const std::filesystem::path path = uam::paths::LexicallyNormalPath(workspace / uam::paths::PathFromUtf8(file.path));
+					std::error_code error;
+					// Unversioned folders stay one row; only a new regular file within the diff size limit is counted.
+					if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(path, error)) || error ||
+					    std::filesystem::file_size(path, error) > kMaxUnversionedDiffBytes || error) continue;
+					if (const std::optional<int> lines = CountTextFileLines(path)) file.additions = *lines;
+					else file.binary = true;
+				}
+				ApplyContentFingerprints(workspace, status.changed_files);
+			}
+
+			void PopulateRemoteStatus(RemoteVcsContext& context, const VcsStatusRequest& request, const std::string&, VcsCommitStatus& status) const override
+			{
+				if (PopulateSvnStatusDetails(RemoteSvnRunner(context, status.workspace_directory), status, request.include_line_stats, request.context_only) && request.include_line_stats)
+					for (VcsChangedFile& file : status.changed_files)
+						if (IsSvnUnversioned(file)) ApplyRemoteUntrackedLineStats(context, status.workspace_directory, file);
 			}
 		};
 
@@ -1768,72 +1866,7 @@ namespace uam
 			}
 			SelectActiveVcsType(status, requested_type);
 
-			if (status.active_vcs_type == VcsType::Svn)
-			{
-				if (PopulateSvnStatusDetails(RemoteSvnRunner(context, status.workspace_directory), status, include_line_stats, context_only) && include_line_stats)
-					for (VcsChangedFile& file : status.changed_files)
-						if (IsSvnUnversioned(file)) ApplyRemoteUntrackedLineStats(context, status.workspace_directory, file);
-				return status;
-			}
-
-			std::string git_root = roots[VcsType::Git];
-			if (git_root.empty()) git_root = status.workspace_directory;
-			if (!RemoteOutput(context, git_root, {"git", "branch", "--show-current"},
-			                  &status.branch_or_revision) && context_only) status.error = "Could not read the Git branch.";
-			if (context_only) return status;
-			if (status.branch_or_revision.empty())
-				RemoteOutput(context, git_root, {"git", "rev-parse", "--short", "HEAD"},
-				             &status.branch_or_revision);
-
-			if (context_only) return status;
-			std::string output;
-			if (comparison_ref.empty())
-			{
-				if (!RemoteOutput(context, git_root,
-				                  {"git", "status", "--porcelain=v1", "-z",
-				                   "--untracked-files=all"}, &output, &status.error, true))
-					return status;
-				status.changed_files = ParseGitStatus(output);
-				if (include_line_stats)
-					ApplyRemoteGitLineStats(context, git_root, status.changed_files);
-				return status;
-			}
-
-			if (comparison_ref == "chat")
-			{
-				PopulateChatComparisonDetails(app, chat, status, uam::paths::PathFromUtf8(git_root), include_line_stats, &context);
-				ApplyRemoteGitFingerprints(context, git_root, status.changed_files);
-				return status;
-			}
-
-			if (!IsCommitId(comparison_ref))
-			{
-				status.error = "The saved chat comparison point is invalid.";
-				return status;
-			}
-			if (!RemoteOutput(context, git_root,
-			                  {"git", "rev-parse", "--verify", comparison_ref + "^{commit}"},
-			                  &output, &status.error)) return status;
-			if (!RemoteOutput(context, git_root,
-			                  {"git", "diff", "--name-status", "-z", comparison_ref, "--"},
-			                  &output, &status.error, true)) return status;
-			status.changed_files = ParseGitNameStatus(output);
-			std::string porcelain;
-			if (RemoteOutput(context, git_root,
-			                 {"git", "status", "--porcelain=v1", "-z",
-			                  "--untracked-files=all"}, &porcelain, nullptr, true))
-			{
-				for (const VcsChangedFile& working_file : ParseGitStatus(porcelain))
-				{
-					auto existing = std::ranges::find_if(status.changed_files,
-					    [&](const VcsChangedFile& file) { return file.path == working_file.path; });
-					if (existing != status.changed_files.end()) existing->staged = working_file.staged;
-					else if (working_file.status == "??") status.changed_files.push_back(working_file);
-				}
-			}
-			if (include_line_stats)
-				ApplyRemoteGitComparisonDetails(context, git_root, comparison_ref,
-				                                status.changed_files);
+			VcsProviderFor(status.active_vcs_type).PopulateRemoteStatus(context, {app, chat, include_line_stats, comparison_ref, context_only}, roots[status.active_vcs_type], status);
 			return status;
 		}
 
@@ -2327,33 +2360,7 @@ namespace uam
 		}
 
 		SelectActiveVcsType(status, requested_type);
-		if (status.active_vcs_type == VcsType::Git)
-		{
-			const std::filesystem::path& git_root = roots[VcsType::Git];
-			const std::string ref = uam::strings::Trim(comparison_ref);
-			if (ref == "chat") PopulateChatComparisonDetails(app, chat, status, git_root, include_line_stats);
-			else if (!ref.empty() && !IsCommitId(ref)) status.error = "The saved chat comparison point is invalid.";
-			else if (!ref.empty()) PopulateGitComparisonDetails(status, workspace, git_root, include_line_stats, ref);
-			else PopulateGitStatusDetails(status, workspace, git_root, include_line_stats, context_only);
-		}
-		else
-		{
-			if (PopulateSvnStatusDetails(LocalSvnRunner(workspace), status, include_line_stats, context_only) && include_line_stats)
-			{
-				for (VcsChangedFile& file : status.changed_files)
-				{
-					if (!IsSvnUnversioned(file)) continue;
-					const std::filesystem::path path = uam::paths::LexicallyNormalPath(workspace / uam::paths::PathFromUtf8(file.path));
-					std::error_code error;
-					// Unversioned folders stay one row; only a new regular file within the diff size limit is counted.
-					if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(path, error)) || error ||
-					    std::filesystem::file_size(path, error) > kMaxUnversionedDiffBytes || error) continue;
-					if (const std::optional<int> lines = CountTextFileLines(path)) file.additions = *lines;
-					else file.binary = true;
-				}
-				ApplyContentFingerprints(workspace, status.changed_files);
-			}
-		}
+		VcsProviderFor(status.active_vcs_type).PopulateLocalStatus({app, chat, include_line_stats, comparison_ref, context_only}, workspace, roots[status.active_vcs_type], status);
 		return status;
 	}
 
