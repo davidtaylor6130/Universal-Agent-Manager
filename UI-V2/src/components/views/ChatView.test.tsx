@@ -10,7 +10,7 @@ import { buildUamAgentCycle, buildVisibleWorkSections, ChatView, matchesUamAgent
 import { useAppStore, type VcsCommitStatus } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
 import { acpBindingFromCppChat, reconcileCppMessages } from '../../store/cpp/reconcile'
-import type { AcpTurnEvent, CppChat } from '../../store/cpp/types'
+import type { AcpToolCall, AcpTurnEvent, CppChat } from '../../store/cpp/types'
 import { sanitizeCppAcpSession, sanitizeCppSettings } from '../../store/cpp/sanitizers'
 import { readChatComposerDraft, removeComposerDrafts, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { resetOutgoingPresentation } from '../../utils/outgoingMessagePresentation'
@@ -9020,15 +9020,15 @@ describe('ChatView', () => {
   })
 
   // #278: a settled turn keeps its events while a later user row (failed-reconnect queue, prepared input) is appended.
-  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; leadingAssistant?: boolean; turnEvents?: AcpTurnEvent[] }) => {
+  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[] }) => {
     useAppStore.setState((state) => ({
       messages: {
         ...state.messages,
         'chat-1': [
           ...(overrides.leadingAssistant ? [{ id: 'm-0', sessionId: 'chat-1', role: 'assistant' as const, content: 'Earlier answer', createdAt: new Date(0) }] : []),
           { id: 'm-1', sessionId: 'chat-1', role: 'user', content: 'Please inspect the workspace', createdAt: new Date(0) },
-          { id: 'm-2', sessionId: 'chat-1', role: 'assistant', content: overrides.assistantContent ?? 'Status update.\n\nSettled answer.', createdAt: new Date(1) },
-          { id: 'm-3', sessionId: 'chat-1', role: 'user', content: 'Follow-up row', createdAt: new Date(2) },
+          { id: 'm-2', sessionId: 'chat-1', role: 'assistant', content: overrides.assistantContent ?? 'Status update.\n\nSettled answer.', isStreaming: overrides.assistantStreaming, createdAt: new Date(1) },
+          ...(overrides.followUp === false ? [] : [{ id: 'm-3', sessionId: 'chat-1', role: 'user' as const, content: 'Follow-up row', createdAt: new Date(2) }]),
         ],
       },
       acpBindingBySessionId: {
@@ -9038,7 +9038,7 @@ describe('ChatView', () => {
           lifecycleState: overrides.processing ? 'processing' : 'error',
           processing: overrides.processing ?? false,
           pendingPermission: null,
-          toolCalls: [],
+          toolCalls: overrides.toolCalls ?? [],
           turnEvents: overrides.turnEvents ?? [{ type: 'assistant_text', text: 'Status update.' }, { type: 'assistant_text', text: '\n\nSettled answer.' }],
           turnUserMessageIndex: overrides.turnUserMessageIndex ?? 0,
           turnAssistantMessageIndex: overrides.turnAssistantMessageIndex ?? 1,
@@ -9062,6 +9062,38 @@ describe('ChatView', () => {
     expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
   })
 
+  const liveAnswerWithTool = {
+    processing: true,
+    turnEvents: [{ type: 'assistant_text' as const, text: 'Status update.\n\nSettled answer.' }, { type: 'tool_call' as const, toolCallId: 'tool-1' }],
+    toolCalls: [{ id: 'tool-1', title: 'Inspect workspace files', kind: 'read', status: 'in_progress', content: '' }],
+  }
+
+  it('renders a processing answer once at its recorded row while a steer row follows it', () => {
+    const text = renderTurnAfterFollowUp(liveAnswerWithTool)
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
+    expect(text.match(/Inspect workspace files/g)).toHaveLength(1)
+  })
+
+  it.each([
+    { name: 'no recorded row', overrides: { turnUserMessageIndex: -1, turnAssistantMessageIndex: -1 } },
+    { name: 'a recorded row past the end', overrides: { turnUserMessageIndex: 0, turnAssistantMessageIndex: 5 } },
+    { name: 'indices left on replaced rows', overrides: { turnUserMessageIndex: 1, turnAssistantMessageIndex: 0 } },
+  ])('renders a processing answer once at the latest assistant row with $name', ({ overrides }) => {
+    const text = renderTurnAfterFollowUp({ ...liveAnswerWithTool, ...overrides, followUp: false })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.match(/Inspect workspace files/g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Inspect workspace files'))
+  })
+
+  it('renders a stale-anchored streaming row once while its tokens are ahead of the turn events', () => {
+    const text = renderTurnAfterFollowUp({
+      processing: true, followUp: false, assistantStreaming: true, turnUserMessageIndex: -1, turnAssistantMessageIndex: -1,
+      assistantContent: 'Status update.\n\nSettled answer. More tokens',
+    })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+  })
+
   it('binds a settled row whose content has a compaction summary between turn text chunks', () => {
     const text = renderTurnAfterFollowUp({ assistantContent: 'Status update.\n\nCompacted context summary.\n\nSettled answer.', turnEvents: [
       { type: 'assistant_text', text: 'Status update.' },
@@ -9073,7 +9105,6 @@ describe('ChatView', () => {
   })
 
   it.each([
-    { name: 'processing turn whose assistant is not the tail', overrides: { processing: true } },
     { name: 'stale index on a user row', overrides: { turnAssistantMessageIndex: 2 } },
     { name: 'stale index past the end', overrides: { turnAssistantMessageIndex: 5 } },
     { name: 'stale index without a preceding turn user row', overrides: { turnUserMessageIndex: -1 } },
@@ -9103,13 +9134,15 @@ describe('ChatView', () => {
     { name: 'a short chunk at the start of a longer row', assistantContent: 'OK, here is the longer imported answer.', turnEvents: [{ type: 'assistant_text' as const, text: 'OK' }] },
     { name: 'a short chunk at the end of a longer row', assistantContent: 'The longer imported answer is OK', turnEvents: [{ type: 'assistant_text' as const, text: 'OK' }] },
     { name: 'text no turn event accounts for between chunks', assistantContent: 'Status update.\n\nImported middle.\n\nSettled answer.', turnEvents: undefined },
-  ])('never hides a stale row holding more than the turn text: $name', ({ assistantContent, turnEvents }) => {
-    const text = renderTurnAfterFollowUp({ assistantContent, turnEvents })
+    { name: 'a processing turn with no answer text', processing: true, assistantContent: 'Imported answer', turnEvents: [{ type: 'tool_call' as const, toolCallId: 'tool-1' }] },
+    { name: 'a processing turn whose short chunk starts a longer row', processing: true, assistantContent: 'OK, here is the longer imported answer.', turnEvents: [{ type: 'assistant_text' as const, text: 'OK' }] },
+  ])('never hides a stale row holding more than the turn text: $name', ({ assistantContent, turnEvents, processing }) => {
+    const text = renderTurnAfterFollowUp({ assistantContent, turnEvents, processing })
     expect(text).toContain(assistantContent.replaceAll('\n\n', ''))
     expect(text.indexOf(assistantContent.slice(0, 15))).toBeLessThan(text.indexOf('Follow-up row'))
   })
 
-  it('keeps the fallback visible while processing even when persisted text matches', () => {
+  it('renders a processing answer once when persisted text matches a stale anchor', () => {
     useAppStore.setState((state) => ({
       messages: {
         ...state.messages,
@@ -9137,7 +9170,7 @@ describe('ChatView', () => {
 
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    expect(host.textContent?.match(/In-flight response\./g)).toHaveLength(2)
+    expect(host.textContent?.match(/In-flight response\./g)).toHaveLength(1)
 
     act(() => root.unmount())
     host.remove()

@@ -214,8 +214,9 @@ function fileUriToPath(uri: string): string {
 
 /** True when the turn has answer text and the row's content is exactly that text, in order, so the timeline can replace
  * the row without losing anything. Compaction summaries are saved in content, and the timeline shows or hides them through
- * their own events, so their text is skipped; whitespace between chunks is ignored. */
-function contentIsExactlyTurnText(content: string, events: readonly AcpTurnEvent[]) {
+ * their own events, so their text is skipped; whitespace between chunks is ignored. A streaming row may hold tokens the
+ * events have not reached yet, as the row at a current anchor can. */
+function contentIsExactlyTurnText(content: string, events: readonly AcpTurnEvent[], tokensMayLead = false) {
   let rest = content.trimStart()
   let hasAnswerText = false
   for (const event of events) {
@@ -227,7 +228,7 @@ function contentIsExactlyTurnText(content: string, events: readonly AcpTurnEvent
     else if (answer) return false
     hasAnswerText ||= answer
   }
-  return hasAnswerText && !rest
+  return hasAnswerText && (!rest || tokensMayLead)
 }
 
 function lastMessageIndexWithRole(messages: Message[], role: Message['role']) {
@@ -1111,7 +1112,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const cancelLiveTurn = useCallback(() => { void cancelAcpTurn(session.id) }, [cancelAcpTurn, session.id])
   const stopLiveRuntime = useCallback(() => { void stopAcpSession(session.id) }, [stopAcpSession, session.id])
   const firstTurnEvent = turnEvents.find((event) => event.type === 'assistant_text' ? event.text.length > 0 : true)
-  const turnAssistantMessageIndex = acp?.turnAssistantMessageIndex === undefined || acp.turnAssistantMessageIndex < 0
+  const recordedTurnAssistantMessageIndex = acp?.turnAssistantMessageIndex === undefined || acp.turnAssistantMessageIndex < 0
     ? -1 : acp.turnAssistantMessageIndex - historyStartIndex
   const turnUserMessageIndex = acp?.turnUserMessageIndex === undefined || acp.turnUserMessageIndex < 0
     ? -1 : acp.turnUserMessageIndex - historyStartIndex
@@ -1153,7 +1154,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const redundantStreamingMessageIndex =
     turnEvents.length > 0 &&
     messages[messages.length - 1]?.isStreaming &&
-    turnAssistantMessageIndex === messages.length - 2
+    recordedTurnAssistantMessageIndex === messages.length - 2
       ? messages.length - 1
       : -1
   const completedTurnAssistantText = useMemo(() => acp?.processing
@@ -1162,19 +1163,27 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         (text, event) => event.type === 'assistant_text' ? text + event.text : text,
         ''
       ).trim(), [acp?.processing, turnEvents])
-  // A settled turn's events were synced into the backend's turn assistant row, so bind them there even when a later
-  // user row follows (#278). Native imports can replace rows without resetting the index, so a non-tail row must follow
-  // the turn's user row and hold exactly the turn's text; anything else keeps the row and the separate card.
-  // While processing, a steer can leave the index on an earlier row; require the tail.
-  const settledTurnAssistantRowValid =
-    !acp?.processing &&
-    turnUserMessageIndex >= 0 && turnUserMessageIndex < turnAssistantMessageIndex &&
+  // Turn events are synced into the backend's turn assistant row, so bind them there even when a later row follows, such
+  // as a steer published before its events reset (#278). Native imports can replace rows without resetting the index, so
+  // a non-tail row must follow the turn's user row and hold exactly the turn's text; anything else keeps the row and the
+  // separate card, and later turn output moves the index to a new row.
+  const recordedTurnAssistantRowValid =
+    turnUserMessageIndex >= 0 && turnUserMessageIndex < recordedTurnAssistantMessageIndex &&
     messages[turnUserMessageIndex]?.role === 'user' &&
-    contentIsExactlyTurnText(messages[turnAssistantMessageIndex]?.content ?? '', turnEvents)
-  const turnAssistantMessageMatches =
-    turnAssistantMessageIndex >= earliestRenderedMessageIndex &&
-    (turnAssistantMessageIndex === messages.length - 1 || redundantStreamingMessageIndex >= 0 || settledTurnAssistantRowValid) &&
-    messages[turnAssistantMessageIndex]?.role === 'assistant'
+    contentIsExactlyTurnText(messages[recordedTurnAssistantMessageIndex]?.content ?? '', turnEvents)
+  const recordedTurnAssistantMatches =
+    recordedTurnAssistantMessageIndex >= earliestRenderedMessageIndex &&
+    (recordedTurnAssistantMessageIndex === messages.length - 1 || redundantStreamingMessageIndex >= 0 || recordedTurnAssistantRowValid) &&
+    messages[recordedTurnAssistantMessageIndex]?.role === 'assistant'
+  // A live turn whose index no longer resolves still owns the latest assistant row when that row holds its text; the
+  // timeline replaces the row in place, keeping live tools and controls without a second card.
+  const liveTurnOwnsLatestAssistant =
+    !recordedTurnAssistantMatches && Boolean(acp?.processing) &&
+    latestAssistantMessageIndex >= earliestRenderedMessageIndex &&
+    latestAssistantMessageIndex > latestUserMessageIndex &&
+    contentIsExactlyTurnText(messages[latestAssistantMessageIndex].content, turnEvents, messages[latestAssistantMessageIndex].isStreaming)
+  const turnAssistantMessageIndex = liveTurnOwnsLatestAssistant ? latestAssistantMessageIndex : recordedTurnAssistantMessageIndex
+  const turnAssistantMessageMatches = recordedTurnAssistantMatches || liveTurnOwnsLatestAssistant
   const turnUserMessageMatches =
     turnUserMessageIndex >= earliestRenderedMessageIndex &&
     turnUserMessageIndex === latestUserMessageIndex &&
