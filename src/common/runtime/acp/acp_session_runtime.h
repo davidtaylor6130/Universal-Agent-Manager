@@ -133,6 +133,8 @@ bool ResolveAcpUserInput(AppState& app,
 
 bool PollCompletedAcpProcessStops(AppState& app, CefRefPtr<CefBrowser> browser);
 bool PollAllAcpSessions(AppState& app, CefRefPtr<CefBrowser> browser = nullptr);
+/// A stop that is queued or running now. AcpStopInProgress also counts a remote stop the host never confirmed.
+bool AcpStopInFlight(const AppState& app, std::string_view chat_id);
 bool AcpStopInProgress(const AppState& app, std::string_view chat_id);
 bool EnsureAcpStopProgress(AppState& app, std::string_view chat_id);
 void TransferStdioProcessFields(platform::StdioProcessPlatformFields& source, platform::StdioProcessPlatformFields& destination);
