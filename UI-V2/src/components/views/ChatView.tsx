@@ -214,9 +214,9 @@ function fileUriToPath(uri: string): string {
 
 /** True when the turn has answer text and the row's content is exactly that text, in order, so the timeline can replace
  * the row without losing anything. Compaction summaries are saved in content, and the timeline shows or hides them through
- * their own events, so their text is skipped; whitespace between chunks is ignored. A streaming row may hold tokens the
- * events have not reached yet, as the row at a current anchor can. */
-function contentIsExactlyTurnText(content: string, events: readonly AcpTurnEvent[], tokensMayLead = false) {
+ * their own events, so their text is skipped; whitespace between chunks is ignored. A streaming row gets tokens and turn
+ * events on separate channels, so either may be ahead; a row whose text agrees up to that point counts. */
+function contentIsExactlyTurnText(content: string, events: readonly AcpTurnEvent[], streamingRow = false) {
   let rest = content.trimStart()
   let hasAnswerText = false
   for (const event of events) {
@@ -225,10 +225,10 @@ function contentIsExactlyTurnText(content: string, events: readonly AcpTurnEvent
     const text = event.text.trim()
     if (!text) continue
     if (rest.startsWith(text)) rest = rest.slice(text.length).trimStart()
-    else if (answer) return false
+    else if (answer) return streamingRow && text.startsWith(rest)
     hasAnswerText ||= answer
   }
-  return hasAnswerText && (!rest || tokensMayLead)
+  return hasAnswerText && (!rest || streamingRow)
 }
 
 function lastMessageIndexWithRole(messages: Message[], role: Message['role']) {
@@ -1161,12 +1161,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     (recordedTurnAssistantMessageIndex === messages.length - 2 || streamingTail.streamMessageIndex === acp?.turnAssistantMessageIndex)
       ? messages.length - 1
       : -1
-  const completedTurnAssistantText = useMemo(() => acp?.processing
-    ? ''
-    : turnEvents.reduce(
-        (text, event) => event.type === 'assistant_text' ? text + event.text : text,
-        ''
-      ).trim(), [acp?.processing, turnEvents])
   // Turn events are synced into the backend's turn assistant row, so bind them there even when a later row follows, such
   // as a steer published before its events reset (#278). Native imports can replace rows without resetting the index, so
   // a non-tail row must follow the turn's user row and hold exactly the turn's text; anything else keeps the row and the
@@ -1196,9 +1190,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       (turnAssistantMessageMatches && turnUserMessageIndex < turnAssistantMessageIndex))
   const completedFallbackAlreadyPersisted =
     !acp?.processing &&
-    completedTurnAssistantText.length > 0 &&
     latestAssistantMessageIndex > latestUserMessageIndex &&
-    messages[latestAssistantMessageIndex]?.content.trim() === completedTurnAssistantText
+    contentIsExactlyTurnText(messages[latestAssistantMessageIndex]?.content ?? '', turnEvents)
   // Bind only a confirmed assistant; steering can put user messages between turn rows.
   const disclosureAssistant = turnAssistantMessageMatches
     ? messages[turnAssistantMessageIndex]

@@ -9020,8 +9020,9 @@ describe('ChatView', () => {
   })
 
   // #278: a settled turn keeps its events while a later user row (failed-reconnect queue, prepared input) is appended.
-  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; trailingRows?: Message[]; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[]; pendingPermission?: AcpBinding['pendingPermission'] }) => {
+  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; trailingRows?: Message[]; historyStart?: number; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[]; pendingPermission?: AcpBinding['pendingPermission'] }) => {
     useAppStore.setState((state) => ({
+      historyStartIndexBySessionId: overrides.historyStart ? { 'chat-1': overrides.historyStart } : {},
       messages: {
         ...state.messages,
         'chat-1': [
@@ -9041,8 +9042,8 @@ describe('ChatView', () => {
           pendingPermission: overrides.pendingPermission ?? null,
           toolCalls: overrides.toolCalls ?? [],
           turnEvents: overrides.turnEvents ?? [{ type: 'assistant_text', text: 'Status update.' }, { type: 'assistant_text', text: '\n\nSettled answer.' }],
-          turnUserMessageIndex: overrides.turnUserMessageIndex ?? 0,
-          turnAssistantMessageIndex: overrides.turnAssistantMessageIndex ?? 1,
+          turnUserMessageIndex: overrides.turnUserMessageIndex ?? (overrides.historyStart ?? 0),
+          turnAssistantMessageIndex: overrides.turnAssistantMessageIndex ?? ((overrides.historyStart ?? 0) + 1),
           turnSerial: 2,
         },
       },
@@ -9101,11 +9102,31 @@ describe('ChatView', () => {
     expect(text.match(/Inspect workspace files/g)).toHaveLength(1)
   })
 
-  it('renders tokens once when a placeholder for the recorded row follows a steer row', () => {
+  it('renders a stale-anchored streaming row once while the turn events are ahead of its tokens', () => {
     const text = renderTurnAfterFollowUp({
-      processing: true, assistantContent: 'Status update.',
+      processing: true, followUp: false, assistantStreaming: true, turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, assistantContent: 'Status upd',
+    })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text).not.toContain('Status updStatus')
+  })
+
+  it('renders a settled answer once when its stale row keeps a compaction summary in its text', () => {
+    const text = renderTurnAfterFollowUp({
+      followUp: false, turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, assistantContent: 'Status update.\n\nCompacted context summary.\n\nSettled answer.',
+      turnEvents: [
+        { type: 'assistant_text', text: 'Status update.' },
+        { type: 'context_compaction_summary', text: '\n\nCompacted context summary.', requestId: 'opencode-message:summary' },
+        { type: 'assistant_text', text: '\n\nSettled answer.' },
+      ],
+    })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+  })
+
+  it.each([0, 100])('renders tokens once when a placeholder for the recorded row follows a steer row at history start %i', (historyStart) => {
+    const text = renderTurnAfterFollowUp({
+      processing: true, assistantContent: 'Status update.', historyStart,
       turnEvents: [{ type: 'assistant_text', text: 'Status update.' }, { type: 'assistant_text', text: ' More tokens' }],
-      trailingRows: [{ id: 'stream-chat-1-0-3', sessionId: 'chat-1', role: 'assistant', content: ' More tokens', isStreaming: true, streamMessageIndex: 1, createdAt: new Date(3) }],
+      trailingRows: [{ id: 'stream-chat-1-0-3', sessionId: 'chat-1', role: 'assistant', content: ' More tokens', isStreaming: true, streamMessageIndex: historyStart + 1, createdAt: new Date(3) }],
     })
     expect(text.match(/Status update\./g)).toHaveLength(1)
     expect(text.match(/More tokens/g)).toHaveLength(1)
