@@ -1151,10 +1151,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     ? workSections.get(activeWorkMessageIndex)?.firstIndex ?? findWorkSectionStartIndex(messages, activeWorkMessageIndex)
     : -1
   const activeWorkSectionId = messages[activeWorkSectionFirstIndex]?.id
+  // A streaming tail repeats the recorded row when it follows that row or was started for it, as after a steer row.
+  const streamingTail = messages[messages.length - 1]
   const redundantStreamingMessageIndex =
     turnEvents.length > 0 &&
-    messages[messages.length - 1]?.isStreaming &&
-    recordedTurnAssistantMessageIndex === messages.length - 2
+    streamingTail?.isStreaming &&
+    recordedTurnAssistantMessageIndex < messages.length - 1 &&
+    messages[recordedTurnAssistantMessageIndex]?.role === 'assistant' &&
+    (recordedTurnAssistantMessageIndex === messages.length - 2 || streamingTail.streamMessageIndex === acp?.turnAssistantMessageIndex)
       ? messages.length - 1
       : -1
   const completedTurnAssistantText = useMemo(() => acp?.processing

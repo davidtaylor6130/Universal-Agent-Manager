@@ -10,7 +10,7 @@ import { buildUamAgentCycle, buildVisibleWorkSections, ChatView, matchesUamAgent
 import { useAppStore, type VcsCommitStatus } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
 import { acpBindingFromCppChat, reconcileCppMessages } from '../../store/cpp/reconcile'
-import type { AcpToolCall, AcpTurnEvent, CppChat } from '../../store/cpp/types'
+import type { AcpBinding, AcpToolCall, AcpTurnEvent, CppChat } from '../../store/cpp/types'
 import { sanitizeCppAcpSession, sanitizeCppSettings } from '../../store/cpp/sanitizers'
 import { readChatComposerDraft, removeComposerDrafts, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { resetOutgoingPresentation } from '../../utils/outgoingMessagePresentation'
@@ -9020,7 +9020,7 @@ describe('ChatView', () => {
   })
 
   // #278: a settled turn keeps its events while a later user row (failed-reconnect queue, prepared input) is appended.
-  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[] }) => {
+  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; trailingRows?: Message[]; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[]; pendingPermission?: AcpBinding['pendingPermission'] }) => {
     useAppStore.setState((state) => ({
       messages: {
         ...state.messages,
@@ -9029,6 +9029,7 @@ describe('ChatView', () => {
           { id: 'm-1', sessionId: 'chat-1', role: 'user', content: 'Please inspect the workspace', createdAt: new Date(0) },
           { id: 'm-2', sessionId: 'chat-1', role: 'assistant', content: overrides.assistantContent ?? 'Status update.\n\nSettled answer.', isStreaming: overrides.assistantStreaming, createdAt: new Date(1) },
           ...(overrides.followUp === false ? [] : [{ id: 'm-3', sessionId: 'chat-1', role: 'user' as const, content: 'Follow-up row', createdAt: new Date(2) }]),
+          ...(overrides.trailingRows ?? []),
         ],
       },
       acpBindingBySessionId: {
@@ -9037,7 +9038,7 @@ describe('ChatView', () => {
           ...state.acpBindingBySessionId['chat-1'],
           lifecycleState: overrides.processing ? 'processing' : 'error',
           processing: overrides.processing ?? false,
-          pendingPermission: null,
+          pendingPermission: overrides.pendingPermission ?? null,
           toolCalls: overrides.toolCalls ?? [],
           turnEvents: overrides.turnEvents ?? [{ type: 'assistant_text', text: 'Status update.' }, { type: 'assistant_text', text: '\n\nSettled answer.' }],
           turnUserMessageIndex: overrides.turnUserMessageIndex ?? 0,
@@ -9092,6 +9093,32 @@ describe('ChatView', () => {
       assistantContent: 'Status update.\n\nSettled answer. More tokens',
     })
     expect(text.match(/Settled answer\./g)).toHaveLength(1)
+  })
+
+  it('shows a stale-anchored streaming row once when the recorded index is on a user row', () => {
+    const text = renderTurnAfterFollowUp({ ...liveAnswerWithTool, followUp: false, assistantStreaming: true, turnUserMessageIndex: 1, turnAssistantMessageIndex: 0 })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.match(/Inspect workspace files/g)).toHaveLength(1)
+  })
+
+  it('renders tokens once when a placeholder for the recorded row follows a steer row', () => {
+    const text = renderTurnAfterFollowUp({
+      processing: true, assistantContent: 'Status update.',
+      turnEvents: [{ type: 'assistant_text', text: 'Status update.' }, { type: 'assistant_text', text: ' More tokens' }],
+      trailingRows: [{ id: 'stream-chat-1-0-3', sessionId: 'chat-1', role: 'assistant', content: ' More tokens', isStreaming: true, streamMessageIndex: 1, createdAt: new Date(3) }],
+    })
+    expect(text.match(/Status update\./g)).toHaveLength(1)
+    expect(text.match(/More tokens/g)).toHaveLength(1)
+    expect(text.indexOf('More tokens')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  it('keeps a pending permission in the one card of a stale-anchored live answer', () => {
+    const text = renderTurnAfterFollowUp({
+      ...liveAnswerWithTool, followUp: false, turnUserMessageIndex: -1, turnAssistantMessageIndex: -1,
+      pendingPermission: { requestId: '5', toolCallId: 'tool-1', title: 'Read file', kind: 'read', status: 'pending', content: 'Read /tmp/project/file.txt', options: [{ id: 'allow-once', name: 'Allow once', kind: 'allow_once' }] },
+    })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.match(/Allow once/g)).toHaveLength(1)
   })
 
   it('binds a settled row whose content has a compaction summary between turn text chunks', () => {
