@@ -12,7 +12,7 @@ using namespace uam_test;
 
 namespace
 {
-#ifndef _WIN32
+#if !defined(_WIN32) && UAM_ENABLE_SSH
 	std::string ResolvedTool(const std::string& name)
 	{
 		return uam::strings::Trim(PlatformServicesFactory::Instance().process_service.ExecuteCommand("command -v " + name).output);
@@ -179,7 +179,7 @@ UAM_TEST(VcsProviderReadOnlyListsApplyOnlyToTheirOwnExecutable)
 	UAM_ASSERT(!IsReadOnlyCommand("hg status"));
 }
 
-#ifndef _WIN32
+#if !defined(_WIN32) && UAM_ENABLE_SSH
 UAM_TEST(VcsCommitNoticeNamesGitWhenTheToolPrintsNothing)
 {
 	if (!GitAvailableForTests()) return;
