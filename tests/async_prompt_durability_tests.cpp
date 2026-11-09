@@ -99,6 +99,94 @@ namespace
 	}
 }
 
+#if !defined(_WIN32)
+UAM_TEST(GeminiChatHostInstructionsAppearOnceForEachNativeSessionAndTextVersion)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	const fs::path wire = fixture.temp.root / "provider-input.jsonl";
+	fixture.process.StopStdioProcess(session, true);
+	fixture.process.CloseStdioProcessHandles(session);
+	std::string error;
+	UAM_ASSERT(fixture.process.StartStdioProcess(session, fixture.temp.root, {"/bin/sh", "-c", "cat > '" + wire.string() + "'"}, &error));
+	session.running = true;
+	session.session_ready = true;
+	ExecutionHost host;
+	host.id = "ssh-host";
+	host.transport = "ssh";
+	host.platform = "linux";
+	host.instruction_text = "Host marker";
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost(), host};
+	chat.execution_host_id = session.process_execution_host_id = host.id;
+	chat.workspace_directory = "/srv/app";
+	chat.messages.clear();
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const auto deliver = [&](const std::string& prompt)
+	{
+		session.processing = false;
+		session.prompt_request_id = 0;
+		session.turn_first_user_message_index = -1;
+		session.turn_user_message_index = -1;
+		std::string send_error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, prompt, &send_error));
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+			if (ReadFile(wire).find(prompt) != std::string::npos) return;
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		throw TestFailure("The prompt never reached the provider: " + session.last_error);
+	};
+	const auto occurrences = [&](const std::string& needle)
+	{
+		const std::string text = ReadFile(wire);
+		std::size_t count = 0;
+		for (std::size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + needle.size())) ++count;
+		return count;
+	};
+	deliver("First question");
+	UAM_ASSERT_EQ(occurrences("Host marker"), std::size_t{1});
+	UAM_ASSERT(!chat.host_instructions_delivery.empty());
+	deliver("Second question");
+	UAM_ASSERT_EQ(occurrences("Host marker"), std::size_t{1});
+	// A resumed session is recognised by the saved marker, and it survives a reload.
+	const std::string saved_delivery = chat.host_instructions_delivery;
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const std::optional<ChatSession> reloaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(reloaded.has_value());
+	UAM_ASSERT_EQ(reloaded->host_instructions_delivery, saved_delivery);
+	// A replacement native session needs them again.
+	session.session_id = "private-replacement-session";
+	deliver("Third question");
+	UAM_ASSERT_EQ(occurrences("Host marker"), std::size_t{2});
+	// A saved edit reaches the session once, even though it was resumed.
+	app.settings.execution_hosts.back().instruction_text = "Edited marker";
+	deliver("Fourth question");
+	UAM_ASSERT_EQ(occurrences("Edited marker"), std::size_t{1});
+	UAM_ASSERT_EQ(occurrences("Host marker"), std::size_t{2});
+	deliver("Fifth question");
+	UAM_ASSERT_EQ(occurrences("Edited marker"), std::size_t{1});
+	// A private goal session gets its own copy without disturbing the main session's marker.
+	const std::string main_delivery = chat.host_instructions_delivery;
+	const std::string main_session = session.session_id;
+	session.goal_internal_session = true;
+	session.session_id = "private-goal-session";
+	deliver("Goal review");
+	UAM_ASSERT_EQ(occurrences("Edited marker"), std::size_t{2});
+	deliver("Goal repair");
+	UAM_ASSERT_EQ(occurrences("Edited marker"), std::size_t{2});
+	UAM_ASSERT_EQ(chat.host_instructions_delivery, main_delivery);
+	session.goal_internal_session = false;
+	session.session_id = main_session;
+	deliver("Back in the main session");
+	UAM_ASSERT_EQ(occurrences("Edited marker"), std::size_t{2});
+}
+#endif
+
 UAM_TEST(AcpSendReturnsPendingBeforeDurablePublicationAndProviderInput)
 {
 	PromptFixture fixture;

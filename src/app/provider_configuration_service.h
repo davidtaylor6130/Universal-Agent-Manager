@@ -42,7 +42,7 @@ namespace uam
 	inline bool PrepareProviderConfiguration(const std::filesystem::path& data_root, const AppSettings& settings,
 	    const ChatSession& chat, const ExecutionHost& host, const std::filesystem::path& workspace,
 	    ProviderConfigurationBundle& bundle, std::string& error, const std::string* selected_agent_instructions = nullptr,
-	    std::string_view checked_provider_version = {}, bool require_session_mcp_configuration = false)
+	    std::string_view checked_provider_version = {}, bool require_session_mcp_configuration = false, bool host_instructions_in_prompt = false)
 	{
 		bundle = {};
 		// Source workspace settings follow isolated worktrees; the active workspace can override them.
@@ -79,7 +79,11 @@ namespace uam
 		// Only a value that raises OpenCode's built-in default is sent, so the launch records exactly what OpenCode received.
 		const bool open_code_request_timeout = !open_code_model_provider.empty() &&
 		    static_cast<std::int64_t>(settings.active_turn_inactivity_timeout_seconds) * 1000 > provider_setup::kOpenCodeDefaultRequestTimeoutMilliseconds;
-		if (!configuration.enabled && selected_servers.empty() && !open_code_discovery && !open_code_uam_control_deadline && !open_code_request_timeout && !claude_fast_override && !gemini_thinking_override && !require_session_mcp_configuration) return true;
+		// Launch configuration is the only channel for host instructions, so every route on this process has them.
+		const bool host_instructions = execution_hosts::HasInstructions(host) && !host_instructions_in_prompt;
+		if (!configuration.enabled && selected_servers.empty() && !open_code_discovery && !open_code_uam_control_deadline && !open_code_request_timeout && !claude_fast_override && !gemini_thinking_override && !require_session_mcp_configuration && !host_instructions) return true;
+		if (host.instruction_text && host.instruction_text->size() > execution_hosts::kMaxInstructionTextBytes)
+		{ error = "Host instruction text exceeds 256 KiB."; return false; }
 		std::set<std::string> executable_files;
 		bool memory_resources_added = false;
 		std::size_t memory_instruction_size = 0;
@@ -193,12 +197,7 @@ namespace uam
 					if (ec) { error = "Could not read imported skill assets."; return false; }
 				}
 			}
-			if (host.instruction_text)
-			{
-				if (host.instruction_text->size() > execution_hosts::kMaxInstructionTextBytes)
-				{ error = "Host instruction text exceeds 256 KiB."; return false; }
-				if (!host.instruction_text->empty()) instructions += "\n\n" + *host.instruction_text;
-			}
+			if (!host_instructions_in_prompt && host.instruction_text && !host.instruction_text->empty()) instructions += "\n\n" + *host.instruction_text;
 			if (instructions.size() > provider_setup::kMaxFileBytes)
 			{ error = "Combined provider instructions exceed 2 MiB."; return false; }
 			bundle.files["AGENTS.md"] = std::move(instructions);
@@ -221,6 +220,8 @@ namespace uam
 				}
 			}
 		}
+		// Central Setup off carries only the host's own text: no central resources, agents or workspace AGENTS.md.
+		else if (host_instructions) bundle.files["AGENTS.md"] = host.instruction_text.value_or(std::string{});
 		std::vector<McpServerConfiguration> servers;
 		for (McpServerConfiguration server : selected_servers)
 		{
@@ -230,8 +231,9 @@ namespace uam
 			server.workspace_directory.clear();
 			servers.push_back(std::move(server));
 		}
-		bundle.manifest = {{"format", 1}, {"mcpOnly", !configuration.enabled}, {"files", nlohmann::json::object()},
-		    {"hostInstructionFile", configuration.enabled && !host.instruction_text ? host.instruction_file : ""}, {"mcpServers", mcp_server_config::Serialize(servers)}};
+		bundle.manifest = {{"format", 1}, {"mcpOnly", !configuration.enabled && !host_instructions}, {"files", nlohmann::json::object()},
+		    {"hostInstructionFile", ((configuration.enabled && !host_instructions_in_prompt) || host_instructions) && !host.instruction_text ? host.instruction_file : ""}, {"mcpServers", mcp_server_config::Serialize(servers)}};
+		if (!configuration.enabled && host_instructions) bundle.manifest["hostInstructionsOnly"] = true;
 		// Format 1 helpers predating this optional hint retain their ordinary eager MCP discovery.
 		if (open_code_discovery) bundle.manifest["openCodeCodeMode"] = true;
 		if (open_code_uam_control_deadline) bundle.manifest["openCodeUamControlDeadline"] = true;
@@ -267,7 +269,15 @@ namespace uam
 			    " progressiveMcp=" + (open_code_discovery ? "applied" : "not-applied") + " mcpServers=" + std::to_string(servers.size()) + " [" + names + "]" +
 			    " instructionsBytes=" + std::to_string(instructions == bundle.files.end() ? 0 : instructions->second.size()));
 		}
-		bundle.local_directory = data_root / "runtime" / "provider-setup" / provider_setup::Digest(bundle.manifest.dump());
+		// A link above the data folder is the user's own path; links below it stay refused.
+		std::filesystem::path resolved_data_root = data_root;
+		std::error_code resolve_error;
+		if (!provider_setup::NoSymlinks(data_root))
+		{
+			const std::filesystem::path resolved = std::filesystem::weakly_canonical(data_root, resolve_error);
+			if (!resolve_error) resolved_data_root = resolved;
+		}
+		bundle.local_directory = resolved_data_root / "runtime" / "provider-setup" / provider_setup::Digest(bundle.manifest.dump());
 		std::vector<std::string> missing;
 		if (!provider_setup::Prepare(bundle.local_directory, bundle.manifest, missing, error)) return false;
 		// Prepare fully verified the existing bundle directory; each install still checks every component below it.

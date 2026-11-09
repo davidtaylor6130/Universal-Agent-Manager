@@ -599,6 +599,8 @@ namespace uam
 		std::string workspace;
 		std::string prompt;
 		int memory_budget = 0;
+		bool capture_host_text = false;
+		std::string host_text;
 		std::string context;
 		std::string error;
 		std::stop_source cancel;
@@ -829,6 +831,8 @@ namespace uam
 		std::string timeout_stop_kind, timeout_stop_channel, timeout_stop_example;
 		int timeout_stop_count = 0;
 		std::string provider_protocol_instructions;
+		std::string pending_host_instructions_delivery; // Runtime-only: marker to record once this prompt is delivered.
+		std::string goal_host_instructions_delivery; // Runtime-only: private goal sessions share the chat, so their marker stays off it.
 		std::string uam_control_capability_id;
 		bool managed_launch_attempted = false;
 		bool managed_cancellation_pending = false;

@@ -216,6 +216,7 @@ namespace uam::provider_setup
 		if (!manifest.is_object() || !manifest.contains("format") || !manifest["format"].is_number_integer() || manifest["format"] != 1 || !manifest.contains("files") || !manifest["files"].is_object() || manifest["files"].size() > kMaxFiles)
 		{ error = "Central resource manifest is invalid."; return false; }
 		if (manifest.contains("mcpOnly") && !manifest["mcpOnly"].is_boolean()) { error = "MCP-only metadata must be boolean."; return false; }
+		if (manifest.contains("hostInstructionsOnly") && !manifest["hostInstructionsOnly"].is_boolean()) { error = "Host instruction metadata must be boolean."; return false; }
 		if (manifest.contains("openCodeCodeMode") && !manifest["openCodeCodeMode"].is_boolean()) { error = "OpenCode discovery metadata must be boolean."; return false; }
 		if (manifest.contains("openCodeUamControlDeadline") && !manifest["openCodeUamControlDeadline"].is_boolean()) { error = "OpenCode UAM control deadline metadata must be boolean."; return false; }
 		if (manifest.contains("openCodeRequestTimeout"))
@@ -259,7 +260,9 @@ namespace uam::provider_setup
 	inline bool Prepare(const std::filesystem::path& directory, const nlohmann::json& manifest, std::vector<std::string>& missing, std::string& error)
 	{
 		if (!ValidateManifest(manifest, error)) return false;
-		if (!directory.is_absolute() || !NoSymlinks(directory) || directory.filename() != Digest(manifest.dump()))
+		if (directory.is_absolute() && !NoSymlinks(directory))
+		{ error = "The launch resource folder's path contains a symbolic link."; return false; }
+		if (!directory.is_absolute() || directory.filename() != Digest(manifest.dump()))
 		{ error = "Central resource directory does not match its manifest."; return false; }
 		std::error_code ec;
 		std::filesystem::create_directories(directory, ec);
@@ -484,9 +487,16 @@ namespace uam::provider_setup
 		system["modelConfigs"]["customOverrides"] = std::move(overrides);
 		// Concrete choices retain their identity instead of native preview/GA alias substitution.
 		system["modelConfigs"]["modelIdResolutions"][thinking["model"].get<std::string>()] = {{"default", thinking["model"]}, {"contexts", nlohmann::json::array()}};
-		// Changing the system-settings path must not relocate native system defaults.
-		SetEnvironment(environment, "GEMINI_CLI_SYSTEM_DEFAULTS_PATH", defaults_path);
 		return true;
+	}
+
+	/// <summary>Gemini derives system defaults from the system-settings folder, so replacing that path must not move them.</summary>
+	inline void PreserveGeminiSystemDefaults(const std::filesystem::path& system_path, const std::filesystem::path& workspace, Environment& environment)
+	{
+		std::string defaults_path = EnvironmentValue(environment, "GEMINI_CLI_SYSTEM_DEFAULTS_PATH");
+		if (defaults_path.empty()) defaults_path = uam::paths::Utf8PathString(system_path.parent_path() / "system-defaults.json");
+		if (uam::paths::PathFromUtf8(defaults_path).is_relative()) defaults_path = uam::paths::Utf8PathString(workspace / uam::paths::PathFromUtf8(defaults_path));
+		SetEnvironment(environment, "GEMINI_CLI_SYSTEM_DEFAULTS_PATH", defaults_path);
 	}
 
 	/// <summary>Resolve expert settings only on the executing host and preserve every key except the explicit speed override.</summary>
@@ -543,6 +553,43 @@ namespace uam::provider_setup
 		return true;
 	}
 
+	/// <summary>A final separator adds an empty path component without changing the workspace.</summary>
+	inline std::filesystem::path NormalizedWorkspaceRoot(const std::filesystem::path& workspace)
+	{
+		std::filesystem::path normalized = workspace.lexically_normal();
+		if (normalized.filename().empty() && normalized.has_relative_path()) normalized = normalized.parent_path();
+		return normalized;
+	}
+
+	/// <summary>Reads a file whose parent folders may be links; only the file itself must not be one.</summary>
+	inline bool ReadFileBehindLinkedParent(const std::filesystem::path& file, std::string& bytes, std::string& error)
+	{
+		std::error_code ec;
+		const std::filesystem::path parent = std::filesystem::canonical(file.parent_path(), ec);
+		return ReadFile(ec ? file : parent / file.filename(), bytes, error);
+	}
+
+	/// <summary>Reads a file through the real workspace path: a link above the workspace is the user's own path, while a link inside it stays refused.</summary>
+	inline bool ReadWorkspaceFile(const std::filesystem::path& file, const std::filesystem::path& workspace, std::string& bytes, std::string& error)
+	{
+		std::error_code ec;
+		const std::filesystem::path resolved = std::filesystem::canonical(workspace, ec);
+		// A provider resolves a relative flag against its working directory, which is the workspace.
+		const std::filesystem::path absolute = file.is_absolute() ? file : workspace / file;
+		const std::filesystem::path relative = absolute.lexically_normal().lexically_relative(NormalizedWorkspaceRoot(workspace));
+		const bool inside = !ec && !relative.empty() && *relative.begin() != "..";
+		if (inside) return ReadFile(resolved / relative, bytes, error);
+		return ReadFileBehindLinkedParent(absolute, bytes, error);
+	}
+
+	/// <summary>Launch resources must sit directly in the named folder of this workspace's managed .UAM directory.</summary>
+	inline bool IsManagedWorkspaceResource(const std::filesystem::path& directory, std::string_view folder, const std::filesystem::path& workspace)
+	{
+		const std::filesystem::path managed = directory.parent_path();
+		return managed.filename() == folder && managed.parent_path().filename() == ".UAM" &&
+		    managed.parent_path().parent_path().lexically_normal() == NormalizedWorkspaceRoot(workspace);
+	}
+
 	/// <summary>Apply session-only settings on the executing host; secrets never travel from controller to SSH.</summary>
 	inline bool Apply(const std::string& provider, const std::filesystem::path& directory,
 	                  const std::filesystem::path& workspace, std::vector<std::string>& argv,
@@ -568,16 +615,17 @@ namespace uam::provider_setup
 			if (permissions_error) { error = "Could not set central resource permissions."; return false; }
 		}
 		const bool mcp_only = manifest.value("mcpOnly", false);
+		const bool host_instructions_only = manifest.value("hostInstructionsOnly", false);
 		std::string instructions;
 		if (!mcp_only && !ReadFile(directory / "AGENTS.md", instructions, error)) return false;
 		const std::string root = uam::paths::Utf8PathString(directory);
 		instructions = ReplaceRoot(instructions, root);
 		std::error_code workspace_error;
 		// Codex loads workspace AGENTS.md natively; copying it into -c duplicates context and can exceed Windows argv limits.
-		if (!mcp_only && provider != uam::provider_ids::kCodexCli && std::filesystem::exists(workspace / "AGENTS.md", workspace_error))
+		if (!mcp_only && !host_instructions_only && provider != uam::provider_ids::kCodexCli && std::filesystem::exists(workspace / "AGENTS.md", workspace_error))
 		{
 			std::string workspace_instructions;
-			if (!ReadFile(workspace / "AGENTS.md", workspace_instructions, error)) return false;
+			if (!ReadWorkspaceFile(workspace / "AGENTS.md", workspace, workspace_instructions, error)) return false;
 			instructions += "\n\nWorkspace AGENTS.md:\n" + workspace_instructions;
 		}
 		else if (workspace_error) { error = "Workspace instructions are unavailable."; return false; }
@@ -586,11 +634,11 @@ namespace uam::provider_setup
 		if (!host_file.empty())
 		{
 			std::string host_instructions;
-			if (!ReadFile(uam::paths::PathFromUtf8(host_file), host_instructions, error)) return false;
+			if (!ReadFileBehindLinkedParent(uam::paths::PathFromUtf8(host_file), host_instructions, error)) return false;
 			instructions += "\n\n" + host_instructions;
 		}
 		// Generated files remain private and are never written to the workspace or provider home.
-		const std::filesystem::path runtime = directory / "runtime" / provider / Digest(session_servers.dump() + nlohmann::json(argv).dump() + nlohmann::json(environment).dump());
+		const std::filesystem::path runtime = directory / "runtime" / provider / Digest(uam::paths::Utf8PathString(workspace) + session_servers.dump() + nlohmann::json(argv).dump() + nlohmann::json(environment).dump());
 		if (!NoSymlinks(runtime)) { error = "Central runtime path contains a symbolic link."; return false; }
 		std::error_code ec;
 		std::filesystem::create_directories(runtime, ec);
@@ -650,7 +698,7 @@ namespace uam::provider_setup
 			{
 				if (mcp_only || (argv[index] != "--append-system-prompt-file" && argv[index] != "--append-system-prompt")) { ++index; continue; }
 				std::string previous = argv[index + 1];
-				if (argv[index] == "--append-system-prompt-file" && !ReadFile(uam::paths::PathFromUtf8(previous), previous, error)) return false;
+				if (argv[index] == "--append-system-prompt-file" && !ReadWorkspaceFile(uam::paths::PathFromUtf8(previous), workspace, previous, error)) return false;
 				instructions += "\n\n" + previous;
 				argv.erase(argv.begin() + index, argv.begin() + index + 2);
 			}
@@ -662,7 +710,7 @@ namespace uam::provider_setup
 				const std::string source = argv[index + 1];
 				std::string content = source;
 				if (!source.starts_with("{"))
-					if (!ReadFile(uam::paths::PathFromUtf8(source), content, error)) return false;
+					if (!ReadWorkspaceFile(uam::paths::PathFromUtf8(source), workspace, content, error)) return false;
 				const nlohmann::json previous = nlohmann::json::parse(content, nullptr, false);
 				if (!previous.is_object() || !previous.contains("mcpServers") || !previous["mcpServers"].is_object())
 				{ error = "Existing Claude MCP configuration is invalid."; return false; }
@@ -687,7 +735,7 @@ namespace uam::provider_setup
 			if (!mcp_only && structured_setup) *protocol_instructions = instructions;
 			else if (!mcp_only)
 			{
-				if (instructions.size() > max_instruction_bytes) { error = "Codex central instructions exceed the OS launch limit. Move reference material into skills."; return false; }
+				if (instructions.size() > max_instruction_bytes) { error = host_instructions_only ? "Host instructions exceed the OS launch limit for this provider. Shorten them." : "Codex central instructions exceed the OS launch limit. Move reference material into skills."; return false; }
 				argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + nlohmann::json(instructions).dump()});
 			}
 			for (const auto& [name, server] : native_servers.items())
@@ -823,7 +871,15 @@ namespace uam::provider_setup
 			}
 			if ((config.contains("context") && !config["context"].is_object()) || (config.contains("mcpServers") && !config["mcpServers"].is_object()))
 			{ error = "Gemini context and MCP settings must be objects."; return false; }
-			if (!mcp_only) config["context"]["loadMemoryFromIncludeDirectories"] = true;
+			if (!mcp_only)
+			{
+				config["context"]["loadMemoryFromIncludeDirectories"] = true;
+				// Gemini walks up from an include directory to its git root, which would also load the bundle's own AGENTS.md.
+				const std::filesystem::path memory_boundary = runtime / ".git";
+				if (!NoSymlinks(memory_boundary)) { error = "Central runtime path contains a symbolic link."; return false; }
+				std::filesystem::create_directories(memory_boundary, ec);
+				if (ec) { error = "Could not create the private memory boundary."; return false; }
+			}
 			if (!mcp_only)
 			{
 				// Add AGENTS.md without replacing the user's configured memory filenames.
@@ -849,7 +905,21 @@ namespace uam::provider_setup
 				if (config.contains("context") && config["context"].is_object() && config["context"].contains("fileName")) names = config["context"]["fileName"];
 				if (names.is_string()) names = nlohmann::json::array({names});
 				if (!names.is_array()) { error = "Gemini context filenames are invalid."; return false; }
-				if (!mcp_only && std::find(names.begin(), names.end(), nlohmann::json("AGENTS.md")) == names.end()) names.push_back("AGENTS.md");
+				if (host_instructions_only)
+				{
+					// Listing AGENTS.md would also load the workspace's files, so use a name Gemini already reads.
+					if (names.empty()) names.push_back("GEMINI.md");
+					const std::string context_name = names.front().is_string() ? names.front().get<std::string>() : std::string{};
+					if (!SafeRelativePath(context_name) || context_name.find_first_of("/\\") != std::string::npos) { error = "Gemini context filenames are invalid."; return false; }
+					// The runtime AGENTS.md is already loaded when that name is listed; a second copy would repeat the text.
+					if (std::find(names.begin(), names.end(), nlohmann::json("AGENTS.md")) == names.end())
+					{
+						const std::filesystem::path context_path = runtime / uam::paths::PathFromUtf8(context_name);
+						if (!NoSymlinks(context_path)) { error = "Central runtime file contains a symbolic link."; return false; }
+						if (!WriteRuntimeFile(context_path, instructions, error)) return false;
+					}
+				}
+				else if (std::find(names.begin(), names.end(), nlohmann::json("AGENTS.md")) == names.end()) names.push_back("AGENTS.md");
 				config["context"]["fileName"] = names;
 			}
 			for (const auto& [name, server] : native_servers.items())
@@ -862,6 +932,7 @@ namespace uam::provider_setup
 			if (snapshot.size() > kMaxFileBytes) { error = "Merged Gemini settings exceed 2 MiB."; return false; }
 			const std::filesystem::path settings = runtime / ("gemini-settings-" + Digest(snapshot) + ".json");
 			if (!WriteRuntimeFile(settings, snapshot, error, false)) { error = "Could not install immutable Gemini configuration. " + error; return false; }
+			PreserveGeminiSystemDefaults(uam::paths::PathFromUtf8(existing), workspace, environment);
 			SetEnvironment(environment, "GEMINI_CLI_SYSTEM_SETTINGS_PATH", uam::paths::Utf8PathString(settings));
 			if (!mcp_only) argv.insert(argv.end(), {"--include-directories", uam::paths::Utf8PathString(runtime)});
 		}

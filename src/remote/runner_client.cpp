@@ -1,7 +1,7 @@
 #include <fstream>
 #include "common/platform/observed_process_stop.h"
 #include "common/utils/io_utils.h"
-#include "common/provider/provider_setup.h"
+#include "common/provider/provider_setup_location.h"
 #include "common/config/build_features.h"
 #include "remote/memory_protocol.h"
 #include "remote/runner_client.h"
@@ -249,6 +249,8 @@ namespace uam::remote
 		m_providerNativeContext = response["capabilities"].value("providerNativeContext", false);
 		m_centralProviderConfiguration = response["capabilities"].value("centralProviderConfiguration", false);
 		m_geminiThinkingConfiguration = response["capabilities"].value("geminiThinkingConfiguration", false);
+		m_hostInstructionsOnlyConfiguration = response["capabilities"].value("hostInstructionsOnlyConfiguration", false);
+		m_providerConfigurationLocation = response["capabilities"].value("providerConfigurationLocation", false);
 		m_claudeTerminalFastConfiguration = response["capabilities"].value("claudeTerminalFastConfiguration", false);
 		m_processOutputAcknowledgement = m_expectedProtocolVersion >= 3 &&
 		    response["capabilities"].value("processOutputAcknowledgement", false);
@@ -388,13 +390,47 @@ namespace uam::remote
 		return false;
 	}
 
+	bool RunnerClient::ProviderConfigurationLocation(const std::filesystem::path& source, const std::filesystem::path& workspace, std::filesystem::path& target, std::string* error_out, std::stop_token stop_token)
+	{
+		target = workspace / ".UAM" / "provider-setup" / source.filename();
+		if (!Connect(error_out, stop_token)) return false;
+		if (!m_providerConfigurationLocation) return true;
+		std::string bytes;
+		std::string error;
+		if (!uam::provider_setup::ReadFile(source / "owner.json", bytes, error)) { if (error_out) *error_out = error; return false; }
+		// Host-only setup references no files of its own, so it never needs to live in the workspace.
+		const bool prefer_workspace = !nlohmann::json::parse(bytes, nullptr, false).contains("hostInstructionsOnly");
+		nlohmann::json response;
+		if (!Request({{"type", "configuration.location"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"digest", uam::paths::Utf8PathString(source.filename())}, {"preferWorkspace", prefer_workspace}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+		const std::string chosen = response.value("result", nlohmann::json::object()).value("directory", std::string{});
+		if (!uam::provider_setup::IsAbsoluteOnAnyHost(chosen)) { if (error_out) *error_out = "SSH helper returned an invalid launch setup location."; return false; }
+		target = uam::paths::PathFromUtf8(chosen);
+		return true;
+	}
+
+	bool RunnerClient::ProviderContextLocation(const std::filesystem::path& requested, std::filesystem::path& directory, std::string* error_out, std::stop_token stop_token)
+	{
+		directory = requested;
+		if (!Connect(error_out, stop_token)) return false;
+		if (!m_providerConfigurationLocation) return true;
+		nlohmann::json response;
+		if (!Request({{"type", "context.location"}, {"directory", uam::paths::Utf8PathString(requested)}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+		const std::string chosen = response.value("result", nlohmann::json::object()).value("directory", std::string{});
+		if (!uam::provider_setup::IsAbsoluteOnAnyHost(chosen)) { if (error_out) *error_out = "SSH helper returned an invalid context location."; return false; }
+		directory = uam::paths::PathFromUtf8(chosen);
+		return true;
+	}
+
 	bool RunnerClient::InstallProviderConfiguration(const std::filesystem::path& source, const std::filesystem::path& target, std::string* error_out, std::stop_token stop_token)
 	{
 		if (!Connect(error_out, stop_token)) return false;
 		std::string error;
 		if (!m_centralProviderConfiguration)
 		{
-			if (error_out) *error_out = "Update the SSH helper before using central provider configuration.";
+			// A host-only launch has no Central Setup for the message to name.
+			std::string owner;
+			const bool host_only = uam::provider_setup::ReadFile(source / "owner.json", owner, error) && nlohmann::json::parse(owner, nullptr, false).contains("hostInstructionsOnly");
+			if (error_out) *error_out = host_only ? "Update the SSH helper before launching on a host with host instructions." : "Update the SSH helper before using central provider configuration.";
 			return false;
 		}
 		std::string bytes;
@@ -405,6 +441,11 @@ namespace uam::remote
 		    (manifest.contains("claudeTerminalFastMode") && !m_claudeTerminalFastConfiguration))
 		{
 			if (error_out) *error_out = "Update the SSH helper before using the required Gemini thinking or Claude terminal speed override.";
+			return false;
+		}
+		if (manifest.contains("hostInstructionsOnly") && !m_hostInstructionsOnlyConfiguration)
+		{
+			if (error_out) *error_out = "Update the SSH helper before launching on a host with host instructions.";
 			return false;
 		}
 		nlohmann::json response;
@@ -1339,7 +1380,7 @@ namespace uam::remote
 	}
 
 	bool RunnerClient::ReadTextFile(const std::filesystem::path& remote_path, std::string& text,
-	    std::string* error_out, std::stop_token stop_token)
+	    std::string* error_out, std::stop_token stop_token, bool allow_linked_ancestors)
 	{
 		text.clear();
 		if (!m_connected && !Connect(error_out, stop_token)) return false;
@@ -1349,7 +1390,7 @@ namespace uam::remote
 			return false;
 		}
 		nlohmann::json response;
-		if (!Request({{"type", "context.read"}, {"path", uam::paths::Utf8PathString(remote_path)}},
+		if (!Request({{"type", "context.read"}, {"path", uam::paths::Utf8PathString(remote_path)}, {"allowLinkedAncestors", allow_linked_ancestors}},
 		    response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
 		if (!response.contains("result") || !response["result"].is_object() || !response["result"].contains("text") || !response["result"]["text"].is_string() || response["result"]["text"].get_ref<const std::string&>().size() > 256 * 1024)
 		{
@@ -1606,6 +1647,8 @@ namespace uam::remote
 		m_providerNativeContext = false;
 		m_centralProviderConfiguration = false;
 		m_geminiThinkingConfiguration = false;
+		m_hostInstructionsOnlyConfiguration = false;
+		m_providerConfigurationLocation = false;
 		m_claudeTerminalFastConfiguration = false;
 	}
 }

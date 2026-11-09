@@ -156,6 +156,8 @@ class IProviderRuntime
 	virtual const ProviderCliPolicy* CliVersionPolicy() const { return nullptr; }
 	/// <summary>Whether isolated text workers can run without native tools.</summary>
 	virtual bool SupportsTextWorkers() const { return true; }
+	/// <summary>Structured launches of this provider cannot rely on launch instructions, so host instructions go in a new native session's first prompt.</summary>
+	virtual bool DeliversHostInstructionsInFirstPrompt() const { return false; }
 	/// <summary>Returns a local CLI compatibility error, or empty when this runtime permits launch.</summary>
 	virtual std::string LocalCliCompatibilityError(const uam::AppState&) const { return {}; }
 	/// <summary>Checks structured protocol compatibility for a checked executing-host CLI version, separately from installation policy.</summary>

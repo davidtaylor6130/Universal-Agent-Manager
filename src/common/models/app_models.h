@@ -796,6 +796,7 @@ struct ChatSession
 	/// <summary>Transcript snapshot carried to a new provider, bound after prompt delivery.</summary>
 	std::string provider_handoff_context;
 	std::string provider_handoff_session_id;
+	std::string host_instructions_delivery; // Native session id and digest of the host text last delivered in a prompt.
 	/// <summary>Owned native context locations retained until chat deletion succeeds.</summary>
 	std::vector<ProviderHandoffCliContext> provider_handoff_cli_contexts;
 	std::string agent_run_id;

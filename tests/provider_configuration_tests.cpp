@@ -1,10 +1,14 @@
 #include "common/provider/provider_setup_input.h"
+#include "common/provider/provider_setup_location.h"
 #include "test_harness.h"
 #include <barrier>
 #include <thread>
 #include "app/provider_configuration_service.h"
 #include "app/provider_model_catalog_service.h"
 #include "app/central_instruction_file_service.h"
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 #if defined(__APPLE__)
 #include <sys/acl.h>
 #include <sys/xattr.h>
@@ -1008,6 +1012,360 @@ UAM_TEST(CentralSshClientTransfersRealAssetsAndPreservesHostContext)
 	client.Disconnect();
 }
 
+namespace
+{
+	struct HelperOwnedSetupFixture
+	{
+		TempDir temp{"uam-helper-owned-setup"};
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		fs::path root = fs::canonical(temp.root);
+		fs::path home = root / "helper-home";
+		fs::path helper_root = home / ".uam" / "provider-setup";
+		fs::path real = root / "real";
+		fs::path linked = root / "linked";
+		std::unique_ptr<ScopedEnvVar> home_env;
+		std::unique_ptr<uam::remote::RunnerClient> client;
+
+		HelperOwnedSetupFixture()
+		{
+			fs::create_directories(home);
+			fs::create_directories(real);
+			fs::create_directory_symlink(real, linked);
+			home_env = std::make_unique<ScopedEnvVar>("HOME", home.string());
+			client = std::make_unique<uam::remote::RunnerClient>(service, std::vector<std::string>{(service.ResolveCurrentExecutablePath().parent_path() / "uam-runner").string(), "bridge-direct"});
+		}
+
+		~HelperOwnedSetupFixture()
+		{
+			client->Disconnect();
+			std::error_code ec;
+			fs::permissions(real, fs::perms::owner_all, fs::perm_options::replace, ec);
+		}
+
+		uam::ProviderConfigurationBundle Bundle(const fs::path& workspace, bool central, std::string text = "Host marker", std::string file = {})
+		{
+			AppSettings settings;
+			settings.central_provider_configuration.enabled = central;
+			if (central) settings.central_provider_configuration.instructions = "Central marker";
+			ChatSession chat;
+			chat.provider_id = uam::provider_ids::kClaudeCli;
+			ExecutionHost host;
+			host.id = "ssh-test";
+			host.transport = "ssh";
+			if (file.empty()) host.instruction_text = text;
+			else host.instruction_file = file;
+			uam::ProviderConfigurationBundle bundle;
+			std::string error;
+			if (!uam::PrepareProviderConfiguration(root / "controller", settings, chat, host, workspace, bundle, error)) throw std::runtime_error(error);
+			return bundle;
+		}
+
+		std::string InstallAndApply(const uam::ProviderConfigurationBundle& bundle, const fs::path& workspace, fs::path& target)
+		{
+			std::string error;
+			if (!client->ProviderConfigurationLocation(bundle.local_directory, workspace, target, &error)) throw std::runtime_error(error);
+			if (!client->InstallProviderConfiguration(bundle.local_directory, target, &error)) throw std::runtime_error(error);
+			std::vector<std::string> argv{"claude"};
+			uam::provider_setup::Environment environment;
+			if (!uam::provider_setup::Apply(uam::provider_ids::kClaudeCli, target, workspace, argv, environment, error)) throw std::runtime_error(error);
+			return ReadFile(uam::paths::PathFromUtf8(argv.back()));
+		}
+	};
+}
+
+UAM_TEST(HostInstructionsReachALaunchFromASymlinkedWorkspace)
+{
+	HelperOwnedSetupFixture fixture;
+	fs::path target;
+	const std::string delivered = fixture.InstallAndApply(fixture.Bundle(fixture.linked, false), fixture.linked, target);
+	UAM_ASSERT(delivered.find("Host marker") != std::string::npos);
+	UAM_ASSERT_EQ(target.parent_path(), fixture.helper_root);
+	UAM_ASSERT(!fs::exists(fixture.real / ".UAM"));
+}
+
+UAM_TEST(HostInstructionsReachALaunchFromAReadOnlyWorkspace)
+{
+	HelperOwnedSetupFixture fixture;
+	if (::geteuid() == 0) return; // Root ignores the permission bits this case depends on.
+	fs::permissions(fixture.real, fs::perms::owner_read | fs::perms::owner_exec, fs::perm_options::replace);
+	fs::path target;
+	const std::string delivered = fixture.InstallAndApply(fixture.Bundle(fixture.real, false), fixture.real, target);
+	UAM_ASSERT(delivered.find("Host marker") != std::string::npos);
+	UAM_ASSERT_EQ(target.parent_path(), fixture.helper_root);
+}
+
+UAM_TEST(CentralSetupFallsBackToTheHelperFolderForUnusableWorkspaces)
+{
+	HelperOwnedSetupFixture fixture;
+	UAM_ASSERT(uam::io::WriteTextFile(fixture.real / "AGENTS.md", "Workspace marker"));
+	fs::path target;
+	const std::string linked = fixture.InstallAndApply(fixture.Bundle(fixture.linked, true), fixture.linked, target);
+	UAM_ASSERT_EQ(target.parent_path(), fixture.helper_root);
+	UAM_ASSERT(linked.find("Host marker") != std::string::npos);
+	UAM_ASSERT(linked.find("Workspace marker") != std::string::npos);
+	if (::geteuid() == 0) return;
+	fs::permissions(fixture.real, fs::perms::owner_read | fs::perms::owner_exec, fs::perm_options::replace);
+	const std::string read_only = fixture.InstallAndApply(fixture.Bundle(fixture.real, true), fixture.real, target);
+	UAM_ASSERT_EQ(target.parent_path(), fixture.helper_root);
+	UAM_ASSERT(read_only.find("Workspace marker") != std::string::npos);
+}
+
+UAM_TEST(LaunchSetupStaysInAUsableWorkspaceOnlyWhenItReferencesItsOwnFiles)
+{
+	HelperOwnedSetupFixture fixture;
+	fs::path target;
+	const uam::ProviderConfigurationBundle central = fixture.Bundle(fixture.real, true);
+	UAM_ASSERT(fixture.InstallAndApply(central, fixture.real, target).find("Host marker") != std::string::npos);
+	UAM_ASSERT_EQ(target, fixture.real / ".UAM/provider-setup" / central.local_directory.filename());
+	// Host-only setup has no files for agents to read, so the workspace stays untouched even when it could hold it.
+	fs::remove_all(fixture.real / ".UAM");
+	UAM_ASSERT(fixture.InstallAndApply(fixture.Bundle(fixture.real, false), fixture.real, target).find("Host marker") != std::string::npos);
+	UAM_ASSERT_EQ(target.parent_path(), fixture.helper_root);
+	UAM_ASSERT(!fs::exists(fixture.real / ".UAM"));
+}
+
+UAM_TEST(LinkedManagedFolderInsideAWorkspaceUsesTheHelperFolderInstead)
+{
+	HelperOwnedSetupFixture fixture;
+	const fs::path other = fixture.root / "other";
+	fs::create_directories(other);
+	fs::create_directory_symlink(other, fixture.real / ".UAM");
+	fs::path target;
+	UAM_ASSERT(fixture.InstallAndApply(fixture.Bundle(fixture.real, true), fixture.real, target).find("Host marker") != std::string::npos);
+	UAM_ASSERT_EQ(target.parent_path(), fixture.helper_root);
+	UAM_ASSERT(fs::is_empty(other));
+}
+
+UAM_TEST(MissingLegacyHostFileStillStopsALaunchFromTheHelperFolder)
+{
+	HelperOwnedSetupFixture fixture;
+	const uam::ProviderConfigurationBundle bundle = fixture.Bundle(fixture.linked, false, {}, (fixture.root / "missing-host.md").string());
+	fs::path target;
+	bool stopped = false;
+	try { (void)fixture.InstallAndApply(bundle, fixture.linked, target); }
+	catch (const std::runtime_error& failure) { stopped = std::string(failure.what()).find("missing-host.md") != std::string::npos; }
+	UAM_ASSERT(stopped);
+}
+
+UAM_TEST(TwoWorkspacesSharingTheHelperFolderKeepTheirOwnProjectInstructions)
+{
+	HelperOwnedSetupFixture fixture;
+	const fs::path other_real = fixture.root / "other-real";
+	const fs::path other_linked = fixture.root / "other-linked";
+	fs::create_directories(other_real);
+	fs::create_directory_symlink(other_real, other_linked);
+	UAM_ASSERT(uam::io::WriteTextFile(fixture.real / "AGENTS.md", "First workspace marker"));
+	UAM_ASSERT(uam::io::WriteTextFile(other_real / "AGENTS.md", "Second workspace marker"));
+	const uam::ProviderConfigurationBundle bundle = fixture.Bundle(fixture.linked, true);
+	fs::path target;
+	UAM_ASSERT(fixture.InstallAndApply(bundle, fixture.linked, target).find("First workspace marker") != std::string::npos);
+	const auto launch = [&](const fs::path& workspace)
+	{
+		std::vector<std::string> argv{"claude"};
+		uam::provider_setup::Environment environment;
+		std::string error;
+		if (!uam::provider_setup::Apply(uam::provider_ids::kClaudeCli, target, workspace, argv, environment, error)) throw std::runtime_error(error);
+		return uam::paths::PathFromUtf8(argv.back());
+	};
+	const fs::path first = launch(fixture.linked);
+	const fs::path second = launch(other_linked);
+	UAM_ASSERT(first != second);
+	UAM_ASSERT(ReadFile(first).find("First workspace marker") != std::string::npos);
+	UAM_ASSERT(ReadFile(first).find("Second workspace marker") == std::string::npos);
+	UAM_ASSERT(ReadFile(second).find("Second workspace marker") != std::string::npos);
+}
+
+UAM_TEST(HandoffContextMovesToTheHelperFolderOnlyForAReadOnlyWorkspace)
+{
+	HelperOwnedSetupFixture fixture;
+	const std::string token = "0123456789abcdef";
+	std::string error;
+	fs::path chosen;
+	const fs::path writable = fixture.real / ".UAM/context" / token;
+	UAM_ASSERT(fixture.client->ProviderContextLocation(writable, chosen, &error));
+	UAM_ASSERT_EQ(chosen, writable);
+	UAM_ASSERT(fixture.client->PrepareProviderContext(chosen, &error));
+	UAM_ASSERT(fixture.client->RemoveProviderContext(chosen, &error));
+	fs::remove_all(fixture.real / ".UAM");
+	if (::geteuid() == 0) return;
+	fs::permissions(fixture.real, fs::perms::owner_read | fs::perms::owner_exec, fs::perm_options::replace);
+	UAM_ASSERT(fixture.client->ProviderContextLocation(writable, chosen, &error));
+	UAM_ASSERT_EQ(chosen, fixture.home / ".UAM/context" / token);
+	UAM_ASSERT(uam::provider_setup::IsHelperContextResource(chosen));
+	UAM_ASSERT(fixture.client->PrepareProviderContext(chosen, &error));
+	UAM_ASSERT(fs::is_directory(chosen));
+	UAM_ASSERT(fixture.client->RemoveProviderContext(chosen, &error));
+}
+
+UAM_TEST(ClaudeHandoffFileUnderALinkedWorkspaceJoinsTheLaunchInstructions)
+{
+	HelperOwnedSetupFixture fixture;
+	const std::string relative = ".UAM/context/0123456789abcdef/conversation.md";
+	UAM_ASSERT(uam::io::WriteTextFile(fixture.real / relative, "Handoff marker"));
+	const uam::ProviderConfigurationBundle bundle = fixture.Bundle(fixture.linked, false);
+	fs::path target;
+	(void)fixture.InstallAndApply(bundle, fixture.linked, target);
+	std::vector<std::string> argv{"claude", "--append-system-prompt-file", (fixture.linked / relative).string()};
+	uam::provider_setup::Environment environment;
+	std::string error;
+	UAM_ASSERT(uam::provider_setup::Apply(uam::provider_ids::kClaudeCli, target, fixture.linked, argv, environment, error));
+	const std::string delivered = ReadFile(uam::paths::PathFromUtf8(argv.back()));
+	UAM_ASSERT(delivered.find("Host marker") != std::string::npos);
+	UAM_ASSERT(delivered.find("Handoff marker") != std::string::npos);
+	// Relative flags resolve against the workspace, as the provider itself would.
+	UAM_ASSERT(uam::io::WriteTextFile(fixture.real / "prompts/system.md", "Relative prompt marker"));
+	UAM_ASSERT(uam::io::WriteTextFile(fixture.real / ".mcp.json", R"({"mcpServers":{"user-server":{"command":"true"}}})"));
+	for (const std::string& mcp : {(fixture.linked / ".mcp.json").string(), std::string(".mcp.json")})
+	{
+		argv = {"claude", "--append-system-prompt-file", "prompts/system.md", "--mcp-config", mcp};
+		environment.clear();
+		UAM_ASSERT(uam::provider_setup::Apply(uam::provider_ids::kClaudeCli, target, fixture.linked, argv, environment, error));
+		const auto file_flag = std::ranges::find(argv, "--append-system-prompt-file");
+		UAM_ASSERT(ReadFile(uam::paths::PathFromUtf8(*(file_flag + 1))).find("Relative prompt marker") != std::string::npos);
+		const auto config_flag = std::ranges::find(argv, "--mcp-config");
+		UAM_ASSERT(ReadFile(uam::paths::PathFromUtf8(*(config_flag + 1))).find("user-server") != std::string::npos);
+	}
+	// A link inside the workspace is still refused.
+	const fs::path outside = fixture.root / "outside.md";
+	UAM_ASSERT(uam::io::WriteTextFile(outside, "Outside marker"));
+	fs::create_directory_symlink(outside, fixture.real / ".UAM/context/0123456789abcdef/linked.md");
+	argv = {"claude", "--append-system-prompt-file", (fixture.linked / ".UAM/context/0123456789abcdef/linked.md").string()};
+	environment.clear();
+	UAM_ASSERT(!uam::provider_setup::Apply(uam::provider_ids::kClaudeCli, target, fixture.linked, argv, environment, error));
+}
+
+UAM_TEST(RemovingARequestedHandoffFolderClearsTheHelperFolderCopy)
+{
+	HelperOwnedSetupFixture fixture;
+	if (::geteuid() == 0) return;
+	fs::permissions(fixture.real, fs::perms::owner_read | fs::perms::owner_exec, fs::perm_options::replace);
+	const fs::path requested = fixture.real / ".UAM/context/0123456789abcdef";
+	fs::path chosen;
+	std::string error;
+	UAM_ASSERT(fixture.client->ProviderContextLocation(requested, chosen, &error));
+	UAM_ASSERT(chosen != requested);
+	UAM_ASSERT(fixture.client->PrepareProviderContext(chosen, &error));
+	UAM_ASSERT(uam::io::WriteTextFile(chosen / "conversation.md", "Handoff marker"));
+	UAM_ASSERT(fixture.client->RemoveProviderContext(requested, &error));
+	UAM_ASSERT(!fs::exists(chosen / "conversation.md"));
+}
+
+UAM_TEST(LegacyHostFileBehindALinkedParentStillReachesTheLaunch)
+{
+	HelperOwnedSetupFixture fixture;
+	const fs::path real_parent = fixture.root / "real-parent";
+	fs::create_directories(real_parent);
+	UAM_ASSERT(uam::io::WriteTextFile(real_parent / "host.md", "Legacy marker"));
+	const fs::path linked_parent = fixture.root / "linked-parent";
+	fs::create_directory_symlink(real_parent, linked_parent);
+	const fs::path file = linked_parent / "host.md";
+	fs::path target;
+	UAM_ASSERT(fixture.InstallAndApply(fixture.Bundle(fixture.linked, false, {}, file.string()), fixture.linked, target).find("Legacy marker") != std::string::npos);
+	std::string text;
+	std::string error;
+	UAM_ASSERT(fixture.client->ReadTextFile(file, text, &error, {}, true));
+	UAM_ASSERT_EQ(text, std::string("Legacy marker"));
+	// The file itself may not be a link, and callers that did not ask keep the strict rule.
+	fs::create_symlink(real_parent / "host.md", real_parent / "alias.md");
+	UAM_ASSERT(!fixture.client->ReadTextFile(real_parent / "alias.md", text, &error, {}, true));
+	UAM_ASSERT(!fixture.client->ReadTextFile(file, text, &error));
+	// The same rule holds when the legacy file sits under a link inside the workspace.
+	const fs::path inner = fixture.real / "dotfiles";
+	UAM_ASSERT(uam::io::WriteTextFile(inner / "host.md", "Inner legacy marker"));
+	fs::create_directory_symlink(inner, fixture.real / "dotfiles-link");
+	UAM_ASSERT(fixture.InstallAndApply(fixture.Bundle(fixture.real, false, {}, (fixture.real / "dotfiles-link/host.md").string()), fixture.real, target).find("Inner legacy marker") != std::string::npos);
+}
+
+UAM_TEST(HandoffContextAvoidsALinkedManagedFolderInsideTheWorkspace)
+{
+	HelperOwnedSetupFixture fixture;
+	const fs::path other = fixture.root / "other";
+	fs::create_directories(other);
+	fs::create_directory_symlink(other, fixture.real / ".UAM");
+	fs::path chosen;
+	std::string error;
+	UAM_ASSERT(fixture.client->ProviderContextLocation(fixture.real / ".UAM/context/0123456789abcdef", chosen, &error));
+	UAM_ASSERT_EQ(chosen, fixture.home / ".UAM/context/0123456789abcdef");
+	UAM_ASSERT(fixture.client->PrepareProviderContext(chosen, &error));
+	UAM_ASSERT(fs::is_empty(other));
+}
+
+UAM_TEST(RemovingAHandoffFolderClearsBothCopiesWhenBothExist)
+{
+	HelperOwnedSetupFixture fixture;
+	const std::string token = "0123456789abcdef";
+	const fs::path requested = fixture.real / ".UAM/context" / token;
+	const fs::path helper = fixture.home / ".UAM/context" / token;
+	std::string error;
+	UAM_ASSERT(fixture.client->Connect(&error));
+	UAM_ASSERT(fixture.client->PrepareProviderContext(requested, &error));
+	UAM_ASSERT(fixture.client->PrepareProviderContext(helper, &error));
+	UAM_ASSERT(uam::io::WriteTextFile(requested / "conversation.md", "Workspace copy"));
+	UAM_ASSERT(uam::io::WriteTextFile(helper / "conversation.md", "Helper copy"));
+	UAM_ASSERT(fixture.client->RemoveProviderContext(requested, &error));
+	UAM_ASSERT(!fs::exists(requested / "conversation.md"));
+	UAM_ASSERT(!fs::exists(helper / "conversation.md"));
+}
+
+UAM_TEST(ControllerDataFolderReachedThroughALinkStillPreparesHostInstructions)
+{
+	HelperOwnedSetupFixture fixture;
+	const fs::path real_data = fixture.root / "real-data";
+	fs::create_directories(real_data);
+	const fs::path linked_data = fixture.root / "linked-data";
+	fs::create_directory_symlink(real_data, linked_data);
+	AppSettings settings;
+	ChatSession chat;
+	chat.provider_id = uam::provider_ids::kClaudeCli;
+	ExecutionHost host;
+	host.id = "ssh-test";
+	host.transport = "ssh";
+	host.instruction_text = "Host marker";
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(linked_data, settings, chat, host, fixture.real, bundle, error));
+	UAM_ASSERT(fs::exists(bundle.local_directory / "AGENTS.md"));
+}
+
+UAM_TEST(ExistingWorkspaceSetupFolderThisAccountCannotUseFallsBackToTheHelperFolder)
+{
+	HelperOwnedSetupFixture fixture;
+	if (::geteuid() == 0) return;
+	const uam::ProviderConfigurationBundle bundle = fixture.Bundle(fixture.real, true);
+	const fs::path blocked = fixture.real / ".UAM/provider-setup" / bundle.local_directory.filename();
+	fs::create_directories(blocked);
+	fs::permissions(blocked, fs::perms::none, fs::perm_options::replace);
+	fs::path target;
+	const std::string delivered = fixture.InstallAndApply(bundle, fixture.real, target);
+	fs::permissions(blocked, fs::perms::owner_all, fs::perm_options::replace);
+	UAM_ASSERT(delivered.find("Host marker") != std::string::npos);
+	UAM_ASSERT_EQ(target.parent_path(), fixture.helper_root);
+}
+
+UAM_TEST(HelperLocationsAcceptAbsolutePathsFromEitherPlatform)
+{
+	UAM_ASSERT(uam::provider_setup::IsAbsoluteOnAnyHost("/home/person/.uam/provider-setup/0123456789abcdef"));
+	UAM_ASSERT(uam::provider_setup::IsAbsoluteOnAnyHost("C:\\Users\\person\\.uam\\provider-setup\\0123456789abcdef"));
+	UAM_ASSERT(!uam::provider_setup::IsAbsoluteOnAnyHost("relative/provider-setup"));
+	UAM_ASSERT(!uam::provider_setup::IsAbsoluteOnAnyHost(""));
+}
+
+UAM_TEST(HelperOwnedConfigurationIsTheOnlyLocationOutsideTheWorkspace)
+{
+	HelperOwnedSetupFixture fixture;
+	fs::path root;
+	std::string error;
+	UAM_ASSERT(uam::provider_setup::HelperOwnedRoot(root, error));
+	UAM_ASSERT_EQ(root, fixture.helper_root);
+	UAM_ASSERT((fs::status(root).permissions() & (fs::perms::group_all | fs::perms::others_all)) == fs::perms::none);
+	UAM_ASSERT(uam::provider_setup::IsAllowedConfigurationDirectory(root / "0123456789abcdef", fixture.real));
+	UAM_ASSERT(uam::provider_setup::IsAllowedConfigurationDirectory(fixture.real / ".UAM/provider-setup/0123456789abcdef", fixture.real));
+	UAM_ASSERT(!uam::provider_setup::IsAllowedConfigurationDirectory(root / "nested/0123456789abcdef", fixture.real));
+	UAM_ASSERT(!uam::provider_setup::IsAllowedConfigurationDirectory(fixture.root / "elsewhere/.uam/provider-setup/0123456789abcdef", fixture.real));
+	fs::path directory;
+	UAM_ASSERT(!uam::provider_setup::ResolveConfigurationLocation(fixture.real, "../escape", false, directory, error));
+}
+
 UAM_TEST(CentralResourcesRejectSymlinkedAssetsAndPreserveClaudeHandoff)
 {
 	TempDir temp("uam-central-symbolic-links");
@@ -1286,6 +1644,61 @@ UAM_TEST(CliViewPreparesMcpInheritedFromSourceWorkspace)
 	UAM_ASSERT(uam::PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
 	const nlohmann::json generated = nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT"));
 	UAM_ASSERT_EQ(generated["mcp"][server.name]["url"], nlohmann::json(server.url));
+}
+
+UAM_TEST(CodexSetupInputCoversAThreadStartAfterARejectedResume)
+{
+	const auto frame = [](const std::string& method) { return nlohmann::json{{"id", 1}, {"method", method}, {"params", nlohmann::json::object()}}.dump() + "\n"; };
+	const auto delivered = [](const std::string& line) { return nlohmann::json::parse(line)["params"].value("developerInstructions", std::string{}); };
+	uam::codex::SetupInputState state;
+	uam::codex::SetupInputState next;
+	std::string output;
+	std::string error;
+	UAM_ASSERT(uam::codex::PrepareSetupInput("Host marker", state, frame("thread/resume"), output, next, error));
+	UAM_ASSERT_EQ(delivered(output), std::string("Host marker"));
+	UAM_ASSERT(!next.configured);
+	state = next;
+	UAM_ASSERT(uam::codex::PrepareSetupInput("Host marker", state, frame("thread/start"), output, next, error));
+	UAM_ASSERT_EQ(delivered(output), std::string("Host marker"));
+	UAM_ASSERT(next.configured);
+	// An accepted resume stops inspecting input at its first turn.
+	state = {};
+	UAM_ASSERT(uam::codex::PrepareSetupInput("Host marker", state, frame("thread/resume"), output, next, error));
+	state = next;
+	UAM_ASSERT(uam::codex::PrepareSetupInput("Host marker", state, frame("turn/start"), output, next, error));
+	UAM_ASSERT_EQ(delivered(output), std::string{});
+	UAM_ASSERT(next.configured);
+	UAM_ASSERT(next.pending.empty());
+}
+
+UAM_TEST(CliViewHostInstructionsSkipTheNoSetupShortcut)
+{
+	TempDir temp("uam-cli-host-instructions");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "chat-cli-host";
+	chat.provider_id = uam::provider_ids::kClaudeCli;
+	chat.workspace_directory = temp.root.string();
+	chat.uam_control_enabled = false;
+	chat.execution_host_id = "ssh-host";
+	ExecutionHost host;
+	host.id = chat.execution_host_id;
+	host.transport = "ssh";
+	host.platform = "linux";
+	host.ssh_alias = "never-connect";
+	host.instruction_text = "Host marker";
+	uam::CliTerminalState terminal;
+	std::vector<std::string> argv{"claude"};
+	uam::provider_setup::Environment environment;
+	std::string channel;
+	std::string error;
+	// Central Setup is off and no tool servers are attached; the launch must still prepare its setup.
+	UAM_ASSERT(!uam::PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(terminal.context_preparation != nullptr);
+	terminal.context_preparation->cancellation.request_stop();
+	app.cli_context_preparation_tasks.back().worker->join();
 }
 
 UAM_TEST(McpWindowsWorkspaceScopeMatchesAcrossControllerPlatforms)

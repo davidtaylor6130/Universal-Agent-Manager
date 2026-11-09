@@ -726,7 +726,7 @@ void UamQueryHandler::HandleCheckRemoteHostInstruction(CefRefPtr<CefBrowser>, co
 		    host);
 		std::string text;
 		std::string error;
-		return client.ReadTextFile(uam::paths::PathFromUtf8(path), text, &error)
+		return client.ReadTextFile(uam::paths::PathFromUtf8(path), text, &error, {}, true)
 		    ? uam::query_handler_async::AsyncSuccess({{"bytes", text.size()}})
 		    : uam::query_handler_async::AsyncFailure(502, error);
 	});

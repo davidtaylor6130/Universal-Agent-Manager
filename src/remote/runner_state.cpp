@@ -1,4 +1,4 @@
-#include "common/provider/provider_setup.h"
+#include "common/provider/provider_setup_location.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_text_worker.h"
 #include "remote/memory_protocol.h"
@@ -984,12 +984,16 @@ namespace uam::remote
 				if (error) return ProcessError(request, "read_failed", "Remote project memory cannot be listed.");
 			}
 			std::ranges::sort(files);
+			// A link above the workspace is the user's own path, so read through the real one; context.read still refuses links inside it.
+			std::error_code resolved_error;
+			const std::filesystem::path resolved_workspace = std::filesystem::canonical(FileSystemPath(workspace), resolved_error);
 			std::string text;
 			std::vector<std::pair<std::string, std::string>> rows;
 			std::size_t fact_bytes = 0;
 			for (const std::filesystem::path& file : files)
 			{
-				const nlohmann::json response = HandleProcessRequest({{"id", request["id"]}, {"type", "context.read"}, {"path", uam::paths::Utf8PathString(file)}});
+				const std::filesystem::path read_path = resolved_error ? file : resolved_workspace / file.lexically_relative(workspace);
+				const nlohmann::json response = HandleProcessRequest({{"id", request["id"]}, {"type", "context.read"}, {"path", uam::paths::Utf8PathString(read_path)}});
 				if (!response.value("ok", false)) return response;
 				std::istringstream content(response["result"].value("text", ""));
 				const std::string preview = uam::memory::ReadFactPreview(content);
@@ -998,7 +1002,7 @@ namespace uam::remote
 				const std::string path = uam::paths::Utf8PathString(file);
 				if (fact_bytes + row.size() + 1 > static_cast<std::size_t>(requested_budget)) break;
 				fact_bytes += row.size() + 1;
-				const bool reference_allowed = detail_references && uam::provider_setup::NoSymlinks(file) &&
+				const bool reference_allowed = detail_references && uam::provider_setup::NoSymlinks(read_path) &&
 				    uam::memory::IsSafeDetailReference(path);
 				rows.emplace_back(std::move(row), reference_allowed ? " [details: " + path + "]" : "");
 			}
@@ -1138,10 +1142,17 @@ namespace uam::remote
 			if (!request.contains("path") || !request["path"].is_string())
 				return ProcessError(request, "invalid_request", "An absolute context file path is required.");
 			const std::string path_text = request["path"].get<std::string>();
-			const std::filesystem::path path = uam::paths::PathFromUtf8(path_text);
+			std::filesystem::path path = uam::paths::PathFromUtf8(path_text);
 			if (!IsBoundedText(path_text, kMaxWorkingDirectoryBytes) || !path.is_absolute())
 				return ProcessError(request, "invalid_request", "An absolute bounded context file path is required.");
 			std::error_code error;
+			// Host instruction files may sit behind a link above them; the file itself must still not be a link.
+			if (request.value("allowLinkedAncestors", false))
+			{
+				std::error_code resolve_error;
+				const std::filesystem::path parent = std::filesystem::canonical(FileSystemPath(path.parent_path()), resolve_error);
+				if (!resolve_error) path = parent / path.filename();
+			}
 			// Begin with the complete root so drive-relative and incomplete UNC names are never probed.
 			std::filesystem::path ancestor = path.root_path();
 			for (const std::filesystem::path& part : path.relative_path())
@@ -1231,18 +1242,46 @@ namespace uam::remote
 			                       {"directories", std::move(entries)},
 			                       {"truncated", truncated}});
 		}
+		if (type == "configuration.location")
+		{
+			if (!request.contains("workspace") || !request["workspace"].is_string() || !request.contains("digest") || !request["digest"].is_string() ||
+			    !request.contains("preferWorkspace") || !request["preferWorkspace"].is_boolean() ||
+			    !IsBoundedText(request["workspace"].get_ref<const std::string&>(), kMaxWorkingDirectoryBytes) || !uam::paths::PathFromUtf8(request["workspace"].get<std::string>()).is_absolute())
+				return ProcessError(request, "invalid_request", "The launch setup location request is invalid.");
+			state_lock.unlock();
+			std::filesystem::path directory;
+			std::string error;
+			if (!uam::provider_setup::ResolveConfigurationLocation(uam::paths::PathFromUtf8(request["workspace"].get<std::string>()), request["digest"].get<std::string>(), request["preferWorkspace"].get<bool>(), directory, error))
+				return ProcessError(request, "configuration_failed", error);
+			return ProcessSuccess(request, {{"directory", uam::paths::Utf8PathString(directory)}});
+		}
 		if (type == "configuration.prepare")
 		{
 			if (!request.contains("directory") || !request["directory"].is_string() || !request.contains("manifest"))
 				return ProcessError(request, "invalid_request", "Central resource request is invalid.");
 			const std::filesystem::path directory = uam::paths::PathFromUtf8(request["directory"].get<std::string>());
-			if (directory.parent_path().filename() != "provider-setup" || directory.parent_path().parent_path().filename() != ".UAM")
+			if ((directory.parent_path().filename() != "provider-setup" || directory.parent_path().parent_path().filename() != ".UAM") && !uam::provider_setup::IsHelperOwnedResource(directory))
 				return ProcessError(request, "invalid_request", "Central resources must use the workspace's managed folder.");
 			std::string error;
 			std::vector<std::string> missing;
 			if (!uam::provider_setup::Prepare(directory, request["manifest"], missing, error))
 				return ProcessError(request, "configuration_failed", error);
 			return ProcessSuccess(request, {{"missing", missing}});
+		}
+		if (type == "context.location")
+		{
+			const std::string directory_text = request.value("directory", "");
+			const std::filesystem::path directory = uam::paths::PathFromUtf8(directory_text);
+			const std::string token = uam::paths::Utf8PathString(directory.filename());
+			if (!IsBoundedText(directory_text, kMaxWorkingDirectoryBytes) || !directory.is_absolute() || token.size() != 16 ||
+			    directory.parent_path().filename() != "context" || directory.parent_path().parent_path().filename() != ".UAM" ||
+			    !std::ranges::all_of(token, [](unsigned char c) { return std::isxdigit(c) != 0; }))
+				return ProcessError(request, "invalid_request", "The provider context directory is invalid.");
+			state_lock.unlock();
+			std::filesystem::path chosen;
+			std::string error;
+			if (!uam::provider_setup::ResolveContextLocation(directory, chosen, error)) return ProcessError(request, "context_cleanup_pending", error);
+			return ProcessSuccess(request, {{"directory", uam::paths::Utf8PathString(chosen)}});
 		}
 		if (type == "context.prepare" || type == "context.remove")
 		{
@@ -1255,9 +1294,19 @@ namespace uam::remote
 				return ProcessError(request, "invalid_request", "The provider context directory is invalid.");
 			state_lock.unlock();
 			std::string error;
-			const bool completed = type == "context.prepare"
-			    ? uam::provider_native_context::PrepareOwnedContext(directory, error)
-			    : uam::provider_native_context::RemoveOwnedContext(directory, true, error);
+			bool completed = true;
+			if (type == "context.prepare") completed = uam::provider_native_context::PrepareOwnedContext(directory, error);
+			else
+			{
+				// Saved cleanup records the workspace path; the context may also be in the helper's folder.
+				std::filesystem::path helper_context_root;
+				std::string helper_context_error;
+				std::error_code location_error;
+				const bool helper_has_copy = uam::provider_setup::HelperContextRoot(helper_context_root, helper_context_error) && std::filesystem::exists(helper_context_root / directory.filename(), location_error);
+				if (helper_has_copy) completed = uam::provider_native_context::RemoveOwnedContext(helper_context_root / directory.filename(), true, error);
+				if (completed && (!helper_has_copy || std::filesystem::exists(directory, location_error)))
+					completed = uam::provider_native_context::RemoveOwnedContext(directory, true, error);
+			}
 			if (!completed) return ProcessError(request, "context_cleanup_pending", error.empty() ? "Provider context storage is unavailable." : error);
 			return ProcessSuccess(request, nlohmann::json::object());
 		}
@@ -1611,10 +1660,7 @@ namespace uam::remote
 				if (!request["configurationDirectory"].is_string() || !request.contains("configurationProvider") || !request["configurationProvider"].is_string())
 					return ProcessError(request, "invalid_request", "Central launch configuration is invalid.");
 				const std::filesystem::path directory = uam::paths::PathFromUtf8(request["configurationDirectory"].get<std::string>());
-				std::filesystem::path normalized_workspace = working_directory.lexically_normal();
-				// A final separator adds an empty component without changing the workspace.
-				if (normalized_workspace.filename().empty() && normalized_workspace.has_relative_path()) normalized_workspace = normalized_workspace.parent_path();
-				if (directory.parent_path().filename() != "provider-setup" || directory.parent_path().parent_path().filename() != ".UAM" || directory.parent_path().parent_path().parent_path().lexically_normal() != normalized_workspace)
+				if (!uam::provider_setup::IsAllowedConfigurationDirectory(directory, working_directory))
 					return ProcessError(request, "invalid_request", "Central resource folder does not belong to this workspace.");
 				if (!uam::provider_setup::Apply(request["configurationProvider"].get<std::string>(), directory, working_directory, arguments, environment, error, request.value("sessionMcpServers", nlohmann::json::array()), &protocol_instructions))
 					return ProcessError(request, "configuration_failed", error);
