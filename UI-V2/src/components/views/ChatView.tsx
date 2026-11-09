@@ -1,5 +1,5 @@
 import { browserDictationAvailable } from '../../ipc/companionPlatform'
-import { AutomationApprovalNotice } from '../chat/AutomationApprovalNotice'
+import { AutomationStartQuestion } from '../chat/AutomationStartQuestion'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
@@ -21,10 +21,10 @@ import { InitialManagedSubagentGroup, InlineSubagentProvider } from '../chat/Inl
 import { openSubagentView } from '../../utils/subagentNavigation'
 import { InlinePromptQueue, type UnsentPrompt } from '../chat/InlinePromptQueue'
 import { OutgoingRecoveryActions } from '../chat/OutgoingMessageRow'
-import type { ConversationDelivery } from '../chat/ConversationTurn'
+import { ConversationTurn, type ConversationDelivery } from '../chat/ConversationTurn'
 import { PersistedConversationMessage, TurnStartTime } from '../chat/PersistedConversationMessage'
 import { ALWAYS_OPEN_WORK_SECTION, buildVisibleWorkSections, findWorkSectionStartIndex, dayDividerLabel, hasSubstantiveOutput, previousAssistantMessage, responseFlags, reviewAssistantLabel, turnTimestampLabel } from '../chat/conversationHistoryModel'
-import { addOutgoingAttempt, nextOutgoingKey, outgoingScope, readOutgoingAttempts, subscribeOutgoingAttempts, updateOutgoingAttempts, type OutgoingAttempt } from '../../utils/outgoingMessagePresentation'
+import { addOutgoingAttempt, automationPromptRowKey, nextOutgoingKey, outgoingScope, readOutgoingAttempts, subscribeOutgoingAttempts, updateOutgoingAttempts, type OutgoingAttempt } from '../../utils/outgoingMessagePresentation'
 import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
 import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactElement, type ReactNode, cloneElement, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
@@ -282,6 +282,7 @@ const ACCEPTED_DELIVERY: ConversationDelivery = { state: 'sending', label: 'UAM 
 const LOCAL_UNCONFIRMED_DELIVERY: ConversationDelivery = { state: 'unconfirmed', label: 'UAM could not confirm whether this message was sent. The submitted message is retained here and is never resent automatically.' }
 const attemptDelivery = (attempt: OutgoingAttempt) =>
   attempt.recordedManagedInput ? { state: 'unconfirmed' as const, label: 'This request was saved in the parent chat. Saving it does not confirm provider delivery; it is never resent automatically.' } : attempt.phase === 'rejected' ? LOCAL_UNCONFIRMED_DELIVERY : attempt.phase === 'accepted' ? ACCEPTED_DELIVERY : SENDING_DELIVERY
+const AUTOMATION_WAITING_DELIVERY: ConversationDelivery = { state: 'waiting', label: 'This message has not been sent. Start the chat to send it.' }
 const RECEIPT_DELIVERY: ConversationDelivery = { state: 'unconfirmed', label: 'UAM could not confirm whether this message reached the provider. Check the chat, then remove it if needed; it is never resent automatically.' }
 
 function canRetryMessageInPlace(messages: Message[], messageIndex: number) {
@@ -408,7 +409,12 @@ function ComposerTab({ open, children }: { open: boolean; children: ReactElement
   return cloneElement(tab, { className: `${tab.props.className ?? ''} uam-subagent-disclosure`, 'data-state': closing ? 'closed' : 'open' })
 }
 
-export const ChatView = memo(function ChatView({ session, accentColor, navigationKey = '', showSubagentLineage = true, showComposer = true }: ChatViewProps) {
+export const ChatView = memo(function ChatView({ session, accentColor, navigationKey = '', showSubagentLineage = true, showComposer: composerAllowed = true }: ChatViewProps) {
+  // A held automation chat has only its question; Start hands it to the ordinary composer and transcript at once.
+  const [automationStartingChatId, setAutomationStartingChatId] = useState('')
+  const [automationStartError, setAutomationStartError] = useState('')
+  const automationHeld = Boolean(session.automationPendingPrompt) && automationStartingChatId !== session.id
+  const showComposer = composerAllowed && !automationHeld
   const sessionBirth = session.createdAt.getTime()
   const showComposerRef = useRef(showComposer)
   showComposerRef.current = showComposer
@@ -888,6 +894,25 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
     return accepted
   }, [sendAcpPrompt])
+  const startAutomationChat = useCallback(async () => {
+    const text = session.automationPendingPrompt?.trim()
+    if (!text) return
+    setAutomationStartError('')
+    setAutomationStartingChatId(session.id)
+    const scope = outgoingScope(session.id, session.createdAt)
+    const key = automationPromptRowKey(session.id)
+    // The attempt reuses the held row's key, so the prompt stays in place as the ordinary sending row during the launch wait.
+    const requestId = createRequestId('approveAutomationChat')
+    addOutgoingAttempt(scope, { key, actionCorrelationId: requestId, text, nativeIndex: 0, attachments: [], receiptIds: new Set(), nativeInputIdsAtCapture: new Set(), createdAt: new Date(), phase: 'pending' })
+    const response = await sendToCEF({ action: 'approveAutomationChat', requestId, payload: { chatId: session.id } })
+    updateOutgoingAttempts(scope, new Map([[key, response.ok ? { phase: 'accepted' as const } : { retired: true }]]))
+    if (response.ok) return
+    setAutomationStartingChatId('')
+    const error = response.error || 'Could not start this chat.'
+    if (useAppStore.getState().sessions.find((chat) => chat.id === session.id)?.automationPendingPrompt) { setAutomationStartError(error); return }
+    // No longer held, so the question that would show this has closed.
+    reportAppFailure(error, 'Check the chat before starting the work again.')
+  }, [session.automationPendingPrompt, session.createdAt, session.id])
   const sendCapturedComposerPrompt = useCallback(async (submission: ComposerReferenceSubmission, text: string, attachments?: Attachment[], steerNow?: boolean, submissionToken?: string) => {
     if (!composerReferenceSubmissionIsCurrent(submission)) return false
     const context = formatContextReferences(submission.references)
@@ -3463,6 +3488,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 }
                 // Captured indices place display rows only; they never identify or confirm a native message.
                 // Keep one flat keyed list so a receipt/native alias retains the same outer row and article.
+                // Verbatim, not Markdown: a link label must not hide text from the person approving what will be sent.
+                if (automationHeld) outgoingRows.push({ attempt: undefined, node: <div key={automationPromptRowKey(session.id)} className="space-y-1" data-outgoing-message="">
+                  <ConversationTurn role="user" assistantLabel="" delivery={AUTOMATION_WAITING_DELIVERY}><p className="m-0 whitespace-pre-wrap break-words">{session.automationPendingPrompt}</p></ConversationTurn>
+                </div> })
                 const attemptOrder = new Map(outgoingAttempts.map((attempt, ordinal) => [attempt.key, ordinal]))
                 const anchoredRows = outgoingRows.flatMap(({ attempt, node }, sourceIndex) => attempt ? [{
                   boundary: attempt.nativeIndex, ordinal: attemptOrder.get(attempt.key)!, sourceIndex, node,
@@ -3482,8 +3511,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 })
                 // Cold receipts retain their fallback slots. Unreached local rows keep capture order in the remaining slots.
                 const trailingRows = outgoingRows.filter((_, sourceIndex) => !placed.has(sourceIndex))
-                return [...rows, ...trailingRows.map(({ attempt, node }) => attempt ? anchoredRows[nextAnchor++].node : node)]
-  }, [acp, activePlanActions, activeWorkSectionFirstIndex, beginEditingMessage, beginEditingUnsentMessage, branchSessions, branchingMessageIndex, canChangeProvider, cancelLiveTurn, collapsibleWorkSections, createMessageBranch, currentProviderId, currentProviderName, earliestRenderedMessageIndex, historyStartIndex, latestPlanMessageIndex, livePlanEntries, liveTools, liveWorkDisclosure, messages, outgoingAttempts, outgoingPresentation, outgoingReceipts, pendingPermission, pendingUserInput, providers, redundantStreamingMessageIndex, renderTimelineAfterUser, renderTimelineAtAssistant, resolveLivePermission, retryInPlaceMessageIndex, savedWorkDisclosures, searchNavigation, sectionControls, selectLiveTool, selectMessageBranch, selectPersistedTool, session, stopLiveRuntime, turnAssistantMessageIndex, turnAssistantMessageMatches, turnClockStart, turnEvents, turnSerial, turnUserMessageIndex, turnWorkedDisplaySeconds, unsentActionsDisabled, unsentByLoadedIndex, unsentProjection, unsentReceiptDeleteDisabled, visibleMessages, transcriptDay, transcriptTimezoneOffset, workSections, workingDisplayMode])
+                return [...rows, ...trailingRows.map(({ attempt, node }) => attempt ? anchoredRows[nextAnchor++].node : node),
+                  ...(session.automationTokenName ? [<AutomationStartQuestion key="automation-start-question" session={session} open={automationHeld} error={automationStartError} onStart={startAutomationChat} />] : [])]
+  }, [acp, automationHeld, automationStartError, startAutomationChat, activePlanActions, activeWorkSectionFirstIndex, beginEditingMessage, beginEditingUnsentMessage, branchSessions, branchingMessageIndex, canChangeProvider, cancelLiveTurn, collapsibleWorkSections, createMessageBranch, currentProviderId, currentProviderName, earliestRenderedMessageIndex, historyStartIndex, latestPlanMessageIndex, livePlanEntries, liveTools, liveWorkDisclosure, messages, outgoingAttempts, outgoingPresentation, outgoingReceipts, pendingPermission, pendingUserInput, providers, redundantStreamingMessageIndex, renderTimelineAfterUser, renderTimelineAtAssistant, resolveLivePermission, retryInPlaceMessageIndex, savedWorkDisclosures, searchNavigation, sectionControls, selectLiveTool, selectMessageBranch, selectPersistedTool, session, stopLiveRuntime, turnAssistantMessageIndex, turnAssistantMessageMatches, turnClockStart, turnEvents, turnSerial, turnUserMessageIndex, turnWorkedDisplaySeconds, unsentActionsDisabled, unsentByLoadedIndex, unsentProjection, unsentReceiptDeleteDisabled, visibleMessages, transcriptDay, transcriptTimezoneOffset, workSections, workingDisplayMode])
   // The fork/edited row is marked so CSS can move or dim only the rows after it (`[data-motion-anchor] ~ *`).
   useLayoutEffect(() => {
     const list = messageListRef.current
@@ -3565,8 +3595,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
             ? <Button type="button" size="sm" variant="ghost" leadingIcon={<CornerUpLeft size={14} aria-hidden />} onClick={() => showChatInPane(startedBy.id)}>Started by {startedBy.name}</Button>
             : <span style={{ color: 'var(--text-3)' }}>Started by a chat that is no longer available</span>}
         </nav>}
-        {session.automationTokenName && <p className="m-0 px-4 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-3)' }}>Started by automation token {session.automationTokenName}</p>}
-        {session.automationPendingPrompt && <AutomationApprovalNotice session={session} />}
         <div className="uam-chat-viewport relative flex-1 min-h-0" data-message-navigation={messageNavigationVisible || undefined}>
           <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
             <div ref={transcriptContentRef} className="uam-chat-content w-full py-4" style={{ paddingBottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>

@@ -96,6 +96,18 @@ describe('snooze menu', () => {
     finally { act(() => root.unmount()); host.remove() }
   })
 
+  it('refuses a bulk snooze of chats still waiting for approval', () => {
+    const held = (id: string) => ({ id, name: id, automationPendingPrompt: 'Fix' })
+    const previous = useAppStore.getState().sessions
+    useAppStore.setState({ sessions: [held('a'), held('b')] as never })
+    const host = document.createElement('div'); document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<SnoozeMenu chatId="a" familyIds={[]} targets={[{ id: 'a', label: 'a' }, { id: 'b', label: 'b' }]} />))
+    try {
+      expect([...host.querySelectorAll('button')].find((item) => item.textContent?.startsWith('1 hour'))!.disabled).toBe(true)
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ sessions: previous }) }
+  })
+
   it('rejects an unusable custom amount before contacting native code', async () => {
     const native = vi.fn(); window.cefQuery = native
     const { root, host, button } = render()

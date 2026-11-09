@@ -1,3 +1,4 @@
+import { addOutgoingAttempt, automationPromptRowKey, outgoingScope, resetOutgoingPresentation } from '../../utils/outgoingMessagePresentation'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -1333,6 +1334,43 @@ describe('FolderTree', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('labels a held automation chat as waiting and offers no Done or Snooze', () => {
+    act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-2' ? { ...session, updatedAt: new Date(), attentionRevision: 'held', automationPendingPrompt: 'Fix the parser' } : session) })))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    expect(host.textContent).toContain('Waiting for approval')
+    expect(host.querySelector('[aria-label^="Mark "][aria-label$=" done"]')).toBeNull()
+    expect(host.querySelector('[aria-label^="Snooze "]')).toBeNull()
+    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 attention')
+    // Clear all, bulk Done and ageing only touch settledAt or time; none may hide an unapproved prompt.
+    act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-2' ? { ...session, updatedAt: new Date(0), settledAt: new Date().toISOString(), snoozedUntilMs: Date.now() + 3_600_000 } : session) })))
+    expect(host.textContent).toContain('Waiting for approval')
+    expect(host.textContent).not.toContain('Snoozed')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows a started automation chat as Working through the worktree wait even if it was settled', () => {
+    const chat = useAppStore.getState().sessions.find((session) => session.id === 'chat-2')!
+    const started = { ...chat, automationTokenName: 'n8n', updatedAt: new Date(0), settledAt: new Date().toISOString() }
+    addOutgoingAttempt(outgoingScope(chat.id, chat.createdAt), { key: automationPromptRowKey(chat.id), actionCorrelationId: 'start-1', text: 'Fix', nativeIndex: 0, attachments: [], receiptIds: new Set(), createdAt: new Date(), phase: 'accepted' })
+    act(() => useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === chat.id ? started : session),
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, [chat.id]: { running: false, processing: false, pendingDirectPrompts: [{ originRequestId: 'start-1' }] } as never },
+    })))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    expect(host.textContent).toContain('Working')
+    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 running')
+    act(() => root.unmount())
+    host.remove()
+    resetOutgoingPresentation()
   })
 
   it('collapses Active chats and keeps an attention strip that expands the section', () => {

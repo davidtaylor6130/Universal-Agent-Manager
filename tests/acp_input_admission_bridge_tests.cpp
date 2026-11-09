@@ -11,6 +11,13 @@ UAM_TEST(SendAdmissionOriginUsesEnvelopeAndRemovesPayloadSpoof)
 	UAM_ASSERT_EQ(parsed.request.payload.at("text").get<std::string>(), std::string("same text"));
 }
 
+UAM_TEST(AutomationStartCarriesItsEnvelopeOriginToTheSend)
+{
+	const auto parsed = uam::cef::ParseBridgeRequest(R"({"action":"approveAutomationChat","requestId":"envelope-1","payload":{"chatId":"chat-1","_uamOriginRequestId":"spoof-1"}})");
+	UAM_ASSERT(parsed.ok);
+	UAM_ASSERT_EQ(parsed.request.payload.at("_uamOriginRequestId").get<std::string>(), std::string("envelope-1"));
+}
+
 UAM_TEST(SendAdmissionOriginMissingOrMalformedDoesNotRejectSend)
 {
 	const auto missing = uam::cef::ParseBridgeRequest(R"({"action":"sendAcpPrompt","payload":{"chatId":"chat-1","text":"same text","requestId":"payload-1","_uamOriginRequestId":"spoof-1"}})");

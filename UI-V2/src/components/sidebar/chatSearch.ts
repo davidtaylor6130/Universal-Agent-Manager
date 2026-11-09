@@ -296,10 +296,11 @@ export function buildChatSearchSessionGroups(
       : familyUpdatedMs.get(rootId) ?? 0
     // Marking done clears a stale "ready" too; only running turns and questions outrank it.
     const unsettled = isUnsettledChat(updatedMs, session.settledAt, nowMs)
-    const snoozed = (session.snoozedUntilMs ?? 0) > nowMs && (status?.type !== 'attention' || status.kind === 'error')
+    const snoozed = !session.automationPendingPrompt && (session.snoozedUntilMs ?? 0) > nowMs && (status?.type !== 'attention' || status.kind === 'error')
     const wokeAt = (session.snoozedUntilMs ?? 0) > 0 && !snoozed ? session.snoozedUntilMs! : 0
     if (snoozed) snoozedSessionIds.push(session.id)
-    if (!snoozed && (status?.type === 'processing' || status?.type === 'attention' || unsettled || isUnsettledChat(wokeAt, session.settledAt, nowMs) || (status?.type === 'done' && !session.settledAt))) {
+    // A held chat stays until answered: Clear all, bulk Done, snooze and ageing never hide an unapproved prompt.
+    if (session.automationPendingPrompt || !snoozed && (status?.type === 'processing' || status?.type === 'attention' || unsettled || isUnsettledChat(wokeAt, session.settledAt, nowMs) || (status?.type === 'done' && !session.settledAt))) {
       activeSessionIds.push(session.id)
       returnedAtMs.set(session.id, Math.max(updatedMs, wokeAt))
     }

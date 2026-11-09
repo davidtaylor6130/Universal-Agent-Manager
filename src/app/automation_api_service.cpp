@@ -342,12 +342,13 @@ namespace uam
 		if (std::string refusal = UamControlService::ChatWorktreeIsolationRefusal(app, *chat); !refusal.empty()) return fail(std::move(refusal));
 		const ChatSession before = *chat;
 		AutomationChatLaunch launch;
-		launch.original_prompt = chat->automation_pending_prompt;
+		launch.text = chat->automation_pending_prompt;
 		// ponytail: an instruction, not a block; Default approval is what stops a push, and a Git-aware command gate would make this enforceable.
-		launch.text = (chat->automation_git_permission == "pr"
-		                   ? "Automation policy: you may commit to this chat's branch and open a pull request. Do not push anywhere else.\n\n"
-		                   : "Automation policy: commit to this chat's branch only. Do not push or open a pull request.\n\n") + launch.original_prompt;
-		if (!GoalService::CreateGoal(app, chat_id, launch.text, app.settings.goal_token_budget, &launch.goal_id) || !GoalService::SetActiveGoal(app, chat_id, launch.goal_id, nullptr, nullptr, true))
+		// In the goal rather than the message, so the transcript shows what was asked and every continuation repeats the policy.
+		const std::string objective = launch.text + (chat->automation_git_permission == "pr"
+		                   ? "\n\nAutomation policy: you may commit to this chat's branch and open a pull request. Do not push anywhere else."
+		                   : "\n\nAutomation policy: commit to this chat's branch only. Do not push or open a pull request.");
+		if (!GoalService::CreateGoal(app, chat_id, objective, app.settings.goal_token_budget, &launch.goal_id) || !GoalService::SetActiveGoal(app, chat_id, launch.goal_id, nullptr, nullptr, true))
 		{
 			*chat = before;
 			return fail("The chat's goal could not be created.");
@@ -369,7 +370,7 @@ namespace uam
 		if (chat == nullptr || !chat->messages.empty()) return false;
 		std::erase_if(chat->goals, [&](const Goal& goal) { return goal.id == launch.goal_id; });
 		if (chat->active_goal_id == launch.goal_id) chat->active_goal_id.clear();
-		chat->automation_pending_prompt = launch.original_prompt;
+		chat->automation_pending_prompt = launch.text;
 		if (!ChatRepository::SaveChat(app.data_root, *chat)) uam::diagnostics::Write("Automation API: the approval hold for chat " + chat_id + " could not be saved.");
 		ChatDomainService().MarkChatNeedsAttention(app, chat_id);
 		return true;

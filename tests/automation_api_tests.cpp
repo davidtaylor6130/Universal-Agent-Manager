@@ -379,9 +379,12 @@ UAM_TEST(AutomationApiTrustedChatLaunchesOnceWithItsCap)
 	const auto launch = AutomationApiService::BeginLaunch(fixture.app, chat_id, &error);
 	UAM_ASSERT(launch.has_value());
 	UAM_ASSERT(!fixture.Chat(chat_id)->AwaitsAutomationApproval());
-	UAM_ASSERT(launch->text.find("open a pull request") != std::string::npos);
+	UAM_ASSERT_EQ(launch->text, std::string("Fix the parser."));
 	const Goal* goal = uam::GoalService::FindGoalById(fixture.app, chat_id, launch->goal_id);
 	UAM_ASSERT(goal != nullptr);
+	UAM_ASSERT(goal->objective.starts_with("Fix the parser."));
+	// The policy reaches the provider through the goal, not the visible message.
+	UAM_ASSERT(uam::GoalService::BuildContinuationPrompt(*goal, 0, 0, false, "", true).find("open a pull request") != std::string::npos);
 	UAM_ASSERT_EQ(goal->max_iterations, 5);
 	UAM_ASSERT_EQ(fixture.Chat(chat_id)->active_goal_id, launch->goal_id);
 	UAM_ASSERT_EQ(fixture.Status(token.secret, chat_id).body.at("status").get<std::string>(), std::string("running"));

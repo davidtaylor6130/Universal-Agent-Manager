@@ -285,7 +285,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	nlohmann::json CompanionTransportStatus(const nlohmann::json& config) const;
 	bool CompanionAllowsKeychainPrompts() const;
 	void HandleGetCompanionToken(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
-	void LaunchAutomationChat(CefRefPtr<CefBrowser> browser, const std::string& chat_id, std::string response, CefRefPtr<Callback> cb);
+	void LaunchAutomationChat(CefRefPtr<CefBrowser> browser, const std::string& chat_id, std::string response, CefRefPtr<Callback> cb, const std::string& origin_request_id = {});
 	void HandleAutomationHttpRequest(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleApproveAutomationChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetAutomationTokens(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

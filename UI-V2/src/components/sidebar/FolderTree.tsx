@@ -6,9 +6,11 @@ import { isCompanionContext } from '../../ipc/cefBridge'
 import { reportAppFailure } from '../../utils/appFailure'
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, useSyncExternalStore } from 'react'
 import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
+import { automationStartPending, subscribeOutgoingAttempts } from '../../utils/outgoingMessagePresentation'
 import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw, Monitor, Server } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
+import type { AppState } from '../../store/storeTypes'
 import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import { SessionItem } from './SessionItem'
@@ -155,6 +157,8 @@ function SidebarSectionHeader({ label, listId, expanded, onToggle, trailing, act
   return action ? <div className="group/section relative flex items-center">{toggle}<div className="absolute right-2 hidden group-hover/section:flex group-focus-within/section:flex">{action}</div></div> : toggle
 }
 
+const countAutomationStarts = (state: AppState) => state.sessions.filter((chat) => automationStartPending(chat, state.acpBindingBySessionId[chat.id]?.pendingDirectPrompts)).length
+
 export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessionOpen }: FolderTreeProps) {
   const navigationRevision = useSyncExternalStore(subscribeSubagentNavigation, subagentNavigationRevision)
   const companionContext = isCompanionContext()
@@ -162,10 +166,12 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const sessions = useAppStore(useShallow((s) => s.sessions))
   const executionHosts = useAppStore(useShallow((s) => s.executionHosts))
   const resourceCollections = useAppStore(useShallow((s) => s.resourceCollections))
-  const runtimeStatuses = useAppStore(useShallow((s) => sessions.map(({ id }) => combinedRuntimeStatus(
-    s.cliBindingBySessionId[id],
-    s.acpBindingBySessionId[id],
-  ))))
+  // Attempts live outside the app store, so their changes need their own re-render; the selector then reads them.
+  useSyncExternalStore(subscribeOutgoingAttempts, () => countAutomationStarts(useAppStore.getState()))
+  const runtimeStatuses = useAppStore(useShallow((s) => sessions.map((chat) => {
+    const status = combinedRuntimeStatus(s.cliBindingBySessionId[chat.id], s.acpBindingBySessionId[chat.id])
+    return (!status || status === 'done') && automationStartPending(chat, s.acpBindingBySessionId[chat.id]?.pendingDirectPrompts) ? 'processing' : status
+  })))
   const runtimeStatusBySessionId = useMemo(
     () => new Map(sessions.map((session, index) => [session.id, runtimeStatuses[index]])),
     [runtimeStatuses, sessions],
@@ -333,13 +339,13 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const activeStatusCounts = useMemo(() => {
     const counts = { running: 0, attention: 0, done: 0 }
     for (const sessionId of searchModel.activeSessionIds) {
-      const status = runtimeStatusBySessionId.get(sessionId)
+      const status = sessionsById.get(sessionId)?.automationPendingPrompt ? 'attention:automation' : runtimeStatusBySessionId.get(sessionId)
       if (status === 'processing') counts.running += 1
       else if (status?.startsWith('attention:')) counts.attention += 1
       else if (status === 'done') counts.done += 1
     }
     return counts
-  }, [runtimeStatusBySessionId, searchModel.activeSessionIds])
+  }, [runtimeStatusBySessionId, searchModel.activeSessionIds, sessionsById])
   const activeStatusSummary = [
     activeStatusCounts.running ? `${activeStatusCounts.running} running` : '',
     activeStatusCounts.attention ? `${activeStatusCounts.attention} attention` : '',

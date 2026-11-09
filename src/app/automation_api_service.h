@@ -32,7 +32,6 @@ namespace uam
 	{
 		std::string text;
 		std::string goal_id;
-		std::string original_prompt;
 	};
 
 	/// <summary>Token-scoped automation API. Tokens live only as hashes in one file, read per request, so revocation needs no cache invalidation.</summary>

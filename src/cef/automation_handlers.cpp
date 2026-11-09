@@ -23,8 +23,10 @@ namespace
 	};
 }
 
-void UamQueryHandler::LaunchAutomationChat(CefRefPtr<CefBrowser> browser, const std::string& chat_id, std::string response, CefRefPtr<Callback> cb)
+void UamQueryHandler::LaunchAutomationChat(CefRefPtr<CefBrowser> browser, const std::string& chat_id, std::string response, CefRefPtr<Callback> cb, const std::string& origin_request_id)
 {
+	// Only the HTTP caller needs telling which chat failed and that it is in UAM.
+	const bool from_desktop = !origin_request_id.empty();
 	std::string error;
 	const std::optional<uam::AutomationChatLaunch> launch = uam::AutomationApiService::BeginLaunch(m_app, chat_id, &error);
 	if (!launch)
@@ -38,16 +40,20 @@ void UamQueryHandler::LaunchAutomationChat(CefRefPtr<CefBrowser> browser, const 
 		// The chat stays held, so it must be visible and the caller must be told which one.
 		ChatDomainService().MarkChatNeedsAttention(m_app, chat_id);
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Failure(409, "The chat " + chat_id + " could not start and is waiting in UAM: " + error);
+		cb->Failure(409, from_desktop ? error : "The chat " + chat_id + " could not start and is waiting in UAM: " + error);
 		return;
 	}
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;
-	HandleSendAcpPrompt(browser, {{"chatId", chat_id}, {"text", launch->text}, {"goalMode", true}, {"goalId", launch->goal_id}},
-	    new AutomationLaunchReply(cb, std::move(response), [this, lifetime, browser, cb, chat_id, launch = *launch](int status, const std::string& reason)
+	nlohmann::json send = {{"chatId", chat_id}, {"text", launch->text}, {"goalMode", true}, {"goalId", launch->goal_id}};
+	// Carries the desktop request ID, so the sent message clears its "Sending" state as any composer send does.
+	if (!origin_request_id.empty()) send["_uamOriginRequestId"] = origin_request_id;
+	HandleSendAcpPrompt(browser, send,
+	    new AutomationLaunchReply(cb, std::move(response), [this, lifetime, browser, cb, chat_id, from_desktop, launch = *launch](int status, const std::string& reason)
 	    {
 		    const bool waiting = !lifetime.expired() && uam::AutomationApiService::AbandonLaunch(m_app, chat_id, launch);
 		    if (!lifetime.expired()) uam::PushStateUpdateIfChanged(browser, m_app);
-		    cb->Failure(status, "The chat " + chat_id + (waiting ? " could not start and is waiting in UAM: " : " may not have started: ") + reason);
+		    if (from_desktop) cb->Failure(status, waiting ? reason : "This chat may not have started: " + reason);
+		    else cb->Failure(status, "The chat " + chat_id + (waiting ? " could not start and is waiting in UAM: " : " may not have started: ") + reason);
 	    }));
 }
 
@@ -73,7 +79,7 @@ void UamQueryHandler::HandleAutomationHttpRequest(CefRefPtr<CefBrowser> browser,
 void UamQueryHandler::HandleApproveAutomationChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	LaunchAutomationChat(browser, chat_id, nlohmann::json{{"chatId", chat_id}}.dump(), cb);
+	LaunchAutomationChat(browser, chat_id, nlohmann::json{{"chatId", chat_id}}.dump(), cb, payload.value("_uamOriginRequestId", ""));
 }
 
 void UamQueryHandler::HandleGetAutomationTokens(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
