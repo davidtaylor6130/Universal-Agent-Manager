@@ -7,6 +7,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace uam
 {
@@ -43,6 +44,10 @@ namespace uam
 		/// <summary>Returns the patch for one selected path. The remote form has the caller's already validated changed-file row.</summary>
 		virtual std::string LocalDiff(const AppState& app, const ChatSession& chat, const std::filesystem::path& workspace, const std::string& trimmed_path, std::string_view comparison_ref, std::string* error_out) const = 0;
 		virtual std::string RemoteDiff(RemoteVcsContext& context, const AppState& app, const ChatSession& chat, const std::string& path, const VcsChangedFile& selected, std::string cwd, const std::string& comparison_ref, std::string* error_out) const = 0;
+
+		/// <summary>Publishes the selected paths. On false, `error` is set and the system's own staging state has been restored or the failure reported in it.</summary>
+		virtual bool LocalCommit(const std::filesystem::path& workspace, const std::string& message, const std::vector<std::string>& files, const VcsCommitStatus& status, ProcessExecutionResult& committed, std::string& error) const = 0;
+		virtual bool RemoteCommit(RemoteVcsContext& context, std::string cwd, const std::string& message, std::vector<std::string> selected_files, const VcsCommitStatus& status, ProcessExecutionResult& committed, std::string& error) const = 0;
 	};
 
 	/// <summary>Registered providers in detection order; the first is the default selection.</summary>

@@ -1902,6 +1902,71 @@ namespace uam
 				std::string output;
 				return RemoteOutput(context, cwd, argv, &output, error_out) ? output : "";
 			}
+
+			bool LocalCommit(const std::filesystem::path& workspace, const std::string& message, const std::vector<std::string>& files, const VcsCommitStatus&, ProcessExecutionResult& committed, std::string& error) const override
+			{
+				const std::string quoted_files = JoinQuotedFiles(files);
+				GitIndexSnapshot index_snapshot;
+				if (!CaptureGitIndex(workspace, index_snapshot, error)) return false;
+				if (!Command(BuildLiteralGitCommandInDirectory(workspace, "add -- " + quoted_files), nullptr, &error))
+				{
+					if (!RestoreGitIndex(index_snapshot)) error += " The previous Git staging area could not be restored.";
+					return false;
+				}
+				if (!Command(BuildLiteralGitCommandInDirectory(workspace, "commit -m " + uam::shell::EscapeArg(message) + " -- " + quoted_files), &committed, &error))
+				{
+					if (!RestoreGitIndex(index_snapshot)) error += " The previous Git staging area could not be restored.";
+					return false;
+				}
+				return true;
+			}
+
+			bool RemoteCommit(RemoteVcsContext& context, std::string cwd, const std::string& message, std::vector<std::string> selected_files, const VcsCommitStatus&, ProcessExecutionResult& committed, std::string& error) const override
+			{
+				std::string root;
+				if (RemoteOutput(context, cwd, {"git", "rev-parse", "--show-toplevel"}, &root))
+					cwd = std::move(root);
+				std::string index_path;
+				if (!RemoteOutput(context, cwd,
+				                  {"git", "rev-parse", "--path-format=absolute", "--git-path", "index"},
+				                  &index_path, &error)) return false;
+				const std::string backup_path = index_path + ".uam-backup-" +
+				    PlatformServicesFactory::Instance().process_service.GenerateUuid();
+				const bool had_index = context.CopyFile(index_path, backup_path, false, &error);
+				if (!had_index && error != "The source file does not exist.") return false;
+				if (!had_index) error.clear();
+				const auto restore_index = [&]
+				{
+					if (had_index)
+					{
+						if (!context.CopyFile(backup_path, index_path, true, nullptr)) return false;
+						(void)context.RemoveFile(backup_path);
+						return true;
+					}
+					return context.RemoveFile(index_path);
+				};
+				std::vector<std::string> add = {"git", "--literal-pathspecs", "add", "--"};
+				add.insert(add.end(), selected_files.begin(), selected_files.end());
+				const ProcessExecutionResult added = context.Run(cwd, add);
+				if (!CommandSucceeded(added))
+				{
+					error = CommandOutputOrError(added);
+					if (!restore_index()) error += " The previous Git staging area could not be restored.";
+					return false;
+				}
+				std::vector<std::string> commit = {"git", "--literal-pathspecs", "commit",
+				                                   "-m", message, "--"};
+				commit.insert(commit.end(), selected_files.begin(), selected_files.end());
+				committed = context.Run(cwd, commit);
+				if (!CommandSucceeded(committed))
+				{
+					error = CommandOutputOrError(committed);
+					if (!restore_index()) error += " The previous Git staging area could not be restored.";
+					return false;
+				}
+				if (had_index) (void)context.RemoveFile(backup_path);
+				return true;
+			}
 		};
 
 		class SvnVcsProvider final : public VcsProvider
@@ -1967,6 +2032,24 @@ namespace uam
 				if (SvnFileDiff(RemoteSvnRunner(context, cwd), path, output, error)) return uam::strings::Trim(output);
 				if (error_out != nullptr) *error_out = error;
 				return {};
+			}
+
+			bool LocalCommit(const std::filesystem::path& workspace, const std::string& message, const std::vector<std::string>& files, const VcsCommitStatus& status, ProcessExecutionResult& committed, std::string& error) const override
+			{
+				return CommitSvnSelection(LocalSvnRunner(workspace), &workspace, message, files, SvnExternalRoots(status), committed, error);
+			}
+
+			bool RemoteCommit(RemoteVcsContext& context, std::string cwd, const std::string& message, std::vector<std::string> selected_files, const VcsCommitStatus& status, ProcessExecutionResult& committed, std::string& error) const override
+			{
+				// A Windows host reports `\` separators that a POSIX controller would read as one path component;
+				// svn accepts `/`, so containment and external checks see real components.
+				VcsCommitStatus remote_status = status;
+				if (context.Platform() == "windows" || context.Platform() == "Windows")
+				{
+					for (std::string& file : selected_files) file = SlashKey(std::move(file));
+					for (VcsChangedFile& file : remote_status.changed_files) file.path = SlashKey(std::move(file.path));
+				}
+				return CommitSvnSelection(RemoteSvnRunner(context, cwd), nullptr, message, selected_files, SvnExternalRoots(remote_status), committed, error);
 			}
 		};
 
@@ -2057,77 +2140,16 @@ namespace uam
 					return result;
 				}
 
-			std::string cwd = result.status.workspace_directory;
-			std::vector<std::string> selected_files(selected.begin(), selected.end());
+			const VcsProvider& provider = VcsProviderFor(type);
 			ProcessExecutionResult committed;
-			if (type == VcsType::Svn)
-			{
-				// A Windows host reports `\` separators that a POSIX controller would read as one path component;
-				// svn accepts `/`, so containment and external checks see real components.
-				VcsCommitStatus remote_status = result.status;
-				if (context.Platform() == "windows" || context.Platform() == "Windows")
-				{
-					for (std::string& file : selected_files) file = SlashKey(std::move(file));
-					for (VcsChangedFile& file : remote_status.changed_files) file.path = SlashKey(std::move(file.path));
-				}
-				if (!CommitSvnSelection(RemoteSvnRunner(context, cwd), nullptr, message, selected_files, SvnExternalRoots(remote_status), committed, result.error)) return result;
-			}
-			else
-			{
-				std::string root;
-				if (RemoteOutput(context, cwd, {"git", "rev-parse", "--show-toplevel"}, &root))
-					cwd = std::move(root);
-				std::string index_path;
-				if (!RemoteOutput(context, cwd,
-				                  {"git", "rev-parse", "--path-format=absolute", "--git-path", "index"},
-				                  &index_path, &result.error)) return result;
-				const std::string backup_path = index_path + ".uam-backup-" +
-				    PlatformServicesFactory::Instance().process_service.GenerateUuid();
-				const bool had_index = context.CopyFile(index_path, backup_path, false,
-				                                        &result.error);
-				if (!had_index && result.error != "The source file does not exist.") return result;
-				if (!had_index) result.error.clear();
-				const auto restore_index = [&]
-				{
-					if (had_index)
-					{
-						if (!context.CopyFile(backup_path, index_path, true, nullptr)) return false;
-						(void)context.RemoveFile(backup_path);
-						return true;
-					}
-					return context.RemoveFile(index_path);
-				};
-				std::vector<std::string> add = {"git", "--literal-pathspecs", "add", "--"};
-				add.insert(add.end(), selected_files.begin(), selected_files.end());
-				const ProcessExecutionResult added = context.Run(cwd, add);
-				if (!CommandSucceeded(added))
-				{
-					result.error = CommandOutputOrError(added);
-					if (!restore_index())
-						result.error += " The previous Git staging area could not be restored.";
-					return result;
-				}
-				std::vector<std::string> commit = {"git", "--literal-pathspecs", "commit",
-				                                   "-m", message, "--"};
-				commit.insert(commit.end(), selected_files.begin(), selected_files.end());
-				committed = context.Run(cwd, commit);
-				if (!CommandSucceeded(committed))
-				{
-					result.error = CommandOutputOrError(committed);
-					if (!restore_index())
-						result.error += " The previous Git staging area could not be restored.";
-					return result;
-				}
-				if (had_index) (void)context.RemoveFile(backup_path);
-			}
+			if (!provider.RemoteCommit(context, result.status.workspace_directory, message, {selected.begin(), selected.end()}, result.status, committed, result.error)) return result;
 			if (!CommandSucceeded(committed))
 			{
 				result.error = CommandOutputOrError(committed);
 				return result;
 			}
 			CompleteSuccessfulCommit(result, RemoteStatus(context, app, chat, type, true, {}, false, settings),
-			                         committed, type == VcsType::Git
-			                             ? "Git commit created." : "SVN commit created.");
+			                         committed, std::string(provider.Declaration().display_name) + " commit created.");
 			return result;
 		}
 	} // namespace
@@ -2500,32 +2522,10 @@ namespace uam
 			return result;
 		}
 
-		if (type == VcsType::Git)
-		{
-			GitIndexSnapshot index_snapshot;
-			if (!CaptureGitIndex(workspace, index_snapshot, result.error))
-			{
-				return result;
-			}
-			if (!Command(BuildLiteralGitCommandInDirectory(workspace, "add -- " + quoted_files), nullptr, &result.error))
-			{
-				if (!RestoreGitIndex(index_snapshot)) result.error += " The previous Git staging area could not be restored.";
-				return result;
-			}
-			ProcessExecutionResult commit_result;
-			if (!Command(BuildLiteralGitCommandInDirectory(workspace, "commit -m " + uam::shell::EscapeArg(message) + " -- " + quoted_files), &commit_result, &result.error))
-			{
-				if (!RestoreGitIndex(index_snapshot)) result.error += " The previous Git staging area could not be restored.";
-				return result;
-			}
-			CompleteSuccessfulCommit(result, Status(app, chat, type), commit_result, "Git commit created.");
-		}
-		else
-		{
-			ProcessExecutionResult commit_result;
-			if (!CommitSvnSelection(LocalSvnRunner(workspace), &workspace, message, files, SvnExternalRoots(result.status), commit_result, result.error)) return result;
-			CompleteSuccessfulCommit(result, Status(app, chat, type), commit_result, "SVN commit created.");
-		}
+		const VcsProvider& provider = VcsProviderFor(type);
+		ProcessExecutionResult committed;
+		if (!provider.LocalCommit(workspace, message, files, result.status, committed, result.error)) return result;
+		CompleteSuccessfulCommit(result, Status(app, chat, type), committed, std::string(provider.Declaration().display_name) + " commit created.");
 
 		return result;
 	}
