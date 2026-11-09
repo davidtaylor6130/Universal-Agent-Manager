@@ -131,7 +131,21 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # GitHub release downloads intermittently return 5xx. Only pushes save this copy of the fetched sources, so pull
+      # requests cannot change it; a miss downloads and checks the pinned SHA-256 as before.
+      # ponytail: the cached sub-builds record the CMake generator; if a Windows image changes it, delete the Windows-x86_64 entry.
+      - uses: actions/cache/restore@v4
+        with:
+          path: Builds/runner/_deps
+          key: ${{ runner.os }}-${{ matrix.arch }}-uam-runner-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.arch }}-uam-runner-deps-
       - run: cmake -S . -B Builds/runner -DUAM_RUNNER_ONLY=ON -DCMAKE_BUILD_TYPE=Release
+      - uses: actions/cache/save@v4
+        if: github.event_name == 'push'
+        continue-on-error: true
+        with:
+          path: Builds/runner/_deps
+          key: ${{ runner.os }}-${{ matrix.arch }}-uam-runner-deps-${{ hashFiles('CMakeLists.txt') }}
       - run: cmake --build Builds/runner --config Release --target uam_runner --parallel 4
       - name: Smoke runner version (Linux)
         if: runner.os == 'Linux'
@@ -466,6 +480,7 @@ jobs:
       - run: |
           for prefix in ccache-macOS-arm64-uam-native- ccache-macOS-x86_64-uam-native- ccache-Windows-x64-uam-native- \
               macOS-arm64-uam-ninja-deps- macOS-x86_64-uam-ninja-deps- Windows-x64-uam-ninja-deps- \
+              Linux-x86_64-uam-runner-deps- Linux-arm64-uam-runner-deps- Windows-x86_64-uam-runner-deps- \
               macOS-uam-flag-deps- Windows-uam-computer-use- node-cache-Linux-x64-npm- node-cache-macOS-arm64-npm- \
               node-cache-macOS-x64-npm- node-cache-Windows-x64-npm-; do
             gh cache list --ref "$GITHUB_REF" --key "$prefix" --sort created_at --order desc --limit 100 --json id --jq '.[1:][].id' |
