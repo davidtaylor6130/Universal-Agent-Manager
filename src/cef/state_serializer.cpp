@@ -1,4 +1,5 @@
 #include "common/utils/uuid.h"
+#include "common/runtime/acp/compute_pool_gate.h"
 #include "common/chat/chat_repository.h"
 #include "common/chat/chat_message_page_index.h"
 #include "app/startup_native_import_service.h"
@@ -1583,6 +1584,8 @@ namespace uam
 					: AcpAttentionKindForFrontend(*session);
 			acp_json["attentionKind"] = uam::nlohmann_json::StringOrNull(attention_kind);
 			acp_json["lifecycleState"] = chat.claude_quota_continuation.state == "waiting" ? "waiting_quota" : chat.claude_quota_continuation.state == "held" ? "quota_held" : session->lifecycle_state;
+			if (uam::compute_pools::IsWaiting(*session, GetAppTimeSeconds()))
+				acp_json["computePoolWait"] = {{"poolName", session->compute_pool_wait_name}, {"inUse", session->compute_pool_wait_in_use}, {"limit", session->compute_pool_wait_limit}};
 			acp_json["lastError"] = session->last_error;
 			acp_json["timeoutStop"] = !session->last_error.empty() && session->timeout_stop_error == session->last_error
 			    ? (session->timeout_stop_kind.empty()
@@ -2118,6 +2121,7 @@ namespace uam
 		j["folders"] = SerializeFoldersForFrontend(app.folders, app.data_root);
 		j["resourceCollections"] = SerializeResourceCollectionsForFrontend(app.resource_collections, app.data_root);
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
+		j["computePoolUsage"] = uam::compute_pools::UsageForFrontend(app);
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;
 		if (app.deletion_progress)
@@ -2253,6 +2257,7 @@ namespace uam
 		j["folders"] = SerializeFoldersForFrontend(app.folders, app.data_root);
 		j["resourceCollections"] = SerializeResourceCollectionsForFrontend(app.resource_collections, app.data_root);
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
+		j["computePoolUsage"] = uam::compute_pools::UsageForFrontend(app);
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;
 		if (app.deletion_progress)

@@ -2349,6 +2349,32 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('shows the pool wait while a turn is held for a compute slot', () => {
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'processing',
+          processing: true,
+          turnEvents: [],
+          turnAssistantMessageIndex: -1,
+          computePoolWait: { poolName: 'InferDeck', inUse: 2, limit: 2 },
+        },
+      },
+      messages: { ...state.messages, 'chat-1': [{ id: 'held', role: 'user', content: 'Held question', createdAt: new Date(), acpPromptNotSent: true }] },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.querySelector('[data-testid="compute-pool-wait"]')?.textContent).toBe('Waiting for InferDeck slot (2/2)')
+    expect(host.textContent).not.toContain('Delivery not confirmed')
+    expect(host.querySelector('[data-testid="turn-starting"]')).toBeNull()
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('starts one working clock immediately and keeps time when the first turn event arrives', async () => {
     vi.useFakeTimers()
     useAppStore.setState((state) => ({
@@ -2619,6 +2645,23 @@ describe('ChatView', () => {
         await act(async () => { queue.click(); await Promise.resolve() })
         expect(sendAcpPrompt).toHaveBeenCalledTimes(3)
         expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', 'Stop and use Postgres', [], undefined, expect.any(Function))
+      } finally { done() }
+    })
+
+    it('queues instead of steering while the turn is held for a compute slot', async () => {
+      useAppStore.setState((state) => ({
+        steerActiveTurnOnSend: true,
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], computePoolWait: { poolName: 'InferDeck', inUse: 2, limit: 2 } } },
+      }))
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(false))
+      useAppStore.setState({ sendAcpPrompt })
+      const { host, done } = mount()
+      try {
+        const textarea = typeDraft(host, 'Wait your turn')
+        expect(host.querySelector('button[aria-label="Interrupt and steer"]')).toBeNull()
+        expect((host.querySelector('button[aria-label="Interrupt and steer instead"]') as HTMLButtonElement).disabled).toBe(true)
+        await act(async () => { enter(textarea); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', 'Wait your turn', [], undefined, expect.any(Function))
       } finally { done() }
     })
 

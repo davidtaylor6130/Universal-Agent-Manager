@@ -1047,6 +1047,20 @@ struct HostScopedSettings
 	std::optional<std::vector<McpServerConfiguration>> mcp_servers;
 };
 
+struct ComputePoolMember
+{
+	std::string provider_id;
+	std::string model_id; // Empty covers every model of the provider.
+};
+
+struct ComputePool
+{
+	std::string id;
+	std::string name;
+	int limit = 1;
+	std::vector<ComputePoolMember> members;
+};
+
 struct AppSettings
 {
 	std::string voice_input_mode = "system";
@@ -1119,6 +1133,7 @@ struct AppSettings
 	CentralProviderConfiguration central_provider_configuration;
 	std::vector<McpServerConfiguration> mcp_servers;
 	std::vector<ExecutionHost> execution_hosts;
+	std::vector<ComputePool> compute_pools; // Empty leaves prompt delivery unlimited.
 	ExecutionRoutingSettings execution_routing;
 	std::vector<std::string> favorite_uam_agent_ids;
 	/// <summary>Native sessions whose title (the first user message for most providers) starts with one of these, ignoring case, are never offered for import.</summary>

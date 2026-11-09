@@ -35,6 +35,7 @@
 #include "common/provider/structured_attachments.h"
 #include <optional>
 #include "app/chat_domain_service.h"
+#include "common/runtime/acp/compute_pool_gate.h"
 #include "app/provider_resolution_service.h"
 #include "app/git_worktree_service.h"
 #include "app/vcs_commit_service.h"
@@ -1668,6 +1669,9 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.turn_assistant_message_index = -1;
 	session.turn_serial = chat.execution_host_id == uam::execution_hosts::kLocalHostId
 	    ? 0 : std::max(session.turn_serial, chat.remote_turn_serial);
+	session.compute_pool_ticket = 0;
+	session.compute_pool_admitted_turn_serial = -1;
+	session.compute_pool_wait_name.clear();
 	session.queued_prompt.clear();
 	session.queued_skill_spans.clear();
 	if (session.attached_skill_preparation != nullptr) session.attached_skill_preparation->cancel.request_stop();
@@ -4226,6 +4230,11 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	}
 	if (!AgentRunScheduler::InitialInputReady(app, session, chat))
 		return false;
+	if (!session.pending_prompt_delivery)
+	{
+		bool status_changed = false;
+		if (!AdmitTurnToComputePools(app, session, chat, status_changed)) return status_changed;
+	}
 	if (session.pending_prompt_delivery)
 	{
 		const std::shared_ptr<PendingAcpPromptDelivery> packet = session.pending_prompt_delivery;

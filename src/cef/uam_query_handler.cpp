@@ -375,6 +375,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"getLegacyChatImports", &UamQueryHandler::HandleGetLegacyChatImports},
 		{"resolveLegacyChatImport", &UamQueryHandler::HandleResolveLegacyChatImport},
 		{"setShellActions", &UamQueryHandler::HandleSetShellActions},
+		{"setComputePools", &UamQueryHandler::HandleSetComputePools},
 		{"applyShellActions", &UamQueryHandler::HandleApplyShellActions},
 		{"dismissShellActionNotification", &UamQueryHandler::HandleDismissShellActionNotification},
 		{"refreshCliProviderVersion", &UamQueryHandler::HandleRefreshCliProviderVersion},

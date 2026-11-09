@@ -507,6 +507,7 @@ export interface AcpTimeoutStop {
 export interface CppAcpSession {
   lastStopReason?: string
   timeoutStop?: AcpTimeoutStop | null
+  computePoolWait?: ComputePoolWait
   idleCountdownStartsAtMs?: number
   idleShutdownAtMs?: number
   idleShutdownTimeoutSeconds?: number
@@ -703,6 +704,27 @@ export interface CliVersionManager {
   remoteProviders?: CliVersionProviderState[]
 }
 
+export interface ComputePoolMember {
+  providerId: string
+  /** Empty covers every model of the provider. */
+  modelId: string
+}
+
+export interface ComputePool {
+  id: string
+  name: string
+  limit: number
+  members: ComputePoolMember[]
+}
+
+export interface ComputePoolWait {
+  poolName: string
+  inUse: number
+  limit: number
+}
+
+export type ComputePoolUsage = Record<string, { inUse: number; waiting: number }>
+
 export interface ShellAction {
   id: string
   label: string
@@ -777,6 +799,7 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   acpSetupInactivityTimeoutSeconds?: number
   activeTurnInactivityTimeoutSeconds?: number
   streamLoopRepeatLimit?: number
+  computePools?: ComputePool[]
   acpTurnOutputLimitMiB?: number
   updateChecksEnabled: boolean
   automaticProviderUpdates: boolean
@@ -964,6 +987,7 @@ export interface CppAppState {
   memoryActivity?: MemoryActivity
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
+  computePoolUsage?: ComputePoolUsage
   shellActionNotification?: string
   statusLine?: string
   deletionProgress?: CppDeletionProgress
@@ -998,6 +1022,7 @@ export interface CppStatePatch {
   memoryActivity?: MemoryActivity
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
+  computePoolUsage?: ComputePoolUsage
   shellActionNotification?: string
   statusLine?: string
 }
@@ -1026,6 +1051,7 @@ export type ProviderSwitchOverride = 'none' | 'warn' | 'disconnected' | 'strande
 export interface AcpBinding {
   lastStopReason?: string
   timeoutStop?: AcpTimeoutStop
+  computePoolWait?: ComputePoolWait
   idleCountdownStartsAtMs?: number
   idleShutdownAtMs?: number
   idleShutdownTimeoutSeconds?: number

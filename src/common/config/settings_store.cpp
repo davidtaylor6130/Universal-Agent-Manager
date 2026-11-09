@@ -1,4 +1,5 @@
 #include "common/config/voice_input_settings.h"
+#include "common/config/compute_pools.h"
 #include "common/config/central_provider_configuration.h"
 #include "common/config/settings_store.h"
 
@@ -102,6 +103,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kEditorFileAssociationsKey = "editor_file_associations";
 	constexpr std::string_view kMcpServersKey = "mcp_servers";
 	constexpr std::string_view kExecutionHostsKey = "execution_hosts";
+	constexpr std::string_view kComputePoolsKey = "compute_pools";
 	constexpr std::string_view kProviderAvailabilityKey = "provider_availability";
 	constexpr std::string_view kExecutionRoutingKey = "execution_routing";
 	constexpr std::string_view kFavoriteUamAgentIdsKey = "favorite_uam_agent_ids";
@@ -598,6 +600,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		uam::editor_file_associations::NormalizeEditorFileAssociations(settings.editor_file_associations);
 		if (!uam::mcp_server_config::NormalizeAndValidate(settings.mcp_servers)) settings.mcp_servers.clear();
 		uam::execution_hosts::Normalize(settings.execution_hosts);
+		uam::compute_pools::Normalize(settings.compute_pools);
 		std::erase_if(settings.host_scoped_settings, [&](const std::pair<const std::string, HostScopedSettings>& entry) { const ExecutionHost* host = uam::execution_hosts::Find(settings.execution_hosts, entry.first); return host == nullptr || host->transport != "ssh"; });
 		uam::provider_availability::Normalize(settings.provider_availability);
 		std::string routing_error;
@@ -743,6 +746,7 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteEncodedSetting(lines, "central_provider_configuration", uam::central_configuration::Serialize(settings.central_provider_configuration).dump());
 		WriteEncodedSetting(lines, kMcpServersKey, uam::mcp_server_config::Serialize(normalized.mcp_servers).dump());
 		WriteEncodedSetting(lines, kExecutionHostsKey, uam::execution_hosts::Serialize(normalized.execution_hosts).dump());
+		WriteEncodedSetting(lines, kComputePoolsKey, uam::compute_pools::Serialize(normalized.compute_pools).dump());
 		WriteEncodedSetting(lines, kProviderAvailabilityKey, uam::provider_availability::Serialize(normalized.provider_availability).dump());
 		WriteEncodedSetting(lines, kExecutionRoutingKey, SettingsStore::SerializeExecutionRoutingSettings(normalized.execution_routing).dump());
 		WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
@@ -1206,6 +1210,11 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		{
 			const nlohmann::json parsed = nlohmann::json::parse(decoded_value, nullptr, false);
 			settings.execution_hosts = uam::execution_hosts::Parse(parsed);
+		}
+		else if (key == kComputePoolsKey)
+		{
+			settings.compute_pools = uam::compute_pools::Parse(nlohmann::json::parse(decoded_value, nullptr, false));
+			uam::compute_pools::Normalize(settings.compute_pools);
 		}
 		else if (key == kExecutionRoutingKey)
 		{

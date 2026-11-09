@@ -886,6 +886,14 @@ namespace uam
 		enum class GoalQueueAdmission { None, Pending, Held, PendingContinuation, HeldContinuation };
 		GoalQueueAdmission goal_queue_admission = GoalQueueAdmission::None;
 		int goal_queue_admission_turn_serial = 0;
+		// Compute pool admission; see compute_pool_gate.cpp. Memory-only: an undelivered turn is re-admitted after restart.
+		std::uint64_t compute_pool_ticket = 0;
+		int compute_pool_ticket_turn_serial = -1;
+		double compute_pool_ticket_seen_s = 0.0;
+		int compute_pool_admitted_turn_serial = -1;
+		std::string compute_pool_wait_name;
+		int compute_pool_wait_in_use = 0;
+		int compute_pool_wait_limit = 0;
 		std::string goal_queue_admission_revision;
 		bool goal_resume_suppressed = false;
 		std::string goal_turn_kind;
@@ -1387,6 +1395,7 @@ namespace uam
 		std::unordered_map<std::string, std::shared_ptr<ManagedInitialRuntimeOwner>> managed_initial_runtime_owners;
 		bool managed_initial_shutdown = false;
 		std::vector<UamControlCapability> uam_control_capabilities;
+		std::uint64_t compute_pool_next_ticket = 0;
 		/// Renders published HTML views to report their runtime errors. Null outside the desktop app.
 		std::shared_ptr<html_view::RenderChecker> html_view_render_checker;
 		/// A chat_create whose first prompt is sent after control requests finish; its reply and audit wait for that send.

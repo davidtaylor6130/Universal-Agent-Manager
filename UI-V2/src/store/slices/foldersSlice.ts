@@ -8,14 +8,14 @@ import {
   isLatestPendingRequest,
   rememberPendingRequest,
 } from '../cpp/reconcile'
-import type { CppFolder, ShellAction } from '../cpp/types'
+import type { ComputePool, ComputePoolUsage, CppFolder, ShellAction } from '../cpp/types'
 import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 import type { ZustandSet, ZustandGet } from '../storeTypes'
 import { deleteSessionsFromState } from './sessionsSlice'
 import { discardPendingPushesForChats } from '../push/pushBuffers'
 import { removeChatsFromGrid } from '../../utils/chatGridStorage'
 import { removeComposerDrafts } from '../../utils/composerDraftStorage'
-import { reportDeletionRejections, type DeletionRejection } from '../../utils/appFailure'
+import { reportAppFailure, reportDeletionRejections, type DeletionRejection } from '../../utils/appFailure'
 
 let folderCounter = 10
 
@@ -112,6 +112,8 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     markdownStoreError: '',
     markdownStoreAttachedBySessionId: {} as Record<string, MarkdownStoreEntry[]>,
     shellActions: [] as ShellAction[],
+    computePools: [] as ComputePool[],
+    computePoolUsage: {} as ComputePoolUsage,
     shellActionNotification: '',
     workspaceFolderRecoveryError: '',
     workspaceDeletionError: '',
@@ -386,6 +388,18 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         }
       }
       set({ shellActions: actions, shellActionNotification: 'Shell action configuration saved.' })
+      return true
+    },
+
+    setComputePools: async (computePools: ComputePool[]) => {
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'setComputePools', payload: { computePools } })
+        if (!response.ok) {
+          reportAppFailure('Could not save compute pools.', response.error ?? 'Try again.')
+          return false
+        }
+      }
+      set({ computePools })
       return true
     },
 

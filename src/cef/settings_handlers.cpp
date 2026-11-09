@@ -1,4 +1,5 @@
 #include "app/storage_retention_service.h"
+#include "common/config/compute_pools.h"
 #include "app/data_folder_settings_service.h"
 #include "app/central_instruction_file_service.h"
 #include "common/config/voice_input_settings.h"
@@ -496,6 +497,34 @@ void UamQueryHandler::HandleSetMcpServers(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 	cb->Success(nlohmann::json{{"servers", uam::mcp_server_config::Serialize(uam::host_scoped_settings::McpServers(m_app.settings, scope))}}.dump());
+	uam::PushStateUpdateIfChanged(browser, m_app);
+}
+
+void UamQueryHandler::HandleSetComputePools(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const nlohmann::json* requested = uam::nlohmann_json::FindArrayField(payload, "computePools");
+	if (requested == nullptr)
+	{
+		cb->Failure(400, "computePools must be an array.");
+		return;
+	}
+	std::vector<ComputePool> pools = uam::compute_pools::Parse(*requested);
+	const std::size_t requested_count = requested->size();
+	uam::compute_pools::Normalize(pools);
+	if (pools.size() != requested_count)
+	{
+		cb->Failure(400, "Each compute pool needs a name of up to 80 bytes, a limit from 1 to 64 and at least one provider.");
+		return;
+	}
+	const AppSettings previous = m_app.settings;
+	m_app.settings.compute_pools = std::move(pools);
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, "Failed to save compute pools.");
+		return;
+	}
+	cb->Success(nlohmann::json{{"computePools", uam::compute_pools::Serialize(m_app.settings.compute_pools)}}.dump());
 	uam::PushStateUpdateIfChanged(browser, m_app);
 }
 

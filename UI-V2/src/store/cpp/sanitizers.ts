@@ -59,6 +59,8 @@ import type {
   VcsStorageSettings,
   ProviderModelCatalog,
   ShellAction,
+  ComputePool,
+  ComputePoolUsage,
   VcsCommitResult,
   VcsCommitStatus,
   VcsType,
@@ -944,6 +946,9 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     lastError: isString(value.lastError) ? value.lastError : undefined,
     recentStderr: isString(value.recentStderr) ? value.recentStderr : undefined,
     lastStopReason: isString(value.lastStopReason) ? value.lastStopReason : undefined,
+    computePoolWait: isRecord(value.computePoolWait) && isString(value.computePoolWait.poolName)
+      ? { poolName: value.computePoolWait.poolName, inUse: nonNegativeInteger(value.computePoolWait.inUse) ?? 0, limit: nonNegativeInteger(value.computePoolWait.limit) ?? 0 }
+      : undefined,
     timeoutStop: isRecord(value.timeoutStop) && isString(value.timeoutStop.label) && value.timeoutStop.label
       ? {
           label: value.timeoutStop.label,
@@ -1786,6 +1791,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
       activeTurnInactivityTimeoutSeconds: DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS,
       streamLoopRepeatLimit: DEFAULT_STREAM_LOOP_REPEAT_LIMIT,
+      computePools: [],
       acpTurnOutputLimitMiB: DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
       updateChecksEnabled: true,
       automaticProviderUpdates: false,
@@ -1951,6 +1957,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     acpSetupInactivityTimeoutSeconds: normalizeAcpSetupInactivityTimeoutSeconds(value.acpSetupInactivityTimeoutSeconds),
     activeTurnInactivityTimeoutSeconds: normalizeActiveTurnInactivityTimeoutSeconds(value.activeTurnInactivityTimeoutSeconds),
     streamLoopRepeatLimit: normalizeStreamLoopRepeatLimit(value.streamLoopRepeatLimit),
+    computePools: sanitizeComputePools(value.computePools),
     acpTurnOutputLimitMiB: normalizeAcpTurnOutputLimitMiB(value.acpTurnOutputLimitMiB),
     updateChecksEnabled: booleanOr(value.updateChecksEnabled, true),
     automaticProviderUpdates: booleanOr(value.automaticProviderUpdates, false),
@@ -2063,6 +2070,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
     memoryActivity: sanitizeMemoryActivity(value.memoryActivity, settings.memoryLastStatus),
     cliVersionManager: sanitizeCliVersionManager(value.cliVersionManager),
     shellActions,
+    computePoolUsage: sanitizeComputePoolUsage(value.computePoolUsage),
     shellActionNotification: stringOr(value.shellActionNotification),
     statusLine: stringOr(value.statusLine),
     deletionProgress: sanitizeDeletionProgress(value.deletionProgress),
@@ -2112,6 +2120,28 @@ function sanitizeProviderModelCatalogs(value: unknown): ProviderModelCatalog[] {
       modelRefreshError: stringOr(entry.modelRefreshError),
     }]
   })
+}
+
+function sanitizeComputePools(value: unknown): ComputePool[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((entry) => {
+    if (!isRecord(entry) || !isString(entry.id) || !isString(entry.name) || !Array.isArray(entry.members)) return []
+    return [{
+      id: entry.id,
+      name: entry.name,
+      limit: nonNegativeInteger(entry.limit) ?? 1,
+      members: entry.members.flatMap((member) => isRecord(member) && isString(member.providerId)
+        ? [{ providerId: member.providerId, modelId: stringOr(member.modelId) }]
+        : []),
+    }]
+  })
+}
+
+function sanitizeComputePoolUsage(value: unknown): ComputePoolUsage {
+  if (!isRecord(value)) return {}
+  return Object.fromEntries(Object.entries(value).flatMap(([id, entry]) => isRecord(entry)
+    ? [[id, { inUse: nonNegativeInteger(entry.inUse) ?? 0, waiting: nonNegativeInteger(entry.waiting) ?? 0 }]]
+    : []))
 }
 
 function sanitizeShellActions(value: unknown): ShellAction[] {
@@ -2224,6 +2254,7 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
     memoryActivity: value.memoryActivity !== undefined ? sanitizeMemoryActivity(value.memoryActivity) : undefined,
     cliVersionManager: value.cliVersionManager !== undefined ? sanitizeCliVersionManager(value.cliVersionManager) : undefined,
     shellActions: value.shellActions !== undefined ? sanitizeShellActions(value.shellActions) : undefined,
+    computePoolUsage: value.computePoolUsage !== undefined ? sanitizeComputePoolUsage(value.computePoolUsage) : undefined,
     shellActionNotification: value.shellActionNotification !== undefined ? stringOr(value.shellActionNotification) : undefined,
     statusLine: value.statusLine !== undefined ? stringOr(value.statusLine) : undefined,
   }

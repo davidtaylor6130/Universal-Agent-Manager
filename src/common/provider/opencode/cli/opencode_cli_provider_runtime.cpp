@@ -1,3 +1,4 @@
+#include "common/runtime/acp/compute_pool_gate.h"
 #include "common/provider/opencode/cli/opencode_cli_provider_runtime.h"
 #include "common/provider/opencode/opencode_permission_policy.h"
 #include "computer_use/computer_use_mcp_config.h"
@@ -529,7 +530,8 @@ bool OpenCodeCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSe
 bool OpenCodeCliProviderRuntime::OnAcpHoldUnconfirmedInput(uam::AppState& app,
 	uam::AcpSessionState& session, ChatSession& chat, const std::string& reason, std::optional<int> observed_exit_code) const
 {
-	if (!session.opencode_v2_native) return false;
+	// A turn still waiting for a compute pool slot was never written, so its input outcome is known.
+	if (!session.opencode_v2_native || uam::compute_pools::HeldBeforeDelivery(session)) return false;
 	// The shared poller has drained and observed this owned process exit. Mark
 	// that observation before retirement: its reaped PID is no longer a live
 	// restart/stop target, while the unresolved input still needs to be held.
