@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "app/attachment_preview_service.h"
 #include "common/provider/structured_attachments.h"
 #include "common/chat/native_attachment_assets.h"
 
@@ -294,4 +295,113 @@ UAM_TEST(StructuredAttachmentsRejectUnsupportedNativeVisionWithoutDroppingImages
 	UAM_ASSERT(uam::structured_attachments::AppendNative(request, session, attachments, "/workspace", "linux", false, error));
 	session.protocol_kind = "unknown-native-protocol";
 	UAM_ASSERT(!uam::structured_attachments::AppendNative(request, session, attachments, "/workspace", "linux", false, error));
+}
+
+namespace
+{
+	nlohmann::json AntigravityRequest()
+	{
+		return {{"event", "user"}, {"message", {{"content", "Describe this"}}}};
+	}
+
+	uam::AcpSessionState AntigravitySession()
+	{
+		uam::AcpSessionState session;
+		session.protocol_kind = "antigravity-stream-json";
+		return session;
+	}
+
+	MessageAttachment StagedImage(const std::string& path)
+	{
+		return MessageAttachment{.id = "image", .name = "a b.png", .kind = "image", .mime_type = "image/png", .path = path};
+	}
+}
+
+UAM_TEST(AntigravityImagesAreSentAsWorkspacePathsInTheSameTextMessage)
+{
+	uam_test::TempDir temp("uam-antigravity-image-path");
+	const std::string relative = ".UAM/attachments/chat-1/a b.png";
+	std::filesystem::create_directories(temp.root / ".UAM/attachments/chat-1");
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / relative, "png"));
+	const auto session = AntigravitySession();
+	const MessageAttachment file{.id = "file", .name = "notes.txt", .kind = "file", .path = "notes.txt"};
+
+	auto local = AntigravityRequest();
+	std::string error;
+	UAM_ASSERT(uam::structured_attachments::AppendNative(local, session, {StagedImage(relative), file}, temp.root.string(), "", false, error));
+	const std::string content = local["message"]["content"].get<std::string>();
+	UAM_ASSERT(content.starts_with("Describe this\n\nAttached images."));
+	UAM_ASSERT(content.find("file viewing tool") != std::string::npos);
+	UAM_ASSERT(content.find("say so instead of guessing") != std::string::npos);
+	UAM_ASSERT(content.find(uam::paths::Utf8PathString((temp.root / relative).lexically_normal()) + "\"") != std::string::npos);
+	UAM_ASSERT(content.find("notes.txt") == std::string::npos);
+	UAM_ASSERT(!local.contains("params"));
+
+	auto remote = AntigravityRequest();
+	UAM_ASSERT(uam::structured_attachments::AppendNative(remote, session, {StagedImage(relative)}, "/srv/project", "linux", true, error));
+	UAM_ASSERT(remote["message"]["content"].get<std::string>().find("\"/srv/project/.UAM/attachments/chat-1/a b.png\"") != std::string::npos);
+
+	auto root_workspace = AntigravityRequest();
+	UAM_ASSERT(uam::structured_attachments::AppendNative(root_workspace, session, {StagedImage(".UAM/a.png")}, "/", "linux", true, error));
+	UAM_ASSERT(root_workspace["message"]["content"].get<std::string>().find("/.UAM/a.png\"") != std::string::npos);
+
+	auto windows = AntigravityRequest();
+	UAM_ASSERT(uam::structured_attachments::AppendNative(windows, session, {StagedImage(".UAM/a.png")}, R"(C:\proj)", "windows", true, error));
+	UAM_ASSERT(windows["message"]["content"].get<std::string>().find(R"("C:\proj\.UAM\a.png")") != std::string::npos);
+
+	auto no_images = AntigravityRequest();
+	UAM_ASSERT(uam::structured_attachments::AppendNative(no_images, session, {file}, temp.root.string(), "", false, error));
+	UAM_ASSERT_EQ(no_images, AntigravityRequest());
+}
+
+UAM_TEST(AntigravityRefusesImagesItCouldNotOpenAndLeavesTheRequestUnchanged)
+{
+	uam_test::TempDir temp("uam-antigravity-image-outside");
+	const fs::path workspace = temp.root / "workspace";
+	const fs::path outside = temp.root / "outside.png";
+	fs::create_directories(workspace);
+	UAM_ASSERT(uam::io::WriteBinaryFile(outside, "png"));
+	const auto session = AntigravitySession();
+	const auto refused = [&session](const std::string& path, const std::string& root, const std::string& platform, bool remote)
+	{
+		auto request = AntigravityRequest();
+		std::string error;
+		UAM_ASSERT(!uam::structured_attachments::AppendNative(request, session, {StagedImage(path)}, root, platform, remote, error));
+		UAM_ASSERT(error.find("inside this chat's workspace") != std::string::npos);
+		UAM_ASSERT_EQ(request, AntigravityRequest());
+	};
+	refused(outside.string(), workspace.string(), "", false);
+	refused("/etc/passwd.png", "/srv/project", "linux", true);
+	refused("/srv/project-other/a.png", "/srv/project", "linux", true);
+	refused("/srv/project/../secret.png", "/srv/project", "linux", true);
+	refused(R"(C:\proj-other\a.png)", R"(C:\proj)", "windows", true);
+	refused(R"(C:\proj\..\secret.png)", R"(C:\proj)", "windows", true);
+}
+
+UAM_TEST(AntigravityImageFileCheckRefusesMissingAndUnsupportedFilesWithAReason)
+{
+	const MessageAttachment image = StagedImage("a.png");
+	const std::string png("\x89PNG\r\n\x1a\nimage", 13);
+	const auto check = [&image](const std::string& bytes, bool found, std::string& error)
+	{
+		return uam::claude_input::CheckImageFiles({image}, error, {}, [&](const MessageAttachment&, std::string& out, std::size_t, std::string&)
+		{ out = bytes; return found; });
+	};
+	std::string error;
+	UAM_ASSERT(check(png, true, error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(!check("not an image", true, error));
+	UAM_ASSERT(error.find("Unsupported image") != std::string::npos);
+	UAM_ASSERT(!check("", false, error));
+	UAM_ASSERT(error.find("Could not read attached image: a b.png") != std::string::npos);
+	int reads = 0;
+	UAM_ASSERT(!uam::claude_input::CheckImageFiles(std::vector<MessageAttachment>(33, image), error, {}, [&reads](const MessageAttachment&, std::string&, std::size_t, std::string&) { ++reads; return true; }));
+	UAM_ASSERT(error.find("at most 32") != std::string::npos);
+	UAM_ASSERT_EQ(reads, 0);
+	std::size_t requested = 0;
+	UAM_ASSERT(!uam::claude_input::CheckImageFiles(std::vector<MessageAttachment>(3, image), error, {}, [&](const MessageAttachment&, std::string& out, std::size_t max_bytes, std::string&)
+	{ requested = max_bytes; out = png + std::string(20 * 1024 * 1024, 'x'); ++reads; return true; }));
+	UAM_ASSERT(error.find("50 MiB total") != std::string::npos);
+	UAM_ASSERT_EQ(requested, uam::attachment_preview::kMaxSourceBytes);
+	UAM_ASSERT_EQ(reads, 3);
 }

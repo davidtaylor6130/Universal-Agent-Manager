@@ -225,9 +225,8 @@ namespace
 	{
 		const std::string resolved = uam::ResolvedNativeSessionIdForChat(app, snapshot);
 		if (!resolved.empty()) snapshot.native_session_id = resolved;
-		if (uam::paths::IsControllerLocalWorkspace(snapshot) &&
-		    uam::strings::IsBlank(snapshot.workspace_directory) && uam::strings::IsBlank(snapshot.workspace_worktree_directory))
-			snapshot.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveControllerWorkspaceRootPath(app, snapshot));
+		if (uam::strings::IsBlank(snapshot.workspace_directory) && uam::strings::IsBlank(snapshot.workspace_worktree_directory))
+			snapshot.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, snapshot));
 	}
 
 	DeletedChatsSelection CollectChatsInFolder(const uam::AppState& app,
@@ -683,7 +682,7 @@ namespace
 		}
 
 		for (const ChatSession& chat : deleted_chats)
-			if (!uam::StageCliProviderContextCleanup(app, chat)) return false;
+			if (!uam::StageCliProviderContextCleanup(app, chat, next_chats)) return false;
 		return true;
 	}
 
@@ -729,11 +728,12 @@ namespace
 			const std::unordered_set<std::string> folder_ids(intent.folder_ids.begin(), intent.folder_ids.end());
 			std::erase_if(next_folders, [&folder_ids](const ChatFolder& folder) { return folder_ids.contains(uam::strings::Trim(folder.id)); });
 			if (!ChatFolderStore::Save(app.data_root, next_folders)) saved = false;
-			app.folders = next_folders;
 		}
+		// Cleanup staging can resolve a chat's workspace through its folder.
 		if (tombstones_saved && saved)
 			for (const ChatSession& chat : deleted_chats)
-				saved = uam::StageCliProviderContextCleanup(app, chat) && saved;
+				saved = uam::StageCliProviderContextCleanup(app, chat, app.chats) && saved;
+		app.folders = next_folders;
 		return saved;
 	}
 

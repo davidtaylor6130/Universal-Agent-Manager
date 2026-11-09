@@ -10,6 +10,14 @@ Files and images attached to a message must reach the intended provider session 
 
 Sending ordinary path-based files, images and directories requires a nonblank execution-host path, whether the legacy source tag is explicit or omitted. A malformed attachment rejects the entire Send or Steer request before input is retained or delivered; remaining text must not proceed by itself. Valid attachment-only input remains supported, and passive preview or native metadata cannot supply a missing path or grant permission to fetch bytes. This shared UAM admission rule applies to all six providers.
 
+## Staged copies
+
+UAM stages composer files and images into the chat's `.UAM/attachments/<chat id>/` folder inside its workspace on the execution host, locally and over SSH. Deleting a chat removes the copies it referenced through the existing durable cleanup intent, except a copy a surviving chat such as a branch still references. Copies a deleted branch inherited from its parent follow the same rule, and a worktree chat also removes the original staged in its source checkout. Other providers' files and images attached before a first send in an automatic worktree are not carried into that worktree. An unreachable SSH host keeps the intent for retry; a removal the reached host refuses is logged and not retried. Copies staged but never sent remain, as does the emptied SSH folder because the runner removes only files.
+
+## Antigravity images
+
+Headless Antigravity accepts text only and automatically denies reads outside its workspace, so UAM adds each current-turn image's absolute workspace path to the same text message and tells `agy` to open it with its file tool and to say so if it cannot. The conversation and login are unchanged. Before dispatch a worker reads each image through the local or SSH reader and checks its format, and copies an image staged before an automatic worktree's first send from the source checkout into that worktree; a missing, unsupported or over-limit image, or a failed copy, refuses the whole turn with its reason, as does an image outside the chat's workspace. A branch with its own worktree refuses an inherited image that is not in that worktree or its original staging folder. Whether the image is understood depends on the selected model having vision.
+
 ## Delivery and recorded history
 
 Native image delivery uses only the current dispatched user-message range, including merged input; it never reattaches earlier images. Image preparation is bounded and cancellable, and remote bytes come from a scoped binary helper reader rather than opening the remote path on the controller. Unsupported provider vision or an older helper reports an explicit outcome.

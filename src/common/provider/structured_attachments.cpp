@@ -98,6 +98,18 @@ namespace uam::structured_attachments
 		}
 	}
 
+	namespace
+	{
+		bool InsideWorkspace(const std::string& workspace, const std::string& path, const std::string& platform, bool remote)
+		{
+			if (!remote) return paths::RelativePathIfInsideRoot(paths::PathFromUtf8(workspace), paths::PathFromUtf8(path)).has_value();
+			std::string root = execution_hosts::NormalizeRemotePath(platform, workspace);
+			if (!root.ends_with('/')) root += '/';
+			const std::string file = execution_hosts::NormalizeRemotePath(platform, path);
+			return file.starts_with(root) && file.find("/../") == std::string::npos;
+		}
+	}
+
 	bool AppendNative(nlohmann::json& request, const AcpSessionState& session, const std::vector<MessageAttachment>& attachments,
 	    const std::string& workspace, const std::string& platform, bool remote, std::string& error)
 	{
@@ -107,14 +119,30 @@ namespace uam::structured_attachments
 		const bool codex = session.protocol_kind == kProtocolCodexAppServer;
 		const bool copilot = session.protocol_kind == "copilot-sdk";
 		const bool claude = session.protocol_kind == kProtocolClaudeCodeStreamJson;
+		const bool antigravity = session.protocol_kind == kProtocolAntigravityStreamJson;
 		const bool claude_images = claude && request.contains("message") && request["message"].is_object() && request["message"].contains("content") && request["message"]["content"].is_array() &&
 		    std::ranges::any_of(request["message"]["content"], [](const nlohmann::json& part) { return part.is_object() && part.value("type", "") == "image"; });
 		const bool inline_images = acp && request.contains("params") && request["params"].is_object() && request["params"].contains("prompt") && request["params"]["prompt"].is_array() &&
 		    std::ranges::any_of(request["params"]["prompt"], [](const nlohmann::json& part) { return part.is_object() && part.value("type", "") == "image"; });
 		nlohmann::json parts = nlohmann::json::array();
+		std::string antigravity_images;
 		for (const MessageAttachment& attachment : attachments)
 		{
 			const bool image = attachment.kind == "image";
+			if (image && antigravity)
+			{
+				// Headless agy has no image block. It auto-denies reads outside its workspace, so
+				// a path it cannot open must refuse here instead of ending the turn with no output.
+				const std::string path = ProviderPath(workspace, attachment.path, platform, remote, error);
+				if (path.empty()) return false;
+				if (!InsideWorkspace(workspace, path, platform, remote))
+				{
+					error = "Antigravity can only open images inside this chat's workspace. Remove the image and attach it again so UAM can copy it there.";
+					return false;
+				}
+				antigravity_images += "\n- \"" + path + "\"";
+				continue;
+			}
 			if (image && ((!acp && !codex && !copilot && !claude) || (claude && remote && !claude_images) || (acp && !session.prompt_image_supported)))
 			{
 				error = claude && remote ? "Native image input for Claude over SSH could not be prepared. Attach the image again and retry."
@@ -137,6 +165,14 @@ namespace uam::structured_attachments
 				if (!attachment.mime_type.empty()) part["mimeType"] = attachment.mime_type;
 				parts.push_back(std::move(part));
 			}
+		}
+		if (!antigravity_images.empty())
+		{
+			if (!request.contains("message") || !request["message"].is_object() || !request["message"].contains("content") || !request["message"]["content"].is_string())
+			{ error = "The provider did not create a valid native attachment request."; return false; }
+			request["message"]["content"] = request["message"]["content"].get<std::string>() +
+			    "\n\nAttached images. Open each one with your file viewing tool before answering, without running commands. If you cannot view an image, say so instead of guessing:" + antigravity_images;
+			return true;
 		}
 		if (parts.empty()) return true;
 		const char* field = codex ? "input" : copilot ? "attachments" : "prompt";
@@ -309,6 +345,46 @@ namespace uam::claude_input
 		if (!structured_attachments::ValidateDeliverySources(images, error))
 			return nullptr;
 		return BuildImageMessage(prompt, images, error, prepare_delivery, cancel, reader, max_wire_bytes);
+	}
+
+	bool CheckImageFiles(const std::vector<MessageAttachment>& images, std::string& error, std::stop_token cancel, const ImageSourceReader& reader)
+	{
+		error.clear();
+		if (!structured_attachments::ValidateDeliverySources(images, error))
+			return false;
+		if (images.size() > 32)
+		{
+			error = "Send at most 32 images in one message.";
+			return false;
+		}
+		std::size_t total = 0;
+		for (const MessageAttachment& image : images)
+		{
+			if (cancel.stop_requested())
+			{
+				error = "Image preparation canceled.";
+				return false;
+			}
+			std::string bytes;
+			std::string read_error;
+			if (!reader(image, bytes, uam::attachment_preview::kMaxSourceBytes, read_error))
+			{
+				error = read_error.empty() ? "Could not read attached image: " + image.name : read_error;
+				return false;
+			}
+			total += bytes.size();
+			if (total > 50 * 1024 * 1024)
+			{
+				error = "Images must be at most 25 MiB each and 50 MiB total.";
+				return false;
+			}
+			if (uam::attachment_preview::ImageMime(bytes).empty())
+			{
+				error = "Unsupported image. Use PNG, JPEG, GIF or WebP: " + image.name;
+				return false;
+			}
+		}
+		return true;
 	}
 
 	nlohmann::json BuildSavedImageRetry(const std::filesystem::path& data_root, const std::string& admitted_owner, const std::filesystem::path& workspace, const std::string& prompt, const std::vector<MessageAttachment>& attachments, std::string& error, std::stop_token cancel, SavedImageSourcePolicy policy, std::size_t max_wire_bytes)

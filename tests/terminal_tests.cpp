@@ -2824,7 +2824,7 @@ UAM_TEST(ProviderContextCleanupIntentSurvivesUnavailableHostWithoutBlockingChatD
 	chat.id = "deleted-remote-context";
 	chat.provider_id = "codex-cli";
 	chat.provider_handoff_cli_contexts.push_back({"removed-host", "/workspace/.UAM/context/0123456789abcdef", "original-connection"});
-	UAM_ASSERT(StageCliProviderContextCleanup(app, chat));
+	UAM_ASSERT(StageCliProviderContextCleanup(app, chat, {}));
 	UAM_ASSERT(ChatRepository::DeleteChatStorageFiles(app.data_root, chat.id).Failed() == false);
 	RetryCliProviderContextCleanup(app, 0.0);
 	app.provider_context_cleanup_worker->join();
@@ -2835,6 +2835,216 @@ UAM_TEST(ProviderContextCleanupIntentSurvivesUnavailableHostWithoutBlockingChatD
 	UAM_ASSERT_EQ(pending->provider_handoff_cli_contexts, chat.provider_handoff_cli_contexts);
 	UAM_ASSERT(pending->messages.empty());
 	UAM_ASSERT(pending->provider_handoff_context.empty());
+}
+
+UAM_TEST(ChatDeletionRemovesOnlyItsOwnUnsharedAttachmentCopies)
+{
+	TempDir temp("uam-attachment-copy-delete");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace / ".UAM/attachments/deleted-chat");
+	const auto write = [&workspace](const std::string& relative) { UAM_ASSERT(uam::io::WriteBinaryFile(workspace / relative, "image")); return workspace / relative; };
+	const fs::path owned = write(".UAM/attachments/deleted-chat/1-0-a.png");
+	const fs::path shared = write(".UAM/attachments/deleted-chat/2-0-b.png");
+	const fs::path user_file = write("photo.png");
+	fs::create_directories(workspace / ".UAM/attachments/parent-chat");
+	const fs::path inherited = write(".UAM/attachments/parent-chat/c.png");
+	const fs::path escaped = write(".UAM/photo.png");
+	ChatSession chat;
+	chat.id = "deleted-chat";
+	chat.provider_id = "antigravity-cli";
+	chat.execution_host_id = "local";
+	chat.workspace_directory = workspace.string();
+	chat.linked_files = {".UAM/attachments/deleted-chat/1-0-a.png", ".UAM/attachments/deleted-chat/2-0-b.png", "photo.png", ".UAM/attachments/../photo.png", ".UAM/attachments/parent-chat/c.png"};
+	ChatSession branch;
+	branch.id = "surviving-branch";
+	branch.linked_files = {".UAM/attachments/deleted-chat/2-0-b.png"};
+
+	UAM_ASSERT(StageCliProviderContextCleanup(app, chat, {branch}));
+	RetryCliProviderContextCleanup(app, 0.0);
+	UAM_ASSERT(app.provider_context_cleanup_worker != nullptr);
+	app.provider_context_cleanup_worker->join();
+	app.provider_context_cleanup_worker.reset();
+
+	UAM_ASSERT(!fs::exists(owned));
+	UAM_ASSERT(fs::exists(shared));
+	UAM_ASSERT(fs::exists(user_file));
+	UAM_ASSERT(!fs::exists(inherited));
+	UAM_ASSERT(fs::exists(escaped));
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root / "runtime-context-cleanup", chat.id).has_value());
+}
+
+UAM_TEST(DeletingAParentKeepsACopyItsBranchUsesUntilTheBranchIsDeleted)
+{
+	TempDir temp("uam-attachment-copy-branch-delete");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path workspace = temp.root / "workspace";
+	const std::string relative = ".UAM/attachments/parent/1-0-a.png";
+	fs::create_directories(workspace / ".UAM/attachments/parent");
+	UAM_ASSERT(uam::io::WriteBinaryFile(workspace / relative, "image"));
+	std::string folder_id;
+	UAM_ASSERT(CreateFolder(app, "Workspace", workspace.string(), &folder_id));
+	for (const std::string id : {"parent", "branch"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.provider_id = "antigravity-cli";
+		chat.execution_host_id = "local";
+		chat.folder_id = folder_id;
+		chat.linked_files = {relative};
+		chat.messages.push_back(Message{MessageRole::User, "Describe this"});
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		app.chats.push_back(std::move(chat));
+	}
+	const auto run_cleanup = [&app](double now)
+	{
+		RetryCliProviderContextCleanup(app, now);
+		if (app.provider_context_cleanup_worker == nullptr) return;
+		app.provider_context_cleanup_worker->join();
+		app.provider_context_cleanup_worker.reset();
+	};
+
+	UAM_ASSERT(RemoveChatById(app, "parent"));
+	run_cleanup(0.0);
+	UAM_ASSERT(fs::exists(workspace / relative));
+
+	UAM_ASSERT(RemoveChatById(app, "branch"));
+	run_cleanup(100.0);
+	UAM_ASSERT(!fs::exists(workspace / relative));
+}
+
+UAM_TEST(WorktreeChatDeletionAlsoRemovesItsSourceCheckoutCopyUnlessAHiddenChatUsesIt)
+{
+	for (const bool hidden_reference : {false, true})
+	{
+		TempDir temp("uam-attachment-copy-worktree-delete");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		const std::string relative = ".UAM/attachments/chat/1-0-a.png";
+		for (const char* root : {"repo", "repo/packages/app", "worktree"})
+		{
+			fs::create_directories(temp.root / root / ".UAM/attachments/chat");
+			UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / root / relative, "image"));
+		}
+		ChatSession chat;
+		chat.id = "chat";
+		chat.provider_id = "antigravity-cli";
+		chat.execution_host_id = "local";
+		chat.workspace_directory = (temp.root / "repo/packages/app").string();
+		chat.workspace_source_directory = (temp.root / "repo").string();
+		chat.workspace_isolation_kind = "gitWorktree";
+		chat.workspace_worktree_directory = (temp.root / "worktree").string();
+		chat.linked_files = {relative};
+		if (hidden_reference)
+		{
+			ChatSession hidden;
+			hidden.id = "hidden-branch";
+			hidden.linked_files = {relative};
+			app.excluded_provider_chats.push_back(hidden);
+		}
+		UAM_ASSERT(StageCliProviderContextCleanup(app, chat, {}));
+		RetryCliProviderContextCleanup(app, 0.0);
+		if (app.provider_context_cleanup_worker != nullptr)
+		{
+			app.provider_context_cleanup_worker->join();
+			app.provider_context_cleanup_worker.reset();
+		}
+		UAM_ASSERT(fs::exists(temp.root / "repo" / relative));
+		UAM_ASSERT_EQ(fs::exists(temp.root / "repo/packages/app" / relative), hidden_reference);
+		UAM_ASSERT_EQ(fs::exists(temp.root / "worktree" / relative), hidden_reference);
+	}
+}
+
+UAM_TEST(WorkspaceDeletionFindsTheStagingFolderOfAWorktreeChatWithoutAStoredDirectory)
+{
+	TempDir temp("uam-attachment-copy-folder-delete");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const std::string relative = ".UAM/attachments/chat/1-0-a.png";
+	const fs::path staged_root = temp.root / "repo/packages/app";
+	fs::create_directories(staged_root / ".UAM/attachments/chat");
+	UAM_ASSERT(uam::io::WriteBinaryFile(staged_root / relative, "image"));
+	std::string folder_id;
+	UAM_ASSERT(CreateFolder(app, "Workspace", staged_root.string(), &folder_id));
+	ChatSession chat;
+	chat.id = "chat";
+	chat.provider_id = "antigravity-cli";
+	chat.execution_host_id = "local";
+	chat.folder_id = folder_id;
+	chat.workspace_source_directory = (temp.root / "repo").string();
+	chat.workspace_isolation_kind = "gitWorktree";
+	chat.workspace_worktree_directory = (temp.root / "worktree").string();
+	chat.linked_files = {relative};
+	chat.messages.push_back(Message{MessageRole::User, "Describe this"});
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	app.chats.push_back(chat);
+
+	UAM_ASSERT(DeleteFolderById(app, folder_id));
+	RetryCliProviderContextCleanup(app, 0.0);
+	UAM_ASSERT(app.provider_context_cleanup_worker != nullptr);
+	app.provider_context_cleanup_worker->join();
+	app.provider_context_cleanup_worker.reset();
+	UAM_ASSERT(!fs::exists(staged_root / relative));
+}
+
+UAM_TEST(AttachmentCopyCleanupIntentStaysUntilTheSshHostCanBeReached)
+{
+	TempDir temp("uam-attachment-copy-unreachable");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ExecutionHost host;
+	host.id = "ssh-host";
+	host.platform = "linux"; // No alias, so the runner connection fails without any network use.
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat;
+	chat.id = "chat";
+	chat.provider_id = "antigravity-cli";
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = "/srv/project";
+	chat.linked_files = {".UAM/attachments/chat/a.png"};
+	UAM_ASSERT(StageCliProviderContextCleanup(app, chat, {}));
+	RetryCliProviderContextCleanup(app, 0.0);
+	UAM_ASSERT(app.provider_context_cleanup_worker != nullptr);
+	app.provider_context_cleanup_worker->join();
+	app.provider_context_cleanup_worker.reset();
+	const std::optional<ChatSession> pending = ChatRepository::LoadLocalChat(app.data_root / "runtime-context-cleanup", chat.id);
+	UAM_ASSERT(pending.has_value());
+	UAM_ASSERT_EQ(pending->linked_files, std::vector<std::string>{"/srv/project/.UAM/attachments/chat/a.png"});
+
+	ChatSession no_workspace = chat;
+	no_workspace.id = "imported";
+	no_workspace.imported_read_only = true;
+	UAM_ASSERT(StageCliProviderContextCleanup(app, no_workspace, {}));
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root / "runtime-context-cleanup", no_workspace.id).has_value());
+}
+
+UAM_TEST(RemoteAttachmentCopyCleanupIntentRecordsHostPaths)
+{
+	for (const auto& [platform, workspace, linked, expected] : std::vector<std::array<std::string, 4>>{
+	         {"linux", "/srv/project", ".UAM/attachments/chat/a.png", "/srv/project/.UAM/attachments/chat/a.png"},
+	         {"windows", R"(C:\proj)", R"(.UAM\attachments\chat\a.png)", R"(C:\proj\.UAM\attachments\chat\a.png)"}})
+	{
+		TempDir temp("uam-attachment-copy-remote-intent");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ExecutionHost host;
+		host.id = "ssh-host";
+		host.platform = platform;
+		app.settings.execution_hosts.push_back(host);
+		ChatSession chat;
+		chat.id = "chat";
+		chat.provider_id = "antigravity-cli";
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = workspace;
+		chat.linked_files = {linked};
+		UAM_ASSERT(StageCliProviderContextCleanup(app, chat, {}));
+		const std::optional<ChatSession> pending = ChatRepository::LoadLocalChat(app.data_root / "runtime-context-cleanup", chat.id);
+		UAM_ASSERT(pending.has_value());
+		UAM_ASSERT_EQ(pending->execution_host_id, host.id);
+		UAM_ASSERT_EQ(pending->linked_files, std::vector<std::string>{expected});
+	}
 }
 
 UAM_TEST(CliContextPreparationIsAsyncRejectsStaleAndCancelsWithoutJoiningUi)
