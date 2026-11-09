@@ -136,6 +136,11 @@ export interface Session {
   subagentParentCreatedAt?: string
   /** Display-only chat_create provenance; never lineage, resume or control authority. */
   createdByChatId?: string
+  /** Automation API origin and approval hold; the prompt is held until the user starts the chat. */
+  automationTokenName?: string
+  automationGitPermission?: string
+  automationMaxIterations?: number
+  automationPendingPrompt?: string
   managedSubagentCount?: number
   managedSubagentRevision?: number
   messagesDigest?: string

@@ -1,4 +1,5 @@
 #include "cef/companion_server.h"
+#include "app/automation_api_service.h"
 #include "common/companion/connection_config.h"
 
 #if defined(__APPLE__)
@@ -577,6 +578,7 @@ void UamCompanionServer::OnHttpRequest(CefRefPtr<CefServer> server, int connecti
 	if (!CefParseURL(request->GetURL(), url)) { reply->Failure(400, "Invalid URL."); return; }
 	const std::string path = CefString(&url.path);
 	if (path.empty() || path.front() != '/') { reply->Failure(400, "Invalid path."); return; }
+	if (uam::AutomationApiService::IsApiPath(path)) { HandleAutomationRequest(request, path, reply); return; }
 	if (request->GetMethod() == "GET")
 	{
 		const std::filesystem::path executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath();
@@ -646,6 +648,37 @@ void UamCompanionServer::OnHttpRequest(CefRefPtr<CefServer> server, int connecti
 		element->GetBytes(element->GetBytesCount(), body.data() + offset);
 	}
 	ProcessApiRequest(std::move(body), reply);
+}
+
+void UamCompanionServer::HandleAutomationRequest(CefRefPtr<CefRequest> request, const std::string& path, CefRefPtr<Callback> reply)
+{
+	// Automation callers are servers; any browser Origin is a cross-site attempt.
+	if (!request->GetHeaderByName("Origin").empty()) { reply->Failure(403, "Browser requests are not accepted."); return; }
+	const std::optional<std::string> token_hash = uam::AutomationApiService::TokenHashFromAuthorization(request->GetHeaderByName("Authorization").ToString());
+	if (!token_hash) { reply->Failure(401, "Invalid automation token."); return; }
+	CefRefPtr<CefPostData> post = request->GetPostData();
+	CefPostData::ElementVector elements;
+	if (post) post->GetElements(elements);
+	std::string body;
+	for (CefRefPtr<CefPostDataElement> element : elements)
+	{
+		if (element->GetType() != PDE_TYPE_BYTES || element->GetBytesCount() > uam::AutomationApiService::kMaxBodyBytes - body.size())
+		{
+			reply->Failure(413, "Request exceeds 256 KiB.");
+			return;
+		}
+		const std::size_t offset = body.size();
+		body.resize(offset + element->GetBytesCount());
+		element->GetBytes(element->GetBytesCount(), body.data() + offset);
+	}
+	// A bodyless status poll still occupies an admission slot.
+	const auto admission = m_request_admission.Acquire(std::max<std::size_t>(body.size(), 1));
+	if (!admission) { reply->Failure(503, "Companion request capacity exhausted. Wait for current actions to finish."); return; }
+	reply = new AdmittedReply(reply, admission);
+	nlohmann::json envelope = {{"action", "automationHttpRequest"}, {"payload", {{"method", request->GetMethod().ToString()}, {"path", path}, {"tokenHash", *token_hash}, {"body", std::move(body)}}}};
+	CefRefPtr<UamCompanionServer> self = this;
+	std::function<void()> dispatch_request = [self, envelope = std::move(envelope), reply]() { self->m_dispatch(envelope, reply); };
+	if (!CefPostTask(TID_UI, new Task(std::move(dispatch_request)))) reply->Failure(503, "UAM is shutting down.");
 }
 
 void UamCompanionServer::ProcessApiRequest(std::string body, CefRefPtr<Callback> reply, bool transferred)

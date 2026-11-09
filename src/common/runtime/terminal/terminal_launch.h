@@ -98,6 +98,11 @@ namespace uam
 
 	inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, ChatSession& chat, int rows, int cols)
 	{
+		if (const char* refusal = chat.AutomationLaunchRefusal())
+		{
+			terminal.last_error = refusal;
+			return false;
+		}
 		const bool awaiting_baseline = terminal.repository_baseline_pending;
 		if (!awaiting_baseline && terminal.context_preparation == nullptr && !terminal.worktree_launch_pending) StopCliTerminal(terminal);
 		if (terminal.running)

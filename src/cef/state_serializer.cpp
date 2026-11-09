@@ -674,6 +674,13 @@ namespace uam
 			w.Set("subagentParentChatId", session.subagent_parent_chat_id);
 			w.Set("subagentParentCreatedAt", session.subagent_parent_created_at);
 			if (!session.created_by_chat_id.empty()) w.Set("createdByChatId", session.created_by_chat_id);
+			if (!session.automation_token_id.empty())
+			{
+				w.Set("automationTokenName", session.automation_token_name);
+				w.Set("automationGitPermission", session.automation_git_permission);
+				w.Set("automationMaxIterations", session.automation_max_iterations);
+				if (session.AwaitsAutomationApproval()) w.Set("automationPendingPrompt", session.automation_pending_prompt);
+			}
 			w.Set("branchRootChatId", uam::strings::NonEmptyOrFallback(session.branch_root_chat_id, session.id));
 			w.Set("branchFromMessageIndex", session.branch_from_message_index);
 			w.Set("branchMessageEdited", session.branch_message_edited);

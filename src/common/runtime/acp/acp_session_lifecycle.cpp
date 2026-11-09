@@ -2067,6 +2067,11 @@ static bool SavedImageRetryLaunchAllowed(const AppState& app, const AcpSessionSt
 bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out, const SavedImageRetryPermission* starting_saved_retry, std::shared_ptr<ColdRetryBinding> cold_binding,
     bool defer_until_saved)
 {
+	if (const char* refusal = chat.AutomationLaunchRefusal())
+	{
+		if (error_out != nullptr) *error_out = refusal;
+		return false;
+	}
 	if (const auto creation = session.pending_local_launch; creation && creation->process)
 	{
 		if (!creation->finished.load(std::memory_order_acquire)) return true;

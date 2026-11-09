@@ -1600,6 +1600,9 @@ namespace
 		    lhs.computer_use_backend != rhs.computer_use_backend ||
 		    lhs.goal_owner_chat_id != rhs.goal_owner_chat_id ||
 		    lhs.created_by_chat_id != rhs.created_by_chat_id || lhs.created_by_request_key != rhs.created_by_request_key ||
+		    lhs.automation_token_id != rhs.automation_token_id || lhs.automation_token_name != rhs.automation_token_name ||
+		    lhs.automation_pending_prompt != rhs.automation_pending_prompt || lhs.automation_max_iterations != rhs.automation_max_iterations ||
+		    lhs.automation_git_permission != rhs.automation_git_permission ||
 		    lhs.goal_iteration_goal_id != rhs.goal_iteration_goal_id ||
 		    lhs.goal_iteration_turn_kind != rhs.goal_iteration_turn_kind ||
 		    lhs.goal_iteration_repair_attempts != rhs.goal_iteration_repair_attempts ||
@@ -2322,6 +2325,11 @@ namespace
 		    JsonStringOrEmpty(root.Find(kChatGoalOwnerChatIdField)));
 		chat.created_by_chat_id = uam::strings::Trim(JsonStringOrEmpty(root.Find(kChatCreatedByChatIdField)));
 		chat.created_by_request_key = JsonStringOrEmpty(root.Find(kChatCreatedByRequestKeyField));
+		chat.automation_token_id = JsonStringOrEmpty(root.Find("automation_token_id"));
+		chat.automation_token_name = JsonStringOrEmpty(root.Find("automation_token_name"));
+		chat.automation_pending_prompt = JsonStringOrEmpty(root.Find("automation_pending_prompt"));
+		chat.automation_max_iterations = NonNegativeIntFieldOrZero(root.Find("automation_max_iterations"));
+		chat.automation_git_permission = JsonStringOrEmpty(root.Find("automation_git_permission"));
 		chat.goal_iteration_goal_id = uam::strings::Trim(
 		    JsonStringOrEmpty(root.Find(kChatGoalIterationGoalIdField)));
 		chat.goal_iteration_turn_kind = JsonStringOrEmpty(root.Find(kChatGoalIterationTurnKindField));
@@ -2509,6 +2517,7 @@ namespace
 				goal.last_assistant_text = JsonStringOrEmpty(goal_obj.Find("lastAssistantText"));
 				goal.same_assistant_text_count = NonNegativeIntFieldOrZero(goal_obj.Find("sameAssistantTextCount"));
 				goal.loop_count = NonNegativeIntFieldOrZero(goal_obj.Find("loopCount"));
+				goal.max_iterations = NonNegativeIntFieldOrZero(goal_obj.Find("maxIterations"));
 				goal.created_at = JsonStringOrEmpty(goal_obj.Find("createdAt"));
 				goal.updated_at = JsonStringOrEmpty(goal_obj.Find("updatedAt"));
 				goal.execution_owner = JsonStringOrEmpty(goal_obj.Find("executionOwner")) == "provider" ? "provider" : "uam";
@@ -4225,6 +4234,14 @@ try
 		uam::json::SetString(root, kChatCreatedByChatIdField, chat.created_by_chat_id);
 		uam::json::SetString(root, kChatCreatedByRequestKeyField, chat.created_by_request_key);
 	}
+	if (!chat.automation_token_id.empty())
+	{
+		uam::json::SetString(root, "automation_token_id", chat.automation_token_id);
+		uam::json::SetString(root, "automation_token_name", chat.automation_token_name);
+		uam::json::SetString(root, "automation_pending_prompt", chat.automation_pending_prompt);
+		uam::json::SetNumber(root, "automation_max_iterations", static_cast<double>(chat.automation_max_iterations));
+		uam::json::SetString(root, "automation_git_permission", chat.automation_git_permission);
+	}
 	uam::json::SetString(root, kChatGoalIterationGoalIdField, chat.goal_iteration_goal_id);
 	uam::json::SetString(root, kChatGoalIterationTurnKindField, chat.goal_iteration_turn_kind);
 	uam::json::SetNumber(root, kChatGoalIterationRepairAttemptsField, static_cast<double>(chat.goal_iteration_repair_attempts));
@@ -4310,6 +4327,7 @@ try
 			uam::json::SetString(goal_obj, "lastAssistantText", goal.last_assistant_text);
 			uam::json::SetNumber(goal_obj, "sameAssistantTextCount", static_cast<double>(goal.same_assistant_text_count));
 			uam::json::SetNumber(goal_obj, "loopCount", static_cast<double>(goal.loop_count));
+			if (goal.max_iterations > 0) uam::json::SetNumber(goal_obj, "maxIterations", static_cast<double>(goal.max_iterations));
 			uam::json::SetString(goal_obj, "createdAt", goal.created_at);
 			uam::json::SetString(goal_obj, "updatedAt", goal.updated_at);
 			uam::json::SetString(goal_obj, "executionOwner", goal.execution_owner == "provider" ? "provider" : "uam");
@@ -5475,6 +5493,11 @@ namespace
 		hydrated.goal_owner_chat_id = summary.goal_owner_chat_id;
 		hydrated.created_by_chat_id = summary.created_by_chat_id;
 		hydrated.created_by_request_key = summary.created_by_request_key;
+		hydrated.automation_token_id = summary.automation_token_id;
+		hydrated.automation_token_name = summary.automation_token_name;
+		hydrated.automation_pending_prompt = summary.automation_pending_prompt;
+		hydrated.automation_max_iterations = summary.automation_max_iterations;
+		hydrated.automation_git_permission = summary.automation_git_permission;
 		hydrated.goal_iteration_goal_id = summary.goal_iteration_goal_id;
 		hydrated.goal_iteration_turn_kind = summary.goal_iteration_turn_kind;
 		hydrated.goal_iteration_repair_attempts = summary.goal_iteration_repair_attempts;

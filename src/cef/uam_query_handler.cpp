@@ -337,6 +337,11 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setCompanionEnabled", &UamQueryHandler::HandleSetCompanionEnabled},
 		{"setCompanionKeychainPrompts", &UamQueryHandler::HandleSetCompanionKeychainPrompts},
 		{"getCompanionToken", &UamQueryHandler::HandleGetCompanionToken},
+		{"automationHttpRequest", &UamQueryHandler::HandleAutomationHttpRequest},
+		{"approveAutomationChat", &UamQueryHandler::HandleApproveAutomationChat},
+		{"getAutomationTokens", &UamQueryHandler::HandleGetAutomationTokens},
+		{"createAutomationToken", &UamQueryHandler::HandleCreateAutomationToken},
+		{"revokeAutomationToken", &UamQueryHandler::HandleRevokeAutomationToken},
 #endif
 		{"setChatMemoryEnabled", &UamQueryHandler::HandleSetChatMemoryEnabled},
 		{"setChatSmallModelMode", &UamQueryHandler::HandleSetChatSmallModelMode},

@@ -2037,6 +2037,11 @@ namespace
 		native.managed_parent_input_receipts_present = local.managed_parent_input_receipts_present;
 		native.goals = local.goals;
 		native.active_goal_id = local.active_goal_id;
+		native.automation_token_id = local.automation_token_id;
+		native.automation_token_name = local.automation_token_name;
+		native.automation_pending_prompt = local.automation_pending_prompt;
+		native.automation_max_iterations = local.automation_max_iterations;
+		native.automation_git_permission = local.automation_git_permission;
 		native.interaction_at = local.interaction_at;
 		if (!uam::strings::IsBlank(local.last_opened_at))
 		{

@@ -44,6 +44,8 @@ class GoalService
 	                       std::string creator_agent_id = {}, std::string creator_run_id = {},
 	                       std::string creator_request_key_hash = {});
 	static bool IsProviderManaged(const Goal& goal);
+	/// <summary>The stricter of the goal's own ceiling and the Settings cap.</summary>
+	static int IterationLimit(const Goal& goal, AppSettings settings);
 	static std::string WorkerModelId(const ChatSession& chat, const Goal& goal);
 	static std::string ReviewerModelId(const ChatSession& chat, const Goal& goal);
 	static std::size_t PauseActiveGoalsAfterRestart(AppState& app,

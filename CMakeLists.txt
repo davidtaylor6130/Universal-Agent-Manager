@@ -368,6 +368,7 @@ endif()
 if(UAM_ENABLE_MOBILE_COMPANION)
   list(APPEND UAM_FEATURE_APP_SOURCES
     src/cef/companion_server.cpp
+    src/cef/automation_handlers.cpp
     src/common/platform/companion_network_platform.cpp
   )
 endif()
@@ -576,6 +577,7 @@ add_library(uam_core_objects OBJECT
   src/app/managed_subagent_control_service.cpp
   src/app/managed_subagent_followup_service.cpp
   src/app/uam_control_service.cpp
+  src/app/automation_api_service.cpp
   src/common/utils/diagnostic_log.cpp
   src/app/chat_domain_service.cpp
   src/app/chat_lifecycle_service.cpp
@@ -1594,6 +1596,7 @@ if(UAM_BUILD_TESTS)
     tests/queued_prompt_hold_tests.cpp
     tests/agent_target_metadata_tests.cpp
     tests/uam_control_chat_create_tests.cpp
+    tests/automation_api_tests.cpp
     tests/turn_finalization_ownership_tests.cpp
     tests/checkpoint_staging_tests.cpp
     tests/codex_allowance_ownership_tests.cpp

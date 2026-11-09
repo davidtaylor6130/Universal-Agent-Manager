@@ -38,6 +38,7 @@ Every provider checklist must account for every row. Conditional features must c
 | `remote-execution` | [SSH execution](../remote-environments/ssh.md) |
 | `stream-watch` | [Loop and stall stops](runtime-lifecycle.md#stream-watch) |
 | `compute-pools` | [Compute Pools](../settings/compute-pools.md) |
+| `automation-api` | [Token-scoped automation chats](../automation-api.md) |
 
 ## Provider checklists
 

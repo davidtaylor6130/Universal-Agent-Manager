@@ -1,4 +1,5 @@
 import { browserDictationAvailable } from '../../ipc/companionPlatform'
+import { AutomationApprovalNotice } from '../chat/AutomationApprovalNotice'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
@@ -3564,6 +3565,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
             ? <Button type="button" size="sm" variant="ghost" leadingIcon={<CornerUpLeft size={14} aria-hidden />} onClick={() => showChatInPane(startedBy.id)}>Started by {startedBy.name}</Button>
             : <span style={{ color: 'var(--text-3)' }}>Started by a chat that is no longer available</span>}
         </nav>}
+        {session.automationTokenName && <nav aria-label="Automation origin" className="px-4 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-3)' }}>Started by automation token {session.automationTokenName}</nav>}
+        {session.automationPendingPrompt && <AutomationApprovalNotice session={session} />}
         <div className="uam-chat-viewport relative flex-1 min-h-0" data-message-navigation={messageNavigationVisible || undefined}>
           <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
             <div ref={transcriptContentRef} className="uam-chat-content w-full py-4" style={{ paddingBottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
