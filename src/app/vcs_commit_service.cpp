@@ -1703,6 +1703,21 @@ namespace uam
 			ApplyRemoteGitFingerprints(context, root, files);
 		}
 
+		std::string RemoteNoIndexDiff(RemoteVcsContext& context, const std::string& cwd, const std::string& path, const VcsChangedFile& selected, std::string* error_out)
+		{
+			const ProcessExecutionResult result = context.Run(
+			    cwd, {"git", "--literal-pathspecs", "diff", "--no-index",
+			          "--no-ext-diff", "--", context.NullDevice(), path});
+			if (result.ok && !result.timed_out && !result.canceled &&
+			    (result.exit_code == 0 || result.exit_code == 1))
+				return uam::strings::Trim(result.output);
+			if (error_out != nullptr)
+				*error_out = IsSvnUnversioned(selected)
+				    ? "This new SVN item could not be compared on the remote host; new folders and hosts without Git have no file diff."
+				    : CommandOutputOrError(result);
+			return {};
+		}
+
 		class GitVcsProvider final : public VcsProvider
 		{
 		  public:
@@ -1796,6 +1811,97 @@ namespace uam
 					                                status.changed_files);
 				return;
 			}
+
+			std::string LocalDiff(const AppState& app, const ChatSession& chat, const std::filesystem::path& workspace, const std::string& trimmed_path, std::string_view comparison_ref, std::string* error_out) const override
+			{
+				const VcsCommitService service;
+				std::filesystem::path diff_workspace = workspace;
+				const std::string ref = uam::strings::Trim(comparison_ref);
+				if (ref == "chat")
+				{
+					std::string root;
+					if (!GitAvailable(workspace, &root))
+					{
+						if (error_out) *error_out = "No Git repository is available for this chat.";
+						return {};
+					}
+					const std::filesystem::path review_root = uam::paths::PathFromUtf8(root);
+					const VcsCommitStatus status = service.Status(app, chat, VcsType::Git, false, "chat");
+					if (!status.error.empty())
+					{
+						if (error_out) *error_out = status.error;
+						return {};
+					}
+					const auto selected = std::ranges::find(status.changed_files, trimmed_path, &VcsChangedFile::path);
+					if (selected == status.changed_files.end())
+					{
+						if (error_out) *error_out = "The selected file is no longer changed in this chat.";
+						return {};
+					}
+					const std::string saved_ref = SavedChatBaseline(app, chat, review_root, error_out);
+					GitReviewIndex index(review_root);
+					if (saved_ref.empty() || !PrepareChatReviewIndex(index, saved_ref, error_out)) return {};
+					std::vector<std::string> args = {"--literal-pathspecs", "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", saved_ref, "--", trimmed_path};
+					if (!selected->previous_path.empty()) args.push_back(selected->previous_path);
+					const ProcessExecutionResult patch = index.Run(std::move(args));
+					if (!CommandSucceeded(patch))
+					{
+						if (error_out) *error_out = CommandOutputOrError(patch);
+						return {};
+					}
+					return patch.output;
+				}
+				if (!ref.empty() && !IsCommitId(ref))
+				{
+					if (error_out != nullptr) *error_out = "The saved chat comparison point is invalid.";
+					return "";
+				}
+				std::string git_root;
+				if (GitAvailable(workspace, &git_root) && !git_root.empty())
+				{
+					diff_workspace = uam::paths::PathFromUtf8(git_root);
+				}
+
+				const VcsCommitStatus status = service.Status(app, chat, VcsType::Git, false, ref);
+				const auto changed_file = std::find_if(status.changed_files.begin(), status.changed_files.end(), [&trimmed_path](const VcsChangedFile& file) { return file.path == trimmed_path; });
+				if (changed_file != status.changed_files.end() && changed_file->status == "??")
+				{
+					std::string output;
+					return OutputGitUntrackedDiff(diff_workspace, trimmed_path, &output, error_out) ? output : "";
+				}
+				std::string output;
+				if (!ref.empty())
+				{
+					return OutputCommand(BuildGitCommandInDirectory(diff_workspace, "diff " + uam::shell::EscapeArg(ref) + " -- " + uam::shell::EscapeArg(trimmed_path)), &output, error_out) ? output : "";
+				}
+				return OutputCommand(BuildLiteralGitCommandInDirectory(diff_workspace, "diff HEAD -- " + uam::shell::EscapeArg(trimmed_path)), &output, error_out) ? output : "";
+			}
+
+			std::string RemoteDiff(RemoteVcsContext& context, const AppState& app, const ChatSession& chat, const std::string& path, const VcsChangedFile& selected, std::string cwd, const std::string& comparison_ref, std::string* error_out) const override
+			{
+				std::string detected_root;
+				if (RemoteOutput(context, cwd, {"git", "rev-parse", "--show-toplevel"}, &detected_root))
+					cwd = std::move(detected_root);
+				if (comparison_ref == "chat")
+				{
+					const std::filesystem::path root = uam::paths::PathFromUtf8(cwd);
+					const std::string ref = SavedChatBaseline(app, chat, root, error_out);
+					GitReviewIndex index(root, {}, &context);
+					if (ref.empty() || !PrepareChatReviewIndex(index, ref, error_out)) return {};
+					std::vector<std::string> args = {"--literal-pathspecs", "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", ref, "--", path};
+					if (!selected.previous_path.empty()) args.push_back(selected.previous_path);
+					const ProcessExecutionResult patch = index.Run(std::move(args));
+					if (!CommandSucceeded(patch)) { if (error_out) *error_out = CommandOutputOrError(patch); return {}; }
+					return patch.output;
+				}
+				if (selected.status == "??" || IsSvnUnversioned(selected)) return RemoteNoIndexDiff(context, cwd, path, selected, error_out);
+				std::vector<std::string> argv = {"git", "--literal-pathspecs", "diff"};
+				if (!comparison_ref.empty()) argv.push_back(comparison_ref);
+				else argv.push_back("HEAD");
+				argv.insert(argv.end(), {"--", path});
+				std::string output;
+				return RemoteOutput(context, cwd, argv, &output, error_out) ? output : "";
+			}
 		};
 
 		class SvnVcsProvider final : public VcsProvider
@@ -1837,6 +1943,30 @@ namespace uam
 				if (PopulateSvnStatusDetails(RemoteSvnRunner(context, status.workspace_directory), status, request.include_line_stats, request.context_only) && request.include_line_stats)
 					for (VcsChangedFile& file : status.changed_files)
 						if (IsSvnUnversioned(file)) ApplyRemoteUntrackedLineStats(context, status.workspace_directory, file);
+			}
+
+			std::string LocalDiff(const AppState& app, const ChatSession& chat, const std::filesystem::path& workspace, const std::string& trimmed_path, std::string_view, std::string* error_out) const override
+			{
+				std::string output;
+				std::string error;
+				const VcsCommitStatus status = VcsCommitService().Status(app, chat, VcsType::Svn, false);
+				const auto selected = std::ranges::find(status.changed_files, trimmed_path, &VcsChangedFile::path);
+				const bool diffed = selected != status.changed_files.end() && IsSvnUnversioned(*selected)
+				    ? SvnUnversionedFileDiff(workspace, trimmed_path, output, error)
+				    : SvnFileDiff(LocalSvnRunner(workspace), trimmed_path, output, error);
+				if (diffed) return uam::strings::Trim(output);
+				if (error_out != nullptr) *error_out = error;
+				return {};
+			}
+
+			std::string RemoteDiff(RemoteVcsContext& context, const AppState&, const ChatSession&, const std::string& path, const VcsChangedFile& selected, std::string cwd, const std::string&, std::string* error_out) const override
+			{
+				if (IsSvnUnversioned(selected)) return RemoteNoIndexDiff(context, cwd, path, selected, error_out);
+				std::string output;
+				std::string error;
+				if (SvnFileDiff(RemoteSvnRunner(context, cwd), path, output, error)) return uam::strings::Trim(output);
+				if (error_out != nullptr) *error_out = error;
+				return {};
 			}
 		};
 
@@ -1893,53 +2023,7 @@ namespace uam
 				if (error_out != nullptr) *error_out = "The selected file is no longer changed.";
 				return {};
 			}
-			std::string cwd = status.workspace_directory;
-			if (type == VcsType::Git)
-			{
-				std::string root;
-				if (RemoteOutput(context, cwd, {"git", "rev-parse", "--show-toplevel"}, &root))
-					cwd = std::move(root);
-			}
-			if (type == VcsType::Svn && !IsSvnUnversioned(*selected))
-			{
-				std::string output;
-				std::string error;
-				if (SvnFileDiff(RemoteSvnRunner(context, cwd), path, output, error)) return uam::strings::Trim(output);
-				if (error_out != nullptr) *error_out = error;
-				return {};
-			}
-			if (type == VcsType::Git && comparison_ref == "chat")
-			{
-				const std::filesystem::path root = uam::paths::PathFromUtf8(cwd);
-				const std::string ref = SavedChatBaseline(app, chat, root, error_out);
-				GitReviewIndex index(root, {}, &context);
-				if (ref.empty() || !PrepareChatReviewIndex(index, ref, error_out)) return {};
-				std::vector<std::string> args = {"--literal-pathspecs", "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", ref, "--", path};
-				if (!selected->previous_path.empty()) args.push_back(selected->previous_path);
-				const ProcessExecutionResult patch = index.Run(std::move(args));
-				if (!CommandSucceeded(patch)) { if (error_out) *error_out = CommandOutputOrError(patch); return {}; }
-				return patch.output;
-			}
-			if (selected->status == "??" || IsSvnUnversioned(*selected))
-			{
-				const ProcessExecutionResult result = context.Run(
-				    cwd, {"git", "--literal-pathspecs", "diff", "--no-index",
-				          "--no-ext-diff", "--", context.NullDevice(), path});
-				if (result.ok && !result.timed_out && !result.canceled &&
-				    (result.exit_code == 0 || result.exit_code == 1))
-					return uam::strings::Trim(result.output);
-				if (error_out != nullptr)
-					*error_out = IsSvnUnversioned(*selected)
-					    ? "This new SVN item could not be compared on the remote host; new folders and hosts without Git have no file diff."
-					    : CommandOutputOrError(result);
-				return {};
-			}
-			std::vector<std::string> argv = {"git", "--literal-pathspecs", "diff"};
-			if (!comparison_ref.empty()) argv.push_back(comparison_ref);
-			else argv.push_back("HEAD");
-			argv.insert(argv.end(), {"--", path});
-			std::string output;
-			return RemoteOutput(context, cwd, argv, &output, error_out) ? output : "";
+			return VcsProviderFor(type).RemoteDiff(context, app, chat, path, *selected, status.workspace_directory, comparison_ref, error_out);
 		}
 
 		VcsCommitResult RemoteCommit(RemoteVcsContext& context, const AppState& app, const ChatSession& chat,
@@ -2384,80 +2468,7 @@ namespace uam
 			                  uam::strings::Trim(comparison_ref), app.settings);
 		}
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
-		std::filesystem::path diff_workspace = workspace;
-		if (type == VcsType::Git)
-		{
-			const std::string ref = uam::strings::Trim(comparison_ref);
-			if (ref == "chat")
-			{
-				std::string root;
-				if (!GitAvailable(workspace, &root))
-				{
-					if (error_out) *error_out = "No Git repository is available for this chat.";
-					return {};
-				}
-				const std::filesystem::path review_root = uam::paths::PathFromUtf8(root);
-				const VcsCommitStatus status = Status(app, chat, type, false, "chat");
-				if (!status.error.empty())
-				{
-					if (error_out) *error_out = status.error;
-					return {};
-				}
-				const auto selected = std::ranges::find(status.changed_files, trimmed_path, &VcsChangedFile::path);
-				if (selected == status.changed_files.end())
-				{
-					if (error_out) *error_out = "The selected file is no longer changed in this chat.";
-					return {};
-				}
-				const std::string saved_ref = SavedChatBaseline(app, chat, review_root, error_out);
-				GitReviewIndex index(review_root);
-				if (saved_ref.empty() || !PrepareChatReviewIndex(index, saved_ref, error_out)) return {};
-				std::vector<std::string> args = {"--literal-pathspecs", "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", saved_ref, "--", trimmed_path};
-				if (!selected->previous_path.empty()) args.push_back(selected->previous_path);
-				const ProcessExecutionResult patch = index.Run(std::move(args));
-				if (!CommandSucceeded(patch))
-				{
-					if (error_out) *error_out = CommandOutputOrError(patch);
-					return {};
-				}
-				return patch.output;
-			}
-			if (!ref.empty() && !IsCommitId(ref))
-			{
-				if (error_out != nullptr) *error_out = "The saved chat comparison point is invalid.";
-				return "";
-			}
-			std::string git_root;
-			if (GitAvailable(workspace, &git_root) && !git_root.empty())
-			{
-				diff_workspace = uam::paths::PathFromUtf8(git_root);
-			}
-
-			const VcsCommitStatus status = Status(app, chat, type, false, ref);
-			const auto changed_file = std::find_if(status.changed_files.begin(), status.changed_files.end(), [&trimmed_path](const VcsChangedFile& file) { return file.path == trimmed_path; });
-			if (changed_file != status.changed_files.end() && changed_file->status == "??")
-			{
-				std::string output;
-				return OutputGitUntrackedDiff(diff_workspace, trimmed_path, &output, error_out) ? output : "";
-			}
-			if (!ref.empty())
-			{
-				std::string output;
-				return OutputCommand(BuildGitCommandInDirectory(diff_workspace, "diff " + uam::shell::EscapeArg(ref) + " -- " + uam::shell::EscapeArg(trimmed_path)), &output, error_out) ? output : "";
-			}
-		}
-		std::string output;
-		if (type == VcsType::Git)
-			return OutputCommand(BuildLiteralGitCommandInDirectory(diff_workspace, "diff HEAD -- " + uam::shell::EscapeArg(trimmed_path)), &output, error_out) ? output : "";
-		std::string error;
-		const VcsCommitStatus status = Status(app, chat, type, false);
-		const auto selected = std::ranges::find(status.changed_files, trimmed_path, &VcsChangedFile::path);
-		const bool diffed = selected != status.changed_files.end() && IsSvnUnversioned(*selected)
-		    ? SvnUnversionedFileDiff(workspace, trimmed_path, output, error)
-		    : SvnFileDiff(LocalSvnRunner(workspace), trimmed_path, output, error);
-		if (diffed) return uam::strings::Trim(output);
-		if (error_out != nullptr) *error_out = error;
-		return {};
+		return VcsProviderFor(type).LocalDiff(app, chat, workspace, trimmed_path, comparison_ref, error_out);
 	}
 
 	VcsCommitResult VcsCommitService::Commit(const AppState& app, const ChatSession& chat, const VcsType type, const std::string& message, const std::vector<std::string>& files) const

@@ -39,6 +39,10 @@ namespace uam
 		/// <summary>Fills branch or revision and changed files for an already detected and selected system.</summary>
 		virtual void PopulateLocalStatus(const VcsStatusRequest& request, const std::filesystem::path& workspace, const std::filesystem::path& root, VcsCommitStatus& status) const = 0;
 		virtual void PopulateRemoteStatus(RemoteVcsContext& context, const VcsStatusRequest& request, const std::string& root, VcsCommitStatus& status) const = 0;
+
+		/// <summary>Returns the patch for one selected path. The remote form has the caller's already validated changed-file row.</summary>
+		virtual std::string LocalDiff(const AppState& app, const ChatSession& chat, const std::filesystem::path& workspace, const std::string& trimmed_path, std::string_view comparison_ref, std::string* error_out) const = 0;
+		virtual std::string RemoteDiff(RemoteVcsContext& context, const AppState& app, const ChatSession& chat, const std::string& path, const VcsChangedFile& selected, std::string cwd, const std::string& comparison_ref, std::string* error_out) const = 0;
 	};
 
 	/// <summary>Registered providers in detection order; the first is the default selection.</summary>
