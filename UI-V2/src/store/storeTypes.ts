@@ -48,6 +48,8 @@ import type {
   UamAgentCycleShortcut,
   UamAgentSummary,
   ShellAction,
+  ComputePool,
+  ComputePoolUsage,
   PushChannelStatus,
   VcsCommitMessageSuggestion,
   VcsCommitResult,
@@ -183,6 +185,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   settingsScopeHostId: string
   uamAgentsBySessionId: Record<string, UamAgentSummary[]>
   shellActions: ShellAction[]
+  computePools: ComputePool[]
+  computePoolUsage: ComputePoolUsage
   shellActionNotification: string
   statusLine: string
   deletionProgress?: CppDeletionProgress
@@ -277,6 +281,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setUamAgentPreferences: (settings: { favoriteUamAgentIds: string[]; uamAgentCycleShortcut: UamAgentCycleShortcut }) => Promise<boolean>
   setNativeImportFilters: (filters: { titlePrefixes: string[]; directories: string[]; startupMaxAgeDays: number }) => Promise<boolean>
   setShellActions: (actions: ShellAction[]) => Promise<boolean>
+  setComputePools: (pools: ComputePool[]) => Promise<boolean>
   applyShellActions: () => Promise<boolean>
   dismissShellActionNotification: () => Promise<void>
   refreshCliProviderVersion: (providerId?: string, executionHostId?: string) => Promise<boolean>

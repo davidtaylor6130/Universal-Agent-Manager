@@ -154,6 +154,8 @@ function deserializeState(
     hostScopedSettingsValues: AppState['hostScopedSettingsValues']
     uamAgentsBySessionId: AppState['uamAgentsBySessionId']
     shellActions: ShellAction[]
+    computePools: AppState['computePools']
+    computePoolUsage: AppState['computePoolUsage']
     shellActionNotification: string
     statusLine: string
   }
@@ -392,6 +394,8 @@ function deserializeState(
     hostScopedSettingsValues: cpp.settings.hostScopedSettingsValues ?? {},
     uamAgentsBySessionId: existing.uamAgentsBySessionId,
     shellActions: cpp.shellActions ?? existing.shellActions,
+    computePools: cpp.settings.computePools ?? [],
+    computePoolUsage: cpp.computePoolUsage ?? {},
     shellActionNotification: cpp.shellActionNotification ?? existing.shellActionNotification,
     statusLine: cpp.statusLine ?? existing.statusLine,
     // Full-state only: absent means no deletion is running, so do not keep the previous value.
@@ -634,6 +638,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     hostScopedSettingsValues: patch.settings?.hostScopedSettingsValues ?? current.hostScopedSettingsValues,
     uamAgentsBySessionId: sameRecordEntries(current.uamAgentsBySessionId, uamAgentsBySessionId) ? current.uamAgentsBySessionId : uamAgentsBySessionId,
     shellActions: patch.shellActions ?? current.shellActions,
+    computePools: patch.settings?.computePools ?? current.computePools,
+    computePoolUsage: patch.computePoolUsage ?? current.computePoolUsage,
     shellActionNotification: patch.shellActionNotification ?? current.shellActionNotification,
     statusLine: patch.statusLine ?? current.statusLine,
   }
@@ -884,6 +890,8 @@ export const useAppStore = create<AppState>((set, get) => {
           hostScopedSettingsValues: current.hostScopedSettingsValues,
           uamAgentsBySessionId: current.uamAgentsBySessionId,
           shellActions: current.shellActions,
+          computePools: current.computePools,
+          computePoolUsage: current.computePoolUsage,
           shellActionNotification: current.shellActionNotification,
           statusLine: current.statusLine,
         })
@@ -1261,6 +1269,8 @@ export const useAppStore = create<AppState>((set, get) => {
         hostScopedSettingsValues: current.hostScopedSettingsValues,
         uamAgentsBySessionId: current.uamAgentsBySessionId,
         shellActions: current.shellActions,
+        computePools: current.computePools,
+        computePoolUsage: current.computePoolUsage,
         shellActionNotification: current.shellActionNotification,
         statusLine: current.statusLine,
       })

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/config/voice_input_settings.h"
+#include "common/config/compute_pools.h"
 
 #include "common/config/central_provider_configuration.h"
 
@@ -176,6 +177,7 @@ namespace uam::settings_frontend_json
 		settings_json["centralProviderConfiguration"] = uam::central_configuration::Serialize(settings.central_provider_configuration);
 		settings_json["mcpServers"] = uam::mcp_server_config::Serialize(settings.mcp_servers);
 		settings_json["executionHosts"] = uam::execution_hosts::Serialize(settings.execution_hosts);
+		settings_json["computePools"] = uam::compute_pools::Serialize(settings.compute_pools);
 		settings_json["executionRouting"] = SettingsStore::SerializeExecutionRoutingSettings(settings.execution_routing);
 		settings_json["favoriteUamAgentIds"] = settings.favorite_uam_agent_ids;
 		settings_json["nativeImportExcludedTitlePrefixes"] = settings.native_import_excluded_title_prefixes;

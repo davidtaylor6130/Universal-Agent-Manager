@@ -1,3 +1,4 @@
+#include "common/runtime/acp/compute_pool_gate.h"
 #include "common/provider/provider_setup.h"
 #include "app/managed_parent_continuation_service.h"
 #include "common/platform/background_thread_priority.h"
@@ -4180,6 +4181,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 			steering_prompt.priority_steer = false;
 			return StartAcpUserPrompt(app, session, *chat, steering_prompt, error_out);
 		}
+		if (uam::compute_pools::IsWaiting(session, GetAppTimeSeconds()))
+		{
+			if (error_out != nullptr) *error_out = "Wait for a compute pool slot before steering.";
+			return false;
+		}
 		if (ProviderRuntimeRegistry::ResolveById(session.provider_id).SupportsAcpSteering())
 			return SendNativeAcpSteer(app, session, *chat, steering_prompt, error_out);
 
@@ -4585,6 +4591,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (session->queue_held)
 		{
 			if (error_out != nullptr) *error_out = "Resume the restored queue before steering.";
+			return false;
+		}
+		if (uam::compute_pools::IsWaiting(*session, GetAppTimeSeconds()))
+		{
+			if (error_out != nullptr) *error_out = "Wait for a compute pool slot before steering.";
 			return false;
 		}
 		if (!ValidateQueuedPromptAction(session->queued_user_prompts[index], expected, error_out)) return false;
@@ -6220,6 +6231,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 	                   bool preserve_queued_prompts, bool hold_preserved_queue, const char* uam_request_decline_reason)
 	{
 		RevokePendingEmptyHeldSend(app, chat_id);
+		const AcpSessionState* pool_waiter = FindAcpSessionForChat(app, chat_id);
+		const bool held_for_compute_pool = pool_waiter != nullptr && uam::compute_pools::IsWaiting(*pool_waiter, GetAppTimeSeconds());
 		if (AcpSessionState* owner = FindAcpSessionForChat(app, chat_id))
 			acp_detail::RevokeSavedImageRetry(*owner);
 		if (AcpSessionState* preparing = FindAcpSessionForChat(app, chat_id);
@@ -6389,6 +6402,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session->cancel_requested = false;
 			session->cancel_requested_time_s = 0.0;
 			session->lifecycle_state = kAcpLifecycleStopped;
+			return true;
+		}
+
+		// A held turn never reached the provider, so there is nothing to cancel and no acknowledgement to wait for.
+		if (held_for_compute_pool)
+		{
+			session->cancel_requested = false;
+			session->cancel_requested_time_s = 0.0;
+			session->compute_pool_ticket = 0;
+			session->compute_pool_wait_name.clear();
 			return true;
 		}
 
@@ -7947,7 +7970,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 				changed = true;
 			}
 
-			if (SendQueuedPromptIfReady(app, session, chat))
+			const bool waited_for_pool = uam::compute_pools::IsWaiting(session, GetAppTimeSeconds());
+			const bool sent = SendQueuedPromptIfReady(app, session, chat);
+			if (waited_for_pool && !uam::compute_pools::IsWaiting(session, GetAppTimeSeconds())) changed = true;
+			if (sent)
 			{
 				if (!session.last_error.empty() && session.lifecycle_state == kAcpLifecycleError)
 				{

@@ -56,9 +56,10 @@ import { formatTimeoutDuration, TIMEOUT_RESTART_STEP_SECONDS } from '../chat/Tim
 import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
-import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, TriangleAlert, X, type LucideIcon } from 'lucide-react'
+import { Cpu, Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, TriangleAlert, X, type LucideIcon } from 'lucide-react'
 import { Button, Card, ConfirmDialog, Disclosure, EXIT_MS, IconButton, MenuItem, MenuSelect, Notice, Overlay, Presence, ProgressFill, RowButton, SegmentedControl, StatusDot, Swap, Switch, ViewportMenu, cx, motionAllowed, scaledMs, Reveal } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
+import { ComputePoolsSettings } from './ComputePoolsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
 import { StatusIndicator } from '../shared/StatusIndicator'
@@ -404,7 +405,7 @@ function memoryModelOptions(provider?: Provider, providerId = '', selectedModelI
   ]
 }
 
-type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'typography' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'routing' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'vcs' | 'editors' | 'shell-actions' | 'chat-data' | 'storage-cleanup' | 'computer-use' | 'about'
+type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'typography' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'routing' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'vcs' | 'editors' | 'shell-actions' | 'compute-pools' | 'chat-data' | 'storage-cleanup' | 'computer-use' | 'about'
 
 interface LocalChatBundleResult {
   cancelled: boolean
@@ -445,6 +446,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'vcs', label: 'Version control', icon: FolderOpen },
   { id: 'editors', label: 'Editors', icon: Pencil },
   { id: 'shell-actions', label: 'Shell actions', icon: MousePointerClick },
+  { id: 'compute-pools', label: 'Compute pools', icon: Cpu },
   { id: 'chat-data', label: 'Chat data', icon: Download },
   { id: 'storage-cleanup', label: 'Storage', icon: Trash2 },
   { id: 'about', label: 'About', icon: Info },
@@ -457,7 +459,7 @@ const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
   { label: 'General', sections: ['appearance', 'defaults', ...(MOBILE_COMPANION_ENABLED ? ['phone' as const] : []), 'voice-input'] },
   { label: 'Providers', sections: ['provider-summary', ...SUPPORTED_CLI_PROVIDER_IDS.map(id => `provider:${id}` as SettingsSectionId)] },
   { label: 'Connections', sections: [...(SSH_ENABLED ? ['remote-hosts' as const, 'routing' as const] : []), 'mcp-servers'] },
-  { label: 'Agent preferences', sections: ['central-configuration', 'agents', 'markdown-store', 'memory-settings', 'memory-store', 'shell-actions', 'goal-loops'] },
+  { label: 'Agent preferences', sections: ['central-configuration', 'agents', 'markdown-store', 'memory-settings', 'memory-store', 'shell-actions', 'goal-loops', 'compute-pools'] },
   { label: 'Security', sections: ['permissions', ...(COMPUTER_USE_ENABLED ? ['computer-use' as const] : [])] },
   { label: 'Workspace', sections: ['vcs', 'editors'] },
   { label: 'App', sections: ['chat-data', 'storage-cleanup', 'about'] },
@@ -497,6 +499,7 @@ const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   ...(COMPUTER_USE_ENABLED ? { 'computer-use': 'computer use screen recording accessibility permissions allowed targets applications recovery macos' } : {}),
   editors: 'editors extensions associations groups default vscode clion file types file explorer finder open powershell pwsh terminal shell',
   'shell-actions': 'finder explorer context menus shell actions groups save',
+  'compute-pools': 'compute pools limit concurrency slots queue gpu models local inference',
   'chat-data': 'chat data native provider history discovery storage import export backup',
   about: 'version build release updates app information',
 }
@@ -2929,6 +2932,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       )
     }
 
+    if (selectedSection === 'compute-pools') return <ComputePoolsSettings />
     if (selectedSection === 'shell-actions') {
       return <ShellActionsSettings ref={shellRef}/>
     }

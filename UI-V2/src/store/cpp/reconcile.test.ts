@@ -167,6 +167,17 @@ describe('reconcileCppMessages deferred tool content', () => {
 })
 
 describe('unsent prompt native authority', () => {
+  it('restarts the turn clock when a held turn is admitted and keeps it otherwise', () => {
+    const held = sanitizeCppAcpSession({ processing: true, turnSerial: 4, computePoolWait: { poolName: 'Local GPU', inUse: 2, limit: 2 } })!
+    const chat = { id: 'chat', providerId: 'codex-cli', acpSession: held } as CppChat
+    const waiting = { ...acpBindingFromCppChat(chat, undefined), processingStartedAtMs: 1000 }
+    expect(waiting.computePoolWait?.poolName).toBe('Local GPU')
+    expect(acpBindingFromCppChat(chat, waiting).processingStartedAtMs).toBe(1000)
+    const admitted = acpBindingFromCppChat({ ...chat, acpSession: { ...held, computePoolWait: undefined } }, waiting)
+    expect(admitted.computePoolWait).toBeUndefined()
+    expect(admitted.processingStartedAtMs).toBeGreaterThan(1000)
+  })
+
   it('keeps valid real queue references and invalidates binding reuse when their raw index changes', () => {
     const queued = { id: 'held', revision: 1, text: 'Original', existingUserMessageIndex: 23 }
     const session = sanitizeCppAcpSession({ queuedPrompts: [queued] })!

@@ -593,6 +593,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.recentStderr === next.recentStderr &&
     existing.lastExitCode === next.lastExitCode &&
     existing.lastStopReason === next.lastStopReason &&
+    existing.computePoolWait?.poolName === next.computePoolWait?.poolName && existing.computePoolWait?.inUse === next.computePoolWait?.inUse && existing.computePoolWait?.limit === next.computePoolWait?.limit &&
     existing.timeoutStop?.label === next.timeoutStop?.label && existing.timeoutStop?.seconds === next.timeoutStop?.seconds &&
     existing.timeoutStop?.kind === next.timeoutStop?.kind && existing.timeoutStop?.count === next.timeoutStop?.count && existing.timeoutStop?.example === next.timeoutStop?.example &&
     diagnosticsEquivalent(existing.diagnostics, next.diagnostics) &&
@@ -722,7 +723,8 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     readySinceLastSelect: Boolean(acp?.readySinceLastSelect),
     attentionKind: acp?.attentionKind ?? null,
     processingStartedAtMs: effectiveProcessing
-      ? previous?.processing && previous.turnSerial === (acp?.turnSerial ?? 0)
+      // Time spent waiting for a compute pool slot is not work: the clock starts when the turn is admitted.
+      ? previous?.processing && previous.turnSerial === (acp?.turnSerial ?? 0) && !(previous.computePoolWait && !acp?.computePoolWait)
         ? previous.processingStartedAtMs ?? Date.now()
         : Date.now()
       : null,
@@ -732,6 +734,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     lastExitCode: typeof acp?.lastExitCode === 'number' ? acp.lastExitCode : null,
     lastStopReason: acp?.lastStopReason,
     timeoutStop: acp?.timeoutStop ?? undefined,
+    computePoolWait: acp?.computePoolWait ?? undefined,
     diagnostics: Array.isArray(acp?.diagnostics) ? acp!.diagnostics : [],
     toolCalls: Array.isArray(acp?.toolCalls) ? acp!.toolCalls : [],
     planSummary: acp?.planSummary ?? '',

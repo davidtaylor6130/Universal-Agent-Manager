@@ -671,6 +671,7 @@ add_library(uam_core_objects OBJECT
   src/common/runtime/acp/acp_resume_rules.cpp
   src/common/provider/attached_skill_resources.cpp
   src/common/runtime/acp/acp_session_runtime.cpp
+  src/common/runtime/acp/compute_pool_gate.cpp
   src/common/runtime/acp/acp_wait_state.cpp
   src/common/runtime/json_runtime.cpp
   src/common/runtime/terminal_polling.cpp
@@ -1670,6 +1671,7 @@ if(UAM_BUILD_TESTS)
     tests/settings_memory_publication_tests.cpp
     tests/remote_memory_publication_tests.cpp
     tests/acp_session_tests.cpp
+    tests/compute_pool_tests.cpp
     tests/acp_permission_ceiling_tests.cpp
     tests/acp_permission_provider_boundary_tests.cpp
     tests/codex_captured_permission_tests.cpp

@@ -274,6 +274,7 @@ export function projectUnsentPrompts(messages: Message[], historyStartIndex: num
 }
 
 const SENDING_DELIVERY: ConversationDelivery = { state: 'sending', label: 'Waiting for the provider to accept this message. It is never resent automatically.' }
+const POOL_WAIT_DELIVERY: ConversationDelivery = { state: 'sending', label: 'Waiting for a compute pool slot. It is sent automatically when one frees.' }
 const UNSENT_DELIVERY: ConversationDelivery = { state: 'unsent', label: 'This message was not delivered. Retry, edit or remove it; it is never resent automatically.' }
 const HELD_DELIVERY: ConversationDelivery = { state: 'unsent', label: 'This message was not delivered. Edit or remove it; it is never resent automatically.' }
 const ACCEPTED_DELIVERY: ConversationDelivery = { state: 'sending', label: 'UAM accepted this message and is waiting for the provider to confirm delivery. It is never resent automatically.' }
@@ -1728,7 +1729,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const submit = async (event?: FormEvent, promptOverride?: string, steerOverride?: boolean) => {
     event?.preventDefault()
     // While a turn runs, Send follows the saved active-turn preference unless the alternate action overrides it.
-    const steerNow = steerOverride ?? (Boolean(providerAcp?.processing) && useAppStore.getState().steerActiveTurnOnSend)
+    const steerNow = steerOverride ?? (Boolean(providerAcp?.processing) && !providerAcp?.computePoolWait && useAppStore.getState().steerActiveTurnOnSend)
     if (editingMessageIndex !== null) {
       if (branchingMessageIndex === null && canChangeProvider && (editingMessageText.trim() || editingMessageAttachments.length > 0)) {
         if (editingMessageSource.kind === 'unsent') await saveEditedUnsentMessage()
@@ -3266,7 +3267,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 const sectionProviderName = providerShortName(providers.find((candidate) => candidate.id === sectionProviderId), sectionProviderId)
                 // Brief turns with no tool or reasoning activity drop the "Worked" toggle; live turns always show it.
                 const briefTurn = !sectionActive && !section.hasTrace && section.workedSeconds < 2
-                const heading = firstVisibleInSection && (section.hasAssistant || sectionActive) && !briefTurn ? <div data-testid={sectionActive && turnEvents.length === 0 ? "turn-starting" : undefined}><ConversationWork
+                const heading = firstVisibleInSection && (section.hasAssistant || sectionActive) && !briefTurn && !(sectionActive && acp?.computePoolWait) ? <div data-testid={sectionActive && turnEvents.length === 0 ? "turn-starting" : undefined}><ConversationWork
                   sectionHeading headerOnly active={sectionActive} startedAt={sectionActive ? turnClockStart : undefined}
                   duration={formatWorkedDuration(section.workedSeconds)} events={[]} tools={[]} collapsible={collapsibleWorkSections}
                   onSelectTool={selectLiveTool}
@@ -3335,7 +3336,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                         pendingDirectAdmission={unsentProjection.pendingIndices.has(index) || nativeDirectReceipt?.sending === true}
                         delivery={unsentByLoadedIndex.has(index) ? (unsentByLoadedIndex.get(index)!.retryable ? UNSENT_DELIVERY : HELD_DELIVERY)
                           : nativeDirectReceipt ? (nativeDirectReceipt.sending ? SENDING_DELIVERY : RECEIPT_DELIVERY)
-                          : unsentProjection.pendingIndices.has(index) ? SENDING_DELIVERY : outgoingUnresolved ? attemptDelivery(outgoingAlias!) : undefined}
+                          : unsentProjection.pendingIndices.has(index) ? SENDING_DELIVERY : outgoingUnresolved ? attemptDelivery(outgoingAlias!) : acp?.computePoolWait && message.acpPromptNotSent ? POOL_WAIT_DELIVERY : undefined}
                         deliveryActions={unsentByLoadedIndex.has(index) && !isCompanionContext() ? <OutgoingRecoveryActions
                           onEdit={() => beginEditingUnsentMessage(index + historyStartIndex, message.content)}
                           onRetry={unsentByLoadedIndex.get(index)!.retryable ? () => unsentActionsRef.current.retryUnsent(index + historyStartIndex) : undefined}
@@ -3602,7 +3603,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 </div>
               )}
               {transcriptRows}
-              {acp?.processing && turnEvents.length === 0 && (activeWorkMessageIndex < 0 || unsentProjection.hiddenIndices.has(activeWorkMessageIndex)) && (
+              {acp?.computePoolWait && (
+                <div data-testid="compute-pool-wait" role="status" className="uam-turn-starting px-4 py-2 text-xs" style={{ color: 'var(--text-3)' }}>
+                  <span className="conversation-work__heading">
+                    <span className="conversation-work__live" aria-hidden />
+                    <span>Waiting for {acp.computePoolWait.poolName} slot ({acp.computePoolWait.inUse}/{acp.computePoolWait.limit})</span>
+                  </span>
+                </div>
+              )}
+              {acp?.processing && !acp.computePoolWait && turnEvents.length === 0 && (activeWorkMessageIndex < 0 || unsentProjection.hiddenIndices.has(activeWorkMessageIndex)) && (
                 <div
                   data-testid="turn-starting"
                   role="status"
@@ -3854,7 +3863,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               Claude Plan mode is read-only. Choose how to proceed with this prompt.
               {claudePlanPrompt && claudePlanPrompt.context.references.length > 0 && <> The prompt keeps the reference snapshots selected when you pressed Send; new selections belong to your next message.</>}
             </ConfirmDialog>}
-            <InlinePromptQueue key={session.id}
+            <InlinePromptQueue key={session.id} steerUnavailable={Boolean(acp?.computePoolWait)}
               held={Boolean(acp?.queueHeld && acp.queuedPrompts?.length)} onResume={(expected) => resumeQueuedAcpPrompts(session.id, expected)} prompts={acp?.queuedPrompts ?? []} disabled={steering || session.importedReadOnly}
               onEdit={(id, revision, text, retainedAttachmentIds) => editQueuedAcpPrompt(session.id, id, revision, text, retainedAttachmentIds)}
               onReorder={(expected, orderedIds) => reorderQueuedAcpPrompts(session.id, expected, orderedIds)}
