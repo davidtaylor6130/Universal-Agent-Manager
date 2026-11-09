@@ -25,7 +25,7 @@ namespace uam::vcs
 	};
 
 	// Only literal local-or-repository reads. Admitted diffs, logs and shows must disable Git's external helpers;
-	// `-c`, `--paginate` and every write subcommand stay unrecognized.
+	// the global `-c` and `--paginate` options and every write subcommand stay unrecognized.
 	inline constexpr std::array<ReadOnlyCommand, 3> kGitReadOnlyCommands = {{
 	    {"status", {"bsz", "u", "--short|--branch|--show-stash|--porcelain|--porcelain=1|--porcelain=2|--long|--verbose|--ignored|--no-renames", "--untracked-files|--ignore-submodules|--column"}},
 	    {"diff", {"abcpRsuwz", "UGOS", "--stat|--numstat|--shortstat|--name-only|--name-status|--summary|--check|--quiet|--exit-code|--cached|--staged|--no-index|--no-ext-diff|--no-textconv|--no-color|--color=never|--color=auto|--color=always|--ignore-space-at-eol|--ignore-all-space|--ignore-space-change|--word-diff|--word-diff=plain|--word-diff=color|--word-diff=porcelain", "--unified|--diff-filter|--word-diff-regex|--relative", true}},
