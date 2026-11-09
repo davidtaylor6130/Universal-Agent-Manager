@@ -195,6 +195,7 @@ std::optional<ChatSession> ParseHistorySnapshot(const ExecutionHost& host, const
 	return loaded;
 }
 
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 std::optional<NativeChildListing> ParseGeminiChildListing(const ExecutionHost& host, const ChatSession& source, const nlohmann::json& listing, std::string* error)
 {
 	const auto fail = [&](const char* message) -> std::optional<NativeChildListing> { if (error) *error = message; return std::nullopt; };
@@ -264,6 +265,7 @@ std::optional<NativeChildListing> ListGeminiChildren(const ChatSession& source, 
 	}
 	return listing;
 }
+#endif
 
 std::optional<ChatSession> LoadHistory(const ChatSession& source, std::string_view reference,
 	const std::optional<ExecutionHost>& host, std::string* error, std::stop_token stop_token)

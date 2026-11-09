@@ -88,10 +88,12 @@ struct ChatIconHandlerTestAccess
 	{
 		handler.HandleImportProviderAgent(nullptr, payload, callback);
 	}
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	static void ListGeminiChildren(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
 	{
 		handler.HandleListGeminiChildConversations(nullptr, payload, callback);
 	}
+#endif
 	static void OpenNative(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
 	{
 		handler.HandleOpenNativeSessionChat(nullptr, payload, callback);
@@ -5279,6 +5281,7 @@ UAM_TEST(RemoteNativeHistoryHandlerGeminiChildInlineOriginalsOpenAndSave)
 	fixture.Settle(callback);
 }
 
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 // The browser lists an SSH child through the actual helper; the listed reference opens through the existing guarded route.
 UAM_TEST(RemoteNativeHistoryHandlerGeminiChildBrowserListsThroughHelperThenOpensExactReference)
 {
@@ -5330,6 +5333,7 @@ UAM_TEST(RemoteNativeHistoryHandlerGeminiChildBrowserUsesWorktreeWorkspace)
 	UAM_ASSERT_EQ(saved->subagent_parent_chat_id, child.parent_id);
 	fixture.Settle(opened);
 }
+#endif
 
 // A slow SSH child read takes no shared preparation slot and does not wait behind background file work.
 UAM_TEST(RemoteNativeHistoryHandlerGeminiChildReadLeavesSharedCapacityAndFileLaneFree)

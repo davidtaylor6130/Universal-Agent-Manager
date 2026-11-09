@@ -30,6 +30,7 @@ import { GEMINI_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerM
 import { preferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { CollectionMenuItems } from './CollectionMenuItems'
 import { GeminiChildBrowser } from './GeminiChildBrowser'
+import { GEMINI_ENABLED } from '../../config/buildFeatures'
 import { ChatSelectionContext, CopyDetailItems, MenuDivider, SingleOnlyMenuItem, markChatsDone, setChatsPinned, wakeChats, type CopyDetail } from './bulkActions'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import { displayedChatStatus, type DisplayedChatStatus } from './chatSearch'
@@ -447,7 +448,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const isSnoozed = snoozedUntilMs > Date.now()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [childBrowserOpen, setChildBrowserOpen] = useState(false)
-  const canBrowseGeminiChildren = sessionSummary.providerId === GEMINI_CLI_PROVIDER_ID && !sessionSummary.importedReadOnly && !isSubagentRow && !isCompanionContext() && isCefContext()
+  const canBrowseGeminiChildren = GEMINI_ENABLED && sessionSummary.providerId === GEMINI_CLI_PROVIDER_ID && !sessionSummary.importedReadOnly && !isSubagentRow && !isCompanionContext() && isCefContext()
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
   const iconPicker = useCustomIconPicker()
@@ -1052,7 +1053,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         </ViewportMenu>
       )}
       {iconPicker.dialog}
-      <Presence open={childBrowserOpen}><GeminiChildBrowser chatId={sessionId} returnFocusTo={() => rowRef.current} onClose={() => setChildBrowserOpen(false)} /></Presence>
+      {GEMINI_ENABLED && <Presence open={childBrowserOpen}><GeminiChildBrowser chatId={sessionId} returnFocusTo={() => rowRef.current} onClose={() => setChildBrowserOpen(false)} /></Presence>}
       <DeleteConfirmDialog
         open={confirmDelete}
         kind="chat"

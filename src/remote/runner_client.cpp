@@ -412,7 +412,9 @@ namespace uam::remote
 		m_safePathInspection = m_expectedProtocolVersion >= 3 && response["capabilities"].value("safePathInspection", false);
 		m_contextRead = response["capabilities"].value("contextRead", false);
 		m_providerHistoryRead = response["capabilities"].value("providerHistoryRead", false);
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 		m_providerHistoryChildren = response["capabilities"].value("providerHistoryChildren", false);
+#endif
 		m_workspaceFileRead = response["capabilities"].value("workspaceFileRead", false);
 		m_workspaceAttachmentRead = response["capabilities"].value("workspaceAttachmentRead", false);
 		m_openCodeNativeControl = response["capabilities"].value("openCodeNativeControl", false);
@@ -1700,6 +1702,7 @@ namespace uam::remote
 		return true;
 	}
 
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	bool RunnerClient::ListGeminiChildren(const std::string& session, const std::string& workspace, nlohmann::json& listing, std::string* error_out, std::stop_token stop_token)
 	{
 		listing = nullptr;
@@ -1722,6 +1725,7 @@ namespace uam::remote
 		listing = *result;
 		return true;
 	}
+#endif
 
 	bool RunnerClient::ReadNativeHistory(const std::string& provider, const std::string& session, const std::string& workspace,
 	    nlohmann::json& output, std::string* error_out, std::stop_token stop_token, const std::string& agent_id)
@@ -2048,7 +2052,9 @@ namespace uam::remote
 		m_safePathInspection = false;
 		m_contextRead = false;
 		m_providerHistoryRead = false;
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 		m_providerHistoryChildren = false;
+#endif
 		m_workspaceFileRead = false;
 		m_workspaceAttachmentRead = false;
 		m_openCodeNativeControl = false;

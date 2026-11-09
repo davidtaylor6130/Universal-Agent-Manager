@@ -1237,6 +1237,7 @@ namespace uam::remote
 			return ProcessSuccess(request, {{"dataBase64", uam::base64::Encode(chunk)}, {"path", file.path},
 			    {"offset", offset}, {"totalBytes", file.text.size()}, {"fingerprint", fingerprint}});
 		}
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 		if (type == "provider.history.children")
 		{
 			const std::string provider = native_history::String(request, "providerId");
@@ -1258,6 +1259,8 @@ namespace uam::remote
 			return ProcessSuccess(request, {{"providerId", provider}, {"sessionId", session}, {"workspace", workspace}, {"children", std::move(children)},
 			    {"unreadable", listing.unreadable}, {"truncated", listing.truncated}});
 		}
+#endif
+
 		if (type == "provider.history.read" || type == "provider.history.release")
 		{
 			const std::string provider = native_history::String(request, "providerId");

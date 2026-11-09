@@ -231,6 +231,7 @@ namespace
 
 using namespace uam::query_handler_internal;
 
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 void UamQueryHandler::HandleListGeminiChildConversations(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	using namespace uam::query_handler_async;
@@ -290,6 +291,7 @@ void UamQueryHandler::HandleListGeminiChildConversations(CefRefPtr<CefBrowser> b
 	catch (...) { queued = false; }
 	if (!queued) { FinishNativeHistoryRead(request_key, request); cb->Failure(503, "Could not start reading subagent conversations."); }
 }
+#endif
 
 void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
