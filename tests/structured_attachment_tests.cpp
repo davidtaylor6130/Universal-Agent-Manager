@@ -242,6 +242,19 @@ UAM_TEST(StructuredAcpCapabilityNegotiationClearsStaleImageSupport)
 #endif
 }
 
+UAM_TEST(SendTimeImageCheckLeavesWorktreeCopiesToTheDispatchWorker)
+{
+	const std::vector<MessageAttachment> attachments{{.name = "staged.png", .kind = "image", .path = ".UAM/attachments/chat/1-0-staged.png"}, {.name = "tree.png", .kind = "image", .path = "tree.png"}, {.name = "escape.png", .kind = "image", .path = ".UAM/attachments/../escape.png"}};
+	ChatSession plain;
+	UAM_ASSERT_EQ(uam::structured_attachments::WithoutWorktreeCopies(plain, attachments).size(), std::size_t(3));
+	ChatSession isolated;
+	isolated.workspace_isolation_kind = "gitWorktree";
+	const auto checked = uam::structured_attachments::WithoutWorktreeCopies(isolated, attachments);
+	UAM_ASSERT_EQ(checked.size(), std::size_t(2));
+	UAM_ASSERT_EQ(checked[0].name, std::string("tree.png"));
+	UAM_ASSERT_EQ(checked[1].name, std::string("escape.png"));
+}
+
 UAM_TEST(StructuredAttachmentsUseNativeCodexImagesOnLocalAndSshHosts)
 {
 	uam::AcpSessionState session;

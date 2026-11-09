@@ -3525,6 +3525,7 @@ static ClaudeInputIdentity ClaudeInputSnapshot(const AppState& app, const AcpSes
 {
 	const int first = session.turn_first_user_message_index >= 0 ? session.turn_first_user_message_index : session.turn_user_message_index;
 	ClaudeInputIdentity identity{chat.id, session.provider_id, chat.provider_id, session.session_id, session.process_execution_host_id, chat.execution_host_id, paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat)), WirePromptText(session), chat.model_id, session.goal_turn_model_id, chat.approval_mode, chat.computer_use_backend, chat.computer_use_enabled, session.turn_serial, first, session.turn_user_message_index, uam::claude_input::TurnImages(chat, first, session.turn_user_message_index)};
+	identity.staged_copies = structured_attachments::StagedForWorktree(chat, session);
 	if (session.saved_image_retry)
 	{
 		identity.original_root = app.data_root;
@@ -4128,7 +4129,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	if (session.claude_input_preparation != nullptr)
 	{
 		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
-		if (session.remote_source_exit_reported || session.queued_prompt.empty() || !UsesBoundedImagePreparation(session) || host == nullptr || session.queued_prompt.size() > platform::kAsyncInputMaxQueuedBytes || session.claude_input_preparation->state->identity != ClaudeInputSnapshot(app, session, chat) || !execution_hosts::SameConnection(session.claude_input_preparation->state->host, *host))
+		if (session.remote_source_exit_reported || session.queued_prompt.empty() || (!UsesBoundedImagePreparation(session) && session.claude_input_preparation->state->identity.staged_copies.empty()) || host == nullptr || session.queued_prompt.size() > platform::kAsyncInputMaxQueuedBytes || session.claude_input_preparation->state->identity != ClaudeInputSnapshot(app, session, chat) || !execution_hosts::SameConnection(session.claude_input_preparation->state->host, *host))
 		{
 			if (session.claude_input_preparation->state->identity.saved_image_retry)
 				return AbortSavedImageRetry(app, session, chat, "Saved image preparation ownership changed. Retry the saved message again.");
@@ -4450,7 +4451,9 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	nlohmann::json msg;
 	const int first = session.turn_first_user_message_index >= 0 ? session.turn_first_user_message_index : session.turn_user_message_index;
 	const std::vector<MessageAttachment> images = UsesBoundedImagePreparation(session) ? uam::claude_input::TurnImages(chat, first, session.turn_user_message_index) : std::vector<MessageAttachment>{};
-	if (!images.empty())
+	// A file attached before the first send, or queued before the worktree existed, was staged in the source checkout.
+	const bool has_staged_copies = !structured_attachments::StagedForWorktree(chat, session).empty();
+	if (!images.empty() || has_staged_copies)
 	{
 		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 		if (host == nullptr) { FailAcpTurnOrSession(session, &chat, "The execution host no longer exists."); return true; }
@@ -4474,36 +4477,26 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			ClaudeInputPreparationTask task;
 			task.state = state;
 			const bool provider_opens_files = session.protocol_kind == provider_profile_constants::kProtocolAntigravityStreamJson;
-			const std::string staged_source = provider_opens_files ? paths::PreIsolationWorkspaceDirectory(app, chat) : std::string{};
-			task.worker = std::make_unique<std::jthread>([state, provider_opens_files, staged_source](std::stop_token shutdown)
+			const bool prepare_images = !images.empty();
+			const std::string staged_source = paths::PreIsolationWorkspaceDirectory(app, chat);
+			task.worker = std::make_unique<std::jthread>([state, provider_opens_files, prepare_images, staged_source](std::stop_token shutdown)
 			{
 				uam::platform::LowerCurrentThreadToBackgroundPriority();
 				std::stop_callback canceled(shutdown, [state]() { state->cancel.request_stop(); });
 				try
 				{
-					if (provider_opens_files)
+					std::optional<remote::RunnerClient> client;
+					if (state->host.id != execution_hosts::kLocalHostId) client.emplace(PlatformServicesFactory::Instance().process_service, state->host);
+					if (!structured_attachments::EnsureStagedInWorktree(state->identity.staged_copies, state->identity.workspace, staged_source, state->host.platform, client ? &*client : nullptr, state->error, state->cancel.get_token()) || !prepare_images)
 					{
-						std::optional<remote::RunnerClient> client;
-						if (state->host.id != execution_hosts::kLocalHostId) client.emplace(PlatformServicesFactory::Instance().process_service, state->host);
-						(void)uam::claude_input::CheckImageFiles(state->identity.images, state->error, state->cancel.get_token(), [&client, &state, &staged_source](const MessageAttachment& image, std::string& bytes, std::size_t max_bytes, std::string& error)
+					}
+					else if (provider_opens_files)
+					{
+						(void)uam::claude_input::CheckImageFiles(state->identity.images, state->error, state->cancel.get_token(), [&client, &state](const MessageAttachment& image, std::string& bytes, std::size_t max_bytes, std::string& error)
 						{
-							const auto read = [&](const std::string& root)
-							{
-								if (client) return client->ReadWorkspaceAttachment(root, image.path, bytes, max_bytes, &error, state->cancel.get_token());
-								const std::filesystem::path path = paths::PathFromUtf8(image.path);
-								return attachment_preview::ReadDeliverySource(path.is_absolute() ? path : paths::PathFromUtf8(root) / path, bytes, max_bytes);
-							};
-							if (read(state->identity.workspace)) return true;
-							// An image attached before the first send was staged in the source checkout,
-							// which the worktree created by that send does not contain.
-							std::string portable = image.path;
-							std::ranges::replace(portable, '\\', '/');
-							if (staged_source.empty() || !portable.starts_with(".UAM/attachments/") || portable.find("/../") != std::string::npos || !read(staged_source)) return false;
-							const bool copied = client
-							    ? client->UploadFile("worktree-image-" + uam::time::SystemEpochMicrosecondsTokenNow(), paths::PathFromUtf8(execution_hosts::JoinRemotePath(state->host.platform, state->identity.workspace, portable)), bytes, &error, state->cancel.get_token())
-							    : io::WriteBinaryFile(paths::PathFromUtf8(state->identity.workspace) / paths::PathFromUtf8(portable), bytes);
-							if (!copied) error = "Could not copy the attached image into this chat's worktree: " + image.name;
-							return copied;
+							if (client) return client->ReadWorkspaceAttachment(state->identity.workspace, image.path, bytes, max_bytes, &error, state->cancel.get_token());
+							const std::filesystem::path path = paths::PathFromUtf8(image.path);
+							return attachment_preview::ReadDeliverySource(path.is_absolute() ? path : paths::PathFromUtf8(state->identity.workspace) / path, bytes, max_bytes);
 						});
 					}
 					else if (state->identity.saved_image_retry)
@@ -4516,10 +4509,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 					else if (state->host.id == execution_hosts::kLocalHostId)
 						state->message = uam::claude_input::Build(state->identity.prompt, paths::PathFromUtf8(state->identity.workspace), state->identity.images, state->error, true, state->cancel.get_token());
 					else
-					{
-						remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, state->host);
-						state->message = uam::claude_input::BuildWithReader(state->identity.prompt, state->identity.images, state->error, true, state->cancel.get_token(), [&client, &state](const MessageAttachment& image, std::string& bytes, std::size_t max_bytes, std::string& error) { return client.ReadWorkspaceAttachment(state->identity.workspace, image.path, bytes, max_bytes, &error, state->cancel.get_token()); }, 2 * 1024 * 1024 - 16 * 1024);
-					}
+						state->message = uam::claude_input::BuildWithReader(state->identity.prompt, state->identity.images, state->error, true, state->cancel.get_token(), [&client, &state](const MessageAttachment& image, std::string& bytes, std::size_t max_bytes, std::string& error) { return client->ReadWorkspaceAttachment(state->identity.workspace, image.path, bytes, max_bytes, &error, state->cancel.get_token()); }, 2 * 1024 * 1024 - 16 * 1024);
 				}
 				catch (...) { state->error = "Image preparation failed. Remove or replace the image and try again."; }
 				state->finished.store(true, std::memory_order_release);
@@ -4536,7 +4526,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			session.claude_input_preparation.reset();
 			FailAcpTurnOrSession(session, &chat, error); return true;
 		}
-		if (session.protocol_kind == provider_profile_constants::kProtocolClaudeCodeStreamJson)
+		if (!images.empty() && session.protocol_kind == provider_profile_constants::kProtocolClaudeCodeStreamJson)
 			msg = state->message;
 	}
 	else
@@ -4566,8 +4556,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			FailAcpTurnOrSession(session, &chat, "The execution host no longer exists.");
 			return true;
 		}
-		// Antigravity is told an exact path, which must be inside the directory it launched in.
-		const std::string workspace = remote && session.protocol_kind != provider_profile_constants::kProtocolAntigravityStreamJson ? chat.workspace_directory : paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat));
+		const std::string workspace = paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat));
 		auto attachments = structured_attachments::CurrentTurn(chat, session);
 		if (session.saved_image_retry)
 		{

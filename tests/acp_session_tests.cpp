@@ -16067,6 +16067,234 @@ UAM_TEST(AntigravityTurnChecksImagesOffThreadThenSendsTheirWorkspacePaths)
 #endif
 }
 
+namespace
+{
+	struct WorktreeAttachmentTurn
+	{
+		std::string error;
+		std::string wire;
+		bool copied = false;
+		fs::path worktree;
+	};
+
+	/// One dispatch in an isolated worktree chat through a process that records exactly what it was sent.
+	WorktreeAttachmentTurn RunWorktreeAttachmentTurn(const std::string& provider_id, const std::string& protocol_kind, const MessageAttachment& attachment, const std::optional<std::string>& source_bytes, const std::optional<std::string>& worktree_bytes = std::nullopt, const std::string& worktree_blocker = {})
+	{
+		WorktreeAttachmentTurn result;
+#if !defined(_WIN32)
+		TempDir temp("uam-worktree-attachment-turn");
+		const fs::path source = temp.root / "source";
+		const fs::path worktree = temp.root / "worktree";
+		result.worktree = worktree;
+		fs::create_directories(source);
+		fs::create_directories(worktree);
+		const fs::path relative = uam::paths::PathFromUtf8(attachment.path);
+		if (source_bytes)
+		{
+			fs::create_directories((source / relative).parent_path());
+			UAM_ASSERT(uam::io::WriteBinaryFile(source / relative, *source_bytes));
+		}
+		if (worktree_bytes)
+		{
+			fs::create_directories((worktree / relative).parent_path());
+			UAM_ASSERT(uam::io::WriteBinaryFile(worktree / relative, *worktree_bytes));
+		}
+		if (!worktree_blocker.empty()) UAM_ASSERT(uam::io::WriteTextFile(worktree / worktree_blocker, "file where a folder is needed"));
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat;
+		chat.id = "worktree-attachments";
+		chat.provider_id = provider_id;
+		chat.approval_mode = "default";
+		chat.workspace_directory = source.string();
+		chat.workspace_source_directory = temp.root.string();
+		chat.workspace_isolation_kind = "gitWorktree";
+		chat.workspace_worktree_directory = worktree.string();
+		chat.messages_loaded = true;
+		Message user;
+		user.role = MessageRole::User;
+		user.attachments.push_back(attachment);
+		chat.messages.push_back(user);
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = provider_id;
+		session.protocol_kind = protocol_kind;
+		session.session_id = "native-session";
+		session.current_mode_id = "default";
+		session.prompt_image_supported = true;
+		session.session_ready = session.initialized = session.processing = true;
+		session.turn_first_user_message_index = session.turn_user_message_index = 0;
+		session.queued_prompt = "Read the attachment";
+		const fs::path wire_path = temp.root / "wire.txt";
+		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+		std::string start_error;
+		UAM_ASSERT(process.StartStdioProcess(session, worktree, {"/bin/sh", "-c", "cat > \"$0\"", wire_path.string()}, &start_error));
+		session.running = true;
+		bool sent = uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (!sent && std::chrono::steady_clock::now() < deadline)
+		{
+			std::this_thread::yield();
+			sent = uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+		}
+		UAM_ASSERT(sent);
+		result.error = session.last_error;
+		// End of input lets cat flush everything this turn wrote, refused or not.
+		process.CloseStdioProcessInput(session);
+		while (!process.PollStdioProcessExited(session) && std::chrono::steady_clock::now() < deadline)
+			std::this_thread::yield();
+		process.StopStdioProcess(session, true);
+		process.CloseStdioProcessHandles(session);
+		(void)uam::io::TryReadTextFile(wire_path, result.wire);
+		std::string copy;
+		result.copied = source_bytes && uam::io::TryReadBinaryFile(worktree / relative, copy) && copy == *source_bytes;
+		if (result.wire.find(worktree.string()) != std::string::npos)
+			result.wire += "\n[worktree path sent]";
+		if (result.wire.find(source.string()) != std::string::npos)
+			result.wire += "\n[source path sent]";
+#else
+		(void)provider_id; (void)protocol_kind; (void)attachment; (void)source_bytes; (void)worktree_bytes; (void)worktree_blocker;
+#endif
+		return result;
+	}
+
+	MessageAttachment StagedWorktreeAttachment(const std::string& kind)
+	{
+		const std::string name = kind == "image" ? "a.png" : "notes.txt";
+		return {.name = name, .kind = kind, .mime_type = kind == "image" ? "image/png" : "", .path = ".UAM/attachments/worktree-attachments/1-0-" + name, .copied = true};
+	}
+
+	const std::vector<std::pair<std::string, std::string>>& EveryStructuredRoute()
+	{
+		static const std::vector<std::pair<std::string, std::string>> routes = {
+		    {uam::provider_ids::kGeminiCli, "gemini-acp"},
+		    {uam::provider_ids::kCodexCli, "codex-app-server"},
+		    {uam::provider_ids::kOpenCodeCli, "opencode-acp"},
+		    {uam::provider_ids::kCopilotCli, "copilot-sdk"},
+		    {uam::provider_ids::kClaudeCli, "claude-code-stream-json"},
+		    {uam::provider_ids::kAntigravityCli, "antigravity-stream-json"}};
+		return routes;
+	}
+}
+
+UAM_TEST(AttachmentsStagedBeforeAFirstSendReachTheWorktreeForEveryProvider)
+{
+#if !defined(_WIN32)
+	std::string png;
+	UAM_ASSERT(uam::base64::Decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", png));
+	for (const auto& [provider, protocol] : EveryStructuredRoute())
+	{
+		for (const std::string kind : {"file", "image"})
+		{
+			const auto turn = RunWorktreeAttachmentTurn(provider, protocol, StagedWorktreeAttachment(kind), kind == "image" ? png : std::string("first line\n"));
+			if (!turn.error.empty()) throw TestFailure(provider + " " + kind + " refused: " + turn.error);
+			if (!turn.copied) throw TestFailure(provider + " " + kind + " was not copied into the worktree");
+			UAM_ASSERT(!turn.wire.empty());
+			UAM_ASSERT(turn.wire.find("[source path sent]") == std::string::npos);
+			const bool sends_a_path = (kind == "file" && provider != uam::provider_ids::kCodexCli && provider != uam::provider_ids::kClaudeCli && provider != uam::provider_ids::kAntigravityCli) || (kind == "image" && (provider == uam::provider_ids::kCodexCli || provider == uam::provider_ids::kCopilotCli || provider == uam::provider_ids::kAntigravityCli));
+			if (sends_a_path && turn.wire.find("[worktree path sent]") == std::string::npos) throw TestFailure(provider + " " + kind + " native part did not name the worktree copy");
+		}
+	}
+#endif
+}
+
+UAM_TEST(EmptyStagedTextAttachmentIsCopiedIntoTheWorktree)
+{
+#if !defined(_WIN32)
+	const auto turn = RunWorktreeAttachmentTurn(uam::provider_ids::kCodexCli, "codex-app-server", StagedWorktreeAttachment("file"), std::string{});
+	UAM_ASSERT(turn.error.empty());
+	UAM_ASSERT(turn.copied);
+#endif
+}
+
+UAM_TEST(StagedAttachmentThatCannotReachTheWorktreeRefusesBeforeDispatch)
+{
+#if !defined(_WIN32)
+	for (const auto& [provider, protocol] : EveryStructuredRoute())
+	{
+		const auto missing = RunWorktreeAttachmentTurn(provider, protocol, StagedWorktreeAttachment("file"), std::nullopt);
+		if (missing.error.find("Could not read attached file: notes.txt") == std::string::npos) throw TestFailure(provider + " missing source: " + missing.error);
+		UAM_ASSERT(missing.wire.empty());
+		const auto blocked = RunWorktreeAttachmentTurn(provider, protocol, StagedWorktreeAttachment("file"), std::string("first line\n"), std::nullopt, ".UAM");
+		if (blocked.error.find("Could not copy the attached file into this chat's worktree: notes.txt") == std::string::npos) throw TestFailure(provider + " blocked copy: " + blocked.error);
+		UAM_ASSERT(blocked.wire.empty());
+	}
+#endif
+}
+
+UAM_TEST(LaterTurnAttachmentAlreadyInTheWorktreeNeedsNoSourceCopy)
+{
+#if !defined(_WIN32)
+	const auto turn = RunWorktreeAttachmentTurn(uam::provider_ids::kGeminiCli, "gemini-acp", StagedWorktreeAttachment("file"), std::nullopt, std::string("worktree copy\n"));
+	UAM_ASSERT(turn.error.empty());
+	UAM_ASSERT(turn.wire.find("[worktree path sent]") != std::string::npos);
+#endif
+}
+
+UAM_TEST(RemoteWorktreeTurnNativePartsNameTheWorktreeNotTheSource)
+{
+	TempDir temp("uam-remote-worktree-native-parts");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+	app.settings.central_provider_configuration.enabled = false;
+	app.settings.git_enabled = app.settings.git_auto_worktree = false;
+	app.settings.provider_chat_defaults["gemini-cli"].feature_preference = "provider";
+	ExecutionHost host;
+	host.id = "ssh-806"; host.transport = "ssh"; host.platform = "linux";
+	host.ssh_alias = "unused-806"; host.runner_status = "ready"; host.runner_protocol_version = 3;
+	app.settings.execution_hosts = {host};
+	ChatSession chat;
+	chat.id = "remote-worktree-native-parts";
+	chat.provider_id = "gemini-cli";
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = "/srv/source";
+	chat.workspace_source_directory = "/srv/source";
+	chat.workspace_isolation_kind = "gitWorktree";
+	chat.workspace_worktree_directory = "/srv/worktree";
+	chat.approval_mode.clear();
+	chat.memory_enabled = false;
+	chat.messages_loaded = true;
+	Message user{.role = MessageRole::User, .content = "first", .acp_prompt_not_sent = true};
+	user.native_input_id = "input-806";
+	// A path outside the staging folder needs no copy, so this reaches the dispatch without a runner.
+	user.attachments.push_back({.name = "notes.txt", .kind = "file", .path = "docs/notes.txt"});
+	chat.messages = {user};
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	auto owned = std::make_unique<uam::AcpSessionState>();
+	uam::AcpSessionState& session = *owned;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "gemini-acp";
+	session.session_id = "warm-806";
+	session.current_mode_id = "default";
+	session.process_execution_host_id = host.id;
+	session.remote_runner_protocol_version = 3;
+	session.remote_output_delivery_token = "token-806";
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, temp.root, StdioCatArgv(), &error));
+	session.running = session.session_ready = session.initialized = true;
+	session.processing = true;
+	session.queued_prompt = "first";
+	session.turn_first_user_message_index = session.turn_user_message_index = 0;
+	app.acp_sessions.push_back(std::move(owned));
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (session.prompt_request_id == 0 && session.last_error.empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::FlushPendingChatSaves(app);
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+		std::this_thread::yield();
+	}
+	const std::string payload = app.chats.front().remote_prompt_delivery_payload;
+	const std::string dispatch_error = session.last_error;
+	PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
+	if (session.prompt_request_id == 0) throw TestFailure("not delivered: " + dispatch_error);
+	UAM_ASSERT(payload.find("/srv/worktree/docs/notes.txt") != std::string::npos);
+	UAM_ASSERT(payload.find("/srv/source/docs/notes.txt") == std::string::npos);
+}
+
 UAM_TEST(CentralSetupQueuesNativeAgentInstructionsForAllProvidersAndSsh)
 {
 	TempDir temp("uam-central-agent-queue");
