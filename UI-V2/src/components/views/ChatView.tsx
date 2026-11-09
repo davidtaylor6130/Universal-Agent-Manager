@@ -1151,14 +1151,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     ? workSections.get(activeWorkMessageIndex)?.firstIndex ?? findWorkSectionStartIndex(messages, activeWorkMessageIndex)
     : -1
   const activeWorkSectionId = messages[activeWorkSectionFirstIndex]?.id
-  // A streaming tail repeats the recorded row when it follows that row or was started for it, as after a steer row.
+  // A streaming tail repeats the recorded row when it follows that row, or was started for it after a steer row while
+  // the turn's events still hold that row's text.
   const streamingTail = messages[messages.length - 1]
   const redundantStreamingMessageIndex =
     turnEvents.length > 0 &&
     streamingTail?.isStreaming &&
     recordedTurnAssistantMessageIndex < messages.length - 1 &&
     messages[recordedTurnAssistantMessageIndex]?.role === 'assistant' &&
-    (recordedTurnAssistantMessageIndex === messages.length - 2 || streamingTail.streamMessageIndex === acp?.turnAssistantMessageIndex)
+    (recordedTurnAssistantMessageIndex === messages.length - 2 || (streamingTail.streamMessageIndex === acp?.turnAssistantMessageIndex &&
+      contentIsExactlyTurnText(messages[recordedTurnAssistantMessageIndex].content, turnEvents, true)))
       ? messages.length - 1
       : -1
   // Turn events are synced into the backend's turn assistant row, so bind them there even when a later row follows, such
@@ -1177,6 +1179,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   // timeline replaces the row in place, keeping live tools and controls without a second card.
   const liveTurnOwnsLatestAssistant =
     !recordedTurnAssistantMatches && Boolean(acp?.processing) &&
+    historyStartIndex + messages.length >= (session.messageCount ?? 0) &&
     latestAssistantMessageIndex >= earliestRenderedMessageIndex &&
     latestAssistantMessageIndex > latestUserMessageIndex &&
     contentIsExactlyTurnText(messages[latestAssistantMessageIndex].content, turnEvents, messages[latestAssistantMessageIndex].isStreaming)

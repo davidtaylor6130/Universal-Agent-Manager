@@ -9020,9 +9020,10 @@ describe('ChatView', () => {
   })
 
   // #278: a settled turn keeps its events while a later user row (failed-reconnect queue, prepared input) is appended.
-  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; trailingRows?: Message[]; historyStart?: number; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[]; pendingPermission?: AcpBinding['pendingPermission'] }) => {
+  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; trailingRows?: Message[]; historyStart?: number; messageCount?: number; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[]; pendingPermission?: AcpBinding['pendingPermission'] }) => {
     useAppStore.setState((state) => ({
       historyStartIndexBySessionId: overrides.historyStart ? { 'chat-1': overrides.historyStart } : {},
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, messageCount: overrides.messageCount } : session),
       messages: {
         ...state.messages,
         'chat-1': [
@@ -9108,6 +9109,31 @@ describe('ChatView', () => {
     })
     expect(text.match(/Settled answer\./g)).toHaveLength(1)
     expect(text).not.toContain('Status updStatus')
+  })
+
+  it('keeps a streaming row and the live card when the row holds unrelated text', () => {
+    const text = renderTurnAfterFollowUp({
+      processing: true, followUp: false, assistantStreaming: true, turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, assistantContent: 'Unrelated streaming row.',
+    })
+    expect(text).toContain('Unrelated streaming row.')
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+  })
+
+  it('keeps the recorded row and placeholder when the turn events no longer hold the row text', () => {
+    const text = renderTurnAfterFollowUp({
+      processing: true, assistantContent: 'Status update.',
+      turnEvents: [{ type: 'tool_call', toolCallId: 'tool-1' }], toolCalls: liveAnswerWithTool.toolCalls,
+      trailingRows: [{ id: 'stream-chat-1-0-3', sessionId: 'chat-1', role: 'assistant', content: ' More tokens', isStreaming: true, streamMessageIndex: 1, createdAt: new Date(3) }],
+    })
+    expect(text).toContain('Status update.')
+    expect(text).toContain('More tokens')
+  })
+
+  it('keeps a matching row on an older history page separate from the live answer', () => {
+    const text = renderTurnAfterFollowUp({
+      ...liveAnswerWithTool, followUp: false, historyStart: 100, messageCount: 500, turnUserMessageIndex: 500, turnAssistantMessageIndex: 501,
+    })
+    expect(text.match(/Settled answer\./g)).toHaveLength(2)
   })
 
   it('renders a settled answer once when its stale row keeps a compaction summary in its text', () => {
