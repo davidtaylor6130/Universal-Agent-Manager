@@ -8,6 +8,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 GATE = ROOT / 'scripts' / 'check_build_flag_leaks.py'
+WORKFLOW = ROOT / '.github' / 'workflows' / 'build-flag-leaks.yml'
 
 
 def run(*args):
@@ -129,6 +130,71 @@ class BuildFlagLeakGateTests(unittest.TestCase):
             self.assertIn('No runner executable', output)
             (runner_only / 'uam-runner').write_bytes(b'\x00')
             self.assertEqual(run('--build-dir', runner_only)[0], 0)
+
+    def test_windows_rows_are_recorded_per_executable_and_merged_without_touching_macos_rows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            build = Path(temporary) / 'windows-off'
+            (build / 'Release').mkdir(parents=True)
+            (build / 'UI-V2/dist').mkdir(parents=True)
+            (build / 'CMakeCache.txt').write_text('UAM_ENABLE_RUNTIME_GEMINI_CLI:BOOL=OFF\n')
+            (build / 'Release/universal_agent_manager.exe').write_bytes('\x00Sign in to Gemini\x00'.encode('utf-16-le'))
+            (build / 'Release/uam-runner.exe').write_bytes(b'\x00geminiRunnerKey\x00')
+            empty = Path(temporary) / 'empty.json'
+            empty.write_text('{"entries": []}')
+            base = {'reasons': {'GEMINI': 'shared settings key'},
+                    'artifacts': {'universal_agent_manager': {'GEMINI': {'macOnly': 2}}}}
+            residue = Path(temporary) / 'residue.json'
+            residue.write_text(json.dumps(base))
+            first = Path(temporary) / 'first.json'
+            first.write_text(json.dumps(base))
+            self.assertEqual(run('--build-dir', build, '--allowlist', empty, '--residue', first, '--record-residue')[0], 0)
+            second = Path(temporary) / 'second.json'
+            second.write_text(json.dumps({'reasons': {'GEMINI': 'TODO: replaced text'},
+                                          'artifacts': {'universal_agent_manager.exe': {'GEMINI': {'Sign in to Gemini': 3}}}}))
+            code, output = run('--merge-residue', first, second, '--residue', residue)
+            self.assertEqual(code, 0, output)
+            merged = json.loads(residue.read_text())
+            self.assertEqual(merged['artifacts']['universal_agent_manager'], base['artifacts']['universal_agent_manager'], 'macOS rows are unchanged')
+            self.assertEqual(merged['artifacts']['universal_agent_manager.exe']['GEMINI']['Sign in to Gemini'], 3, 'The highest count wins')
+            self.assertEqual(merged['artifacts']['uam-runner.exe']['GEMINI']['geminiRunnerKey'], 1, 'The Windows runner has its own rows')
+            self.assertEqual(merged['reasons']['GEMINI'], 'shared settings key', 'A reviewed reason is kept')
+            self.assertEqual(run('--build-dir', build, '--allowlist', empty, '--residue', residue)[0], 0, 'Merged rows pass the gate')
+            third = Path(temporary) / 'third.json'
+            third.write_text(json.dumps({'reasons': {'SSH': 'TODO: review'}, 'artifacts': {'uam-runner.exe': {'SSH': {'ssh key': 1}}}}))
+            unreviewed = Path(temporary) / 'unreviewed.json'
+            unreviewed.write_text(residue.read_text())
+            self.assertEqual(run('--merge-residue', third, '--residue', unreviewed)[0], 0)
+            code, output = run('--build-dir', build, '--allowlist', empty, '--residue', unreviewed)
+            self.assertEqual(code, 1, output)
+            self.assertIn('Native residue for SSH has no reviewed reason', output)
+
+    def test_recording_counts_matches_beyond_the_recorded_count(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            build = Path(temporary) / 'windows-off'
+            (build / 'Release').mkdir(parents=True)
+            (build / 'UI-V2/dist').mkdir(parents=True)
+            (build / 'CMakeCache.txt').write_text('UAM_ENABLE_RUNTIME_GEMINI_CLI:BOOL=OFF\nUAM_ENABLE_SSH:BOOL=OFF\n')
+            (build / 'Release/universal_agent_manager.exe').write_bytes(b'\x00geminiKey\x00geminiKey\x00geminiKey\x00')
+            empty = Path(temporary) / 'empty.json'
+            empty.write_text('{"entries": []}')
+            residue = Path(temporary) / 'residue.json'
+            residue.write_text(json.dumps({'reasons': {'GEMINI': 'shared key'}, 'artifacts': {'universal_agent_manager.exe': {'GEMINI': {'geminiKey': 2}}}}))
+            gate = ('--build-dir', build, '--allowlist', empty, '--residue', residue)
+            self.assertEqual(run(*gate)[0], 1, 'A third occurrence is not reviewed yet')
+            self.assertEqual(run(*gate, '--record-residue')[0], 0)
+            self.assertEqual(json.loads(residue.read_text())['artifacts']['universal_agent_manager.exe']['GEMINI']['geminiKey'], 3)
+            self.assertEqual(run(*gate)[0], 0, 'A recorded row passes on its own build')
+
+    def test_native_rows_cover_windows_only_when_requested(self):
+        workflow = WORKFLOW.read_text()
+        native = workflow[workflow.index('\n  native:\n'):]
+        self.assertIn('os: [macos-latest, windows-latest]', native)
+        self.assertIn('runs-on: ${{ matrix.os }}', native)
+        self.assertIn("if: (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'build-flags'))", native,
+                      'Unlabelled pull requests never start native rows')
+        self.assertIn("native-residue-${{ matrix.os == 'windows-latest' && 'windows-' || '' }}${{ strategy.job-index }}", native,
+                      'Windows candidates can be downloaded on their own')
+        self.assertIn('if: failure()', native, 'A failing row uploads its candidates')
 
 
 if __name__ == '__main__':
