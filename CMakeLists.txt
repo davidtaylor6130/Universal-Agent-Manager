@@ -1631,6 +1631,7 @@ if(UAM_BUILD_TESTS)
     tests/google_account_allowance_tests.cpp
     tests/claude_account_allowance_tests.cpp
     tests/chat_title_tests.cpp
+    tests/vcs_provider_tests.cpp
     tests/vcs_settings_tests.cpp
     tests/chat_snooze_tests.cpp
     tests/workspace_file_preview_tests.cpp
