@@ -1,4 +1,5 @@
 #include "app/automation_api_service.h"
+#include "app/chat_domain_service.h"
 #include "cef/cef_push.h"
 #include "cef/uam_query_handler.h"
 
@@ -28,7 +29,16 @@ void UamQueryHandler::LaunchAutomationChat(CefRefPtr<CefBrowser> browser, const 
 	const std::optional<uam::AutomationChatLaunch> launch = uam::AutomationApiService::BeginLaunch(m_app, chat_id, &error);
 	if (!launch)
 	{
-		cb->Failure(409, error);
+		ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id);
+		if (chat == nullptr || !chat->AwaitsAutomationApproval())
+		{
+			cb->Failure(409, error);
+			return;
+		}
+		// The chat stays held, so it must be visible and the caller must be told which one.
+		ChatDomainService().MarkChatNeedsAttention(m_app, chat_id);
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Failure(409, "The chat " + chat_id + " could not start and is waiting in UAM: " + error);
 		return;
 	}
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;

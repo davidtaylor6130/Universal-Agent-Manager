@@ -81,7 +81,7 @@ export function AutomationSettings() {
       <SettingRow title="Endpoint" description={endpoint || 'Turn on Phone access to reach this API.'} />
       {tokens === null && <SettingsLoading label="Loading automation tokens" rows={2} />}
       {tokens !== null && tokens.length === 0 && <SettingRow title={<span style={{ color: 'var(--text-3)' }}>No automation tokens.</span>} />}
-      {tokens?.map(token => <SettingRow key={token.id} title={token.name} description={describeToken(token)}
+      {tokens?.map(token => <SettingRow key={token.id} title={token.name} description={describeToken(token)} status={`workspaceId: ${token.workspaces.join(', ')}`}
         control={<IconButton size="sm" icon={<X size={14} />} label={`Revoke ${token.name}`} onClick={() => setRevoking(token)} />} />)}
     </SettingsSection>
 
@@ -115,7 +115,7 @@ export function AutomationSettings() {
               </SettingsField>
               <SettingsField label="Allowed workspaces">
                 <div className="grid gap-1">
-                  {folders.map(folder => <SettingRow key={folder.id} title={folder.name} description={folder.directory}
+                  {folders.map(folder => <SettingRow key={folder.id} title={folder.name} description={`${folder.directory} · ${folder.id}`}
                     control={<Switch hideLabel label={`Allow ${folder.name}`} checked={workspaces.includes(folder.id)}
                       onChange={event => { const checked = event.currentTarget.checked; setWorkspaces(current => checked ? [...current, folder.id] : current.filter(value => value !== folder.id)) }} />} />)}
                 </div>

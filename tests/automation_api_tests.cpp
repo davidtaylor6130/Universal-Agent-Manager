@@ -333,6 +333,20 @@ UAM_TEST(AutomationApiStatusReportsAPausedGoal)
 	UAM_ASSERT_EQ(fixture.Status(token.secret, chat_id).body.at("status").get<std::string>(), std::string("paused"));
 }
 
+UAM_TEST(AutomationApiStatusReportsALaunchThatFailedAfterAcceptance)
+{
+	AutomationFixture fixture;
+	const Issued token = fixture.Token(true);
+	const std::string chat_id = fixture.Post(token.secret, AutomationFixture::Body()).launch_chat_id;
+	std::string error;
+	UAM_ASSERT(AutomationApiService::BeginLaunch(fixture.app, chat_id, &error).has_value());
+	UAM_ASSERT_EQ(fixture.Status(token.secret, chat_id).body.at("status").get<std::string>(), std::string("running"));
+	// What failed worktree preparation records after the send was accepted.
+	fixture.Chat(chat_id)->acp_queue_held = true;
+	UAM_ASSERT_EQ(fixture.Status(token.secret, chat_id).body.at("status").get<std::string>(), std::string("blocked"));
+	for (int index = 0; index < 16; ++index) UAM_ASSERT_EQ(fixture.Post(token.secret, AutomationFixture::Body()).status, 200);
+}
+
 UAM_TEST(AutomationApiKeepsARecordedPromptOutOfTheHoldOnFailedLaunch)
 {
 	AutomationFixture fixture;

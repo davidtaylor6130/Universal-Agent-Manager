@@ -13,15 +13,15 @@ Tokens are created and revoked in [Automation settings](settings/automation.md).
 | Field | Required | Meaning |
 |---|---|---|
 | `prompt` | Yes | First prompt, up to 128 KiB. |
-| `workspaceId` | Yes | A UAM workspace folder ID on the token's allowed list. |
+| `workspaceId` | Yes | A UAM workspace folder ID on the token's allowed list, shown on the token's row in Settings. |
 | `providerId` | Yes | A provider available on the workspace's host. Antigravity is refused; see below. |
 | `maxIterations` | Yes | Integer from 1 to 200; see below. |
 | `gitPermission` | Yes | `commit` or `pr`, no more than the token allows. |
 | `modelId`, `title` | No | Otherwise the provider default and a generated title. |
 
-An unknown or malformed token returns 401, a workspace or Git permission outside the token returns 403, an invalid field including a missing `maxIterations` returns 400, an oversized body 413, a workspace that cannot be isolated or a provider that is unavailable 409, and 16 open chats for one token 429. None of these creates a chat, a worktree or a provider process. A successful response is `{"chatId": "...", "status": "running"}` for a trusted token, or `"awaitingApproval"` for an untrusted one.
+An unknown or malformed token returns 401, a workspace or Git permission outside the token returns 403, an invalid field including a missing `maxIterations` returns 400, an oversized body 413, a workspace that cannot be isolated or a provider that is unavailable 409, and 16 open chats for one token 429. None of these creates a chat, a worktree or a provider process. A trusted chat that is created but cannot start returns an error naming the chat, which stays waiting for the user. A successful response is `{"chatId": "...", "status": "running"}` for a trusted token, or `"awaitingApproval"` for an untrusted one.
 
-`GET /automation/chats/<chatId>` returns `status` (`awaitingApproval`, `running`, `completed`, `blocked`, `paused` or `stopped`), `iterationsUsed`, `maxIterations` and `gitPermission`. A chat created by a different token reads as not found. Status is polling only: UAM makes no outbound callbacks or webhooks. The API does not return transcript content.
+`GET /automation/chats/<chatId>` returns `status` (`awaitingApproval`, `running`, `completed`, `blocked`, `paused` or `stopped`), `iterationsUsed`, `maxIterations` and `gitPermission`. `blocked` includes a chat whose worktree preparation failed after the send was accepted. A chat created by a different token reads as not found. Status is polling only: UAM makes no outbound callbacks or webhooks. The API does not return transcript content.
 
 ## Chat behaviour
 

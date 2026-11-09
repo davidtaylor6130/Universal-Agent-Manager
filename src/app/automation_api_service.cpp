@@ -11,6 +11,7 @@
 #include "common/platform/platform_incremental_sha256.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_ids.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/state/app_state.h"
 #include "common/utils/diagnostic_log.h"
 #include "common/utils/io_utils.h"
@@ -149,9 +150,16 @@ namespace uam
 			return out.size() <= limit && out.find('\0') == std::string::npos;
 		}
 
+		/// <summary>A send can be accepted and then fail while the worktree is prepared, leaving the goal Active with nothing running.</summary>
+		bool LaunchFailedAfterAcceptance(const AppState& app, const ChatSession& chat)
+		{
+			const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+			return chat.acp_queue_held || (session != nullptr && session->lifecycle_state == "error");
+		}
+
 		bool ChatIsOpen(const AppState& app, const ChatSession& chat)
 		{
-			return chat.AwaitsAutomationApproval() || GoalService::FindActiveGoal(app, chat.id) != nullptr;
+			return chat.AwaitsAutomationApproval() || (GoalService::FindActiveGoal(app, chat.id) != nullptr && !LaunchFailedAfterAcceptance(app, chat));
 		}
 
 		AutomationApiResponse CreateChat(AppState& app, const AutomationApiRequest& request, const TokenRecord& token)
@@ -219,7 +227,7 @@ namespace uam
 			if (!chat->AwaitsAutomationApproval())
 			{
 				const Goal* goal = chat->goals.empty() ? nullptr : &chat->goals.back();
-				status = goal == nullptr ? "stopped" : goal->status == GoalStatus::Active ? "running" : goal->status == GoalStatus::Complete ? "completed" : goal->status == GoalStatus::Blocked ? "blocked" : "paused";
+				status = goal == nullptr ? "stopped" : goal->status == GoalStatus::Active ? (LaunchFailedAfterAcceptance(app, *chat) ? "blocked" : "running") : goal->status == GoalStatus::Complete ? "completed" : goal->status == GoalStatus::Blocked ? "blocked" : "paused";
 				if (goal != nullptr) used = goal->loop_count;
 			}
 			return {.body = {{"chatId", chat->id}, {"status", status}, {"iterationsUsed", used}, {"maxIterations", chat->automation_max_iterations}, {"gitPermission", chat->automation_git_permission}}};

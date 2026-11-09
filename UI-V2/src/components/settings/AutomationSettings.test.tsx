@@ -46,6 +46,7 @@ describe('Automation settings', () => {
   it('lists token metadata and the endpoint', () => {
     expect(host.textContent).toContain('n8n homelab')
     expect(host.textContent).toContain('Waits for approval')
+    expect(host.textContent).toContain('workspaceId: folder-a')
     expect(host.textContent).toContain('https://uam.local:58950/automation/chats')
   })
 
