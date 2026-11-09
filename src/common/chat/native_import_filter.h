@@ -1,11 +1,13 @@
 #pragma once
 
 #include "common/models/app_models.h"
+#include "common/provider/provider_ids.h"
 #include "common/utils/history_timestamp_order.h"
 
 #include <algorithm>
 #include <cctype>
 #include <ctime>
+#include <regex>
 #include <string>
 #include <string_view>
 
@@ -74,5 +76,17 @@ namespace uam::chat_import
 		const std::string cutoff_text = uam::time::detail::FormatTimestamp(uam::time::detail::UtcTimeSnapshot(cutoff), uam::time::kIsoUtcTimestampFormat);
 		const std::string& activity = chat.updated_at.empty() ? chat.created_at : chat.updated_at;
 		return uam::time::CompareHistoryTimestamps(activity, cutoff_text).order == uam::time::HistoryTimestampOrder::Before;
+	}
+
+	/// <summary>
+	/// True when startup import should leave this session for explicit discovery because it still has its provider's
+	/// generated default name. Only OpenCode generates one; the pattern is the one OpenCode uses to recognise a generated
+	/// title, so any other title, including "New session" typed by a user, is kept. Other providers name sessions from
+	/// their content, and an OpenCode session with no stored title is named from its first message during discovery.
+	/// </summary>
+	inline bool NativeImportHasProviderDefaultTitle(const ChatSession& chat)
+	{
+		static const std::regex open_code_default(R"((New session|Child session) - \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)");
+		return chat.provider_id == provider_ids::kOpenCodeCli && std::regex_match(chat.title, open_code_default);
 	}
 }
