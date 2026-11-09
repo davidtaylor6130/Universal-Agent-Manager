@@ -859,6 +859,64 @@ UAM_TEST(StartupImportDiscoveryFiltersStagedRemoteSessionsAgain)
 	UAM_ASSERT_EQ(service.Snapshot().candidates.size(), std::size_t{2});
 }
 
+// Default-named OpenCode sessions wait for explicit discovery; anything a user could have named stays offered.
+UAM_TEST(StartupImportLeavesProviderDefaultTitledSessionsForDiscovery)
+{
+	TempDir temp("uam-native-import-startup-default-title");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	ExecutionHost host;
+	host.id = "synthetic-host"; host.transport = "ssh"; host.platform = "linux"; host.runner_status = "ready";
+	app.settings.execution_hosts.push_back(host);
+	app.folders.push_back({"remote", "Remote", "/synthetic/remote", false, host.id});
+	const std::string generated = "New session - 2026-10-01T12:30:45.123Z";
+	const auto history = [&](const fs::path& directory, const std::string& id, const std::string& provider, const std::string& title)
+	{
+		ChatSession chat = StartupHistory(directory, id);
+		chat.provider_id = provider; chat.title = title; chat.updated_at = uam::time::IsoUtcTimestampNow();
+		return chat;
+	};
+	const fs::path workspace = temp.root / "workspace";
+	const std::vector<ChatSession> local = {
+	    history(workspace, "generated", "opencode-cli", generated),
+	    history(workspace, "generated-child", "opencode-cli", "Child session - 2026-10-01T12:30:45.123Z"),
+	    history(workspace, "named", "opencode-cli", "Fix login"),
+	    history(workspace, "bare", "opencode-cli", "New session"),
+	    history(workspace, "suffixed", "opencode-cli", "New session - tidy imports"),
+	    history(workspace, "trailing", "opencode-cli", generated + " notes"),
+	    history(workspace, "lowercase", "opencode-cli", "new session - 2026-10-01T12:30:45.123Z"),
+	    history(workspace, "other-provider", "gemini-cli", generated),
+	    history(workspace, "no-milliseconds", "opencode-cli", "New session - 2026-10-01T12:30:45Z"),
+	    history(workspace, "ends-in-z", "opencode-cli", "New session - fix bug Z"),
+	};
+	const auto remote = [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, std::stop_token)
+	{
+		ChatHistorySyncService::LocalHistoryDiscovery result;
+		for (const auto& [id, title] : {std::pair<std::string, std::string>{"remote-generated", generated}, {"remote-named", "Deploy notes"}})
+		{
+			ChatSession chat = history("/synthetic/remote", id, "opencode-cli", title);
+			chat.execution_host_id = host.id; chat.folder_id = "remote";
+			result.chats.push_back(std::move(chat));
+		}
+		return result;
+	};
+	const auto offered_ids = [](const uam::StartupNativeImportService& service)
+	{
+		std::set<std::string> ids;
+		for (const auto& candidate : service.Snapshot().candidates) ids.insert(candidate.native_session_id);
+		return ids;
+	};
+	const std::set<std::string> kept = {"named", "bare", "suffixed", "trailing", "lowercase", "other-provider", "no-milliseconds", "ends-in-z", "remote-named"};
+	uam::StartupNativeImportService service(FixtureScanner(local), remote);
+	service.Initialize(app); WaitForStartup(service, app);
+	UAM_ASSERT_EQ(offered_ids(service), kept);
+	// The explicit Chat Data scan still reaches the left-out sessions, locally and on the remote host.
+	UAM_ASSERT(service.DiscoverLocalHistory(app)); WaitForStartup(service, app);
+	UAM_ASSERT(offered_ids(service).contains("generated"));
+	UAM_ASSERT(offered_ids(service).contains("generated-child"));
+	UAM_ASSERT(offered_ids(service).contains("remote-generated"));
+}
+
 UAM_TEST(StartupImportAgeLimitKeepsSessionsActiveExactlyAtTheLimit)
 {
 	AppSettings settings;

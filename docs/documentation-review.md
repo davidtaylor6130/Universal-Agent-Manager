@@ -273,6 +273,6 @@ Issue #688 asks for the Send during a running turn preference to apply in both C
 
 ## Startup import untitled sessions
 
-Issue #631 also asks whether startup import should treat sessions that still have a provider's default name, such as OpenCode's "New session - ...", specially. This is undecided: they are currently imported like any other session within the age limit, and a title filter can exclude them.
+**Resolved, 2026-11-09.** Issue #631 also asked whether startup import should treat sessions that still have a provider's default name specially. Startup import now leaves out sessions carrying OpenCode's generated `New session - <timestamp>` or `Child session - <timestamp>` name, the only provider-generated default, and explicit discovery still lists them ([policy](chat/native-imports.md)).
 
 **Age limit default resolved by David, 2026-11-07.** The startup age limit defaults to 30 days for anyone who has not saved a value ([policy](chat/native-imports.md)). Settings written before that decision recorded 0 on every save, so a saved 0 from those builds counts as no choice; a positive value is kept.

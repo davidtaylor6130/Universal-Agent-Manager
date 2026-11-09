@@ -120,7 +120,7 @@ namespace uam
 		}
 		// Only replace settled staging metadata; saved chats, declines and native histories remain authoritative.
 		std::erase_if(m_candidates, [](const Candidate& candidate) { return paths::IsControllerLocalWorkspace(candidate.chat); });
-		// Remote sessions startup left out for age join this review; the local scan below finds local ones without the limit.
+		// Remote sessions startup left out join this review; the local scan below finds local ones without the startup rules.
 		for (Candidate& candidate : m_startup_deferred) m_candidates.push_back(std::move(candidate));
 		m_startup_deferred.clear();
 		HoldBackIneligibleRemoteCandidates(app);
@@ -366,8 +366,9 @@ namespace uam
 				if (owner == nullptr && (!m_include_unregistered_local || !paths::IsControllerLocalWorkspace(chat))) return;
 				const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
 				if (candidate_keys.contains({key, chat.execution_host_id})) return;
-				// Startup leaves old sessions to explicit discovery: local ones are rescanned there, remote ones wait below.
-				const bool deferred = !m_include_unregistered_local && chat_import::NativeImportOlderThanStartupLimit(app.settings, chat, now);
+				// Startup leaves old and default-named sessions to explicit discovery: local ones are rescanned there, remote ones wait below.
+				const bool deferred = !m_include_unregistered_local &&
+				    (chat_import::NativeImportOlderThanStartupLimit(app.settings, chat, now) || chat_import::NativeImportHasProviderDefaultTitle(chat));
 				if (deferred && paths::IsControllerLocalWorkspace(chat)) return;
 				Candidate candidate;
 				if (!paths::IsControllerLocalWorkspace(chat))
