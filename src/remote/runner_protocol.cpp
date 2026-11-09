@@ -170,6 +170,7 @@ namespace uam::remote
 			                          {"safePathInspection", state != nullptr},
 			                          {"contextRead", state != nullptr},
 			                          {"providerHistoryRead", state != nullptr},
+			                          {"providerHistoryChildren", state != nullptr},
 			                          {"workspaceFileRead", state != nullptr},
 			                          {"workspaceAttachmentRead", state != nullptr},
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI

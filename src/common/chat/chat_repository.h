@@ -238,7 +238,7 @@ class ChatRepository
 	static bool PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory = true, ChatSession* committed_chat = nullptr, const std::function<bool()>& still_owned = {}, ChatPublicationState* primary_publication_state = nullptr, const std::function<bool(uam::io::AtomicWriteStage)>& primary_stage_hook_for_tests = {});
 	static std::string ChatMetadataFingerprint(const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Stages display-only lineage after an explicit native open; requires actual source tool evidence and matching identities. The caller must publish or roll back the chat save.</summary>
-	static bool ApplyNativeChildDisplayLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id);
+	static bool ApplyNativeChildDisplayLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id, bool attested_gemini_listing = false);
 	/// <summary>Saves one chat; native refreshes may skip byte-identical files while repairing summaries.</summary>
 	static bool SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged = false);
 	/// Bounded canonical DATA only; no publication receipt, graph promotion or runtime authority.

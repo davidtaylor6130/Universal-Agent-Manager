@@ -172,6 +172,8 @@ namespace uam::remote
 		/// Reads one exact immutable native transcript, releasing its bounded runner snapshot on success or cancellation.
 		bool ReadNativeHistory(const std::string& provider, const std::string& session, const std::string& workspace,
 		    nlohmann::json& snapshot, std::string* error_out = nullptr, std::stop_token stop_token = {}, const std::string& agent_id = {});
+		/// Lists the attested Gemini child journals stored under one exact parent session on this host.
+		bool ListGeminiChildren(const std::string& session, const std::string& workspace, nlohmann::json& listing, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool ListDirectories(const std::filesystem::path& remote_path,
 		                     DirectoryListing& result,
 		                     std::string* error_out = nullptr);
@@ -206,6 +208,7 @@ namespace uam::remote
 		bool m_safePathInspection = false;
 		bool m_contextRead = false;
 		bool m_providerHistoryRead = false;
+		bool m_providerHistoryChildren = false;
 		bool m_workspaceFileRead = false;
 		bool m_workspaceAttachmentRead = false;
 		bool m_openCodeNativeControl = false;

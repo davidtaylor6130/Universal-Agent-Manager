@@ -133,6 +133,9 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	// Saved results of delivery-cancelled reads, consumed by the next request for the same chat.
 	// ponytail: no expiry; the next request of any kind for that chat consumes it.
 	std::set<std::string> m_reusableNativeHistory;
+	// References the browser listing attested in this run; the frontend cannot assert one.
+	// ponytail: cleared at 4096 entries; a listing is re-read every time the browser opens.
+	std::set<std::string> m_attestedGeminiChildren;
 	// Hover warm-up reads an explicit open can still move ahead of queued status reads (#624).
 	std::map<std::string, CefRefPtr<CefTask>> m_promotableHistoryReads;
 	bool m_retryReusesSavedRead = false; // Set only while a waiter retries after a finished read.
@@ -211,6 +214,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleRetryFailedMessage(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleListGeminiChildConversations(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	uam::query_handler_async::AsyncCefResult FinishOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, const ChatSession* native_snapshot = nullptr, bool native_snapshot_prepared = false, const std::string& expected_storage_revision = {}, bool publish = true);
 	void HandleRegenerateChatTitle(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleCancelChatTitle(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

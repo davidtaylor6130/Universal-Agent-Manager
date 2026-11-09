@@ -4822,13 +4822,16 @@ std::string ChatRepository::ChatMetadataFingerprint(const fs::path& data_root, c
 	return fingerprint;
 }
 
-bool ChatRepository::ApplyNativeChildDisplayLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id)
+bool ChatRepository::ApplyNativeChildDisplayLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id, bool attested_gemini_listing)
 {
 	// This is a display receipt of a validated open, not evidence that a native
 	// session can be resumed or controlled. Titles and tool arguments are not IDs.
 	const std::string native_id = uam::strings::Trim(native_child_id);
 	const std::string provider = uam::provider_ids::NormalizeCliProviderAliasOrSelf(source.provider_id);
-	if (source.imported_read_only || !source.messages_loaded || source.id.empty() || child.id.empty() || source.id == child.id ||
+	// Gemini ACP reports no child IDs, so tool evidence cannot exist. A reference this app just listed
+	// from the attested parent directory is that evidence instead, and needs no loaded parent messages.
+	const bool listed = attested_gemini_listing && provider == uam::provider_ids::kGeminiCli && uam::native_agents::ParseHistoryId(native_id).has_value();
+	if (source.imported_read_only || (!source.messages_loaded && !listed) || source.id.empty() || child.id.empty() || source.id == child.id ||
 	    uam::strings::IsBlank(source.created_at) || uam::strings::IsBlank(source.native_session_id) || native_id.empty() ||
 	    provider != uam::provider_ids::NormalizeCliProviderAliasOrSelf(child.provider_id)) return false;
 	if (uam::strings::NonEmptyOrFallback(uam::strings::Trim(source.execution_host_id), "local") !=
@@ -4869,7 +4872,7 @@ bool ChatRepository::ApplyNativeChildDisplayLineage(const ChatSession& source, C
 	{
 		return codex ? uam::codex::ThreadIdKey(id) == uam::codex::ThreadIdKey(native_id) : id == native_id;
 	};
-	bool evidence = false;
+	bool evidence = listed;
 	for (const Message& message : source.messages)
 	{
 		if (message.role != MessageRole::Assistant) continue;

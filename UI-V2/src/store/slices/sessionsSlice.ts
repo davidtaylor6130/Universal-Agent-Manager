@@ -1305,7 +1305,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return Boolean(session?.workspaceDirectory?.trim() || folderDirectory.trim())
     },
 
-    openSubAgentSession: async (sourceChatId: string, nativeSessionId: string, title = '', selectChat = true, onFailure?: (message: string) => void) => {
+    openSubAgentSession: async (sourceChatId: string, nativeSessionId: string, title = '', selectChat = true, onFailure?: (message: string) => void, stillWanted?: () => boolean) => {
       if (isCefContext()) {
         const stateAtRequest = get()
         const source = stateAtRequest.sessions.find(candidate => candidate.id === sourceChatId)
@@ -1335,7 +1335,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           onFailure?.('The native conversation could not be read. Refresh to try again.')
           return null
         }
-        if (selectChat && intentionalSelectionRevision !== selectionRevision) return null
+        if (selectChat && (intentionalSelectionRevision !== selectionRevision || stillWanted?.() === false)) return null
         const currentSource = get().sessions.find(candidate => candidate.id === sourceChatId)
         if (!source || !currentSource || source.createdAt.getTime() !== currentSource.createdAt.getTime() ||
             source.providerId !== currentSource.providerId || source.executionHostId !== currentSource.executionHostId ||
