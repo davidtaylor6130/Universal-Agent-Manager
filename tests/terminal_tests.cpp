@@ -2361,6 +2361,167 @@ UAM_TEST(AttachedTerminalPollingTracksWindowVisibility)
 #endif
 }
 
+UAM_TEST(TerminalPollSkipsGeminiProjectScanBetweenHistoryRefreshes)
+{
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	TempDir temp("uam-terminal-poll-project-scan");
+	const fs::path workspace = temp.root / "workspace";
+	const fs::path gemini_home = temp.root / "gemini";
+	const fs::path source = gemini_home / ".gemini" / "tmp" / "workspace-source";
+	fs::create_directories(workspace);
+	fs::create_directories(source);
+	UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", workspace.string()));
+	for (int index = 0; index < 1000; ++index)
+	{
+		const fs::path project = gemini_home / ".gemini" / "tmp" / ("project-" + std::to_string(index));
+		fs::create_directories(project);
+		UAM_ASSERT(uam::io::WriteTextFile(project / ".project_root", (temp.root / ("other-" + std::to_string(index))).string()));
+	}
+	ScopedEnvVar gemini_env("GEMINI_CLI_HOME", gemini_home.string());
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const ProviderProfile provider = ProviderProfileStore::DefaultGeminiProfile();
+	app.provider_profiles = {provider};
+	ChatSession chat;
+	chat.id = "local-poll-scan";
+	chat.provider_id = provider.id;
+	chat.workspace_directory = workspace.string();
+	app.chats.push_back(chat);
+
+	app.cli_terminals.push_back(std::make_unique<uam::CliTerminalState>());
+	uam::CliTerminalState& terminal = *app.cli_terminals.front();
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {"cmd.exe", "/C", "ping -n 31 127.0.0.1 >NUL"};
+#else
+	const std::vector<std::string> argv = {"/bin/cat"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, workspace, argv, &error));
+	terminal.running = true;
+	terminal.frontend_chat_id = chat.id;
+	terminal.attached_chat_id = chat.id;
+	terminal.ui_attached = true;
+	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+	terminal.turn_state = uam::CliTerminalTurnState::Idle;
+
+	const auto median_ms = [](std::vector<double> values)
+	{
+		std::sort(values.begin(), values.end());
+		return values[values.size() / 2];
+	};
+	const auto timed_ms = [](const std::function<void()>& work)
+	{
+		const auto started = std::chrono::steady_clock::now();
+		work();
+		return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+	};
+	// Resolution creates the chats folder, so its absence proves a poll did not scan.
+	terminal.last_sync_time_s = uam::GetAppTimeSeconds() + 1000.0;
+	(void)uam::PollCliTerminal(nullptr, app, terminal, true);
+	const bool scanned_between_refreshes = fs::exists(source / "chats");
+	std::vector<double> scans;
+	for (int index = 0; index < 3; ++index) scans.push_back(timed_ms([&] { (void)ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, chat); }));
+	fs::remove_all(source / "chats");
+	std::vector<double> polls;
+	for (int index = 0; index < 15; ++index) polls.push_back(timed_ms([&] { (void)uam::PollCliTerminal(nullptr, app, terminal, true); }));
+	const bool scanned_during_timed_polls = fs::exists(source / "chats");
+	terminal.last_sync_time_s = -100.0;
+	(void)uam::PollCliTerminal(nullptr, app, terminal, true);
+	const bool scanned_at_refresh = fs::exists(source / "chats");
+	uam::StopCliTerminal(terminal);
+
+	const double scan_ms = median_ms(scans);
+	const double poll_ms = median_ms(polls);
+	std::cout << "[TIMING] terminal poll " << poll_ms << " ms; Gemini project scan " << scan_ms << " ms\n";
+	UAM_ASSERT(!scanned_between_refreshes);
+	UAM_ASSERT(!scanned_during_timed_polls);
+	UAM_ASSERT(scanned_at_refresh);
+	// Half of one scan on this machine: a poll that still performs the scan cannot pass.
+	UAM_ASSERT(poll_ms < scan_ms / 2.0);
+#endif
+}
+
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_GEMINI_CLI
+namespace
+{
+	/// <summary>Starts argv as the only terminal, attached to a Gemini chat whose history refresh is not due.</summary>
+	uam::CliTerminalState& StartAttachedPollTerminal(uam::AppState& app, const fs::path& root, const std::vector<std::string>& argv)
+	{
+		app.data_root = root;
+		const ProviderProfile provider = ProviderProfileStore::DefaultGeminiProfile();
+		app.provider_profiles = {provider};
+		ChatSession chat;
+		chat.id = "local-poll-drain";
+		chat.provider_id = provider.id;
+		chat.workspace_directory = root.string();
+		app.chats.push_back(chat);
+		app.cli_terminals.push_back(std::make_unique<uam::CliTerminalState>());
+		uam::CliTerminalState& terminal = *app.cli_terminals.front();
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, root, argv, &error));
+		terminal.running = true;
+		terminal.frontend_chat_id = chat.id;
+		terminal.attached_chat_id = chat.id;
+		terminal.ui_attached = true;
+		terminal.lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+		terminal.turn_state = uam::CliTerminalTurnState::Idle;
+		terminal.last_sync_time_s = uam::GetAppTimeSeconds() + 1000.0;
+		return terminal;
+	}
+}
+#endif
+
+UAM_TEST(AttachedTerminalPollDrainsMoreThanOnePtyReadPerTick)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_GEMINI_CLI
+	TempDir temp("uam-terminal-poll-drain");
+	uam::AppState app;
+	uam::CliTerminalState& terminal = StartAttachedPollTerminal(app, temp.root, {"/usr/bin/yes", std::string(70, 'x')});
+
+	constexpr int kPolls = 30;
+	std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	const std::uint64_t cursor_before = terminal.output_cursor;
+	for (int index = 0; index < kPolls; ++index)
+	{
+		(void)uam::PollCliTerminal(nullptr, app, terminal, true);
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	const std::uint64_t delivered = terminal.output_cursor - cursor_before;
+	uam::StopCliTerminal(terminal);
+
+	std::cout << "[TIMING] attached terminal delivered " << delivered << " bytes in " << kPolls << " polls\n";
+	// A macOS PTY read returns at most 1 KB, so one read per poll stays far below this.
+	UAM_ASSERT(delivered >= kPolls * 4096);
+#endif
+}
+
+UAM_TEST(AttachedTerminalPollDrainWaitStaysBounded)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_GEMINI_CLI
+	TempDir temp("uam-terminal-poll-wait");
+	uam::AppState app;
+	// A writer that keeps output arriving just inside each wait, so only the time limit ends the drain.
+	uam::CliTerminalState& terminal = StartAttachedPollTerminal(app, temp.root, {"/usr/bin/perl", "-e", "$|=1; while (1) { print 'x'; select(undef, undef, undef, 0.0006); }"});
+
+	std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	std::vector<double> polls;
+	for (int index = 0; index < 30; ++index)
+	{
+		const auto started = std::chrono::steady_clock::now();
+		(void)uam::PollCliTerminal(nullptr, app, terminal, true);
+		polls.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	uam::StopCliTerminal(terminal);
+
+	std::sort(polls.begin(), polls.end());
+	const double median_ms = polls[polls.size() / 2];
+	std::cout << "[TIMING] slow-writer terminal poll median " << median_ms << " ms\n";
+	// One wait is about 5 ms; 32 chunks of unbounded waiting would take several times this.
+	UAM_ASSERT(median_ms < 12.0);
+#endif
+}
+
 UAM_TEST(NativeTerminalRefreshRetriesTheSameSnapshotAfterStorageRecovers)
 {
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI

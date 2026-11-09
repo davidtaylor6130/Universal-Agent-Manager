@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -433,8 +434,11 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	constexpr std::size_t kRecentOutputBufferLimitBytes = 256 * 1024;
 	constexpr double kInputReadyFallbackSeconds = 1.5;
 	// Keep PTY draining and CEF delivery within a small UI-thread slice.
-	constexpr int kReadBudgetChunksPerTick = 4;
+	// A macOS PTY read returns at most 1 KB, so the byte budget is the limit that matters.
+	constexpr int kReadBudgetChunksPerTick = 32;
 	constexpr std::size_t kReadBudgetBytesPerTick = 32 * 1024;
+	// Known gap: a bounded blocking wait on the UI thread, per attached terminal. A PTY reader thread removes it.
+	constexpr auto kOutputDrainWaitBudget = std::chrono::milliseconds(4);
 
 	const bool first_launch_output = terminal.last_output_time_s <= 0.0;
 	bool changed = false;
@@ -445,7 +449,6 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	const int previous_chat_message_count = terminal_chat != nullptr ? static_cast<int>(terminal_chat->messages_loaded ? terminal_chat->messages.size() : terminal_chat->persisted_message_count) : -1;
 	const bool terminal_uses_native_history = (terminal_chat != nullptr) && ProviderResolutionService().ChatUsesNativeOverlayHistory(app, *terminal_chat);
 	const ProviderProfile terminal_provider = (terminal_chat != nullptr) ? ProviderResolutionService().ProviderForChatOrDefault(app, *terminal_chat) : ProviderResolutionService().ActiveProviderOrDefault(app);
-	const std::filesystem::path terminal_native_history_chats_dir = (terminal_chat != nullptr) ? ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, *terminal_chat) : std::filesystem::path{};
 
 	const IPlatformTerminalRuntime& platform_terminal_runtime = PlatformServicesFactory::Instance().terminal_runtime;
 
@@ -473,6 +476,7 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 		return true;
 	}
 
+	const std::chrono::steady_clock::time_point drain_started = std::chrono::steady_clock::now();
 	char buffer[8192];
 	int chunks_read = 0;
 	std::size_t bytes_read_total = 0;
@@ -510,6 +514,13 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 
 		if (read_bytes == -2)
 		{
+			// The writer refills the PTY only after it is scheduled, so an attached terminal
+			// waits briefly for it instead of leaving one read per 16 ms poll.
+			if (chunks_read > 0 && terminal.ui_attached && std::chrono::steady_clock::now() - drain_started < kOutputDrainWaitBudget &&
+			    platform_terminal_runtime.WaitForCliTerminalOutput(terminal, 1))
+			{
+				continue;
+			}
 			break;
 		}
 
@@ -617,6 +628,8 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	if (should_refresh_native_history)
 	{
 		terminal.last_sync_time_s = now;
+		// Resolution can walk every Gemini project directory, so it must not run on each 16 ms poll.
+		const std::filesystem::path terminal_native_history_chats_dir = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, *terminal_chat);
 
 		if (platform_terminal_runtime.SupportsAsyncNativeGeminiHistoryRefresh())
 		{
