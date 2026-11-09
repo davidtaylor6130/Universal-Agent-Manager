@@ -1,4 +1,5 @@
 #include "app/automation_api_service.h"
+#include "cef/cef_push.h"
 #include "cef/uam_query_handler.h"
 
 namespace
@@ -32,10 +33,11 @@ void UamQueryHandler::LaunchAutomationChat(CefRefPtr<CefBrowser> browser, const 
 	}
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;
 	HandleSendAcpPrompt(browser, {{"chatId", chat_id}, {"text", launch->text}, {"goalMode", true}, {"goalId", launch->goal_id}},
-	    new AutomationLaunchReply(cb, std::move(response), [this, lifetime, cb, chat_id, launch = *launch](int status, const std::string& reason)
+	    new AutomationLaunchReply(cb, std::move(response), [this, lifetime, browser, cb, chat_id, launch = *launch](int status, const std::string& reason)
 	    {
-		    if (!lifetime.expired()) uam::AutomationApiService::AbandonLaunch(m_app, chat_id, launch);
-		    cb->Failure(status, "The chat " + chat_id + " could not start and is waiting in UAM: " + reason);
+		    const bool waiting = !lifetime.expired() && uam::AutomationApiService::AbandonLaunch(m_app, chat_id, launch);
+		    if (!lifetime.expired()) uam::PushStateUpdateIfChanged(browser, m_app);
+		    cb->Failure(status, "The chat " + chat_id + (waiting ? " could not start and is waiting in UAM: " : " may not have started: ") + reason);
 	    }));
 }
 
@@ -49,6 +51,8 @@ void UamQueryHandler::HandleAutomationHttpRequest(CefRefPtr<CefBrowser> browser,
 	}
 	if (response.launch_chat_id.empty())
 	{
+		// A held chat is saved directly, which the state tracker does not see.
+		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success(response.body.dump());
 		return;
 	}

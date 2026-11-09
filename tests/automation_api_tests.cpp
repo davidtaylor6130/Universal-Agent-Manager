@@ -295,8 +295,42 @@ UAM_TEST(AutomationApiRefusesAProviderThatAnswersItsOwnPrompts)
 	version.supported = true;
 	version.installed_version = "1.2.3";
 	version.execution_host = fixture.app.settings.execution_hosts.front();
-	UAM_ASSERT_EQ(fixture.Post(token.secret, body).status, 409);
+	const auto refused = fixture.Post(token.secret, body);
+	UAM_ASSERT_EQ(refused.status, 409);
+	UAM_ASSERT(refused.body.at("error").get<std::string>().find("answers its own permission prompts") != std::string::npos);
 	fixture.RequireNoChat();
+}
+
+UAM_TEST(AutomationApiRechecksTheWorktreeAfterLaunchPreparation)
+{
+	AutomationFixture fixture;
+	const Issued token = fixture.Token();
+	const std::string chat_id = fixture.Post(token.secret, AutomationFixture::Body()).body.at("chatId").get<std::string>();
+	std::string error;
+	UAM_ASSERT(AutomationApiService::BeginLaunch(fixture.app, chat_id, &error).has_value());
+	// Still pending at the first guard; preparation is what then drops the worktree.
+	fixture.app.settings.git_auto_worktree = false;
+	ChatSession* chat = fixture.Chat(chat_id);
+	UAM_ASSERT_EQ(chat->workspace_isolation_kind, std::string(uam::paths::kPendingGitWorktreeIsolationKind));
+	uam::AcpSessionState session;
+	session.chat_id = chat_id;
+	session.provider_id = "codex-cli";
+	error.clear();
+	UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(fixture.app, session, *chat, &error));
+	UAM_ASSERT_EQ(error, std::string(kAutomationWorktreeRequiredError));
+	UAM_ASSERT(!session.running);
+}
+
+UAM_TEST(AutomationApiStatusReportsAPausedGoal)
+{
+	AutomationFixture fixture;
+	const Issued token = fixture.Token();
+	const std::string chat_id = fixture.Post(token.secret, AutomationFixture::Body()).body.at("chatId").get<std::string>();
+	std::string error;
+	const auto launch = AutomationApiService::BeginLaunch(fixture.app, chat_id, &error);
+	UAM_ASSERT(launch.has_value());
+	uam::GoalService::FindGoalById(fixture.app, chat_id, launch->goal_id)->status = GoalStatus::Paused;
+	UAM_ASSERT_EQ(fixture.Status(token.secret, chat_id).body.at("status").get<std::string>(), std::string("paused"));
 }
 
 UAM_TEST(AutomationApiKeepsARecordedPromptOutOfTheHoldOnFailedLaunch)
@@ -310,7 +344,7 @@ UAM_TEST(AutomationApiKeepsARecordedPromptOutOfTheHoldOnFailedLaunch)
 	Message sent;
 	sent.content = launch->text;
 	fixture.Chat(chat_id)->messages.push_back(sent);
-	AutomationApiService::AbandonLaunch(fixture.app, chat_id, *launch);
+	UAM_ASSERT(!AutomationApiService::AbandonLaunch(fixture.app, chat_id, *launch));
 	UAM_ASSERT(!fixture.Chat(chat_id)->AwaitsAutomationApproval());
 	UAM_ASSERT(!fixture.Chat(chat_id)->goals.empty());
 }

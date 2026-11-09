@@ -44,4 +44,10 @@ status, created = call('POST', url, valid)
 assert status == 200 and created['status'] == 'awaitingApproval', (status, created)
 status, polled = call('GET', url + '/' + created['chatId'])
 assert status == 200 and polled['status'] == 'awaitingApproval' and polled['maxIterations'] == 2, (status, polled)
+companion = os.environ.get('UAM_COMPANION_TEST_TOKEN')
+if companion:
+    # The phone's send route, including its initial-mention branch, must refuse a held chat.
+    status, refused = call('POST', base.rstrip('/') + '/api', {'action': 'sendAcpPrompt', 'payload': {'chatId': created['chatId'], 'text': '@reviewer go anyway'}}, credential=companion)
+    assert status == 409, (status, refused)
+    assert call('POST', url, valid, credential=companion)[0] == 401
 print('automation API integration: ok', created['chatId'])

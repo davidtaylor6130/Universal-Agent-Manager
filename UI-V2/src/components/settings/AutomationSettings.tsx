@@ -6,7 +6,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { reportAppFailure } from '../../utils/appFailure'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, Switch } from '../ui'
-import { SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
+import { SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 
 export interface AutomationToken {
   id: string
@@ -79,13 +79,14 @@ export function AutomationSettings() {
   return <div className="grid gap-0">
     <SettingsSection title="API access" actions={<Button size="sm" variant="secondary" leadingIcon={<Plus size={14} aria-hidden />} onClick={open}>New token</Button>}>
       <SettingRow title="Endpoint" description={endpoint || 'Turn on Phone access to reach this API.'} />
+      {tokens === null && <SettingsLoading label="Loading automation tokens" rows={2} />}
       {tokens !== null && tokens.length === 0 && <SettingRow title={<span style={{ color: 'var(--text-3)' }}>No automation tokens.</span>} />}
       {tokens?.map(token => <SettingRow key={token.id} title={token.name} description={describeToken(token)}
         control={<IconButton size="sm" icon={<X size={14} />} label={`Revoke ${token.name}`} onClick={() => setRevoking(token)} />} />)}
     </SettingsSection>
 
     <Presence open={editing}>
-      <Overlay open zIndex={60} onBackdropMouseDown={close}>
+      <Overlay open zIndex={60} onBackdropMouseDown={secret ? undefined : close}>
         <div role="dialog" aria-modal="true" data-settings-owned-overlay aria-label="New automation token" tabIndex={-1} className="uam-mcp-dialog uam-central-dialog"
           onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close() } }}>
           <header className="uam-central-dialog__head">
@@ -96,7 +97,7 @@ export function AutomationSettings() {
             ? <div className="uam-central-dialog__body">
               <Notice tone="warning" dismissible={false} dismissLabel="Dismiss">This token is shown once. UAM keeps only its hash.</Notice>
               <SettingsField label="Token">
-                <input readOnly aria-label="Automation token" className="uam-field" value={secret} onFocus={event => event.currentTarget.select()} style={{ fontFamily: 'var(--font-mono)' }} />
+                <input readOnly autoFocus aria-label="Automation token" className="uam-field" value={secret} onFocus={event => event.currentTarget.select()} style={{ fontFamily: 'var(--font-mono)' }} />
               </SettingsField>
               <div className="flex justify-end gap-2">
                 <Button size="sm" variant="secondary" onClick={() => void copy()}>{copied ? 'Copied' : 'Copy token'}</Button>

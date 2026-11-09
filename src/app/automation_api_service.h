@@ -56,7 +56,7 @@ namespace uam
 
 		/// <summary>Creates the capped goal and releases the approval hold. Only an awaiting chat can launch.</summary>
 		static std::optional<AutomationChatLaunch> BeginLaunch(AppState& app, const std::string& chat_id, std::string* error_out);
-		/// <summary>Restores the approval hold after a refused send, so the chat waits instead of being lost.</summary>
-		static void AbandonLaunch(AppState& app, const std::string& chat_id, const AutomationChatLaunch& launch);
+		/// <summary>Restores the approval hold after a refused send, so the chat waits instead of being lost. Returns false when the prompt may already have been delivered.</summary>
+		static bool AbandonLaunch(AppState& app, const std::string& chat_id, const AutomationChatLaunch& launch);
 	};
 } // namespace uam

@@ -218,7 +218,7 @@ namespace uam
 			int used = 0;
 			if (!chat->AwaitsAutomationApproval())
 			{
-				const Goal* goal = GoalService::FindActiveOrLatestTerminalGoal(app, chat->id);
+				const Goal* goal = chat->goals.empty() ? nullptr : &chat->goals.back();
 				status = goal == nullptr ? "stopped" : goal->status == GoalStatus::Active ? "running" : goal->status == GoalStatus::Complete ? "completed" : goal->status == GoalStatus::Blocked ? "blocked" : "paused";
 				if (goal != nullptr) used = goal->loop_count;
 			}
@@ -354,15 +354,16 @@ namespace uam
 		return launch;
 	}
 
-	void AutomationApiService::AbandonLaunch(AppState& app, const std::string& chat_id, const AutomationChatLaunch& launch)
+	bool AutomationApiService::AbandonLaunch(AppState& app, const std::string& chat_id, const AutomationChatLaunch& launch)
 	{
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 		// A recorded prompt may have reached the provider, so holding the chat again could run it twice.
-		if (chat == nullptr || !chat->messages.empty()) return;
+		if (chat == nullptr || !chat->messages.empty()) return false;
 		std::erase_if(chat->goals, [&](const Goal& goal) { return goal.id == launch.goal_id; });
 		if (chat->active_goal_id == launch.goal_id) chat->active_goal_id.clear();
 		chat->automation_pending_prompt = launch.original_prompt;
 		if (!ChatRepository::SaveChat(app.data_root, *chat)) uam::diagnostics::Write("Automation API: the approval hold for chat " + chat_id + " could not be saved.");
 		ChatDomainService().MarkChatNeedsAttention(app, chat_id);
+		return true;
 	}
 } // namespace uam

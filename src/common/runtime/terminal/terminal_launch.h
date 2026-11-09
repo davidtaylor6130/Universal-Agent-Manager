@@ -248,6 +248,11 @@ namespace uam
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, runtime_handoff_error);
 		}
+		// Preparation can clear a pending worktree and still succeed.
+		if (const char* refusal = chat.AutomationLaunchRefusal())
+		{
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, refusal);
+		}
 
 		const bool chat_uses_native_history = !remote &&
 		    ProviderResolutionService().ChatUsesNativeOverlayHistory(app, chat);
