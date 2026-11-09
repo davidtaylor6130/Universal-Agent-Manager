@@ -2,6 +2,7 @@
 #include "common/chat/message_attachment_sources.h"
 #include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
+#include "common/paths/workspace_root.h"
 #include "common/provider/provider_profile_constants.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_session_internal.h"
@@ -9,6 +10,9 @@
 #include "common/utils/base64.h"
 #include "common/utils/range_utils.h"
 #include "common/utils/string_utils.h"
+#include "common/utils/io_utils.h"
+#include "common/utils/time_utils.h"
+#include "remote/runner_client.h"
 #include "app/attachment_preview_service.h"
 #include "common/state/app_state.h"
 #include <algorithm>
@@ -83,6 +87,78 @@ namespace uam::structured_attachments
 			else { encoded += '%'; encoded += digits[byte >> 4]; encoded += digits[byte & 15]; }
 		}
 		return encoded;
+	}
+
+	namespace
+	{
+		std::string PortableAttachmentPath(std::string path)
+		{
+			std::ranges::replace(path, '\\', '/');
+			return path;
+		}
+
+		bool IsStagedPath(const std::string& path)
+		{
+			const std::string portable = PortableAttachmentPath(path);
+			return portable.starts_with(".UAM/attachments/") && portable.find("/../") == std::string::npos && !portable.ends_with("/..");
+		}
+	}
+
+	std::vector<MessageAttachment> StagedForWorktree(const ChatSession& chat, const AcpSessionState& session)
+	{
+		std::vector<MessageAttachment> staged;
+		if (!paths::IsGitWorktreeIsolated(chat)) return staged;
+		for (MessageAttachment& attachment : CurrentTurn(chat, session))
+			if (attachment.source == AttachmentSource::LegacyPath && attachment.kind != "directory" && IsStagedPath(attachment.path))
+				staged.push_back(std::move(attachment));
+		return staged;
+	}
+
+	std::vector<MessageAttachment> WithoutWorktreeCopies(const ChatSession& chat, std::vector<MessageAttachment> attachments)
+	{
+		if (paths::IsGitWorktreeIsolated(chat))
+			std::erase_if(attachments, [](const MessageAttachment& attachment) { return IsStagedPath(attachment.path); });
+		return attachments;
+	}
+
+	bool EnsureStagedInWorktree(const std::vector<MessageAttachment>& staged, const std::string& worktree, const std::string& source,
+	    const std::string& platform, remote::RunnerClient* client, std::string& error, std::stop_token cancel)
+	{
+		constexpr std::size_t kMaxStagedBytes = 25 * 1024 * 1024;
+		std::size_t index = 0;
+		for (const MessageAttachment& attachment : staged)
+		{
+			if (cancel.stop_requested()) { error = "Attachment preparation was canceled."; return false; }
+			const std::string noun = attachment.kind == "image" ? "image" : "file";
+			const std::string portable = PortableAttachmentPath(attachment.path);
+			const std::string read_failure = "Could not read attached " + noun + ": " + attachment.name;
+			const std::string copy_failure = "Could not copy the attached " + noun + " into this chat's worktree: " + attachment.name;
+			std::string bytes, detail;
+			if (client != nullptr)
+			{
+				// ponytail: the runner has no stat, so presence costs one read of at most 25 MiB; add a stat request if SSH turns feel slow.
+				if (client->ReadWorkspaceAttachment(worktree, attachment.path, bytes, kMaxStagedBytes, &detail, cancel)) continue;
+				detail.clear();
+				if (source.empty() || !client->ReadWorkspaceAttachment(source, attachment.path, bytes, kMaxStagedBytes, &detail, cancel))
+				{ error = detail.empty() ? read_failure : read_failure + " (" + detail + ")"; return false; }
+				const std::string upload_id = "worktree-attachment-" + std::to_string(index++) + "-" + uam::time::SystemEpochMicrosecondsTokenNow();
+				if (!client->UploadFile(upload_id, paths::PathFromUtf8(execution_hosts::JoinRemotePath(platform, worktree, portable)), bytes, &detail, cancel))
+				{ error = detail.empty() ? copy_failure : copy_failure + " (" + detail + ")"; return false; }
+				continue;
+			}
+			const std::filesystem::path relative = paths::PathFromUtf8(portable);
+			const std::filesystem::path target = paths::PathFromUtf8(worktree) / relative;
+			std::error_code ec;
+			if (std::filesystem::is_regular_file(std::filesystem::symlink_status(target, ec))) continue;
+			const std::filesystem::path origin = paths::PathFromUtf8(source) / relative;
+			// ReadDeliverySource refuses empty files; only images must be nonempty, and those are checked later.
+			const bool empty = !source.empty() && std::filesystem::is_regular_file(std::filesystem::symlink_status(origin, ec)) && std::filesystem::file_size(origin, ec) == 0 && !ec;
+			if (!empty && (source.empty() || !attachment_preview::ReadDeliverySource(origin, bytes, kMaxStagedBytes)))
+			{ error = read_failure; return false; }
+			(void)PlatformServicesFactory::Instance().path_service.EnsureHiddenDirectory(paths::PathFromUtf8(worktree) / ".UAM", &ec);
+			if (!io::WriteBinaryFile(target, bytes)) { error = copy_failure; return false; }
+		}
+		return true;
 	}
 
 	void AppendPreparedAcpImages(nlohmann::json& request, const nlohmann::json& prepared)

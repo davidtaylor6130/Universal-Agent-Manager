@@ -9,6 +9,7 @@
 #include <vector>
 
 namespace uam { struct AcpSessionState; }
+namespace uam::remote { class RunnerClient; }
 
 namespace uam::structured_attachments
 {
@@ -21,6 +22,14 @@ namespace uam::structured_attachments
 	std::string ProviderPath(const std::string& workspace, const std::string& path,
 	    const std::string& platform, bool remote, std::string& error);
 	std::string FileUri(std::string path);
+	/// This turn's files staged under .UAM/attachments/ that a Git worktree chat must hold before dispatch.
+	/// ponytail: a native steer skips this. Only a draft staged before the worktree and steered into a turn started on another device misses the copy; route steers through it if that appears.
+	std::vector<MessageAttachment> StagedForWorktree(const ChatSession& chat, const AcpSessionState& session);
+	/// Drops files the dispatch worker copies and then checks, since they can still be in the source checkout at send time.
+	std::vector<MessageAttachment> WithoutWorktreeCopies(const ChatSession& chat, std::vector<MessageAttachment> attachments);
+	/// Worker-only. Copies each staged file the worktree lacks out of the source checkout. A null client means the local host.
+	bool EnsureStagedInWorktree(const std::vector<MessageAttachment>& staged, const std::string& worktree, const std::string& source,
+	    const std::string& platform, remote::RunnerClient* client, std::string& error, std::stop_token cancel);
 	/// Reuse bounded, decoded image preparation across Claude stream JSON and ACP native input.
 	void AppendPreparedAcpImages(nlohmann::json& request, const nlohmann::json& prepared_claude_message);
 	/// Append native path attachments without opening files on the UI thread.

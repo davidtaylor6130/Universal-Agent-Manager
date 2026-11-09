@@ -654,6 +654,7 @@ namespace uam
 		int first_message_index = -1;
 		int last_message_index = -1;
 		std::vector<MessageAttachment> images;
+		std::vector<MessageAttachment> staged_copies;
 		std::filesystem::path original_root;
 		std::shared_ptr<const std::uint8_t> original_incarnation;
 		std::shared_ptr<const SavedImageRetryPermission> saved_image_retry;

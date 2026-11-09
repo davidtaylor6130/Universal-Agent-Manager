@@ -21,6 +21,7 @@
 #include "app/uam_control_service.h"
 #include "app/chat_domain_service.h"
 #include "app/attachment_preview_service.h"
+#include "common/provider/structured_attachments.h"
 #include "common/utils/base64.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
@@ -563,7 +564,7 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 
 	const std::vector<MessageAttachment> attachments = ParseStagedAttachments(payload);
 	if (chat->provider_id == uam::provider_ids::kClaudeCli && chat->execution_host_id == uam::execution_hosts::kLocalHostId &&
-	    !uam::attachment_preview::ValidateImageAttachmentFiles(uam::paths::ResolveWorkspaceRootPath(m_app, *chat), attachments, error))
+	    !uam::attachment_preview::ValidateImageAttachmentFiles(uam::paths::ResolveWorkspaceRootPath(m_app, *chat), uam::structured_attachments::WithoutWorktreeCopies(*chat, attachments), error))
 	{
 		cb->Failure(400, error);
 		return;
@@ -1205,7 +1206,6 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 		cb->Failure(400, "Attachment staging requires an items array.");
 		return;
 	}
-
 	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
 	if (workspace_root.empty())
 	{

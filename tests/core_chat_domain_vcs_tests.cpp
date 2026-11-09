@@ -1786,11 +1786,15 @@ UAM_TEST(GitWorktreeServiceCreatesDiscardsAndPortsChanges)
 	const fs::path second_worktree = app.chats.front().workspace_worktree_directory;
 	UAM_ASSERT(uam::io::WriteTextFile(second_worktree / "app.txt", "two\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(second_worktree / "new.txt", "new\n"));
+	const std::string attachment_copy = ".UAM/attachments/chat/1-0-notes.txt";
+	fs::create_directories((second_worktree / attachment_copy).parent_path());
+	UAM_ASSERT(uam::io::WriteTextFile(second_worktree / attachment_copy, "private notes\n"));
 	uam::GitWorktreeOperationResult ported = service.PortChatChanges(app, app.chats.front());
 	UAM_ASSERT(ported.ok);
 	UAM_ASSERT(fs::exists(ported.patch_path));
 	UAM_ASSERT_EQ(ReadFile(repo / "app.txt"), std::string("two\n"));
 	UAM_ASSERT_EQ(ReadFile(repo / "new.txt"), std::string("new\n"));
+	UAM_ASSERT(!fs::exists(repo / attachment_copy));
 	UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, std::string(""));
 	UAM_ASSERT_EQ(app.chats.front().workspace_worktree_directory, std::string(""));
 	UAM_ASSERT_EQ(uam::paths::ResolveWorkspaceRootPath(app, app.chats.front()), uam::paths::AbsolutePathNoThrow(repo));

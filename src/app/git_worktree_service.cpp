@@ -741,7 +741,19 @@ namespace uam
 			return false;
 		}
 
-		bool IsDirty(const std::filesystem::path& repo, bool* dirty_out, std::string* error_out = nullptr, std::stop_token stop_token = {})
+		/// Staged attachment copies are chat input, not work to commit. They stay visible to providers, unlike git-ignored files.
+		std::string OutsideAttachmentCopies()
+		{
+			return " -- . " + uam::shell::EscapeArg(":(exclude).UAM/attachments");
+		}
+
+		/// An exclude pathspec makes `git add` fail when the folder is itself git-ignored, so stage everything and unstage the copies.
+		bool StageOutsideAttachmentCopies(const std::filesystem::path& repo, std::string* error_out, std::stop_token stop_token = {})
+		{
+			return GitCommand(repo, "add -A", error_out, stop_token) && GitCommand(repo, "reset -q -- .UAM/attachments", error_out, stop_token);
+		}
+
+		bool IsDirty(const std::filesystem::path& repo, bool* dirty_out, std::string* error_out = nullptr, std::stop_token stop_token = {}, const std::string& pathspec = {})
 		{
 			if (dirty_out != nullptr)
 			{
@@ -749,7 +761,7 @@ namespace uam
 			}
 
 			std::string status;
-			if (!GitOutput(repo, "status --porcelain", &status, error_out, stop_token))
+			if (!GitOutput(repo, "status --porcelain" + pathspec, &status, error_out, stop_token))
 			{
 				return false;
 			}
@@ -1066,7 +1078,7 @@ namespace uam
 			}
 
 			bool worktree_dirty = false;
-			if (IsDirty(worktree_path, &worktree_dirty))
+			if (IsDirty(worktree_path, &worktree_dirty, nullptr, {}, OutsideAttachmentCopies()))
 			{
 				status.worktree_dirty = worktree_dirty;
 			}
@@ -1552,7 +1564,7 @@ namespace uam
 		{ error = "Choose a literal local Git branch name."; return false; }
 		// `switch -c` keeps the files as they are, so only switching to an existing branch needs a clean worktree.
 		bool dirty = false;
-		if (!create && !IsDirty(worktree, &dirty, &error)) return false;
+		if (!create && !IsDirty(worktree, &dirty, &error, {}, OutsideAttachmentCopies())) return false;
 		if (dirty) { error = "Commit or discard worktree changes before switching branches."; return false; }
 
 			const ProcessExecutionResult ref = RunCommand(BuildGitCommandInDirectory(worktree,
@@ -2296,7 +2308,7 @@ namespace uam
 		bool dirty = false;
 		std::string error;
 		std::string head;
-		if (!IsDirty(worktree, &dirty, &error) || !GitOutput(worktree, "rev-parse HEAD", &head, &error))
+		if (!IsDirty(worktree, &dirty, &error, {}, OutsideAttachmentCopies()) || !GitOutput(worktree, "rev-parse HEAD", &head, &error))
 		{
 			if (error_out != nullptr) *error_out = uam::strings::NonEmptyOrFallback(error, "Could not inspect branch worktree.");
 			return false;
@@ -2553,7 +2565,7 @@ namespace uam
 			}
 		}
 
-		if (!GitCommand(worktree, "add -A", &result.message))
+		if (!StageOutsideAttachmentCopies(worktree, &result.message))
 		{
 			return result;
 		}
@@ -2646,7 +2658,7 @@ namespace uam
 		}
 		bool dirty = false;
 		std::string error;
-		if (!IsDirty(worktree, &dirty, &error, stop_token))
+		if (!IsDirty(worktree, &dirty, &error, stop_token, OutsideAttachmentCopies()))
 		{
 			if (reason_out != nullptr) *reason_out = uam::strings::NonEmptyOrFallback(error, "Failed to inspect the isolated worktree.");
 			return false;
@@ -2705,7 +2717,7 @@ namespace uam
 		}
 
 		bool dirty = false;
-		if (!IsDirty(worktree, &dirty, &result.message, stop_token)) return result;
+		if (!IsDirty(worktree, &dirty, &result.message, stop_token, OutsideAttachmentCopies())) return result;
 		if (!dirty)
 		{
 			result.ok = true;
@@ -2716,7 +2728,7 @@ namespace uam
 		{
 			return result;
 		}
-		if (!GitCommand(worktree, "add -A", &result.message, stop_token))
+		if (!StageOutsideAttachmentCopies(worktree, &result.message, stop_token))
 		{
 			(void)GitCommand(worktree, "reset --mixed " + uam::shell::EscapeArg(result.parent_sha));
 			result.message = uam::strings::NonEmptyOrFallback(result.message, "Automatic checkpoint staging was cancelled or failed.");
@@ -2784,7 +2796,7 @@ namespace uam
 			return result;
 		}
 		bool dirty = false;
-		if (!IsDirty(worktree, &dirty, &result.message)) return result;
+		if (!IsDirty(worktree, &dirty, &result.message, {}, OutsideAttachmentCopies())) return result;
 		if (dirty)
 		{
 			result.message = "The isolated worktree has uncommitted changes. Preserve or discard them before rollback.";
