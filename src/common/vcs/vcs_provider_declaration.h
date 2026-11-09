@@ -48,7 +48,7 @@ namespace uam::vcs
 	}};
 #undef UAM_SVN_COMMON_READ_SWITCHES
 
-	/// <summary>What a system can do, so callers can decline an unsupported operation instead of hiding it.</summary>
+	/// <summary>What a system can do, for callers that need to decline an unsupported operation. Nothing reads this yet.</summary>
 	enum class VcsCapability
 	{
 		Status,
@@ -65,7 +65,8 @@ namespace uam::vcs
 	inline constexpr std::array<VcsCapability, 9> kGitCapabilities = {
 	    VcsCapability::Status, VcsCapability::Diff, VcsCapability::Commit, VcsCapability::ChatComparison, VcsCapability::RevisionComparison,
 	    VcsCapability::BranchList, VcsCapability::BranchCreate, VcsCapability::BranchSwitch, VcsCapability::WorkspaceIsolation};
-	// SVN has no chat or revision comparison in the panel and cannot create a branch; isolation is the managed local snapshot.
+	// SVN has no chat or revision comparison in the panel and cannot create a branch. Its branch listing and switching are local-only,
+	// and its isolation is a managed local Git snapshot.
 	inline constexpr std::array<VcsCapability, 6> kSvnCapabilities = {
 	    VcsCapability::Status, VcsCapability::Diff, VcsCapability::Commit,
 	    VcsCapability::BranchList, VcsCapability::BranchSwitch, VcsCapability::WorkspaceIsolation};

@@ -1809,7 +1809,6 @@ namespace uam
 				if (include_line_stats)
 					ApplyRemoteGitComparisonDetails(context, git_root, comparison_ref,
 					                                status.changed_files);
-				return;
 			}
 
 			std::string LocalDiff(const AppState& app, const ChatSession& chat, const std::filesystem::path& workspace, const std::string& trimmed_path, std::string_view comparison_ref, std::string* error_out) const override
@@ -2515,8 +2514,7 @@ namespace uam
 			return result;
 		}
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
-		const std::string quoted_files = JoinQuotedFiles(files);
-		if (quoted_files.empty())
+		if (TrimmedFileSet(files).empty())
 		{
 			result.error = "Select at least one changed file to commit.";
 			return result;

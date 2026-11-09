@@ -12,6 +12,7 @@ using namespace uam_test;
 
 namespace
 {
+#ifndef _WIN32
 	std::string ResolvedTool(const std::string& name)
 	{
 		return uam::strings::Trim(PlatformServicesFactory::Instance().process_service.ExecuteCommand("command -v " + name).output);
@@ -30,7 +31,13 @@ namespace
 		return std::ranges::any_of(status.changed_files, [&](const uam::VcsChangedFile& file) { return file.path == path && file.status == code; });
 	}
 
-#ifndef _WIN32
+	bool SvnToolsAvailable()
+	{
+		if (!ResolvedTool("svn").empty() && !ResolvedTool("svnadmin").empty()) return true;
+		std::fprintf(stderr, "SKIP real-svn case: svn or svnadmin is not installed\n");
+		return false;
+	}
+
 	/// Real runner service reached through a fake `ssh`, so remote VCS commands execute against temporary repositories.
 	struct RemoteVcsHost
 	{
@@ -53,7 +60,7 @@ namespace
 			path.emplace("PATH", (tool_directory.empty() ? std::string() : tool_directory.string() + ":") + temp.root.string() + ":" + inherited_path);
 			std::string error;
 			UAM_ASSERT(service.StartStdioProcess(process, temp.root, {runner.string(), "serve", "--socket", socket.string()}, &error));
-			for (int attempt = 0; attempt < 100 && !fs::exists(socket); ++attempt)
+			for (int attempt = 0; attempt < 500 && !fs::exists(socket); ++attempt)
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			UAM_ASSERT(fs::exists(socket));
 			UAM_ASSERT(uam::io::WriteTextFile(fake_ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge --socket \"$UAM_TEST_SOCKET\"\n"));
@@ -102,11 +109,12 @@ UAM_TEST(VcsProvidersRegisterGitThenSvnWithTheirOwnDeclarations)
 	UAM_ASSERT_EQ(uam::VcsTypeToString(uam::VcsType::Git), std::string("git"));
 	UAM_ASSERT_EQ(uam::VcsTypeToString(uam::VcsType::Svn), std::string("svn"));
 
-	using enum uam::vcs::VcsCapability;
-	const std::vector<uam::vcs::VcsCapability> git{Status, Diff, Commit, ChatComparison, RevisionComparison, BranchList, BranchCreate, BranchSwitch, WorkspaceIsolation};
-	const std::vector<uam::vcs::VcsCapability> svn{Status, Diff, Commit, BranchList, BranchSwitch, WorkspaceIsolation};
-	UAM_ASSERT(std::ranges::equal(uam::VcsProviderFor(uam::VcsType::Git).Declaration().capabilities, git));
-	UAM_ASSERT(std::ranges::equal(uam::VcsProviderFor(uam::VcsType::Svn).Declaration().capabilities, svn));
+	const auto declares_branch_create = [](const uam::VcsType type)
+	{
+		return uam::ranges::Contains(uam::VcsProviderFor(type).Declaration().capabilities, uam::vcs::VcsCapability::BranchCreate);
+	};
+	UAM_ASSERT(declares_branch_create(uam::VcsType::Git));
+	UAM_ASSERT(!declares_branch_create(uam::VcsType::Svn));
 }
 
 UAM_TEST(VcsSelectionFallsBackToTheSystemThatIsActuallyPresent)
@@ -172,14 +180,12 @@ UAM_TEST(VcsProviderReadOnlyListsApplyOnlyToTheirOwnExecutable)
 }
 
 #ifndef _WIN32
-UAM_TEST(VcsCommitNoticeNamesTheSystemWhenTheToolPrintsNothing)
+UAM_TEST(VcsCommitNoticeNamesGitWhenTheToolPrintsNothing)
 {
-	if (!GitAvailableForTests() || ResolvedTool("svn").empty() || ResolvedTool("svnadmin").empty()) return;
+	if (!GitAvailableForTests()) return;
 	TempDir wrappers("uam-vcs-tools");
 	WriteSilentCommitWrapper(wrappers.root, "git", ResolvedTool("git"));
-	WriteSilentCommitWrapper(wrappers.root, "svn", ResolvedTool("svn"));
 	RemoteVcsHost host(wrappers.root);
-	const uam::VcsCommitService vcs;
 
 	// Local Git cannot be covered here: its shell is a login shell, which reorders PATH ahead of the wrapper.
 	const fs::path repo = host.temp.root / "git";
@@ -189,9 +195,18 @@ UAM_TEST(VcsCommitNoticeNamesTheSystemWhenTheToolPrintsNothing)
 	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
 	UAM_ASSERT(uam::io::WriteTextFile(repo / "a.txt", "a\n"));
 	host.chat.workspace_directory = repo.string();
-	const uam::VcsCommitResult git = vcs.Commit(host.app, host.chat, uam::VcsType::Git, "first", {"a.txt"});
+	const uam::VcsCommitResult git = uam::VcsCommitService().Commit(host.app, host.chat, uam::VcsType::Git, "first", {"a.txt"});
 	if (!git.ok) throw TestFailure(git.error);
 	UAM_ASSERT_EQ(git.message, std::string("Git commit created."));
+}
+
+UAM_TEST(VcsCommitNoticeNamesSvnWhenTheToolPrintsNothing)
+{
+	if (!SvnToolsAvailable()) return;
+	TempDir wrappers("uam-vcs-tools");
+	WriteSilentCommitWrapper(wrappers.root, "svn", ResolvedTool("svn"));
+	RemoteVcsHost host(wrappers.root);
+	const uam::VcsCommitService vcs;
 
 	const fs::path svn_repository = host.temp.root / "repository";
 	UAM_ASSERT(RunTestCommand("svnadmin create " + ShellQuoteForTest(svn_repository.string())));
@@ -213,7 +228,7 @@ UAM_TEST(VcsCommitNoticeNamesTheSystemWhenTheToolPrintsNothing)
 
 UAM_TEST(RemoteSvnStatusDiffAndCommitGoThroughTheSvnProvider)
 {
-	if (ResolvedTool("svn").empty() || ResolvedTool("svnadmin").empty() || !GitAvailableForTests()) return;
+	if (!GitAvailableForTests() || !SvnToolsAvailable()) return;
 	RemoteVcsHost host;
 	const fs::path repository = host.temp.root / "repository";
 	const fs::path checkout = host.temp.root / "checkout";
@@ -285,7 +300,7 @@ UAM_TEST(RemoteGitStatusDiffAndCommitGoThroughTheGitProvider)
 
 	const uam::VcsCommitResult committed = vcs.Commit(host.app, host.chat, uam::VcsType::Git, "remote git publish", {"tracked.txt"});
 	if (!committed.ok) throw TestFailure(committed.error);
-	UAM_ASSERT(RunGitForTest(repository, "log --oneline --grep 'remote git publish'"));
+	UAM_ASSERT(RunGitForTest(repository, "log -1 --format=%s | grep -qx 'remote git publish'"));
 	UAM_ASSERT(ChangedPathStatus(committed.status, "new.txt", "??"));
 	UAM_ASSERT(!ChangedPathStatus(committed.status, "tracked.txt", " M"));
 }

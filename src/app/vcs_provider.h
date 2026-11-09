@@ -23,7 +23,8 @@ namespace uam
 	};
 
 	/// <summary>One version-control system behind VcsCommitService. To add a system, declare it in
-	/// vcs_provider_declaration.h, implement this interface and register it in VcsProviders().</summary>
+	/// vcs_provider_declaration.h, implement this interface and register it in VcsProviders(). Implementations currently
+	/// live in vcs_commit_service.cpp, which alone defines RemoteVcsContext.</summary>
 	class VcsProvider
 	{
 	  public:
