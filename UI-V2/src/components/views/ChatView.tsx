@@ -36,7 +36,7 @@ import type { Provider } from '../../types/provider'
 import type { Goal } from '../../types/goal'
 import { RemoteDirectoryBrowser } from '../sidebar/RemoteDirectoryBrowser'
 import { GoalBanner } from '../shared/GoalBanner'
-import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, permissionTierForProvider, providerCapabilities, providerDisabledOn, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
+import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, normalizeCliProviderIdAlias, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, permissionTierForProvider, providerCapabilities, providerDisabledOn, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusScenes'
 import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
@@ -306,6 +306,7 @@ function ProviderHandoffDialog({
   sourceName,
   targetName,
   blockedReason,
+  versionNote,
   override = 'none',
   activeGoal = false,
   loweredPermissionNotice,
@@ -317,6 +318,7 @@ function ProviderHandoffDialog({
   sourceName: string
   targetName: string
   blockedReason?: string
+  versionNote?: string
   override?: ProviderSwitchOverride
   activeGoal?: boolean
   /** Says why the switch lowers this chat's permission level to Default, when it does. */
@@ -377,6 +379,7 @@ function ProviderHandoffDialog({
         {loweredPermissionNotice && <Notice tone="warning" title="Permission level lowered" dismissible={false}>{loweredPermissionNotice}</Notice>}
         <p className="text-xs" style={{ color: 'var(--text-3)' }}>Anything the current provider did not record in UAM will not transfer.</p>
         {blockedReason && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--yellow)', color: 'var(--yellow)' }}>{blockedReason}</div>}
+        {versionNote && <p className="text-xs" style={{ color: 'var(--text-2)' }}>{versionNote}</p>}
         {uncertainDelivery && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--yellow)', color: 'var(--yellow)' }}>UAM cannot confirm whether the provider received this chat's latest message. If it did, switching may run that prompt twice.{override.startsWith('stranded') && ' A held message has not been sent and will not be sent; its text stays in this chat.'}{override.endsWith('disconnected') && ' The previous provider keeps running until the host can be reached. UAM then stops it, and new messages wait for that.'}{activeGoal && ' The active goal will be blocked.'} Cancel to leave this chat unchanged.</div>}
       </div>
     </ConfirmDialog>
@@ -2063,15 +2066,24 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     ? providerShortName(providerHandoffTarget, providerHandoffTarget.id)
     : ''
   const providerHandoffReadiness = providerHandoffTarget
-    ? cliVersionManager.providers.find((candidate) => candidate.providerId === providerHandoffTarget.id)
+    ? [...cliVersionManager.providers, ...(cliVersionManager.remoteProviders ?? [])].find((candidate) => candidate.providerId === providerHandoffTarget.id && (candidate.executionHostId || 'local') === (session.executionHostId || 'local'))
     : undefined
+  // A failed or timed-out check says nothing about whether the CLI runs; native reports a confirmed-missing CLI with no checkError.
+  const providerHandoffCheckFailed = providerHandoffReadiness?.status === 'unavailable' && Boolean(providerHandoffReadiness.checkError)
+  const providerHandoffMissing = providerHandoffReadiness?.status === 'unavailable' && !providerHandoffCheckFailed
   const providerHandoffBlocked = providerHandoffReadiness?.status === 'checking' ||
     providerHandoffReadiness?.status === 'installing' ||
     providerHandoffReadiness?.status === 'known-incompatible' ||
-    providerHandoffReadiness?.status === 'unavailable'
-  const providerHandoffBlockedReason = providerHandoffBlocked
-    ? providerHandoffReadiness?.message || `${providerHandoffTargetName} cannot start structured chats right now.`
-    : ''
+    providerHandoffMissing
+  const providerHandoffBlockedReason = providerHandoffMissing
+    ? `${providerHandoffTargetName} is not installed or not on PATH. Check Settings > CLI Version.`
+    : providerHandoffBlocked
+      ? providerHandoffReadiness?.message || `${providerHandoffTargetName} cannot start structured chats right now.`
+      : ''
+  const providerHandoffVersionNote = providerHandoffCheckFailed ? `${providerHandoffReadiness?.checkError} Check Settings > CLI Version.` : ''
+  // Native launches a saved Gemini level as Default while the local version is unknown; the saved level stays.
+  const geminiThinkingUnverified = normalizeCliProviderIdAlias(currentProviderId) === GEMINI_CLI_PROVIDER_ID && Boolean(session.reasoningEffort) && (session.executionHostId || 'local') === 'local' &&
+    Boolean(cliVersionManager.providers.find((candidate) => candidate.providerId === GEMINI_CLI_PROVIDER_ID && (candidate.executionHostId || 'local') === 'local')?.checkError)
   const errorProviderId = acp?.providerId || currentProviderId
   const errorProvider = providers.find((candidate) => candidate.id === errorProviderId) ?? fallbackProviderForId(errorProviderId)
   const currentErrorSource = `Universal Agent Manager · ${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)}`
@@ -3475,6 +3487,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           sourceName={currentProviderName}
           targetName={providerHandoffTargetName}
           blockedReason={providerHandoffBlockedReason}
+          versionNote={providerHandoffVersionNote}
           override={acp?.providerSwitchOverride}
           activeGoal={Boolean(activeGoal)}
           loweredPermissionNotice={providerHandoffLoweredPermissionNotice}
@@ -3803,6 +3816,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
             {!providerSupported && (
               <Notice key={`unsupported:${currentProviderId}`} tone="warning" title="Provider unavailable" dismissLabel="Dismiss unsupported provider warning">
                 {unsupportedProviderMessage}
+              </Notice>
+            )}
+            {geminiThinkingUnverified && (
+              <Notice tone="info" title="Using Default thinking" dismissLabel="Dismiss Default thinking notice">
+                {currentProviderName}'s version could not be checked, so a launch now uses Default thinking instead of your saved level. Check Settings &gt; CLI Version.
               </Notice>
             )}
             {session.importedReadOnly && (

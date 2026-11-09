@@ -114,6 +114,34 @@ UAM_TEST(OpenCodeTextWorkerSelectsCheckedLocalV2WithoutLegacyFlags)
 	UAM_ASSERT(!runtime.PrepareLocalWorkerLaunch(app, profile, argv, error)); UAM_ASSERT_EQ(argv, original);
 }
 
+UAM_TEST(OpenCodeFailedVersionCheckKeepsPermissionMinimumFromRunningProcess)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("opencode-cli");
+	uam::AppState app;
+	uam::AcpSessionState session;
+	ChatSession chat;
+	chat.provider_id = "opencode-cli";
+	std::string error;
+	app.runtime_cli_versions_by_provider_id["opencode-cli"].check_error = "Could not check OpenCode version.";
+	for (const char* below_minimum : {"", "1.15.12"})
+	{
+		session.agent_version = below_minimum;
+		UAM_ASSERT(runtime.OnAcpPrepareSetup(app, session, chat, "/workspace", error) == AcpRequestPreflight::Rejected);
+		UAM_ASSERT(error.find("1.15.13") != std::string::npos);
+	}
+	error.clear();
+	session.agent_version = "1.15.13";
+	UAM_ASSERT(runtime.OnAcpPrepareSetup(app, session, chat, "/workspace", error) == AcpRequestPreflight::Ready);
+	session.agent_version.clear();
+	chat.execution_host_id = "remote-host"; // Remote recovery keeps its own owner; this local check does not apply.
+	UAM_ASSERT(runtime.OnAcpPrepareSetup(app, session, chat, "/workspace", error) == AcpRequestPreflight::Ready);
+	chat.execution_host_id.clear();
+	app.runtime_cli_versions_by_provider_id["opencode-cli"].check_error.clear(); // A later result cleared the error before this process initialized.
+	UAM_ASSERT(runtime.OnAcpPrepareSetup(app, session, chat, "/workspace", error) == AcpRequestPreflight::Rejected);
+	app.runtime_cli_versions_by_provider_id["opencode-cli"].installed_version = "1.19.4";
+	UAM_ASSERT(runtime.OnAcpPrepareSetup(app, session, chat, "/workspace", error) == AcpRequestPreflight::Ready);
+}
+
 UAM_TEST(OpenCodeStructuredCompatibilitySeparatesV1FromUnverifiedNewMajors)
 {
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("opencode-cli");

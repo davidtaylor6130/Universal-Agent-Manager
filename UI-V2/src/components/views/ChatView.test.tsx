@@ -1558,13 +1558,92 @@ describe('ChatView', () => {
     const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')
     const confirm = Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) => button.textContent === 'Switch to Codex')
 
-    expect(dialog?.textContent).toContain('Codex CLI is unavailable.')
+    expect(dialog?.textContent).toContain('Codex is not installed or not on PATH.')
+    expect(dialog?.querySelector('[role="alert"]')).not.toBeNull()
     expect(confirm?.disabled).toBe(true)
     expect(setSessionProvider).not.toHaveBeenCalled()
 
     act(() => root.unmount())
     host.remove()
     useAppStore.setState({ setSessionProvider: originalSetSessionProvider, cliVersionManager: originalCliVersionManager })
+  })
+
+  it('notes that a saved Gemini thinking level launches as Default after a failed version check', () => {
+    const originalCliVersionManager = useAppStore.getState().cliVersionManager
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, providerId: 'gemini', reasoningEffort: 'high' })),
+      cliVersionManager: { ...state.cliVersionManager, providers: [{ providerId: 'gemini-cli', installedVersion: '', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'unavailable', message: 'Could not check Gemini CLI version.', checkError: 'Could not check Gemini CLI version.', running: false, lastCommand: '', lastOutput: '' }] },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(document.body.textContent).toContain('Using Default thinking')
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ cliVersionManager: originalCliVersionManager })
+  })
+
+  it('uses the version state of the chat\'s own computer for handoff', () => {
+    const originalCliVersionManager = useAppStore.getState().cliVersionManager
+    const local = { providerId: 'codex-cli', installedVersion: '1.0.0', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'verified' as const, message: '', running: false, lastCommand: '', lastOutput: '' }
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, executionHostId: 'ssh-lab' })),
+      cliVersionManager: { ...state.cliVersionManager, providers: [local], remoteProviders: [{ ...local, executionHostId: 'ssh-lab', installedVersion: '', status: 'unavailable' as const, message: 'Could not check Codex CLI version.' }] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')
+    const confirm = Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) => button.textContent === 'Switch to Codex')
+
+    expect(dialog?.textContent).toContain('Codex is not installed or not on PATH.')
+    expect(confirm?.disabled).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ cliVersionManager: originalCliVersionManager })
+  })
+
+  it('allows handoff after a failed version check and notes it neutrally', async () => {
+    const originalCliVersionManager = useAppStore.getState().cliVersionManager
+    useAppStore.setState((state) => ({
+      cliVersionManager: { ...state.cliVersionManager, providers: [{ providerId: 'codex-cli', installedVersion: '', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'unavailable', message: 'Could not check Codex CLI version.', checkError: 'Could not check Codex CLI version.', running: false, lastCommand: '', lastOutput: '' }] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')
+    const confirm = Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) => button.textContent === 'Switch to Codex')
+
+    expect(dialog?.textContent).toContain('Could not check Codex CLI version. Check Settings > CLI Version.')
+    expect(dialog?.textContent).not.toContain('not installed')
+    expect(dialog?.querySelector('[role="alert"]')).toBeNull()
+    expect(confirm?.disabled).toBe(false)
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ cliVersionManager: originalCliVersionManager })
   })
 
   it('restores a separate unsent draft for each chat across navigation and remount', () => {

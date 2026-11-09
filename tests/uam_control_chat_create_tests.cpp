@@ -285,6 +285,18 @@ UAM_TEST(UamControlChatCreateRetryIsIdempotent)
 	UAM_ASSERT(!fixture.Call("second", {{"task", "Different task"}}).value("ok", true));
 }
 
+UAM_TEST(UamControlChatCreateSeparatesFailedVersionCheckFromMissingCli)
+{
+	ChatCreateFixture fixture;
+	auto& version = fixture.app.runtime_cli_versions_by_provider_id["claude-cli"];
+	version.checked = true; version.execution_host = uam::execution_hosts::LocalHost();
+	const nlohmann::json missing = fixture.Call("confirmed-missing", {{"task", "Do work."}, {"providerId", "claude-cli"}});
+	UAM_ASSERT(!missing.value("ok", true));
+	UAM_ASSERT(missing.value("error", "").find("unavailable") != std::string::npos);
+	version.check_error = "Could not check Claude CLI version.";
+	UAM_ASSERT(fixture.Call("failed-check", {{"task", "Do work."}, {"providerId", "claude-cli"}}).value("ok", false));
+}
+
 UAM_TEST(UamControlChatCreateRefusesUnavailableProviders)
 {
 	ChatCreateFixture fixture;

@@ -755,7 +755,7 @@ void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, bool
 			if (!uam::execution_hosts::SameConnection(state.execution_host, host)) state = {};
 			state.provider_id = provider_id;
 			state.execution_host = host;
-			// A prior failure stands while the provider waits; the probe clears it when it actually starts.
+			// A prior failure stands while the provider waits; the check's result replaces it.
 			state.message = ProviderTitleMessage("Waiting to check installed ", ProviderTitle(app, provider_id), " version...");
 			app.runtime_cli_version_check_queue.push_back(target);
 		}
@@ -807,7 +807,7 @@ bool ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& a
 	if (!uam::execution_hosts::SameConnection(state.execution_host, *host)) state = {};
 	state.provider_id = normalized_provider_id;
 	state.execution_host = *host;
-	state.check_error.clear();
+	// A prior failure stands until this check completes; clearing it now would read as a confirmed-missing CLI.
 	state.message = ProviderTitleMessage("Checking installed ", ProviderTitle(app, normalized_provider_id), " version...");
 	app.runtime_cli_version_provider_id = normalized_provider_id;
 	StartAsyncCommandTask(app.runtime_cli_version_check_task, *host, normalized_provider_id, command, false, kProviderCliVersionProbeTimeoutMs);

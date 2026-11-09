@@ -144,7 +144,9 @@ namespace uam
 			}
 			if (!ProviderCliLaunchBlockReason(app, scope.provider_id, scope.execution_host_id).empty() || (version != app.runtime_cli_versions_by_provider_id.end() && !version->second.checked)) { ++item; continue; }
 			const std::string compatibility_error = host->transport == "local" ? ProviderRuntimeRegistry::ResolveById(scope.provider_id).LocalCliCompatibilityError(app) : std::string{};
-			if (!compatibility_error.empty() || (version != app.runtime_cli_versions_by_provider_id.end() && !version->second.supported))
+			// A failed local check says nothing about the installation; launch applies the same rule.
+			const bool local_check_failed = host->transport == "local" && !version->second.check_error.empty();
+			if (!compatibility_error.empty() || (!version->second.supported && !local_check_failed))
 			{
 				diagnostics::Write("Startup model discovery skipped an incompatible provider: " + scope.provider_id);
 				item = m_pending_scopes.erase(item);

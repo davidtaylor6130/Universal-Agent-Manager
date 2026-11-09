@@ -69,7 +69,8 @@ namespace uam
 		    central_configuration::McpEnabled(configuration, chat.provider_id, host.id, "uam-mcp", chat.uam_control_enabled);
 		const bool claude_fast_override = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kClaudeCli) &&
 		    (chat.service_tier == "fast" || chat.service_tier_explicit);
-		const bool gemini_thinking_override = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kGeminiCli) && !chat.reasoning_effort.empty();
+		// Launch gates admit an empty version only after a failed local check; named levels are version-scoped, so that launch uses Default.
+		const bool gemini_thinking_override = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kGeminiCli) && !chat.reasoning_effort.empty() && !checked_provider_version.empty();
 		if (gemini_thinking_override && !gemini::SupportsReasoningEffort(chat.model_id, chat.reasoning_effort, checked_provider_version))
 		{ error = "The selected Gemini model and checked executing-host CLI version do not support that thinking level; select Default or refresh the host CLI version."; return false; }
 		// OpenCode's own provider request timeout follows UAM's turn timeout so it cannot end the turn first.

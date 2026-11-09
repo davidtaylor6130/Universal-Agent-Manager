@@ -7924,6 +7924,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				changed = true;
 			}
+			// A rejected setup retires the process; reading its closed pipes below would replace the reason.
+			if (!session.running)
+			{
+				changed = true;
+				continue;
+			}
 
 			if (session.pending_compaction)
 				changed = PollPendingCompaction(app, session) || changed;

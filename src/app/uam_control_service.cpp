@@ -647,19 +647,21 @@ namespace uam
 				if (!provider_ids::IsKnownCliProviderId(id) || !profile.supports_cli || !profile.supports_structured || !ProviderRuntimeRegistry::ResolveById(id).IsEnabled() || !seen.insert(id).second) continue;
 				std::string reason;
 				const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(id, host_id));
+				const bool local_check_failed = host != nullptr && host->transport == "local" && version != app.runtime_cli_versions_by_provider_id.end() && !version->second.check_error.empty();
 				if (host == nullptr) reason = "Execution host unavailable.";
 				else if (host->transport == "ssh" && host->runner_status != "ready") reason = "Execution host is not ready.";
 				else if (host->transport == "ssh" && !execution_hosts::IsAbsoluteRemotePath(host->platform, workspace)) reason = "Remote workspace unavailable.";
 				else if (!provider_availability::IsEnabled(app.settings, id, host_id)) reason = provider_availability::DisabledReason();
 				else if (version == app.runtime_cli_versions_by_provider_id.end() || !version->second.checked) reason = "CLI compatibility has not been checked.";
 				else if (!execution_hosts::SameConnection(*host, version->second.execution_host)) reason = "CLI observation belongs to a different host configuration.";
-				else if (!version->second.supported || version->second.installed_version.empty() || !version->second.check_error.empty()) reason = "CLI is unavailable or incompatible.";
+				// A failed local check says nothing about the installation; launch applies the same rule.
+				else if (!local_check_failed && (!version->second.supported || version->second.installed_version.empty() || !version->second.check_error.empty())) reason = "CLI is unavailable or incompatible.";
 				else reason = ProviderCliLaunchBlockReason(app, id, host_id);
 				nlohmann::json choices = app.provider_model_catalog != nullptr
 				    ? app.provider_model_catalog->GetCachedProviderModelChoices(id, workspace, host_id) : nlohmann::json::array();
 				const std::string default_model = id == parent_provider ? chat.model_id : std::string{};
 				targets.push_back({{"providerId", id}, {"title", profile.title}, {"executionHostId", host_id},
-				    {"eligible", reason.empty()}, {"availability", reason.empty() ? "installed-compatible" : "unavailable"},
+				    {"eligible", reason.empty()}, {"availability", !reason.empty() ? "unavailable" : local_check_failed ? "unverified" : "installed-compatible"},
 				    {"unavailableReason", reason}, {"authentication", "unverified"},
 				    {"defaultModelId", default_model}, {"models", std::move(choices)}});
 				if (targets.size() == 8) break;
