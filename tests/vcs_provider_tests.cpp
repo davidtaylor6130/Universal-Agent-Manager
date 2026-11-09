@@ -99,11 +99,32 @@ UAM_TEST(VcsProvidersRegisterGitThenSvnWithTheirOwnDeclarations)
 	for (std::size_t index = 0; index < providers.size(); ++index)
 		UAM_ASSERT_EQ(&providers[index]->Declaration(), uam::vcs::kVcsProviderDeclarations[index]);
 
+	UAM_ASSERT_EQ(uam::VcsTypeToString(uam::VcsType::Git), std::string("git"));
+	UAM_ASSERT_EQ(uam::VcsTypeToString(uam::VcsType::Svn), std::string("svn"));
+
 	using enum uam::vcs::VcsCapability;
 	const std::vector<uam::vcs::VcsCapability> git{Status, Diff, Commit, ChatComparison, RevisionComparison, BranchList, BranchCreate, BranchSwitch, WorkspaceIsolation};
 	const std::vector<uam::vcs::VcsCapability> svn{Status, Diff, Commit, BranchList, BranchSwitch, WorkspaceIsolation};
 	UAM_ASSERT(std::ranges::equal(uam::VcsProviderFor(uam::VcsType::Git).Declaration().capabilities, git));
 	UAM_ASSERT(std::ranges::equal(uam::VcsProviderFor(uam::VcsType::Svn).Declaration().capabilities, svn));
+}
+
+UAM_TEST(VcsSelectionFallsBackToTheSystemThatIsActuallyPresent)
+{
+	if (!GitAvailableForTests()) return;
+	TempDir temp("uam-vcs-select");
+	uam::AppState app;
+	ChatSession chat;
+	const uam::VcsCommitService service;
+	const fs::path svn_only = temp.root / "svn";
+	fs::create_directories(svn_only / ".svn");
+	chat.workspace_directory = svn_only.string();
+	UAM_ASSERT_EQ(service.Status(app, chat, uam::VcsType::Git, false, {}, false).active_vcs_type, uam::VcsType::Svn);
+	const fs::path git_only = temp.root / "git";
+	fs::create_directories(git_only);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(git_only.string())));
+	chat.workspace_directory = git_only.string();
+	UAM_ASSERT_EQ(service.Status(app, chat, uam::VcsType::Svn, false, {}, false).active_vcs_type, uam::VcsType::Git);
 }
 
 UAM_TEST(VcsProviderSettingsGateFollowsEachSystemsOwnSwitch)
@@ -267,5 +288,23 @@ UAM_TEST(RemoteGitStatusDiffAndCommitGoThroughTheGitProvider)
 	UAM_ASSERT(RunGitForTest(repository, "log --oneline --grep 'remote git publish'"));
 	UAM_ASSERT(ChangedPathStatus(committed.status, "new.txt", "??"));
 	UAM_ASSERT(!ChangedPathStatus(committed.status, "tracked.txt", " M"));
+}
+
+UAM_TEST(RemoteGitStatusUsesTheWorkspaceWhenTheRootIsReportedEmpty)
+{
+	if (!GitAvailableForTests()) return;
+	TempDir tools("uam-vcs-empty-root");
+	const fs::path wrapper = tools.root / "git";
+	UAM_ASSERT(uam::io::WriteTextFile(wrapper, "#!/bin/sh\ncase \" $* \" in *\" --show-toplevel \"*) exit 0;; esac\nexec \"" + ResolvedTool("git") + "\" \"$@\"\n"));
+	fs::permissions(wrapper, fs::perms::owner_all);
+	RemoteVcsHost host(tools.root);
+	const fs::path repository = host.temp.root / "repository";
+	fs::create_directories(repository);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repository.string())));
+	UAM_ASSERT(uam::io::WriteTextFile(repository / "new.txt", "new\n"));
+	host.chat.workspace_directory = repository.string();
+	const uam::VcsCommitStatus status = uam::VcsCommitService().Status(host.app, host.chat, uam::VcsType::Git);
+	if (!status.error.empty()) throw TestFailure(status.error);
+	UAM_ASSERT(ChangedPathStatus(status, "new.txt", "??"));
 }
 #endif
