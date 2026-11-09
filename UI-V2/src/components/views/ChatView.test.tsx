@@ -9119,6 +9119,16 @@ describe('ChatView', () => {
     expect(text.match(/Settled answer\./g)).toHaveLength(1)
   })
 
+  it('keeps a placeholder started for a new row visible after a steer row', () => {
+    const text = renderTurnAfterFollowUp({
+      processing: true,
+      trailingRows: [{ id: 'stream-chat-1-0-3', sessionId: 'chat-1', role: 'assistant', content: 'New streaming answer', isStreaming: true, streamMessageIndex: 3, createdAt: new Date(3) }],
+    })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.match(/New streaming answer/g)).toHaveLength(1)
+    expect(text.indexOf('Follow-up row')).toBeLessThan(text.indexOf('New streaming answer'))
+  })
+
   it('keeps a stale-anchored completed row holding more than the live turn text', () => {
     const text = renderTurnAfterFollowUp({
       processing: true, followUp: false, turnUserMessageIndex: -1, turnAssistantMessageIndex: -1,
