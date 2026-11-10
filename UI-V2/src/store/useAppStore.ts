@@ -942,18 +942,29 @@ export const useAppStore = create<AppState>((set, get) => {
   if (isCefContext() && typeof window !== 'undefined') {
     // Full state only hydrates the selected transcript. Keep buffered
     // background deltas unless this update contains that chat's messages.
-    // A resync snapshot is forced (the caller compared revisions) and keeps this window's selection:
-    // a click whose selectSession is still unacknowledged must not jump back to the native choice.
-    const applyFullState = (data: CppAppState, resync = false) => {
+    const pruneStreamTokensForFullState = (data: CppAppState) => {
       for (const chatId of pendingStreamTokensByChatId.keys()) {
         const chat = data.chats.find((candidate) => candidate.id === chatId)
         if (!chat || Array.isArray(chat.messages)) {
           pendingStreamTokensByChatId.delete(chatId)
         }
       }
-      const localSelection = get().activeSessionId
-      get().loadFromCef(resync && localSelection && data.chats.some((chat) => chat.id === localSelection)
-        ? { ...data, selectedChatId: localSelection } : data, resync)
+    }
+    const applyFullState = (data: CppAppState) => {
+      pruneStreamTokensForFullState(data)
+      get().loadFromCef(data)
+    }
+    // Buffered side effects of a patch, separate from its pure projection so a resync can replay it.
+    const discardBuffersForPatch = (patch: CppStatePatch) => {
+      // A patch that replaces a chat's messages carries the streamed text
+      // authoritatively; buffered deltas for those chats must not be
+      // re-applied on top.
+      if (patch && typeof patch === 'object' && patch.messagesByChatId && typeof patch.messagesByChatId === 'object') {
+        for (const chatId of Object.keys(patch.messagesByChatId)) {
+          pendingStreamTokensByChatId.delete(chatId)
+        }
+      }
+      discardPendingPushesForChats(patch.removedChatIds ?? [])
     }
 
     // Compare the visible chat before and after a state change and reload its transcript when the change requires it.
@@ -1061,18 +1072,35 @@ export const useAppStore = create<AppState>((set, get) => {
           const before = get()
           const snapshotRevision = cppStateRevision(snapshot)
           const storeRevision = before.lastAppliedStateRevision
-          const newer = copies.filter((patch) => cppPatchRevision(patch) > snapshotRevision)
-          const rebuildsStore = !overflowed && newer.length === storeRevision - snapshotRevision &&
-            newer.every((patch, index) => cppPatchRevision(patch) === snapshotRevision + index + 1)
-          if (snapshotRevision >= storeRevision || (newerFullState <= snapshotRevision && rebuildsStore)) {
+          // Copies above `base` rebuild the store exactly when they run base + 1 .. storeRevision without a hole.
+          const copiesAbove = (base: number) => copies.filter((patch) => cppPatchRevision(patch) > base)
+          const rebuilds = (base: number) => {
+            const above = copiesAbove(base)
+            return !overflowed && above.length === storeRevision - base &&
+              above.every((patch, index) => cppPatchRevision(patch) === base + index + 1)
+          }
+          if (snapshotRevision >= storeRevision || (newerFullState <= snapshotRevision && rebuilds(snapshotRevision))) {
             // Cleared first so the replayed copies are not mistaken for a still-open gap.
             stateResyncOutstanding = false
-            applyFullState(snapshot, true)
-            for (const patch of newer) applyLivePatch(patch)
+            // Keep this window's selection, including a deliberate none: a click whose selectSession is still
+            // unacknowledged must not jump back to the native choice.
+            const localSelection = before.activeSessionId
+            const keepSelection = localSelection === null || snapshot.chats.some((chat) => chat.id === localSelection)
+            // Snapshot and replay are composed off-store and published once, so subscribers never see the
+            // snapshot's older revision between them.
+            pruneStreamTokensForFullState(snapshot)
+            let working = { ...before, ...fullStateProjection(keepSelection ? { ...snapshot, selectedChatId: localSelection } : snapshot, before) } as AppState
+            for (const patch of copiesAbove(snapshotRevision)) {
+              discardBuffersForPatch(patch)
+              const next = applyStatePatch(patch, working)
+              if (next) working = { ...working, ...working.reconcileMemorySettingsProjection(next, patch.settings) }
+            }
+            set(working)
+            if (working.theme) persistTheme(working.theme, get().customThemes)
             reloadActiveTranscriptIfChanged(before, false)
             settled = true
-          } else if (newerFullState > snapshotRevision) {
-            // A newer full state arrived during the pull and already contains what the gap lost.
+          } else if (newerFullState > snapshotRevision && rebuilds(newerFullState)) {
+            // A newer full state arrived during the pull and, with the copies after it, already holds what the gap lost.
             settled = true
           }
         } catch (error) {
@@ -1118,15 +1146,7 @@ export const useAppStore = create<AppState>((set, get) => {
         if (revision !== lastRevision + 1) requestStateResync(`revision ${revision} after ${lastRevision}`)
         else if (stateResyncOutstanding) requestStateResync('retry after failed resync')
       }
-      // A patch that replaces a chat's messages carries the streamed text
-      // authoritatively; buffered deltas for those chats must not be
-      // re-applied on top.
-      if (patch && typeof patch === 'object' && patch.messagesByChatId && typeof patch.messagesByChatId === 'object') {
-        for (const chatId of Object.keys(patch.messagesByChatId)) {
-          pendingStreamTokensByChatId.delete(chatId)
-        }
-      }
-      discardPendingPushesForChats(patch.removedChatIds ?? [])
+      discardBuffersForPatch(patch)
       const current = get()
       const next = applyStatePatch(patch, current)
       if (next) {
@@ -1299,6 +1319,99 @@ export const useAppStore = create<AppState>((set, get) => {
     }
   }
 
+  // Full state projected onto the current store; the caller decides when to apply it.
+  const fullStateProjection = (sanitized: CppAppState, current: AppState): Partial<AppState> => {
+    const deserialized = deserializeState(sanitized, {
+      sessions: current.sessions,
+      folders: current.folders,
+      resourceCollections: current.resourceCollections,
+      messages: current.messages,
+      historyStartIndexBySessionId: current.historyStartIndexBySessionId,
+      chatSearchNavigation: current.chatSearchNavigation,
+      providers: current.providers,
+      activeSessionId: current.activeSessionId,
+      cliTranscriptBySessionId: current.cliTranscriptBySessionId,
+      cliBindingBySessionId: current.cliBindingBySessionId,
+      acpBindingBySessionId: current.acpBindingBySessionId,
+      providerModelCatalogs: current.providerModelCatalogs,
+      cliDebugState: current.cliDebugState,
+      memoryEnabledDefault: current.memoryEnabledDefault,
+      memoryLevelDefault: current.memoryLevelDefault,
+      memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
+      memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
+      goalMaxLoopIterations: current.goalMaxLoopIterations,
+      goalTokenBudget: current.goalTokenBudget,
+      acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
+      activeTurnInactivityTimeoutSeconds: current.activeTurnInactivityTimeoutSeconds,
+      streamLoopRepeatLimit: current.streamLoopRepeatLimit,
+      acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
+      appVersion: current.appVersion,
+      runnerProtocolVersion: current.runnerProtocolVersion,
+      showProviderIconsInSidebar: current.showProviderIconsInSidebar,
+      showWorktreePathInSidebar: current.showWorktreePathInSidebar,
+      steerActiveTurnOnSend: current.steerActiveTurnOnSend,
+      gitEnabled: current.gitEnabled,
+      svnEnabled: current.svnEnabled,
+      updateChecksEnabled: current.updateChecksEnabled,
+          automaticProviderUpdates: current.automaticProviderUpdates,
+      updateLastCheckedAt: current.updateLastCheckedAt,
+      dismissedUpdateVersions: current.dismissedUpdateVersions,
+      memoryLastStatus: current.memoryLastStatus,
+      memoryWorkerBindings: current.memoryWorkerBindings,
+      permissionReviewerProviderId: current.permissionReviewerProviderId,
+      permissionReviewerModelId: current.permissionReviewerModelId,
+      memoryActivity: current.memoryActivity,
+      cliVersionManager: current.cliVersionManager,
+      markdownStoreDirectory: current.markdownStoreDirectory,
+      defaultNewChatProviderId: current.defaultNewChatProviderId,
+      providerChatDefaults: current.providerChatDefaults,
+      voiceInputMode: current.voiceInputMode,
+      voiceInputServerBaseUrl: current.voiceInputServerBaseUrl,
+      voiceInputServerEndpoint: current.voiceInputServerEndpoint,
+      voiceInputServerModel: current.voiceInputServerModel,
+      voiceInputApiKeyEnv: current.voiceInputApiKeyEnv,
+      voiceInputCapabilities: current.voiceInputCapabilities,
+      providerAvailability: current.providerAvailability,
+      gitAutoWorktree: current.gitAutoWorktree,
+      gitSnapshotSvn: current.gitSnapshotSvn,
+      gitSnapshotPlainFolders: current.gitSnapshotPlainFolders,
+      gitDefaultBaseBranch: current.gitDefaultBaseBranch,
+      gitPullBeforeChat: current.gitPullBeforeChat,
+      svnUpdateBeforeChat: current.svnUpdateBeforeChat,
+      gitPortMethod: current.gitPortMethod,
+      worktreeCleanupEnabled: current.worktreeCleanupEnabled,
+      worktreeRetentionDays: current.worktreeRetentionDays,
+      backupLogRetentionDays: current.backupLogRetentionDays,
+      httpCacheClearIntervalDays: current.httpCacheClearIntervalDays,
+      fileExplorerApplication: current.fileExplorerApplication,
+      windowsPowerShell: current.windowsPowerShell,
+      defaultEditorPresetId: current.defaultEditorPresetId,
+      editorFileAssociations: current.editorFileAssociations,
+      centralProviderConfiguration: current.centralProviderConfiguration,
+          mcpServers: current.mcpServers,
+      executionRouting: current.executionRouting,
+      executionHosts: current.executionHosts,
+      favoriteUamAgentIds: current.favoriteUamAgentIds,
+      nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
+      nativeImportExcludedDirectories: current.nativeImportExcludedDirectories,
+      nativeImportStartupMaxAgeDays: current.nativeImportStartupMaxAgeDays,
+      uamAgentCycleShortcut: current.uamAgentCycleShortcut,
+      computerUseEnabled: current.computerUseEnabled,
+      computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
+      computerUseAllowedApplications: current.computerUseAllowedApplications,
+      branchSwitching: current.branchSwitching,
+      hostScopedSettings: current.hostScopedSettings,
+      hostScopedSettingsValues: current.hostScopedSettingsValues,
+      uamAgentsBySessionId: current.uamAgentsBySessionId,
+      shellActions: current.shellActions,
+      computePools: current.computePools,
+      computePoolUsage: current.computePoolUsage,
+      shellActionNotification: current.shellActionNotification,
+      statusLine: current.statusLine,
+    })
+    return current.reconcileMemorySettingsProjection(deserialized, sanitized.settings)
+  }
+
   const inCef = isCefContext()
 
   return {
@@ -1326,103 +1439,15 @@ export const useAppStore = create<AppState>((set, get) => {
 
     // ---- CEF bootstrap ----
 
-    loadFromCef: (cppState, force = false) => {
+    loadFromCef: (cppState) => {
       const sanitized = sanitizeCppAppState(cppState)
       if (!sanitized) return
       const current = get()
-      const nextRevision = cppStateRevision(sanitized)
-      if (!force && !isNewerStateRevision(nextRevision, current.lastAppliedStateRevision)) return
-      const deserialized = deserializeState(sanitized, {
-        sessions: current.sessions,
-        folders: current.folders,
-        resourceCollections: current.resourceCollections,
-        messages: current.messages,
-        historyStartIndexBySessionId: current.historyStartIndexBySessionId,
-        chatSearchNavigation: current.chatSearchNavigation,
-        providers: current.providers,
-        activeSessionId: current.activeSessionId,
-        cliTranscriptBySessionId: current.cliTranscriptBySessionId,
-        cliBindingBySessionId: current.cliBindingBySessionId,
-        acpBindingBySessionId: current.acpBindingBySessionId,
-        providerModelCatalogs: current.providerModelCatalogs,
-        cliDebugState: current.cliDebugState,
-        memoryEnabledDefault: current.memoryEnabledDefault,
-        memoryLevelDefault: current.memoryLevelDefault,
-        memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
-        memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
-        goalMaxLoopIterations: current.goalMaxLoopIterations,
-        goalTokenBudget: current.goalTokenBudget,
-        acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
-        activeTurnInactivityTimeoutSeconds: current.activeTurnInactivityTimeoutSeconds,
-        streamLoopRepeatLimit: current.streamLoopRepeatLimit,
-        acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
-        appVersion: current.appVersion,
-        runnerProtocolVersion: current.runnerProtocolVersion,
-        showProviderIconsInSidebar: current.showProviderIconsInSidebar,
-        showWorktreePathInSidebar: current.showWorktreePathInSidebar,
-        steerActiveTurnOnSend: current.steerActiveTurnOnSend,
-        gitEnabled: current.gitEnabled,
-        svnEnabled: current.svnEnabled,
-        updateChecksEnabled: current.updateChecksEnabled,
-            automaticProviderUpdates: current.automaticProviderUpdates,
-        updateLastCheckedAt: current.updateLastCheckedAt,
-        dismissedUpdateVersions: current.dismissedUpdateVersions,
-        memoryLastStatus: current.memoryLastStatus,
-        memoryWorkerBindings: current.memoryWorkerBindings,
-        permissionReviewerProviderId: current.permissionReviewerProviderId,
-        permissionReviewerModelId: current.permissionReviewerModelId,
-        memoryActivity: current.memoryActivity,
-        cliVersionManager: current.cliVersionManager,
-        markdownStoreDirectory: current.markdownStoreDirectory,
-        defaultNewChatProviderId: current.defaultNewChatProviderId,
-        providerChatDefaults: current.providerChatDefaults,
-        voiceInputMode: current.voiceInputMode,
-        voiceInputServerBaseUrl: current.voiceInputServerBaseUrl,
-        voiceInputServerEndpoint: current.voiceInputServerEndpoint,
-        voiceInputServerModel: current.voiceInputServerModel,
-        voiceInputApiKeyEnv: current.voiceInputApiKeyEnv,
-        voiceInputCapabilities: current.voiceInputCapabilities,
-        providerAvailability: current.providerAvailability,
-        gitAutoWorktree: current.gitAutoWorktree,
-        gitSnapshotSvn: current.gitSnapshotSvn,
-        gitSnapshotPlainFolders: current.gitSnapshotPlainFolders,
-        gitDefaultBaseBranch: current.gitDefaultBaseBranch,
-        gitPullBeforeChat: current.gitPullBeforeChat,
-        svnUpdateBeforeChat: current.svnUpdateBeforeChat,
-        gitPortMethod: current.gitPortMethod,
-        worktreeCleanupEnabled: current.worktreeCleanupEnabled,
-        worktreeRetentionDays: current.worktreeRetentionDays,
-        backupLogRetentionDays: current.backupLogRetentionDays,
-        httpCacheClearIntervalDays: current.httpCacheClearIntervalDays,
-        fileExplorerApplication: current.fileExplorerApplication,
-        windowsPowerShell: current.windowsPowerShell,
-        defaultEditorPresetId: current.defaultEditorPresetId,
-        editorFileAssociations: current.editorFileAssociations,
-        centralProviderConfiguration: current.centralProviderConfiguration,
-            mcpServers: current.mcpServers,
-        executionRouting: current.executionRouting,
-        executionHosts: current.executionHosts,
-        favoriteUamAgentIds: current.favoriteUamAgentIds,
-        nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
-        nativeImportExcludedDirectories: current.nativeImportExcludedDirectories,
-        nativeImportStartupMaxAgeDays: current.nativeImportStartupMaxAgeDays,
-        uamAgentCycleShortcut: current.uamAgentCycleShortcut,
-        computerUseEnabled: current.computerUseEnabled,
-        computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
-        computerUseAllowedApplications: current.computerUseAllowedApplications,
-        branchSwitching: current.branchSwitching,
-        hostScopedSettings: current.hostScopedSettings,
-        hostScopedSettingsValues: current.hostScopedSettingsValues,
-        uamAgentsBySessionId: current.uamAgentsBySessionId,
-        shellActions: current.shellActions,
-        computePools: current.computePools,
-        computePoolUsage: current.computePoolUsage,
-        shellActionNotification: current.shellActionNotification,
-        statusLine: current.statusLine,
-      })
-      set(current.reconcileMemorySettingsProjection(deserialized, sanitized.settings))
-      if (deserialized.theme) {
-        persistTheme(deserialized.theme, get().customThemes)
+      if (!isNewerStateRevision(cppStateRevision(sanitized), current.lastAppliedStateRevision)) return
+      const next = fullStateProjection(sanitized, current)
+      set(next)
+      if (next.theme) {
+        persistTheme(next.theme, get().customThemes)
       }
     },
   }

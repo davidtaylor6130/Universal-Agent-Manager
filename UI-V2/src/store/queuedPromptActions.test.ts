@@ -36,11 +36,12 @@ describe('queued prompt identity', () => {
     const firstRequest = sentRequestId()
     await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-1'))
     expect(sentIdempotencyId()).toBe(first)
+    const secondRequest = sentRequestId()
     bridge.send.mockResolvedValue({ ok: true, data: { duplicateSend: true, originRequestId: firstRequest } })
     const observer = Object.assign(vi.fn(), { onDuplicateOf: vi.fn(), submissionToken: 'submission-1' })
     await expect(useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, observer)).resolves.toBe(true)
     expect(sentIdempotencyId()).toBe(first)
-    expect(observer.onDuplicateOf).toHaveBeenCalledWith(firstRequest)
+    expect(observer.onDuplicateOf).toHaveBeenCalledWith(firstRequest, [firstRequest, secondRequest])
   })
 
   it('gives identical words in a new submission a new idempotency ID', async () => {
@@ -62,6 +63,31 @@ describe('queued prompt identity', () => {
     const generated = sentIdempotencyId()
     await useAppStore.getState().sendAcpPrompt('chat', 'continue')
     expect(sentIdempotencyId()).not.toBe(generated)
+  })
+
+  it.each(['text', 'references', 'skills', 'attachments', 'steer'] as const)('starts a new submission when a retry carries different %s', async (change) => {
+    bridge.cef = true
+    const skill = (filePath: string) => ({ id: filePath, title: filePath, maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', filePath })
+    const file = (id: string) => ({ id, name: `${id}.txt`, type: 'file', size: 1, path: `/fixture/${id}.txt` })
+    useAppStore.setState({ sessions: [{ id: 'chat' } as never], markdownStoreAttachedBySessionId: { chat: [skill('/skills/a.md')] } })
+    bridge.send.mockResolvedValue(lost)
+    await useAppStore.getState().sendAcpPrompt('chat', 'explain this\n\n> reference A', [file('one')], false, as('submission-1'))
+    const first = sentIdempotencyId()
+    // Unchanged retry keeps the ID.
+    useAppStore.setState({ markdownStoreAttachedBySessionId: { chat: [skill('/skills/a.md')] } })
+    await useAppStore.getState().sendAcpPrompt('chat', 'explain this\n\n> reference A', [file('one')], false, as('submission-1'))
+    expect(sentIdempotencyId()).toBe(first)
+    let text = 'explain this\n\n> reference A'
+    let attachments = [file('one')]
+    let steer = false
+    if (change === 'text') text = 'explain that\n\n> reference A'
+    if (change === 'references') text = 'explain this\n\n> reference B'
+    if (change === 'skills') useAppStore.setState({ markdownStoreAttachedBySessionId: { chat: [skill('/skills/b.md')] } })
+    else useAppStore.setState({ markdownStoreAttachedBySessionId: { chat: [skill('/skills/a.md')] } })
+    if (change === 'attachments') attachments = [file('two')]
+    if (change === 'steer') steer = true
+    await useAppStore.getState().sendAcpPrompt('chat', text, attachments, steer, as('submission-1'))
+    expect(sentIdempotencyId()).not.toBe(first)
   })
 
   it.each(['row', 'receipt', 'turn'] as const)('retires the ID once the unconfirmed attempt visibly landed (%s)', async (evidence) => {

@@ -80,3 +80,35 @@ UAM_TEST(SendIdempotencyWindowEvictsOldestBeyondCapacity)
 		UAM_ASSERT(window.Begin("chat-1", "id-" + std::to_string(index), "").claim == Claim::New);
 	UAM_ASSERT(window.Begin("chat-1", "oldest", "").claim == Claim::New);
 }
+
+UAM_TEST(SendIdempotencySettlementReleasesAnUnsettledClaimAndIgnoresAGoneOwner)
+{
+	using Claim = uam::cef::SendIdempotencyWindow::Claim;
+	uam::cef::SendIdempotencyWindow window;
+	auto owner = std::make_shared<char>();
+	UAM_ASSERT(window.Begin("chat-1", "dropped", "").claim == Claim::New);
+	{
+		// An exception or a completion that never runs drops the settlement without an outcome.
+		uam::cef::SendIdempotencySettlement settlement(window, owner, "chat-1", "dropped");
+	}
+	UAM_ASSERT(window.Begin("chat-1", "dropped", "").claim == Claim::New);
+
+	UAM_ASSERT(window.Begin("chat-1", "admitted", "").claim == Claim::New);
+	{
+		uam::cef::SendIdempotencySettlement settlement(window, owner, "chat-1", "admitted");
+		settlement.Settle(true);
+		settlement.Settle(false);
+	}
+	UAM_ASSERT(window.Begin("chat-1", "admitted", "").claim == Claim::Admitted);
+
+	UAM_ASSERT(window.Begin("chat-1", "late", "").claim == Claim::New);
+	std::weak_ptr<void> gone;
+	{
+		auto expired = std::make_shared<char>();
+		gone = expired;
+	}
+	{
+		uam::cef::SendIdempotencySettlement settlement(window, gone, "chat-1", "late");
+	}
+	UAM_ASSERT(window.Begin("chat-1", "late", "").claim == Claim::InProgress);
+}

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <deque>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -67,6 +68,40 @@ namespace uam::cef
 		}
 
 		std::deque<Entry> m_entries;
+	};
+
+	/// One claim's outcome. Every exit settles it: Settle reports the outcome, and a settlement destroyed unsettled
+	/// (an exception, or an asynchronous completion that is dropped without running) releases the claim, so a retry
+	/// is a fresh admission rather than an indefinite 409. The window is touched only while its owner is alive.
+	class SendIdempotencySettlement
+	{
+	  public:
+		SendIdempotencySettlement(SendIdempotencyWindow& window, std::weak_ptr<void> owner_lifetime, std::string chat_id, std::string id)
+		    : m_window(window), m_owner_lifetime(std::move(owner_lifetime)), m_chat_id(std::move(chat_id)), m_id(std::move(id))
+		{
+		}
+		SendIdempotencySettlement(const SendIdempotencySettlement&) = delete;
+		SendIdempotencySettlement& operator=(const SendIdempotencySettlement&) = delete;
+		~SendIdempotencySettlement()
+		{
+			Settle(false);
+		}
+
+		void Settle(bool admitted)
+		{
+			if (m_settled)
+				return;
+			m_settled = true;
+			if (!m_id.empty() && !m_owner_lifetime.expired())
+				m_window.Settle(m_chat_id, m_id, admitted);
+		}
+
+	  private:
+		SendIdempotencyWindow& m_window;
+		std::weak_ptr<void> m_owner_lifetime;
+		std::string m_chat_id;
+		std::string m_id;
+		bool m_settled = false;
 	};
 
 } // namespace uam::cef

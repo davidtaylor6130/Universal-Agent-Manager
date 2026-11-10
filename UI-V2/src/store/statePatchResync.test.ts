@@ -172,6 +172,59 @@ describe('state patch gap recovery', () => {
     expect(pulls).toHaveLength(1)
   })
 
+  it('does not let a newer full state hide a patch lost after it', async () => {
+    const { store, pulls, push, flush } = await startStore()
+    push(chatPatch(7))
+    await flush()
+    push({ type: 'stateUpdate', data: fullState(12, 'Full state during the pull') })
+    // 13 is lost; 14 applies while the pull is in flight, so no gap is raised yet.
+    push(chatPatch(14, 'After the lost patch'))
+    pulls[0].reply(fullState(9, 'Older snapshot'))
+    await flush(0)
+    expect(store.getState().lastAppliedStateRevision).toBe(14)
+    await flush(5000)
+    expect(pulls).toHaveLength(2)
+    pulls[1].reply(fullState(14, 'Repaired'))
+    await flush(0)
+    expect(store.getState().sessions[0].name).toBe('Repaired')
+  })
+
+  it('settles on a newer full state when the patches after it are contiguous', async () => {
+    const { store, pulls, push, flush } = await startStore()
+    push(chatPatch(7))
+    await flush()
+    push({ type: 'stateUpdate', data: fullState(12, 'Full state during the pull') })
+    push(chatPatch(13)); push(chatPatch(14, 'Contiguous'))
+    pulls[0].reply(fullState(9, 'Older snapshot'))
+    await flush(60000)
+    expect(pulls).toHaveLength(1)
+    expect(store.getState().sessions[0].name).toBe('Contiguous')
+  })
+
+  it('publishes an overtaken snapshot and its replay as one update', async () => {
+    const { store, pulls, push, flush } = await startStore()
+    push(chatPatch(7))
+    await flush()
+    push(chatPatch(8)); push(chatPatch(9, 'Newest'))
+    const seen: number[] = []
+    const unsubscribe = store.subscribe((state) => seen.push(state.lastAppliedStateRevision))
+    pulls[0].reply(fullState(8, 'Snapshot', [chat('chat-2', 'Only in the snapshot')]))
+    await flush(0)
+    unsubscribe()
+    expect(seen.every((revision) => revision === 9)).toBe(true)
+    expect(store.getState().sessions.map((session) => session.name)).toEqual(['Newest', 'Only in the snapshot'])
+  })
+
+  it('keeps a deliberate empty selection through a resync', async () => {
+    const { store, pulls, push, flush } = await startStore()
+    store.setState({ activeSessionId: null })
+    push(chatPatch(7))
+    await flush()
+    pulls[0].reply(fullState(7))
+    await flush(0)
+    expect(store.getState().activeSessionId).toBeNull()
+  })
+
   it('spaces pulls for a recurring fault between clean patches and resets after a quiet minute', async () => {
     const { pulls, push, flush } = await startStore()
     let revision = 5

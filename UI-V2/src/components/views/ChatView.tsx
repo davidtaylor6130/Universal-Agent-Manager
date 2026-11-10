@@ -867,10 +867,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
     onStarted.submissionToken = submissionToken
     // Native had already admitted this submission under an earlier attempt: that attempt's row is this message,
-    // so the earlier unconfirmed row retires and this attempt takes its correlation instead of showing a second row.
-    onStarted.onDuplicateOf = (originRequestId) => {
+    // so every earlier unconfirmed row of the submission retires and this attempt takes the admitted correlation.
+    onStarted.onDuplicateOf = (originRequestId, earlierRequestIds) => {
       if (!attempt) return
-      const earlier = readOutgoingAttempts(scope).filter((candidate) => candidate.key !== attempt.key && candidate.actionCorrelationId === originRequestId)
+      const sameSubmission = new Set([originRequestId, ...earlierRequestIds])
+      const earlier = readOutgoingAttempts(scope).filter((candidate) => candidate.key !== attempt.key &&
+        candidate.actionCorrelationId !== undefined && sameSubmission.has(candidate.actionCorrelationId))
       updateOutgoingAttempts(scope, new Map<string, Partial<OutgoingAttempt>>([
         ...earlier.map((candidate) => [candidate.key, { retired: true }] as [string, Partial<OutgoingAttempt>]),
         [attempt.key, { actionCorrelationId: originRequestId }],

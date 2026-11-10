@@ -290,6 +290,19 @@ describe('ChatView outgoing admission without a delivery witness', () => {
     noReplay(2)
   })
 
+  it('retires every earlier unconfirmed row of the submission when a later retry is a duplicate', async () => {
+    await send()
+    await act(async () => callbacks[0].fail())
+    await send()
+    await act(async () => callbacks[1].fail())
+    expect(host.querySelectorAll('[data-outgoing-message]')).toHaveLength(2)
+    await send()
+    expect(idempotencyId(2)).toBe(idempotencyId(0))
+    await act(async () => callbacks[2].ack({ duplicateSend: true, originRequestId: sends()[0].requestId }))
+    expect(host.querySelectorAll('[data-outgoing-message]')).toHaveLength(1)
+    noReplay(3)
+  })
+
   it('starts a new submission after the draft is edited, even back to the same words', async () => {
     await send()
     await act(async () => callbacks[0].fail())

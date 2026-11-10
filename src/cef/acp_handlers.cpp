@@ -593,10 +593,9 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 			return;
 		}
 	}
-	const auto settle_send_id = [this, chat_id, send_idempotency_id](bool admitted)
-	{
-		if (!send_idempotency_id.empty()) m_recentSendIds.Settle(chat_id, send_idempotency_id, admitted);
-	};
+	// Shared by every path that can finish this send, so the last one to drop it releases an unsettled claim.
+	const auto settlement = std::make_shared<uam::cef::SendIdempotencySettlement>(m_recentSendIds, m_asyncLifetime, chat_id, send_idempotency_id);
+	const auto settle_send_id = [settlement](bool admitted) { settlement->Settle(admitted); };
 	const bool goal_mode = payload.value("goalMode", false);
 	const std::string goal_id = AcpPromptGoalIdFromPayload(payload);
 	const bool computer_use_mode = payload.value("computerUseMode", false);
