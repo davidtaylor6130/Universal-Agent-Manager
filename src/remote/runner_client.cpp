@@ -86,6 +86,13 @@ namespace uam::remote
 			return key;
 		}
 
+		bool SshDroppedTheHandshake(std::string_view diagnostics)
+		{
+			return diagnostics.find("kex_exchange_identification") != std::string_view::npos ||
+			       diagnostics.find("Connection closed by") != std::string_view::npos ||
+			       diagnostics.find("Connection reset by") != std::string_view::npos;
+		}
+
 		std::string ChannelCursorKey(std::string_view channel_id, std::string_view direction)
 		{
 			return std::string(channel_id) + "\n" + std::string(direction);
@@ -277,33 +284,48 @@ namespace uam::remote
 				*error_out = "The remote runner bridge working directory is unavailable.";
 			return false;
 		}
-		if (!m_processService.StartStdioProcess(m_bridge, *current_path, m_bridgeArgv, &error))
-		{
-			if (error.empty()) error = "The remote runner bridge could not start.";
-			record_failure(error);
-			if (error_out != nullptr) *error_out = error;
-			return false;
-		}
-		m_connected = true;
-		m_bridgeDiagnostics.clear();
-		const std::string nonce = Nonce();
 		nlohmann::json response;
-		bool interrupted = false;
-		if (!Request({{"type", "hello"}, {"protocolVersion", m_expectedProtocolVersion},
-		              {"nonce", nonce}},
-		             response, &error, [&] { return stop_token.stop_requested() || (interrupt && interrupt()); }, &interrupted) || response.value("nonce", "") != nonce ||
-		    response.value("protocolVersion", 0) != m_expectedProtocolVersion ||
-		    (!m_expectedVersion.empty() &&
-		     response.value("runnerVersion", "") != m_expectedVersion) ||
-		    !response.value("capabilities", nlohmann::json::object())
-		         .value("processExecution", false) ||
-		    !response.value("capabilities", nlohmann::json::object())
-		         .value("fileCopy", false) ||
-		    response.value("capabilities", nlohmann::json::object())
-		        .value("computerUse", true))
+		for (int attempt = 0;; ++attempt)
 		{
+			error.clear();
+			if (!m_processService.StartStdioProcess(m_bridge, *current_path, m_bridgeArgv, &error))
+			{
+				if (error.empty()) error = "The remote runner bridge could not start.";
+				record_failure(error);
+				if (error_out != nullptr) *error_out = error;
+				return false;
+			}
+			m_connected = true;
+			m_bridgeDiagnostics.clear();
+			const std::string nonce = Nonce();
+			bool interrupted = false;
+			const auto canceled = [&] { return stop_token.stop_requested() || (interrupt && interrupt()); };
+			if (Request({{"type", "hello"}, {"protocolVersion", m_expectedProtocolVersion},
+			             {"nonce", nonce}},
+			            response, &error, canceled, &interrupted) && response.value("nonce", "") == nonce &&
+			    response.value("protocolVersion", 0) == m_expectedProtocolVersion &&
+			    (m_expectedVersion.empty() ||
+			     response.value("runnerVersion", "") == m_expectedVersion) &&
+			    response.value("capabilities", nlohmann::json::object())
+			        .value("processExecution", false) &&
+			    response.value("capabilities", nlohmann::json::object())
+			        .value("fileCopy", false) &&
+			    !response.value("capabilities", nlohmann::json::object())
+			        .value("computerUse", true))
+				break;
 			Disconnect();
 			if (error.empty()) error = "The remote runner handshake is incompatible.";
+			// sshd drops handshakes beyond MaxStartups when many connections open at once. Only the handshake
+			// was sent, so trying again cannot repeat any work; other failures would only repeat their wait.
+			if (attempt < 2 && !interrupted && !ShutdownBudgetSpent() && SshDroppedTheHandshake(m_bridgeDiagnostics))
+			{
+				std::random_device random;
+				const auto retry_at = std::chrono::steady_clock::now() + std::chrono::milliseconds((attempt + 1) * (250 + random() % 500));
+				while (std::chrono::steady_clock::now() < retry_at && !canceled() && !g_shutdown.load() && !(m_commandInterrupt && m_commandInterrupt()))
+					std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				if (std::chrono::steady_clock::now() >= retry_at) continue;
+				interrupted = true;
+			}
 			// A cancel or a closing app says nothing about the host, so neither may fail other queued work.
 			if (!interrupted && !ShutdownBudgetSpent()) record_failure(error);
 			if (error_out != nullptr) *error_out = error;
@@ -752,9 +774,11 @@ namespace uam::remote
 			if (exited) m_commandInterrupt = nullptr;
 			else m_commandInterrupt = [cleanup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5)] { return std::chrono::steady_clock::now() >= cleanup_deadline; };
 			std::string cleanup_error;
-			if (!exited && !StopProcess(session_id, &cleanup_error))
+			// A start that failed has no worker to report on: the stop and removal still run in case a lost reply
+			// hid a started one, but their "does not exist" answer would only bury the start error.
+			if (!exited && !StopProcess(session_id, &cleanup_error) && started)
 				result.error += " Remote process stop failed: " + cleanup_error;
-			if (!RemoveProcess(session_id, &cleanup_error))
+			if (!RemoveProcess(session_id, &cleanup_error) && started)
 				result.error += " Remote process cleanup failed: " + cleanup_error;
 		}
 		result.ok = exited && result.exit_code == 0 && result.error.empty() &&

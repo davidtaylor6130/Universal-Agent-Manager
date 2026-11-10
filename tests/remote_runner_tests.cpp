@@ -9488,6 +9488,50 @@ UAM_TEST(RemoteRunnerShutdownBudgetBoundsEveryBlockedWait)
 	UAM_ASSERT(!fs::exists(temp.root / "started"));
 }
 
+UAM_TEST(RemoteRunnerRetriesOnlyAHandshakeThatSshDropped)
+{
+	TempDir temp("uam-runner-handshake-retry");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const std::string runner = (service.ResolveCurrentExecutablePath().parent_path() / "uam-runner").string();
+	const fs::path dropped = temp.root / "dropped";
+	// sshd past MaxStartups closes the first two connections; the third reaches the helper.
+	uam::remote::RunnerClient client(service, {"/bin/sh", "-c",
+	    "echo attempt >> \"$0\"; [ $(wc -l < \"$0\") -lt 3 ] || exec \"$1\" bridge-direct; echo 'kex_exchange_identification: Connection closed by remote host' >&2; exit 255",
+	    dropped.string(), runner});
+	std::string error;
+	UAM_ASSERT(client.Connect(&error));
+	UAM_ASSERT_EQ(ReadFile(dropped), "attempt\nattempt\nattempt\n");
+	// A refused login is not retried: more attempts cannot succeed and can lock the account.
+	const fs::path denied = temp.root / "denied";
+	uam::remote::RunnerClient refused(service, {"/bin/sh", "-c", "echo attempt >> \"$0\"; echo 'Permission denied (publickey).' >&2; exit 255", denied.string()});
+	UAM_ASSERT(!refused.Connect(&error));
+	UAM_ASSERT_EQ(ReadFile(denied), "attempt\n");
+	// A host that keeps dropping connections fails after three attempts, and a cancel ends the retry wait.
+	const fs::path always = temp.root / "always";
+	const std::vector<std::string> dropping = {"/bin/sh", "-c", "echo attempt >> \"$0\"; echo 'Connection reset by peer' >&2; exit 255", always.string()};
+	UAM_ASSERT(!uam::remote::RunnerClient(service, dropping).Connect(&error));
+	UAM_ASSERT_EQ(error, "The remote runner bridge closed. Bridge reported: Connection reset by peer");
+	UAM_ASSERT_EQ(ReadFile(always), "attempt\nattempt\nattempt\n");
+	std::stop_source stop;
+	std::jthread cancel([&](std::stop_token)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(120));
+		stop.request_stop();
+	});
+	UAM_ASSERT(!uam::remote::RunnerClient(service, dropping).Connect(&error, stop.get_token()));
+	UAM_ASSERT_EQ(ReadFile(always), "attempt\nattempt\nattempt\nattempt\n");
+}
+
+UAM_TEST(RemoteCommandStartFailureIsNotBuriedUnderCleanupErrors)
+{
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	uam::remote::RunnerClient client(service, {(service.ResolveCurrentExecutablePath().parent_path() / "uam-runner").string(), "bridge-direct"});
+	const ProcessExecutionResult result = client.ExecuteCommand("start-fails-" + service.GenerateUuid(), "/nonexistent-uam-workspace", {"/bin/sh", "-c", "true"}, 5000);
+	UAM_ASSERT(!result.ok && !result.error.empty());
+	UAM_ASSERT(result.error.find("Remote process stop failed") == std::string::npos);
+	UAM_ASSERT(result.error.find("Remote process cleanup failed") == std::string::npos);
+}
+
 UAM_TEST(RemoteQueuedWorkFailsAtOnceAfterItsHostStoppedAnswering)
 {
 	TempDir temp("uam-runner-queued-work");
