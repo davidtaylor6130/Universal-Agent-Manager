@@ -19,7 +19,7 @@ namespace uam::usage
 		/// <summary>A positive idle_after parks collection once no export has been requested for that long; the next export resumes it.</summary>
 		explicit Collector(std::filesystem::path data_root, bool export_accounting = false, std::chrono::milliseconds idle_after = {});
 		Collector(std::filesystem::path data_root, std::vector<HistorySource> sources, RateFetcher fetch_rates = {}, bool export_accounting = false,
-		          std::chrono::milliseconds idle_after = {}, std::chrono::milliseconds pass_interval = std::chrono::seconds(30));
+		          std::chrono::milliseconds idle_after = {}, std::chrono::milliseconds pass_interval = std::chrono::seconds(30), std::chrono::milliseconds publish_min_interval = {});
 		~Collector();
 		nlohmann::json Query(int days, const std::map<ModelKey, ModelPrices>& prices = {}) const;
 		/// <summary>Returns immutable bounded wire chunks; never reads provider files or accounting storage.</summary>
@@ -31,16 +31,24 @@ namespace uam::usage
 		/// <summary>Prices an immutable combined ledger using the locally cached catalog, without I/O.</summary>
 		nlohmann::json Render(const Ledger& ledger, nlohmann::json metadata, int days, const std::map<ModelKey, ModelPrices>& prices = {}) const;
 		const std::filesystem::path& DataRoot() const { return m_dataRoot; }
+		/// <summary>Records that someone will read the accounting export, so the next pass refreshes it.</summary>
+		void NoteDemand() const;
+		/// <summary>True while this collector is the only one that can own its data root's scratch files.</summary>
+		bool OwnsScratch() const { return m_scratchLease != nullptr; }
 
 	private:
 		void Run(std::stop_token stop);
-		void NoteDemand() const;
-		bool Publish(std::int64_t generated_ms, const nlohmann::json& metadata, std::string& error, const std::function<bool()>& cancelled);
+		bool Publish(std::int64_t generated_ms, const nlohmann::json& metadata, bool ledger, bool persist_ledger, bool receipts, std::string& error, const std::function<bool()>& cancelled);
 		const std::filesystem::path m_dataRoot;
 		const bool m_exportAccounting;
 		const std::chrono::milliseconds m_idleAfter;
 		const std::chrono::milliseconds m_passInterval;
+		const std::chrono::milliseconds m_ledgerMinInterval;
+		const std::chrono::milliseconds m_receiptMinInterval;
 		mutable std::atomic<std::int64_t> m_lastDemandMs;
+		mutable std::atomic<std::int64_t> m_lastQueryMs;
+		mutable std::atomic<bool> m_passWake{false};
+		std::shared_ptr<void> m_scratchLease;
 		Store m_store;
 		HistoryService m_history;
 		PricingCache m_pricing;

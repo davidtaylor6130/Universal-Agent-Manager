@@ -460,6 +460,105 @@ UAM_TEST(UsageScratchCleanupRemovesOnlyDayOldReceiptSnapshotsAndCombinedStores)
 	for (const char* name : {"receipts.jsonl.tmp.2", "combined-2-2", "remote", "history-index-v1.sqlite", "snapshot-v1.json", "remote/scope/receipt-view.tmp.2", "remote/scope/snapshot-v3.jsonl"}) UAM_ASSERT(fs::exists(usage / name));
 }
 
+UAM_TEST(UsageStoreChangeCounterTracksCommittedFactChangesOnly)
+{
+	TempDir temp("uam-usage-change-counter");
+	uam::usage::Store store(temp.root); std::string error;
+	UAM_ASSERT_EQ(store.ChangeCounter(), std::uint32_t{0});
+	uam::usage::Record record = StoreEvent("counted");
+	UAM_ASSERT(store.Import({{&record, "file", 0}}, error));
+	const std::uint32_t written = store.ChangeCounter();
+	UAM_ASSERT(written != 0);
+	UAM_ASSERT(store.Import({{&record, "file", 0}}, error));
+	UAM_ASSERT_EQ(store.ChangeCounter(), written);
+	UAM_ASSERT(store.ReadLifetimeLedger(kStoreAsOf, error));
+	UAM_ASSERT_EQ(store.ChangeCounter(), written);
+	record.tokens.input = 99;
+	UAM_ASSERT(store.Import({{&record, "file", 0}}, error));
+	UAM_ASSERT(store.ChangeCounter() != written);
+}
+
+namespace
+{
+	std::vector<std::string> QueryColumn(const fs::path& database, const std::string& sql, int column, const std::function<void(sqlite3_stmt*)>& bind)
+	{
+		sqlite3* raw = nullptr;
+		UAM_ASSERT_EQ(sqlite3_open_v2(database.string().c_str(), &raw, SQLITE_OPEN_READONLY, nullptr), SQLITE_OK);
+		const std::unique_ptr<sqlite3, decltype(&sqlite3_close)> connection(raw, sqlite3_close);
+		sqlite3_stmt* statement = nullptr;
+		UAM_ASSERT_EQ(sqlite3_prepare_v2(raw, sql.c_str(), -1, &statement, nullptr), SQLITE_OK);
+		const std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> owned(statement, sqlite3_finalize);
+		if (bind) bind(statement);
+		std::vector<std::string> rows;
+		while (sqlite3_step(statement) == SQLITE_ROW) rows.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(statement, column)));
+		return rows;
+	}
+}
+
+UAM_TEST(UsageLifetimeReadsRunInIndexOrderWithoutATemporarySort)
+{
+	TempDir temp("uam-usage-query-plan");
+	uam::usage::Store local(temp.root), combined(temp.root / "combined"); std::string error;
+	uam::usage::Record record = StoreEvent("planned");
+	UAM_ASSERT(local.Import({{&record, "file", 0}}, error));
+	UAM_ASSERT(combined.ImportAccounting({{nlohmann::json::array({"native", record.provider_id, record.dedupe_key}).dump(), record}}, "source-0", error));
+	for (const auto& [store, imported] : std::vector<std::pair<const uam::usage::Store*, bool>>{{&local, false}, {&combined, true}})
+	{
+		const std::vector<std::string> plan = QueryColumn(store->Path(), "EXPLAIN QUERY PLAN " + uam::usage::Store::LifetimeRecordsSql(imported), 3, {});
+		UAM_ASSERT(!plan.empty());
+		for (const std::string& detail : plan) UAM_ASSERT(detail.find("TEMP B-TREE") == std::string::npos);
+	}
+}
+
+UAM_TEST(UsageCombinedLedgerKeepsExactTotalsAndIndexOrderMatchesTheSortedOrder)
+{
+	TempDir temp("uam-usage-combined-exact");
+	uam::usage::Store local(temp.root), combined(temp.root / "combined"); std::string error;
+	std::vector<uam::usage::Record> records;
+	for (int index = 0; index < 5000; ++index)
+	{
+		uam::usage::Record record = StoreEvent(index % 7 ? "exact-" + std::to_string(index % 11) + "-" + std::to_string(index) : std::string{});
+		record.session_id = "session-" + std::to_string(index % 37);
+		// Unique times keep the direct and combined streams in one order, so floating cost sums compare exactly.
+		record.timestamp_ms = kStoreAsOf - 120LL * 86400000 + index * 2073600LL + (index % 9);
+		record.tokens = {10 + index % 13, index % 5, index % 3, 20 + index % 17, index % 7 == 0 ? 0 : 1}; record.tokens.reasoning = std::min(record.tokens.reasoning, record.tokens.output);
+		record.estimated_cost_usd = index % 4 ? std::optional<double>(0.001 * (index % 29)) : std::nullopt;
+		records.push_back(std::move(record));
+	}
+	std::vector<uam::usage::SourceRecord> batch;
+	for (std::size_t index = 0; index < records.size(); ++index)
+	{
+		batch.push_back({&records[index], "file", index});
+		if (batch.size() == 2048 || index + 1 == records.size()) { UAM_ASSERT(local.Import(batch, error)); batch.clear(); }
+	}
+	const std::shared_ptr<const uam::usage::ReceiptSnapshot> receipts = local.WriteReceiptSnapshot(kStoreAsOf, uam::usage::EmptyHistoryMetadata(), error);
+	UAM_ASSERT(receipts);
+	std::vector<uam::usage::AccountingRecord> imported;
+	UAM_ASSERT(receipts->Visit([&](const uam::usage::AccountingRecord& entry)
+	{
+		imported.push_back(entry);
+		if (imported.size() == 2048) { UAM_ASSERT(combined.ImportAccounting(imported, "source-0", error)); imported.clear(); }
+		return true;
+	}, error));
+	UAM_ASSERT(combined.ImportAccounting(imported, "source-0", error));
+	const std::optional<uam::usage::Ledger> direct = local.ReadLifetimeLedger(kStoreAsOf, error), merged = combined.ReadLifetimeLedger(kStoreAsOf, error);
+	UAM_ASSERT(direct && merged);
+	UAM_ASSERT_EQ(merged->Encode().dump(), direct->Encode().dump());
+	UAM_ASSERT_EQ(merged->Query(merged->WindowStart(0), kStoreAsOf)->total.tokens.Total(), direct->Query(direct->WindowStart(0), kStoreAsOf)->total.tokens.Total());
+	// The indexed scan visits exactly the rows of the old sort-based plan, in the same order.
+	const std::string lower = std::string("[\"native\",\"") + uam::provider_ids::kAntigravityCli + "\",";
+	std::string upper = lower; ++upper.back();
+	const std::function<void(sqlite3_stmt*)> bind = [&](sqlite3_stmt* statement)
+	{
+		sqlite3_bind_int64(statement, 1, kStoreAsOf);
+		sqlite3_bind_text(statement, 2, lower.c_str(), -1, SQLITE_TRANSIENT); sqlite3_bind_text(statement, 3, upper.c_str(), -1, SQLITE_TRANSIENT);
+	};
+	const std::vector<std::string> indexed = QueryColumn(combined.Path(), uam::usage::Store::LifetimeRecordsSql(true), 0, bind);
+	const std::vector<std::string> sorted = QueryColumn(combined.Path(), "SELECT identity FROM imported_facts NOT INDEXED WHERE created<?1 OR identity>=?2 AND identity<?3 ORDER BY created,scope,identity", 0, bind);
+	UAM_ASSERT_EQ(sorted.size(), records.size());
+	UAM_ASSERT(indexed == sorted);
+}
+
 #if !defined(_WIN32)
 UAM_TEST(UsageReceiptSnapshotWriteFailureReportsTheSystemErrorInsteadOfAnInterruptedStream)
 {

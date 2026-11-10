@@ -2,6 +2,7 @@
 #include "common/utils/io_utils.h"
 #include "common/utils/base64.h"
 #include "common/utils/hash_utils.h"
+#include "common/platform/data_folder_writer_lease.h"
 #include <fstream>
 
 namespace uam::usage
@@ -18,13 +19,33 @@ namespace uam::usage
 			return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 		}
 
+		// A reader polls every 30 seconds, so this covers it without keeping idle collectors busy.
+		constexpr std::int64_t kDemandWindowMs = 120000;
+		// Unchanged facts only need rolling windows advanced.
+		constexpr std::chrono::minutes kLedgerClockRefresh{5};
+
+		std::shared_ptr<void> AcquireScratchLease(const std::filesystem::path& data_root)
+		{
+			if (data_root.empty() || !paths::CreateDirectoriesNoThrow(data_root / "usage")) return {};
+			std::string error;
+			return platform::DataFolderWriterLease::TryAcquire(data_root / "usage", platform::DataFolderWriterLease::Access::Exclusive, error);
+		}
+
+		nlohmann::json PublishedMetadata(const nlohmann::json& metadata)
+		{
+			nlohmann::json published = metadata;
+			published["complete"] = metadata.value("complete", false) && !metadata.value("listingLimited", false);
+			for (const nlohmann::json& provider : metadata["providers"])
+				for (const char* key : {"errors", "invalidLines", "oversizedLines", "pendingLines"}) if (provider.value(key, std::int64_t{0}) > 0) published["complete"] = false;
+			return published;
+		}
 	}
 
 	Collector::Collector(std::filesystem::path data_root, bool export_accounting, std::chrono::milliseconds idle_after)
-	    : m_dataRoot(std::move(data_root)), m_exportAccounting(export_accounting), m_idleAfter(idle_after), m_passInterval(std::chrono::seconds(30)), m_lastDemandMs(SteadyNow()), m_store(m_dataRoot), m_pricing(m_dataRoot, PricingCache::PublicCatalogFetcher()), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyHistoryMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
+	    : m_dataRoot(std::move(data_root)), m_exportAccounting(export_accounting), m_idleAfter(idle_after), m_passInterval(std::chrono::seconds(30)), m_ledgerMinInterval(std::chrono::minutes(1)), m_receiptMinInterval(std::chrono::minutes(5)), m_lastDemandMs(SteadyNow() - kDemandWindowMs), m_lastQueryMs(SteadyNow() - kDemandWindowMs), m_scratchLease(AcquireScratchLease(m_dataRoot)), m_store(m_dataRoot), m_pricing(m_dataRoot, PricingCache::PublicCatalogFetcher()), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyHistoryMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
 
-	Collector::Collector(std::filesystem::path data_root, std::vector<HistorySource> sources, RateFetcher fetch_rates, bool export_accounting, std::chrono::milliseconds idle_after, std::chrono::milliseconds pass_interval)
-	    : m_dataRoot(std::move(data_root)), m_exportAccounting(export_accounting), m_idleAfter(idle_after), m_passInterval(pass_interval), m_lastDemandMs(SteadyNow()), m_store(m_dataRoot), m_history(std::move(sources)), m_pricing(m_dataRoot, std::move(fetch_rates)), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyHistoryMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
+	Collector::Collector(std::filesystem::path data_root, std::vector<HistorySource> sources, RateFetcher fetch_rates, bool export_accounting, std::chrono::milliseconds idle_after, std::chrono::milliseconds pass_interval, std::chrono::milliseconds publish_min_interval)
+	    : m_dataRoot(std::move(data_root)), m_exportAccounting(export_accounting), m_idleAfter(idle_after), m_passInterval(pass_interval), m_ledgerMinInterval(publish_min_interval), m_receiptMinInterval(publish_min_interval), m_lastDemandMs(SteadyNow() - kDemandWindowMs), m_lastQueryMs(SteadyNow() - kDemandWindowMs), m_scratchLease(AcquireScratchLease(m_dataRoot)), m_store(m_dataRoot), m_history(std::move(sources)), m_pricing(m_dataRoot, std::move(fetch_rates)), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyHistoryMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
 
 	Collector::~Collector()
 	{
@@ -40,40 +61,45 @@ namespace uam::usage
 		m_wake.notify_all();
 	}
 
-	bool Collector::Publish(std::int64_t generated_ms, const nlohmann::json& metadata, std::string& error, const std::function<bool()>& cancelled)
+	bool Collector::Publish(std::int64_t generated_ms, const nlohmann::json& metadata, bool ledger, bool persist_ledger, bool receipts, std::string& error, const std::function<bool()>& cancelled)
 	{
-		nlohmann::json published_metadata = metadata;
-		published_metadata["complete"] = metadata.value("complete", false) && !metadata.value("listingLimited", false);
-		for (const nlohmann::json& provider : metadata["providers"])
-			for (const char* key : {"errors", "invalidLines", "oversizedLines", "pendingLines"}) if (provider.value(key, std::int64_t{0}) > 0) published_metadata["complete"] = false;
-		std::optional<Ledger> ledger = m_store.ReadLifetimeLedger(generated_ms, error, cancelled);
-		if (!ledger) return false;
-		std::shared_ptr<const ReceiptSnapshot> receipts;
+		const nlohmann::json published_metadata = PublishedMetadata(metadata);
+		std::shared_ptr<const Ledger> published;
+		if (ledger)
+		{
+			std::optional<Ledger> built = m_store.ReadLifetimeLedger(generated_ms, error, cancelled);
+			if (!built) { if (error.empty()) error = "Usage accounting totals exceed supported limits."; return false; }
+			published = std::make_shared<const Ledger>(std::move(*built));
+		}
+		std::shared_ptr<const ReceiptSnapshot> receipt_snapshot;
 		std::shared_ptr<const std::string> accounting;
 		std::string fingerprint;
-		if (m_exportAccounting)
+		if (receipts)
 		{
-			receipts = m_store.WriteReceiptSnapshot(generated_ms, published_metadata, error, cancelled);
-			if (!receipts) return false;
+			receipt_snapshot = m_store.WriteReceiptSnapshot(generated_ms, published_metadata, error, cancelled);
+			if (!receipt_snapshot) return false;
 			// Legacy clients retain their bounded document format; large histories use streamed receipts.
-			if (receipts->bytes <= 64 * 1024 * 1024)
+			if (receipt_snapshot->bytes <= 64 * 1024 * 1024)
 			{
 				nlohmann::json rows = nlohmann::json::array();
-				if (!receipts->Visit([&](const AccountingRecord& entry) { rows.push_back(EncodeAccountingRecord(entry)); return true; }, error, cancelled)) return false;
+				if (!receipt_snapshot->Visit([&](const AccountingRecord& entry) { rows.push_back(EncodeAccountingRecord(entry)); return true; }, error, cancelled)) return false;
 				std::string bytes = nlohmann::json({{"version", 2}, {"range", "all-recorded"}, {"asOfMs", generated_ms}, {"metadata", published_metadata}, {"facts", std::move(rows)}}).dump();
 				if (bytes.size() <= 64 * 1024 * 1024)
 				{ fingerprint = hashing::Hex64Padded(hashing::Fnv1a64(bytes)); accounting = std::make_shared<const std::string>(std::move(bytes)); }
 			}
 		}
 
-		if (!ledger) { if (error.empty()) error = "Usage accounting totals exceed supported limits."; return false; }
-		const std::shared_ptr<const Ledger> published = std::make_shared<const Ledger>(std::move(*ledger));
-		const std::string encoded = published->Encode().dump();
 		// The durable receipt index can rebuild unusually large cohort snapshots after restart.
 		if (cancelled()) return false;
-		if (encoded.size() <= 64 * 1024 * 1024 && !io::AtomicWriteFile(m_dataRoot / "usage" / "snapshot-v1.json", encoded)) { error = "Could not save the usage snapshot."; return false; }
+		if (published && persist_ledger)
+		{
+			const std::string encoded = published->Encode().dump();
+			if (encoded.size() <= 64 * 1024 * 1024 && !io::AtomicWriteFile(m_dataRoot / "usage" / "snapshot-v1.json", encoded)) { error = "Could not save the usage snapshot."; return false; }
+		}
 		std::lock_guard<std::mutex> lock(m_mutex);
-		m_ledger = published; m_receipts = std::move(receipts); m_accountingBytes = std::move(accounting); m_accountingFingerprint = std::move(fingerprint); m_metadata = published_metadata; m_metadata["version"] = 3; m_error.clear();
+		if (published) m_ledger = published;
+		if (receipts) { m_receipts = std::move(receipt_snapshot); m_accountingBytes = std::move(accounting); m_accountingFingerprint = std::move(fingerprint); }
+		m_metadata = published_metadata; m_metadata["version"] = 3; m_error.clear();
 		return true;
 	}
 
@@ -83,7 +109,7 @@ namespace uam::usage
 		try
 		{
 			// Owned snapshots and combined stores are deleted with their owner; an app that exits without that leaves them behind.
-			if (m_exportAccounting) RemoveAbandonedScratch(m_dataRoot);
+			if (m_exportAccounting) RemoveAbandonedScratch(m_dataRoot, OwnsScratch());
 			std::string saved;
 			if (!m_dataRoot.empty() && io::TryReadTextFile(m_dataRoot / "usage" / "snapshot-v1.json", saved, 64 * 1024 * 1024))
 			{
@@ -99,6 +125,42 @@ namespace uam::usage
 				std::lock_guard<std::mutex> lock(m_mutex); m_catalog = m_pricing.Catalog(); m_aliases = m_pricing.Aliases(); m_pricingMetadata = m_pricing.Metadata(Now());
 			}
 			std::size_t generation = 0;
+			// The index is rewritten only by imports; everything below is derived from it and rebuilds at most on change, and only when read.
+			std::optional<std::uint32_t> ledger_revision, receipts_revision;
+			bool receipts_complete = false;
+			std::chrono::steady_clock::time_point ledger_built{}, receipts_built{}, retry_at{};
+			int failures = 0;
+			std::string publish_error;
+			const std::function<bool(std::int64_t, const nlohmann::json&, std::string&)> publish_if_due = [&](std::int64_t as_of, const nlohmann::json& progress, std::string& error)
+			{
+				const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+				if (now < retry_at) { error = publish_error; return true; }
+				const std::uint32_t revision = m_store.ChangeCounter();
+				const bool queried = SteadyNow() - m_lastQueryMs.load(std::memory_order_acquire) < kDemandWindowMs;
+				const bool exported = SteadyNow() - m_lastDemandMs.load(std::memory_order_acquire) < kDemandWindowMs;
+				const bool ledger_changed = !ledger_revision || revision == 0 || revision != *ledger_revision;
+				const bool receipts_changed = !receipts_revision || revision == 0 || revision != *receipts_revision;
+				const bool complete = PublishedMetadata(progress).value("complete", false);
+				const bool ledger_due = !ledger_revision || (queried && now - ledger_built >= (ledger_changed ? m_ledgerMinInterval : std::chrono::duration_cast<std::chrono::milliseconds>(kLedgerClockRefresh)));
+				const bool receipts_due = m_exportAccounting && (!receipts_revision || (exported && (receipts_changed || complete != receipts_complete) && now - receipts_built >= m_receiptMinInterval));
+				if (!ledger_due && !receipts_due)
+				{
+					{ std::lock_guard<std::mutex> lock(m_mutex); m_metadata = PublishedMetadata(progress); m_metadata["version"] = 3; }
+					if (!ledger_changed) LogLedgerWork("local", -1);
+					return true;
+				}
+				if (!Publish(as_of, progress, ledger_due, ledger_due && ledger_changed, receipts_due, error, cancelled))
+				{
+					++failures; publish_error = error;
+					retry_at = now + std::min<std::chrono::steady_clock::duration>(std::chrono::seconds(30LL << std::min(failures - 1, 5)), std::chrono::minutes(15));
+					return false;
+				}
+				failures = 0; retry_at = {};
+				LogLedgerWork("local", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - now).count());
+				if (ledger_due) { ledger_revision = revision; ledger_built = now; }
+				if (receipts_due) { receipts_revision = revision; receipts_built = now; receipts_complete = complete; }
+				return true;
+			};
 			while (!cancelled())
 			{
 				const std::int64_t as_of = Now();
@@ -133,7 +195,7 @@ namespace uam::usage
 					if (progress.value("cancelled", false) || cancelled()) return;
 					if (progress.value("complete", false) || std::chrono::steady_clock::now() - last_publish >= std::chrono::seconds(5))
 					{
-						if (!Publish(as_of, progress, error, cancelled)) break;
+						if (!publish_if_due(as_of, progress, error)) break;
 						last_publish = std::chrono::steady_clock::now();
 					}
 				} while (!progress.value("complete", false));
@@ -148,7 +210,7 @@ namespace uam::usage
 					std::lock_guard<std::mutex> lock(m_mutex); m_catalog = m_pricing.Catalog(); m_aliases = m_pricing.Aliases(); m_pricingMetadata = m_pricing.Metadata(Now());
 				}
 				std::unique_lock<std::mutex> wait_lock(m_waitMutex);
-				m_wake.wait_for(wait_lock, stop, m_passInterval, [] { return false; });
+				m_wake.wait_for(wait_lock, stop, m_passInterval, [this] { return m_passWake.exchange(false); });
 				// Every pass rescans all history and rewrites the receipts; an unread helper must not keep doing that.
 				if (m_idleAfter.count() > 0)
 					m_wake.wait(wait_lock, stop, [this] { return SteadyNow() - m_lastDemandMs.load(std::memory_order_acquire) < m_idleAfter.count(); });
@@ -227,11 +289,15 @@ namespace uam::usage
 	nlohmann::json Collector::Query(int days, const std::map<ModelKey, ModelPrices>& prices) const
 	{
 		if (days != 0 && days != 1 && days != 7 && days != 30 && days != 90) return {{"error", "Choose a valid usage period."}};
+		const std::int64_t now = SteadyNow();
+		const bool was_idle = now - m_lastQueryMs.exchange(now, std::memory_order_acq_rel) >= kDemandWindowMs;
+		if (was_idle) { m_passWake.store(true); { std::lock_guard<std::mutex> lock(m_waitMutex); } m_wake.notify_all(); }
 		std::shared_ptr<const Ledger> ledger;
 		nlohmann::json result;
 		{
 			std::lock_guard<std::mutex> lock(m_mutex); ledger = m_ledger; result = m_metadata;
-			result["collecting"] = m_collecting; result["collectionError"] = m_error;
+			// A first read after idling triggers one refresh; report it so the view polls for the result.
+			result["collecting"] = m_collecting || was_idle; result["collectionError"] = m_error;
 			if (!m_error.empty()) result["complete"] = false;
 		}
 		if (!ledger) return {{"pending", true}, {"collectionError", result["collectionError"]}};

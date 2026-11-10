@@ -422,6 +422,54 @@ UAM_TEST(UsageMultiHostStreamedFactReuseRevalidatesRegressedAndRollingBounds)
 	}
 }
 
+UAM_TEST(UsageMultiHostHoldsTheLastLedgerDuringAChangeBurstInsideTheMinimumInterval)
+{
+	TempDir temp("uam-usage-multi-burst");
+	ExecutionHost host = UsageHost("peer");
+	const nlohmann::json document = UsageSnapshot("codex-cli", "receipt");
+	std::atomic<int> calls{0};
+	const std::shared_ptr<uam::usage::Collector> local = EmptyLocal(temp.root);
+	for (int attempt = 0; attempt < 1000 && !local->Receipts(); ++attempt) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	UAM_ASSERT(local->Receipts());
+	uam::usage::MultiHostHistory history(temp.root, local, {host},
+	    [&](const ExecutionHost&, std::stop_token, std::string&) -> std::optional<nlohmann::json>
+	    {
+		    nlohmann::json refreshed = document;
+		    refreshed["facts"][0][2][5] = 10 + (++calls);
+		    return refreshed;
+	    }, std::chrono::hours(1));
+	const nlohmann::json initial = WaitUsage(history, "*", [](const nlohmann::json& value) { return value.contains("totals") && !value.value("collecting", true); });
+	UAM_ASSERT(initial.contains("totals"));
+	const std::uint64_t builds = history.LedgerBuildCount(), imports = history.ImportedRecordCount();
+	const std::int64_t tokens = initial["totals"]["totalTokens"].get<std::int64_t>();
+	UAM_ASSERT(builds >= 2);
+	for (int index = 0; index < 6; ++index)
+	{
+		const int seen = calls.load();
+		host.label = "burst-" + std::to_string(index); history.SetHosts({host});
+		const nlohmann::json settled = WaitUsage(history, "*", [&](const nlohmann::json& value) { return value.contains("totals") && calls.load() > seen; });
+		UAM_ASSERT_EQ(settled["totals"]["totalTokens"].get<std::int64_t>(), tokens);
+	}
+	UAM_ASSERT_EQ(history.LedgerBuildCount(), builds);
+	UAM_ASSERT_EQ(history.ImportedRecordCount(), imports);
+}
+
+UAM_TEST(UsageMultiHostStopsFetchingAndRebuildingUntilSomeoneReads)
+{
+	TempDir temp("uam-usage-multi-demand");
+	std::atomic<int> calls{0};
+	uam::usage::MultiHostHistory history(temp.root, EmptyLocal(temp.root), {UsageHost("peer")},
+	    [&](const ExecutionHost&, std::stop_token, std::string&) -> std::optional<nlohmann::json> { ++calls; return nlohmann::json{{"pending", true}, {"collectionError", ""}}; }, {}, std::chrono::milliseconds(400));
+	for (int attempt = 0; attempt < 600 && calls.load() == 0; ++attempt) { (void)history.Query("*", 7); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+	UAM_ASSERT(calls.load() > 0);
+	std::this_thread::sleep_for(std::chrono::milliseconds(800));
+	const int idle = calls.load();
+	std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+	UAM_ASSERT_EQ(calls.load(), idle);
+	for (int attempt = 0; attempt < 500 && calls.load() == idle; ++attempt) { (void)history.Query("*", 7); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+	UAM_ASSERT(calls.load() > idle);
+}
+
 UAM_TEST(MultiHostHistoryStartRemovesRemoteViewsLeftByAnEarlierRun)
 {
 	TempDir temp("uam-multi-host-stale-view");

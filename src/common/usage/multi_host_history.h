@@ -15,7 +15,7 @@ namespace uam::usage
 	{
 	public:
 		MultiHostHistory(std::filesystem::path data_root, std::vector<ExecutionHost> hosts);
-		MultiHostHistory(std::filesystem::path data_root, std::shared_ptr<Collector> local, std::vector<ExecutionHost> hosts, RemoteAccountingFetcher fetch);
+		MultiHostHistory(std::filesystem::path data_root, std::shared_ptr<Collector> local, std::vector<ExecutionHost> hosts, RemoteAccountingFetcher fetch, std::chrono::milliseconds ledger_min_interval = {}, std::chrono::milliseconds demand_window = std::chrono::minutes(2));
 		~MultiHostHistory();
 		void SetHosts(std::vector<ExecutionHost> hosts);
 		nlohmann::json Query(std::string_view host_id, int days, const std::map<ModelKey, ModelPrices>& prices = {}) const;
@@ -35,6 +35,9 @@ namespace uam::usage
 		const std::filesystem::path m_dataRoot;
 		const std::shared_ptr<Collector> m_local;
 		const RemoteAccountingFetcher m_fetch;
+		const std::chrono::milliseconds m_ledgerMinInterval;
+		const std::chrono::milliseconds m_demandWindow;
+		mutable std::atomic<std::int64_t> m_lastDemandMs;
 		std::atomic<std::uint64_t> m_importedRecords{0};
 		std::atomic<std::uint64_t> m_ledgerBuilds{0};
 		mutable std::mutex m_mutex;
