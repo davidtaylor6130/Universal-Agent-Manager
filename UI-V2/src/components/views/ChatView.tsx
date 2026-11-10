@@ -982,7 +982,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }, [refreshUamAgents, session.id, workspaceDirectory])
   useEffect(() => {
     if (isCompanionContext() && !session.importedReadOnly) {
-      void discoverProviderModels(session.id)
+      void discoverProviderModels(session.id, '', '', '', true)
     }
   }, [discoverProviderModels, session.id, session.modelId, session.uamAgentId, session.importedReadOnly])
 
@@ -4321,7 +4321,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               modelMenuRef={modelMenuRef}
 			  onToggleModel={() => {
 				if (!modelOpen && isOpenCodeProvider(currentProvider, currentProviderId) && !providerAcp?.modelsLoading && !providerAcp?.availableModels.length) {
-				  void discoverProviderModels('', currentProviderId, workspaceDirectory, session.executionHostId || 'local')
+				  void discoverProviderModels('', currentProviderId, workspaceDirectory, session.executionHostId || 'local', true)
 				}
                 setModelOpen((value) => !value)
                 setWorkspaceMenuOpen(false)

@@ -590,7 +590,8 @@ UAM_TEST(NewProviderLaunchesUseTheDefaultIsolatedWorktree)
 	const bool launched = uam::StartCliTerminalForChat(app, terminal, app.chats.front(), 24, 80);
 	const std::string launch_error = terminal.last_error;
 	// Start accepts asynchronous preparation; production polling adopts its durable workspace before dispatch.
-	for (int attempt = 0; launched && !fs::exists(marker) && attempt < 100; ++attempt)
+	// Managed isolation runs about ten Git processes before launch; two seconds was too short on a loaded machine.
+	for (int attempt = 0; launched && !fs::exists(marker) && attempt < 1000; ++attempt)
 	{
 		(void)uam::PollAllCliTerminals(nullptr, app);
 		uam::FlushPendingChatSaves(app);
@@ -615,7 +616,7 @@ UAM_TEST(NewProviderLaunchesUseTheDefaultIsolatedWorktree)
 	app.chats.push_back(structured);
 	std::string error;
 	const bool sent = uam::SendAcpPrompt(app, structured.id, "Check this workspace", &error);
-	for (int attempt = 0; sent && !fs::exists(marker) && attempt < 100; ++attempt)
+	for (int attempt = 0; sent && !fs::exists(marker) && attempt < 1000; ++attempt)
 	{
 		(void)uam::PollWorktreeLaunchPreparations(app);
 		(void)uam::PollAllAcpSessions(app, nullptr);

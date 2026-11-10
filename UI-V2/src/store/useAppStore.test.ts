@@ -7988,6 +7988,8 @@ describe('useAppStore Gemini CLI slice', () => {
 
     await expect(useAppStore.getState().discoverProviderModels('chat-1')).resolves.toBe(true)
     expect(requests).toContainEqual(expect.objectContaining({ action: 'discoverProviderModels', payload: { chatId: 'chat-1' } }))
+    await useAppStore.getState().discoverProviderModels('chat-1', '', '', '', true)
+    expect(requests).toContainEqual(expect.objectContaining({ action: 'discoverProviderModels', payload: { chatId: 'chat-1', automatic: true } }))
     expect(useAppStore.getState().acpBindingBySessionId['chat-1'].modelsLoading).toBe(true)
   })
 

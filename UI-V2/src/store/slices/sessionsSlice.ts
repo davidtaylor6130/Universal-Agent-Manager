@@ -3241,7 +3241,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    discoverProviderModels: async (sessionId: string, providerId = '', workspaceDirectory = '', executionHostId = ''): Promise<boolean> => {
+    discoverProviderModels: async (sessionId: string, providerId = '', workspaceDirectory = '', executionHostId = '', automatic = false): Promise<boolean> => {
       if (!isCefContext()) return false
       const initial = get()
       const session = sessionId ? initial.sessions.find((entry) => entry.id === sessionId) : undefined
@@ -3280,9 +3280,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const mayProjectReply = (state: AppState) => Boolean(preparedBinding && stillOwnsSelector(state) &&
         // A binding-only or identity-less selector must remain the exact object prepared by this call.
         ((owner && (native.sessionId || native.threadId)) || state.acpBindingBySessionId[sessionId] === preparedBinding))
-      const response = await sendToCEF<{ started?: boolean; pending?: boolean }>({
+      const response = await sendToCEF<{ started?: boolean; pending?: boolean; current?: boolean }>({
         action: 'discoverProviderModels',
-        payload: { chatId: sessionId, ...(providerId ? { providerId } : {}), ...(workspaceDirectory ? { workspaceDirectory } : {}), ...(executionHostId ? { executionHostId } : {}) },
+        payload: { chatId: sessionId, ...(providerId ? { providerId } : {}), ...(workspaceDirectory ? { workspaceDirectory } : {}), ...(executionHostId ? { executionHostId } : {}), ...(automatic ? { automatic: true } : {}) },
       })
       if (!response.ok) {
         if (sessionId) set((state) => mayProjectReply(state) ? ({
@@ -3299,7 +3299,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           [sessionId]: { ...state.acpBindingBySessionId[sessionId], modelsLoading: true },
         },
       }) : state)
-      return Boolean(response.data?.started || response.data?.pending)
+      return Boolean(response.data?.started || response.data?.pending || response.data?.current)
     },
 
     setAcpConfigOption: async (sessionId: string, configId: string, value: string): Promise<boolean> => {

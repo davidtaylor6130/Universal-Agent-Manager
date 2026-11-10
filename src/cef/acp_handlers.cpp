@@ -1084,12 +1084,24 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 	{
 		(void)m_app.provider_model_catalog->StartConfiguredOpenCodeRefresh();
 	}
-	const bool should_start = m_app.provider_model_catalog->BeginDiscovery(
-	    provider_id, workspace_directory, execution_host_id);
+	// A request the UI makes by itself (opening a model menu, showing a chat on the phone) is skipped while the cached
+	// models are current or were already refreshed this run. Refresh and Retry always ask the provider.
+	const bool automatic = payload.value("automatic", false);
+	const bool should_start = automatic
+	    ? m_app.provider_model_catalog->BeginDiscoveryIfStale(provider_id, workspace_directory, execution_host_id)
+	    : m_app.provider_model_catalog->BeginDiscovery(provider_id, workspace_directory, execution_host_id);
 	if (!should_start)
 	{
+		const bool pending = m_app.provider_model_catalog->IsDiscoveryPending(provider_id, workspace_directory, execution_host_id);
+		// A skipped automatic request is "current" only when there are models to show. A refresh that failed earlier
+		// in this run answers with its stored error, so the menu is never empty without an explanation.
+		const std::string stored_error = automatic && !pending
+		    ? m_app.provider_model_catalog->GetProviderRefreshError(provider_id, workspace_directory, execution_host_id) : std::string{};
+		const bool has_models = automatic && !pending &&
+		    !m_app.provider_model_catalog->GetCachedProviderModels(provider_id, workspace_directory, execution_host_id).empty();
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Success(nlohmann::json{{"started", false}, {"pending", m_app.provider_model_catalog->IsDiscoveryPending(provider_id, workspace_directory, execution_host_id)}}.dump());
+		if (!stored_error.empty()) cb->Failure(500, stored_error);
+		else cb->Success(nlohmann::json{{"started", false}, {"pending", pending}, {"current", has_models}}.dump());
 		return;
 	}
 	std::string error;
