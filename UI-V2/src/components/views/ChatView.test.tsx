@@ -4003,10 +4003,14 @@ describe('ChatView', () => {
         expect(retryFailedMessage).not.toHaveBeenCalled()
         expect(host.textContent).toContain('This turn already produced output')
       } else {
-        expect(order).toEqual(['save', 'retry'])
+        // A refused restart saves the previous limit back, so the setting is not left raised.
+        expect(order).toEqual(branch === 'refused' ? ['save', 'retry', 'save'] : ['save', 'retry'])
         expect(retryFailedMessage).toHaveBeenCalledWith('chat-1', 0)
       }
-      if (branch === 'refused') expect(host.querySelector('[role="alert"]')?.textContent).toContain('Wait for pending runtime work.')
+      if (branch === 'refused') {
+        expect(setMemorySettings).toHaveBeenLastCalledWith({ activeTurnInactivityTimeoutSeconds: 1800 })
+        expect(host.querySelector('[role="alert"]')?.textContent).toContain('Wait for pending runtime work.')
+      }
     } finally {
       act(() => root.unmount())
       host.remove()
