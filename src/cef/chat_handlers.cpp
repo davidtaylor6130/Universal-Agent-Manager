@@ -236,16 +236,19 @@ void UamQueryHandler::HandleGetChatRuntimeMetrics(CefRefPtr<CefBrowser>, const n
 void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(m_app);
+	// Selection is in-memory state: a failed settings write must not bounce the user back to the previous chat.
+	// The remembered selection is part of the settings document, so the next settings save carries it.
+	const auto persist_selection = [this]()
+	{
+		bool saved = false;
+		try { saved = PersistenceCoordinator().SaveSettings(m_app); }
+		catch (...) {}
+		if (!saved) uam::diagnostics::Write("[selectSession] The selected chat was not persisted; the next settings save retries it.");
+	};
 	if (chat_id.empty())
 	{
 		ChatDomainService().SelectChatById(m_app, "");
-		if (!PersistenceCoordinator().SaveSettings(m_app))
-		{
-			ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
-			cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Failed to clear selected chat."));
-			return;
-		}
+		persist_selection();
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success("{}");
 		return;
@@ -256,7 +259,6 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	const std::string previous_last_opened_at = target_chat->last_opened_at;
 	ChatDomainService().SelectChatById(m_app, chat_id);
 
 	ChatSession* selected_chat = ChatDomainService().SelectedChat(m_app);
@@ -267,13 +269,7 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 	}
 
 	selected_chat->last_opened_at = uam::time::TimestampNow();
-	if (!PersistenceCoordinator().SaveSettings(m_app))
-	{
-		selected_chat->last_opened_at = previous_last_opened_at;
-		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
-		cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Failed to persist selected chat."));
-		return;
-	}
+	persist_selection();
 
 	if (!m_app.pending_chat_save_at_by_chat_id.contains(chat_id))
 	{

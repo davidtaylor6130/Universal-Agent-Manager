@@ -6,6 +6,7 @@
 #include "common/chat/native_attachment_assets.h"
 #include "common/runtime/native_refresh_lifetime.h"
 #include "app/transcript_retention_service.h"
+#include "app/persistence_coordinator.h"
 #include "remote/native_history_snapshot.h"
 #include "include/cef_api_hash.h"
 
@@ -423,6 +424,28 @@ UAM_TEST(RemoteRefreshFeedbackRecoverySurvivesActualReopening)
 	UAM_ASSERT_EQ(ReadFile(fixture.Primary()), primary); UAM_ASSERT_EQ(ReadFile(fixture.Summary()), summary);
 	UAM_ASSERT(!fs::exists(fixture.Generation() / "published.receipt"));
 	UAM_ASSERT_EQ(fixture.reads->load(), 1); UAM_ASSERT_EQ(fixture.app.composer_text, selection_draft);
+}
+
+UAM_TEST(SelectingAChatSucceedsWhenSettingsCannotBeSaved)
+{
+	FeedbackFixture fixture;
+	ChatSession other;
+	other.id = "select-despite-settings-failure"; other.provider_id = "gemini-cli";
+	other.created_at = other.updated_at = "2020-01-01T00:00:00Z";
+	fixture.app.chats.push_back(std::move(other));
+	const fs::path settings = AppPaths::SettingsFilePath(fixture.app.data_root);
+	std::error_code ignored;
+	fs::remove_all(settings, ignored);
+	fs::create_directories(settings / "blocks-the-settings-write");
+	bool saved = true;
+	try { saved = PersistenceCoordinator().SaveSettings(fixture.app); } catch (...) { saved = false; }
+	UAM_ASSERT(!saved);
+	CefRefPtr<FeedbackCallback> selected = new FeedbackCallback;
+	RemoteRefreshFeedbackTestAccess::Select(*fixture.handler, "select-despite-settings-failure", selected);
+	UAM_ASSERT_EQ(selected->failures, 0);
+	UAM_ASSERT_EQ(selected->successes, 1);
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(fixture.app), std::string("select-despite-settings-failure"));
+	UAM_ASSERT(fixture.app.status_line.empty());
 }
 
 UAM_TEST(RemoteRefreshFeedbackRecoverySurvivesNormalTranscriptEviction)
