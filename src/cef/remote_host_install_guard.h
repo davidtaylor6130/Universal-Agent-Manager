@@ -399,7 +399,8 @@ namespace uam::remote_install
 				return "Model discovery is still stopping on this host. UAM is confirming the stop; update the helper once the host answers.";
 			// A stop the host never confirmed, with nothing running now. It is named only after every more specific hold below.
 			const bool unconfirmed_stop = !chat_id.empty() && !ChatStopInFlight(app, chat_id) &&
-			    (session != nullptr ? session->remote_stop_unconfirmed && !session->running : chat != app.chats.end() && chat->remote_stop_cleanup_pending);
+			    (session == nullptr || !session->running) &&
+			    ((session != nullptr && session->remote_stop_unconfirmed) || (chat != app.chats.end() && chat->remote_stop_cleanup_pending));
 			if (!chat_id.empty() && !unconfirmed_stop && AcpStopInProgress(app, chat_id))
 				return name + " is still stopping on this host. UAM is confirming the stop; update the helper once the host answers.";
 			if (session != nullptr && (session->processing || AcpSessionIsWaitingForInput(*session) || session->prompt_request_id != 0 ||

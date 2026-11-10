@@ -1112,6 +1112,10 @@ UAM_TEST(InstallerUnconfirmedStopIsRetriedOnceThenSetAsideAndReconnectWaitsForIn
 	++created->reconnect_attempts;
 	UAM_ASSERT(!wait_blocks(&probes, true));
 	UAM_ASSERT(wait_blocks(&probes, false));
+	// A runtime that lost its own flag still has the chat's saved stop: the refusal stays specific.
+	created->remote_stop_unconfirmed = false;
+	UAM_ASSERT(wait_blocks(&probes, false, &reason, &chat_id));
+	UAM_ASSERT(uam::remote_install::HostRuntimeBlockMessage(app, reason, chat_id).find("UAM could not confirm that \xE2\x80\x9CHomelab notes\xE2\x80\x9D stopped") != std::string::npos);
 	// Once the helper has answered, the saved stop is gone and nothing blocks either install.
 	chat.remote_stop_cleanup_pending = false;
 	app.acp_sessions.clear();

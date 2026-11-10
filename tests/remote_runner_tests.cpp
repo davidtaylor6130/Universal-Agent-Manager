@@ -3107,6 +3107,8 @@ UAM_TEST(RemoteRunnerProxyUsesTheConfiguredVersionAndAttachOnlyNeverStartsOrDupl
 }
 
 #if !defined(_WIN32)
+#include <sys/file.h>
+#include <unistd.h>
 UAM_TEST(RemoteRunnerProxyReportsAHelperThatIsVerifiablyNotRunningOnlyForAttach)
 {
 	// The stand-in `ssh` fails the bridge as a host does once the helper folder is deleted, and answers the process check as told.
@@ -3161,11 +3163,243 @@ UAM_TEST(RemoteRunnerProxyReportsAHelperThatIsVerifiablyNotRunningOnlyForAttach)
 	}
 	// A fresh launch never asks: it has no saved process to settle.
 	UAM_ASSERT(last_stderr_line("echo " + token, false, exit_code) != gone);
-	// The check exists for hosts that can list a process's executable; others get no check and so never the line.
-	UAM_ASSERT(uam::remote::RemoteHelperNotRunningCommand("linux", "1.2.3").find("*/1.2.3/uam-runner|*/\"1.2.3/uam-runner (deleted)\")") != std::string::npos);
-	UAM_ASSERT(!uam::remote::RemoteHelperNotRunningCommand("windows", "1.2.3").empty());
-	UAM_ASSERT(uam::remote::RemoteHelperNotRunningCommand("macos", "1.2.3").empty());
-	UAM_ASSERT(uam::remote::RemoteHelperNotRunningCommand("linux", "1.2.3; rm -rf x").empty());
+	// No check exists for a platform without a readable process table, or for input that is not plain text.
+	UAM_ASSERT(!uam::remote::RemoteHelperNotRunningCommand("windows", "1.2.3", "sid", "").empty());
+	UAM_ASSERT(uam::remote::RemoteHelperNotRunningCommand("macos", "1.2.3", "sid", "/w").empty());
+	UAM_ASSERT(uam::remote::RemoteHelperNotRunningCommand("linux", "1.2.3; rm -rf x", "sid", "/w").empty());
+	UAM_ASSERT(uam::remote::RemoteHelperNotRunningCommand("linux", "1.2.3", "sid'; x", "/w").empty());
+	UAM_ASSERT(uam::remote::RemoteHelperNotRunningCommand("linux", "1.2.3", "sid", "").empty());
+}
+
+namespace
+{
+	// Runs one shell command to its exit and returns its trimmed standard output.
+	std::string RunShellForTest(const std::vector<std::string>& argv, int& exit_code)
+	{
+		auto& processes = PlatformServicesFactory::Instance().process_service;
+		uam::platform::StdioProcessPlatformFields process;
+		std::string error;
+		TempDir temp("uam-helper-check-shell");
+		UAM_ASSERT(processes.StartStdioProcess(process, temp.root, argv, &error));
+		processes.CloseStdioProcessInput(process);
+		std::string output;
+		std::array<char, 256> buffer{};
+		exit_code = -1;
+		bool exited = false;
+		for (int attempt = 0; attempt < 3000; ++attempt)
+		{
+			const std::ptrdiff_t count = processes.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &error);
+			if (count > 0) { output.append(buffer.data(), static_cast<std::size_t>(count)); continue; }
+			if (exited) break;
+			exited = processes.PollStdioProcessExited(process, &exit_code);
+			if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		processes.StopStdioProcess(process, true);
+		processes.CloseStdioProcessHandles(process);
+		UAM_ASSERT(exited);
+		return std::string(uam::strings::TrimAsciiView(output));
+	}
+}
+
+UAM_TEST(RemoteHelperCheckScriptRunsAgainstAProcessTableAndFailsClosed)
+{
+	// The real Linux script, run by sh against a process table laid out as files, so every branch executes on any POSIX machine.
+	TempDir temp("uam-helper-check-table");
+	const fs::path root = temp.root / "proc";
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(root / "self");
+	fs::create_directories(workspace / "nested");
+	fs::create_directories(temp.root / "elsewhere");
+	fs::create_symlink("/bin/sh", root / "self" / "exe");
+	const std::string resolved_workspace = fs::canonical(workspace).string();
+	const std::string token(uam::remote::kRemoteHelperNotRunningToken);
+	const std::string marker = std::string(uam::remote::kRemoteSessionEnvironment) + "=session-1";
+	int next_pid = 100;
+	const auto add = [&](const std::string& exe, const std::string& name, const std::string& environ, const std::string& cwd, const std::string& state = "S (sleeping)")
+	{
+		const fs::path process = root / std::to_string(next_pid++);
+		fs::create_directories(process);
+		UAM_ASSERT(uam::io::WriteTextFile(process / "status", "Name:\t" + name + "\nState:\t" + state + "\n"));
+		if (!exe.empty()) fs::create_symlink(exe, process / "exe");
+		UAM_ASSERT(uam::io::WriteTextFile(process / "environ", environ));
+		if (!cwd.empty()) fs::create_symlink(cwd, process / "cwd");
+		return process;
+	};
+	const auto run = [&](int& exit_code)
+	{
+		const std::string script = uam::remote::RemoteHelperNotRunningCommand("linux", "1.2.3", "session-1", workspace.string(), root.string());
+		UAM_ASSERT(!script.empty());
+		int syntax = -1;
+		(void)RunShellForTest({"/bin/sh", "-n", "-c", script}, syntax);
+		UAM_ASSERT_EQ(syntax, 0);
+		return RunShellForTest({"/bin/sh", "-c", script}, exit_code);
+	};
+	const auto expect = [&](const fs::path& process, const std::string& output)
+	{
+		int exit_code = -1;
+		const std::string actual = run(exit_code);
+		fs::remove_all(process);
+		if (actual != output || exit_code != 0) throw TestFailure("Expected " + output + ", got '" + actual + "' exit " + std::to_string(exit_code));
+	};
+	const std::string plain = std::string("HOME=/home/u") + '\0' + "PATH=/usr/bin" + '\0';
+	int exit_code = -1;
+	// Unrelated processes of this account: another helper version, another session, another folder.
+	add("/home/u/.uam/9.9.9/uam-runner", "uam-runner", plain, "/");
+	add("/usr/bin/node", "node", plain + std::string(uam::remote::kRemoteSessionEnvironment) + "=session-2" + '\0', (temp.root / "elsewhere").string());
+	// A process that hides its details from its own account, as the SSH session's server process does.
+	add("", "sshd", "", "");
+	UAM_ASSERT_EQ(run(exit_code), token);
+	UAM_ASSERT_EQ(exit_code, 0);
+	// A helper of this version, also once its file or folder was deleted or renamed, or when only its name can be read.
+	expect(add("/home/u/.uam/1.2.3/uam-runner", "uam-runner", plain, "/"), "UAM_HELPER_RUNNING");
+	expect(add("/home/u/.uam/1.2.3/uam-runner (deleted)", "uam-runner", plain, "/"), "UAM_HELPER_RUNNING");
+	expect(add("/home/u/.uam/1.2.3.old/uam-runner", "uam-runner", plain, "/"), "UAM_HELPER_RUNNING");
+	expect(add("", "uam-runner", "", ""), "UAM_HELPER_RUNNING");
+	// A process of this session that outlived its helper: marked by a new helper, or only working in the session's workspace.
+	expect(add("/usr/bin/node", "node", plain + marker + '\0', "/"), "UAM_SESSION_PROCESS_RUNNING");
+	expect(add("/usr/bin/node", "node", marker + '\0' + plain, "/"), "UAM_SESSION_PROCESS_RUNNING");
+	expect(add("/usr/bin/node", "node", plain, resolved_workspace), "UAM_SESSION_PROCESS_RUNNING");
+	expect(add("/usr/bin/node", "node", plain, resolved_workspace + "/nested"), "UAM_SESSION_PROCESS_RUNNING");
+	// A marker that only contains this session's text, a sibling folder and a dead process prove nothing.
+	expect(add("/usr/bin/node", "node", plain + marker + "-other" + '\0', resolved_workspace + "-sibling"), token);
+	expect(add("/usr/bin/node", "node", plain + marker + '\0', resolved_workspace, "Z (zombie)"), token);
+	// A process table that cannot be read gives no answer at all.
+	fs::remove(root / "self" / "exe");
+	UAM_ASSERT_EQ(run(exit_code), std::string());
+	UAM_ASSERT_EQ(exit_code, 3);
+}
+
+UAM_TEST(RunnerStopRefusesAServiceThatHoldsItsLockButDoesNotAnswer)
+{
+	TempDir temp("uam-runner-stop-unreachable");
+	const fs::path socket = temp.root / "runner.sock";
+	const fs::path runner = RunnerBesideTests();
+	int exit_code = -1;
+	// No service was ever here.
+	(void)RunShellForTest({runner.string(), "stop", "--socket", socket.string()}, exit_code);
+	UAM_ASSERT_EQ(exit_code, 0);
+	// A service that still holds its lock with no reachable socket may own processes: replacing it is refused.
+	const int lock = open((socket.string() + ".lock").c_str(), O_RDWR | O_CREAT, 0600);
+	UAM_ASSERT(lock >= 0);
+	UAM_ASSERT_EQ(flock(lock, LOCK_EX | LOCK_NB), 0);
+	(void)RunShellForTest({runner.string(), "stop", "--socket", socket.string()}, exit_code);
+	UAM_ASSERT_EQ(exit_code, 2);
+	// Once it has exited, its lock is free and the stop is a no-op again.
+	UAM_ASSERT_EQ(flock(lock, LOCK_UN), 0);
+	(void)close(lock);
+	(void)RunShellForTest({runner.string(), "stop", "--socket", socket.string()}, exit_code);
+	UAM_ASSERT_EQ(exit_code, 0);
+}
+
+UAM_TEST(RemoteHelperMarksEveryProcessItStartsWithItsSession)
+{
+	TempDir temp("uam-runner-session-marker");
+	const ProxyTestHost host(temp.root);
+	uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, host.bridge, host.version);
+	std::string error;
+	UAM_ASSERT(client.Connect(&error));
+	const fs::path seen = temp.root / "seen-session";
+	UAM_ASSERT(client.StartProcess("marked-session", temp.root,
+	    {"/bin/sh", "-c", "printf %s \"$" + std::string(uam::remote::kRemoteSessionEnvironment) + "\" > '" + seen.string() + ".tmp' && mv '" + seen.string() + ".tmp' '" + seen.string() + "'"},
+	    {}, &error, false, "marked-session-token"));
+	for (int attempt = 0; attempt < ProxyPollAttempts(300) && !fs::exists(seen); ++attempt)
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(seen), std::string("marked-session"));
+	client.Disconnect();
+}
+
+#if defined(__linux__)
+UAM_TEST(RemoteHelperCheckScriptReadsTheRealLinuxProcessTable)
+{
+	// The same script against /proc: a live copy of the helper under a version folder, then a marked process, then neither.
+	TempDir temp("uam-helper-check-linux");
+	const std::string version = "0.0.0-helper-check-fixture";
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace);
+	fs::create_directories(temp.root / version);
+	const fs::path helper = temp.root / version / "uam-runner";
+	fs::copy_file(RunnerBesideTests(), helper);
+	const std::string script = uam::remote::RemoteHelperNotRunningCommand("linux", version, "linux-check-session", workspace.string());
+	auto& processes = PlatformServicesFactory::Instance().process_service;
+	std::string error;
+	int exit_code = -1;
+	UAM_ASSERT_EQ(RunShellForTest({"/bin/sh", "-c", script}, exit_code), std::string(uam::remote::kRemoteHelperNotRunningToken));
+	UAM_ASSERT_EQ(exit_code, 0);
+	{
+		uam::platform::StdioProcessPlatformFields running;
+		UAM_ASSERT(processes.StartStdioProcess(running, temp.root, {helper.string(), "bridge-direct"}, &error));
+		UAM_ASSERT_EQ(RunShellForTest({"/bin/sh", "-c", script}, exit_code), std::string("UAM_HELPER_RUNNING"));
+		processes.StopStdioProcess(running, true);
+		processes.CloseStdioProcessHandles(running);
+	}
+	{
+		uam::platform::StdioProcessPlatformFields marked;
+		UAM_ASSERT(processes.StartStdioProcess(marked, temp.root, {"/bin/sleep", "30"}, &error,
+		    {{std::string(uam::remote::kRemoteSessionEnvironment), "linux-check-session"}}));
+		UAM_ASSERT_EQ(RunShellForTest({"/bin/sh", "-c", script}, exit_code), std::string("UAM_SESSION_PROCESS_RUNNING"));
+		processes.StopStdioProcess(marked, true);
+		processes.CloseStdioProcessHandles(marked);
+	}
+	{
+		uam::platform::StdioProcessPlatformFields working;
+		UAM_ASSERT(processes.StartStdioProcess(working, workspace, {"/bin/sleep", "30"}, &error));
+		UAM_ASSERT_EQ(RunShellForTest({"/bin/sh", "-c", script}, exit_code), std::string("UAM_SESSION_PROCESS_RUNNING"));
+		processes.StopStdioProcess(working, true);
+		processes.CloseStdioProcessHandles(working);
+	}
+	UAM_ASSERT_EQ(RunShellForTest({"/bin/sh", "-c", script}, exit_code), std::string(uam::remote::kRemoteHelperNotRunningToken));
+}
+#endif
+#else
+UAM_TEST(RemoteHelperCheckScriptRunsOnWindows)
+{
+	// The real PowerShell check against this machine: a live copy of the helper under a version folder, then none.
+	TempDir temp("uam-helper-check-windows");
+	const std::string version = "0.0.0-helper-check-fixture";
+	fs::create_directories(temp.root / version);
+	const fs::path helper = temp.root / version / "uam-runner.exe";
+	fs::copy_file(RunnerBesideTests(), helper);
+	const std::string command = uam::remote::RemoteHelperNotRunningCommand("windows", version, "windows-check-session", "");
+	std::vector<std::string> argv;
+	for (std::size_t start = 0; start < command.size();)
+	{
+		const std::size_t end = std::min(command.find(' ', start), command.size());
+		argv.push_back(command.substr(start, end - start));
+		start = end + 1;
+	}
+	auto& processes = PlatformServicesFactory::Instance().process_service;
+	const auto run = [&]
+	{
+		uam::platform::StdioProcessPlatformFields process;
+		std::string error;
+		UAM_ASSERT(processes.StartStdioProcess(process, temp.root, argv, &error));
+		processes.CloseStdioProcessInput(process);
+		std::string output;
+		std::array<char, 256> buffer{};
+		int exit_code = -1;
+		bool exited = false;
+		for (int attempt = 0; attempt < 6000; ++attempt)
+		{
+			const std::ptrdiff_t count = processes.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &error);
+			if (count > 0) { output.append(buffer.data(), static_cast<std::size_t>(count)); continue; }
+			if (exited) break;
+			exited = processes.PollStdioProcessExited(process, &exit_code);
+			if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		processes.StopStdioProcess(process, true);
+		processes.CloseStdioProcessHandles(process);
+		UAM_ASSERT(exited);
+		UAM_ASSERT_EQ(exit_code, 0);
+		return std::string(uam::strings::TrimAsciiView(output));
+	};
+	UAM_ASSERT_EQ(run(), std::string(uam::remote::kRemoteHelperNotRunningToken));
+	uam::platform::StdioProcessPlatformFields running;
+	std::string error;
+	UAM_ASSERT(processes.StartStdioProcess(running, temp.root, {helper.string(), "bridge-direct"}, &error));
+	UAM_ASSERT_EQ(run(), std::string("UAM_HELPER_RUNNING"));
+	processes.StopStdioProcess(running, true);
+	processes.CloseStdioProcessHandles(running);
+	UAM_ASSERT_EQ(run(), std::string(uam::remote::kRemoteHelperNotRunningToken));
 }
 #endif
 

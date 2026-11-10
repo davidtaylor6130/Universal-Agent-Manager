@@ -628,22 +628,51 @@ namespace uam::remote
 #endif
 	}
 
-	std::string RemoteHelperNotRunningCommand(const std::string& platform, const std::string& version)
+	std::string RemoteHelperNotRunningCommand(const std::string& platform, const std::string& version, const std::string& session_id,
+	    const std::string& workspace, const std::string& proc_root)
 	{
-		if (version.empty() || !std::ranges::all_of(version, [](unsigned char character)
-		    { return std::isalnum(character) != 0 || character == '-' || character == '_' || character == '.'; })) return {};
+		const auto token_text = [](const std::string& value, std::string_view extra)
+		{
+			return !value.empty() && std::ranges::all_of(value, [extra](unsigned char character)
+			    { return std::isalnum(character) != 0 || extra.find(static_cast<char>(character)) != std::string_view::npos; });
+		};
+		if (!token_text(version, "-_.") || !token_text(session_id, "-_")) return {};
 		const std::string token(kRemoteHelperNotRunningToken);
 		if (platform == "linux" || platform == "Linux")
-			// Matching the version folder and file name survives a symlinked home; a helper whose binary was deleted still shows here.
-			return "LC_ALL=C; export LC_ALL; test -r /proc/self/exe || exit 3; for p in /proc/[0-9]*; do "
-			       "l=$(readlink \"$p/exe\" 2>/dev/null) || continue; case \"$l\" in */" + version + "/uam-runner|*/\"" + version +
-			       "/uam-runner (deleted)\") echo UAM_HELPER_RUNNING; exit 0;; esac; done; echo " + token;
+		{
+			// Fail closed: without a workspace the check for unmarked survivors cannot run.
+			if (workspace.empty() || workspace.find('\0') != std::string::npos || workspace.find('\n') != std::string::npos) return {};
+			const auto quoted = [](const std::string& value)
+			{
+				std::string result = "'";
+				for (const char character : value) result += character == '\'' ? std::string("'\\''") : std::string(1, character);
+				return result + "'";
+			};
+			// Exit 3 means the process table could not be read; nothing is concluded from it. Other accounts' processes and
+			// zombies are skipped. A process that hides its details from its own account (the SSH session's own server
+			// process does) is judged by name alone. The version match is loose so a renamed version folder still counts.
+			return "LC_ALL=C; export LC_ALL; R=" + quoted(proc_root) + "; w=" + quoted(workspace) + "; "
+			       "readlink \"$R/self/exe\" >/dev/null 2>&1 || exit 3; "
+			       "r=$(cd \"$w\" 2>/dev/null && pwd -P) && w=$r; "
+			       "for p in \"$R\"/[0-9]*; do [ -O \"$p\" ] || continue; [ -r \"$p/status\" ] || continue; "
+			       "grep -q '^State:[[:space:]]*Z' \"$p/status\" 2>/dev/null && continue; "
+			       "if l=$(readlink \"$p/exe\" 2>/dev/null); then "
+			       "case \"$l\" in *" + version + "*/uam-runner|*" + version + "*\"/uam-runner (deleted)\") echo UAM_HELPER_RUNNING; exit 0;; esac; "
+			       "else [ -d \"$p\" ] || continue; "
+			       "case \"$(sed -n 's/^Name:[[:space:]]*//p' \"$p/status\" 2>/dev/null)\" in uam-runner*) echo UAM_HELPER_RUNNING; exit 0;; esac; continue; fi; "
+			       "[ \"${p##*/}\" = \"$$\" ] && continue; "
+			       "if tr '\\000' '\\n' < \"$p/environ\" 2>/dev/null | grep -qxF '" + std::string(kRemoteSessionEnvironment) + "=" + session_id + "'; then echo UAM_SESSION_PROCESS_RUNNING; exit 0; fi; "
+			       "c=$(readlink \"$p/cwd\" 2>/dev/null) || c=; "
+			       "case \"$c\" in \"$w\"|\"$w\"/*) echo UAM_SESSION_PROCESS_RUNNING; exit 0;; esac; "
+			       "done; echo " + token;
+		}
 		if (platform == "windows" || platform == "Windows")
 		{
-			// A process whose path cannot be read counts as running.
+			// A Windows helper's processes end with it (kill-on-close job), so the helper check alone settles it there.
+			// A process whose path cannot be read, such as another account's helper, counts as running.
 			const std::string script = "$p=@(Get-CimInstance Win32_Process -Filter \"Name='uam-runner.exe'\" -ErrorAction Stop | Where-Object { "
-			    "-not $_.ExecutablePath -or $_.ExecutablePath -like '*\\" + version + "\\uam-runner.exe' -or $_.ExecutablePath -like '*/" + version +
-			    "/uam-runner.exe' }); if ($p.Count -gt 0) { 'UAM_HELPER_RUNNING' } else { '" + token + "' }";
+			    "-not $_.ExecutablePath -or $_.ExecutablePath -like '*" + version + "*\\uam-runner.exe' -or $_.ExecutablePath -like '*" + version +
+			    "*/uam-runner.exe' }); if ($p.Count -gt 0) { 'UAM_HELPER_RUNNING' } else { '" + token + "' }";
 			std::string utf16_le;
 			for (const char character : script) { utf16_le.push_back(character); utf16_le.push_back('\0'); }
 			return "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + uam::base64::Encode(utf16_le);
@@ -654,14 +683,17 @@ namespace uam::remote
 	namespace
 	{
 		/// One bounded SSH command; true only for a clean exit whose whole output is the not-running token.
-		bool RemoteHelperVerifiablyNotRunning(IPlatformProcessService& service, const std::string& ssh_alias, const std::string& platform, const std::string& version)
+		bool RemoteHelperVerifiablyNotRunning(IPlatformProcessService& service, const std::string& ssh_alias, const std::string& platform, const std::string& version,
+		    const std::string& session_id, const std::string& workspace)
 		{
-			const std::string command = RemoteHelperNotRunningCommand(platform, version);
+			const std::string command = RemoteHelperNotRunningCommand(platform, version, session_id, workspace);
 			const std::optional<std::filesystem::path> directory = uam::paths::CurrentPathNoThrow();
 			if (command.empty() || !directory) return false;
 			uam::platform::StdioProcessPlatformFields probe;
 			std::string error;
-			if (!service.StartStdioProcess(probe, *directory, {"ssh", "-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=10", ssh_alias, command}, &error))
+			if (!service.StartStdioProcess(probe, *directory, {"ssh", "-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=10",
+			        // Keepalives end the command by itself if this proxy is killed while it runs.
+			        "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2", ssh_alias, command}, &error))
 				return false;
 			service.CloseStdioProcessInput(probe);
 			std::string output;
@@ -741,8 +773,9 @@ namespace uam::remote
 		if (!client.Connect(&error))
 		{
 			std::cerr << (error.empty() ? "Remote process could not start." : error) << '\n';
-			// A helper that cannot be reached because it no longer exists owns nothing; an unreachable host proves nothing.
-			if (spec->attach_only && RemoteHelperVerifiablyNotRunning(process_service, ssh_alias, platform, version))
+			// Neither a helper nor a process of this session left on a reachable host is an answer; an unreachable host proves nothing.
+			if (spec->attach_only && RemoteHelperVerifiablyNotRunning(process_service, ssh_alias, platform, version, session_id,
+			        uam::paths::Utf8PathString(spec->working_directory)))
 				std::cerr << kRemoteHelperNotRunningLine << '\n';
 			return 70;
 		}
