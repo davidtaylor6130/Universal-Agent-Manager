@@ -1498,6 +1498,9 @@ namespace uam
 		// Consecutive failed transcript saves per chat: told to the user once, then retried with backoff.
 		struct ChatSaveFailure { int attempts = 0; double retry_at = 0.0; };
 		std::unordered_map<std::string, ChatSaveFailure> chat_save_failures_by_chat_id;
+		// Rows of the most recently saved transcripts, reused as the next save's unchanged prefix so each
+		// burst does not read and parse the whole file again. Only ever compared against live rows.
+		std::vector<std::pair<std::string, std::vector<std::shared_ptr<const Message>>>> saved_chat_rows;
 		std::unordered_map<std::string, std::shared_ptr<PendingChatSaveTask>> pending_chat_save_tasks;
 		std::unordered_map<std::string, std::shared_ptr<PendingAcpCompletedPromptRecoveries>> pending_acp_completed_prompt_recoveries;
 		// A failed durable barrier can retain a scoped retry after removing its active task.

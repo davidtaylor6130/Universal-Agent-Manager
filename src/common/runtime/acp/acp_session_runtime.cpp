@@ -10197,6 +10197,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 				CollectControlAuditSaveResults(app, task, published, acknowledgements);
 				if (published)
 				{
+					// ponytail: two transcripts, a second in-memory copy of each; widen if more chats stream at once.
+					std::erase_if(app.saved_chat_rows, [&](const auto& rows) { return rows.first == chat_id; });
+					if (app.saved_chat_rows.size() >= 2) app.saved_chat_rows.erase(app.saved_chat_rows.begin());
+					app.saved_chat_rows.emplace_back(chat_id, task->messages);
 					app.chat_save_pace_by_chat_id[chat_id] = {now, std::max(0.0, now - task->captured_at)};
 					acp_detail::NoteChatSaveSucceeded(app, chat_id);
 				}
@@ -10358,18 +10362,23 @@ For desktop observation and input, use only the provider's built-in controller; 
 				task->baseline_requested = true;
 				task->chat_id = chat_id;
 				task->data_root = app.data_root;
-				// Build the durable immutable prefix on the worker, without copying archived bodies on UI.
-				std::packaged_task<std::vector<std::shared_ptr<const Message>>()> baseline([root = app.data_root, chat_id]()
+				const auto rows = std::ranges::find(app.saved_chat_rows, chat_id, [](const auto& saved) -> const std::string& { return saved.first; });
+				if (rows != app.saved_chat_rows.end()) task->messages = rows->second;
+				else
 				{
-					std::vector<std::shared_ptr<const Message>> messages;
-					std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(root, chat_id, true, nullptr, false);
-					if (saved)
-						for (Message& message : saved->messages) messages.push_back(std::make_shared<const Message>(std::move(message)));
-					return messages;
-				});
-				task->baseline = baseline.get_future();
-				std::thread(std::move(baseline)).detach();
-				continue;
+					// Build the durable immutable prefix on the worker, without copying archived bodies on UI.
+					std::packaged_task<std::vector<std::shared_ptr<const Message>>()> baseline([root = app.data_root, chat_id]()
+					{
+						std::vector<std::shared_ptr<const Message>> messages;
+						std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(root, chat_id, true, nullptr, false);
+						if (saved)
+							for (Message& message : saved->messages) messages.push_back(std::make_shared<const Message>(std::move(message)));
+						return messages;
+					});
+					task->baseline = baseline.get_future();
+					std::thread(std::move(baseline)).detach();
+					continue;
+				}
 			}
 			task->publication_owned = std::make_shared<std::atomic<bool>>(true);
 			task->data_root = app.data_root;
