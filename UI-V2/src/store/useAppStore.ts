@@ -1080,21 +1080,21 @@ export const useAppStore = create<AppState>((set, get) => {
               above.every((patch, index) => cppPatchRevision(patch) === base + index + 1)
           }
           if (snapshotRevision >= storeRevision || (newerFullState <= snapshotRevision && rebuilds(snapshotRevision))) {
-            // Cleared first so the replayed copies are not mistaken for a still-open gap.
-            stateResyncOutstanding = false
             // Keep this window's selection, including a deliberate none: a click whose selectSession is still
             // unacknowledged must not jump back to the native choice.
             const localSelection = before.activeSessionId
             const keepSelection = localSelection === null || snapshot.chats.some((chat) => chat.id === localSelection)
             // Snapshot and replay are composed off-store and published once, so subscribers never see the
             // snapshot's older revision between them.
-            pruneStreamTokensForFullState(snapshot)
+            const replayed = copiesAbove(snapshotRevision)
             let working = { ...before, ...fullStateProjection(keepSelection ? { ...snapshot, selectedChatId: localSelection } : snapshot, before) } as AppState
-            for (const patch of copiesAbove(snapshotRevision)) {
-              discardBuffersForPatch(patch)
+            for (const patch of replayed) {
               const next = applyStatePatch(patch, working)
               if (next) working = { ...working, ...working.reconcileMemorySettingsProjection(next, patch.settings) }
             }
+            // Buffers change only once the compose succeeded, so a throw above drops nothing.
+            pruneStreamTokensForFullState(snapshot)
+            for (const patch of replayed) discardBuffersForPatch(patch)
             set(working)
             if (working.theme) persistTheme(working.theme, get().customThemes)
             reloadActiveTranscriptIfChanged(before, false)
@@ -1193,8 +1193,11 @@ export const useAppStore = create<AppState>((set, get) => {
       switch (msg.type) {
         case 'stateUpdate':
           if (!isNewerStateRevision(cppStateRevision(msg.data), store.lastAppliedStateRevision)) break
-          if (stateResyncInFlight) fullStateRevisionDuringResync = Math.max(fullStateRevisionDuringResync, cppStateRevision(msg.data))
           applyFullState(msg.data)
+          // Only a full state the store actually took can close the gap for the pull in flight.
+          if (stateResyncInFlight && get().lastAppliedStateRevision === cppStateRevision(msg.data)) {
+            fullStateRevisionDuringResync = Math.max(fullStateRevisionDuringResync, cppStateRevision(msg.data))
+          }
           break
         case 'statePatch':
           if (stateResyncInFlight) {

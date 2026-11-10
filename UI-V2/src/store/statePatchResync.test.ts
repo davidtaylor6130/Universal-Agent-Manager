@@ -267,6 +267,44 @@ describe('state patch gap recovery', () => {
     expect(pulls).toHaveLength(6)
   })
 
+  it('keeps the gap outstanding when composing the snapshot throws on the last allowed attempt', async () => {
+    const { store, pulls, push, flush } = await startStore()
+    push(chatPatch(7))
+    for (const [index, delay] of [100, 2000, 4000, 8000].entries()) {
+      await flush(delay)
+      expect(pulls).toHaveLength(index + 1)
+      pulls[index].fail()
+      await flush(0)
+    }
+    await flush(16000)
+    expect(pulls).toHaveLength(5)
+    const reconcile = store.getState().reconcileMemorySettingsProjection
+    store.setState({ reconcileMemorySettingsProjection: () => { throw new Error('compose failed') } })
+    pulls[4].reply(fullState(7, 'Never composed'))
+    await flush(0)
+    store.setState({ reconcileMemorySettingsProjection: reconcile })
+    await flush(600000)
+    expect(pulls).toHaveLength(5)
+    push(chatPatch(8))
+    await flush(100)
+    expect(pulls).toHaveLength(6)
+  })
+
+  it('does not count a full state the store rejected as closing the gap', async () => {
+    const { store, pulls, push, flush } = await startStore()
+    push(chatPatch(7))
+    await flush()
+    const loadFromCef = store.getState().loadFromCef
+    store.setState({ loadFromCef: () => undefined })
+    push({ type: 'stateUpdate', data: fullState(12) })
+    store.setState({ loadFromCef })
+    push(chatPatch(13)); push(chatPatch(14))
+    expect(store.getState().lastAppliedStateRevision).toBe(14)
+    pulls[0].reply(fullState(9, 'Older snapshot'))
+    await flush(5000)
+    expect(pulls).toHaveLength(2)
+  })
+
   it('does not freeze live state when the pull never answers, and ignores the late reply', async () => {
     const { store, pulls, push, flush } = await startStore()
     push(chatPatch(7))
