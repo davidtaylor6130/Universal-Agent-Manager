@@ -4,4 +4,6 @@ A manual memory scan lets the user select saved conversations as candidates for 
 
 A scan must prepare its complete selected input before starting extraction; it must not silently replace a requested range with a shorter tail or advance progress after incomplete preparation. If the input exceeds supported memory limits or cannot be read safely, report the failure and retain the scan intent and previous progress. Saved conversations, queued input and recovery records remain unchanged. An unexpected failure while reading saved history or processing worker output stops only that chat's extraction the same way and must not end the app; the developer log records a bounded reason without raw worker or remote error text. Large-history extraction beyond the current input limit remains an implementation gap, not a successful empty result.
 
+A worker failure pauses background extraction for 30 seconds to five minutes only for that execution host and worker provider. Chats on another host or provider keep extracting, and a manual scan clears the pause for the chats it selects.
+
 [Memory policies](../settings/memory-policies.md) · [Memory store](store.md) · [Settings](../settings/memory.md).

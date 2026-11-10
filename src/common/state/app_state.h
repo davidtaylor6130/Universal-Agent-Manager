@@ -1235,6 +1235,13 @@ namespace uam
 		task.running = false;
 	}
 
+	/// <summary>Worker retry pause for one execution host and provider pair.</summary>
+	struct MemoryWorkerBackoff
+	{
+		double retry_not_before = 0.0;
+		int failure_count = 0;
+	};
+
 	struct QueuedMemoryExtractionTask
 	{
 		std::string chat_id;
@@ -1478,8 +1485,7 @@ namespace uam
 		std::unordered_map<std::string, double> memory_idle_started_at_by_chat_id;
 		std::unordered_map<std::string, double> memory_retry_not_before_by_chat_id;
 		std::unordered_map<std::string, int> memory_failure_count_by_chat_id;
-		double memory_global_retry_not_before = 0.0;
-		int memory_global_failure_count = 0;
+		std::unordered_map<std::string, MemoryWorkerBackoff> memory_worker_backoff_by_key;
 		std::unordered_map<std::string, CliProviderVersionState> runtime_cli_versions_by_provider_id;
 		std::unordered_map<std::string, ComputerUseRuntimeState> computer_use_by_chat_id;
 		std::unordered_set<std::string> computer_use_revocation_pending_chat_ids;
