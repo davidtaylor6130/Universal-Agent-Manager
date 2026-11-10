@@ -71,6 +71,9 @@ class StateSerializer
 	/// <summary>Values reused by revision stamp on this thread so far without recomputing them.</summary>
 	static std::size_t TrustedCacheReadCount();
 
+	/// <summary>Times a live session's tool calls were serialized from the session on this thread so far.</summary>
+	static std::size_t LiveToolCallSerializationCountForTests();
+
 	/// <summary>Times the providerModelCatalogs slice was built on this thread so far.</summary>
 	static std::size_t CatalogSliceBuildCountForTests();
 

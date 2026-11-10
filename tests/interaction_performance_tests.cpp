@@ -1330,3 +1330,44 @@ UAM_TEST(StatePushRebuildsModelCataloguesOnlyWhenTheirInputsChange)
 	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
 	UAM_ASSERT_EQ(uam::StateSerializer::CatalogSliceBuildCountForTests(), builds + 1);
 }
+
+UAM_TEST(StatePushSerializesLiveToolCallsOnlyWhenTheyChange)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	StatePatchObserver observer;
+	TempDir temp("uam-live-tool-calls");
+	uam::AppState app;
+	BuildStreamingPushFixture(app, temp.root);
+	clock.Advance(std::chrono::seconds(3));
+	uam::PushStateUpdate(nullptr, app);
+	clock.Advance(std::chrono::milliseconds(120));
+	(void)uam::PushStateUpdateIfChanged(nullptr, app);
+
+	// Streaming text changes the turn events of the three live chats, not their tool calls (40 calls of 50 KB each).
+	std::size_t serialized = uam::StateSerializer::LiveToolCallSerializationCountForTests();
+	for (int token = 0; token < 5; ++token)
+	{
+		AppendStreamToken(app, token);
+		clock.Advance(std::chrono::milliseconds(120));
+		g_observed_state_patch.clear();
+		UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+		const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+		UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{3});
+		// The published summary still carries every tool call.
+		UAM_ASSERT_EQ(patch["chats"][0]["acpSession"]["toolCalls"].size(), app.acp_sessions[0]->tool_calls.size());
+	}
+	UAM_ASSERT_EQ(uam::StateSerializer::LiveToolCallSerializationCountForTests(), serialized);
+
+	// A tool call that changes is serialized again for its session only, and published.
+	app.acp_sessions[1]->tool_calls.back().status = "failed";
+	clock.Advance(std::chrono::milliseconds(120));
+	g_observed_state_patch.clear();
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+	UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(patch["chats"][0]["id"], app.chats[1].id);
+	UAM_ASSERT_EQ(patch["chats"][0]["acpSession"]["toolCalls"].back()["status"], "failed");
+	UAM_ASSERT(uam::StateSerializer::LiveToolCallSerializationCountForTests() > serialized);
+	UAM_ASSERT(uam::StateSerializer::LiveToolCallSerializationCountForTests() <= serialized + 3);
+}

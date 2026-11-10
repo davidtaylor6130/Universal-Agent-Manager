@@ -1385,6 +1385,42 @@ namespace uam
 			return tool_calls_json;
 		}
 
+		struct StampedToolCallJson
+		{
+			std::uint64_t revision = 0;
+			nlohmann::json tool_calls;
+		};
+		// A live session's serialized tool calls by chat id, valid while the tool call list's stamp is unchanged.
+		thread_local std::unordered_map<std::string, StampedToolCallJson> g_live_tool_call_json;
+		thread_local std::size_t g_live_tool_call_serializations = 0;
+
+		/// <summary>
+		/// The session's tool calls as the frontend receives them. A streamed token leaves the tool calls alone, so
+		/// inside a push their JSON (each call's arguments and output, up to 64 KB inline) is reused by stamp instead
+		/// of being rebuilt from the session on every 100 ms rebuild.
+		/// </summary>
+		nlohmann::json SerializeLiveAcpToolCalls(const AcpSessionState& session)
+		{
+			const std::uint64_t revision = session.tool_calls.revision();
+			const auto known = g_live_tool_call_json.find(session.chat_id);
+			const bool stamped = g_stamped_cache_mode != StateSerializer::StampedCacheMode::Exact && revision != 0 &&
+			    known != g_live_tool_call_json.end() && known->second.revision == revision;
+			if (stamped && g_stamped_cache_mode == StateSerializer::StampedCacheMode::Trust)
+			{
+				++g_trusted_cache_reads;
+				return known->second.tool_calls;
+			}
+			++g_live_tool_call_serializations;
+			nlohmann::json tool_calls = SerializeAcpToolCalls(session.tool_calls);
+			if (stamped && known->second.tool_calls != tool_calls) ReportCacheDivergence("live tool calls", session.chat_id);
+			if (revision != 0 && g_stamped_cache_mode != StateSerializer::StampedCacheMode::Exact)
+			{
+				if (known == g_live_tool_call_json.end() && g_live_tool_call_json.size() >= 256) g_live_tool_call_json.erase(g_live_tool_call_json.begin());
+				g_live_tool_call_json[session.chat_id] = StampedToolCallJson{revision, tool_calls};
+			}
+			return tool_calls;
+		}
+
 		nlohmann::json SerializeAcpPlanEntries(const std::vector<AcpPlanEntryState>& plan_entries)
 		{
 			nlohmann::json plan_entries_json = JsonArrayWithCapacity(plan_entries.size());
@@ -1821,7 +1857,7 @@ namespace uam
 			};
 
 			acp_json["diagnostics"] = SerializeAcpDiagnostics(session->diagnostics);
-			acp_json["toolCalls"] = SerializeAcpToolCalls(session->tool_calls);
+			acp_json["toolCalls"] = SerializeLiveAcpToolCalls(*session);
 			acp_json["planSummary"] = session->plan_summary;
 			acp_json["planEntries"] = SerializeAcpPlanEntries(session->plan_entries);
 			acp_json["availableCommands"] = SerializeAcpCommands(session->available_commands);
@@ -2355,6 +2391,11 @@ namespace uam
 	std::size_t StateSerializer::TrustedCacheReadCount()
 	{
 		return g_trusted_cache_reads;
+	}
+
+	std::size_t StateSerializer::LiveToolCallSerializationCountForTests()
+	{
+		return g_live_tool_call_serializations;
 	}
 
 	std::size_t StateSerializer::CatalogSliceBuildCountForTests()
