@@ -622,3 +622,91 @@ UAM_TEST(ExecutionRoutingMcpChangesInvalidateHostConfirmation)
 		UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("remote"));
 	}
 }
+
+namespace
+{
+	void ConfirmCurrentRoutingConfiguration(uam::AppState& app)
+	{
+		ExecutionRoutingProviderConfirmation& confirmation = app.settings.execution_routing.hosts.front().provider_confirmations.front();
+		confirmation.connection_identity = uam::ExecutionRoutingConnectionIdentity(app.settings.execution_hosts.back());
+		confirmation.provider_configuration_identity = uam::ExecutionRoutingProviderIdentity(app, app.provider_profiles.front(), "remote");
+		app.execution_routing_retry_at_by_chat_id.clear();
+	}
+}
+
+UAM_TEST(ExecutionRoutingHelperUpdateDoesNotChangeTheAssignedConnection)
+{
+	TempDir temp("uam-routing-helper-update");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+	const std::string before = uam::ExecutionRoutingConnectionIdentity(app.settings.execution_hosts.back());
+	app.settings.execution_hosts.back().runner_version = "updated-helper";
+	UAM_ASSERT_EQ(uam::ExecutionRoutingConnectionIdentity(app.settings.execution_hosts.back()), before);
+	app.runtime_cli_versions_by_provider_id.at(CliProviderVersionStateKey("codex-cli", "remote")).execution_host = app.settings.execution_hosts.back();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+}
+
+UAM_TEST(ExecutionRoutingIdleAssignmentAdoptsAConfirmedConfigurationChange)
+{
+	TempDir temp("uam-routing-restamp");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	ChatSession& chat = app.chats.front();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, chat).status, uam::ExecutionRoutingStatus::Assigned);
+	const std::string assigned_connection = chat.routing_assigned_connection_identity;
+	const std::string assigned_provider = chat.routing_assigned_provider_configuration_identity;
+	app.settings.execution_hosts.back().instruction_text = "Changed host guidance";
+	app.settings.provider_extra_flags = "--changed-default";
+	app.runtime_cli_versions_by_provider_id.at(CliProviderVersionStateKey("codex-cli", "remote")).execution_host = app.settings.execution_hosts.back();
+	// Until the user confirms the provider on the changed configuration, the chat waits and keeps its assignment.
+	const uam::ExecutionRoutingDecision unconfirmed = uam::AdmitExecutionRouting(app, chat);
+	UAM_ASSERT_EQ(unconfirmed.status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(unconfirmed.reason, uam::ExecutionRoutingReason::OwnershipChanged);
+	UAM_ASSERT_EQ(chat.routing_assigned_connection_identity, assigned_connection);
+	ConfirmCurrentRoutingConfiguration(app);
+	const uam::ExecutionRoutingDecision adopted = uam::AdmitExecutionRouting(app, chat);
+	UAM_ASSERT_EQ(adopted.status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(adopted.assignment.host_id, std::string("remote"));
+	UAM_ASSERT(chat.routing_assigned_connection_identity != assigned_connection);
+	UAM_ASSERT(chat.routing_assigned_provider_configuration_identity != assigned_provider);
+	UAM_ASSERT_EQ(chat.routing_assigned_connection_identity, uam::ExecutionRoutingConnectionIdentity(app.settings.execution_hosts.back()));
+	UAM_ASSERT_EQ(chat.workspace_directory, std::string("/mapped/repo"));
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT_EQ(persisted->routing_assigned_connection_identity, chat.routing_assigned_connection_identity);
+	UAM_ASSERT_EQ(persisted->routing_assigned_provider_configuration_identity, chat.routing_assigned_provider_configuration_identity);
+	UAM_ASSERT(app.execution_routing_waits.find(chat.id) == app.execution_routing_waits.end());
+}
+
+UAM_TEST(ExecutionRoutingOwnedWorkKeepsItsConnectionAndAdoptsOnlyProviderSettings)
+{
+	TempDir temp("uam-routing-restamp-owned");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	ChatSession& chat = app.chats.front();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, chat).status, uam::ExecutionRoutingStatus::Assigned);
+	chat.remote_active_turn_id = "turn-still-running";
+	UAM_ASSERT(uam::ExecutionRoutingOwnsWork(app, chat));
+	const std::string assigned_connection = chat.routing_assigned_connection_identity;
+	const std::string assigned_provider = chat.routing_assigned_provider_configuration_identity;
+	// A provider setting edited during the turn must not stop the chat reattaching to its own process.
+	app.settings.provider_extra_flags = "--changed-default";
+	const uam::ExecutionRoutingDecision reattached = uam::AdmitExecutionRouting(app, chat);
+	UAM_ASSERT_EQ(reattached.status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(chat.routing_assigned_connection_identity, assigned_connection);
+	UAM_ASSERT(chat.routing_assigned_provider_configuration_identity != assigned_provider);
+	// A changed connection may be another machine: the turn stays where it is until it is stopped, even once confirmed.
+	app.settings.execution_hosts.back().ssh_alias = "fixture-other-machine";
+	app.runtime_cli_versions_by_provider_id.at(CliProviderVersionStateKey("codex-cli", "remote")).execution_host = app.settings.execution_hosts.back();
+	ConfirmCurrentRoutingConfiguration(app);
+	const uam::ExecutionRoutingDecision held = uam::AdmitExecutionRouting(app, chat);
+	UAM_ASSERT_EQ(held.status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(held.reason, uam::ExecutionRoutingReason::OwnershipChanged);
+	UAM_ASSERT_EQ(chat.routing_assigned_connection_identity, assigned_connection);
+	UAM_ASSERT(app.execution_routing_waits[chat.id].find("Stop the turn") != std::string::npos);
+	chat.remote_active_turn_id.clear();
+	app.execution_routing_retry_at_by_chat_id.clear();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, chat).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT(chat.routing_assigned_connection_identity != assigned_connection);
+}

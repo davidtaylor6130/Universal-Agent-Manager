@@ -70,16 +70,17 @@ namespace uam
 			switch (reason)
 			{
 			case ExecutionRoutingReason::HostUnavailable: return "The assigned host is unavailable.";
-			case ExecutionRoutingReason::OwnershipChanged: return "The assigned host or provider configuration changed. Review the assignment before retrying.";
+			case ExecutionRoutingReason::OwnershipChanged: return "The assigned host or provider configuration changed. Confirm the provider for this computer in Routing settings; the chat then continues by itself.";
 			case ExecutionRoutingReason::InconsistentSnapshot: return "Routing ownership is inconsistent. Review the chat before retrying.";
 			default: return "Waiting for an eligible host with a matching workspace and available slot.";
 			}
 		}
+
 	}
 
 	std::string ExecutionRoutingConnectionConfiguration(const ExecutionHost& host)
 	{
-		return nlohmann::json::array({host.id, host.transport, host.ssh_alias, host.platform, host.architecture, host.runner_version, host.runner_protocol_version, host.runner_directory, host.instruction_file, host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr)}).dump();
+		return nlohmann::json::array({host.id, host.transport, host.ssh_alias, host.platform, host.architecture, host.runner_directory, host.instruction_file, host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr)}).dump();
 	}
 
 	std::string ExecutionRoutingProviderConfiguration(const AppState& app, const ProviderProfile& provider, std::string_view host_id)
@@ -142,10 +143,11 @@ namespace uam
 			candidate.runner_ready = host.id == "local" || host.runner_status == "ready";
 			candidate.runner_compatible = host.id == "local" || (!host.runner_version.empty() && host.runner_protocol_version == remote::kRunnerProtocolVersion);
 			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider->id, host.id));
-			candidate.provider_supported = ProviderRuntime::IsRuntimeEnabled(*provider) && provider_availability::IsEnabled(app.settings, provider->id, host.id) && (terminal ? provider->supports_interactive : provider->supports_structured) &&
-			    version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked && version->second.supported &&
-			    !version->second.installed_version.empty() && version->second.check_error.empty() && execution_hosts::SameConnection(host, version->second.execution_host) &&
-			    ProviderCliLaunchBlockReason(app, provider->id, host.id).empty();
+			const bool version_usable = version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked && version->second.supported &&
+			    !version->second.installed_version.empty() && version->second.check_error.empty() && execution_hosts::SameConnection(host, version->second.execution_host);
+			const bool provider_enabled = ProviderRuntime::IsRuntimeEnabled(*provider) && provider_availability::IsEnabled(app.settings, provider->id, host.id);
+			candidate.provider_supported = provider_enabled && (terminal ? provider->supports_interactive : provider->supports_structured) &&
+			    version_usable && ProviderCliLaunchBlockReason(app, provider->id, host.id).empty();
 			for (const ExecutionRoutingHostPolicy& policy : app.settings.execution_routing.hosts)
 			{
 				if (policy.host_id != host.id) continue;
@@ -211,6 +213,26 @@ namespace uam
 			}
 		}
 
+		if (automatic && !request.assigned.host_id.empty())
+		{
+			const std::vector<ExecutionRoutingCandidate>::const_iterator owner = std::ranges::find(candidates, request.assigned.host_id, &ExecutionRoutingCandidate::host_id);
+			if (owner != candidates.end() && (request.assigned.connection_identity != owner->connection_identity ||
+			    request.assigned.provider_configuration_identity != owner->provider_configuration_identity))
+			{
+				// The assignment pins the chat to its host, so a newer configuration never moves it. With no turn,
+				// delivery or pending answer on the old one, the chat adopts the configuration the user confirmed.
+				// Work already on the host keeps its connection and adopts only provider settings, which apply at the next launch.
+				const bool confirmed = owner->provider_confirmed && owner->connection_identity == owner->confirmed_connection_identity &&
+				    owner->provider_configuration_identity == owner->confirmed_provider_configuration_identity;
+				if (request.recovery_of_owned_work ? request.assigned.connection_identity == owner->connection_identity : confirmed)
+				{
+					(void)RoutingService(app).Release(chat.id, true);
+					request.assigned.connection_identity = owner->connection_identity;
+					request.assigned.provider_configuration_identity = owner->provider_configuration_identity;
+				}
+			}
+		}
+
 		if (automatic)
 		{
 			if (request.assigned.host_id.empty())
@@ -218,7 +240,7 @@ namespace uam
 			request.source_workspace_identity = WorkspaceIdentity(app, chat.routing_source_folder_id, chat.routing_source_directory);
 			if (request.assigned.host_id.empty() && (!chat.native_session_id.empty() || chat.remote_process_exists))
 			{
-				app.execution_routing_waits[chat.id] = WaitReason(ExecutionRoutingReason::OwnershipChanged);
+				app.execution_routing_waits[chat.id] = "This chat already has a provider session from before automatic routing assigned it a computer. Review the chat before retrying.";
 				return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::OwnershipChanged, {}};
 			}
 		}
@@ -234,7 +256,9 @@ namespace uam
 		ExecutionRoutingDecision decision = RoutingService(app).Admit(request, candidates, occupancy);
 		if (decision.status == ExecutionRoutingStatus::Waiting || decision.status == ExecutionRoutingStatus::Invalid)
 		{
-			app.execution_routing_waits[chat.id] = WaitReason(decision.reason);
+			app.execution_routing_waits[chat.id] = decision.reason == ExecutionRoutingReason::OwnershipChanged && request.recovery_of_owned_work
+			    ? "This chat still has work on its host's previous connection. Stop the turn, or restore the host's previous SSH settings, then retry."
+			    : WaitReason(decision.reason);
 			app.execution_routing_retry_at_by_chat_id[chat.id] = now + 1.0;
 			return decision;
 		}
