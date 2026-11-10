@@ -131,8 +131,10 @@ function codexOptionsTitle(options: { reasoningEffort?: string; serviceTier?: st
  * A caller that already names the change takes the raw reason for its own notice.
  */
 function reportRefusal(title: string, reason: string | undefined, onFailure?: (reason: string) => void) {
-  if (onFailure) onFailure(reason ?? '')
-  else reportAppFailure(`${title}. ${reason || 'Try again.'}`, '')
+  // The bridge's own failures carry raw exception text; that stays in the console, never in a notice.
+  const shown = reason && !reason.startsWith('Bridge request failed:') && !reason.startsWith('Invalid bridge payload:') ? reason : ''
+  if (onFailure) onFailure(shown)
+  else reportAppFailure(`${title}. ${shown || 'Try again.'}`, '')
 }
 
 type AcceptedModel = Pick<Session, 'modelId' | 'reasoningEffort' | 'serviceTier' | 'serviceTierExplicit' | 'updatedAt'>

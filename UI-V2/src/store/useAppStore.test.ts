@@ -5508,6 +5508,19 @@ describe('useAppStore Gemini CLI slice', () => {
       }
     })
 
+    it.each(['Bridge request failed: std::bad_alloc', 'Invalid bridge payload: [json.exception.type_error.302] type must be string'])('keeps raw bridge text (%s) out of the notice', async (bridgeError) => {
+      seedChat()
+      window.cefQuery = ({ onFailure }) => { onFailure(500, bridgeError) }
+      const capture = captureFailures()
+      const reasons: string[] = []
+      try {
+        await useAppStore.getState().setSessionUamAgent('chat-1', 'plan')
+        await useAppStore.getState().setSessionModel('chat-1', 'gpt-5.1', (reason) => reasons.push(reason))
+        expect(capture.failures.map(({ message, detail }) => ({ message, detail }))).toEqual([{ message: 'The UAM agent was not changed. Try again.', detail: '' }])
+        expect(reasons).toEqual([''])
+      } finally { capture.stop() }
+    })
+
     it('rolls a refused model change back to the last accepted model, not an unconfirmed one', async () => {
       seedChat()
       const callbacks: Array<{ onSuccess: (response: string) => void; onFailure: (code: number, message: string) => void }> = []

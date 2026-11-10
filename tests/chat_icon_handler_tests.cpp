@@ -241,6 +241,13 @@ UAM_TEST(ChatControlRefusalsNameTheirOwnReasonWithoutPathsOrStaleStatus)
 	chat.execution_host_id = "remote-host";
 	chat.remote_process_exists = true;
 	app.chats.push_back(chat);
+	ChatSession codex;
+	codex.id = "chat-refusals-codex";
+	codex.provider_id = "codex-cli";
+	codex.title = "Stand-in Codex";
+	codex.model_id = "gpt-5";
+	codex.reasoning_effort = "low";
+	app.chats.push_back(codex);
 	auto owned = std::make_unique<uam::AcpSessionState>();
 	owned->chat_id = chat.id;
 	owned->provider_id = chat.provider_id;
@@ -257,9 +264,9 @@ UAM_TEST(ChatControlRefusalsNameTheirOwnReasonWithoutPathsOrStaleStatus)
 	};
 
 	// A disconnected remote turn: Stop names that cause, never the earlier status line.
-	CefRefPtr<RecordingIconCallback> stop = run("stopAcpSession", {{"chatId", chat.id}});
-	UAM_ASSERT_EQ(stop->failures, 1);
-	UAM_ASSERT_EQ(stop->failure_message, std::string("The remote host is disconnected. Reconnect it before stopping, so UAM can confirm the turn ended."));
+	const CefRefPtr<RecordingIconCallback> stop_refused = run("stopAcpSession", {{"chatId", chat.id}});
+	UAM_ASSERT_EQ(stop_refused->failures, 1);
+	UAM_ASSERT_EQ(stop_refused->failure_message, std::string("The remote host is disconnected. Reconnect it before stopping, so UAM can confirm the turn ended."));
 
 	// A remote stop UAM is still confirming is progress for both Stop and Cancel turn.
 	session.remote_stop_pending = true;
@@ -270,8 +277,14 @@ UAM_TEST(ChatControlRefusalsNameTheirOwnReasonWithoutPathsOrStaleStatus)
 	session.remote_stop_unconfirmed = true;
 	cancel = run("cancelAcpTurn", {{"chatId", chat.id}});
 	UAM_ASSERT_EQ(cancel->failures, 0);
-	stop = run("stopAcpSession", {{"chatId", chat.id}});
-	UAM_ASSERT_EQ(stop->failures, 0);
+	const CefRefPtr<RecordingIconCallback> stop_pending = run("stopAcpSession", {{"chatId", chat.id}});
+	UAM_ASSERT_EQ(stop_pending->failures, 0);
+	// With the helper reattached this cancel itself did nothing, so it is a refusal, never "pending".
+	session.running = true;
+	const CefRefPtr<RecordingIconCallback> cancel_refused = run("cancelAcpTurn", {{"chatId", chat.id}});
+	session.running = false;
+	UAM_ASSERT_EQ(cancel_refused->failures, 1);
+	UAM_ASSERT_EQ(cancel_refused->failure_message, std::string("The turn could not be cancelled. Try again."));
 	session.remote_stop_unconfirmed = false;
 
 	// A rename that cannot be saved names no path.
@@ -286,8 +299,40 @@ UAM_TEST(ChatControlRefusalsNameTheirOwnReasonWithoutPathsOrStaleStatus)
 	CefRefPtr<RecordingIconCallback> small = run("setChatSmallModelMode", {{"chatId", chat.id}, {"enabled", true}});
 	UAM_ASSERT_EQ(small->failures, 1);
 	UAM_ASSERT_EQ(small->failure_message, std::string("The chat could not be saved. Try again."));
-	for (const auto& callback : {stop, rename, agent, small})
+	CefRefPtr<RecordingIconCallback> model = run("setChatModel", {{"chatId", chat.id}, {"modelId", "fixture/model-two"}});
+	UAM_ASSERT_EQ(model->failures, 1);
+	UAM_ASSERT_EQ(model->failure_message, std::string("The chat could not be saved. Try again."));
+	CefRefPtr<RecordingIconCallback> reviewer = run("setChatModel", {{"chatId", chat.id}, {"modelId", "fixture/model-two"}, {"modelRole", "reviewer"}});
+	UAM_ASSERT_EQ(reviewer->failures, 1);
+	UAM_ASSERT_EQ(reviewer->failure_message, std::string("The chat could not be saved. Try again."));
+	CefRefPtr<RecordingIconCallback> speed = run("setChatCodexOptions", {{"chatId", codex.id}, {"serviceTier", "fast"}, {"serviceTierExplicit", true}});
+	UAM_ASSERT_EQ(speed->failures, 1);
+	UAM_ASSERT_EQ(speed->failure_message, std::string("The chat could not be saved. Try again."));
+	CefRefPtr<RecordingIconCallback> reasoning = run("setChatCodexOptions", {{"chatId", codex.id}, {"reasoningEffort", "high"}});
+	UAM_ASSERT_EQ(reasoning->failures, 1);
+	UAM_ASSERT_EQ(reasoning->failure_message, std::string("The chat could not be saved. Try again."));
+
+	// A phone cancel discards a held queue; when that cannot be saved its fixed reason is passed through.
+	uam::AcpQueuedUserPromptState held;
+	held.id = "held";
+	held.revision = 1;
+	held.text = "Held prompt";
+	session.queued_user_prompts = {held};
+	session.queue_held = true;
+	app.chats.front().acp_queued_prompts = {held};
+	app.chats.front().acp_queue_held = true;
+	CefRefPtr<RecordingIconCallback> discard = new RecordingIconCallback;
+	app.status_line = stale;
+	UAM_ASSERT(ChatIconHandlerTestAccess::CancelTurnRequest(*handler_owner, {{"chatId", chat.id}}, discard, true));
+	UAM_ASSERT_EQ(discard->failures, 1);
+	UAM_ASSERT_EQ(discard->failure_message, std::string("Held prompts could not be discarded because their recovery state could not be saved."));
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+
+	for (const auto& callback : {stop_refused, cancel_refused, rename, agent, small, model, reviewer, speed, reasoning, discard})
+	{
 		UAM_ASSERT(callback->failure_message.find(uam::paths::Utf8PathString(temp.root)) == std::string::npos);
+		UAM_ASSERT(callback->failure_message.find("Unrelated status") == std::string::npos);
+	}
 }
 
 UAM_TEST(ChatIconHandlerSupersededCancellationCannotRollbackNewerIntent)

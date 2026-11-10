@@ -6050,7 +6050,7 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       await Promise.resolve()
     })
-    expect(appFailures.map(({ message, detail }) => ({ message, detail }))).toEqual([{ message: 'Command', detail: 'Failed to change reasoning to High. Reasoning is locked by the provider.' }])
+    expect(appFailures.map(({ message, detail }) => ({ message, detail }))).toEqual([{ message: 'Failed to change reasoning to High. Reasoning is locked by the provider.', detail: '' }])
 
     act(() => root.unmount())
     host.remove()

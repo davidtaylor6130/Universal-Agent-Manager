@@ -165,13 +165,6 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   const recordActivity = useRuntimeActivity(session.id)
   const runtimeDescriptionId = useId()
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
-  const [stopRuntimeError, setStopRuntimeError] = useState('')
-  useEffect(() => setStopRuntimeError(''), [session.id])
-  useEffect(() => {
-    if (!stopRuntimeError) return
-    reportAppFailure('Runtime stop failed', stopRuntimeError)
-    setStopRuntimeError('')
-  }, [stopRuntimeError])
   const refreshFor = useRef({ key: nativeFollowupOwnerKey })
   if (refreshFor.current.key !== nativeFollowupOwnerKey) refreshFor.current = { key: nativeFollowupOwnerKey }
   const refreshOwner = refreshFor.current
@@ -246,11 +239,8 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
           aria-label="Stop runtime"
           aria-describedby={runtimeDescriptionId}
           disabled={runtimeStopState.disabled}
-          onClick={() => {
-            setStopRuntimeError('')
-            // A refused stop reports its reason from the store; only a thrown bridge error is reported here.
-            void stopAcpSession(session.id, 'timeout').catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
-          }}
+          // The store reports a refused stop with its reason; sendToCEF resolves rather than rejects.
+          onClick={() => { void stopAcpSession(session.id, 'timeout') }}
         >
           <span className="uam-runtime-stop-icon">
             {icon}
