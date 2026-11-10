@@ -69,7 +69,7 @@ Before an enterprise release:
 2. Run native tests:
 
    ```bash
-   cmake -S . -B Builds/tests -DUAM_BUILD_TESTS=ON
+   cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Debug -DUAM_BUILD_TESTS=ON
    cmake --build Builds/tests --config Debug
    ctest --test-dir Builds/tests -C Debug --output-on-failure
    ```

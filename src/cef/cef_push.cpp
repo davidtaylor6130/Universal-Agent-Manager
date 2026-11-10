@@ -182,9 +182,10 @@ namespace
 		// Separate limits: a large but fast patch must not hide a slow one, nor be reported as slow.
 		static auto last_slow_report = std::chrono::steady_clock::time_point::min();
 		static auto last_large_report = std::chrono::steady_clock::time_point::min();
+		// A patch that is both slow and large falls through to the large line while the slow line is rate-limited.
 		if (elapsed_ms > kStatePatchSlowSerializationMs && due(last_slow_report))
 			uam::diagnostics::Write("[performance] statePatch serialization took " + std::to_string(elapsed_ms) + " ms, " + detail);
-		else if (elapsed_ms <= kStatePatchSlowSerializationMs && message.size() > kStatePatchLargeMessageBytes && due(last_large_report))
+		else if (message.size() > kStatePatchLargeMessageBytes && due(last_large_report))
 			uam::diagnostics::Write("[performance] statePatch is large: " + detail + ", built in " + std::to_string(elapsed_ms) + " ms");
 	}
 

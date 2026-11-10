@@ -54,7 +54,8 @@ namespace uam::paths
 		const std::chrono::milliseconds lifetime{2000 + static_cast<long long>(std::hash<std::string>{}(key) % 1000)};
 		{
 			const std::lock_guard<std::mutex> lock(mutex);
-			if (const auto found = cache.find(key); found != cache.end() && now - found->second.probed_at < lifetime)
+			// A clock that stepped backwards would leave the age negative and the entry alive for good; treat it as expired.
+			if (const auto found = cache.find(key); found != cache.end() && now >= found->second.probed_at && now - found->second.probed_at < lifetime)
 				return found->second.value;
 		}
 		std::string value = probe();
