@@ -124,7 +124,8 @@ namespace uam
 	{
 	public:
 		/// <summary>Validate a background history load; page requests must leave cold transcripts detached.</summary>
-		static bool CompleteHistoryLoad(ChatSession& current, ChatSession&& loaded, std::size_t expected_count, std::string_view expected_digest, bool retain_history);
+		/// <summary>primary_is_authority: the caller proved nothing is queued to save and the file is unchanged, so a stale in-memory count is corrected from the saved primary.</summary>
+		static bool CompleteHistoryLoad(ChatSession& current, ChatSession&& loaded, std::size_t expected_count, std::string_view expected_digest, bool retain_history, bool primary_is_authority = false);
 		void SetVisibleChatIds(const std::vector<std::string>& chat_ids);
 		void Invalidate(const std::string& chat_id);
 		std::optional<std::uint64_t> BeginRelease(const AppState& app, const std::string& chat_id);

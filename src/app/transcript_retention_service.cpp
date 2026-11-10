@@ -418,8 +418,16 @@ namespace uam
 		return matches == 1;
 	}
 
-	bool TranscriptRetentionService::CompleteHistoryLoad(ChatSession& current, ChatSession&& loaded, std::size_t expected_count, std::string_view expected_digest, bool retain_history)
+	bool TranscriptRetentionService::CompleteHistoryLoad(ChatSession& current, ChatSession&& loaded, std::size_t expected_count, std::string_view expected_digest, bool retain_history, bool primary_is_authority)
 	{
+		if (primary_is_authority && !current.messages_loaded && loaded.messages_loaded && current.id == loaded.id &&
+		    current.persisted_message_count == expected_count && current.persisted_messages_digest == expected_digest &&
+		    (loaded.persisted_message_count != expected_count || loaded.persisted_messages_digest != expected_digest))
+		{
+			current.persisted_message_count = loaded.persisted_message_count;
+			current.persisted_messages_digest = loaded.persisted_messages_digest;
+			return CompleteHistoryLoad(current, std::move(loaded), current.persisted_message_count, std::string(current.persisted_messages_digest), retain_history);
+		}
 		if (retain_history)
 			return ChatRepository::AdoptHydratedMessagesIfUnchanged(current, std::move(loaded), expected_count, expected_digest);
 		// A detached page keeps its buffers on the worker-owned snapshot.
