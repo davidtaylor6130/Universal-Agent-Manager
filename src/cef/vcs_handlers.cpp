@@ -338,7 +338,7 @@ void UamQueryHandler::HandleGetChatWorktreeStatus(CefRefPtr<CefBrowser> /*browse
 
 	const std::string chat_id = chat->id;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	RunAsyncCefQuery(m_asyncLifetime,
+	RunAsyncCefQuery(SlowQueryRunner(chat_id), m_asyncLifetime,
 	    cb,
 	    [snapshot_inputs = std::move(snapshot_inputs), chat_id]() mutable
 	    {
@@ -515,7 +515,7 @@ void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browse
 		request->worktree = expected->workspace_worktree_directory; request->branch = expected->workspace_branch_name; request->base = expected->workspace_base_ref;
 		m_app.git_port_requests[chat_id] = request;
 		m_app.worktree_operation_chat_ids.insert(chat_id);
-		if (!RunAsyncCefQuery(m_asyncLifetime, cb,
+		if (!RunAsyncCefQuery(SlowQueryRunner(chat->id), m_asyncLifetime, cb,
 		    [expected, root, settings, request]() mutable
 		    {
 			    if (request->handler_lifetime.expired()) request->cancellation->request_stop();
@@ -583,7 +583,7 @@ void UamQueryHandler::HandlePreviewChatTurnRollback(CefRefPtr<CefBrowser> /*brow
 	}
 	const std::string chat_id = chat->id;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	RunAsyncCefQuery(m_asyncLifetime, cb, [snapshot_inputs = std::move(snapshot_inputs), chat_id, message_index = *message_index]() mutable {
+	RunAsyncCefQuery(SlowQueryRunner(chat_id), m_asyncLifetime, cb, [snapshot_inputs = std::move(snapshot_inputs), chat_id, message_index = *message_index]() mutable {
 		uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		std::string warning;
 		std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(snapshot.data_root, chat_id, true, &warning);
@@ -629,7 +629,7 @@ void UamQueryHandler::HandleRollbackChatTurn(CefRefPtr<CefBrowser> browser, cons
 	const std::shared_ptr<std::optional<ChatSession>> persisted_after = std::make_shared<std::optional<ChatSession>>();
 	m_app.worktree_operation_chat_ids.insert(chat_id);
 	uam::AppState* live_app = &m_app;
-	RunAsyncCefQuery(m_asyncLifetime, cb,
+	RunAsyncCefQuery(SlowQueryRunner(chat_id), m_asyncLifetime, cb,
 		[snapshot_inputs = std::move(snapshot_inputs), chat_id, index, rollback_snapshot, loaded_checkpoint_snapshot, result_state, persisted_after]() mutable {
 			uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 			std::string warning;
@@ -675,7 +675,7 @@ void UamQueryHandler::HandleCaptureChatRepositoryBaseline(CefRefPtr<CefBrowser> 
 	const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
 	m_app.worktree_operation_chat_ids.insert(chat_id);
 	uam::AppState* live_app = &m_app;
-	if (!RunAsyncCefQuery(m_asyncLifetime, cb,
+	if (!RunAsyncCefQuery(SlowQueryRunner(chat->id), m_asyncLifetime, cb,
 	    [inputs = std::move(inputs), chat = chat_snapshot]() mutable
 	    {
 		    uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(inputs));
@@ -715,7 +715,7 @@ void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
 	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
 
-	RunAsyncCefQuery(m_asyncLifetime, cb,
+	RunAsyncCefQuery(SlowQueryRunner(chat->id), m_asyncLifetime, cb,
 	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), requested_type, include_line_stats, request_id, comparison_ref, context_only, remote_vcs]() mutable
 	                 {
 		                 const std::shared_ptr<void> remote_vcs_lease = remote_vcs.Hold();
@@ -766,7 +766,7 @@ void UamQueryHandler::HandleCaptureChatReferenceContext(CefRefPtr<CefBrowser> /*
 	const std::filesystem::path data_root = m_app.data_root;
 	ReadOnlyAppSnapshotInputs inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
 	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
-	RunAsyncCefQuery(m_asyncLifetime, cb,
+	RunAsyncCefQuery(SlowQueryRunner(chat->id), m_asyncLifetime, cb,
 	    [inputs = std::move(inputs), captured, kind, slot = std::move(slot), remote_vcs]() mutable
 	    {
 		    const std::shared_ptr<void> remote_vcs_lease = remote_vcs.Hold();
@@ -826,7 +826,7 @@ void UamQueryHandler::HandleGetWorkspaceFilePreview(CefRefPtr<CefBrowser> /*brow
 	{ cb->Failure(503, "The chat's remote runner is unavailable. Recheck it in Settings."); return; }
 	const std::filesystem::path data_root = m_app.data_root;
 	++m_pendingFilePreviews;
-	if (!RunAsyncCefQuery(m_asyncLifetime, cb,
+	if (!RunAsyncCefQuery(SlowQueryRunner(chat->id), m_asyncLifetime, cb,
 	    [workspace, path, host_id, expected_host, chat_id = chat->id, chat_created_at]()
 	    {
 		    nlohmann::json preview;
@@ -880,7 +880,7 @@ void UamQueryHandler::HandleGetVcsFileDiff(CefRefPtr<CefBrowser> /*browser*/, co
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
 	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
 
-	RunAsyncCefQuery(m_asyncLifetime, cb,
+	RunAsyncCefQuery(SlowQueryRunner(chat->id), m_asyncLifetime, cb,
 	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), path, type, request_id, comparison_ref, remote_vcs]() mutable
 	                 {
 		                 const std::shared_ptr<void> remote_vcs_lease = remote_vcs.Hold();
@@ -924,7 +924,7 @@ void UamQueryHandler::HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, cons
 	uam::AppState* live_app = &m_app;
 	const std::string chat_id = chat->id;
 	m_app.worktree_operation_chat_ids.insert(chat_id);
-	if (!RunAsyncCefQuery(m_asyncLifetime, cb,
+	if (!RunAsyncCefQuery(SlowQueryRunner(chat->id), m_asyncLifetime, cb,
 	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, message, remote_vcs, files, lease, remote_vcs_lease]() mutable
 	                 {
 		                 const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
@@ -956,7 +956,7 @@ void UamQueryHandler::HandleGenerateVcsCommitMessage(CefRefPtr<CefBrowser> /*bro
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
 	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
 
-	RunAsyncCefQuery(m_asyncLifetime, cb,
+	RunAsyncCefQuery(SlowQueryRunner(chat->id), m_asyncLifetime, cb,
 	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, files = std::move(files), request_id, remote_vcs]() mutable
 	                 {
 		                 const std::shared_ptr<void> remote_vcs_lease = remote_vcs.Hold();
@@ -994,7 +994,7 @@ void UamQueryHandler::HandleGetWorkspaceVcsContext(CefRefPtr<CefBrowser> /*brows
 	const std::filesystem::path root = m_app.data_root;
 	const bool git_enabled = m_app.settings.git_enabled;
 	const bool svn_enabled = m_app.settings.svn_enabled;
-	RunAsyncCefQuery(m_asyncLifetime, cb,
+	RunAsyncCefQuery(SlowQueryRunner(directory), m_asyncLifetime, cb,
 	    [directory, git_enabled, svn_enabled, slot = std::move(slot)]() mutable
 	    {
 		    const std::shared_ptr<void> active_slot = std::move(slot);

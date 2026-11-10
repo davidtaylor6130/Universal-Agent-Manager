@@ -163,6 +163,13 @@ UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_inde
 	}
 }
 
+CefRefPtr<CefTaskRunner> UamQueryHandler::SlowQueryRunner(const std::string& key)
+{
+	CefRefPtr<CefThread>& thread = m_slowQueries[std::hash<std::string>{}(key) % m_slowQueries.size()];
+	if (!thread) thread = CefThread::CreateThread("uam-slow-query");
+	return thread ? thread->GetTaskRunner() : nullptr;
+}
+
 UamQueryHandler::~UamQueryHandler()
 {
 	m_asyncLifetime.reset();

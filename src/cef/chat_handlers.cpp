@@ -2637,7 +2637,7 @@ void UamQueryHandler::HandleMoveChatWorkspace(CefRefPtr<CefBrowser> browser, con
 	const ExecutionHost observed_host = *host;
 	const std::string original_workspace = chat->workspace_directory;
 	const std::string destination = folder->directory;
-	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(observed_host.id), m_asyncLifetime, cb,
 	    [observed_host, destination]()
 	    {
 		    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,

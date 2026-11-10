@@ -771,6 +771,33 @@ UAM_TEST(CefInteractiveBridgeAndClipboardStayBounded)
 
 }
 
+UAM_TEST(SubprocessAndNetworkBridgeWorkersLeaveTheSharedFileLanes)
+{
+	// CEF runs each shared file lane one task at a time: an SSH listing or Git read there made saved-history reads in other chats time out.
+	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
+	const std::string bridge = ReadFile(source_root / "src/cef/uam_query_handler_async.h");
+	UAM_ASSERT(bridge.find("runner ? runner->PostTask(task) : CefPostTask(fallback, task)") != std::string::npos);
+	UAM_ASSERT(ReadFile(source_root / "src/cef/uam_query_handler.cpp").find("m_slowQueries[std::hash<std::string>{}(key) % m_slowQueries.size()]") != std::string::npos);
+	const std::vector<std::pair<const char*, std::vector<const char*>>> workers = {
+	    {"src/cef/chat_handlers.cpp", {"HandleMoveChatWorkspace("}},
+	    {"src/cef/chat_branch_handlers.cpp", {"HandleListChatBranches(", "HandleSwitchChatBranch(", "ContinueSwitchChatBranch("}},
+	    {"src/cef/workspace_handlers.cpp", {"HandleOpenWorkspaceTerminal("}},
+	    {"src/cef/remote_host_handlers.cpp", {"HandleListRemoteDirectories(", "HandleCheckRemoteHostInstruction("}},
+	    {"src/cef/vcs_handlers.cpp", {"HandleGetChatWorktreeStatus(", "HandleGetVcsCommitStatus(", "HandleGetVcsFileDiff(", "HandleCommitVcsChanges(", "HandleGenerateVcsCommitMessage(", "HandleCaptureChatReferenceContext(", "HandleGetWorkspaceVcsContext(", "HandleGetWorkspaceFilePreview("}}};
+	for (const auto& [file, handlers] : workers)
+	{
+		const std::string source = ReadFile(source_root / file);
+		for (const char* handler : handlers)
+		{
+			const std::size_t begin = source.find(std::string("void UamQueryHandler::") + handler);
+			UAM_ASSERT(begin != std::string::npos);
+			const std::string body = source.substr(begin, source.find("\nvoid UamQueryHandler::", begin + 1) - begin);
+			UAM_ASSERT(body.find("RunAsyncCefQuery(SlowQueryRunner(") != std::string::npos);
+			UAM_ASSERT(body.find("RunAsyncCefQuery(m_asyncLifetime") == std::string::npos);
+		}
+	}
+}
+
 UAM_TEST(VcsStatusSubprocessReadsYieldToChatHistory)
 {
 	// History pages are user-blocking; live opening of a huge chat waited ~300 ms behind equal-priority Git status reads.

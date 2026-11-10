@@ -720,7 +720,7 @@ void UamQueryHandler::HandleCheckRemoteHostInstruction(CefRefPtr<CefBrowser>, co
 	{ cb->Failure(400, "Use an absolute instruction file path on this SSH host."); return; }
 	if (host->runner_install_unresolved)
 	{ cb->Failure(409, "Retry helper setup to reconcile the unfinished installation first."); return; }
-	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [host = *host, path]()
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(host->id), m_asyncLifetime, cb, [host = *host, path]()
 	{
 		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
 		    host);
@@ -934,7 +934,7 @@ void UamQueryHandler::HandleListRemoteDirectories(CefRefPtr<CefBrowser> browser,
 		std::string startup_error;
 	};
 	auto result = std::make_shared<DirectoryResult>();
-	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime,
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(host.id), m_asyncLifetime,
 	    cb, [host, directory, result]()
 	    {
 		uam::remote::RunnerClient client(
