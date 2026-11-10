@@ -7773,14 +7773,15 @@ namespace
 		}
 	};
 
-	/// <summary>Polls until the turn settles. With spend_budget, the minute a never-written prompt keeps reconnecting is treated as elapsed.</summary>
+	/// <summary>Polls until the turn settles. With spend_budget, the minute a never-written prompt keeps reconnecting is treated as elapsed.
+	/// Chat saves are deliberately not flushed: a pending save keeps the prompt from being released and written to a relaunched
+	/// proxy, which would make it a possibly delivered turn that correctly reconnects without end.</summary>
 	void PollUntilRemoteTurnSettles(uam::AppState& app, uam::AcpSessionState& session, bool spend_budget, int seconds = 10)
 	{
 		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
 		while ((session.running || session.processing || session.reconnect_pending) && std::chrono::steady_clock::now() < deadline)
 		{
 			if (spend_budget && session.reconnect_attempts > 0) session.reconnect_first_failure_time_s = -1.0e6;
-			uam::FlushPendingChatSaves(app);
 			(void)uam::PollAllAcpSessions(app);
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
@@ -7836,7 +7837,6 @@ UAM_TEST(AcpRemoteStagedPromptReturnsUnsentWhenItsBridgeCloses)
 		// Inside the budget the prompt is re-queued and the turn keeps reconnecting.
 		for (int poll = 0; poll < 150 && session.reconnect_attempts < 2; ++poll)
 		{
-			uam::FlushPendingChatSaves(app);
 			(void)uam::PollAllAcpSessions(app);
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
@@ -8100,7 +8100,6 @@ UAM_TEST(AcpRemoteUntransportedPromptExitsCountBackOffAndEndThroughTheExitHandle
 	deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 	while (session.reconnect_attempts < 3 && std::chrono::steady_clock::now() < deadline)
 	{
-		uam::FlushPendingChatSaves(app);
 		(void)uam::PollAllAcpSessions(app);
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
