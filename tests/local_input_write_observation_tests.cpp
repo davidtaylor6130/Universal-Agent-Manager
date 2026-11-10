@@ -460,6 +460,14 @@ UAM_TEST(GoalInternalOrUnanchoredTurnsNeverConfirmInput)
 		UAM_ASSERT(!fixture.Written(1) && !fixture.Written(2));
 	}
 	{
+		// A goal turn restored after a restart: its indices fell back to the last user row, an unrelated message a
+		// stopped turn left unconfirmed. The goal turn's normal completion must not confirm it.
+		AnsweredTurnFixture fixture;
+		fixture.session->goal_turn_kind = std::string(uam::acp_detail::kGoalTurnKindWorkerContinuation);
+		UAM_ASSERT(!uam::acp_detail::ConfirmTurnInputReceived(*fixture.session, fixture.Chat()));
+		UAM_ASSERT(!fixture.Written(1) && !fixture.Written(2));
+	}
+	{
 		// Without a recorded first row the turn's rows are unknown; the last index alone confirms nothing.
 		AnsweredTurnFixture fixture;
 		fixture.session->turn_first_user_message_index = -1;

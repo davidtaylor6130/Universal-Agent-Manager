@@ -19,9 +19,10 @@ bool ConfirmTurnInputReceived(const AcpSessionState& session, ChatSession& chat)
 	// or for a prompt that has not left the queue. A stale marker is acceptable; a falsely confirmed loss is not.
 	if (!session.processing || session.cancel_requested || uam::AcpSessionHasPendingCancel(session) || !session.queued_prompt.empty() ||
 	    !chat.remote_prompt_delivery_id.empty()) return false;
-	// A goal's internal turn carries no authored row of its own, and without a recorded first row the turn's rows are
-	// not known: neither may confirm whatever row an index happens to name.
-	if (session.goal_internal_session || session.turn_first_user_message_index < 0) return false;
+	// A goal turn carries no authored row of its own, and without a recorded first row the turn's rows are not known.
+	// A restored internal turn saves no anchor, and the restore then falls back to the last user row: its completion
+	// must not confirm that unrelated row.
+	if (session.goal_internal_session || !session.goal_turn_kind.empty() || session.turn_first_user_message_index < 0) return false;
 	bool changed = false;
 	const int last = session.turn_user_message_index;
 	// Read through const access: touching the list any other way restamps it even when no row changes.
