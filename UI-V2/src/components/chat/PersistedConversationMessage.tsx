@@ -86,7 +86,10 @@ export const PersistedConversationMessage = memo(function PersistedConversationM
     return <CompactionSeparator summary={block.text} tokensBefore={block.tokensBefore} tokensAfter={block.tokensAfter} interrupted={block.type === 'context_compaction_interrupted'} />
   }
   const isUserMessage = message.role === 'user'
-  const historicalInputUnknown = delivery === undefined && !receivedByProvider && hasUnconfirmedNativeInput(message)
+  // No write fact for this saved input: what it permits (no Edit, Revert or delivery actions) follows from that alone.
+  const nativeInputUnconfirmed = delivery === undefined && hasUnconfirmedNativeInput(message)
+  // Display only: a directly following answer hides the marker and changes nothing the row allows.
+  const historicalInputUnknown = nativeInputUnconfirmed && !receivedByProvider
   const effectiveDelivery = delivery ?? (historicalInputUnknown ? { state: 'unconfirmed' as const,
     label: 'Delivery not confirmed. Kept here and not sent again automatically.' } : undefined)
   const branchParentId = sessionParentChatId && sessionBranchFromMessageIndex === index
@@ -123,11 +126,11 @@ export const PersistedConversationMessage = memo(function PersistedConversationM
         onNext: () => onSelectBranch!(branchParentId, index, messageBranchSessions[messageBranchIndex + 1].id, 'next'),
       } : undefined}
       goalReview={Boolean(goalReview)}
-      actionsDisabled={(actionsDisabled ?? false) || historicalInputUnknown}
+      actionsDisabled={(actionsDisabled ?? false) || nativeInputUnconfirmed}
       delivery={isUserMessage ? effectiveDelivery : undefined}
-      deliveryActions={historicalInputUnknown ? undefined : deliveryActions}
-      onEdit={isUserMessage && !historicalInputUnknown && !passive && onBeginEdit && !isCompanionContext() ? () => onBeginEdit(index, message.content) : undefined}
-      onRevert={isUserMessage && !historicalInputUnknown && !passive && onCreateBranch && !isCompanionContext() ? () => void onCreateBranch(index) : undefined}
+      deliveryActions={nativeInputUnconfirmed ? undefined : deliveryActions}
+      onEdit={isUserMessage && !nativeInputUnconfirmed && !passive && onBeginEdit && !isCompanionContext() ? () => onBeginEdit(index, message.content) : undefined}
+      onRevert={isUserMessage && !nativeInputUnconfirmed && !passive && onCreateBranch && !isCompanionContext() ? () => void onCreateBranch(index) : undefined}
       revertLabel={retryInPlace ? 'Retry message' : undefined}
     >
         <PersistedMessageContent

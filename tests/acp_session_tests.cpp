@@ -21427,6 +21427,121 @@ UAM_TEST(AntigravityCapturedRetryRetiresOnlyNewOwnedSuccess)
 #endif
 }
 
+namespace
+{
+	/// <summary>Gives the retried row an input ID after dispatch, so only a provider's completion gate can confirm it.</summary>
+	Message& IdentifyRetriedRow(NativeRetirementCaptureFixture& fixture)
+	{
+		Message& row = fixture.app.chats.front().messages[1];
+		row.native_input_id = "66666666-6666-4666-8666-000000000001";
+		row.input_write_completed = false;
+		return row;
+	}
+}
+
+UAM_TEST(ClaudeConfirmsInputOnlyOnFreshOwnedSuccess)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string outcome : {"success", "cancelled", "unknown", "foreign", "missing-uuid"})
+	{
+		NativeRetirementCaptureFixture fixture("claude-cli");
+		(void)fixture.Retry();
+		Message& row = IdentifyRetriedRow(fixture);
+		if (outcome == "cancelled")
+		{
+			std::string error;
+			UAM_ASSERT(uam::CancelAcpTurn(fixture.app, fixture.app.chats.front().id, &error));
+			UAM_ASSERT(fixture.observed->Flush(std::chrono::seconds(1)) && fixture.transport->Flush(std::chrono::seconds(1)));
+		}
+		const std::string native_id = fixture.app.chats.front().native_session_id;
+		nlohmann::json result = {{"type", "result"}, {"subtype", outcome == "unknown" ? "unknown" : "success"},
+		    {"session_id", outcome == "foreign" ? "550e8400-e29b-41d4-a716-446655440001" : native_id},
+		    {"uuid", "native-confirmation-claude-result"}, {"result", "Private Claude completion"}};
+		if (outcome == "missing-uuid") result.erase("uuid");
+		fixture.Response(result);
+		UAM_ASSERT_EQ(fixture.app.chats.front().messages[1].input_write_completed, outcome == "success");
+		(void)row;
+	}
+#endif
+}
+
+UAM_TEST(CopilotConfirmsInputOnlyOnAcceptedOwnedIdle)
+{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	for (const std::string outcome : {"success", "aborted", "foreign", "unaccepted"})
+	{
+		NativeRetirementCaptureFixture fixture("copilot-cli");
+		const auto request = fixture.Retry();
+		auto& session = *fixture.session;
+		const auto& chat = fixture.app.chats.front();
+		(void)IdentifyRetriedRow(fixture);
+		const auto event = [&](const char* type, nlohmann::json data)
+		{
+			fixture.Response({{"jsonrpc", "2.0"}, {"method", "session.event"}, {"params", {
+			    {"sessionId", outcome == "foreign" ? "550e8400-e29b-41d4-a716-446655440001" : chat.native_session_id},
+			    {"event", {{"type", type}, {"id", std::string("native-confirmation-") + type}, {"data", std::move(data)}}}}}});
+		};
+		if (outcome == "unaccepted")
+			// Output and an idle arrive before the send is acknowledged: they can belong to a background agent.
+			event("assistant.turn_start", nlohmann::json::object());
+		else
+			fixture.Response({{"jsonrpc", "2.0"}, {"id", request.at("id")}, {"result", {{"messageId", "native-confirmation-accepted"}}}});
+		event("session.idle", {{"aborted", outcome == "aborted"}});
+		UAM_ASSERT_EQ(session.processing, outcome == "foreign");
+		UAM_ASSERT_EQ(chat.messages[1].input_write_completed, outcome == "success");
+	}
+#endif
+}
+
+UAM_TEST(AntigravityConfirmsInputOnlyOnNewOwnedSuccess)
+{
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	for (const std::string outcome : {"SUCCESS", "FAILED", "foreign", "zero-turn"})
+	{
+		NativeRetirementCaptureFixture fixture("antigravity-cli");
+		(void)fixture.Retry();
+		(void)IdentifyRetriedRow(fixture);
+		const std::string native_id = fixture.app.chats.front().native_session_id;
+		fixture.Response({{"event", "result"}, {"result", {
+		    {"conversation_id", outcome == "foreign" ? "550e8400-e29b-41d4-a716-446655440001" : native_id},
+		    {"status", outcome == "FAILED" ? "FAILED" : "SUCCESS"}, {"num_turns", outcome == "zero-turn" ? 0 : 1},
+		    {"response", "Private Antigravity completion"}}}});
+		UAM_ASSERT_EQ(fixture.app.chats.front().messages[1].input_write_completed, outcome == "SUCCESS");
+	}
+#endif
+}
+
+UAM_TEST(CodexConfirmsInputOnlyWhenThePromptsOwnTurnCompletes)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (const std::string outcome : {"own", "other-turn-first"})
+	{
+		NativeRetirementCaptureFixture fixture("codex-cli");
+		const auto request = fixture.Retry();
+		auto& session = *fixture.session;
+		const auto& chat = fixture.app.chats.front();
+		(void)IdentifyRetriedRow(fixture);
+		const auto notify = [&](const char* method, const std::string& turn, const char* status)
+		{
+			fixture.Response({{"jsonrpc", "2.0"}, {"method", method}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", turn}, {"status", status}}}}}});
+		};
+		if (outcome == "other-turn-first")
+		{
+			// Another turn (a native goal's own) starts and completes before this prompt's turn/start reply arrives.
+			notify("turn/started", "native-confirmation-other-turn", "inProgress");
+			notify("turn/completed", "native-confirmation-other-turn", "completed");
+			UAM_ASSERT(!chat.messages[1].input_write_completed);
+			continue;
+		}
+		fixture.Response({{"jsonrpc", "2.0"}, {"id", request.at("id")}, {"result", {{"turn", {{"id", "native-confirmation-own-turn"}, {"status", "inProgress"}}}}}});
+		notify("turn/started", "native-confirmation-own-turn", "inProgress");
+		UAM_ASSERT(!chat.messages[1].input_write_completed);
+		notify("turn/completed", "native-confirmation-own-turn", "completed");
+		UAM_ASSERT(chat.messages[1].input_write_completed);
+	}
+#endif
+}
+
 
 #include "common/chat/acp_prompt_recovery.h"
 #include <tuple>

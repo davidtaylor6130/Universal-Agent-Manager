@@ -12088,7 +12088,7 @@ describe('ChatView', () => {
     { label: 'malformed boolean', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', inputWriteCompleted: 'true' }, answered: false, expected: 'unconfirmed' },
     { label: 'malformed input ID', fields: { nativeInputId: 'bad-id', inputWriteCompleted: true }, answered: true, expected: null },
     { label: 'legacy absent fields', fields: {}, answered: true, expected: null },
-  ])('shares historical input presentation across main, managed and passive native routes: $label', async ({ fields, answered, expected }) => {
+  ])('shares historical input presentation across main, managed and passive native routes: $label', async ({ label, fields, answered, expected }) => {
     const previous = useAppStore.getState()
     const input = { role: 'user', content: 'Historical **input** remains readable', createdAt: '2026-10-16T16:00:00Z', providerId: 'codex-cli', ...fields }
     const output = { role: 'assistant', content: 'Recorded answer\n\n```ts\nconst kept = true\n```', createdAt: '2026-10-16T16:00:01Z', providerId: 'codex-cli' }
@@ -12124,6 +12124,9 @@ describe('ChatView', () => {
       expect(same.delivery).toBe(expected)
       expect(same.body).toContain('Historical'); expect(same.answer).toContain('kept')
       expect(capture(managed)).toEqual(same); expect(capture(passive)).toEqual(same)
+      // Hiding the marker for an answered row is display only: without a write fact it still offers no actions.
+      if (label === 'identified unknown but answered') for (const host of [main, managed, passive])
+        expect(host.querySelector('article.conversation-turn--user')!.querySelector('[aria-label="Retry message"],[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()
       if (expected === 'unconfirmed') for (const host of [main, managed, passive]) {
         const user = host.querySelector('article.conversation-turn--user')!
         expect(user.querySelector('[aria-label="Retry message"],[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()

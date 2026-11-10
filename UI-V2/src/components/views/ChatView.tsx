@@ -3354,7 +3354,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                         message={message}
                         hasDeliveredResponse={hasDeliveredResponse}
                         hasStoppedResponse={hasStoppedResponse}
-                        receivedByProvider={receivedByProvider}
+                        // A response still streaming is output, not a completion: it hides nothing yet.
+                        receivedByProvider={receivedByProvider && !(acp?.processing && index + 1 === turnAssistantMessageIndex)}
                         pendingDirectAdmission={unsentProjection.pendingIndices.has(index) || nativeDirectReceipt?.sending === true}
                         delivery={unsentByLoadedIndex.has(index) ? (unsentByLoadedIndex.get(index)!.retryable ? UNSENT_DELIVERY : HELD_DELIVERY)
                           : nativeDirectReceipt ? (nativeDirectReceipt.sending ? SENDING_DELIVERY : RECEIPT_DELIVERY)
