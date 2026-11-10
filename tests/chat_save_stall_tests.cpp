@@ -123,3 +123,44 @@ UAM_TEST(ChatSaveStallMeasurements)
 	fixture.Drain();
 	UAM_ASSERT_EQ(fixture.SavedTail(), fixture.Chat().messages.back().content);
 }
+
+UAM_TEST(AtomicWriteDoesNotScaleWithDirectoryEntries)
+{
+	TempDir temporary{"uam-atomic-write-budget"};
+	double elapsed[2] = {};
+	int slot = 0;
+	for (const int entries : {10, 4000})
+	{
+		const fs::path directory = temporary.root / std::to_string(entries);
+		FillDirectory(directory, entries);
+		const fs::path target = directory / "target.json";
+		UAM_ASSERT(uam::io::WriteTextFileWithBackup(target, "first"));
+		UAM_ASSERT(uam::io::WriteTextFileWithBackup(target, "second"));
+		const Clock::time_point start = Clock::now();
+		for (int write = 0; write < 100; ++write) UAM_ASSERT(uam::io::WriteTextFileWithBackup(target, "content " + std::to_string(write)));
+		elapsed[slot++] = MsSince(start);
+	}
+	// Before the fix each write listed and inspected every neighbour twice: 4,000 entries cost many times 10.
+	UAM_ASSERT(elapsed[1] <= elapsed[0] * 2.0 + 1000.0);
+}
+
+UAM_TEST(AtomicWriteRemovesOnlyAbandonedTempsOfItsDestination)
+{
+	TempDir temporary{"uam-atomic-temp-sweep"};
+	const fs::path target = temporary.root / "target.json", other = temporary.root / "other.json";
+	const auto old = fs::file_time_type::clock::now() - std::chrono::hours(25);
+	// Seeded before this process first writes here, as a crashed earlier launch leaves them.
+	std::ofstream(target) << "seed"; std::ofstream(uam::io::MakeBackupPath(target)) << "seed"; std::ofstream(other) << "seed";
+	const fs::path abandoned = temporary.root / "target.json.tmp.1", abandoned_backup = temporary.root / "target.json.bak.tmp.2";
+	const fs::path live = temporary.root / "target.json.tmp.3", foreign = temporary.root / "other.json.tmp.4";
+	for (const fs::path& path : {abandoned, abandoned_backup, live, foreign}) std::ofstream(path) << "partial";
+	for (const fs::path& path : {abandoned, abandoned_backup, foreign}) fs::last_write_time(path, old);
+	UAM_ASSERT(uam::io::WriteTextFileWithBackup(target, "first"));
+	UAM_ASSERT(!fs::exists(abandoned) && !fs::exists(abandoned_backup));
+	// A recent temporary may belong to a live writer; another destination's is that destination's to remove.
+	UAM_ASSERT(fs::exists(live) && fs::exists(foreign));
+	UAM_ASSERT(uam::io::WriteTextFileWithBackup(other, "first"));
+	UAM_ASSERT(!fs::exists(foreign) && fs::exists(live));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(target), std::string("first"));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(uam::io::MakeBackupPath(target)), std::string("seed"));
+}

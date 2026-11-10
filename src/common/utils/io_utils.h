@@ -19,6 +19,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #if defined(_WIN32)
@@ -304,6 +305,23 @@ namespace uam::io
 		}
 	}
 
+	/// <summary>Removes one atomic temporary abandoned for at least 24 hours; returns whether it is gone.</summary>
+	inline bool RemoveAbandonedAtomicTempNoThrow(const std::filesystem::path& temp_path)
+	{
+		std::filesystem::path native_entry;
+		std::string normalization_error;
+		if (!NativeFilePath(temp_path, native_entry, normalization_error)) return false;
+		std::error_code status_error;
+		const std::filesystem::file_status status = std::filesystem::symlink_status(native_entry, status_error);
+		if (status.type() == std::filesystem::file_type::not_found) return true;
+		if (status_error) return false;
+		if (std::filesystem::is_symlink(status) || !std::filesystem::is_regular_file(status)) return false;
+		std::error_code time_error;
+		const std::filesystem::file_time_type modified = std::filesystem::last_write_time(native_entry, time_error);
+		if (time_error || std::filesystem::file_time_type::clock::now() - modified < std::chrono::hours(24)) return false;
+		return std::filesystem::remove(native_entry, status_error) || !status_error;
+	}
+
 	inline void CleanupAbandonedAtomicTemps(const std::filesystem::path& path)
 	{
 		std::filesystem::path native_path;
@@ -322,22 +340,53 @@ namespace uam::io
 		     it.increment(error))
 		{
 			const std::filesystem::directory_entry& entry = *it;
-			const std::string name = uam::paths::Utf8PathString(entry.path().filename());
-			std::filesystem::path native_entry;
-			if (!NativeFilePath(entry.path(), native_entry, normalization_error)) continue;
-			std::error_code status_error;
-			const std::filesystem::file_status status = std::filesystem::symlink_status(native_entry, status_error);
-			if (status_error || std::filesystem::is_symlink(status) || !std::filesystem::is_regular_file(status) || !name.starts_with(prefix))
-			{
-				continue;
-			}
+			// Name first: a chats directory holds thousands of entries and a stat each is the whole cost.
+			if (!uam::paths::Utf8PathString(entry.path().filename()).starts_with(prefix)) continue;
+			RemoveAbandonedAtomicTempNoThrow(entry.path());
+		}
+	}
 
-			std::error_code time_error;
-			const std::filesystem::file_time_type modified = std::filesystem::last_write_time(native_entry, time_error);
-			if (!time_error && std::filesystem::file_time_type::clock::now() - modified >= std::chrono::hours(24))
+	/// <summary>Removes the abandoned temporaries of one destination, reading its directory at most once per interval.</summary>
+	/// The caller holds the durable writer lock. Only temporaries at least 24 hours old are removed, so one
+	/// that appears after the directory was listed is simply left for a later listing.
+	inline void CleanupAbandonedAtomicTempsThrottled(const std::filesystem::path& path)
+	{
+		struct Listing
+		{
+			std::chrono::steady_clock::time_point read_at;
+			std::vector<std::string> temp_names;
+		};
+		static std::unordered_map<std::string, Listing> listings;
+		std::filesystem::path native_parent;
+		std::string normalization_error;
+		if (path.parent_path().empty() || !NativeFilePath(path.parent_path(), native_parent, normalization_error, true)) return;
+		const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+		const auto [found, inserted] = listings.try_emplace(uam::paths::Utf8PathString(native_parent));
+		Listing& listing = found->second;
+		if (inserted || now - listing.read_at >= std::chrono::minutes(10))
+		{
+			listing.read_at = now;
+			listing.temp_names.clear();
+			std::error_code error;
+			for (std::filesystem::directory_iterator it(native_parent, std::filesystem::directory_options::skip_permission_denied, error), end;
+			     !error && it != end;
+			     it.increment(error))
 			{
-				std::filesystem::remove(native_entry, status_error);
+				std::string name = uam::paths::Utf8PathString(it->path().filename());
+				if (name.find(kTempWritePathSuffix) != std::string::npos) listing.temp_names.push_back(std::move(name));
 			}
+		}
+		if (listing.temp_names.empty()) return;
+		// Same rule as the unthrottled sweep: an existing destination and an existing backup each own their prefix.
+		for (const std::filesystem::path& owner : {path, MakeBackupPath(path)})
+		{
+			std::filesystem::path native_owner;
+			if (!NativeFilePath(owner, native_owner, normalization_error) || !uam::paths::PathExistsNoThrow(native_owner)) continue;
+			const std::string prefix = uam::paths::Utf8PathString(owner.filename()) + kTempWritePathSuffix;
+			std::erase_if(listing.temp_names, [&](const std::string& name)
+			{
+				return name.starts_with(prefix) && RemoveAbandonedAtomicTempNoThrow(path.parent_path() / uam::paths::PathFromUtf8(name));
+			});
 		}
 	}
 
@@ -1058,8 +1107,7 @@ namespace uam::io
 			return result;
 		}
 
-		CleanupAbandonedAtomicTemps(path);
-		CleanupAbandonedAtomicTemps(MakeBackupPath(path));
+		CleanupAbandonedAtomicTempsThrottled(path);
 
 		const std::filesystem::path temp_path = MakeTempWritePath(path);
 		const std::filesystem::path backup_path = MakeBackupPath(path);
