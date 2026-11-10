@@ -2158,10 +2158,13 @@ UAM_TEST(RemoteHelperUpdateBlocksEveryRemoteCleanupState)
 		UAM_ASSERT(begin != std::string::npos);
 		const std::size_t end = vcs_source.find("void UamQueryHandler::", begin + 1);
 		const std::string handler_body = vcs_source.substr(begin, end - begin);
-		const std::size_t acquire = handler_body.find("BeginRemoteVcsOperationLease(m_app, chat->execution_host_id)");
-		UAM_ASSERT(acquire != std::string::npos);
-		UAM_ASSERT(acquire < handler_body.find("RunAsyncCefQuery"));
-		UAM_ASSERT(handler_body.find("remote_vcs_lease]() mutable") != std::string::npos);
+		const std::size_t queued = handler_body.find("QueueRemoteVcsWork(m_app, chat->execution_host_id)");
+		const std::size_t posted = handler_body.find("RunAsyncCefQuery");
+		const std::size_t held = handler_body.find("remote_vcs_lease = remote_vcs.Hold()");
+		UAM_ASSERT(queued != std::string::npos && queued < posted && held != std::string::npos);
+		// Reads block helper setup only while they run; a queued commit blocks it from the moment it is queued.
+		UAM_ASSERT((held < posted) == (std::string_view(method) == "HandleCommitVcsChanges"));
+		UAM_ASSERT(handler_body.find("ScopedRunnerQueuedWork queued(remote_vcs.queued_at)") > posted);
 	}
 }
 

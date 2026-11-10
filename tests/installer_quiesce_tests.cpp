@@ -629,8 +629,7 @@ UAM_TEST(InstallerBlockReasonPreservesFirstMatchAndHostScope)
 	session->process_execution_host_id = host;
 	session->remote_stop_unconfirmed = true;
 	app.acp_sessions.push_back(std::move(session));
-	std::shared_ptr<void> lease = std::make_shared<int>(1);
-	app.remote_vcs_operation_leases_by_host_id[host] = lease;
+	std::shared_ptr<void> lease = app.remote_vcs_operation_leases_by_host_id[host].Hold();
 	AssertInstallerBlockReason(app, host, Reason::VcsLease, true);
 	AssertInstallerBlockReason(app, "another-host", Reason::None, true);
 	lease.reset();
@@ -1042,4 +1041,27 @@ UAM_TEST(InstallerUnconfirmedStopStillBlocksAndReconnectWaitsForInstall)
 	UAM_ASSERT(!uam::RemoteReconnectHeldForHelperInstall(app.chats.front(), false));
 	uam::SetRemoteHelperInstallProbe(nullptr);
 	UAM_ASSERT(!uam::RemoteReconnectHeldForHelperInstall(app.chats.front(), false));
+}
+
+UAM_TEST(QueuedRemoteGitWorkBlocksHelperSetupOnlyWhileItRuns)
+{
+	using Reason = uam::remote_install::HostRuntimeBlockReason;
+	uam::AppState app;
+	const std::string host = InstallerHost().id;
+	// What a queued worker captures on the UI thread: the host's activity, not a hold on it.
+	const uam::RemoteVcsActivity queued = app.remote_vcs_operation_leases_by_host_id[host];
+	AssertInstallerBlockReason(app, host, Reason::None, true);
+	std::promise<void> running, finish;
+	std::thread worker([&]
+	{
+		const std::shared_ptr<void> hold = queued.Hold();
+		running.set_value();
+		finish.get_future().wait();
+	});
+	running.get_future().wait();
+	AssertInstallerBlockReason(app, host, Reason::VcsLease, true);
+	AssertInstallerBlockReason(app, "another-host", Reason::None, true);
+	finish.set_value();
+	worker.join();
+	AssertInstallerBlockReason(app, host, Reason::None, true);
 }

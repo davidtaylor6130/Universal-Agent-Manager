@@ -70,18 +70,20 @@ namespace
 		IMPLEMENT_REFCOUNTING(PendingWorktreeCreationTask);
 	};
 
-	std::shared_ptr<void> BeginRemoteVcsOperationLease(uam::AppState& app,
-	                                                   const std::string& host_id)
+	/// Queued remote Git work. Reads hold the host's activity only while they run, so a queue behind an
+	/// unreachable host does not block helper setup; a commit holds it from the moment it is queued.
+	struct RemoteVcsQueuedWork
+	{
+		std::optional<uam::RemoteVcsActivity> activity;
+		std::chrono::steady_clock::time_point queued_at = std::chrono::steady_clock::now();
+
+		std::shared_ptr<void> Hold() const { return activity ? activity->Hold() : nullptr; }
+	};
+
+	RemoteVcsQueuedWork QueueRemoteVcsWork(uam::AppState& app, const std::string& host_id)
 	{
 		if (host_id.empty() || host_id == uam::execution_hosts::kLocalHostId) return {};
-		std::weak_ptr<void>& lease = app.remote_vcs_operation_leases_by_host_id[host_id];
-		std::shared_ptr<void> token = lease.lock();
-		if (!token)
-		{
-			token = std::make_shared<int>(0);
-			lease = token;
-		}
-		return token;
+		return {app.remote_vcs_operation_leases_by_host_id[host_id]};
 	}
 
 	uam::AppState BuildReadOnlyAppSnapshot(std::filesystem::path data_root, AppSettings settings, std::vector<ChatFolder> folders, std::vector<ProviderProfile> provider_profiles, std::unordered_map<std::string, uam::CliProviderVersionState> provider_versions)
@@ -711,11 +713,13 @@ void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/
 	const std::optional<ExecutionHost> expected_host = host == nullptr ? std::nullopt : std::optional<ExecutionHost>(*host);
 	uam::AppState* live_app = &m_app;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
+	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
 
 	RunAsyncCefQuery(m_asyncLifetime, cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), requested_type, include_line_stats, request_id, comparison_ref, context_only, remote_vcs_lease]() mutable
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), requested_type, include_line_stats, request_id, comparison_ref, context_only, remote_vcs]() mutable
 	                 {
+		                 const std::shared_ptr<void> remote_vcs_lease = remote_vcs.Hold();
+		                 const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		                 const uam::VcsCommitStatus status = uam::VcsCommitService().Status(snapshot, chat, requested_type, include_line_stats, comparison_ref, context_only);
 		                 return AsyncSuccess(WithOptionalRequestId(SerializeVcsCommitStatus(status), request_id));
@@ -761,10 +765,12 @@ void UamQueryHandler::HandleCaptureChatReferenceContext(CefRefPtr<CefBrowser> /*
 	const ExecutionHost expected_host = *host;
 	const std::filesystem::path data_root = m_app.data_root;
 	ReadOnlyAppSnapshotInputs inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	const std::shared_ptr<void> remote_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
+	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
 	RunAsyncCefQuery(m_asyncLifetime, cb,
-	    [inputs = std::move(inputs), captured, kind, slot = std::move(slot), remote_lease]() mutable
+	    [inputs = std::move(inputs), captured, kind, slot = std::move(slot), remote_vcs]() mutable
 	    {
+		    const std::shared_ptr<void> remote_vcs_lease = remote_vcs.Hold();
+		    const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
 		    const std::shared_ptr<void> active_slot = std::move(slot);
 		    uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(inputs));
 		    const uam::VcsCommitStatus status = uam::VcsCommitService().Status(snapshot, captured, uam::VcsType::Git, false, {}, true);
@@ -872,11 +878,13 @@ void UamQueryHandler::HandleGetVcsFileDiff(CefRefPtr<CefBrowser> /*browser*/, co
 	const std::string comparison_ref(uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "comparisonRef"));
 	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
+	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
 
 	RunAsyncCefQuery(m_asyncLifetime, cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), path, type, request_id, comparison_ref, remote_vcs_lease]() mutable
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), path, type, request_id, comparison_ref, remote_vcs]() mutable
 	                 {
+		                 const std::shared_ptr<void> remote_vcs_lease = remote_vcs.Hold();
+		                 const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		                 std::string error;
 		                 const std::string diff = uam::VcsCommitService().Diff(snapshot, chat, path, type, &error, comparison_ref);
@@ -911,13 +919,15 @@ void UamQueryHandler::HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, cons
 	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
 	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
+	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
+	const std::shared_ptr<void> remote_vcs_lease = remote_vcs.Hold();
 	uam::AppState* live_app = &m_app;
 	const std::string chat_id = chat->id;
 	m_app.worktree_operation_chat_ids.insert(chat_id);
 	if (!RunAsyncCefQuery(m_asyncLifetime, cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, message, files, lease, remote_vcs_lease]() mutable
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, message, remote_vcs, files, lease, remote_vcs_lease]() mutable
 	                 {
+		                 const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		                 const uam::VcsCommitResult result = uam::VcsCommitService().Commit(snapshot, chat, type, message, files);
 		                 if (!result.ok) return AsyncFailure(400, FailureDetailOrFallback(result.error, "Failed to commit changes."));
@@ -944,11 +954,13 @@ void UamQueryHandler::HandleGenerateVcsCommitMessage(CefRefPtr<CefBrowser> /*bro
 	const std::string request_id = payload.value("requestId", "");
 	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
+	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
 
 	RunAsyncCefQuery(m_asyncLifetime, cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, files = std::move(files), request_id, remote_vcs_lease]() mutable
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, files = std::move(files), request_id, remote_vcs]() mutable
 	                 {
+		                 const std::shared_ptr<void> remote_vcs_lease = remote_vcs.Hold();
+		                 const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		                 const uam::VcsCommitMessageSuggestion suggestion = uam::VcsCommitService().GenerateMessage(snapshot, chat, type, files);
 		                 if (!suggestion.ok)

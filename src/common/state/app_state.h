@@ -1108,6 +1108,23 @@ namespace uam
 	};
 
 	/// <summary>
+	/// Counts remote Git work on one host. Copies share the count, so a queued worker holds it from its own thread only while it runs.
+	/// </summary>
+	class RemoteVcsActivity
+	{
+	  public:
+		std::shared_ptr<void> Hold() const
+		{
+			m_running->fetch_add(1);
+			return std::shared_ptr<void>(m_running.get(), [running = m_running](void*) { running->fetch_sub(1); });
+		}
+		bool expired() const { return m_running->load() == 0; }
+
+	  private:
+		std::shared_ptr<std::atomic<int>> m_running = std::make_shared<std::atomic<int>>(0);
+	};
+
+	/// <summary>
 	/// Background command execution container for provider CLI version checks.
 	/// </summary>
 	struct AsyncCommandTask
@@ -1520,7 +1537,7 @@ namespace uam
 		};
 		std::unordered_map<std::string, std::shared_ptr<GitPortRequest>> git_port_requests;
 		std::unordered_map<std::string, std::shared_ptr<WorktreeLaunchPreparationTask>> worktree_launch_preparations;
-		std::unordered_map<std::string, std::weak_ptr<void>> remote_vcs_operation_leases_by_host_id;
+		std::unordered_map<std::string, RemoteVcsActivity> remote_vcs_operation_leases_by_host_id;
 
 		std::unique_ptr<ProviderModelCatalogService> provider_model_catalog;
 		std::shared_ptr<OpenCodeNativeActivityService> opencode_native_activity;
