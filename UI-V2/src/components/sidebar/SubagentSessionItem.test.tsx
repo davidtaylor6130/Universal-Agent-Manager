@@ -208,6 +208,18 @@ describe('SubagentSessionItem native child disclosure', () => {
 })
 
 
+it('keeps a forked branch inside its family row while still listing the fork\'s subagents', async () => {
+  const root_chat: Session = { ...parent, id: 'family-root', name: 'Family root', managedSubagentCount: 0 }
+  const fork: Session = { ...root_chat, id: 'family-fork', name: 'Branch: stand-in', parentChatId: root_chat.id, branchRootChatId: root_chat.id }
+  const child: Session = { ...root_chat, id: 'fork-subagent', name: 'Fork subagent', importedReadOnly: true, subagentParentChatId: fork.id, subagentParentCreatedAt: fork.createdAt.toISOString() }
+  useAppStore.setState({ sessions: [root_chat, fork, child] })
+  await act(async () => root.render(<SubagentSessionItem sessionId={root_chat.id} session={root_chat} familySessionIds={[root_chat.id, fork.id]} />))
+  await expand()
+  expect(host.querySelector('[data-session-id="family-root"]')).not.toBeNull()
+  expect(host.querySelector('[data-session-id="family-fork"]')).toBeNull()
+  expect(host.querySelector('[aria-label="Subagents of Branch: stand-in"] [data-session-id="fork-subagent"]')).not.toBeNull()
+})
+
 it('does not mount a closed managed reader when IntersectionObserver is unavailable', async () => {
   vi.stubGlobal('IntersectionObserver', undefined)
   vi.useFakeTimers()
