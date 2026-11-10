@@ -48,8 +48,9 @@ namespace uam::remote
 
 		std::vector<std::string> SshCommand(const std::string& alias, std::string command)
 		{
+			// ServerAlive ends a step promptly after the network drops (for example the laptop sleeping), matching the bridge and proxy.
 			return {"ssh", "-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
-			        "-o", "ConnectTimeout=10", alias, std::move(command)};
+			        "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", alias, std::move(command)};
 		}
 
 		std::string PowerShellCommand(std::string_view script)
@@ -748,9 +749,12 @@ fi
 			    "if ! flock -n 9; then echo UAM_INSTALL_BUSY; printf '%s\\n' 'The remote helper is busy with another installation.' >&2; exit 73; fi; " +
 			    "test ! -L \"$root/install.operation\"; exec 8>\"$root/install.operation\"; "
 			    "if ! flock -n 8; then echo UAM_INSTALL_BUSY; echo 'A helper operation is still active.' >&2; exit 73; fi; " +
+			    // A controller that goes silent (sleep, dropped network) must not hold both locks until sshd notices: after ten idle minutes the guard
+			    // exits, rolling back through its trap once authorized, like the Windows guard's deadline. Without timeout(1) it waits as before.
+			    "uam_timeout=$(command -v timeout || :); uam_read() { ${uam_timeout:+$uam_timeout 600} sh -c 'IFS= read -r line || exit 1; printf %s \"$line\"' 8>&- 9>&-; }; "
 			    "printf '%s\\n' 'UAM_INSTALL_LOCK_READY:" + plan.nonce + "'; "
-			    "IFS= read -r authorization; test \"$authorization\" = 'UAM_INSTALL_AUTHORIZE:" + plan.nonce + "'; trap " + quoted_trap + " EXIT; "
-			    "while IFS= read -r line; do id=${line%%:*}; line=${line#*:}; case \"$id\" in *[!0-9]*|'') exit 2;; esac; case \"$line\" in *[!a-zA-Z0-9+/=]*|'') exit 2;; esac; "
+			    "authorization=$(uam_read); test \"$authorization\" = 'UAM_INSTALL_AUTHORIZE:" + plan.nonce + "'; trap " + quoted_trap + " EXIT; "
+			    "while line=$(uam_read); do id=${line%%:*}; line=${line#*:}; case \"$id\" in *[!0-9]*|'') exit 2;; esac; case \"$line\" in *[!a-zA-Z0-9+/=]*|'') exit 2;; esac; "
 			    "command=$(printf '%s' \"$line\" | base64 -d); if output=$(sh -c \"$command\" 9>&- 2>&1); then status=0; else status=$?; fi; "
 			    "printf 'UAM_INSTALL_RESULT:%s:%s:%s\\n' \"$id\" \"$status\" \"$(printf '%s' \"$output\" | base64 -w 0)\"; done";
 		}
