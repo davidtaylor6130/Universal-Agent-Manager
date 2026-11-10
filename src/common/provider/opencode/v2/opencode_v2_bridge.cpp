@@ -400,13 +400,7 @@ int History(const std::string& operation, std::vector<std::string> command, cons
 	if (operation == "list")
 	{
 		if (!result.is_array() || result.size() >= 100001) throw std::runtime_error("OpenCode history list is incomplete or exceeds its bounded limit.");
-		for (auto& entry : result)
-		{
-			if (entry.contains("location")) entry["directory"] = entry.at("location").at("directory");
-			// Internal refusal data from this checked dispatcher, not upstream
-			// metadata support or evidence authorizing a future native resume.
-			entry["opencode_v2_session_id"] = entry.at("id");
-		}
+		NormalizeHistoryList(result);
 	}
 	Output(result); return 0;
 }

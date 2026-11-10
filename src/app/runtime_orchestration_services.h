@@ -33,6 +33,7 @@ class ChatHistorySyncService
 		std::string directory;
 		std::int64_t created_epoch_ms = 0;
 		std::int64_t updated_epoch_ms = 0;
+		bool open_code_v2 = false;
 	};
 	struct RemoteOpenCodeTranscript
 	{
@@ -58,6 +59,7 @@ class ChatHistorySyncService
 	};
 	RemoteOpenCodeDiscovery DiscoverRemoteOpenCodeSessions(const ChatFolder& folder, const ExecutionHost& host,
 	    const ProviderProfile& profile, std::stop_token stop_token = {}) const;
+	static RemoteOpenCodeDiscovery ParseRemoteOpenCodeSessionList(std::string_view output, bool open_code_v2);
 	struct RemoteCodexDiscovery
 	{
 		std::vector<RemoteCodexSession> sessions;
