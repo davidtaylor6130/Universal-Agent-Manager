@@ -1157,7 +1157,7 @@ UAM_TEST(StatePushReconciliationRepairsAWriteThatBypassedTheTranscriptStamp)
 	clock.Advance(std::chrono::seconds(3));
 	UAM_ASSERT(uam::StateReconciliationDue());
 	g_observed_state_patch.clear();
-	uam_test::g_expected_state_cache_divergences = 1;
+	++uam_test::g_expected_state_cache_divergences;
 	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
 	UAM_ASSERT_EQ(uam::StateSerializer::CacheDivergenceCount(), divergences_before + 1);
 	UAM_ASSERT_EQ(nlohmann::json::parse(g_observed_state_patch)["data"]["chats"][0]["id"], "background");
@@ -1197,4 +1197,61 @@ UAM_TEST(PerformancePushDoesNotScanEveryManagedRunForEveryChat)
 	// Scanning every run for every chat adds 100 million comparisons, several hundred milliseconds; the index adds one pass over the runs.
 	if (with_runs - without_runs > 50.0)
 		throw TestFailure("50000 managed runs added " + std::to_string(with_runs - without_runs) + " ms to an unchanged push; limit 50 ms");
+}
+
+UAM_TEST(StatePushStampsAreNotPinnedByOtherReadersAndTheirCostIsVisible)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	StatePatchObserver observer;
+	uam::AppState app;
+	for (const char* id : {"selected", "background"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.provider_id = "claude-cli";
+		chat.messages.push_back(Message{MessageRole::User, "Hello"});
+		chat.messages.push_back(Message{MessageRole::Assistant, "First answer"});
+		app.chats.push_back(std::move(chat));
+	}
+	app.selected_chat_index = 0;
+	clock.Advance(std::chrono::seconds(3));
+	uam::PushStateUpdate(nullptr, app);
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+
+	// A reader outside a push (a message page, a handler's reply) computes a digest between taking a reference and
+	// writing through it. It must not leave that digest behind for the next push to trust.
+	Message& kept = app.chats[1].messages.back();
+	const std::string before = uam::StateSerializer::MessageDigest(app.chats[1]);
+	kept.content = "Second answer";
+	UAM_ASSERT(uam::StateSerializer::MessageDigest(app.chats[1]) != before);
+	clock.Advance(std::chrono::milliseconds(120));
+	g_observed_state_patch.clear();
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(nlohmann::json::parse(g_observed_state_patch)["data"]["chats"][0]["id"], "background");
+
+	// A non-const read restamps without changing anything: the push rehashes that transcript, publishes nothing, and counts it.
+	const std::size_t restamped_before = uam::StateSerializer::RestampedUnchangedTranscriptCount();
+	const std::size_t hashed_before = uam::StateSerializer::HashedTranscriptMessageCountForTests();
+	(void)app.chats[1].messages.back();
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::RestampedUnchangedTranscriptCount(), restamped_before + 1);
+	UAM_ASSERT_EQ(uam::StateSerializer::HashedTranscriptMessageCountForTests(), hashed_before + app.chats[1].messages.size());
+
+	// The poll loop wakes for the owed reconciliation instead of sleeping through its idle second.
+	// The reconciling push's hashing shows in the hash count.
+	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(1000), 1000);
+	clock.Advance(std::chrono::milliseconds(2140));
+	UAM_ASSERT(!uam::StateReconciliationDue());
+	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(1000), 500);
+	clock.Advance(std::chrono::milliseconds(500));
+	UAM_ASSERT(uam::StateReconciliationDue());
+	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(1000), 1);
+	const std::size_t verify_hashed_before = uam::StateSerializer::HashedTranscriptMessageCountForTests();
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT(uam::StateSerializer::HashedTranscriptMessageCountForTests() > verify_hashed_before);
+	UAM_ASSERT(!uam::StateReconciliationDue());
+	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(1000), 1000);
 }

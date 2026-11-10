@@ -49,8 +49,9 @@ class StateSerializer
 
 	/// <summary>
 	/// How serializations on this thread treat values cached by revision stamp (a loaded transcript digest).
-	/// Exact, the default, computes from the source. Trust reuses a value whose stamp is unchanged; only state
-	/// pushes do, because only they are followed by a Verify pass. Verify recomputes every value Trust would
+	/// Exact, the default, computes from the source and stores nothing: a digest stored outside a push could be
+	/// pinned by a later write through a reference taken before it was computed, with no Verify pass owed for it.
+	/// Trust reuses a value whose stamp is unchanged; only state pushes do, because only they are followed by a Verify pass. Verify recomputes every value Trust would
 	/// have reused; a difference is repaired, counted and logged. That is the full reconciliation behind the stamps.
 	/// </summary>
 	enum class StampedCacheMode { Exact, Trust, Verify };
@@ -70,8 +71,17 @@ class StateSerializer
 	/// <summary>Values reused by revision stamp on this thread so far without recomputing them.</summary>
 	static std::size_t TrustedCacheReadCount();
 
-	/// <summary>Reused values a verifying pass found different from their source on this thread so far.</summary>
+	/// <summary>Reused values verifying passes found different from their source so far, on any thread.</summary>
 	static std::size_t CacheDivergenceCount();
+
+	/// <summary>Writes one [desync] line naming up to five values the verifying pass on this thread repaired, if any.</summary>
+	static void FlushCacheDivergenceReport();
+
+	/// <summary>
+	/// Loaded transcripts pushes on this thread rehashed although their content had not changed: something read
+	/// them through a non-const path, which restamps. A count that keeps rising means the stamps are being defeated.
+	/// </summary>
+	static std::size_t RestampedUnchangedTranscriptCount();
 
 	/// Serialise the application state, optionally omitting loaded chat messages.
 	static nlohmann::json Serialize(const AppState& app, bool summary_only = false);

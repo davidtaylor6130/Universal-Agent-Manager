@@ -152,17 +152,19 @@ namespace uam
 			// Queued and running managed runs per root chat, counted once instead of scanning every run for every chat.
 			std::optional<std::unordered_map<std::string, std::size_t>> active_run_counts;
 			// A chat's summary reads its attention revision three times; unopened chats compare two timestamps for it.
-			const ChatSession* attention_chat = nullptr;
+			bool attention_known = false;
+			std::string attention_chat_id;
 			std::string attention_revision;
 		};
 
 		/// <summary>The chat's attention revision, computed once per chat within one serialization.</summary>
 		const std::string& AttentionRevisionForChat(const AppState& app, const ChatSession& chat, CatalogSnapshotCache& cache)
 		{
-			if (cache.attention_chat != &chat)
+			if (!cache.attention_known || cache.attention_chat_id != chat.id)
 			{
 				cache.attention_revision = ChatDomainService().AttentionRevision(app, chat);
-				cache.attention_chat = &chat;
+				cache.attention_chat_id = chat.id;
+				cache.attention_known = true;
 			}
 			return cache.attention_revision;
 		}
@@ -182,18 +184,20 @@ namespace uam
 		// caller (a message page, a handler's reply) computes from the source as before.
 		thread_local StateSerializer::StampedCacheMode g_stamped_cache_mode = StateSerializer::StampedCacheMode::Exact;
 		thread_local std::size_t g_trusted_cache_reads = 0;
-		thread_local std::size_t g_cache_divergences = 0;
+		// Process-wide: handler test programs push on the CEF UI thread and check the total from the main thread.
+		std::atomic<std::size_t> g_cache_divergences{0};
+		// Found by the current verifying pass; FlushCacheDivergenceReport writes them as one log line.
+		thread_local std::vector<std::string> g_unreported_divergences;
+		thread_local std::size_t g_unreported_divergence_count = 0;
+		// Transcripts whose stamp moved while their digest did not: a non-const read restamped them and they were rehashed for nothing.
+		thread_local std::size_t g_restamped_unchanged_transcripts = 0;
 
 		void ReportCacheDivergence(std::string_view what, std::string_view owner)
 		{
 			++g_cache_divergences;
-			static auto last_report = std::chrono::steady_clock::time_point::min();
-			const auto now = std::chrono::steady_clock::now();
-			if (last_report != std::chrono::steady_clock::time_point::min() && now - last_report < std::chrono::seconds(5)) return;
-			last_report = now;
+			++g_unreported_divergence_count;
 			// Identifiers only: the diverged content is private.
-			uam::diagnostics::Write("[desync] Cached " + std::string(what) + " for " + std::string(owner) +
-			    " differed from its source and was repaired; a write bypassed its revision stamp. Total so far: " + std::to_string(g_cache_divergences) + ".");
+			if (g_unreported_divergences.size() < 5) g_unreported_divergences.push_back(std::string(what) + " of " + std::string(owner));
 		}
 
 		struct StampedTranscriptDigest
@@ -1119,6 +1123,7 @@ namespace uam
 				}
 				std::uint64_t truth_hash = uam::hashing::kFnv1a64OffsetBasis;
 				for (const Message& message : session.messages.items()) chat_pages::AppendMessageDigest(truth_hash, message);
+				g_hashed_transcript_messages += session.messages.size();
 				std::string truth = chat_pages::FinishMessageDigest(truth_hash, session.messages.size());
 				if (truth != known->second.digest)
 				{
@@ -1169,9 +1174,14 @@ namespace uam
 				last_slow_digest_report = finished;
 			}
 			std::string digest = chat_pages::FinishMessageDigest(hash, session.messages.size());
-			if (revision != 0)
+			// Only a push stores: its Verify pass is what makes a stored digest safe to trust later. A digest stored by
+			// any other caller could be pinned by a write through a reference taken before that caller ran.
+			if (revision != 0 && g_stamped_cache_mode != StateSerializer::StampedCacheMode::Exact)
 			{
-				if (g_transcript_digests.size() >= 8192) g_transcript_digests.clear(); // ponytail: wholesale reset bounds entries of deleted chats.
+				const auto previous = g_transcript_digests.find(session.id);
+				if (previous != g_transcript_digests.end() && previous->second.digest == digest) ++g_restamped_unchanged_transcripts;
+				// Entries of deleted chats are bounded by evicting one, not by clearing: a clear would rehash every loaded chat.
+				if (previous == g_transcript_digests.end() && g_transcript_digests.size() >= 8192) g_transcript_digests.erase(g_transcript_digests.begin());
 				g_transcript_digests[session.id] = StampedTranscriptDigest{revision, digest};
 			}
 			return digest;
@@ -2260,6 +2270,23 @@ namespace uam
 	std::size_t StateSerializer::CacheDivergenceCount()
 	{
 		return g_cache_divergences;
+	}
+
+	std::size_t StateSerializer::RestampedUnchangedTranscriptCount()
+	{
+		return g_restamped_unchanged_transcripts;
+	}
+
+	void StateSerializer::FlushCacheDivergenceReport()
+	{
+		if (g_unreported_divergence_count == 0) return;
+		std::string names;
+		for (const std::string& name : g_unreported_divergences) names += (names.empty() ? "" : ", ") + name;
+		uam::diagnostics::Write("[desync] " + std::to_string(g_unreported_divergence_count) + " cached value(s) differed from their source and were repaired (" +
+		    names + (g_unreported_divergence_count > g_unreported_divergences.size() ? ", ..." : "") +
+		    "); a write bypassed a revision stamp. Total so far: " + std::to_string(g_cache_divergences.load()) + ".");
+		g_unreported_divergences.clear();
+		g_unreported_divergence_count = 0;
 	}
 
 	nlohmann::json StateSerializer::Serialize(const AppState& app, bool summary_only)

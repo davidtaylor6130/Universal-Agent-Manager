@@ -73,7 +73,8 @@ namespace
 	std::unordered_map<std::string, std::uint64_t> g_last_pushed_chat_digests_by_chat_id;
 	// Pushes reuse values by revision stamp (see StateSerializer::StampedCacheMode). A push that starts at least
 	// this long after the last verifying one recomputes them instead, so a write that bypassed a stamp reaches the
-	// frontend after this delay at most, with a [desync] log line, instead of never.
+	// frontend with a [desync] log line instead of never: the poll loop wakes when the interval ends, and the
+	// reconciling push can then wait out one 100 ms rebuild window, so about 3.1 s after the push that missed it.
 	constexpr std::chrono::seconds kStateReconciliationInterval{3};
 	std::chrono::steady_clock::time_point g_last_state_reconciliation_at{};
 	// A push since then trusted a stamp; the poll loop runs one more push when the interval ends even if nothing reports a change.
@@ -85,6 +86,20 @@ namespace
 	bool ReconciliationIntervalElapsed(std::chrono::steady_clock::time_point now)
 	{
 		return now < g_last_state_reconciliation_at || now - g_last_state_reconciliation_at >= kStateReconciliationInterval;
+	}
+
+	/// <summary>Shows in the log whether non-const reads are defeating the transcript stamps, at most once a minute.</summary>
+	void ReportRestampedTranscripts()
+	{
+		static std::size_t reported = 0;
+		static auto last_report = std::chrono::steady_clock::time_point::min();
+		const std::size_t total = uam::StateSerializer::RestampedUnchangedTranscriptCount();
+		const auto now = std::chrono::steady_clock::now();
+		if (total == reported || (last_report != std::chrono::steady_clock::time_point::min() && now - last_report < std::chrono::seconds(60))) return;
+		uam::diagnostics::Write("[performance] State pushes rehashed " + std::to_string(total - reported) +
+		    " loaded transcript(s) whose content had not changed since the last report: a non-const read restamped them. Total: " + std::to_string(total) + ".");
+		reported = total;
+		last_report = now;
 	}
 
 	/// <summary>Chooses whether this push verifies or trusts stamped values, and records what it did.</summary>
@@ -103,8 +118,10 @@ namespace
 			{
 				g_last_state_reconciliation_at = m_now;
 				g_state_reconciliation_pending = false;
+				uam::StateSerializer::FlushCacheDivergenceReport();
 			}
 			else if (uam::StateSerializer::TrustedCacheReadCount() != m_trusted_before) g_state_reconciliation_pending = true;
+			ReportRestampedTranscripts();
 		}
 
 	  private:
@@ -547,7 +564,14 @@ namespace uam
 
 	int CapPollDelayForDeferredStatePush(int delay_ms)
 	{
-		return HasDeferredStatePush() ? std::min(delay_ms, MillisecondsUntilDeferredStatePushDue()) : delay_ms;
+		if (HasDeferredStatePush()) delay_ms = std::min(delay_ms, MillisecondsUntilDeferredStatePushDue());
+		// The reconciliation bound holds only if the poll loop wakes for it instead of on its idle interval.
+		if (g_state_reconciliation_pending)
+		{
+			const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(g_last_state_reconciliation_at + kStateReconciliationInterval - g_state_push_clock()).count();
+			delay_ms = std::min(delay_ms, remaining < 1 ? 1 : static_cast<int>(std::min<long long>(remaining, kStateReconciliationInterval / std::chrono::milliseconds(1))));
+		}
+		return delay_ms;
 	}
 
 	void SetStatePushClockForTests(std::chrono::steady_clock::time_point (*clock)())
