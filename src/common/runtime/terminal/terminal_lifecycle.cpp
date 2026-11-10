@@ -124,12 +124,14 @@ bool RequestCliTerminalSteer(CliTerminalState& terminal, std::string_view prompt
 	terminal.pending_steer_prompt = std::string(prompt);
 	terminal.pending_steer_started_time_s = GetAppTimeSeconds();
 	terminal.pending_steer_restart_attempted = false;
+	terminal.pending_steer_failed = false;
 	terminal.last_error.clear();
 	if (CliTerminalLifecycleIsIdleLive(terminal)) return TryDeliverPendingCliTerminalSteer(terminal);
 	constexpr char interrupt = '\x03';
 	if (!WriteToCliTerminal(terminal, &interrupt, 1))
 	{
 		terminal.last_error = "Failed to interrupt terminal fallback; steering prompt retained for retry.";
+		terminal.pending_steer_failed = true;
 		if (error_out != nullptr) *error_out = terminal.last_error;
 		return false;
 	}
@@ -143,11 +145,13 @@ bool TryDeliverPendingCliTerminalSteer(CliTerminalState& terminal)
 	if (input.empty() || !WriteToCliTerminal(terminal, input.data(), input.size()))
 	{
 		terminal.last_error = "Failed to deliver terminal steering prompt; prompt retained for retry.";
+		terminal.pending_steer_failed = true;
 		return false;
 	}
 	terminal.pending_steer_prompt.clear();
 	terminal.pending_steer_started_time_s = 0.0;
 	terminal.pending_steer_restart_attempted = false;
+	terminal.pending_steer_failed = false;
 	terminal.last_error.clear();
 	MarkCliTerminalTurnBusy(terminal);
 	return true;
@@ -459,7 +463,7 @@ bool CliTerminalBlocksAcpHandoff(const CliTerminalState& terminal)
 	// A steer blocks only while it is still being delivered or recovered (bounded by its restart and failure
 	// timeouts). One already reported as failed is retained for retry, not running work: it used to refuse
 	// structured chat for as long as the terminal stayed open.
-	const bool steer_in_flight = !terminal.pending_steer_prompt.empty() && terminal.last_error.empty();
+	const bool steer_in_flight = !terminal.pending_steer_prompt.empty() && !terminal.pending_steer_failed;
 	return terminal.lifecycle_state == CliTerminalLifecycleState::Busy || terminal.turn_state == CliTerminalTurnState::Busy ||
 	    terminal.generation_in_progress || steer_in_flight;
 }
