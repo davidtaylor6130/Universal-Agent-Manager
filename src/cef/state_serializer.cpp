@@ -148,7 +148,14 @@ namespace uam
 			std::unordered_map<std::string, nlohmann::json> catalogs;
 			std::unordered_map<std::string, nlohmann::json> fingerprints;
 			bool compact_catalogs = false;
-			std::map<WorkspaceKey, std::filesystem::path> workspaces;
+			// Transparent comparison: a chat is looked up through views of its own strings, without copying them.
+			using WorkspaceKeyView = std::tuple<bool, bool, std::string_view, std::string_view, std::string_view, std::string_view>;
+			std::map<WorkspaceKey, std::filesystem::path, std::less<>> workspaces;
+			// A chat's compact catalogue fingerprint by provider, resolved workspace and host. The views point into
+			// chats, which outlive this cache: it lives for one serialization, or one push during which state is fixed.
+			std::map<std::tuple<std::string_view, const std::filesystem::path*, std::string_view>, const nlohmann::json*> chat_fingerprints;
+			// The provider's agent execution capability depends on the provider alone.
+			std::map<std::string, std::string, std::less<>> execution_capabilities;
 			// Queued and running managed runs per root chat, counted once instead of scanning every run for every chat.
 			std::optional<std::unordered_map<std::string, std::size_t>> active_run_counts;
 			// A chat's summary reads its attention revision three times; unopened chats compare two timestamps for it.
@@ -244,10 +251,12 @@ namespace uam
 		const std::filesystem::path& WorkspaceSnapshotForChat(const AppState& app, const ChatSession& chat,
 		                                                       CatalogSnapshotCache& cache)
 		{
-			const CatalogSnapshotCache::WorkspaceKey key{chat.imported_read_only, uam::paths::IsGitWorktreeIsolated(chat),
+			const CatalogSnapshotCache::WorkspaceKeyView view{chat.imported_read_only, uam::paths::IsGitWorktreeIsolated(chat),
 			    chat.execution_host_id, chat.workspace_directory, chat.workspace_worktree_directory, chat.folder_id};
-			if (const auto found = cache.workspaces.find(key); found != cache.workspaces.end()) return found->second;
-			return cache.workspaces.emplace(key, uam::paths::ResolveWorkspaceRootPath(app, chat)).first->second;
+			if (const auto found = cache.workspaces.find(view); found != cache.workspaces.end()) return found->second;
+			return cache.workspaces.emplace(CatalogSnapshotCache::WorkspaceKey{chat.imported_read_only, std::get<1>(view),
+			    chat.execution_host_id, chat.workspace_directory, chat.workspace_worktree_directory, chat.folder_id},
+			    uam::paths::ResolveWorkspaceRootPath(app, chat)).first->second;
 		}
 
 		std::string CatalogSnapshotKey(const std::string& provider_id,
@@ -352,10 +361,22 @@ namespace uam
 			return &g_catalog_memo;
 		}
 
+		const nlohmann::json& CatalogFingerprintForScope(const AppState& app, const ChatSession& chat, CatalogSnapshotCache& cache, const std::string& workspace);
+
 		const nlohmann::json& CatalogFingerprintForChat(const AppState& app, const ChatSession& chat,
 		                                               CatalogSnapshotCache& cache)
 		{
-			const std::string workspace = WorkspaceSnapshotForChat(app, chat, cache).generic_string();
+			// Most chats share a provider, workspace and host with an earlier one: answer those without building the scope key.
+			const std::filesystem::path& workspace_root = WorkspaceSnapshotForChat(app, chat, cache);
+			const std::tuple<std::string_view, const std::filesystem::path*, std::string_view> chat_key{chat.provider_id, &workspace_root, chat.execution_host_id};
+			if (const auto known = cache.chat_fingerprints.find(chat_key); known != cache.chat_fingerprints.end()) return *known->second;
+			const nlohmann::json& fingerprint = CatalogFingerprintForScope(app, chat, cache, workspace_root.generic_string());
+			cache.chat_fingerprints.emplace(chat_key, &fingerprint);
+			return fingerprint;
+		}
+
+		const nlohmann::json& CatalogFingerprintForScope(const AppState& app, const ChatSession& chat, CatalogSnapshotCache& cache, const std::string& workspace)
+		{
 			const std::string key = CatalogSnapshotKey(chat.provider_id, workspace, chat.execution_host_id);
 			if (const std::unordered_map<std::string, nlohmann::json>::const_iterator found = cache.fingerprints.find(key); found != cache.fingerprints.end()) return found->second;
 			CatalogMemo* memo = CurrentCatalogMemo(app);
@@ -1746,7 +1767,10 @@ namespace uam
 			w.Set("sessionId", session_id);
 			w.Set("providerId", chat.provider_id);
 			w.Object("manualCompaction", [&](auto& compaction) { WriteManualCompactionAvailability(compaction, app, chat, nullptr); });
-			w.Set("uamAgentExecutionCapability", AgentDefinitionService::ExecutionCapabilityForProvider(chat.provider_id));
+			auto capability = cache.execution_capabilities.find(chat.provider_id);
+			if (capability == cache.execution_capabilities.end())
+				capability = cache.execution_capabilities.emplace(chat.provider_id, AgentDefinitionService::ExecutionCapabilityForProvider(chat.provider_id)).first;
+			w.Set("uamAgentExecutionCapability", capability->second);
 			w.Set("protocolKind", "");
 			w.Set("threadId", session_id);
 			w.Set("running", false);
@@ -1786,7 +1810,8 @@ namespace uam
 			w.Set("waitSeconds", 0);
 			w.Set("pendingPermission", nullptr);
 			w.Set("pendingUserInput", nullptr);
-			const auto approval = UamControlService::PendingApprovalForChat(app, chat.id);
+			// Without any control capability there is no approval to find, and looking reads the system clock per chat.
+			const auto approval = app.uam_control_capabilities.empty() ? std::optional<AcpPendingUserInputState>{} : UamControlService::PendingApprovalForChat(app, chat.id);
 			if (approval.has_value())
 			{
 				w.Set("pendingUserInput", SerializePendingAcpUserInput(*approval));
@@ -2318,14 +2343,16 @@ namespace uam
 			const auto chats_started = std::chrono::steady_clock::now();
 			std::chrono::microseconds slowest_chat{0};
 			std::size_t loaded_chats = 0;
+			auto previous_chat_finished = chats_started;
 			for (const auto& chat : app.chats)
 			{
 				if (IsInternalChat(chat)) continue;
-				const auto chat_started = std::chrono::steady_clock::now();
 				const auto managed_count = managed_counts.find(chat.id);
 				visit(chat, chat.id == selected_chat_id, managed_count == managed_counts.end() ? std::size_t{0} : managed_count->second);
-				slowest_chat = std::max(slowest_chat, std::chrono::duration_cast<std::chrono::microseconds>(
-					std::chrono::steady_clock::now() - chat_started));
+				// One clock read per chat: each chat is timed from the end of the previous one.
+				const auto chat_finished = std::chrono::steady_clock::now();
+				slowest_chat = std::max(slowest_chat, std::chrono::duration_cast<std::chrono::microseconds>(chat_finished - previous_chat_finished));
+				previous_chat_finished = chat_finished;
 				loaded_chats += chat.messages_loaded ? 1 : 0;
 			}
 			const auto chats_finished = std::chrono::steady_clock::now();
