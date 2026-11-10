@@ -3,13 +3,45 @@ import argparse
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+import json
 import os
 import subprocess
 import sys
 import time
 
 
-def run_tests(binary, jobs, requested=(), retry_failed_once=False, quarantine=None, serial=frozenset(), shard=(1, 1)):
+def failure_lines(name, output, returncode):
+    """The decisive first-attempt lines for a case; a crash or incomplete batch leaves no [FAIL] line."""
+    lines = [line[:500] for line in output.splitlines() if line.startswith(f'[FAIL] {name}:')]
+    return lines or [f'No [FAIL] line for this case; its batch exited with code {returncode}.']
+
+
+def report_flaky(flaky, first_failures, quarantine, report_path):
+    """Name every pass-on-retry case in the log, annotations, job summary and report file; never changes the result."""
+    entries = [{'case': name, 'firstFailure': first_failures[name], 'quarantine': quarantine.get(name)} for name in flaky]
+    heading = f'FLAKY NATIVE TESTS: {len(flaky)} failed, then passed on retry'
+    print(f'\n{"=" * 16} {heading} {"=" * 16}')
+    summary = [f'### {heading}', '']
+    for entry in entries:
+        tag = f' (quarantined {entry["quarantine"]})' if entry['quarantine'] else ''
+        print(entry['case'] + tag)
+        print(*(f'    {line}' for line in entry['firstFailure']), sep='\n')
+        summary += [f'- `{entry["case"]}`{tag}', '  ```text', *(f'  {line}' for line in entry['firstFailure']), '  ```']
+        if os.environ.get('GITHUB_ACTIONS') == 'true':
+            print(f'::warning title=Flaky native test::{entry["case"]}')
+    print('=' * (len(heading) + 34), flush=True)
+    try:
+        if os.environ.get('GITHUB_STEP_SUMMARY'):
+            with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary_file:
+                summary_file.write('\n'.join(summary) + '\n')
+        if report_path:
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(json.dumps(entries, indent=2) + '\n', encoding='utf-8')
+    except OSError as error:
+        print(f'Could not write the flaky test report: {error}', file=sys.stderr)
+
+
+def run_tests(binary, jobs, requested=(), retry_failed_once=False, quarantine=None, serial=frozenset(), shard=(1, 1), flaky_report=None):
     environment = os.environ.copy()
     if sys.platform == 'darwin':
         environment['TMPDIR'] = '/tmp'
@@ -33,6 +65,7 @@ def run_tests(binary, jobs, requested=(), retry_failed_once=False, quarantine=No
     passed = 0
     passed_names = set()
     retried_passes = set()
+    first_failures = {}
     failed = False
 
     def execute(batch):
@@ -61,9 +94,12 @@ def run_tests(binary, jobs, requested=(), retry_failed_once=False, quarantine=No
                     if result.returncode or counts != Counter(batch):
                         print(f'Batch failed or returned an incomplete inventory: {batch}', file=sys.stderr)
                         failed = True
+                        first_failures.update((name, failure_lines(name, result.stdout, result.returncode))
+                                              for name in batch if counts[name] != 1)
                 except (OSError, subprocess.TimeoutExpired) as error:
                     print(f'Native test batch failed: {error}', file=sys.stderr)
                     failed = True
+                    first_failures.update((name, [f'Its batch did not finish: {type(error).__name__}.']) for name in batch)
     print(f'Verified {passed}/{len(selected)} native cases in '
           f'{time.perf_counter() - started:.2f}s with {jobs} processes '
           f'({len(phases[1][0])} run serially).')
@@ -94,6 +130,8 @@ def run_tests(binary, jobs, requested=(), retry_failed_once=False, quarantine=No
             if name in quarantine:
                 print(f'QUARANTINED: {name} ({quarantine[name]})')
         failed = any(name not in quarantine for name in still_failing) or (failed and not still_failing)
+    if retried_passes:
+        report_flaky([name for name in selected if name in retried_passes], first_failures, quarantine or {}, flaky_report)
     return 1 if failed else 0
 
 
@@ -108,6 +146,8 @@ def main():
                         help='List of case names with tight wall-clock budgets; they run one at a time after the rest.')
     parser.add_argument('--retry-failed-once', action='store_true',
                         help='Rerun each failed case once in its own process; for CI timing flakes only.')
+    parser.add_argument('--flaky-report', type=Path, metavar='PATH',
+                        help='Write a JSON list of cases that passed only on retry; no file is written when none did.')
     parser.add_argument('--shard', default='1/1', metavar='I/N',
                         help='Run only shard I of N; together the N shards run every selected case exactly once.')
     args = parser.parse_intermixed_args()
@@ -131,7 +171,7 @@ def main():
         if args.serial:
             serial = frozenset(line.split()[0] for line in args.serial.read_text().splitlines()
                                if line.strip() and not line.strip().startswith('#'))
-        return run_tests(args.binary.resolve(strict=True), args.jobs, args.names, args.retry_failed_once, quarantine, serial, shard)
+        return run_tests(args.binary.resolve(strict=True), args.jobs, args.names, args.retry_failed_once, quarantine, serial, shard, args.flaky_report)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f'Native tests could not run: {error}', file=sys.stderr)
         return 1
