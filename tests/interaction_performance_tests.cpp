@@ -1166,6 +1166,69 @@ UAM_TEST(StatePushReconciliationRepairsAWriteThatBypassedTheTranscriptStamp)
 	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
 }
 
+// The frontend's gap repair relies on this contract: every published patch, including a corrective one, is exactly
+// the last revision + 1, a push that publishes nothing consumes no revision, and a getInitialState snapshot at revision
+// R already holds every change up to R, even one a trusting push missed.
+UAM_TEST(StatePushRevisionsStepByOneAndAnExactSnapshotHoldsWhatATrustingPushMissed)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	StatePatchObserver observer;
+	uam::AppState app;
+	for (const char* id : {"selected", "background"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.provider_id = "claude-cli";
+		chat.messages.push_back(Message{MessageRole::User, "Hello"});
+		chat.messages.push_back(Message{MessageRole::Assistant, "First answer"});
+		app.chats.push_back(std::move(chat));
+	}
+	app.selected_chat_index = 0;
+	clock.Advance(std::chrono::seconds(3));
+	uam::PushStateUpdate(nullptr, app);
+	std::uint64_t revision = app.state_revision;
+	const auto published = [] { return nlohmann::json::parse(g_observed_state_patch)["data"]; };
+	const auto background_digest = [](const nlohmann::json& chats)
+	{
+		for (const nlohmann::json& chat : chats)
+			if (chat.value("id", "") == "background") return chat.value("messagesDigest", std::string{});
+		return std::string{};
+	};
+
+	clock.Advance(std::chrono::milliseconds(120));
+	app.chats[1].messages.back().content = "Second answer";
+	g_observed_state_patch.clear();
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(published()["stateRevision"].get<std::uint64_t>(), revision + 1);
+	UAM_ASSERT_EQ(app.state_revision, revision + 1);
+	revision = app.state_revision;
+
+	// A write through a reference kept from before the digest was read is missed by the trusting push.
+	Message& kept = app.chats[1].messages.back();
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	kept.content = "Third answer";
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(app.state_revision, revision);
+
+	// getInitialState serializes exactly, so a snapshot at the same revision already holds the missed write.
+	const nlohmann::json snapshot = uam::StateSerializer::Serialize(app, true);
+	UAM_ASSERT_EQ(snapshot["stateRevision"].get<std::uint64_t>(), revision);
+
+	// The verifying push repairs it with an ordinary patch at revision + 1 that agrees with the snapshot.
+	clock.Advance(std::chrono::seconds(3));
+	g_observed_state_patch.clear();
+	++uam_test::g_expected_state_cache_divergences;
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	const nlohmann::json corrective = published();
+	UAM_ASSERT_EQ(corrective["stateRevision"].get<std::uint64_t>(), revision + 1);
+	UAM_ASSERT_EQ(app.state_revision, revision + 1);
+	UAM_ASSERT(!background_digest(snapshot["chats"]).empty());
+	UAM_ASSERT_EQ(background_digest(snapshot["chats"]), background_digest(corrective["chats"]));
+}
+
 UAM_TEST(PerformancePushDoesNotScanEveryManagedRunForEveryChat)
 {
 	const WithoutStateCacheVerification unverified;
