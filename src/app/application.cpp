@@ -1039,7 +1039,7 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 void Application::Shutdown()
 {
-	// Quit must not wait on a remote host: the joins and task queues below share one short runner budget.
+	// Quit must not wait on a remote host: no remote connection starts from here, and the waits already under way end together
 	uam::remote::BeginRunnerShutdown();
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	if (m_app.opencode_native_activity)

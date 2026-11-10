@@ -172,7 +172,7 @@ void UamQueryHandler::HandleListChatBranches(CefRefPtr<CefBrowser>, const nlohma
 	const std::shared_ptr<BranchRequest> request = CaptureBranchRequest(m_app, *chat);
 	const bool svn_requested = payload.value("vcsType", std::string{}) == "svn";
 	const std::string parent = payload.value("svnParent", std::string{});
-	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat.id), m_asyncLifetime, cb, [request, svn_requested, parent]()
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, svn_requested, parent]()
 	{
 		if (svn_requested)
 		{
@@ -222,7 +222,7 @@ void UamQueryHandler::HandleSwitchChatBranch(CefRefPtr<CefBrowser> browser, cons
 		return;
 	}
 	const std::shared_ptr<BranchRequest> request = CaptureBranchRequest(m_app, *chat);
-	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat.id), m_asyncLifetime, cb, [request, branch, create, svn, svn_context]()
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, branch, create, svn, svn_context]()
 	{
 		if (svn)
 		{
@@ -336,7 +336,7 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 	m_app.worktree_operation_chat_ids.insert(chat->id);
 	uam::query_handler_async::DispatchBranchOperation(m_app.worktree_operation_chat_ids, request->chat.id, [&]()
 	{
-		return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat.id), m_asyncLifetime, cb, [request, svn, svn_context]()
+		return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, svn, svn_context]()
 		{
 			if (svn)
 			{
@@ -362,7 +362,7 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 			}
 			uam::query_handler_async::DispatchBranchOperation(m_app.worktree_operation_chat_ids, request->chat.id, [&]()
 			{
-				return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat.id), m_asyncLifetime, cb, [request, branch, create, svn, svn_context]()
+				return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, branch, create, svn, svn_context]()
 				{
 					if (svn)
 					{

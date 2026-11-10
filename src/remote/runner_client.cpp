@@ -24,6 +24,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <limits>
 #include <mutex>
@@ -65,19 +66,38 @@ namespace uam::remote
 		}
 
 		constexpr const char* kShutdownError = "The remote runner request stopped because UAM is closing.";
-		std::atomic<bool> g_shutdown{false};
-		std::atomic<std::int64_t> g_shutdownBudgetNanoseconds{0};
+		// Steady-clock nanoseconds at which waits already under way end; 0 while the app is running.
+		std::atomic<std::int64_t> g_shutdownDeadline{0};
 
-		bool ShutdownBudgetSpent()
+		std::int64_t SteadyNanoseconds()
 		{
-			return g_shutdown.load() && g_shutdownBudgetNanoseconds.load() <= 0;
+			return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+		}
+
+		bool ShuttingDown()
+		{
+			return g_shutdownDeadline.load() != 0;
+		}
+
+		bool ShutdownDeadlinePassed()
+		{
+			const std::int64_t deadline = g_shutdownDeadline.load();
+			return deadline != 0 && SteadyNanoseconds() >= deadline;
 		}
 
 		constexpr std::chrono::steady_clock::time_point kNotQueued = std::chrono::steady_clock::time_point::max();
 		thread_local std::chrono::steady_clock::time_point t_queuedAt = kNotQueued;
+		// The UI gives up on a request after 30 seconds, so work it queued must report its own connection error first.
+		constexpr std::chrono::seconds kQueuedWorkHandshakeLimit{25};
 		std::mutex g_connectFailuresMutex;
 		// One entry per bridge command, so it stays as small as the list of hosts and helper versions.
 		std::unordered_map<std::string, std::pair<std::chrono::steady_clock::time_point, std::string>> g_connectFailures;
+
+		// sshd drops handshakes beyond its MaxStartups (10 by default), so only a few may be open to one host at a time.
+		constexpr int kMaxHandshakesPerHost = 4;
+		std::mutex g_handshakesMutex;
+		std::condition_variable g_handshakesChanged;
+		std::unordered_map<std::string, int> g_handshakes;
 
 		std::string BridgeKey(const std::vector<std::string>& argv)
 		{
@@ -86,11 +106,55 @@ namespace uam::remote
 			return key;
 		}
 
+		/// sshd closes a connection it will not serve before either side identifies itself; a refused login is never this.
 		bool SshDroppedTheHandshake(std::string_view diagnostics)
 		{
-			return diagnostics.find("kex_exchange_identification") != std::string_view::npos ||
-			       diagnostics.find("Connection closed by") != std::string_view::npos ||
-			       diagnostics.find("Connection reset by") != std::string_view::npos;
+			return (diagnostics.find("kex_exchange_identification") != std::string_view::npos ||
+			        diagnostics.find("ssh_exchange_identification") != std::string_view::npos) &&
+			       diagnostics.find("Permission denied") == std::string_view::npos &&
+			       diagnostics.find("uthentication") == std::string_view::npos;
+		}
+
+		/// Keeps the reason SSH gave and masks what identifies the user: accounts, host names, addresses and paths.
+		std::string SanitizeBridgeDiagnostic(std::string_view line)
+		{
+			std::string sanitized;
+			bool host_follows = false;
+			while (!line.empty())
+			{
+				const std::size_t space = line.find(' ');
+				std::string_view word = line.substr(0, space);
+				line.remove_prefix(space == std::string_view::npos ? line.size() : space + 1);
+				if (word.empty()) continue;
+				std::string_view core = word;
+				const auto wraps = [](char character) { return std::string_view("\"'():,.;[]").find(character) != std::string_view::npos; };
+				while (!core.empty() && wraps(core.front())) core.remove_prefix(1);
+				while (!core.empty() && wraps(core.back())) core.remove_suffix(1);
+				const bool path = core.find('\\') != std::string_view::npos || core.starts_with('/') || core.starts_with('~') ||
+				    core.find("/Users/") != std::string_view::npos || core.find("/home/") != std::string_view::npos ||
+				    (core.size() > 2 && std::isalpha(static_cast<unsigned char>(core[0])) != 0 && core[1] == ':' && core[2] == '/');
+				const bool address = !core.empty() &&
+				    ((std::ranges::count(core, '.') == 3 && std::ranges::all_of(core, [](unsigned char character) { return std::isdigit(character) != 0 || character == '.'; })) ||
+				     (std::ranges::count(core, ':') >= 2 && std::ranges::all_of(core, [](unsigned char character) { return std::isxdigit(character) != 0 || character == ':' || character == '%'; })));
+				const char* mask = core.empty() ? nullptr : host_follows ? "<host>" : core.find('@') != std::string_view::npos ? "<account>" : path ? "<path>" : address ? "<address>" : nullptr;
+				host_follows = core == "host" || core == "hostname";
+				if (!sanitized.empty()) sanitized += ' ';
+				if (mask == nullptr) sanitized += word;
+				else
+				{
+					const std::size_t begin = static_cast<std::size_t>(core.data() - word.data());
+					sanitized.append(word.substr(0, begin)).append(mask).append(word.substr(begin + core.size()));
+				}
+			}
+			return sanitized;
+		}
+
+		const std::string* ErrorCode(const nlohmann::json& response)
+		{
+			const auto error = response.find("error");
+			if (error == response.end() || !error->is_object()) return nullptr;
+			const auto code = error->find("code");
+			return code != error->end() && code->is_string() ? &code->get_ref<const std::string&>() : nullptr;
 		}
 
 		std::string ChannelCursorKey(std::string_view channel_id, std::string_view direction)
@@ -178,14 +242,14 @@ namespace uam::remote
 
 	void BeginRunnerShutdown(std::chrono::milliseconds wait_budget)
 	{
-		if (g_shutdown.load()) return;
-		g_shutdownBudgetNanoseconds.store(std::chrono::duration_cast<std::chrono::nanoseconds>(wait_budget).count());
-		g_shutdown.store(true);
+		std::int64_t running = 0;
+		(void)g_shutdownDeadline.compare_exchange_strong(running,
+		    SteadyNanoseconds() + std::chrono::duration_cast<std::chrono::nanoseconds>(wait_budget).count());
 	}
 
 	void ResetRunnerShutdownForTesting()
 	{
-		g_shutdown.store(false);
+		g_shutdownDeadline.store(0);
 	}
 
 	ScopedRunnerQueuedWork::ScopedRunnerQueuedWork(std::chrono::steady_clock::time_point queued_at)
@@ -243,12 +307,13 @@ namespace uam::remote
 		if (!UAM_ENABLE_SSH) { if (error_out) *error_out = "Remote execution is not included in this build."; return false; }
 		if (!m_connectionAllowed) { if (error_out) *error_out = "Retry helper setup to reconcile the unfinished or unavailable installation first."; return false; }
 		if (m_connected) return true;
-		if (ShutdownBudgetSpent())
+		if (ShuttingDown())
 		{
 			if (error_out != nullptr) *error_out = kShutdownError;
 			return false;
 		}
-		if (m_commandInterrupt && m_commandInterrupt())
+		const auto canceled = [&] { return stop_token.stop_requested() || (interrupt && interrupt()) || (m_commandInterrupt && m_commandInterrupt()); };
+		if (canceled())
 		{
 			if (error_out != nullptr) *error_out = "The remote runner request was canceled.";
 			return false;
@@ -259,7 +324,9 @@ namespace uam::remote
 			return false;
 		}
 		const std::string bridge_key = BridgeKey(m_bridgeArgv);
-		if (t_queuedAt != kNotQueued)
+		// Only work that has not reached its host yet: a reconnect in the middle of a command must really try,
+		// because it is how a started command is found again.
+		if (!m_everConnected && t_queuedAt != kNotQueued)
 		{
 			const std::scoped_lock lock(g_connectFailuresMutex);
 			const auto failure = g_connectFailures.find(bridge_key);
@@ -284,6 +351,39 @@ namespace uam::remote
 				*error_out = "The remote runner bridge working directory is unavailable.";
 			return false;
 		}
+		// One deadline covers the wait for a handshake slot, every attempt and the pauses between them.
+		m_handshakeLimit = t_queuedAt == kNotQueued ? m_handshakeDeadline
+		    : std::min<std::chrono::milliseconds>(m_handshakeDeadline, kQueuedWorkHandshakeLimit);
+		const std::chrono::milliseconds handshake_limit = m_handshakeLimit;
+		m_handshakeEndsAt = std::chrono::steady_clock::now() + handshake_limit;
+		{
+			std::unique_lock lock(g_handshakesMutex);
+			while (g_handshakes[bridge_key] >= kMaxHandshakesPerHost)
+			{
+				const bool timed_out = std::chrono::steady_clock::now() >= m_handshakeEndsAt;
+				if (timed_out || canceled() || ShuttingDown())
+				{
+					if (error_out != nullptr)
+						*error_out = ShuttingDown() ? kShutdownError : !timed_out ? "The remote runner request was canceled."
+						    : "The remote runner did not respond within " + std::to_string((handshake_limit.count() + 999) / 1000) + " seconds.";
+					return false;
+				}
+				g_handshakesChanged.wait_for(lock, std::chrono::milliseconds(20));
+			}
+			++g_handshakes[bridge_key];
+		}
+		struct HandshakeSlot
+		{
+			const std::string& key;
+			~HandshakeSlot()
+			{
+				{
+					const std::scoped_lock lock(g_handshakesMutex);
+					--g_handshakes[key];
+				}
+				g_handshakesChanged.notify_all();
+			}
+		} handshake_slot{bridge_key};
 		nlohmann::json response;
 		for (int attempt = 0;; ++attempt)
 		{
@@ -296,10 +396,10 @@ namespace uam::remote
 				return false;
 			}
 			m_connected = true;
+			m_bridgeClosed = false;
 			m_bridgeDiagnostics.clear();
 			const std::string nonce = Nonce();
 			bool interrupted = false;
-			const auto canceled = [&] { return stop_token.stop_requested() || (interrupt && interrupt()); };
 			if (Request({{"type", "hello"}, {"protocolVersion", m_expectedProtocolVersion},
 			             {"nonce", nonce}},
 			            response, &error, canceled, &interrupted) && response.value("nonce", "") == nonce &&
@@ -313,23 +413,37 @@ namespace uam::remote
 			    !response.value("capabilities", nlohmann::json::object())
 			        .value("computerUse", true))
 				break;
+			// Read before Disconnect: the diagnostics belong to the bridge that just closed.
+			const bool dropped = m_bridgeClosed && SshDroppedTheHandshake(m_bridgeDiagnostics);
 			Disconnect();
 			if (error.empty()) error = "The remote runner handshake is incompatible.";
 			// sshd drops handshakes beyond MaxStartups when many connections open at once. Only the handshake
-			// was sent, so trying again cannot repeat any work; other failures would only repeat their wait.
-			if (attempt < 2 && !interrupted && !ShutdownBudgetSpent() && SshDroppedTheHandshake(m_bridgeDiagnostics))
+			// was sent, so trying again cannot repeat any work. A timeout, an unreachable host and a refused
+			// login are not retried: they would repeat their wait, and repeated logins can lock an account.
+			if (attempt < 2 && dropped && !interrupted && !ShuttingDown())
 			{
 				std::random_device random;
 				const auto retry_at = std::chrono::steady_clock::now() + std::chrono::milliseconds((attempt + 1) * (250 + random() % 500));
-				while (std::chrono::steady_clock::now() < retry_at && !canceled() && !g_shutdown.load() && !(m_commandInterrupt && m_commandInterrupt()))
-					std::this_thread::sleep_for(std::chrono::milliseconds(10));
-				if (std::chrono::steady_clock::now() >= retry_at) continue;
-				interrupted = true;
+				if (retry_at < m_handshakeEndsAt)
+				{
+					while (std::chrono::steady_clock::now() < retry_at && !canceled() && !ShuttingDown())
+						std::this_thread::sleep_for(std::chrono::milliseconds(10));
+					if (std::chrono::steady_clock::now() >= retry_at) continue;
+					interrupted = true;
+				}
 			}
 			// A cancel or a closing app says nothing about the host, so neither may fail other queued work.
-			if (!interrupted && !ShutdownBudgetSpent()) record_failure(error);
+			if (!interrupted && !ShuttingDown()) record_failure(error);
 			if (error_out != nullptr) *error_out = error;
 			return false;
+		}
+		m_everConnected = true;
+		// Later failures must not quote a line from this connection's start, such as a host-key notice.
+		DrainBridgeDiagnostics();
+		m_bridgeDiagnostics.clear();
+		{
+			const std::scoped_lock lock(g_connectFailuresMutex);
+			g_connectFailures.erase(bridge_key);
 		}
 		m_directoryBrowsing = response["capabilities"].value("directoryBrowsing", false);
 		m_safePathInspection = m_expectedProtocolVersion >= 3 && response["capabilities"].value("safePathInspection", false);
@@ -392,8 +506,9 @@ namespace uam::remote
 		}
 		std::string error;
 		if (!m_processService.WriteToStdioProcess(m_bridge, frame.data(), frame.size(), &error) ||
-		    !ReadResponse(response, &error, interrupt, interrupted_out,
-		        request.value("type", "") == "hello" ? m_handshakeDeadline : m_requestDeadline))
+		    !(request.value("type", "") == "hello"
+		        ? ReadResponse(response, &error, interrupt, interrupted_out, m_handshakeEndsAt, m_handshakeLimit)
+		        : ReadResponse(response, &error, interrupt, interrupted_out, std::chrono::steady_clock::now() + m_requestDeadline, m_requestDeadline)))
 		{
 			if (error_out != nullptr)
 				*error_out = error.empty() ? "The remote runner request failed." : error;
@@ -432,13 +547,12 @@ namespace uam::remote
 
 	bool RunnerClient::ReadResponse(nlohmann::json& response, std::string* error_out,
 	                                const std::function<bool()>& interrupt,
-	                                bool* interrupted_out, std::chrono::milliseconds deadline)
+	                                bool* interrupted_out, std::chrono::steady_clock::time_point deadline_at, std::chrono::milliseconds deadline)
 	{
-		const auto deadline_at = std::chrono::steady_clock::now() + deadline;
 		std::array<char, 16 * 1024> buffer{};
 		while (std::chrono::steady_clock::now() < deadline_at)
 		{
-			if (ShutdownBudgetSpent())
+			if (ShutdownDeadlinePassed())
 			{
 				if (error_out != nullptr) *error_out = kShutdownError;
 				return false;
@@ -486,20 +600,17 @@ namespace uam::remote
 			DrainBridgeDiagnostics();
 			if (read == 0 || read == -1)
 			{
+				m_bridgeClosed = true;
 				if (error_out != nullptr)
 					*error_out = WithBridgeDiagnostics(read_error.empty() ? "The remote runner bridge closed." : read_error);
 				return false;
 			}
 			// Stdout only: stderr is drained above on every pass, and waiting on it too would wake this wait constantly.
-			const auto waited_from = std::chrono::steady_clock::now();
 			uam::platform::WaitForStdioProcessOutput(m_bridge, std::chrono::milliseconds(5), false);
-			if (g_shutdown.load())
-				g_shutdownBudgetNanoseconds.fetch_sub(std::chrono::duration_cast<std::chrono::nanoseconds>(
-				    std::chrono::steady_clock::now() - waited_from).count());
 		}
+		// No bridge line here: the bridge is still open, so anything it said earlier is not this timeout's cause.
 		if (error_out != nullptr)
-			*error_out = WithBridgeDiagnostics("The remote runner did not respond within " +
-			    std::to_string((deadline.count() + 999) / 1000) + " seconds.");
+			*error_out = "The remote runner did not respond within " + std::to_string((deadline.count() + 999) / 1000) + " seconds.";
 		return false;
 	}
 
@@ -524,6 +635,7 @@ namespace uam::remote
 		const std::size_t previous_line = line.find_last_of("\r\n");
 		if (previous_line != std::string::npos) line.erase(0, previous_line + 1);
 		std::erase_if(line, [](unsigned char character) { return character < 32 || character > 126; });
+		line = SanitizeBridgeDiagnostic(line);
 		if (line.size() > 300) line.resize(300);
 		return line.empty() ? error : error + " Bridge reported: " + line;
 	}
@@ -703,7 +815,7 @@ namespace uam::remote
 		m_commandInterrupt = interrupted;
 		if (!Connect(&result.error, stop_token))
 		{
-			(void)interrupted();
+			if (interrupted()) result.error = result.canceled ? "Remote command canceled." : "Remote command timed out.";
 			return result;
 		}
 		if (!m_processOutputAcknowledgement)
@@ -717,6 +829,8 @@ namespace uam::remote
 		if (start_request_attempted_out) *start_request_attempted_out = true;
 		bool started = StartProcess(session_id, working_directory, argv, {}, &result.error,
 		                            false, std::move(retained_control_token), false);
+		// Still connected after a failed start means the helper answered and refused it: nothing was started.
+		const bool start_refused = !started && m_connected;
 		// An uncertain start is recovered only by observing its original ID and token.
 		if (!started && !m_connected && !interrupted() && Connect(&result.error, stop_token))
 		{
@@ -751,18 +865,22 @@ namespace uam::remote
 					        poll.standard_output.data(), poll.standard_output.size()) ||
 					    !uam::platform::AppendCapturedCommandOutput(result,
 					        poll.standard_error.data(), poll.standard_error.size())) break;
-					if (!AcknowledgeProcessOutput(session_id, poll, &result.error)) break;
+					const bool acknowledged = AcknowledgeProcessOutput(session_id, poll, &result.error);
 					if (!poll.running)
 					{
+						// The command finished: a cancel or deadline that lands on this last acknowledgement does not change its result.
 						result.exit_code = poll.exit_code;
+						result.error.clear();
 						exited = true;
 						break;
 					}
+					if (!acknowledged) break;
 					std::this_thread::sleep_for(std::chrono::milliseconds(10));
 				}
 			}
 		}
-		if (!exited) (void)interrupted();
+		if (exited) result.canceled = result.timed_out = false;
+		else (void)interrupted();
 		if (result.canceled) result.error = "Remote command canceled.";
 		else if (result.timed_out) result.error = "Remote command timed out.";
 		else if (result.output_truncated)
@@ -772,14 +890,22 @@ namespace uam::remote
 		{
 			// An unfinished command still asks the host to stop its worker, but briefly: the helper reclaims an abandoned transient worker itself.
 			if (exited) m_commandInterrupt = nullptr;
-			else m_commandInterrupt = [cleanup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5)] { return std::chrono::steady_clock::now() >= cleanup_deadline; };
-			std::string cleanup_error;
-			// A start that failed has no worker to report on: the stop and removal still run in case a lost reply
-			// hid a started one, but their "does not exist" answer would only bury the start error.
-			if (!exited && !StopProcess(session_id, &cleanup_error) && started)
-				result.error += " Remote process stop failed: " + cleanup_error;
-			if (!RemoveProcess(session_id, &cleanup_error) && started)
-				result.error += " Remote process cleanup failed: " + cleanup_error;
+			else m_commandInterrupt = [cleanup_deadline = std::chrono::steady_clock::now() + m_cleanupLimit] { return std::chrono::steady_clock::now() >= cleanup_deadline; };
+			std::string stop_error;
+			const bool stopped = exited || StopProcess(session_id, &stop_error);
+			// An answer, even an error, settles what the host holds; no answer leaves it unknown.
+			const bool stop_answered = stopped || m_connected;
+			std::string remove_error;
+			const bool removed = RemoveProcess(session_id, &remove_error);
+			if (started)
+			{
+				if (!stopped) result.error += " Remote process stop failed: " + stop_error;
+				if (!removed) result.error += " Remote process cleanup failed: " + remove_error;
+			}
+			// A start the helper refused left nothing behind, so its error stands alone. A start whose reply never
+			// came may have run: unless the host then answered the stop, the command may still be running there.
+			else if (!start_refused && !stop_answered && !removed)
+				result.error += " Its start was not confirmed and the host could not be reached to stop it, so the command may still be running there.";
 		}
 		result.ok = exited && result.exit_code == 0 && result.error.empty() &&
 		    !result.canceled && !result.timed_out && !result.output_truncated;
@@ -1767,9 +1893,8 @@ namespace uam::remote
 		if (!removed && !m_connected && Connect(error_out))
 		{
 			removed = Request(std::move(request), response, error_out);
-			if (!removed && error_out != nullptr &&
-			    error_out->find("does not exist") != std::string::npos)
-				removed = true;
+			const std::string* code = removed || !m_connected ? nullptr : ErrorCode(response);
+			if (code != nullptr && *code == "session_not_found") removed = true;
 		}
 		if (removed)
 		{

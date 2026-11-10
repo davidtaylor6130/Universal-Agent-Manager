@@ -1108,20 +1108,41 @@ namespace uam
 	};
 
 	/// <summary>
-	/// Counts remote Git work on one host. Copies share the count, so a queued worker holds it from its own thread only while it runs.
+	/// Remote Git work on one host. Copies share the counts, so a queued worker reports from its own thread.
+	/// Helper setup fences the host first and then counts what runs: a worker that starts after the fence is
+	/// refused, so none can launch the helper that is being replaced.
 	/// </summary>
 	class RemoteVcsActivity
 	{
 	  public:
+		/// Empty while the host is fenced; otherwise held for as long as the work runs.
 		std::shared_ptr<void> Hold() const
 		{
-			m_running->fetch_add(1);
-			return std::shared_ptr<void>(m_running.get(), [running = m_running](void*) { running->fetch_sub(1); });
+			m_state->running.fetch_add(1);
+			if (m_state->fences.load() == 0) return Token(&State::running);
+			m_state->running.fetch_sub(1);
+			return {};
 		}
-		bool expired() const { return m_running->load() == 0; }
+		/// Held from the moment work is queued until it has run or been dropped.
+		std::shared_ptr<void> Queue() const { m_state->queued.fetch_add(1); return Token(&State::queued); }
+		std::shared_ptr<void> Fence() const { m_state->fences.fetch_add(1); return Token(&State::fences); }
+		/// No work is running; queued work does not count.
+		bool expired() const { return m_state->running.load() == 0; }
+		/// Nothing is running or waiting to run.
+		bool idle() const { return expired() && m_state->queued.load() == 0; }
 
 	  private:
-		std::shared_ptr<std::atomic<int>> m_running = std::make_shared<std::atomic<int>>(0);
+		struct State
+		{
+			std::atomic<int> running{0};
+			std::atomic<int> queued{0};
+			std::atomic<int> fences{0};
+		};
+		std::shared_ptr<void> Token(std::atomic<int> State::* count) const
+		{
+			return std::shared_ptr<void>(m_state.get(), [state = m_state, count](void*) { ((*state).*count).fetch_sub(1); });
+		}
+		std::shared_ptr<State> m_state = std::make_shared<State>();
 	};
 
 	/// <summary>

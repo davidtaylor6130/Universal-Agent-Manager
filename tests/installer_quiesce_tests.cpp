@@ -1048,9 +1048,12 @@ UAM_TEST(QueuedRemoteGitWorkBlocksHelperSetupOnlyWhileItRuns)
 	using Reason = uam::remote_install::HostRuntimeBlockReason;
 	uam::AppState app;
 	const std::string host = InstallerHost().id;
-	// What a queued worker captures on the UI thread: the host's activity, not a hold on it.
+	// What a queued worker captures on the UI thread: the host's activity and a queued mark, not a hold on it.
 	const uam::RemoteVcsActivity queued = app.remote_vcs_operation_leases_by_host_id[host];
+	std::shared_ptr<void> waiting = queued.Queue();
 	AssertInstallerBlockReason(app, host, Reason::None, true);
+	// Deleting a chat or workspace still waits for work that has not started.
+	UAM_ASSERT(!app.remote_vcs_operation_leases_by_host_id[host].idle());
 	std::promise<void> running, finish;
 	std::thread worker([&]
 	{
@@ -1064,4 +1067,34 @@ UAM_TEST(QueuedRemoteGitWorkBlocksHelperSetupOnlyWhileItRuns)
 	finish.set_value();
 	worker.join();
 	AssertInstallerBlockReason(app, host, Reason::None, true);
+	waiting.reset();
+	UAM_ASSERT(app.remote_vcs_operation_leases_by_host_id[host].idle());
+}
+
+UAM_TEST(HelperSetupFencesQueuedRemoteGitWorkOffItsHost)
+{
+	using Reason = uam::remote_install::HostRuntimeBlockReason;
+	uam::AppState app;
+	const std::string host = InstallerHost().id;
+	const uam::RemoteVcsActivity queued = app.remote_vcs_operation_leases_by_host_id[host];
+	const uam::RemoteVcsActivity other = app.remote_vcs_operation_leases_by_host_id["another-host"];
+	// Setup fences the host, then counts what is running. The fence alone is not work.
+	std::shared_ptr<void> fence = app.remote_vcs_operation_leases_by_host_id[host].Fence();
+	AssertInstallerBlockReason(app, host, Reason::None, true);
+	// A read queued with the old helper's settings must not start while that helper is being replaced.
+	bool refused = false;
+	std::thread([&] { refused = queued.Hold() == nullptr; }).join();
+	UAM_ASSERT(refused);
+	AssertInstallerBlockReason(app, host, Reason::None, true);
+	UAM_ASSERT(other.Hold() != nullptr);
+	// Two setups on one host: the fence lasts until the last one ends.
+	std::shared_ptr<void> second = app.remote_vcs_operation_leases_by_host_id[host].Fence();
+	fence.reset();
+	UAM_ASSERT(queued.Hold() == nullptr);
+	second.reset();
+	// Work that started first is counted, so setup is refused rather than run beside it.
+	const std::shared_ptr<void> hold = queued.Hold();
+	UAM_ASSERT(hold != nullptr);
+	fence = app.remote_vcs_operation_leases_by_host_id[host].Fence();
+	AssertInstallerBlockReason(app, host, Reason::VcsLease, true);
 }

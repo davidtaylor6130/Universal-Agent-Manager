@@ -170,6 +170,12 @@ CefRefPtr<CefTaskRunner> UamQueryHandler::SlowQueryRunner(const std::string& key
 	return thread ? thread->GetTaskRunner() : nullptr;
 }
 
+CefRefPtr<CefTaskRunner> UamQueryHandler::SlowQueryRunner(const ChatSession& chat)
+{
+	const bool remote = !chat.execution_host_id.empty() && chat.execution_host_id != "local";
+	return SlowQueryRunner(remote ? chat.execution_host_id : chat.id);
+}
+
 UamQueryHandler::~UamQueryHandler()
 {
 	m_asyncLifetime.reset();

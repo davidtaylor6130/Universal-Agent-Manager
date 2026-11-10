@@ -4772,7 +4772,7 @@ ChatHistorySyncService::RemoteOpenCodeDiscovery ChatHistorySyncService::Discover
 		    PlatformServicesFactory::Instance().process_service,
 		    host);
 		if (stop_token.stop_requested()) return result;
-		if (!client.Connect(&result.error)) return result;
+		if (!client.Connect(&result.error, stop_token)) return result;
 		std::string session_id = "history-" +
 		    PlatformServicesFactory::Instance().process_service.GenerateUuid();
 		if (session_id == "history-")
@@ -5340,7 +5340,7 @@ ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
 	uam::remote::RunnerClient client(
 	    PlatformServicesFactory::Instance().process_service,
 	    host);
-	if (!client.Connect(&result.error)) return result;
+	if (!client.Connect(&result.error, stop_token)) return result;
 	if (stop_token.stop_requested())
 	{
 		result.error = "Remote OpenCode transcript loading was canceled.";
@@ -5492,7 +5492,7 @@ ChatHistorySyncService::DiscoverRemoteCodexSessions(
 	uam::remote::RunnerClient client(
 	    PlatformServicesFactory::Instance().process_service,
 	    host);
-	if (!client.Connect(&discovery.error)) return discovery;
+	if (!client.Connect(&discovery.error, stop_token)) return discovery;
 	for (const bool archived : {false, true})
 	{
 		const std::size_t remaining = kRemoteCodexMaxSessions - discovery.sessions.size();
@@ -5847,7 +5847,7 @@ ChatHistorySyncService::LoadRemoteCodexTranscript(
 	uam::remote::RunnerClient client(
 	    PlatformServicesFactory::Instance().process_service,
 	    host);
-	if (!client.Connect(&transcript.error)) return transcript;
+	if (!client.Connect(&transcript.error, stop_token)) return transcript;
 	nlohmann::json read_result;
 	if (!RunRemoteCodexRpc(client, uam::paths::PathFromUtf8(chat.workspace_directory),
 	                       "thread/read", {{"threadId", valid_id}, {"includeTurns", true}},

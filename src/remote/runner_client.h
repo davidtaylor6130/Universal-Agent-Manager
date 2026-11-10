@@ -63,13 +63,14 @@ namespace uam::remote
 	bool ValidateRemoteWorkspaceDirectory(IPlatformProcessService& service, const ExecutionHost& host,
 	    const std::filesystem::path& directory, std::string* error_out = nullptr);
 
-	/// Quit must not wait on a remote host: from this call every runner wait in the process draws on one
-	/// shared budget, and once it is spent each wait and each new connection fails at once.
+	/// Quit must not wait on a remote host: from this call no new connection starts, and every wait already
+	/// under way in the process ends at one shared instant, wait_budget from now, however many are waiting.
 	void BeginRunnerShutdown(std::chrono::milliseconds wait_budget = std::chrono::seconds(2));
 	void ResetRunnerShutdownForTesting();
 
 	/// Work queued before its host's latest connection failure fails with that error at once, on this
-	/// thread, instead of repeating the same wait for every queued request.
+	/// thread, instead of repeating the same wait for every queued request; a later successful connection
+	/// clears the failure. Its first contact is also held to 25 seconds, inside the UI's own request timeout.
 	class ScopedRunnerQueuedWork
 	{
 	  public:
@@ -103,10 +104,11 @@ namespace uam::remote
 		bool Connect(std::string* error_out = nullptr, std::stop_token stop_token = {}, const std::function<bool()>& interrupt = {});
 		bool IsConnected() const { return m_connected; }
 		/// The handshake covers the SSH connection, the remote shell and helper start; a request covers one reply.
-		void SetDeadlines(std::chrono::milliseconds handshake, std::chrono::milliseconds request)
+		void SetDeadlines(std::chrono::milliseconds handshake, std::chrono::milliseconds request, std::chrono::milliseconds cleanup = std::chrono::seconds(5))
 		{
 			m_handshakeDeadline = handshake;
 			m_requestDeadline = request;
+			m_cleanupLimit = cleanup;
 		}
 		/// <summary>Asks the helper where this bundle should install; a helper that cannot choose keeps the workspace folder.</summary>
 		bool ProviderConfigurationLocation(const std::filesystem::path& source, const std::filesystem::path& workspace, std::filesystem::path& target, std::string* error_out = nullptr, std::stop_token stop_token = {});
@@ -214,7 +216,7 @@ namespace uam::remote
 		             bool* interrupted_out = nullptr);
 		bool ReadResponse(nlohmann::json& response, std::string* error_out,
 		                  const std::function<bool()>& interrupt,
-		                  bool* interrupted_out, std::chrono::milliseconds deadline);
+		                  bool* interrupted_out, std::chrono::steady_clock::time_point deadline_at, std::chrono::milliseconds deadline);
 		/// Keeps the bridge's stderr pipe from filling and retains a bounded tail for failure messages.
 		void DrainBridgeDiagnostics();
 		std::string WithBridgeDiagnostics(std::string error);
@@ -231,6 +233,11 @@ namespace uam::remote
 		std::function<bool()> m_commandInterrupt;
 		std::chrono::milliseconds m_handshakeDeadline = std::chrono::seconds(45);
 		std::chrono::milliseconds m_requestDeadline = std::chrono::seconds(15);
+		std::chrono::milliseconds m_cleanupLimit = std::chrono::seconds(5);
+		std::chrono::steady_clock::time_point m_handshakeEndsAt;
+		std::chrono::milliseconds m_handshakeLimit = std::chrono::seconds(45);
+		bool m_bridgeClosed = false;
+		bool m_everConnected = false;
 		std::string m_expectedVersion;
 		int m_expectedProtocolVersion = kRunnerProtocolVersion;
 		std::uint64_t m_nextRequestId = 1;

@@ -124,8 +124,83 @@ std::optional<int> RunProxyProviderFixture(int argc, char** argv)
 	return 64;
 }
 
+// A stand-in bridge for RunnerClient waits, so the same cases run on macOS and Windows.
+// --uam-test-bridge <launch log> <stderr text, - for none> <behaviour>[,<behaviour>...]: launch N uses behaviour N and the last repeats.
+std::optional<int> RunBridgeFixture(int argc, char** argv)
+{
+	if (argc != 5 || std::string_view(argv[1]) != "--uam-test-bridge") return std::nullopt;
+#if defined(_WIN32)
+	(void)_setmode(_fileno(stdin), _O_BINARY);
+	(void)_setmode(_fileno(stdout), _O_BINARY);
+#endif
+	const auto log = [&](const char* line) { std::ofstream(argv[2], std::ios::binary | std::ios::app) << line; };
+	log("s\n");
+	std::size_t launch = 0;
+	{
+		std::ifstream launches(argv[2], std::ios::binary);
+		for (std::string line; std::getline(launches, line);) launch += line == "s" ? 1 : 0;
+	}
+	std::vector<std::string> behaviours;
+	for (std::string_view rest = argv[4]; !rest.empty();)
+	{
+		const std::size_t comma = rest.find(',');
+		behaviours.emplace_back(rest.substr(0, comma));
+		rest.remove_prefix(comma == std::string_view::npos ? rest.size() : comma + 1);
+	}
+	const std::string behaviour = behaviours[std::min(std::max<std::size_t>(launch, 1), behaviours.size()) - 1];
+	if (std::string text = argv[3]; text != "-")
+	{
+		// '|' stands for a line break and '^' for a control byte, which argv cannot carry portably.
+		std::ranges::replace(text, '|', '\n');
+		std::ranges::replace(text, '^', '\001');
+		std::fputs((text + "\n").c_str(), stderr);
+	}
+	if (behaviour == "flood") std::fputs(std::string(400000, 'x').c_str(), stderr);
+	std::fflush(stderr);
+	if (behaviour == "exit") return 255;
+	if (behaviour == "silent")
+	{
+		std::this_thread::sleep_for(std::chrono::seconds(30));
+		return 0;
+	}
+	uam::remote::RunnerState state;
+	nlohmann::json request;
+	while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
+	{
+		const std::string type = request.value("type", "");
+		nlohmann::json response = {{"id", request["id"]}, {"ok", true}, {"result", nlohmann::json::object()}};
+		const auto refuse = [&](const char* code, const char* message)
+		{
+			response = {{"id", request["id"]}, {"ok", false}, {"error", {{"code", code}, {"message", message}}}};
+		};
+		if (type == "hello")
+		{
+			if (behaviour == "slowhello") std::this_thread::sleep_for(std::chrono::milliseconds(300));
+			log("e\n");
+			response = uam::remote::HandleRunnerRequest(request, "development", &state);
+		}
+		else if (behaviour == "stall")
+		{
+			std::this_thread::sleep_for(std::chrono::seconds(30));
+			return 0;
+		}
+		else if (behaviour == "dropstart" && type == "process.start") return 0;
+		else if (behaviour == "rejectstart" && type == "process.start") refuse("invalid_request", "The working directory does not exist.");
+		else if (behaviour == "rejectstart" && type.starts_with("process.")) refuse("session_not_found", "The remote process does not exist.");
+		else if (behaviour == "finish" && type == "process.start") response["result"]["inputSequence"] = std::uint64_t{0};
+		else if (behaviour == "finish" && type == "process.poll")
+			response["result"] = {{"running", false}, {"exitCode", 0}, {"stdoutBase64", uam::base64::Encode("done\n")}, {"stderrBase64", ""},
+			    {"stdoutCursor", std::uint64_t{5}}, {"stderrCursor", std::uint64_t{0}}};
+		else if (behaviour == "finish" && type == "process.ack") std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+		if (!uam::remote::WriteFrame(std::cout, response)) return 5;
+		std::cout.flush();
+	}
+	return 0;
+}
+
 std::optional<int> RunRemoteCodexSetupFixture(int argc, char** argv)
 {
+	if (const std::optional<int> result = RunBridgeFixture(argc, argv)) return result;
 	// Dispatched from here so a new proxy fixture needs no change to the shared test main.
 	if (const std::optional<int> result = RunProxyProviderFixture(argc, argv)) return result;
 	if (argc < 2 || std::string_view(argv[1]) != "--uam-test-codex-setup") return std::nullopt;
@@ -162,11 +237,6 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 		}
 		const std::string type = request.value("type", "");
 		if (mode == "handshake-offline" && type == "hello") return 0;
-		if (mode == "stall-requests" && type != "hello")
-		{
-			std::this_thread::sleep_for(std::chrono::seconds(30));
-			return 0;
-		}
 		nlohmann::json result = nlohmann::json::object();
 		if (mode == "command-lost-start" && type == "process.start") return 0;
 		if (mode == "teardown-lost-reply" && type == "process.closeInput") return 0;
@@ -9323,7 +9393,6 @@ UAM_TEST(RemoteRunnerOpenCodeNativeSurfacesRespectBuildExclusion)
 	UAM_ASSERT(!state.HasManagedProcesses());
 }
 
-#if !defined(_WIN32)
 namespace
 {
 	struct RunnerShutdownReset
@@ -9332,204 +9401,333 @@ namespace
 		~RunnerShutdownReset() { uam::remote::ResetRunnerShutdownForTesting(); }
 	};
 
-	std::vector<std::string> StalledRequestBridge()
+	std::vector<std::string> TestBridge(const fs::path& launches, std::string behaviours, std::string stderr_text = "-")
 	{
-		return {PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string(), "--uam-test-remote-opencode-create"};
+		return {uam::paths::Utf8PathString(PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()),
+		    "--uam-test-bridge", uam::paths::Utf8PathString(launches), std::move(stderr_text), std::move(behaviours)};
+	}
+
+	// Launches of the stand-in bridge, and the most that were inside a handshake at once.
+	std::pair<int, int> BridgeLaunches(const fs::path& launches)
+	{
+		int started = 0, open = 0, most = 0;
+		std::ifstream file(launches, std::ios::binary);
+		for (std::string line; std::getline(file, line);)
+		{
+			if (line == "s") { ++started; most = std::max(most, ++open); }
+			else if (line == "e") --open;
+		}
+		return {started, most};
 	}
 
 	std::chrono::milliseconds ElapsedSince(std::chrono::steady_clock::time_point started)
 	{
 		return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
 	}
+
+	std::jthread StopAfter(std::stop_source& stop, std::chrono::milliseconds delay)
+	{
+		return std::jthread([&stop, delay](std::stop_token)
+		{
+			std::this_thread::sleep_for(delay);
+			stop.request_stop();
+		});
+	}
+
+	const fs::path kBridgeWorkspace = fs::temp_directory_path();
+	constexpr const char* kTimeout = "The remote runner did not respond within 1 seconds.";
+	constexpr const char* kClosed = "The remote runner bridge closed.";
+	constexpr const char* kClosing = "The remote runner request stopped because UAM is closing.";
 }
 
 UAM_TEST(RemoteRunnerHandshakeDeadlineIsSeparateFromRequestDeadline)
 {
+	TempDir temp("uam-runner-deadlines");
 	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
 	std::string error;
 	{
 		// A silent bridge fails the handshake at the handshake deadline, however long a request may take.
-		uam::remote::RunnerClient client(service, {"/bin/sh", "-c", "sleep 30"});
+		uam::remote::RunnerClient client(service, TestBridge(temp.root / "silent", "silent"));
 		client.SetDeadlines(std::chrono::milliseconds(200), std::chrono::seconds(30));
 		const auto started = std::chrono::steady_clock::now();
 		UAM_ASSERT(!client.Connect(&error));
 		UAM_ASSERT(ElapsedSince(started) >= std::chrono::milliseconds(200) && ElapsedSince(started) < std::chrono::seconds(3));
-		UAM_ASSERT_EQ(error, "The remote runner did not respond within 1 seconds.");
+		UAM_ASSERT_EQ(error, kTimeout);
 	}
 	{
 		// A slow start is not a failure: the handshake may outlast the request deadline.
-		uam::remote::RunnerClient client(service, {"/bin/sh", "-c", "sleep 0.4; exec \"$0\" bridge-direct",
-		    (service.ResolveCurrentExecutablePath().parent_path() / "uam-runner").string()});
+		uam::remote::RunnerClient client(service, TestBridge(temp.root / "slow", "slowhello"));
 		client.SetDeadlines(std::chrono::seconds(20), std::chrono::milliseconds(200));
 		UAM_ASSERT(client.Connect(&error));
 	}
-	ScopedEnvVar mode("UAM_TEST_CREATE_MODE", "stall-requests");
-	uam::remote::RunnerClient client(service, StalledRequestBridge());
+	uam::remote::RunnerClient client(service, TestBridge(temp.root / "stall", "stall"));
 	client.SetDeadlines(std::chrono::seconds(20), std::chrono::milliseconds(200));
 	UAM_ASSERT(client.Connect(&error));
 	const auto started = std::chrono::steady_clock::now();
-	UAM_ASSERT(!client.RemoveFile("stalled", "/tmp/never-removed", &error));
+	UAM_ASSERT(!client.RemoveFile("stalled", kBridgeWorkspace / "never-removed", &error));
 	UAM_ASSERT(ElapsedSince(started) < std::chrono::seconds(3));
-	UAM_ASSERT_EQ(error, "The remote runner did not respond within 1 seconds.");
+	UAM_ASSERT_EQ(error, kTimeout);
 	UAM_ASSERT(!client.IsConnected());
 }
 
 UAM_TEST(RemoteCommandCancelInterruptsConnectAndInFlightRequests)
 {
+	TempDir temp("uam-runner-cancel");
 	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
-	ScopedEnvVar mode("UAM_TEST_CREATE_MODE", "stall-requests");
 	// First a bridge that never answers the handshake, then one that accepts it and never answers the start.
-	for (const std::vector<std::string>& bridge : {std::vector<std::string>{"/bin/sh", "-c", "sleep 30"}, StalledRequestBridge()})
+	for (const char* behaviour : {"silent", "stall"})
 	{
-		uam::remote::RunnerClient client(service, bridge);
-		client.SetDeadlines(std::chrono::seconds(30), std::chrono::milliseconds(300));
+		uam::remote::RunnerClient client(service, TestBridge(temp.root / behaviour, behaviour));
+		client.SetDeadlines(std::chrono::seconds(30), std::chrono::milliseconds(300), std::chrono::milliseconds(300));
 		std::stop_source stop;
-		std::jthread cancel([&](std::stop_token)
-		{
-			std::this_thread::sleep_for(std::chrono::milliseconds(150));
-			stop.request_stop();
-		});
+		const std::jthread cancel = StopAfter(stop, std::chrono::milliseconds(150));
 		const auto started = std::chrono::steady_clock::now();
-		const ProcessExecutionResult result = client.ExecuteCommand("cancel-" + service.GenerateUuid(), "/tmp", {"/bin/sh", "-c", "true"}, 60000, stop.get_token());
+		const ProcessExecutionResult result = client.ExecuteCommand("cancel-" + service.GenerateUuid(), kBridgeWorkspace, {"fixture"}, 60000, stop.get_token());
 		UAM_ASSERT(ElapsedSince(started) < std::chrono::seconds(3));
 		UAM_ASSERT(result.canceled && !result.ok && !result.timed_out);
+		UAM_ASSERT(result.error.starts_with("Remote command canceled."));
 	}
-	// The command's own deadline interrupts a stalled start the same way.
-	uam::remote::RunnerClient client(service, StalledRequestBridge());
-	client.SetDeadlines(std::chrono::seconds(30), std::chrono::milliseconds(300));
-	const auto started = std::chrono::steady_clock::now();
-	const ProcessExecutionResult result = client.ExecuteCommand("deadline-" + service.GenerateUuid(), "/tmp", {"/bin/sh", "-c", "true"}, 150);
-	UAM_ASSERT(ElapsedSince(started) < std::chrono::seconds(3));
-	UAM_ASSERT(result.timed_out && !result.canceled && !result.ok);
+	// The command's own deadline interrupts a silent connection and a stalled start the same way, and says so.
+	for (const char* behaviour : {"silent", "stall"})
+	{
+		uam::remote::RunnerClient client(service, TestBridge(temp.root / (std::string("deadline-") + behaviour), behaviour));
+		client.SetDeadlines(std::chrono::seconds(30), std::chrono::milliseconds(300), std::chrono::milliseconds(300));
+		const auto started = std::chrono::steady_clock::now();
+		const ProcessExecutionResult result = client.ExecuteCommand("deadline-" + service.GenerateUuid(), kBridgeWorkspace, {"fixture"}, 150);
+		UAM_ASSERT(ElapsedSince(started) < std::chrono::seconds(3));
+		UAM_ASSERT(result.timed_out && !result.canceled && !result.ok);
+		UAM_ASSERT(result.error.starts_with("Remote command timed out."));
+	}
 	// A stop token reaches a directory listing's connection too.
 	std::stop_source stop;
-	std::jthread cancel([&](std::stop_token)
-	{
-		std::this_thread::sleep_for(std::chrono::milliseconds(150));
-		stop.request_stop();
-	});
-	uam::remote::RunnerClient silent(service, {"/bin/sh", "-c", "sleep 30"});
+	const std::jthread cancel = StopAfter(stop, std::chrono::milliseconds(150));
+	uam::remote::RunnerClient silent(service, TestBridge(temp.root / "listing", "silent"));
 	uam::remote::DirectoryListing listing;
 	std::string error;
-	const auto listing_started = std::chrono::steady_clock::now();
-	UAM_ASSERT(!silent.ListDirectories("/tmp", listing, &error, stop.get_token()));
-	UAM_ASSERT(ElapsedSince(listing_started) < std::chrono::seconds(3));
+	const auto started = std::chrono::steady_clock::now();
+	UAM_ASSERT(!silent.ListDirectories(kBridgeWorkspace, listing, &error, stop.get_token()));
+	UAM_ASSERT(ElapsedSince(started) < std::chrono::seconds(3));
 }
 
-UAM_TEST(RemoteRunnerFailuresCarryABoundedBridgeStderrTail)
+UAM_TEST(RemoteCommandReportsWhatIsKnownAboutAnUnfinishedStart)
 {
+	TempDir temp("uam-runner-start-fate");
 	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const std::string uncertain = " Its start was not confirmed and the host could not be reached to stop it, so the command may still be running there.";
+	{
+		// The start request was sent, the deadline fired before its reply, and the host cannot be reached again:
+		// the command may be running, and the bounded cleanup must say so instead of reporting a clean timeout.
+		uam::remote::RunnerClient client(service, TestBridge(temp.root / "unknown", "stall,silent"));
+		client.SetDeadlines(std::chrono::seconds(30), std::chrono::seconds(30), std::chrono::milliseconds(300));
+		std::string error;
+		UAM_ASSERT(client.Connect(&error));
+		const auto started = std::chrono::steady_clock::now();
+		const ProcessExecutionResult result = client.ExecuteCommand("unknown-" + service.GenerateUuid(), kBridgeWorkspace, {"fixture"}, 150);
+		UAM_ASSERT(ElapsedSince(started) < std::chrono::seconds(3));
+		UAM_ASSERT(result.timed_out && !result.ok);
+		UAM_ASSERT_EQ(result.error, "Remote command timed out." + uncertain);
+		UAM_ASSERT_EQ(BridgeLaunches(temp.root / "unknown").first, 2);
+	}
+	{
+		// The helper answered the start with an error: nothing was started, so its error stands alone.
+		uam::remote::RunnerClient client(service, TestBridge(temp.root / "refused", "rejectstart"));
+		const ProcessExecutionResult result = client.ExecuteCommand("refused-" + service.GenerateUuid(), kBridgeWorkspace, {"fixture"}, 5000);
+		UAM_ASSERT(!result.ok && !result.timed_out && !result.canceled);
+		UAM_ASSERT_EQ(result.error, "The working directory does not exist.");
+	}
+	{
+		// The start's reply was lost, but the host then answered that no such process exists: nothing is left running.
+		uam::remote::RunnerClient client(service, TestBridge(temp.root / "lost", "dropstart,rejectstart"));
+		const ProcessExecutionResult result = client.ExecuteCommand("lost-" + service.GenerateUuid(), kBridgeWorkspace, {"fixture"}, 5000);
+		UAM_ASSERT(!result.ok);
+		UAM_ASSERT_EQ(result.error, "The remote process does not exist.");
+	}
+	// A command that finished keeps its real result when the deadline lands on the final acknowledgement.
+	uam::remote::RunnerClient client(service, TestBridge(temp.root / "finish", "finish"));
+	std::string error;
+	UAM_ASSERT(client.Connect(&error));
+	const ProcessExecutionResult result = client.ExecuteCommand("finish-" + service.GenerateUuid(), kBridgeWorkspace, {"fixture"}, 1000);
+	UAM_ASSERT(result.ok && !result.timed_out && !result.canceled);
+	UAM_ASSERT_EQ(result.exit_code, 0);
+	UAM_ASSERT_EQ(result.output, "done\n");
+}
+
+UAM_TEST(RemoteRunnerFailuresCarryABoundedSanitisedBridgeLine)
+{
+	TempDir temp("uam-runner-stderr");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	int index = 0;
+	const auto closed_with = [&](const std::string& text)
+	{
+		uam::remote::RunnerClient client(service, TestBridge(temp.root / ("closed-" + std::to_string(++index)), "exit", text));
+		std::string error;
+		UAM_ASSERT(!client.Connect(&error));
+		return error;
+	};
+	const std::string reported = std::string(kClosed) + " Bridge reported: ";
+	UAM_ASSERT_EQ(closed_with("-"), kClosed);
+	// The last line only, without control bytes.
+	UAM_ASSERT_EQ(closed_with("Warning: first line|Permission denied^ (publickey).|"), reported + "Permission denied (publickey).");
+	UAM_ASSERT_EQ(closed_with(std::string(1000, 'x')), reported + std::string(300, 'x'));
+	// The reason stays; accounts, host names, addresses and paths do not.
+	UAM_ASSERT_EQ(closed_with("Load key \"/Users/alice/.ssh/id_ed25519\": bad permissions"), reported + "Load key \"<path>\": bad permissions");
+	UAM_ASSERT_EQ(closed_with("alice@10.0.0.5: Permission denied (publickey)."), reported + "<account>: Permission denied (publickey).");
+	UAM_ASSERT_EQ(closed_with("ssh: connect to host lab.internal port 22: Connection refused"), reported + "ssh: connect to host <host> port 22: Connection refused");
+	UAM_ASSERT_EQ(closed_with("Connection closed by 192.168.1.20 port 22"), reported + "Connection closed by <address> port 22");
+	UAM_ASSERT_EQ(closed_with("Bad owner or permissions on C:\\Users\\alice\\.ssh\\config"), reported + "Bad owner or permissions on <path>");
 	std::string error;
 	{
-		uam::remote::RunnerClient client(service, {"/bin/sh", "-c", "printf 'Warning: first line\\nPermission denied\\001 (publickey).\\n\\n' >&2; exit 255"});
-		UAM_ASSERT(!client.Connect(&error));
-		UAM_ASSERT_EQ(error, "The remote runner bridge closed. Bridge reported: Permission denied (publickey).");
-	}
-	{
-		uam::remote::RunnerClient client(service, {"/bin/sh", "-c", "head -c 5000 /dev/zero | tr '\\0' x >&2; exit 255"});
-		UAM_ASSERT(!client.Connect(&error));
-		UAM_ASSERT_EQ(error, "The remote runner bridge closed. Bridge reported: " + std::string(300, 'x'));
-	}
-	{
-		uam::remote::RunnerClient client(service, {"/bin/sh", "-c", "echo 'uam-runner: not found' >&2; sleep 30"});
+		// A bridge that is still open did not cause the timeout, whatever it printed.
+		uam::remote::RunnerClient client(service, TestBridge(temp.root / "open", "silent", "uam-runner: starting"));
 		client.SetDeadlines(std::chrono::milliseconds(200), std::chrono::seconds(30));
 		UAM_ASSERT(!client.Connect(&error));
-		UAM_ASSERT_EQ(error, "The remote runner did not respond within 1 seconds. Bridge reported: uam-runner: not found");
+		UAM_ASSERT_EQ(error, kTimeout);
 	}
 	{
-		uam::remote::RunnerClient client(service, {"/bin/sh", "-c", "exit 255"});
-		UAM_ASSERT(!client.Connect(&error));
-		UAM_ASSERT_EQ(error, "The remote runner bridge closed.");
+		// A line from the start of a connection that then worked is not the cause of a later failure.
+		const std::string notice = "Warning: Permanently added 'lab' (ED25519) to the list of known hosts.";
+		uam::remote::RunnerClient stalled(service, TestBridge(temp.root / "stale-timeout", "stall", notice));
+		stalled.SetDeadlines(std::chrono::seconds(20), std::chrono::milliseconds(200));
+		UAM_ASSERT(stalled.Connect(&error));
+		UAM_ASSERT(!stalled.RemoveFile("stalled", kBridgeWorkspace / "never-removed", &error));
+		UAM_ASSERT_EQ(error, kTimeout);
+		uam::remote::RunnerClient dropped(service, TestBridge(temp.root / "stale-closed", "dropstart", notice));
+		UAM_ASSERT(dropped.Connect(&error));
+		UAM_ASSERT(!dropped.StartProcess("dropped", kBridgeWorkspace, {"fixture"}, {}, &error, false, {}, false));
+		UAM_ASSERT_EQ(error, kClosed);
 	}
 	// More diagnostics than a pipe holds must not stall the bridge before it answers.
-	uam::remote::RunnerClient client(service, {"/bin/sh", "-c", "head -c 400000 /dev/zero | tr '\\0' x >&2; exec \"$0\" bridge-direct",
-	    (service.ResolveCurrentExecutablePath().parent_path() / "uam-runner").string()});
-	client.SetDeadlines(std::chrono::seconds(5), std::chrono::seconds(5));
+	uam::remote::RunnerClient client(service, TestBridge(temp.root / "flood", "flood"));
+	client.SetDeadlines(std::chrono::seconds(10), std::chrono::seconds(10));
 	UAM_ASSERT(client.Connect(&error));
 }
 
-UAM_TEST(RemoteRunnerShutdownBudgetBoundsEveryBlockedWait)
+UAM_TEST(RemoteRunnerShutdownEndsEveryWaitAtOneInstantAndRefusesNewConnections)
 {
 	const RunnerShutdownReset reset;
+	TempDir temp("uam-runner-shutdown");
 	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
 	std::string error;
 	{
-		// A host that answers is still served while the budget lasts.
+		uam::remote::RunnerClient connected(service, TestBridge(temp.root / "connected", "serve"));
+		UAM_ASSERT(connected.Connect(&error));
 		uam::remote::BeginRunnerShutdown(std::chrono::seconds(60));
-		uam::remote::RunnerClient healthy(service, {(service.ResolveCurrentExecutablePath().parent_path() / "uam-runner").string(), "bridge-direct"});
-		UAM_ASSERT(healthy.Connect(&error));
+		// A connection that is already open is still served until the shared instant.
+		UAM_ASSERT(connected.RemoveFile("served", kBridgeWorkspace / "never-removed", &error));
+		// A new one is refused from the first moment, without starting a bridge.
+		uam::remote::RunnerClient late(service, TestBridge(temp.root / "late", "serve"));
+		const auto started = std::chrono::steady_clock::now();
+		UAM_ASSERT(!late.Connect(&error));
+		UAM_ASSERT(ElapsedSince(started) < std::chrono::milliseconds(500));
+		UAM_ASSERT_EQ(error, kClosing);
+		UAM_ASSERT(!fs::exists(temp.root / "late"));
 		uam::remote::ResetRunnerShutdownForTesting();
 	}
 	std::atomic<int> waiting{0};
-	std::vector<std::string> errors(4);
+	std::vector<std::string> errors(8);
 	std::vector<std::thread> workers;
 	// Neither a stop token nor an interrupt: these waits would each last the full handshake deadline.
 	for (std::size_t index = 0; index < errors.size(); ++index)
 		workers.emplace_back([&, index]
 		{
-			uam::remote::RunnerClient client(service, {"/bin/sh", "-c", "sleep 30"});
+			uam::remote::RunnerClient client(service, TestBridge(temp.root / ("waiter-" + std::to_string(index)), "silent"));
 			++waiting;
 			(void)client.Connect(&errors[index]);
 		});
 	while (waiting.load() != static_cast<int>(errors.size())) std::this_thread::yield();
-	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	std::this_thread::sleep_for(std::chrono::milliseconds(300));
 	const auto started = std::chrono::steady_clock::now();
-	uam::remote::BeginRunnerShutdown(std::chrono::milliseconds(400));
+	uam::remote::BeginRunnerShutdown(std::chrono::milliseconds(500));
+	// A second call cannot move the instant.
+	uam::remote::BeginRunnerShutdown(std::chrono::seconds(60));
 	for (std::thread& worker : workers) worker.join();
-	UAM_ASSERT(ElapsedSince(started) < std::chrono::seconds(2));
-	for (const std::string& worker_error : errors) UAM_ASSERT_EQ(worker_error, "The remote runner request stopped because UAM is closing.");
-	// Work that reaches the queue after the budget is spent never starts a bridge.
-	TempDir temp("uam-runner-shutdown");
-	uam::remote::RunnerClient late(service, {"/bin/sh", "-c", "touch \"$0\"; sleep 30", (temp.root / "started").string()});
-	const auto late_started = std::chrono::steady_clock::now();
-	UAM_ASSERT(!late.Connect(&error));
-	UAM_ASSERT(ElapsedSince(late_started) < std::chrono::milliseconds(500));
-	UAM_ASSERT_EQ(error, "The remote runner request stopped because UAM is closing.");
-	UAM_ASSERT(!fs::exists(temp.root / "started"));
+	// One wall-clock instant for all of them: eight waiters neither shorten the wait eightfold nor queue behind each other.
+	UAM_ASSERT(ElapsedSince(started) >= std::chrono::milliseconds(450));
+	UAM_ASSERT(ElapsedSince(started) < std::chrono::seconds(3));
+	for (const std::string& worker_error : errors) UAM_ASSERT_EQ(worker_error, kClosing);
 }
 
 UAM_TEST(RemoteRunnerRetriesOnlyAHandshakeThatSshDropped)
 {
 	TempDir temp("uam-runner-handshake-retry");
 	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
-	const std::string runner = (service.ResolveCurrentExecutablePath().parent_path() / "uam-runner").string();
-	const fs::path dropped = temp.root / "dropped";
-	// sshd past MaxStartups closes the first two connections; the third reaches the helper.
-	uam::remote::RunnerClient client(service, {"/bin/sh", "-c",
-	    "echo attempt >> \"$0\"; [ $(wc -l < \"$0\") -lt 3 ] || exec \"$1\" bridge-direct; echo 'kex_exchange_identification: Connection closed by remote host' >&2; exit 255",
-	    dropped.string(), runner});
+	const std::string dropped = "kex_exchange_identification: Connection closed by remote host";
 	std::string error;
+	// sshd past MaxStartups closes the first two connections; the third reaches the helper.
+	uam::remote::RunnerClient client(service, TestBridge(temp.root / "dropped", "exit,exit,serve", dropped));
 	UAM_ASSERT(client.Connect(&error));
-	UAM_ASSERT_EQ(ReadFile(dropped), "attempt\nattempt\nattempt\n");
-	// A refused login is not retried: more attempts cannot succeed and can lock the account.
-	const fs::path denied = temp.root / "denied";
-	uam::remote::RunnerClient refused(service, {"/bin/sh", "-c", "echo attempt >> \"$0\"; echo 'Permission denied (publickey).' >&2; exit 255", denied.string()});
-	UAM_ASSERT(!refused.Connect(&error));
-	UAM_ASSERT_EQ(ReadFile(denied), "attempt\n");
-	// A host that keeps dropping connections fails after three attempts, and a cancel ends the retry wait.
-	const fs::path always = temp.root / "always";
-	const std::vector<std::string> dropping = {"/bin/sh", "-c", "echo attempt >> \"$0\"; echo 'Connection reset by peer' >&2; exit 255", always.string()};
-	UAM_ASSERT(!uam::remote::RunnerClient(service, dropping).Connect(&error));
-	UAM_ASSERT_EQ(error, "The remote runner bridge closed. Bridge reported: Connection reset by peer");
-	UAM_ASSERT_EQ(ReadFile(always), "attempt\nattempt\nattempt\n");
-	std::stop_source stop;
-	std::jthread cancel([&](std::stop_token)
+	UAM_ASSERT_EQ(BridgeLaunches(temp.root / "dropped").first, 3);
+	// Not retried: a refused login (more attempts can lock the account), a dead jump host, a drop during
+	// authentication, and a timeout, which would only repeat its wait.
+	int index = 0;
+	for (const char* text : {"Permission denied (publickey).", "Connection closed by UNKNOWN port 65535", "Connection reset by 192.168.1.20 port 22",
+	         "kex_exchange_identification: read: Connection reset by peer|alice@lab: Permission denied (publickey).",
+	         "ssh_exchange_identification: Connection closed by remote host|Too many authentication failures"})
 	{
-		std::this_thread::sleep_for(std::chrono::milliseconds(120));
-		stop.request_stop();
-	});
-	UAM_ASSERT(!uam::remote::RunnerClient(service, dropping).Connect(&error, stop.get_token()));
-	UAM_ASSERT_EQ(ReadFile(always), "attempt\nattempt\nattempt\nattempt\n");
+		const fs::path launches = temp.root / ("once-" + std::to_string(++index));
+		UAM_ASSERT(!uam::remote::RunnerClient(service, TestBridge(launches, "exit", text)).Connect(&error));
+		UAM_ASSERT_EQ(BridgeLaunches(launches).first, 1);
+	}
+	{
+		uam::remote::RunnerClient silent(service, TestBridge(temp.root / "timeout", "silent", dropped));
+		silent.SetDeadlines(std::chrono::milliseconds(200), std::chrono::seconds(30));
+		UAM_ASSERT(!silent.Connect(&error));
+		UAM_ASSERT_EQ(BridgeLaunches(temp.root / "timeout").first, 1);
+	}
+	// A host that keeps dropping connections fails after three attempts, all inside the one handshake deadline.
+	const fs::path always = temp.root / "always";
+	const auto started = std::chrono::steady_clock::now();
+	UAM_ASSERT(!uam::remote::RunnerClient(service, TestBridge(always, "exit", dropped)).Connect(&error));
+	UAM_ASSERT(ElapsedSince(started) < std::chrono::seconds(10));
+	UAM_ASSERT_EQ(error, std::string(kClosed) + " Bridge reported: " + dropped);
+	UAM_ASSERT_EQ(BridgeLaunches(always).first, 3);
+	// The pauses count against the handshake deadline: with no time left for one, there is no retry.
+	uam::remote::RunnerClient brief(service, TestBridge(temp.root / "brief", "exit", dropped));
+	brief.SetDeadlines(std::chrono::milliseconds(200), std::chrono::seconds(30));
+	UAM_ASSERT(!brief.Connect(&error));
+	UAM_ASSERT_EQ(BridgeLaunches(temp.root / "brief").first, 1);
+	// A cancel ends the pause before a retry.
+	std::stop_source stop;
+	const std::jthread cancel = StopAfter(stop, std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::remote::RunnerClient(service, TestBridge(always, "exit", dropped)).Connect(&error, stop.get_token()));
+	UAM_ASSERT_EQ(BridgeLaunches(always).first, 4);
 }
 
-UAM_TEST(RemoteCommandStartFailureIsNotBuriedUnderCleanupErrors)
+UAM_TEST(RemoteRunnerLimitsConcurrentHandshakesPerHost)
 {
+	TempDir temp("uam-runner-handshake-cap");
 	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
-	uam::remote::RunnerClient client(service, {(service.ResolveCurrentExecutablePath().parent_path() / "uam-runner").string(), "bridge-direct"});
-	const ProcessExecutionResult result = client.ExecuteCommand("start-fails-" + service.GenerateUuid(), "/nonexistent-uam-workspace", {"/bin/sh", "-c", "true"}, 5000);
-	UAM_ASSERT(!result.ok && !result.error.empty());
-	UAM_ASSERT(result.error.find("Remote process stop failed") == std::string::npos);
-	UAM_ASSERT(result.error.find("Remote process cleanup failed") == std::string::npos);
+	// Startup opens a connection for every remote chat, scan and probe at once; sshd refuses handshakes beyond its limit.
+	const std::vector<std::string> bridge = TestBridge(temp.root / "host", "slowhello");
+	std::atomic<int> connected{0};
+	std::vector<std::thread> workers;
+	for (int index = 0; index < 10; ++index)
+		workers.emplace_back([&]
+		{
+			uam::remote::RunnerClient client(service, bridge);
+			if (client.Connect()) ++connected;
+		});
+	for (std::thread& worker : workers) worker.join();
+	UAM_ASSERT_EQ(connected.load(), 10);
+	const std::pair<int, int> launches = BridgeLaunches(temp.root / "host");
+	UAM_ASSERT_EQ(launches.first, 10);
+	UAM_ASSERT(launches.second <= 4);
+	// Another host is not held up by this one, and a cancel ends the wait for a slot.
+	std::vector<std::thread> holders;
+	const std::vector<std::string> silent = TestBridge(temp.root / "silent-host", "silent");
+	std::stop_source release;
+	for (int index = 0; index < 4; ++index)
+		holders.emplace_back([&] { (void)uam::remote::RunnerClient(service, silent).Connect(nullptr, release.get_token()); });
+	while (BridgeLaunches(temp.root / "silent-host").first < 4) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	UAM_ASSERT(uam::remote::RunnerClient(service, TestBridge(temp.root / "other-host", "serve")).Connect());
+	std::stop_source stop;
+	const std::jthread cancel = StopAfter(stop, std::chrono::milliseconds(150));
+	const auto started = std::chrono::steady_clock::now();
+	UAM_ASSERT(!uam::remote::RunnerClient(service, silent).Connect(nullptr, stop.get_token()));
+	UAM_ASSERT(ElapsedSince(started) < std::chrono::seconds(3));
+	UAM_ASSERT_EQ(BridgeLaunches(temp.root / "silent-host").first, 4);
+	release.request_stop();
+	for (std::thread& holder : holders) holder.join();
 }
 
 UAM_TEST(RemoteQueuedWorkFailsAtOnceAfterItsHostStoppedAnswering)
@@ -9537,52 +9735,69 @@ UAM_TEST(RemoteQueuedWorkFailsAtOnceAfterItsHostStoppedAnswering)
 	TempDir temp("uam-runner-queued-work");
 	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
 	const fs::path attempts = temp.root / "attempts";
-	const std::vector<std::string> bridge = {"/bin/sh", "-c", "echo attempt >> \"$0\"; echo 'ssh: connect to host lab port 22: Operation timed out' >&2; exit 255", attempts.string()};
-	const std::string expected = "The remote runner bridge closed. Bridge reported: ssh: connect to host lab port 22: Operation timed out";
+	const std::vector<std::string> bridge = TestBridge(attempts, "exit", "ssh: connect to host lab port 22: Operation timed out");
+	const std::string expected = std::string(kClosed) + " Bridge reported: ssh: connect to host <host> port 22: Operation timed out";
 	const auto queued_at = std::chrono::steady_clock::now();
 	std::string error;
 	UAM_ASSERT(!uam::remote::RunnerClient(service, bridge).Connect(&error));
 	UAM_ASSERT_EQ(error, expected);
-	UAM_ASSERT_EQ(ReadFile(attempts), "attempt\n");
+	UAM_ASSERT_EQ(BridgeLaunches(attempts).first, 1);
 	{
 		// Queued before the failure: the same answer, without another connection attempt.
 		const uam::remote::ScopedRunnerQueuedWork queued(queued_at);
 		error.clear();
 		UAM_ASSERT(!uam::remote::RunnerClient(service, bridge).Connect(&error));
 		UAM_ASSERT_EQ(error, expected);
-		UAM_ASSERT_EQ(ReadFile(attempts), "attempt\n");
+		UAM_ASSERT_EQ(BridgeLaunches(attempts).first, 1);
 	}
 	{
 		// Queued after it, such as a retry: the host is tried again.
 		const uam::remote::ScopedRunnerQueuedWork queued(std::chrono::steady_clock::now());
 		UAM_ASSERT(!uam::remote::RunnerClient(service, bridge).Connect(&error));
-		UAM_ASSERT_EQ(ReadFile(attempts), "attempt\nattempt\n");
+		UAM_ASSERT_EQ(BridgeLaunches(attempts).first, 2);
 	}
 	// Work outside a queue is never refused on another request's failure.
 	UAM_ASSERT(!uam::remote::RunnerClient(service, bridge).Connect(&error));
-	UAM_ASSERT_EQ(ReadFile(attempts), "attempt\nattempt\nattempt\n");
+	UAM_ASSERT_EQ(BridgeLaunches(attempts).first, 3);
+	{
+		// The host answered again after failing: work queued before the failure must reach it, not the old error.
+		const fs::path recovered = temp.root / "recovered";
+		const std::vector<std::string> recovering = TestBridge(recovered, "exit,serve", "ssh: connect to host lab port 22: Operation timed out");
+		const auto before_failure = std::chrono::steady_clock::now();
+		UAM_ASSERT(!uam::remote::RunnerClient(service, recovering).Connect(&error));
+		UAM_ASSERT(uam::remote::RunnerClient(service, recovering).Connect(&error));
+		const uam::remote::ScopedRunnerQueuedWork queued(before_failure);
+		UAM_ASSERT(uam::remote::RunnerClient(service, recovering).Connect(&error));
+		UAM_ASSERT_EQ(BridgeLaunches(recovered).first, 3);
+	}
+	{
+		// A reconnect in the middle of a piece of work must really try: it is how a started command is found again.
+		const fs::path midway = temp.root / "midway";
+		const std::vector<std::string> flapping = TestBridge(midway, "serve,exit,serve", "ssh: connect to host lab port 22: Operation timed out");
+		const uam::remote::ScopedRunnerQueuedWork queued(std::chrono::steady_clock::now());
+		uam::remote::RunnerClient working(service, flapping);
+		UAM_ASSERT(working.Connect(&error));
+		{
+			const uam::remote::ScopedRunnerQueuedWork later(std::chrono::steady_clock::now());
+			UAM_ASSERT(!uam::remote::RunnerClient(service, flapping).Connect(&error));
+		}
+		working.Disconnect();
+		UAM_ASSERT(working.Connect(&error));
+		UAM_ASSERT_EQ(BridgeLaunches(midway).first, 3);
+	}
 	// A cancel says nothing about the host, so it must not fail other queued work.
 	const fs::path canceled_attempts = temp.root / "canceled-attempts";
-	const std::vector<std::string> silent = {"/bin/sh", "-c", "echo attempt >> \"$0\"; sleep 30", canceled_attempts.string()};
+	const std::vector<std::string> silent = TestBridge(canceled_attempts, "silent");
 	const auto silent_queued_at = std::chrono::steady_clock::now();
-	std::stop_source stop;
-	std::jthread cancel([&](std::stop_token)
+	for (int attempt = 0; attempt < 2; ++attempt)
 	{
-		std::this_thread::sleep_for(std::chrono::milliseconds(150));
-		stop.request_stop();
-	});
-	UAM_ASSERT(!uam::remote::RunnerClient(service, silent).Connect(&error, stop.get_token()));
-	const uam::remote::ScopedRunnerQueuedWork queued(silent_queued_at);
-	std::stop_source second_stop;
-	std::jthread second_cancel([&](std::stop_token)
-	{
-		std::this_thread::sleep_for(std::chrono::milliseconds(150));
-		second_stop.request_stop();
-	});
-	UAM_ASSERT(!uam::remote::RunnerClient(service, silent).Connect(&error, second_stop.get_token()));
-	UAM_ASSERT_EQ(ReadFile(canceled_attempts), "attempt\nattempt\n");
+		const uam::remote::ScopedRunnerQueuedWork queued(silent_queued_at);
+		std::stop_source stop;
+		const std::jthread cancel = StopAfter(stop, std::chrono::milliseconds(150));
+		UAM_ASSERT(!uam::remote::RunnerClient(service, silent).Connect(&error, stop.get_token()));
+	}
+	UAM_ASSERT_EQ(BridgeLaunches(canceled_attempts).first, 2);
 }
-#endif
 
 UAM_TEST(RemoteCliVersionWorkerStopsWithoutWaitingOnASilentHost)
 {

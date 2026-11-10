@@ -198,6 +198,9 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 	const auto stop = std::make_shared<std::stop_source>();
 	std::erase_if(m_remoteInstallStops, [](const auto& install) { return install.second.expired(); });
 	m_remoteInstallStops.emplace_back(query, stop);
+	// Fence before counting: a queued Git read that starts from here on is refused instead of launching the helper
+	// this request replaces. The fence lasts as long as the request's callback, so it ends with the install.
+	cb = new RemoteInstallScanPauseCallback(cb, m_app.remote_vcs_operation_leases_by_host_id[host.id].Fence());
 	uam::remote_install::HostRuntimeBlockReason block_reason = uam::remote_install::HostRuntimeBlockReason::None;
 	std::string block_chat_id;
 	if (HostHasActiveRuntimeWork(m_app, host.id, true, &block_reason, &block_chat_id))

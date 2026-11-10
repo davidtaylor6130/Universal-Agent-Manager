@@ -2152,7 +2152,7 @@ bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>
 	{
 		const std::string host_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat.execution_host_id), "local");
 		const auto lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
-		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.expired())
+		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.idle())
 		{
 			app.status_line = "Wait for the workspace operation to finish.";
 			return false;
@@ -2252,7 +2252,7 @@ bool uam::PrepareChatDeletion(AppState& app, const std::vector<std::string>& cha
 		}
 		const std::string host_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat->execution_host_id), "local");
 		const auto lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
-		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.expired())
+		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.idle())
 		{
 			app.status_line = "Wait for the workspace operation to finish.";
 			return false;
