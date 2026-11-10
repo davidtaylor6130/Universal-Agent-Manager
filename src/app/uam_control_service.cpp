@@ -11,6 +11,7 @@
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
 #include "app/provider_model_catalog_service.h"
+#include "app/provider_mcp_settings_service.h"
 #include "common/config/execution_host_config.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
@@ -405,6 +406,13 @@ namespace uam
 			           uam::approval_modes::kPlanApprovalMode &&
 			       uam::command_safety::ParseTier(chat.command_safety_tier) ==
 			           uam::command_safety::Tier::Yolo;
+		}
+
+		bool OutstandingRequest(const UamControlCapability& capability, std::string_view request_id)
+		{
+			return (capability.pending_agent_wait && capability.pending_agent_wait->request_id == request_id) ||
+			       (capability.pending_approval && capability.pending_approval->request_id == request_id) ||
+			       capability.render_check_request_id == request_id;
 		}
 
 		UamControlCapability* FindCapability(AppState& app, std::string_view id)
@@ -1740,6 +1748,7 @@ namespace uam
 			{
 				if (app.html_view_render_checker)
 				{
+					if (UamControlCapability* owner = FindCapability(app, capability_snapshot.id)) owner->render_check_request_id = request_id;
 					app.html_view_render_checker->Start(capability_snapshot.id, arguments.at("html").get<std::string>(),
 					    [directory = capability_snapshot.directory, request_id, tool_result = std::move(result.result)](html_view::RenderCheckResult check) mutable
 					    {
@@ -2554,7 +2563,8 @@ namespace uam
 				UamControlCapability* owner = FindCapability(app, capability_id);
 				// An answered or still-waiting ID owns its reply. A leftover file for it (removal failed, still
 				// listed while Windows deletes it, or emptied) is dropped; never write an error over that reply.
-				if (safe_id && owner != nullptr && owner->seen_request_ids.contains(request_id))
+				// Outstanding IDs (a live wait, approval or render check) are protected even after the bounded seen cache evicts them.
+				if (safe_id && owner != nullptr && (owner->seen_request_ids.contains(request_id) || OutstandingRequest(*owner, request_id)))
 				{
 					(void)uam::paths::RemoveFileNoThrow(file);
 					owner->unreadable_request_since.erase(request_id);
@@ -2568,9 +2578,9 @@ namespace uam
 				    file.extension() == ".json" && !link)
 				{
 					std::string text;
-					if (uam::io::TryReadTextFile(file, text) && text.size() == *size &&
-					    uam::paths::FileSizeNoThrow(file) == size &&
-					    !uam::paths::IsLinkOrReparsePointNoThrow(file))
+					// The open handle, not the earlier path checks, must be a regular non-link file: a swapped-in
+					// FIFO cannot block this poll and a growing file cannot exceed the request limit.
+					if (provider_mcp_settings::ReadConfigFile(file, text, html_view::kMaxRequestBytes))
 					{
 						const nlohmann::json request = nlohmann::json::parse(text, nullptr, false);
 						if (request.is_object() && request.contains("requestId") &&

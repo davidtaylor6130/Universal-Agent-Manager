@@ -10,6 +10,8 @@
 #ifdef _WIN32
 #include <share.h>
 #else
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -1506,4 +1508,74 @@ UAM_TEST(UamControlBadRequestFilesNeverDelayAnotherCapability)
 		UAM_ASSERT(fs::exists(file->path));
 		UAM_ASSERT(!fs::exists(noisy / "responses" / file->path.filename()));
 	}
+}
+
+UAM_TEST(UamControlOutstandingWaitIdStaysProtectedAfterSeenCacheEviction)
+{
+	ControlAgentWaitFixture fixture;
+	const std::string child_id = fixture.Delegate("plan");
+	auto& child = fixture.Run(child_id);
+	child.status = "running";
+	UAM_ASSERT(uam::AgentRunLedger::Save(fixture.app.data_root, child));
+	UAM_ASSERT(fixture.Call("long-wait", "agent_wait", {{"runId", child_id}}).value("pendingAgentWait", false));
+	// 256 newer accepted IDs evict the wait's ID from the bounded seen cache; heartbeats skip the rate limit.
+	for (int index = 0; index < 300; ++index)
+		UAM_ASSERT(fixture.Call("newer-" + std::to_string(index), "_mcp_heartbeat", {{"connectionId", "manager-test-connection"}}).value("ok", false));
+	UAM_ASSERT(!fixture.app.uam_control_capabilities.front().seen_request_ids.contains("long-wait"));
+	const fs::path leftover = fixture.capability_directory / "requests" / "long-wait.json";
+	UAM_ASSERT(uam::io::WriteTextFile(leftover, ""));
+	for (int poll = 0; poll < 5; ++poll) (void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(!fs::exists(leftover));
+	UAM_ASSERT(!fs::exists(fixture.capability_directory / "responses" / "long-wait.json"));
+	UAM_ASSERT(fixture.app.uam_control_capabilities.front().pending_agent_wait);
+}
+
+UAM_TEST(UamControlRequestSwappedForFifoNeverBlocksThePoll)
+{
+#ifdef _WIN32
+	return; // No FIFOs on Windows; the reader there opens without following reparse points and checks the handle.
+#else
+	ControlAgentWaitFixture fixture;
+	const fs::path requests = fixture.capability_directory / "requests";
+	const fs::path target = requests / "swapped.json";
+	const fs::path regular = fixture.temp.root / "regular-stage";
+	const fs::path fifo = fixture.temp.root / "fifo-stage";
+	const std::string body = nlohmann::json{{"requestId", "swapped"}, {"method", "goal_get"}, {"arguments", nlohmann::json::object()}}.dump();
+	std::atomic<bool> stop{false};
+	// Swap a regular request and a FIFO under the same name as fast as possible, so the size and link checks
+	// see a regular file and the open meets the FIFO. A blocking open would hang the poll until a writer appears.
+	std::jthread swapper([&]
+	{
+		while (!stop)
+		{
+			std::error_code ignored;
+			{ std::ofstream(regular) << body; }
+			fs::rename(regular, target, ignored);
+			if (::mkfifo(fifo.c_str(), 0600) == 0) fs::rename(fifo, target, ignored);
+			fs::remove(fifo, ignored);
+		}
+	});
+	std::atomic<bool> polling_done{false};
+	std::atomic<bool> unblocked_by_watchdog{false};
+	std::jthread watchdog([&]
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+		while (!polling_done && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		while (!polling_done)
+		{
+			stop = true;
+			const int writer = ::open(target.c_str(), O_WRONLY | O_NONBLOCK); // Releases a reader blocked on the FIFO.
+			if (writer >= 0) { unblocked_by_watchdog = true; ::close(writer); }
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+	});
+	const auto started = std::chrono::steady_clock::now();
+	while (std::chrono::steady_clock::now() - started < std::chrono::seconds(3))
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	polling_done = true;
+	stop = true;
+	swapper.join();
+	watchdog.join();
+	UAM_ASSERT(!unblocked_by_watchdog);
+#endif
 }

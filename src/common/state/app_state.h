@@ -529,6 +529,7 @@ namespace uam
 		int chat_create_turn_serial = -1;
 		std::size_t chat_create_turn_count = 0;
 		std::optional<PendingApproval> pending_approval;
+		std::string render_check_request_id; // Latest render-checked request; its reply is written asynchronously.
 		std::shared_ptr<UamAgentWait> pending_agent_wait;
 		// Captured by real setup; wait admission cannot adopt a changed host/workspace selection.
 		std::optional<ExecutionHost> wait_host_at_launch;
