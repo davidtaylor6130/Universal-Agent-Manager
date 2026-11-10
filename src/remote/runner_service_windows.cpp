@@ -269,6 +269,7 @@ namespace uam::remote
 		    descriptor_guard{descriptor};
 		SECURITY_ATTRIBUTES security{sizeof(security), descriptor, FALSE};
 		RunnerState state;
+		state.RemoveOrphanedSpools(); // This helper holds the endpoint lock from here on.
 		std::atomic<bool> stopping{false};
 		std::mutex dispatch_mutex;
 		Handle stop_event(CreateEventW(nullptr, TRUE, FALSE, nullptr));

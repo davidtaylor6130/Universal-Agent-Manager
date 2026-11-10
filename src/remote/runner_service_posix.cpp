@@ -340,6 +340,7 @@ namespace uam::remote
 		}
 
 		RunnerState state;
+		state.RemoveOrphanedSpools(); // This helper holds the endpoint lock from here on.
 		std::atomic<bool> shutdown_requested{false};
 		std::mutex dispatch_mutex;
 		std::vector<ClientThread> clients;
