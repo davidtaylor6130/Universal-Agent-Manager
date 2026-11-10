@@ -21,8 +21,8 @@ namespace uam::usage
 
 		// A reader polls every 30 seconds, so this covers it without keeping idle collectors busy.
 		constexpr std::int64_t kDemandWindowMs = 120000;
-		// Local: a fact shows within one pass. Machine views: receipts plus the combined hold stay inside 5 minutes.
-		const PublishIntervals kProductionIntervals{std::chrono::seconds(30), std::chrono::seconds(90), std::chrono::minutes(5)};
+		// Local: a fact shows within one pass. Whole receipt files are rewritten at most every 5 minutes.
+		const PublishIntervals kProductionIntervals{std::chrono::seconds(30), std::chrono::minutes(5), std::chrono::minutes(5)};
 		// snapshot-v1.json only seeds the view at the next launch, so it need not follow every rebuild.
 		constexpr std::chrono::minutes kLedgerPersistInterval{5};
 

@@ -53,6 +53,12 @@ namespace uam::usage
 			{ error = "Could not initialize usage storage."; database.reset(); return database; }
 			if (version == 1 && sqlite3_exec(database.get(), "BEGIN IMMEDIATE; CREATE TABLE archived_facts(identity TEXT PRIMARY KEY, created INTEGER NOT NULL, data TEXT NOT NULL) WITHOUT ROWID; CREATE INDEX archived_facts_time ON archived_facts(created); PRAGMA user_version=2; COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
 			{ error = "Could not migrate usage storage."; database.reset(); return database; }
+			// Change detection reads the rollback-journal file change counter (Store::ChangeCounter); WAL commits never advance it.
+			sqlite3_stmt* journal_raw = nullptr;
+			if (sqlite3_prepare_v2(database.get(), "PRAGMA journal_mode", -1, &journal_raw, nullptr) != SQLITE_OK) { error = "Could not inspect usage storage journal."; database.reset(); return database; }
+			Statement journal(journal_raw, sqlite3_finalize);
+			const unsigned char* mode = sqlite3_step(journal.get()) == SQLITE_ROW ? sqlite3_column_text(journal.get(), 0) : nullptr;
+			if (!mode || std::string_view(reinterpret_cast<const char*>(mode)) == "wal") { error = "Usage storage uses an unsupported journal mode."; database.reset(); return database; }
 			return database;
 		}
 

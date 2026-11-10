@@ -417,7 +417,9 @@ UAM_TEST(UsageMultiHostStreamedFactReuseRevalidatesRegressedAndRollingBounds)
 		UAM_ASSERT_EQ(initial["totals"]["records"].get<int>(), lifetime ? 1 : 0);
 		narrowed = true; host.label = "Narrowed snapshot"; history.SetHosts({host});
 		const auto rejected = WaitUsage(history, "peer", [](const nlohmann::json& value) { return !value.value("collectionError", "").empty(); });
-		UAM_ASSERT(!rejected.contains("totals"));
+		// The rejected snapshot never reaches the totals: the last good ledger stays, marked incomplete with the error.
+		UAM_ASSERT(!rejected.value("complete", true));
+		if (rejected.contains("totals")) UAM_ASSERT_EQ(rejected["totals"]["records"].get<int>(), initial["totals"]["records"].get<int>());
 		UAM_ASSERT(rejected.value("collectionError", "").find("scope") != std::string::npos);
 	}
 }
@@ -495,12 +497,14 @@ UAM_TEST(UsageMultiHostIsolatesAFailingMachineLedgerFromHealthyMachines)
 	const std::shared_ptr<const uam::usage::ReceiptSnapshot> snapshot = store.WriteReceiptSnapshot(UsageNow(), metadata, error); UAM_ASSERT(snapshot);
 	const std::string bytes = ReadFile(snapshot->path);
 	const std::string fact = bytes.substr(bytes.find('\n') + 1);
-	uam::usage::MultiHostHistory history(temp.root, EmptyLocal(temp.root), {UsageHost("good"), UsageHost("bad")},
+	std::atomic<bool> broken{false};
+	std::vector<ExecutionHost> hosts{UsageHost("good"), UsageHost("bad"), UsageHost("later")};
+	uam::usage::MultiHostHistory history(temp.root, EmptyLocal(temp.root), hosts,
 	    [&](const ExecutionHost& peer, std::stop_token, std::string&) -> std::optional<nlohmann::json>
 	    {
 		    const fs::path path = PeerSnapshotPath(temp.root, peer); fs::create_directories(path.parent_path());
-		    // The bad machine repeats an identity, which fails its ledger build every time.
-		    UAM_ASSERT(uam::io::AtomicWriteFile(path, peer.id == "bad" ? bytes + fact : bytes));
+		    // The bad machine repeats an identity, which fails its ledger build every time; the later one breaks after a good build.
+		    UAM_ASSERT(uam::io::AtomicWriteFile(path, peer.id == "bad" || (peer.id == "later" && broken) ? bytes + fact : bytes));
 		    return nlohmann::json{{"receiptSnapshotPath", uam::paths::Utf8PathString(path)}};
 	    });
 	const nlohmann::json good = WaitUsage(history, "good", [](const nlohmann::json& value) { return value.contains("totals") && !value.value("collecting", true); });
@@ -512,6 +516,12 @@ UAM_TEST(UsageMultiHostIsolatesAFailingMachineLedgerFromHealthyMachines)
 		UAM_ASSERT_EQ(history.Query("good", 7)["totals"]["totalTokens"].get<int>(), 15);
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
+	UAM_ASSERT_EQ(WaitUsage(history, "later", [](const nlohmann::json& value) { return value.contains("totals"); })["totals"]["totalTokens"].get<int>(), 15);
+	broken = true; hosts[2].label = "Broken later"; history.SetHosts(hosts);
+	// A machine whose new snapshot fails keeps its last good totals, marked incomplete with the error.
+	const nlohmann::json held = WaitUsage(history, "later", [](const nlohmann::json& value) { return !value.value("collectionError", "").empty(); });
+	UAM_ASSERT_EQ(held["totals"]["totalTokens"].get<int>(), 15);
+	UAM_ASSERT(!held.value("complete", true));
 }
 
 UAM_TEST(UsageMultiHostRebuildsADeletedCombinedStoreInsteadOfReadingItEmpty)

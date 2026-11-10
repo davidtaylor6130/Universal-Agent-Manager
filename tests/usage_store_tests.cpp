@@ -559,6 +559,20 @@ UAM_TEST(UsageCombinedLedgerKeepsExactTotalsAndIndexOrderMatchesTheSortedOrder)
 	UAM_ASSERT(indexed == sorted);
 }
 
+UAM_TEST(UsageStoreRefusesAWriteAheadLogIndex)
+{
+	TempDir temp("uam-usage-wal");
+	uam::usage::Store store(temp.root); std::string error;
+	uam::usage::Record record = StoreEvent("journal");
+	UAM_ASSERT(store.Import({{&record, "file", 0}}, error));
+	sqlite3* raw = nullptr;
+	UAM_ASSERT_EQ(sqlite3_open(store.Path().string().c_str(), &raw), SQLITE_OK);
+	UAM_ASSERT_EQ(sqlite3_exec(raw, "PRAGMA journal_mode=WAL", nullptr, nullptr, nullptr), SQLITE_OK);
+	sqlite3_close(raw);
+	UAM_ASSERT(!store.Import({{&record, "file", 0}}, error));
+	UAM_ASSERT(error.find("journal mode") != std::string::npos);
+}
+
 #if !defined(_WIN32)
 UAM_TEST(UsageReceiptSnapshotWriteFailureReportsTheSystemErrorInsteadOfAnInterruptedStream)
 {
