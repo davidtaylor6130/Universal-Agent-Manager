@@ -250,9 +250,19 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
   const boundedTailReloads = new Map<string, number>()
   const loadedMessagesDigestByChatId = new Map<string, string>()
   const messageHydrationGenerationByChatId = new Map<string, number>()
-  // One unanswered submission per chat. The window stops a deliberate repeat of the same text being mistaken for a retry.
-  const retainedSendIdsBySessionId = new Map<string, { fingerprint: string; id: string; at: number }>()
-  const SEND_RETRY_ID_WINDOW_MS = 120_000
+  // Per chat, the last composer submission whose reply never confirmed admission. Its idempotency ID belongs to that
+  // submission (the caller's token), never to its text: a new submission always gets a new ID, identical words or not.
+  type UnconfirmedSubmission = { token: string; id: string; requestIds: string[]; turnSerial: number }
+  const unconfirmedSubmissionBySessionId = new Map<string, UnconfirmedSubmission>()
+  // Native state already shows the attempt (a row or receipt carries one of its request IDs) or a later turn started,
+  // so pressing Send again is a new message. Over-retiring can deliver twice; it never swallows a new message.
+  const submissionLanded = (sessionId: string, submission: UnconfirmedSubmission) => {
+    const state = get()
+    const binding = state.acpBindingBySessionId[sessionId]
+    if ((binding?.turnSerial ?? 0) > submission.turnSerial) return true
+    return [...(state.messages[sessionId] ?? []), ...(binding?.pendingDirectPrompts ?? []), ...(binding?.unsentDirectPrompts ?? []), ...(binding?.queuedPrompts ?? [])]
+      .some((record) => typeof record.originRequestId === 'string' && submission.requestIds.includes(record.originRequestId))
+  }
   // ponytail: fixed caps for hover prefetch; tune when profiling shows memory or bridge pressure.
   const PREFETCH_MAX_IN_FLIGHT = 2
   const PREFETCH_MAX_RETAINED = 4
@@ -2846,11 +2856,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (isCefContext()) {
         const requestKey = `sendAcpPrompt:${sessionId}`
         rememberPendingRequest(requestKey, actionErrorId)
-        // Resending an unchanged message whose last attempt got no successful reply keeps its id, so native admits it once.
-        const sendFingerprint = JSON.stringify([prompt, markdownStoreFiles, attachments, steerNow])
-        const retainedSend = retainedSendIdsBySessionId.get(sessionId)
-        const sendIdempotencyId = retainedSend?.fingerprint === sendFingerprint && Date.now() - retainedSend.at < SEND_RETRY_ID_WINDOW_MS
-          ? retainedSend.id : createRequestId('send')
+        // A retry of the same unconfirmed submission keeps its ID, so native admits it once.
+        const submissionToken = onStarted?.submissionToken
+        const unconfirmed = submissionToken ? unconfirmedSubmissionBySessionId.get(sessionId) : undefined
+        const retrying = unconfirmed !== undefined && unconfirmed.token === submissionToken && !submissionLanded(sessionId, unconfirmed)
+        const sendIdempotencyId = retrying ? unconfirmed.id : createRequestId('send')
+        const turnSerialAtSend = retrying ? unconfirmed.turnSerial : (state.acpBindingBySessionId[sessionId]?.turnSerial ?? 0)
         const response = await sendToCEF({
           action: 'sendAcpPrompt',
           requestId: actionErrorId,
@@ -2866,8 +2877,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             sendIdempotencyId,
           },
         })
-        if (response.ok) retainedSendIdsBySessionId.delete(sessionId)
-        else retainedSendIdsBySessionId.set(sessionId, { fingerprint: sendFingerprint, id: sendIdempotencyId, at: Date.now() })
+        if (response.ok || !submissionToken) unconfirmedSubmissionBySessionId.delete(sessionId)
+        else unconfirmedSubmissionBySessionId.set(sessionId, { token: submissionToken, id: sendIdempotencyId,
+          requestIds: retrying ? [...unconfirmed.requestIds, actionErrorId] : [actionErrorId], turnSerial: turnSerialAtSend })
+        // Native already admitted this submission under an earlier attempt: that attempt's row is this message.
+        const admittedOrigin = response.ok && isRecord(response.data) && response.data.duplicateSend === true &&
+          typeof response.data.originRequestId === 'string' ? response.data.originRequestId : undefined
+        if (admittedOrigin) {
+          try { onStarted?.onDuplicateOf?.(admittedOrigin) }
+          catch { /* Presentation is optional and cannot change the native send outcome. */ }
+        }
         const ownsAttempt = isLatestPendingRequest(requestKey, actionErrorId)
         clearPendingRequest(requestKey, actionErrorId)
 		if (!get().sessions.some((session) => session.id === sessionId)) return false

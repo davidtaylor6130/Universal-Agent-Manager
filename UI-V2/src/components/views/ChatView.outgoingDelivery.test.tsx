@@ -269,6 +269,52 @@ describe('ChatView outgoing admission without a delivery witness', () => {
     noReplay(2)
   })
 
+  const editDraft = async (text: string) => {
+    const input = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, text)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+  const idempotencyId = (index: number) => sends()[index].payload.sendIdempotencyId
+
+  it('retries one unconfirmed submission under its idempotency ID and shows the admitted attempt once', async () => {
+    await send()
+    await act(async () => callbacks[0].fail())
+    await send()
+    expect(idempotencyId(1)).toEqual(expect.any(String))
+    expect(idempotencyId(1)).toBe(idempotencyId(0))
+    await act(async () => callbacks[1].ack({ duplicateSend: true, originRequestId: sends()[0].requestId }))
+    expect(host.querySelectorAll('[data-outgoing-message]')).toHaveLength(1)
+    expect(host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('')
+    noReplay(2)
+  })
+
+  it('starts a new submission after the draft is edited, even back to the same words', async () => {
+    await send()
+    await act(async () => callbacks[0].fail())
+    await editDraft(`${TEXT} `)
+    await editDraft(TEXT)
+    await send()
+    expect(idempotencyId(1)).not.toBe(idempotencyId(0))
+  })
+
+  it('starts a new submission once the unconfirmed attempt has visibly landed', async () => {
+    await send()
+    await act(async () => callbacks[0].fail())
+    publish([...HISTORY, { ...inputIdentity(), role: 'user', content: TEXT, attachments: [FILE], markdownStoreFiles: [SKILL.filePath], createdAt: '2026-01-02T00:00:00Z' }], {})
+    await send()
+    expect(idempotencyId(1)).not.toBe(idempotencyId(0))
+  })
+
+  it('gives the same words sent after a confirmed message their own idempotency ID', async () => {
+    await send()
+    await act(async () => callbacks[0].ack())
+    await editDraft(TEXT)
+    await send()
+    expect(idempotencyId(1)).not.toBe(idempotencyId(0))
+  })
+
   it.each(['ack-first', 'write-first'] as const)('clears dotted presentation only for this input full-write fact (%s)', async order => {
     await send(); exactResources()
     const row = host.querySelector('[data-outgoing-message]')!; const article = row.querySelector('article')!

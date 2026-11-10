@@ -57,22 +57,26 @@ UAM_TEST(SendIdempotencyWindowTracksEachSubmissionPerChat)
 {
 	using Claim = uam::cef::SendIdempotencyWindow::Claim;
 	uam::cef::SendIdempotencyWindow window;
-	UAM_ASSERT(window.Begin("chat-1", "id-1") == Claim::New);
-	UAM_ASSERT(window.Begin("chat-1", "id-1") == Claim::InProgress);
-	UAM_ASSERT(window.Begin("chat-2", "id-1") == Claim::New);
+	UAM_ASSERT(window.Begin("chat-1", "id-1", "request-a").claim == Claim::New);
+	const auto in_progress = window.Begin("chat-1", "id-1", "request-b");
+	UAM_ASSERT(in_progress.claim == Claim::InProgress);
+	UAM_ASSERT_EQ(in_progress.origin_request_id, std::string("request-a"));
+	UAM_ASSERT(window.Begin("chat-2", "id-1", "request-c").claim == Claim::New);
 	window.Settle("chat-1", "id-1", true);
-	UAM_ASSERT(window.Begin("chat-1", "id-1") == Claim::Admitted);
+	const auto admitted = window.Begin("chat-1", "id-1", "request-d");
+	UAM_ASSERT(admitted.claim == Claim::Admitted);
+	UAM_ASSERT_EQ(admitted.origin_request_id, std::string("request-a"));
 	window.Settle("chat-2", "id-1", false);
-	UAM_ASSERT(window.Begin("chat-2", "id-1") == Claim::New);
+	UAM_ASSERT(window.Begin("chat-2", "id-1", "").claim == Claim::New);
 }
 
 UAM_TEST(SendIdempotencyWindowEvictsOldestBeyondCapacity)
 {
 	using Claim = uam::cef::SendIdempotencyWindow::Claim;
 	uam::cef::SendIdempotencyWindow window;
-	UAM_ASSERT(window.Begin("chat-1", "oldest") == Claim::New);
+	UAM_ASSERT(window.Begin("chat-1", "oldest", "").claim == Claim::New);
 	window.Settle("chat-1", "oldest", true);
 	for (int index = 0; index < 256; ++index)
-		UAM_ASSERT(window.Begin("chat-1", "id-" + std::to_string(index)) == Claim::New);
-	UAM_ASSERT(window.Begin("chat-1", "oldest") == Claim::New);
+		UAM_ASSERT(window.Begin("chat-1", "id-" + std::to_string(index), "").claim == Claim::New);
+	UAM_ASSERT(window.Begin("chat-1", "oldest", "").claim == Claim::New);
 }

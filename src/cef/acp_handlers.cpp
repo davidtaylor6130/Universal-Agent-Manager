@@ -578,15 +578,18 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 		send_idempotency_id = id_it->get<std::string>();
 	if (!send_idempotency_id.empty())
 	{
-		const auto claim = m_recentSendIds.Begin(chat_id, send_idempotency_id);
-		if (claim == uam::cef::SendIdempotencyWindow::Claim::InProgress)
+		const auto claim = m_recentSendIds.Begin(chat_id, send_idempotency_id, payload.value("_uamOriginRequestId", std::string{}));
+		if (claim.claim == uam::cef::SendIdempotencyWindow::Claim::InProgress)
 		{
 			cb->Failure(409, "This message is still being sent. Check the chat before sending it again.");
 			return;
 		}
-		if (claim == uam::cef::SendIdempotencyWindow::Claim::Admitted)
+		if (claim.claim == uam::cef::SendIdempotencyWindow::Claim::Admitted)
 		{
-			cb->Success(R"({"duplicateSend":true})");
+			// The earlier attempt's request ID lets the client show that admitted row as this message.
+			nlohmann::json duplicate{{"duplicateSend", true}};
+			if (!claim.origin_request_id.empty()) duplicate["originRequestId"] = claim.origin_request_id;
+			cb->Success(duplicate.dump());
 			return;
 		}
 	}

@@ -457,11 +457,12 @@ namespace
 		{
 			handler.reset();
 		}
-		CefRefPtr<MediaCallback> Send(const nlohmann::json& attachment, const std::string& text = "New authored request", bool steer = false, const std::string& idempotency_id = "")
+		CefRefPtr<MediaCallback> Send(const nlohmann::json& attachment, const std::string& text = "New authored request", bool steer = false, const std::string& idempotency_id = "", const std::string& origin_request_id = "")
 		{
 			CefRefPtr<MediaCallback> cb = new MediaCallback;
 			nlohmann::json payload = {{"chatId", app.chats.front().id}, {"text", text}, {"attachments", attachment.is_array() ? attachment : nlohmann::json::array({attachment})}, {"steerNow", steer}};
 			if (!idempotency_id.empty()) payload["sendIdempotencyId"] = idempotency_id;
+			if (!origin_request_id.empty()) payload["_uamOriginRequestId"] = origin_request_id;
 			NativeMediaRefreshHandlerTestAccess::Send(*handler, payload, cb);
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
 			while (cb->successes + cb->failures == 0 && std::chrono::steady_clock::now() < deadline)
@@ -477,24 +478,35 @@ namespace
 UAM_TEST(NativeSendCollapsesRepeatIdempotencyIdButAdmitsNewMessageWithSameText)
 {
 	InputFixture fixture;
-	const auto admitted = fixture.Send(nlohmann::json::array(), "Same text", false, "submission-1");
+	// One submission: the first attempt is admitted, its retry names that admitted attempt instead of adding input.
+	const auto admitted = fixture.Send(nlohmann::json::array(), "continue", false, "submission-1", "request-1");
 	UAM_ASSERT_EQ(admitted->successes, 1);
 	UAM_ASSERT(!admitted->body.contains("duplicateSend"));
 	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
 
-	const auto repeat = fixture.Send(nlohmann::json::array(), "Same text", false, "submission-1");
-	UAM_ASSERT_EQ(repeat->successes, 1);
-	UAM_ASSERT_EQ(repeat->body.at("duplicateSend").get<bool>(), true);
+	const auto retry = fixture.Send(nlohmann::json::array(), "continue", false, "submission-1", "request-2");
+	UAM_ASSERT_EQ(retry->successes, 1);
+	UAM_ASSERT_EQ(retry->body.at("duplicateSend").get<bool>(), true);
+	UAM_ASSERT_EQ(retry->body.at("originRequestId").get<std::string>(), std::string("request-1"));
 	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
 
-	const auto fresh = fixture.Send(nlohmann::json::array(), "Same text", false, "submission-2");
+	// A second submission with identical text is a new message and is delivered.
+	const auto fresh = fixture.Send(nlohmann::json::array(), "continue", false, "submission-2", "request-3");
 	UAM_ASSERT_EQ(fresh->successes, 1);
+	UAM_ASSERT(!fresh->body.contains("duplicateSend"));
 	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{2});
 
-	// Clients without an id keep today's behaviour.
-	const auto unstamped = fixture.Send(nlohmann::json::array(), "Same text");
+	// Clients without an ID keep the earlier behaviour.
+	const auto unstamped = fixture.Send(nlohmann::json::array(), "continue");
 	UAM_ASSERT_EQ(unstamped->successes, 1);
 	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{3});
+
+	// After an app restart the window is empty, so a retry of an admitted submission is admitted again.
+	fixture.handler = UamQueryHandlerTestAccess::Create(fixture.app, "file:///private/index.html");
+	const auto after_restart = fixture.Send(nlohmann::json::array(), "continue", false, "submission-1", "request-4");
+	UAM_ASSERT_EQ(after_restart->successes, 1);
+	UAM_ASSERT(!after_restart->body.contains("duplicateSend"));
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{4});
 }
 
 UAM_TEST(NativeInputHandlerRejectsRecordedUnknownAndMixedMetadataWithoutQueueMutation)

@@ -23,38 +23,59 @@ beforeEach(() => {
 
 describe('queued prompt identity', () => {
   const sentIdempotencyId = () => ((bridge.send.mock.lastCall as unknown as [{ payload: { sendIdempotencyId: string } }])[0]).payload.sendIdempotencyId
+  const sentRequestId = () => ((bridge.send.mock.lastCall as unknown as [{ requestId: string }])[0]).requestId
+  const as = (submissionToken: string) => Object.assign(vi.fn(), { submissionToken })
+  const lost = { ok: false, error: 'Connection lost. Check the chat before retrying; the action may have reached UAM.' }
 
-  it('keeps one idempotency id across resends of an unanswered message and starts a new one once it lands', async () => {
+  it('keeps one idempotency ID for retries of one unconfirmed submission and reports the admitted attempt', async () => {
     bridge.cef = true
     useAppStore.setState({ sessions: [{ id: 'chat' } as never] })
-    bridge.send.mockResolvedValue({ ok: false, error: 'Connection lost. Check the chat before retrying; the action may have reached UAM.' })
-    await useAppStore.getState().sendAcpPrompt('chat', 'Same words')
+    bridge.send.mockResolvedValue(lost)
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-1'))
     const first = sentIdempotencyId()
-    expect(first).toBeTruthy()
-    await useAppStore.getState().sendAcpPrompt('chat', 'Same words')
+    const firstRequest = sentRequestId()
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-1'))
     expect(sentIdempotencyId()).toBe(first)
-    bridge.send.mockResolvedValue({ ok: true, data: { duplicateSend: true } })
-    await expect(useAppStore.getState().sendAcpPrompt('chat', 'Same words')).resolves.toBe(true)
+    bridge.send.mockResolvedValue({ ok: true, data: { duplicateSend: true, originRequestId: firstRequest } })
+    const observer = Object.assign(vi.fn(), { onDuplicateOf: vi.fn(), submissionToken: 'submission-1' })
+    await expect(useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, observer)).resolves.toBe(true)
     expect(sentIdempotencyId()).toBe(first)
-    await useAppStore.getState().sendAcpPrompt('chat', 'Same words')
-    expect(sentIdempotencyId()).not.toBe(first)
+    expect(observer.onDuplicateOf).toHaveBeenCalledWith(firstRequest)
   })
 
-  it('does not reuse an idempotency id for changed text or an expired retry window', async () => {
+  it('gives identical words in a new submission a new idempotency ID', async () => {
     bridge.cef = true
     useAppStore.setState({ sessions: [{ id: 'chat' } as never] })
-    bridge.send.mockResolvedValue({ ok: false, error: 'Backend busy' })
-    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
-    try {
-      await useAppStore.getState().sendAcpPrompt('chat', 'First words')
-      const first = sentIdempotencyId()
-      await useAppStore.getState().sendAcpPrompt('chat', 'Edited words')
-      const edited = sentIdempotencyId()
-      expect(edited).not.toBe(first)
-      now.mockReturnValue(1_000_000 + 120_000)
-      await useAppStore.getState().sendAcpPrompt('chat', 'Edited words')
-      expect(sentIdempotencyId()).not.toBe(edited)
-    } finally { now.mockRestore() }
+    bridge.send.mockResolvedValue({ ok: true })
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-1'))
+    const first = sentIdempotencyId()
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-2'))
+    expect(sentIdempotencyId()).not.toBe(first)
+    // Even an unconfirmed submission does not lend its ID to a different submission with the same words.
+    bridge.send.mockResolvedValue(lost)
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-3'))
+    const unconfirmed = sentIdempotencyId()
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-4'))
+    expect(sentIdempotencyId()).not.toBe(unconfirmed)
+    // Callers without a submission token (generated actions) never share an ID.
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue')
+    const generated = sentIdempotencyId()
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue')
+    expect(sentIdempotencyId()).not.toBe(generated)
+  })
+
+  it.each(['row', 'receipt', 'turn'] as const)('retires the ID once the unconfirmed attempt visibly landed (%s)', async (evidence) => {
+    bridge.cef = true
+    useAppStore.setState({ sessions: [{ id: 'chat' } as never], messages: { chat: [] }, acpBindingBySessionId: { chat: { turnSerial: 4, queuedPrompts: [] } as never } })
+    bridge.send.mockResolvedValue(lost)
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-1'))
+    const first = sentIdempotencyId()
+    const originRequestId = sentRequestId()
+    if (evidence === 'row') useAppStore.setState({ messages: { chat: [{ id: 'row', sessionId: 'chat', role: 'user', content: 'continue', createdAt: new Date(0), originRequestId }] } })
+    else if (evidence === 'receipt') useAppStore.setState({ acpBindingBySessionId: { chat: { turnSerial: 4, queuedPrompts: [{ ...prompt('queued', 'continue'), originRequestId }] } as never } })
+    else useAppStore.setState({ acpBindingBySessionId: { chat: { turnSerial: 5, queuedPrompts: [] } as never } })
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-1'))
+    expect(sentIdempotencyId()).not.toBe(first)
   })
 
   it.each(['error', 'offline'] as const)('lets an explicit bound-chat send and Retry reach native SSH recovery with cached %s status', async (runnerStatus) => {

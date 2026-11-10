@@ -12,8 +12,8 @@
 #include "common/config/build_features.h"
 #if UAM_ENABLE_MOBILE_COMPANION
 #include "cef/companion_server.h"
-#include "cef/send_idempotency_window.h"
 #endif
+#include "cef/send_idempotency_window.h"
 #include "common/security/permission_change_log.h"
 #include <memory>
 #include <stop_token>
