@@ -133,13 +133,17 @@ std::optional<int> RunBridgeFixture(int argc, char** argv)
 	(void)_setmode(_fileno(stdin), _O_BINARY);
 	(void)_setmode(_fileno(stdout), _O_BINARY);
 #endif
-	const auto log = [&](const char* line) { std::ofstream(argv[2], std::ios::binary | std::ios::app) << line; };
-	log("s\n");
-	std::size_t launch = 0;
+	// One file per event: appends to a shared file from several processes are not atomic on Windows.
+	const fs::path prefix = uam::paths::PathFromUtf8(argv[2]);
+	const auto log = [&](const char* event)
 	{
-		std::ifstream launches(argv[2], std::ios::binary);
-		for (std::string line; std::getline(launches, line);) launch += line == "s" ? 1 : 0;
-	}
+		const auto now = std::chrono::system_clock::now().time_since_epoch().count();
+		std::ofstream(prefix.string() + "." + std::to_string(now) + "." + std::to_string(std::random_device{}()) + "." + event) << event;
+	};
+	log("s");
+	std::size_t launch = 0;
+	for (const fs::directory_entry& entry : fs::directory_iterator(prefix.parent_path()))
+		launch += entry.path().filename().string().starts_with(prefix.filename().string() + ".") && entry.path().extension() == ".s" ? 1 : 0;
 	std::vector<std::string> behaviours;
 	for (std::string_view rest = argv[4]; !rest.empty();)
 	{
@@ -176,7 +180,7 @@ std::optional<int> RunBridgeFixture(int argc, char** argv)
 		if (type == "hello")
 		{
 			if (behaviour == "slowhello") std::this_thread::sleep_for(std::chrono::milliseconds(300));
-			log("e\n");
+			log("e");
 			response = uam::remote::HandleRunnerRequest(request, "development", &state);
 		}
 		else if (behaviour == "stall")
@@ -9410,12 +9414,20 @@ namespace
 	// Launches of the stand-in bridge, and the most that were inside a handshake at once.
 	std::pair<int, int> BridgeLaunches(const fs::path& launches)
 	{
-		int started = 0, open = 0, most = 0;
-		std::ifstream file(launches, std::ios::binary);
-		for (std::string line; std::getline(file, line);)
+		// Event files are named <log>.<time>.<unique>.<s|e>; an end sorts before a start of the same instant.
+		std::vector<std::pair<long long, bool>> events;
+		const std::string prefix = launches.filename().string() + ".";
+		for (const fs::directory_entry& entry : fs::directory_iterator(launches.parent_path()))
 		{
-			if (line == "s") { ++started; most = std::max(most, ++open); }
-			else if (line == "e") --open;
+			const std::string name = entry.path().filename().string();
+			if (name.starts_with(prefix)) events.emplace_back(std::atoll(name.c_str() + prefix.size()), entry.path().extension() == ".s");
+		}
+		std::ranges::sort(events);
+		int started = 0, open = 0, most = 0;
+		for (const auto& [time, start] : events)
+		{
+			if (start) { ++started; most = std::max(most, ++open); }
+			else --open;
 		}
 		return {started, most};
 	}
@@ -9620,7 +9632,7 @@ UAM_TEST(RemoteRunnerShutdownEndsEveryWaitAtOneInstantAndRefusesNewConnections)
 		UAM_ASSERT(!late.Connect(&error));
 		UAM_ASSERT(ElapsedSince(started) < std::chrono::milliseconds(500));
 		UAM_ASSERT_EQ(error, kClosing);
-		UAM_ASSERT(!fs::exists(temp.root / "late"));
+		UAM_ASSERT_EQ(BridgeLaunches(temp.root / "late").first, 0);
 		uam::remote::ResetRunnerShutdownForTesting();
 	}
 	std::atomic<int> waiting{0};
