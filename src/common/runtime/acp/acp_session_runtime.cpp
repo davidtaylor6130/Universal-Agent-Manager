@@ -211,7 +211,7 @@ namespace uam
 	{
 		if (!chat.acp_queued_prompts.empty() || !session.queued_user_prompts.empty())
 			return chat.acp_queue_storage_error || ProviderSwitchQueueHasClearableInput(app, chat)
-			    ? "Resume the restored queue before sending prompts."
+			    ? "Resume the held queue or remove its prompts before sending."
 			    : "This chat has held input with no control, so this message was not sent. Change the chat's provider and accept the warning, then send again.";
 		if (!chat.messages_loaded)
 			return "This chat's held input could not be confirmed, so the message was not sent and the hold was kept to protect it.";
@@ -227,7 +227,7 @@ namespace uam
 			return "This chat's session reset has not finished, so the message was not sent. Change the chat's provider to start a new session, then send again.";
 		if (std::ranges::any_of(chat.messages, &Message::AcpPromptAwaitsDecision))
 			return "An earlier message is still marked as not sent but cannot be removed, so this one was not sent. Change the chat's provider to start a new session, then send again.";
-		return "Resume the restored queue before sending prompts.";
+		return "Resume the held queue or remove its prompts before sending.";
 	}
 	static void RevokePendingEmptyHeldSend(AppState& app, const std::string& chat_id, bool successor = false);
 	static ChatSession PendingSaveMetadata(ChatSession& chat);
@@ -2304,7 +2304,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (session.queued_rollback_save_pending)
 			{
 				if (error_out)
-					*error_out = "The restored queue is waiting for its complete history to be saved.";
+					*error_out = "The held queue is waiting for its complete history to be saved.";
 				return false;
 			}
 			if (chat.acp_queue_storage_error)
@@ -4160,7 +4160,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		AcpSessionState& session = EnsureAcpSessionForChat(app, *chat);
 		if (session.queue_held)
 		{
-			if (error_out != nullptr) *error_out = "Resume the restored queue before steering.";
+			if (error_out != nullptr) *error_out = "Resume the held queue before steering.";
 			return false;
 		}
 		if (uam::AcpSessionHasDeferredUserQueueOnly(session))
@@ -4590,7 +4590,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 		if (session->queue_held)
 		{
-			if (error_out != nullptr) *error_out = "Resume the restored queue before steering.";
+			if (error_out != nullptr) *error_out = "Resume the held queue before steering.";
 			return false;
 		}
 		if (uam::compute_pools::IsWaiting(*session, GetAppTimeSeconds()))
@@ -4646,7 +4646,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		};
 		if (chat == nullptr || session == nullptr || chat->imported_read_only || !session->queue_held)
-			return reject("Restored queue is no longer held. Refresh the queue.");
+			return reject("The queue is no longer held. Refresh the queue.");
 		if (ChatIsRetiringRemoteHelper(*chat))
 			return reject("UAM is stopping the previous process on this host. Resume these messages once the host is reachable and that has finished.");
 		if (HasUncertainClaudeQuotaInput(*chat))
@@ -4686,7 +4686,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 		}
 		if (session->queued_rollback_save_pending && !SaveChatQuietly(app, *chat, AcpChatSavePurpose::PreserveQueuedIntent))
-			return reject("The restored queue could not be fully saved. Its input remains held.");
+			return reject("The held queue could not be fully saved. Its input remains held.");
 		const bool referenced_local_queue = chat->execution_host_id == execution_hosts::kLocalHostId &&
 		    app.settings.central_provider_configuration.enabled &&
 		    std::ranges::any_of(queue, [](const AcpQueuedUserPromptState& prompt) { return prompt.existing_user_message_index >= 0; });
@@ -6298,8 +6298,23 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session->reconnect_not_before_time_s = GetAppTimeSeconds();
 			chat->remote_stop_cleanup_pending = true;
 			// The confirmed stop must not release queued input the user cancelled behind.
-			if (preserve_queued_prompts && hold_preserved_queue && !session->queued_user_prompts.empty())
-				session->queue_held = chat->acp_queue_held = true;
+			if (preserve_queued_prompts && hold_preserved_queue)
+			{
+				// A session created just now for this cancel has not loaded the chat's unheld saved queue.
+				if (session->queued_user_prompts.empty())
+				{
+					const std::size_t dispatched = std::min(chat->acp_dispatched_queued_prompt_count, chat->acp_queued_prompts.size());
+					for (std::size_t index = dispatched; index < chat->acp_queued_prompts.size(); ++index)
+						if (!chat->acp_queued_prompts[index].prepared_for_delivery && chat->acp_queued_prompts[index].claude_quota_continuation_id.empty())
+							session->queued_user_prompts.push_back(chat->acp_queued_prompts[index]);
+				}
+				if (!session->queued_user_prompts.empty())
+				{
+					session->queue_held = chat->acp_queue_held = true;
+					// A missing-process confirmation finalises with this flag; without it the held queue becomes Not sent rows.
+					session->restart_after_remote_stop_cleanup = true;
+				}
+			}
 			if (!acp_detail::SaveChatQuietly(app, *chat))
 				acp_detail::ScheduleChatSave(app, *chat, 0.0);
 			if (error_out != nullptr)

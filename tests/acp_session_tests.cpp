@@ -10969,42 +10969,83 @@ UAM_TEST(AcpCancelTurnHoldsQueuedInputIncludingDispatchedFrontAndGoalTurns)
 
 UAM_TEST(AcpCancelTurnOnDisconnectedSshTurnHoldsQueueUntilStopIsConfirmed)
 {
-	TempDir temp("uam-acp-cancel-holds-ssh");
-	uam::AppState app;
-	app.data_root = temp.root;
-	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-	ChatSession chat;
-	chat.id = "chat-cancel-ssh";
-	chat.provider_id = app.provider_profiles.front().id;
-	chat.execution_host_id = "remote-host";
-	chat.remote_turn_reconnect_pending = true;
-	for (const std::string& text : {"Remote queued one", "Remote queued two"})
-	{
-		uam::AcpQueuedUserPromptState prompt;
-		prompt.id = text;
-		prompt.revision = 1;
-		prompt.text = text;
-		chat.acp_queued_prompts.push_back(prompt);
-	}
-	app.chats.push_back(chat);
-	auto owned = std::make_unique<uam::AcpSessionState>();
-	owned->chat_id = chat.id;
-	owned->provider_id = chat.provider_id;
-	owned->queued_user_prompts.assign(chat.acp_queued_prompts.begin(), chat.acp_queued_prompts.end());
-	uam::AcpSessionState& session = *owned;
-	app.acp_sessions.push_back(std::move(owned));
+	// Route: the reattached helper stops gracefully (reconnect's preserving stop), or the stop proxy reports the
+	// process missing. Session: already restored with its queue, or created by this cancel from an unheld saved queue.
+	for (const bool missing_process : {false, true})
+		for (const bool fresh_session : {false, true})
+		{
+			TempDir temp("uam-acp-cancel-holds-ssh");
+			uam::AppState app;
+			app.data_root = temp.root;
+			app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+			ChatSession chat;
+			chat.id = "chat-cancel-ssh";
+			chat.provider_id = "gemini-cli";
+			chat.execution_host_id = "remote-host";
+			chat.remote_turn_reconnect_pending = true;
+			for (const std::string& text : {"Remote queued one", "Remote queued two"})
+			{
+				uam::AcpQueuedUserPromptState prompt;
+				prompt.id = text;
+				prompt.revision = 1;
+				prompt.text = text;
+				chat.acp_queued_prompts.push_back(prompt);
+			}
+			app.chats.push_back(chat);
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+			if (!fresh_session)
+			{
+				auto owned = std::make_unique<uam::AcpSessionState>();
+				owned->chat_id = chat.id;
+				owned->provider_id = chat.provider_id;
+				owned->queued_user_prompts.assign(chat.acp_queued_prompts.begin(), chat.acp_queued_prompts.end());
+				app.acp_sessions.push_back(std::move(owned));
+			}
 
-	std::string error;
-	UAM_ASSERT(!uam::CancelAcpTurn(app, chat.id, &error, true, true, true));
-	UAM_ASSERT_EQ(error, std::string("The remote turn is disconnected. Reconnecting to confirm it stops."));
-	UAM_ASSERT(session.remote_stop_unconfirmed);
-	UAM_ASSERT(session.queue_held && app.chats.front().acp_queue_held);
-	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{2});
-	UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.size(), std::size_t{2});
-	uam::FlushPendingChatSaves(app, true);
-	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
-	UAM_ASSERT(saved.has_value() && saved->acp_queue_held && saved->remote_stop_cleanup_pending);
-	UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{2});
+			std::string error;
+			UAM_ASSERT(!uam::CancelAcpTurn(app, chat.id, &error, true, true, true));
+			UAM_ASSERT_EQ(error, std::string("The remote turn is disconnected. Reconnecting to confirm it stops."));
+			uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat.id);
+			UAM_ASSERT(session != nullptr);
+			UAM_ASSERT(session->remote_stop_unconfirmed);
+			UAM_ASSERT(session->queue_held && app.chats.front().acp_queue_held);
+			UAM_ASSERT_EQ(session->queued_user_prompts.size(), std::size_t{2});
+			UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.size(), std::size_t{2});
+			uam::FlushPendingChatSaves(app, true);
+			const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			UAM_ASSERT(saved.has_value() && saved->acp_queue_held && saved->remote_stop_cleanup_pending);
+			UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{2});
+
+			// Reconnect reattaches to the stop proxy, then the stop is confirmed.
+#if defined(_WIN32)
+			const std::vector<std::string> argv = missing_process
+			    ? std::vector<std::string>{"cmd.exe", "/d", "/s", "/c", "echo The remote process does not exist. 1>&2 & exit /b 70"}
+			    : std::vector<std::string>{"cmd.exe", "/d", "/s", "/c", "set /p line= & exit /b 0"};
+#else
+			const std::vector<std::string> argv = missing_process
+			    ? std::vector<std::string>{"/bin/sh", "-c", "printf 'The remote process does not exist.\\n' >&2; exit 70"}
+			    : std::vector<std::string>{"/bin/sh", "-c", "IFS= read -r line; exit 0"};
+#endif
+			UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, argv, &error));
+			session->running = true;
+			if (!missing_process) (void)uam::StopAcpSession(app, chat.id, uam::AcpStopPurpose::Interrupt, true);
+			for (int attempt = 0; attempt < 500 && (app.chats.front().remote_stop_cleanup_pending || session->running); ++attempt)
+			{
+				(void)uam::PollAllAcpSessions(app);
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+			UAM_ASSERT(!session->running && !session->remote_stop_unconfirmed);
+			UAM_ASSERT(!app.chats.front().remote_stop_cleanup_pending);
+			UAM_ASSERT(session->queue_held && app.chats.front().acp_queue_held);
+			UAM_ASSERT_EQ(session->queued_user_prompts.size(), std::size_t{2});
+			UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.size(), std::size_t{2});
+			UAM_ASSERT(std::ranges::none_of(app.chats.front().messages, [](const Message& message) { return message.acp_prompt_not_sent; }));
+			UAM_ASSERT(session->queued_prompt.empty() && !session->processing);
+			uam::FlushPendingChatSaves(app, true);
+			const std::optional<ChatSession> confirmed = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			UAM_ASSERT(confirmed.has_value() && confirmed->acp_queue_held && !confirmed->remote_stop_cleanup_pending);
+			UAM_ASSERT_EQ(confirmed->acp_queued_prompts.size(), std::size_t{2});
+		}
 }
 
 UAM_TEST(AcpRecallPrefaceIsSentOncePerChatBeforeFollowup)

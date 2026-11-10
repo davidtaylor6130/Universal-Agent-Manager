@@ -104,6 +104,15 @@ struct ChatIconHandlerTestAccess
 		return handler.DispatchAction(action, nullptr, payload, callback);
 	}
 
+	/// The real cancelAcpTurn route, dispatched as the desktop window or as the phone companion.
+	static bool CancelTurnRequest(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback, bool companion)
+	{
+		handler.m_dispatchingCompanion = companion;
+		const bool dispatched = handler.DispatchAction("cancelAcpTurn", nullptr, payload, callback);
+		handler.m_dispatchingCompanion = false;
+		return dispatched;
+	}
+
 	static void InstallRemoteHost(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback, int64_t query)
 	{
 		handler.m_remoteInstallQueryIdentities[callback.get()] = {-1, "", query};
@@ -169,6 +178,54 @@ UAM_TEST(ChatIconHandlerLatestFailureRollsBackExactlyOnce)
 	UAM_ASSERT_EQ(callback->failures, 1); UAM_ASSERT_EQ(callback->last_failure, 500);
 	uam::ResolvePendingChatSaveResults(app, "chat", false);
 	DrainIconHandlerSaves(app); UAM_ASSERT_EQ(callback->failures, 1); UAM_ASSERT_EQ(callback->successes, 0);
+}
+
+UAM_TEST(CancelTurnRequestHoldsDesktopQueueButKeepsCompanionDiscard)
+{
+	for (const bool companion : {false, true})
+	{
+		TempDir temp("uam-cancel-turn-request");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatSession chat;
+		chat.id = "chat-cancel";
+		chat.provider_id = "gemini-cli";
+		for (const std::string& text : {"Queued one", "Queued two"})
+		{
+			uam::AcpQueuedUserPromptState prompt;
+			prompt.id = text;
+			prompt.revision = 1;
+			prompt.text = text;
+			chat.acp_queued_prompts.push_back(prompt);
+		}
+		app.chats.push_back(chat);
+		auto owned = std::make_unique<uam::AcpSessionState>();
+		owned->chat_id = chat.id;
+		owned->provider_id = chat.provider_id;
+		owned->processing = true;
+		owned->queued_user_prompts.assign(chat.acp_queued_prompts.begin(), chat.acp_queued_prompts.end());
+		uam::AcpSessionState& session = *owned;
+		app.acp_sessions.push_back(std::move(owned));
+		auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+		CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+		UAM_ASSERT(ChatIconHandlerTestAccess::CancelTurnRequest(*handler_owner, {{"chatId", chat.id}}, callback, companion));
+		UAM_ASSERT_EQ(callback->successes, 1);
+		UAM_ASSERT_EQ(callback->failures, 0);
+		UAM_ASSERT(!session.processing);
+		if (companion)
+		{
+			// The phone has no Resume control, so its cancel keeps the earlier discard until the owner decides.
+			UAM_ASSERT(session.queued_user_prompts.empty() && app.chats.front().acp_queued_prompts.empty());
+			UAM_ASSERT(!session.queue_held && !app.chats.front().acp_queue_held);
+		}
+		else
+		{
+			UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{2});
+			UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.size(), std::size_t{2});
+			UAM_ASSERT(session.queue_held && app.chats.front().acp_queue_held);
+		}
+	}
 }
 
 UAM_TEST(ChatIconHandlerSupersededCancellationCannotRollbackNewerIntent)
