@@ -562,7 +562,7 @@ namespace
 
 UAM_TEST(AcpLocalStopReachesIdleFromEveryStateWithoutLosingTranscript)
 {
-	for (const std::string state : {"hung", "ignoring-cancel", "approval-pending", "tool-running", "queue", "held-queue", "goal-active", "save-failing", "held-queue-save-failing", "pending-save", "native-children"})
+	for (const std::string state : {"hung", "ignoring-cancel", "approval-pending", "tool-running", "queue", "held-queue", "goal-active", "save-failing", "pending-save", "native-children"})
 	{
 		for (const uam::AcpStopPurpose purpose : {uam::AcpStopPurpose::Timeout, uam::AcpStopPurpose::Interrupt})
 		{
@@ -659,7 +659,6 @@ UAM_TEST(AcpLocalStopReachesIdleFromEveryStateWithoutLosingTranscript)
 				UAM_ASSERT(as_row || as_queue);
 			}
 			if (state == "goal-active") UAM_ASSERT(uam::GoalService::FindGoalById(app, chat.id, goal_id) != nullptr);
-			if (state == "held-queue-save-failing") continue; // Held input is unchanged in memory; nothing new needed saving.
 			if (state == "save-failing")
 			{
 				// The unsaved history is still owned by the retrying save; the chat is not held "stopping" behind it.

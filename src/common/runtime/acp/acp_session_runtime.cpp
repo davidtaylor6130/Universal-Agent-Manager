@@ -7063,19 +7063,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		std::string held_discard_error;
-		bool held_queue_kept = false;
+		// A held queue whose discard cannot be saved (or is stale) refuses this Stop and stays held: the discard
+		// owns durable queue state, and the next Stop retries it once that state is current.
 		if (!preserve_held_queue && !DiscardHeldQueue(app, *session, chat, true, &held_discard_error))
 		{
-			if (chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId)
-			{
-				app.status_line = held_discard_error;
-				return false;
-			}
-			// A local stop is not refused because held prompts could not be recorded as interrupted rows: the failed
-			// attempt restored them, and they stay held, unchanged, while the process stops.
-			preserve_held_queue = held_queue_kept = true;
+			app.status_line = held_discard_error;
+			return false;
 		}
-		if (preserve_held_queue && session->queue_held && !held_queue_kept) session->restart_after_remote_stop_cleanup = true;
+		if (preserve_held_queue && session->queue_held) session->restart_after_remote_stop_cleanup = true;
 		const bool recoverable_remote_turn = chat != nullptr &&
 		    chat->remote_turn_reconnect_pending && uam::AcpSessionHasActiveTurn(*session);
 		const bool remote = session->running && chat != nullptr &&
