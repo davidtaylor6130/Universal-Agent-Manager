@@ -1,12 +1,15 @@
 #include "test_harness.h"
+#include <set>
 #include "common/chat/chat_repository.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/app_time.h"
 
 using namespace uam_test;
 
 namespace uam
 {
 	bool PendingChatSavePreparationForTests(const AppState&, const std::string&, bool&);
+	bool TranscriptWorkerBoundBusyForTests(const AppState&);
 }
 
 namespace
@@ -50,6 +53,27 @@ namespace
 		{
 			const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, "stall-chat", true, nullptr, false);
 			return saved && !saved->messages.empty() ? saved->messages.back().content : std::string();
+		}
+		std::string SavedRow(std::size_t index) const
+		{
+			const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, "stall-chat", true, nullptr, false);
+			return saved && index < saved->messages.size() ? saved->messages[index].content : std::string();
+		}
+		// Polls until a snapshot has been captured and its preparation is running or parked.
+		void AwaitCapture()
+		{
+			bool ready = false;
+			const Clock::time_point deadline = Clock::now() + std::chrono::seconds(60);
+			while (!uam::PendingChatSavePreparationForTests(app, "stall-chat", ready) && Clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(app); std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+			UAM_ASSERT(uam::PendingChatSavePreparationForTests(app, "stall-chat", ready));
+		}
+		void Stream(const std::string& text)
+		{
+			Chat().messages.back().content += text;
+			uam::acp_detail::ScheduleChatSave(app, Chat(), 0.0, true);
 		}
 		void Drain()
 		{
@@ -132,21 +156,14 @@ UAM_TEST(ChatSaveStallMeasurements)
 UAM_TEST(AtomicWriteDoesNotScaleWithDirectoryEntries)
 {
 	TempDir temporary{"uam-atomic-write-budget"};
-	double elapsed[2] = {};
-	int slot = 0;
-	for (const int entries : {10, 4000})
-	{
-		const fs::path directory = temporary.root / std::to_string(entries);
-		FillDirectory(directory, entries);
-		const fs::path target = directory / "target.json";
-		UAM_ASSERT(uam::io::WriteTextFileWithBackup(target, "first"));
-		UAM_ASSERT(uam::io::WriteTextFileWithBackup(target, "second"));
-		const Clock::time_point start = Clock::now();
-		for (int write = 0; write < 100; ++write) UAM_ASSERT(uam::io::WriteTextFileWithBackup(target, "content " + std::to_string(write)));
-		elapsed[slot++] = MsSince(start);
-	}
-	// Before the fix each write listed and inspected every neighbour twice: 4,000 entries cost many times 10.
-	UAM_ASSERT(elapsed[1] <= elapsed[0] * 2.0 + 1000.0);
+	FillDirectory(temporary.root, 4000);
+	const fs::path target = temporary.root / "target.json";
+	UAM_ASSERT(uam::io::WriteTextFileWithBackup(target, "first"));
+	const std::uint64_t before = uam::io::AtomicTempSweepEntriesExamined().load();
+	for (int write = 0; write < 100; ++write) UAM_ASSERT(uam::io::WriteTextFileWithBackup(target, "content " + std::to_string(write)));
+	// Before the fix each write looked at every neighbour twice: 800,000 entries here. Now the directory
+	// was listed once by the first write, and at most once more if ten minutes passed.
+	UAM_ASSERT(uam::io::AtomicTempSweepEntriesExamined().load() - before <= 4100);
 }
 
 UAM_TEST(AtomicWriteRemovesOnlyAbandonedTempsOfItsDestination)
@@ -269,31 +286,35 @@ UAM_TEST(ChatSaveFailureSurfacesOnceAndBacksOff)
 	SaveStallFixture fixture(4, 64);
 	const fs::path primary = AppPaths::UamChatFilePath(fixture.app.data_root, "stall-chat");
 	fs::rename(primary, fixture.temporary.root / "preserved.json"); fs::create_directory(primary);
-	fixture.Chat().messages.back().content += " unsaved output";
-	uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 0.0, true);
-	const auto poll_for = [&](std::chrono::milliseconds duration)
+	fixture.Stream(" unsaved output");
+	const auto attempts = [&] { const auto found = fixture.app.chat_save_failures_by_chat_id.find("stall-chat"); return found == fixture.app.chat_save_failures_by_chat_id.end() ? 0 : found->second.attempts; };
+	const auto poll_until_attempts = [&](int wanted)
 	{
-		const Clock::time_point until = Clock::now() + duration;
-		while (Clock::now() < until)
+		const Clock::time_point deadline = Clock::now() + std::chrono::seconds(30);
+		while (attempts() < wanted && Clock::now() < deadline)
 		{
 			// The stream keeps producing output while the disk refuses it.
 			uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 0.5, true);
-			uam::FlushPendingChatSaves(fixture.app); std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			uam::FlushPendingChatSaves(fixture.app); std::this_thread::sleep_for(std::chrono::milliseconds(2));
 		}
+		UAM_ASSERT_EQ(attempts(), wanted);
 	};
-	poll_for(std::chrono::milliseconds(300));
+	poll_until_attempts(1);
 	UAM_ASSERT_EQ(fixture.app.status_line, std::string(uam::acp_detail::kChatSaveFailedStatus));
-	UAM_ASSERT_EQ(fixture.app.chat_save_failures_by_chat_id.at("stall-chat").attempts, 1);
-	// Told once: later failures of the same streak neither repeat the status nor retry every second.
+	const double first_wait = fixture.app.chat_save_failures_by_chat_id.at("stall-chat").retry_at - uam::GetAppTimeSeconds();
+	UAM_ASSERT(first_wait > 0.0 && first_wait <= 1.0);
+	// A burst of synchronous saves that fail before the retry is due is the same failure, not five more.
+	for (int save = 0; save < 5; ++save) UAM_ASSERT(!uam::acp_detail::SaveChatQuietly(fixture.app, fixture.Chat()));
+	UAM_ASSERT_EQ(attempts(), 1);
+	// Told once: the scheduled retry fails quietly and doubles the wait.
 	fixture.app.status_line.clear();
-	poll_for(std::chrono::milliseconds(3500));
+	poll_until_attempts(2);
 	UAM_ASSERT(fixture.app.status_line.empty());
-	const int attempts = fixture.app.chat_save_failures_by_chat_id.at("stall-chat").attempts;
-	UAM_ASSERT(attempts >= 2 && attempts <= 3); // 1 s, then 2 s, then 4 s apart; 1 Hz would have made 4 or 5.
+	UAM_ASSERT(fixture.app.chat_save_failures_by_chat_id.at("stall-chat").retry_at - uam::GetAppTimeSeconds() > 1.5);
 	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains("stall-chat")); // Still owed, never marked clean.
-	// The quit barrier tries once more and leaves the failure on record rather than dropping it.
+	// The quit barrier tries again and leaves the failure on record rather than dropping it.
 	uam::FlushPendingChatSaves(fixture.app, true);
-	UAM_ASSERT(fixture.app.chat_save_failures_by_chat_id.at("stall-chat").attempts > attempts);
+	UAM_ASSERT_EQ(attempts(), 2);
 	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains("stall-chat"));
 
 	fs::remove(primary); fs::rename(fixture.temporary.root / "preserved.json", primary);
@@ -301,4 +322,152 @@ UAM_TEST(ChatSaveFailureSurfacesOnceAndBacksOff)
 	fixture.Drain();
 	UAM_ASSERT(fixture.app.chat_save_failures_by_chat_id.empty());
 	UAM_ASSERT_EQ(fixture.SavedTail(), fixture.Chat().messages.back().content);
+}
+
+UAM_TEST(ChatSaveRecordsDoNotOutliveDeletedChat)
+{
+	SaveStallFixture fixture(4, 64);
+	fixture.Stream(" saved once");
+	fixture.Drain();
+	UAM_ASSERT(fixture.app.chat_save_pace_by_chat_id.contains("stall-chat") && !fixture.app.saved_chat_rows.empty());
+	(void)uam::acp_detail::NoteChatSaveFailed(fixture.app, "stall-chat");
+	UAM_ASSERT_EQ(fixture.app.status_line, std::string(uam::acp_detail::kChatSaveFailedStatus));
+	fixture.app.acp_sessions.clear(); fixture.app.chats.clear();
+	fixture.app.chat_save_records_pruned_at = uam::GetAppTimeSeconds() - 10.0;
+	uam::FlushPendingChatSaves(fixture.app);
+	UAM_ASSERT(fixture.app.chat_save_failures_by_chat_id.empty() && fixture.app.chat_save_pace_by_chat_id.empty() && fixture.app.saved_chat_rows.empty());
+	UAM_ASSERT(fixture.app.status_line.empty());
+}
+
+UAM_TEST(ChatSaveRefusalIsNotReportedAsStorageFailure)
+{
+	SaveStallFixture fixture(4, 64);
+	fixture.Chat().managed_followup_incarnation = "not-a-uuid";
+	UAM_ASSERT(!uam::acp_detail::SaveChatQuietly(fixture.app, fixture.Chat()));
+	UAM_ASSERT_EQ(fixture.app.status_line, std::string(uam::acp_detail::kChatSaveRefusedStatus));
+	fixture.Chat().managed_followup_incarnation.clear();
+	UAM_ASSERT(uam::acp_detail::SaveChatQuietly(fixture.app, fixture.Chat()));
+	UAM_ASSERT(fixture.app.status_line.empty() && fixture.app.chat_save_failures_by_chat_id.empty());
+}
+
+UAM_TEST(ZeroDelayUpdatesRewriteTranscriptAtMostTwiceASecond)
+{
+	SaveStallFixture fixture(50, 1024);
+	std::set<double> finished;
+	const Clock::time_point start = Clock::now();
+	while (Clock::now() - start < std::chrono::seconds(3))
+	{
+		// Tool status and plan rows arrive far faster than this small transcript takes to write.
+		fixture.Chat().messages.back().content += "t";
+		uam::acp_detail::SaveChatSoon(fixture.app, fixture.Chat());
+		uam::FlushPendingChatSaves(fixture.app);
+		if (const auto pace = fixture.app.chat_save_pace_by_chat_id.find("stall-chat"); pace != fixture.app.chat_save_pace_by_chat_id.end()) finished.insert(pace->second.finished_at);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	// One rewrite at once, then no sooner than half a second after each finishes: at most 7 in 3 s.
+	UAM_ASSERT(finished.size() >= 2 && finished.size() <= 7);
+	fixture.Drain();
+	UAM_ASSERT_EQ(fixture.SavedTail(), fixture.Chat().messages.back().content);
+}
+
+UAM_TEST(UpdatesToEarlierRowReachDiskWhileTheyContinue)
+{
+	SaveStallFixture fixture(2000, 6 * 1024);
+	// A tool row with later rows after it (a steer, a sub-agent row), updated faster than one preparation.
+	const std::size_t row = fixture.Chat().messages.size() - 3;
+	std::size_t updates = 0;
+	const Clock::time_point start = Clock::now();
+	Clock::time_point next = start;
+	while (Clock::now() - start < std::chrono::seconds(5))
+	{
+		if (Clock::now() >= next)
+		{
+			fixture.Chat().messages[row].content += "U"; ++updates;
+			uam::acp_detail::SaveChatSoon(fixture.app, fixture.Chat());
+			next += std::chrono::milliseconds(5);
+		}
+		uam::FlushPendingChatSaves(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	const std::string saved = fixture.SavedRow(row);
+	const std::size_t on_disk = static_cast<std::size_t>(std::ranges::count(saved, 'U'));
+	UAM_ASSERT(on_disk > 0 && on_disk < updates);
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains("stall-chat"));
+	fixture.Drain();
+	UAM_ASSERT_EQ(fixture.SavedRow(row), fixture.Chat().messages[row].content);
+}
+
+UAM_TEST(OlderSnapshotDoesNotReplaceNewerSummaryOverlay)
+{
+	SaveStallFixture fixture(2000, 6 * 1024);
+	fixture.Stream("S");
+	fixture.AwaitCapture();
+	// The user opens the chat: the summary overlay is written directly, with no save revocation.
+	fixture.Chat().last_opened_at = "2026-11-10T09:09:09Z";
+	UAM_ASSERT(ChatRepository::SaveLastOpenedAt(fixture.app.data_root, fixture.Chat(), false));
+	fixture.Stream("S");
+	const auto saved_last_opened = [&]
+	{
+		for (const ChatSession& summary : ChatRepository::LoadLocalChatSummariesReadOnly(fixture.app.data_root))
+			if (summary.id == "stall-chat") return summary.last_opened_at;
+		return std::string();
+	};
+	const Clock::time_point deadline = Clock::now() + std::chrono::seconds(120);
+	while (!fixture.app.pending_chat_save_at_by_chat_id.empty() && Clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(fixture.app);
+		UAM_ASSERT_EQ(saved_last_opened(), std::string("2026-11-10T09:09:09Z"));
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
+	UAM_ASSERT_EQ(fixture.SavedTail(), fixture.Chat().messages.back().content);
+}
+
+UAM_TEST(SynchronousSaveWinsOverOlderSnapshotInFlight)
+{
+	SaveStallFixture fixture(2000, 6 * 1024);
+	fixture.Stream("A");
+	fixture.AwaitCapture();
+	fixture.Stream("B");
+	fixture.Chat().messages.back().content += "C";
+	UAM_ASSERT(uam::acp_detail::SaveChatQuietly(fixture.app, fixture.Chat()));
+	UAM_ASSERT_EQ(fixture.SavedTail(), fixture.Chat().messages.back().content);
+	// The snapshot captured at "A" finishes preparing afterwards and must not be published over "ABC".
+	const Clock::time_point until = Clock::now() + std::chrono::seconds(3);
+	while (Clock::now() < until || !fixture.app.pending_chat_save_tasks.empty())
+	{
+		uam::FlushPendingChatSaves(fixture.app); std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		UAM_ASSERT(Clock::now() < until + std::chrono::seconds(120));
+	}
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
+	UAM_ASSERT_EQ(fixture.SavedTail(), fixture.Chat().messages.back().content);
+}
+
+UAM_TEST(ForceBarrierWinsOverOlderSnapshotInFlight)
+{
+	SaveStallFixture fixture(2000, 6 * 1024);
+	fixture.Stream("A");
+	fixture.AwaitCapture();
+	fixture.Stream("B");
+	uam::FlushPendingChatSaves(fixture.app, true);
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
+	UAM_ASSERT_EQ(fixture.SavedTail(), fixture.Chat().messages.back().content);
+	for (int poll = 0; poll < 500; ++poll) { uam::FlushPendingChatSaves(fixture.app); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+	UAM_ASSERT_EQ(fixture.SavedTail(), fixture.Chat().messages.back().content);
+}
+
+UAM_TEST(FinishedSaveResultDoesNotOccupyTranscriptWorkerBound)
+{
+	SaveStallFixture fixture(2000, 6 * 1024);
+	fixture.Stream("A");
+	fixture.AwaitCapture();
+	bool ready = false;
+	// While the preparation runs it is the one transcript worker; once its result only waits to be
+	// collected (as it does for a chat the poll skips), it must not stop another chat's save from starting.
+	if (uam::PendingChatSavePreparationForTests(fixture.app, "stall-chat", ready) && !ready) UAM_ASSERT(uam::TranscriptWorkerBoundBusyForTests(fixture.app));
+	const Clock::time_point deadline = Clock::now() + std::chrono::seconds(120);
+	while (uam::PendingChatSavePreparationForTests(fixture.app, "stall-chat", ready) && !ready && Clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	UAM_ASSERT(ready);
+	UAM_ASSERT(!uam::TranscriptWorkerBoundBusyForTests(fixture.app));
+	fixture.Drain();
 }

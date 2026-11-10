@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -305,6 +306,13 @@ namespace uam::io
 		}
 	}
 
+	/// <summary>Directory entries the abandoned-temporary sweeps have looked at; lets a test bound the work per write.</summary>
+	inline std::atomic<std::uint64_t>& AtomicTempSweepEntriesExamined()
+	{
+		static std::atomic<std::uint64_t> examined{0};
+		return examined;
+	}
+
 	/// <summary>Removes one atomic temporary abandoned for at least 24 hours; returns whether it is gone.</summary>
 	inline bool RemoveAbandonedAtomicTempNoThrow(const std::filesystem::path& temp_path)
 	{
@@ -340,6 +348,7 @@ namespace uam::io
 		     it.increment(error))
 		{
 			const std::filesystem::directory_entry& entry = *it;
+			++AtomicTempSweepEntriesExamined();
 			// Name first: a chats directory holds thousands of entries and a stat each is the whole cost.
 			if (!uam::paths::Utf8PathString(entry.path().filename()).starts_with(prefix)) continue;
 			RemoveAbandonedAtomicTempNoThrow(entry.path());
@@ -372,6 +381,7 @@ namespace uam::io
 			     !error && it != end;
 			     it.increment(error))
 			{
+				++AtomicTempSweepEntriesExamined();
 				std::string name = uam::paths::Utf8PathString(it->path().filename());
 				if (name.find(kTempWritePathSuffix) != std::string::npos) listing.temp_names.push_back(std::move(name));
 			}

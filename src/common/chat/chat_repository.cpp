@@ -3941,16 +3941,20 @@ private:
 	std::function<bool(ChatPublicationFile, uam::io::AtomicWriteStage)> m_stopped_creation_hook;
 };
 
+bool ChatRepository::ChatContentRefusesSave(const ChatSession& chat)
+{
+	return (!chat.managed_followup_incarnation.empty() && !uam::uuid::IsCanonicalUuid(chat.managed_followup_incarnation)) ||
+	    !std::ranges::all_of(chat.acp_queued_prompts, ValidManagedPrompt) ||
+	    !uam::chat_ids::IsSafeStorageChatId(chat.id) || !ChatAttachmentsPersistable(chat);
+}
+
 bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged, PreparedChatSave* prepared, std::string* fingerprint, std::string* saved_revision, PreparedChatPublication* publication, SavedChatPrimaryWitness* primary_witness)
 try
 {
 	std::unique_lock<std::mutex> lock(ChatSaveMutex(), std::defer_lock);
 	if (prepared == nullptr && fingerprint == nullptr) lock.lock();
 
-	if ((fingerprint == nullptr && chat.managed_followup_input_unavailable) ||
-	    (!chat.managed_followup_incarnation.empty() && !uam::uuid::IsCanonicalUuid(chat.managed_followup_incarnation)) ||
-	    !std::ranges::all_of(chat.acp_queued_prompts, ValidManagedPrompt) ||
-	    !uam::chat_ids::IsSafeStorageChatId(chat.id) || !ChatAttachmentsPersistable(chat))
+	if ((fingerprint == nullptr && chat.managed_followup_input_unavailable) || ChatContentRefusesSave(chat))
 	{
 		return false;
 	}

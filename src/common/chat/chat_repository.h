@@ -231,6 +231,8 @@ class ChatRepository
 	/// <summary>Captures primary-file metadata without reading transcript bodies; missing files have a stable revision.</summary>
 	static std::optional<std::string> ChatStorageRevision(const std::filesystem::path& data_root, std::string_view chat_id);
 	static std::optional<std::string> ChatSummaryStorageRevision(const std::filesystem::path& data_root, std::string_view chat_id);
+	/// <summary>True when the chat's own content is refused before any file is written, so the cause is not storage.</summary>
+	static bool ChatContentRefusesSave(const ChatSession& chat);
 	/// <summary>Publishes prepared files after the caller validates current chat and deletion state.</summary>
 	/// Optional primary observation is DATA only: Rejected before write admission,
 	/// Uncertain after admission without confirmation, Committed on the atomic receipt.

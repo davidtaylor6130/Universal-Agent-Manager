@@ -1498,6 +1498,7 @@ namespace uam
 		// Consecutive failed transcript saves per chat: told to the user once, then retried with backoff.
 		struct ChatSaveFailure { int attempts = 0; double retry_at = 0.0; };
 		std::unordered_map<std::string, ChatSaveFailure> chat_save_failures_by_chat_id;
+		double chat_save_records_pruned_at = 0.0;
 		// Rows of the most recently saved transcripts, reused as the next save's unchanged prefix so each
 		// burst does not read and parse the whole file again. Only ever compared against live rows.
 		std::vector<std::pair<std::string, std::vector<std::shared_ptr<const Message>>>> saved_chat_rows;
