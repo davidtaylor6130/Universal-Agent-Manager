@@ -4728,7 +4728,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return reject("The queue is no longer held. Refresh the queue.");
 		// The cancelled turn settles only when its stop is confirmed; resuming earlier could relaunch it first.
 		if (session->remote_stop_unconfirmed)
-			return reject("Wait for the stop to be confirmed, then resume the queue.");
+			return reject("UAM is stopping the previous process on this host. Resume these messages once the host is reachable and that has finished.");
 		if (ChatIsRetiringRemoteHelper(*chat))
 			return reject("UAM is stopping the previous process on this host. Resume these messages once the host is reachable and that has finished.");
 		if (HasUncertainClaudeQuotaInput(*chat))

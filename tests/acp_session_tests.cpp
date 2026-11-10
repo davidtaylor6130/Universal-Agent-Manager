@@ -11037,7 +11037,7 @@ UAM_TEST(AcpCancelTurnOnDisconnectedSshTurnHoldsQueueUntilStopIsConfirmed)
 			{
 				const std::vector<std::pair<std::string, int>> expected = {{"Remote queued one", 1}, {"Remote queued two", 1}};
 				UAM_ASSERT(!uam::ResumeQueuedAcpPrompts(app, chat.id, expected, &error));
-				UAM_ASSERT_EQ(error, std::string("Wait for the stop to be confirmed, then resume the queue."));
+				UAM_ASSERT_EQ(error, std::string("UAM is stopping the previous process on this host. Resume these messages once the host is reachable and that has finished."));
 				UAM_ASSERT(session->queue_held && app.chats.front().acp_queue_held);
 				UAM_ASSERT_EQ(session->queued_user_prompts.size(), std::size_t{2});
 			}
