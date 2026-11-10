@@ -823,7 +823,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const stageChatAttachments = useAppStore((s) => s.stageChatAttachments)
   const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
   // Generated actions take already-formed input; user-authored sends explicitly supply their frozen references.
-  const sendSubmittedPrompt = useCallback(async (chatId: string, submittedText: string, attachments?: Attachment[], steerNow?: boolean) => {
+  const sendSubmittedPrompt = useCallback(async (chatId: string, submittedText: string, attachments?: Attachment[], steerNow?: boolean, submissionToken?: string) => {
     // Display only: an idle direct send occupies its transcript slot before ACK and keeps it after settling. It never enters
     // messages[] or ACP state; ACK records admission only, and a failed request stays visible as unconfirmed.
     const state = useAppStore.getState()
@@ -865,6 +865,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         message: identity.message, managedOriginRunId, associated: true,
       } }]]))
     }
+    onStarted.submissionToken = submissionToken
+    // Native had already admitted this submission under an earlier attempt: that attempt's row is this message,
+    // so every earlier unconfirmed row of the submission retires and this attempt takes the admitted correlation.
+    onStarted.onDuplicateOf = (originRequestId, earlierRequestIds) => {
+      if (!attempt) return
+      const sameSubmission = new Set([originRequestId, ...earlierRequestIds])
+      const earlier = readOutgoingAttempts(scope).filter((candidate) => candidate.key !== attempt.key &&
+        candidate.actionCorrelationId !== undefined && sameSubmission.has(candidate.actionCorrelationId))
+      updateOutgoingAttempts(scope, new Map<string, Partial<OutgoingAttempt>>([
+        ...earlier.map((candidate) => [candidate.key, { retired: true }] as [string, Partial<OutgoingAttempt>]),
+        [attempt.key, { actionCorrelationId: originRequestId }],
+      ]))
+    }
     let accepted = false
     try {
       accepted = await sendAcpPrompt(chatId, submittedText, attachments, steerNow, onStarted)
@@ -874,11 +887,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
     return accepted
   }, [sendAcpPrompt])
-  const sendCapturedComposerPrompt = useCallback(async (submission: ComposerReferenceSubmission, text: string, attachments?: Attachment[], steerNow?: boolean) => {
+  const sendCapturedComposerPrompt = useCallback(async (submission: ComposerReferenceSubmission, text: string, attachments?: Attachment[], steerNow?: boolean, submissionToken?: string) => {
     if (!composerReferenceSubmissionIsCurrent(submission)) return false
     const context = formatContextReferences(submission.references)
     const submittedText = context ? `${text}\n\n${context}` : text
-    const accepted = await sendSubmittedPrompt(submission.chatId, submittedText, attachments, steerNow)
+    const accepted = await sendSubmittedPrompt(submission.chatId, submittedText, attachments, steerNow, submissionToken)
     if (accepted) {
       acknowledgeComposerReferences(submission)
       // A newer admitted send resolves earlier not-sent guidance, but only for the chat this view still shows.
@@ -888,9 +901,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
     return accepted
   }, [sendSubmittedPrompt])
-  const sendComposerPrompt = useCallback(async (chatId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => {
+  const sendComposerPrompt = useCallback(async (chatId: string, text: string, attachments?: Attachment[], steerNow?: boolean, submissionToken?: string) => {
     const submission = captureComposerReferenceSubmission(chatId)
-    return submission ? sendCapturedComposerPrompt(submission, text, attachments, steerNow) : false
+    return submission ? sendCapturedComposerPrompt(submission, text, attachments, steerNow, submissionToken) : false
   }, [sendCapturedComposerPrompt])
   const getVcsCommitStatus = useAppStore((s) => s.getVcsCommitStatus)
   const getVcsFileDiff = useAppStore((s) => s.getVcsFileDiff)
@@ -1022,6 +1035,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const dictationSubmitAfterStopRef = useRef<false | { steerOverride?: boolean }>(false)
   const submitDictatedPromptRef = useRef<(prompt: string, steerOverride?: boolean) => void>(() => {})
   const submitInFlightRef = useRef(false)
+  // The composer submission a retry belongs to; see handleSubmit. Any draft or attachment edit retires it.
+  const composerSubmissionRef = useRef<{ chatId: string; token: string } | null>(null)
+  const composerAttachmentKey = composerAttachments.map((attachment) => attachment.id).join('\n')
+  useEffect(() => { composerSubmissionRef.current = null }, [draft, composerAttachmentKey, session.id])
   const previousComposerIdentityRef = useRef({ id: session.id, birth: sessionBirth })
   const abandonedBirthSubmission = previousComposerIdentityRef.current.id === session.id &&
     previousComposerIdentityRef.current.birth !== sessionBirth && submitInFlightRef.current
@@ -1790,14 +1807,18 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     submitInFlightRef.current = true
     setSubmitting(true)
     if (steerNow) setSteering(true)
+    // Pressing Send again on the retained, unedited draft retries this submission; an edit or a new chat starts another.
+    const submission = composerSubmissionRef.current?.chatId === submittedSessionId ? composerSubmissionRef.current
+      : (composerSubmissionRef.current = { chatId: submittedSessionId, token: createRequestId('submission') })
     let ok = false
     try {
       ok = await (steerNow
-        ? sendComposerPrompt(session.id, prompt, readyAttachments, true)
-        : sendComposerPrompt(session.id, prompt, readyAttachments))
+        ? sendComposerPrompt(session.id, prompt, readyAttachments, true, submission.token)
+        : sendComposerPrompt(session.id, prompt, readyAttachments, undefined, submission.token))
     } catch {
       ok = false
     }
+    if (ok && composerSubmissionRef.current === submission) composerSubmissionRef.current = null
     const acknowledgedSession = useAppStore.getState().sessions.find((candidate) => candidate.id === submittedSessionId)
     if (ok && acknowledgedSession?.createdAt.getTime() === submittedBirth) {
       acknowledgeChatComposerDraft(submittedSessionId, submittedBirth, { text: draft, attachments: readyAttachments })

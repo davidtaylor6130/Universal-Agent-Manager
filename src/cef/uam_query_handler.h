@@ -13,6 +13,7 @@
 #if UAM_ENABLE_MOBILE_COMPANION
 #include "cef/companion_server.h"
 #endif
+#include "cef/send_idempotency_window.h"
 #include "common/security/permission_change_log.h"
 #include <memory>
 #include <stop_token>
@@ -88,6 +89,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 #endif
 	// Workers hold weak references so queued callbacks cannot outlive this handler.
 	std::shared_ptr<void> m_asyncLifetime = std::make_shared<char>();
+	uam::cef::SendIdempotencyWindow m_recentSendIds;
 	struct ChatIconOperation
 	{
 		std::atomic<bool> cancelled{false};

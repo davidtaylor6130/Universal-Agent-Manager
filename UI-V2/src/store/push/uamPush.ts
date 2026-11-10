@@ -12,23 +12,23 @@ export function parseUamPushPayload(payload: unknown): ParsedPushResult {
       raw = JSON.parse(raw)
     } catch (err) {
       const reason = err instanceof Error ? err.message : 'unknown parse failure'
-      return { ok: false, status: 'parse-error', error: `JSON parse failed: ${reason}` }
+      return { ok: false, status: 'parse-error', error: `JSON parse failed: ${reason}`, mayHaveCarriedState: true }
     }
   }
 
   if (!isRecord(raw)) {
-    return { ok: false, status: 'invalid-message', error: 'Payload is not an object.' }
+    return { ok: false, status: 'invalid-message', error: 'Payload is not an object.', mayHaveCarriedState: true }
   }
 
   const type = raw.type
   if (!isString(type) || type.trim().length === 0) {
-    return { ok: false, status: 'invalid-message', error: 'Missing message type.' }
+    return { ok: false, status: 'invalid-message', error: 'Missing message type.', mayHaveCarriedState: true }
   }
 
   if (type === 'stateUpdate') {
     const sanitized = sanitizeCppAppState(raw.data)
     if (!sanitized) {
-      return { ok: false, status: 'invalid-message', error: 'stateUpdate.data does not match CppAppState shape.' }
+      return { ok: false, status: 'invalid-message', error: 'stateUpdate.data does not match CppAppState shape.', mayHaveCarriedState: true }
     }
     return { ok: true, message: { type, data: sanitized } }
   }
@@ -36,7 +36,7 @@ export function parseUamPushPayload(payload: unknown): ParsedPushResult {
   if (type === 'statePatch') {
     const sanitized = sanitizeCppStatePatch(raw.data)
     if (!sanitized) {
-      return { ok: false, status: 'invalid-message', error: 'statePatch.data does not match CppStatePatch shape.' }
+      return { ok: false, status: 'invalid-message', error: 'statePatch.data does not match CppStatePatch shape.', mayHaveCarriedState: true }
     }
     return { ok: true, message: { type, data: sanitized } }
   }

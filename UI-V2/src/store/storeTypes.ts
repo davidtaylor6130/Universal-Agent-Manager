@@ -75,6 +75,11 @@ export type GoalCreateResult = MutationResult & { goalId?: string }
 /** Optional presentation observation only; action result, child controls and delivery authority remain separate. */
 export type AcpPromptPresentationObserver = ((identity: { requestId: string; sessionId: string; createdAtMs: number }) => void) & {
   onInputRecorded?: (identity: { requestId: string; sessionId: string; createdAtMs: number; message: Message }) => void
+  /** This attempt repeated a submission native had already admitted under the earlier attempt's request ID;
+   *  `earlierRequestIds` are every earlier attempt of the same submission. */
+  onDuplicateOf?: (originRequestId: string, earlierRequestIds: readonly string[]) => void
+  /** Identifies one composer submission; the same token is passed only to retry that submission. */
+  submissionToken?: string
 }
 
 export interface AppState extends VoiceInputSettings, VcsStorageSettings {
