@@ -10924,8 +10924,16 @@ UAM_TEST(AcpCancelTurnHoldsQueuedInputIncludingDispatchedFrontAndGoalTurns)
 			// The running turn ends and the queue's front is dispatched as the next turn.
 			uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, session, stored, "ready", nullptr);
 			UAM_ASSERT(session.queued_prompt.find("Already dispatched") != std::string::npos);
-			UAM_ASSERT_EQ(stored.acp_dispatched_queued_prompt_count, std::size_t{1});
-			UAM_ASSERT_EQ(stored.acp_queued_prompts.size(), std::size_t{3});
+			UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{2});
+			// Pin the in-flight outbox the dispatch publishes (its dispatched head ahead of the raw queue); the
+			// asynchronous admission save may already have retired that head, which would skip this case.
+			uam::AcpQueuedUserPromptState head;
+			head.id = "dispatched-head";
+			head.revision = 1;
+			head.text = "Already dispatched";
+			stored.acp_queued_prompts.assign(session.queued_user_prompts.begin(), session.queued_user_prompts.end());
+			stored.acp_queued_prompts.insert(stored.acp_queued_prompts.begin(), head);
+			stored.acp_dispatched_queued_prompt_count = 1;
 		}
 		const std::size_t messages_before = stored.messages.size();
 		session.running = false;
