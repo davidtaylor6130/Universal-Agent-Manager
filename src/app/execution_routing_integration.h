@@ -16,8 +16,9 @@ namespace uam
 	bool ExecutionRoutingOwnsWork(const AppState& app, const ChatSession& chat);
 	bool RestoreExecutionRoutingReservations(AppState& app);
 	bool PollExecutionRouting(AppState& app);
-	/// Contacts hosts whose last health check failed, off the app thread and with a growing delay.
-	/// A contact restores Ready. Never stops or starts a remote process.
+	/// Contacts hosts whose last health check failed and hosts holding a reservation restored without its
+	/// owning work, off the app thread and with a growing delay. A contact restores Ready; the helper's own
+	/// "no such process" releases the reservation. Never stops or starts a remote process.
 	bool PollRemoteHostRecovery(AppState& app);
 	/// Clears only local admission metadata after an explicit acknowledgement. Never stops a remote process.
 	bool ReleaseUnresolvedExecutionRouting(AppState& app, const ExecutionRoutingAssignment& expected, bool acknowledged, std::string& error);

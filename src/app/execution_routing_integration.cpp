@@ -501,6 +501,21 @@ namespace uam
 			wanted.insert(key);
 			if (PollRemoteHostProbe(app, key, host, {}, now) == RemoteHostProbeOutcome::Reachable) changed = MarkRemoteHostReachable(app, host) || changed;
 		}
+		for (const std::string& chat_id : std::vector<std::string>(app.execution_routing_restored_unresolved_chat_ids.begin(), app.execution_routing_restored_unresolved_chat_ids.end()))
+		{
+			const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+			if (chat == nullptr || ExecutionRoutingOwnsWork(app, *chat)) continue;
+			const ExecutionHost* found = execution_hosts::Find(app.settings.execution_hosts, chat->execution_host_id);
+			if (found == nullptr || found->id == execution_hosts::kLocalHostId || !remote::CanAttemptRunnerConnection(*found)) continue;
+			const ExecutionHost host = *found;
+			const std::string key = "owner:" + chat_id;
+			wanted.insert(key);
+			const RemoteHostProbeOutcome outcome = PollRemoteHostProbe(app, key, host, "acp-" + chat_id, now);
+			if (outcome == RemoteHostProbeOutcome::Reachable || outcome == RemoteHostProbeOutcome::SessionMissing) changed = MarkRemoteHostReachable(app, host) || changed;
+			// Only the helper's own "no such process" releases. An unreachable host or a process that still exists keeps the manual release.
+			std::string error;
+			if (outcome == RemoteHostProbeOutcome::SessionMissing) changed = ReleaseUnresolvedExecutionRouting(app, AssignmentForChat(*chat), true, error) || changed;
+		}
 		// A contact still in flight is kept so this thread never waits for it.
 		std::erase_if(app.remote_host_probes, [&wanted](const std::pair<const std::string, std::shared_ptr<RemoteHostProbeTask>>& probe)
 		{ return !wanted.contains(probe.first) && !(probe.second->worker && probe.second->outcome.load(std::memory_order_acquire) == RemoteHostProbeOutcome::Pending); });

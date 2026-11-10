@@ -830,4 +830,62 @@ UAM_TEST(ExecutionRoutingStartsTheVersionCheckItWaitsOn)
 	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(excluded, excluded.chats.front()).status, uam::ExecutionRoutingStatus::Waiting);
 	UAM_ASSERT(!excluded.runtime_cli_version_check_task.running);
 }
+
+UAM_TEST(ExecutionRoutingRestoredReservationReleasesOnlyWhenTheHelperReportsNoProcess)
+{
+	TempDir temp("uam-routing-restored-release");
+	uam::AppState original;
+	ConfigureRoutingFixture(original, temp.root);
+	const ChatSession fresh = original.chats.front();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(original, original.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+	uam::AppState restored;
+	ConfigureRoutingFixture(restored, temp.root);
+	restored.chats.front() = original.chats.front();
+	ChatSession next = fresh;
+	next.id = "next-chat";
+	restored.chats.push_back(next);
+	std::shared_ptr<std::atomic<int>> answer = std::make_shared<std::atomic<int>>(static_cast<int>(uam::RemoteHostProbeOutcome::Unreachable));
+	std::shared_ptr<std::mutex> asked_mutex = std::make_shared<std::mutex>();
+	std::shared_ptr<std::string> asked = std::make_shared<std::string>();
+	restored.remote_host_probe = [answer, asked_mutex, asked](const ExecutionHost&, const std::string& session_id, std::stop_token)
+	{
+		std::scoped_lock lock(*asked_mutex);
+		*asked = session_id;
+		return static_cast<uam::RemoteHostProbeOutcome>(answer->load());
+	};
+	UAM_ASSERT(uam::RestoreExecutionRoutingReservations(restored));
+	const std::string chat_id = restored.chats.front().id;
+	UAM_ASSERT(restored.execution_routing_restored_unresolved_chat_ids.contains(chat_id));
+	const auto probe = [&restored, &chat_id]() -> uam::RemoteHostProbeTask* { const auto found = restored.remote_host_probes.find("owner:" + chat_id); return found == restored.remote_host_probes.end() ? nullptr : found->second.get(); };
+	const auto answered = [&] { return probe() != nullptr && !probe()->worker && probe()->delay_s > 0.0; };
+	// An unreachable host proves nothing about its processes.
+	UAM_ASSERT(PollRemoteHostRecoveryUntil(restored, answered));
+	{
+		std::scoped_lock lock(*asked_mutex);
+		UAM_ASSERT_EQ(*asked, "acp-" + chat_id);
+	}
+	UAM_ASSERT(restored.execution_routing_restored_unresolved_chat_ids.contains(chat_id));
+	UAM_ASSERT(restored.chats.front().routing_reservation_pending);
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(restored, restored.chats.back()).status, uam::ExecutionRoutingStatus::Waiting);
+	// Neither does a host that answers while the process still exists.
+	answer->store(static_cast<int>(uam::RemoteHostProbeOutcome::Reachable));
+	probe()->retry_at_s = 0.0;
+	probe()->delay_s = 0.0;
+	UAM_ASSERT(PollRemoteHostRecoveryUntil(restored, answered));
+	UAM_ASSERT(restored.execution_routing_restored_unresolved_chat_ids.contains(chat_id));
+	UAM_ASSERT(restored.chats.front().routing_reservation_pending);
+	// The helper's own "no such process" releases the reservation and its slot.
+	answer->store(static_cast<int>(uam::RemoteHostProbeOutcome::SessionMissing));
+	probe()->retry_at_s = 0.0;
+	UAM_ASSERT(PollRemoteHostRecoveryUntil(restored, [&] { return !restored.execution_routing_restored_unresolved_chat_ids.contains(chat_id); }));
+	UAM_ASSERT(!restored.chats.front().routing_reservation_pending);
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(restored.data_root, chat_id);
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT(!persisted->routing_reservation_pending);
+	UAM_ASSERT_EQ(persisted->execution_host_id, std::string("remote"));
+	restored.execution_routing_retry_at_by_chat_id.clear();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(restored, restored.chats.back()).status, uam::ExecutionRoutingStatus::Assigned);
+	restored.execution_routing_retry_at_by_chat_id.clear();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(restored, restored.chats.front()).status, uam::ExecutionRoutingStatus::Waiting);
+}
 #endif
