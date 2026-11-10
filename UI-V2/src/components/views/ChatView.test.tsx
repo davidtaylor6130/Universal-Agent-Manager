@@ -10524,7 +10524,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    if (path === '/companion') expect(discover).toHaveBeenCalledWith('chat-1')
+    if (path === '/companion') expect(discover).toHaveBeenCalledWith('chat-1', '', '', '', true)
     else expect(discover).not.toHaveBeenCalled()
 
     const selector = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement
@@ -10585,7 +10585,7 @@ describe('ChatView', () => {
       expect(textarea.value).toBe(savedDraft.text)
       await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Select provider and model"]')!.click())
       expect(discover).toHaveBeenCalledTimes(1)
-      expect(discover).toHaveBeenCalledWith('', 'opencode-cli', workspaceDirectory, expectedHost)
+      expect(discover).toHaveBeenCalledWith('', 'opencode-cli', workspaceDirectory, expectedHost, true)
       expect(host.querySelector('.uam-composer-textarea')).toBe(textarea)
       expect(textarea.value).toBe(savedDraft.text)
       expect(readChatComposerDraft(session.id)).toEqual(savedDraft)
