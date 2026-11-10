@@ -2162,13 +2162,35 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	if (session.pending_prompt_delivery && session.pending_prompt_delivery->remote_host)
 	{
 		const std::shared_ptr<PendingAcpPromptDelivery> packet = session.pending_prompt_delivery;
-		if (!OwnsPromptAdmission(app, session, chat, *packet) || packet->admission == DurableAdmissionState::Failed)
+		if (session.running)
 		{
-			RestorePendingPromptDelivery(session, chat);
-			ScheduleChatSave(app, chat, 0.0);
+			if (!OwnsPromptAdmission(app, session, chat, *packet) || packet->admission == DurableAdmissionState::Failed)
+			{
+				RestorePendingPromptDelivery(session, chat);
+				ScheduleChatSave(app, chat, 0.0);
+			}
+			if (error_out != nullptr) *error_out = "Remote prompt is waiting for its owned durable receipt.";
+			return false;
 		}
-		if (error_out != nullptr) *error_out = "Remote prompt is waiting for its owned durable receipt.";
-		return false;
+		// Only the running process a packet was staged for releases it, and transport happens after that release.
+		// Its process is gone, so the packet was never written and no receipt can still deliver it: return it to
+		// the user as unsent instead of holding every relaunch behind a wait that cannot end.
+		const bool same_turn = packet->turn_serial == session.turn_serial && packet->prompt == session.queued_prompt;
+		RestorePendingPromptDelivery(session, chat);
+		ScheduleChatSave(app, chat, 0.0);
+		if (same_turn)
+		{
+			session.reconnect_pending = false;
+			session.reconnect_not_before_time_s = 0.0;
+			session.last_error = "The remote connection closed before this prompt was sent. Send it again.";
+			session.queue_held = chat.acp_queue_held = true;
+			session.goal_resume_suppressed = true;
+			AppendAcpDiagnostic(session, "persistence", "staged_prompt_returned_unsent", "", "", false, 0, session.last_error);
+			CompletePromptTurn(session, kAcpLifecycleError);
+			if (error_out != nullptr) *error_out = session.last_error;
+			return false;
+		}
+		// A packet from an earlier turn has nothing waiting on it; this launch continues.
 	}
 
 	if (session.local_stop_pending)

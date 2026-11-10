@@ -727,8 +727,13 @@ namespace uam
 			++session.reconnect_attempts;
 			const std::string message = uam::strings::NonEmptyOrFallback(
 			    error, "Structured runtime reconnect failed.");
-			const bool recovering_helper_process =
-			    session.recovering_remote_turn || session.recovering_remote_process;
+			// A prompt that never reached the connection has no remote turn to protect, so its relaunch is
+			// bounded like any other launch. A staged or possibly written prompt keeps the unbounded recovery.
+			const bool untransported_prompt = session.processing && session.prompt_request_id == 0 &&
+			    !session.queued_prompt.empty() && !session.pending_prompt_delivery && chat.remote_prompt_delivery_id.empty() &&
+			    !session.recovering_remote_process && !session.remote_stop_unconfirmed;
+			const bool recovering_helper_process = !untransported_prompt &&
+			    (session.recovering_remote_turn || session.recovering_remote_process);
 			if (recovering_helper_process ||
 			    session.reconnect_attempts < kAcpReconnectMaxAttempts)
 			{
@@ -825,6 +830,16 @@ namespace uam
 			{
 				return false;
 			}
+			// Background discovery reattaches only to stop a helper process it could not confirm stopped. Every attach
+			// counts, so a cleanup that never confirms ends instead of relaunching for as long as the app runs.
+			if (session.ephemeral_model_discovery && session.reconnect_attempts >= kAcpReconnectMaxAttempts)
+			{
+				// Releasing the unconfirmed stop lets the completed-discovery sweep retire this session and its chat.
+				session.reconnect_pending = false;
+				session.remote_stop_unconfirmed = false;
+				session.recovering_remote_process = false;
+				return true;
+			}
 			// A helper update on this host owns its runner until it commits or rolls back; recovery reattach would
 			// otherwise race the install (#771); it retries once the host is ready again.
 			// The wait does not use a reconnect attempt; Settings shows the host as installing.
@@ -907,6 +922,7 @@ namespace uam
 				session.reconnect_pending = false;
 				session.reconnect_not_before_time_s = 0.0;
 				AppendAcpDiagnostic(session, "reconnect", "started", "", "", false, 0, "Structured runtime reconnected.");
+				if (session.ephemeral_model_discovery) ++session.reconnect_attempts;
 				if (session.remote_stop_unconfirmed && chat.remote_stop_cleanup_pending)
 					(void)StopAcpSession(app, chat.id, AcpStopPurpose::Interrupt, true);
 				return true;
@@ -8238,12 +8254,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 				}
 				else
 				{
-					if (remote_source_exit || remote_startup_rejected)
+					// The relaunch attempt above may itself have returned the undelivered prompt as unsent.
+					if (remote_source_exit || remote_startup_rejected || (undelivered_prompt && remote_turn_recovery && !session.processing))
 					{
 						session.reconnect_pending = false;
 						session.reconnect_not_before_time_s = 0.0;
 					}
-					else if (recovering_remote_process)
+					else if (recovering_remote_process || (undelivered_prompt && remote_turn_recovery))
 					{
 						RecordAcpReconnectFailure(app, session, chat, GetAppTimeSeconds(),
 						                          session.last_error);
@@ -8317,13 +8334,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    [&session](const ChatSession& chat) { return chat.id == session->chat_id; });
 			if (discovery != app.model_discovery_chats.end() && discovery->execution_host_id != execution_hosts::kLocalHostId &&
 			    execution_hosts::Find(app.settings.execution_hosts, discovery->execution_host_id) != nullptr &&
-			    discovery->remote_process_exists && !discovery->remote_process_control_token.empty())
+			    discovery->remote_process_exists && !discovery->remote_process_control_token.empty() &&
+			    session->reconnect_attempts < kAcpReconnectMaxAttempts)
 			{
 				// A proxy exit cannot discard authority over its surviving discovery process.
 				PreserveFailedRemoteStop(app, *session, false);
 				changed = true;
 				continue;
 			}
+			if (session->reconnect_attempts >= kAcpReconnectMaxAttempts)
+				diagnostics::Write("Background model discovery cleanup ended after bounded reattach attempts: " + session->provider_id);
 			completed_ephemeral_ids.insert(session->chat_id);
 		}
 		if (!completed_ephemeral_ids.empty())
