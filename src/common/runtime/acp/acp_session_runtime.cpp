@@ -4478,8 +4478,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const std::vector<AcpQueuedUserPromptState> previous_outbox = chat->acp_queued_prompts;
 		const std::size_t previous_dispatched = chat->acp_dispatched_queued_prompt_count;
 		const bool previous_chat_held = chat->acp_queue_held;
+		const bool previous_restart_after_stop = session->restart_after_remote_stop_cleanup;
 		session->queued_user_prompts.erase(session->queued_user_prompts.begin() + static_cast<std::ptrdiff_t>(index));
 		if (session->queued_user_prompts.empty()) session->queue_held = false;
+		// A cancelled remote turn kept this flag only to preserve its held queue. With nothing left to hold, the
+		// confirmed stop must finalise instead of relaunching the cancelled turn.
+		if (session->queued_user_prompts.empty() && session->remote_stop_unconfirmed && !chat->remote_restart_pending)
+			session->restart_after_remote_stop_cleanup = false;
 		const std::array<int, 4> previous_indices = ClearRemovedTranscriptIndices(*session, removed_tail);
 		if (removed_tail >= 0)
 		{
@@ -4493,6 +4498,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			RestoreTranscriptIndices(*session, previous_indices);
 			if (previous_chat) *chat = *previous_chat;
 			session->queue_held = previous_held;
+			session->restart_after_remote_stop_cleanup = previous_restart_after_stop;
 			chat->acp_queue_held = previous_chat_held;
 			session->queued_user_prompts = previous_queue;
 			chat->acp_queued_prompts = previous_outbox;

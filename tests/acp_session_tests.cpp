@@ -10880,8 +10880,11 @@ UAM_TEST(AcpQueuedUserPromptsPreserveFifoPayloadAndBeatGoalReview)
 
 UAM_TEST(AcpCancelTurnHoldsQueuedInputIncludingDispatchedFrontAndGoalTurns)
 {
-	for (const bool dispatched_front : {false, true})
+	// 0: queued behind the running turn; 1: front dispatched through the real drain, with whatever outbox the
+	// asynchronous admission save has left; 2: the same with the in-flight outbox pinned (dispatched head, count 1).
+	for (const int mode : {0, 1, 2})
 	{
+		const bool dispatched_front = mode != 0;
 		TempDir temp("uam-acp-cancel-holds-queue");
 		const fs::path workspace = temp.root / "workspace";
 		fs::create_directories(workspace);
@@ -10925,8 +10928,11 @@ UAM_TEST(AcpCancelTurnHoldsQueuedInputIncludingDispatchedFrontAndGoalTurns)
 			uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, session, stored, "ready", nullptr);
 			UAM_ASSERT(session.queued_prompt.find("Already dispatched") != std::string::npos);
 			UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{2});
+		}
+		if (mode == 2)
+		{
 			// Pin the in-flight outbox the dispatch publishes (its dispatched head ahead of the raw queue); the
-			// asynchronous admission save may already have retired that head, which would skip this case.
+			// asynchronous admission save may already have retired that head in mode 1.
 			uam::AcpQueuedUserPromptState head;
 			head.id = "dispatched-head";
 			head.revision = 1;
@@ -10981,6 +10987,7 @@ UAM_TEST(AcpCancelTurnOnDisconnectedSshTurnHoldsQueueUntilStopIsConfirmed)
 	// process missing. Session: already restored with its queue, or created by this cancel from an unheld saved queue.
 	for (const bool missing_process : {false, true})
 		for (const bool fresh_session : {false, true})
+		for (const bool remove_all : {false, true})
 		{
 			TempDir temp("uam-acp-cancel-holds-ssh");
 			uam::AppState app;
@@ -11023,6 +11030,14 @@ UAM_TEST(AcpCancelTurnOnDisconnectedSshTurnHoldsQueueUntilStopIsConfirmed)
 			const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
 			UAM_ASSERT(saved.has_value() && saved->acp_queue_held && saved->remote_stop_cleanup_pending);
 			UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{2});
+			if (remove_all)
+			{
+				// Remove stays available while the host is unreachable; emptying the hold must not leave a relaunch armed.
+				UAM_ASSERT(uam::RemoveQueuedAcpPrompt(app, chat.id, 0, &error, std::make_pair(std::string("Remote queued one"), 1)));
+				UAM_ASSERT(uam::RemoveQueuedAcpPrompt(app, chat.id, 0, &error, std::make_pair(std::string("Remote queued two"), 1)));
+				UAM_ASSERT(session->queued_user_prompts.empty() && !session->queue_held);
+				UAM_ASSERT(!session->restart_after_remote_stop_cleanup);
+			}
 
 			// Reconnect reattaches to the stop proxy, then the stop is confirmed.
 #if defined(_WIN32)
@@ -11044,6 +11059,15 @@ UAM_TEST(AcpCancelTurnOnDisconnectedSshTurnHoldsQueueUntilStopIsConfirmed)
 			}
 			UAM_ASSERT(!session->running && !session->remote_stop_unconfirmed);
 			UAM_ASSERT(!app.chats.front().remote_stop_cleanup_pending);
+			// The cancelled turn is finalised: no relaunch is scheduled and nothing is pending delivery.
+			UAM_ASSERT(!session->reconnect_pending && !session->restart_after_remote_stop_cleanup);
+			if (remove_all)
+			{
+				UAM_ASSERT(session->queued_user_prompts.empty() && app.chats.front().acp_queued_prompts.empty());
+				UAM_ASSERT(!session->queue_held && !app.chats.front().acp_queue_held);
+				UAM_ASSERT(session->queued_prompt.empty() && !session->processing);
+				continue;
+			}
 			UAM_ASSERT(session->queue_held && app.chats.front().acp_queue_held);
 			UAM_ASSERT_EQ(session->queued_user_prompts.size(), std::size_t{2});
 			UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.size(), std::size_t{2});
