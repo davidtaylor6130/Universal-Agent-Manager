@@ -1724,21 +1724,81 @@ UAM_TEST(PendingOperationGatesNeverRefuseSelectionReadsOrStops)
 	UAM_ASSERT(PendingOperationRefusal("sendAcpPrompt", false, false, false).empty());
 }
 
-UAM_TEST(RejectedDeletionCommitFencesOnlyItsOwnFolders)
+UAM_TEST(RejectedDeletionFencesOnlyWhatItOwns)
 {
-	using uam::cef::RestartDeletionFolderRefusal;
-	const std::unordered_set<std::string> pending = {"folder-pending-restart"};
-	const std::string_view refused = "Wait for workspace deletion to finish.";
-	// Nothing new may be placed in a folder whose deletion completes at restart.
-	UAM_ASSERT_EQ(RestartDeletionFolderRefusal("createSession", {{"folderId", "folder-pending-restart"}}, pending), refused);
-	UAM_ASSERT_EQ(RestartDeletionFolderRefusal("moveChatWorkspace", {{"chatId", "other"}, {"folderId", "folder-pending-restart"}}, pending), refused);
-	UAM_ASSERT_EQ(RestartDeletionFolderRefusal("deleteFolders", {{"folderIds", nlohmann::json::array({"another", "folder-pending-restart"})}}, pending), refused);
-	// Every other chat and folder, and every read, stays available: the app is not locked.
-	UAM_ASSERT(RestartDeletionFolderRefusal("createSession", {{"folderId", "another"}}, pending).empty());
-	UAM_ASSERT(RestartDeletionFolderRefusal("sendAcpPrompt", {{"chatId", "other"}}, pending).empty());
-	UAM_ASSERT(RestartDeletionFolderRefusal("getFolderState", {{"folderId", "folder-pending-restart"}}, pending).empty());
-	UAM_ASSERT(RestartDeletionFolderRefusal("createSession", {{"folderId", "folder-pending-restart"}}, {}).empty());
-	UAM_ASSERT(RestartDeletionFolderRefusal("createSession", nlohmann::json::array(), pending).empty());
+	using uam::cef::RestartDeletionRefusal;
+	const std::unordered_set<std::string> chats = {"chat-pending-restart"};
+	const std::unordered_set<std::string> folders = {"folder-pending-restart"};
+	const std::string_view folder_refused = "Wait for workspace deletion to finish.";
+	const std::string_view chat_refused = "Chat deletion is in progress.";
+	// Its chats cannot be changed and nothing new may be placed in its folders.
+	UAM_ASSERT_EQ(RestartDeletionRefusal("sendAcpPrompt", {{"chatId", "chat-pending-restart"}}, chats, folders), chat_refused);
+	UAM_ASSERT_EQ(RestartDeletionRefusal("deleteSessions", {{"chatIds", nlohmann::json::array({"other", "chat-pending-restart"})}}, chats, folders), chat_refused);
+	UAM_ASSERT_EQ(RestartDeletionRefusal("createSession", {{"folderId", "folder-pending-restart"}}, chats, folders), folder_refused);
+	UAM_ASSERT_EQ(RestartDeletionRefusal("moveChatWorkspace", {{"chatId", "other"}, {"folderId", "folder-pending-restart"}}, chats, folders), folder_refused);
+	UAM_ASSERT_EQ(RestartDeletionRefusal("deleteFolders", {{"folderIds", nlohmann::json::array({"another", "folder-pending-restart"})}}, chats, folders), folder_refused);
+	// Those chats can still be selected, read and stopped.
+	for (const std::string_view action : {"selectSession", "getChatMessages", "stopAcpSession", "cancelAcpTurn"})
+		UAM_ASSERT(RestartDeletionRefusal(action, {{"chatId", "chat-pending-restart"}}, chats, folders).empty());
+	// Everything else stays available, including other deletions: the app is not held by it.
+	UAM_ASSERT(RestartDeletionRefusal("sendAcpPrompt", {{"chatId", "other"}}, chats, folders).empty());
+	UAM_ASSERT(RestartDeletionRefusal("createSession", {{"folderId", "another"}}, chats, folders).empty());
+	UAM_ASSERT(RestartDeletionRefusal("deleteFolder", {{"folderId", "another"}}, chats, folders).empty());
+	UAM_ASSERT(RestartDeletionRefusal("deleteFolders", {{"folderIds", nlohmann::json::array({"another"})}}, chats, folders).empty());
+	UAM_ASSERT(RestartDeletionRefusal("deleteSessions", {{"chatIds", nlohmann::json::array({"other"})}}, chats, folders).empty());
+	UAM_ASSERT(RestartDeletionRefusal("rescanFolderChats", {{"folderId", "another"}}, chats, folders).empty());
+	UAM_ASSERT(RestartDeletionRefusal("createSession", {{"folderId", "folder-pending-restart"}}, {}, {}).empty());
+	UAM_ASSERT(RestartDeletionRefusal("createSession", nlohmann::json::array(), chats, folders).empty());
+	// The folder-wide worktree gate only sees real operations, never the restart fence.
+	UAM_ASSERT(uam::cef::PendingOperationRefusal("deleteFolder", false, false, false).empty());
+}
+
+UAM_TEST(ParkedRejectedDeletionLeavesLaterDeletionsWorkingAndCompletesAtRestart)
+{
+	TempDir temp("uam-delete-parked");
+	ScopedEnvVar home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	for (const char* id : {"chat-rejected", "chat-later", "chat-kept"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.messages.push_back({MessageRole::User, "keep"});
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	}
+	const fs::path intent = app.data_root / "deletion-transaction.json";
+	// A staged deletion whose commit was rejected keeps its record; parking frees the transaction file.
+	uam::WorkspaceDeletionTask rejected;
+	UAM_ASSERT(uam::PrepareChatDeletion(app, {"chat-rejected"}, rejected));
+	UAM_ASSERT(uam::StageWorkspaceDeletion(rejected));
+	UAM_ASSERT(fs::exists(intent));
+	uam::WorkspaceDeletionTask blocked;
+	UAM_ASSERT(uam::PrepareChatDeletion(app, {"chat-later"}, blocked));
+	UAM_ASSERT(!uam::StageWorkspaceDeletion(blocked));
+	UAM_ASSERT(uam::ParkRejectedDeletionTransaction(app.data_root));
+	UAM_ASSERT(!fs::exists(intent) && fs::exists(app.data_root / "deletion-transaction.parked-0.json"));
+	UAM_ASSERT(fs::exists(AppPaths::UamChatFilePath(app.data_root, "chat-rejected")));
+	// Another deletion now runs to completion.
+	uam::WorkspaceDeletionTask later;
+	UAM_ASSERT(uam::PrepareChatDeletion(app, {"chat-later"}, later));
+	UAM_ASSERT(uam::StageWorkspaceDeletion(later));
+	uam::CommitWorkspaceDeletion(app, later);
+	UAM_ASSERT(!later.commit_rejected && later.metadata_saved);
+	UAM_ASSERT(uam::CleanupWorkspaceDeletion(later));
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, "chat-later")));
+	UAM_ASSERT(fs::exists(AppPaths::UamChatFilePath(app.data_root, "chat-rejected")));
+	UAM_ASSERT(fs::exists(app.data_root / "deletion-transaction.parked-0.json"));
+	// A second rejected deletion parks beside the first.
+	UAM_ASSERT(!fs::exists(intent));
+	// Restart completes the parked deletion and nothing else.
+	uam::AppState restarted;
+	restarted.data_root = app.data_root;
+	UAM_ASSERT(uam::RecoverPendingDeletionTransaction(restarted));
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, "chat-rejected")));
+	UAM_ASSERT(fs::exists(AppPaths::UamChatFilePath(app.data_root, "chat-kept")));
+	UAM_ASSERT(!fs::exists(intent) && !fs::exists(app.data_root / "deletion-transaction.parked-0.json"));
+	UAM_ASSERT(uam::RecoverPendingDeletionTransaction(restarted));
 }
 
 UAM_TEST(DeletionRejectsOwnershipPublicationFailureBeforeChangingLiveHistory)

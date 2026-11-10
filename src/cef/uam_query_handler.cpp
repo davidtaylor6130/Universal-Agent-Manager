@@ -236,7 +236,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		cb->Failure(409, std::string(refusal));
 		return true;
 	}
-	if (const std::string_view refusal = uam::cef::RestartDeletionFolderRefusal(action, payload, m_restartDeletionFolderIds); !refusal.empty())
+	if (const std::string_view refusal = uam::cef::RestartDeletionRefusal(action, payload, m_app.restart_deletion_chat_ids, m_app.restart_deletion_folder_ids); !refusal.empty())
 	{
 		cb->Failure(409, std::string(refusal));
 		return true;

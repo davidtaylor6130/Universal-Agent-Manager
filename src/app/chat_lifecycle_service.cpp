@@ -2027,8 +2027,85 @@ bool RemoveChatsByIds(uam::AppState& app, const std::vector<std::string>& chat_i
 	return true;
 }
 
+namespace
+{
+	constexpr int kMaxParkedDeletionTransactions = 32;
+
+	std::filesystem::path ParkedDeletionIntentPath(const std::filesystem::path& data_root, int slot)
+	{
+		return data_root / ("deletion-transaction.parked-" + std::to_string(slot) + ".json");
+	}
+
+	std::filesystem::path ParkedDeletionStagingRoot(const std::filesystem::path& data_root, int slot)
+	{
+		return data_root / (std::string(kDeletionStagingDirectory) + ".parked-" + std::to_string(slot));
+	}
+
+	/// Renames a file that may be absent; false only when an existing file could not be moved.
+	bool MoveIfPresent(const std::filesystem::path& from, const std::filesystem::path& to)
+	{
+		if (!uam::paths::PathExistsNoThrow(from)) return true;
+		std::error_code error;
+		std::filesystem::rename(from, to, error);
+		return !error;
+	}
+
+	bool RecoverCurrentDeletionTransaction(uam::AppState& app);
+}
+
+bool uam::ParkRejectedDeletionTransaction(const std::filesystem::path& data_root)
+{
+	const std::filesystem::path intent = DeletionIntentPath(data_root), backup = uam::io::MakeBackupPath(intent);
+	if (!uam::paths::PathExistsNoThrow(intent) && !uam::paths::PathExistsNoThrow(backup)) return true;
+	for (int slot = 0; slot < kMaxParkedDeletionTransactions; ++slot)
+	{
+		const std::filesystem::path parked = ParkedDeletionIntentPath(data_root, slot), parked_backup = uam::io::MakeBackupPath(parked);
+		const std::filesystem::path parked_staging = ParkedDeletionStagingRoot(data_root, slot);
+		if (uam::paths::PathExistsNoThrow(parked) || uam::paths::PathExistsNoThrow(parked_backup) || uam::paths::PathExistsNoThrow(parked_staging)) continue;
+		// Staging first: a crash between the moves leaves a complete intent at one name or the other, never none.
+		(void)MoveIfPresent(DeletionStagingRoot(data_root), parked_staging);
+		if (!MoveIfPresent(backup, parked_backup) || !MoveIfPresent(intent, parked))
+		{
+			(void)MoveIfPresent(parked_backup, backup);
+			(void)MoveIfPresent(parked_staging, DeletionStagingRoot(data_root));
+			return false;
+		}
+		return true;
+	}
+	return false;
+}
+
 bool uam::RecoverPendingDeletionTransaction(AppState& app)
 {
+	if (!RecoverCurrentDeletionTransaction(app)) return false;
+	// Parked records are deletions whose commit was rejected while the app ran: each is restored and completed in turn.
+	for (int slot = 0; slot < kMaxParkedDeletionTransactions; ++slot)
+	{
+		const std::filesystem::path parked = ParkedDeletionIntentPath(app.data_root, slot), parked_backup = uam::io::MakeBackupPath(parked);
+		const std::filesystem::path parked_staging = ParkedDeletionStagingRoot(app.data_root, slot);
+		if (!uam::paths::PathExistsNoThrow(parked) && !uam::paths::PathExistsNoThrow(parked_backup))
+		{
+			if (uam::paths::PathExistsNoThrow(parked_staging) && !uam::paths::IsLinkOrReparsePointNoThrow(parked_staging))
+				(void)uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(parked_staging);
+			continue;
+		}
+		const std::filesystem::path intent = DeletionIntentPath(app.data_root);
+		if (!MoveIfPresent(parked_staging, DeletionStagingRoot(app.data_root)) || !MoveIfPresent(parked_backup, uam::io::MakeBackupPath(intent)) ||
+		    !MoveIfPresent(parked, intent))
+		{
+			app.status_line = "A pending deletion transaction could not be completed. Recovery evidence was preserved and UAM will not open a partial chat database.";
+			return false;
+		}
+		if (!RecoverCurrentDeletionTransaction(app)) return false;
+	}
+	return true;
+}
+
+namespace
+{
+bool RecoverCurrentDeletionTransaction(uam::AppState& app)
+{
+	using namespace uam;
 	const std::filesystem::path intent_path = DeletionIntentPath(app.data_root);
 	const bool has_intent = uam::paths::PathExistsNoThrow(intent_path) || uam::paths::PathExistsNoThrow(uam::io::MakeBackupPath(intent_path));
 	if (!has_intent)
@@ -2065,6 +2142,7 @@ bool uam::RecoverPendingDeletionTransaction(AppState& app)
 	app.status_line = "Recovered and completed an interrupted deletion transaction.";
 	if (native_cleanup_failed) app.status_line += " Some provider-native history could not be removed, but durable tombstones prevent reimport.";
 	return true;
+}
 }
 
 bool RemoveChatById(uam::AppState& app, const std::string& chat_id)
