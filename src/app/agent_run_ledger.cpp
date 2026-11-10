@@ -14,6 +14,8 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <functional>
 #include <fstream>
 #include <map>
 #include <limits>
@@ -35,6 +37,11 @@ namespace uam
 		constexpr std::size_t kMaxResultBytes = 16U * 1024U;
 		constexpr std::size_t kMaxDiagnosticBytes = 4096;
 		constexpr std::size_t kMaxIdBytes = 160;
+		// Startup pruning keeps the ledger well inside the load limits above, so no record is skipped at the cap.
+		constexpr auto kTerminalRetention = std::chrono::hours(24 * 90);
+		constexpr std::size_t kMaxRetainedTerminalRuns = kMaxRunFiles / 2;
+		// A result card is only written into a parent chat for a run that was active this recently.
+		constexpr auto kOwedResultWindow = std::chrono::hours(24 * 7);
 
 		const std::unordered_set<std::string> kStatuses = {
 		    "queued", "running", "completed", "failed", "cancelled", "interrupted"};
@@ -994,6 +1001,7 @@ namespace uam
 	{
 		AgentRunLoadResult result = LoadAllImpl(data_root, true, {});
 		uam::excluded_provider_data::RemoveRuns(result.runs);
+		uam::excluded_provider_data::RemoveRuns(result.inert_managed);
 		return result;
 	}
 
@@ -1046,8 +1054,10 @@ namespace uam
 		std::ranges::sort(files, {}, [](const auto& path) { return uam::paths::PortablePathString(path.filename()); });
 		std::map<std::string, AgentRun> runs;
 		std::uintmax_t remaining_bytes = kMaxLedgerLoadBytes;
-		for (const auto& path : files)
+		std::size_t unread_files = 0;
+		for (std::size_t index = 0; index < files.size(); ++index)
 		{
+			const auto& path = files[index];
 			// Mutable recovery validates its primary and backup inside the same writer boundary.
 			// Read-only observers stay unlocked and may themselves call Save.
 			std::unique_lock<std::mutex> recovery_lock(LedgerWriteMutex(), std::defer_lock);
@@ -1062,6 +1072,8 @@ namespace uam
 			if (recover && RecognizableManagedRecord(primary_text))
 			{
 				AddLoadError(result, "Managed continuation record is unsupported for execution and remains inert: " + id + ".");
+				// Read, never rewritten or admitted here; the application's startup step decides what a previous process still owes.
+				if (run.has_value()) result.inert_managed.push_back(std::move(*run));
 				continue;
 			}
 			if (!run.has_value())
@@ -1069,13 +1081,13 @@ namespace uam
 				if (!recover)
 				{
 					AddLoadError(result, "Read-only agent-run primary is unavailable, invalid or changed during the read.");
-					if (remaining_bytes == 0) break;
+					if (remaining_bytes == 0) { unread_files = files.size() - index - 1; break; }
 					continue;
 				}
 				if (!legacy_recovery_allowed)
 				{
 					AddLoadError(result, uam::paths::Utf8PathString(path) + ": primary could not be inspected safely (" + primary_error + "); backup was not restored.");
-					if (remaining_bytes == 0) break;
+					if (remaining_bytes == 0) { unread_files = files.size() - index - 1; break; }
 					continue;
 				}
 				std::string backup_error;
@@ -1089,7 +1101,7 @@ namespace uam
 				if (!run.has_value())
 				{
 					AddLoadError(result, uam::paths::Utf8PathString(path) + ": primary invalid (" + primary_error + "); backup invalid (" + backup_error + ").");
-					if (remaining_bytes == 0) break;
+					if (remaining_bytes == 0) { unread_files = files.size() - index - 1; break; }
 					continue;
 				}
 				if (!uam::io::WriteTextFile(path, backup_text))
@@ -1101,6 +1113,8 @@ namespace uam
 				AddLoadError(result, "Duplicate agent run identity: " + run->id + ".");
 		}
 
+		if (unread_files > 0)
+			AddLoadError(result, std::to_string(unread_files) + " agent-run records beyond the 64 MiB load budget were not read: they were neither executed nor interrupted.");
 		std::unordered_set<std::string> invalid;
 		for (const auto& [id, run] : runs)
 		{
@@ -1163,15 +1177,100 @@ namespace uam
 		return success;
 	}
 
-	std::size_t AgentRunLedger::PruneExpired(const std::filesystem::path&, AgentRunLoadResult&, std::vector<std::string>*)
+	std::size_t AgentRunLedger::PruneExpired(const std::filesystem::path& data_root, AgentRunLoadResult& loaded,
+	                                         std::vector<std::string>* errors)
 	{
-		return 0; // Implemented by the following fix commit.
+		struct Terminal
+		{
+			std::filesystem::file_time_type written;
+			std::string id;
+		};
+		std::vector<Terminal> terminal;
+		const auto consider = [&](const AgentRun& run)
+		{
+			if (run.status == "queued" || run.status == "running") return; // Unfinished work is interrupted, never pruned.
+			std::error_code error;
+			const auto written = std::filesystem::last_write_time(RunPath(data_root, run.id), error);
+			if (!error) terminal.push_back({written, run.id});
+		};
+		for (const AgentRun& run : loaded.runs) consider(run);
+		for (const AgentRun& run : loaded.inert_managed) consider(run);
+		std::ranges::sort(terminal, std::greater{}, &Terminal::written);
+		const auto cutoff = std::filesystem::file_time_type::clock::now() - kTerminalRetention;
+		std::unordered_set<std::string> expired;
+		for (std::size_t index = 0; index < terminal.size(); ++index)
+			if (terminal[index].written < cutoff || index >= kMaxRetainedTerminalRuns) expired.insert(terminal[index].id);
+		// A kept record must still find its parent on the next load.
+		for (bool changed = true; changed && !expired.empty();)
+		{
+			changed = false;
+			for (const AgentRun& run : loaded.runs)
+				if (!run.parent_run_id.empty() && !expired.contains(run.id) && expired.erase(run.parent_run_id) > 0) changed = true;
+		}
+		if (expired.empty()) return 0;
+		std::unordered_set<std::string> removed;
+		{
+			std::lock_guard<std::mutex> lock(LedgerWriteMutex());
+			for (const std::string& id : expired)
+			{
+				const auto path = RunPath(data_root, id);
+				std::error_code error;
+				if (std::filesystem::remove(path, error) && !error)
+				{
+					std::filesystem::remove(uam::io::MakeBackupPath(path), error);
+					removed.insert(id);
+				}
+				else if (errors != nullptr) errors->push_back("Expired agent run " + id + " could not be removed.");
+			}
+		}
+		std::erase_if(loaded.runs, [&](const AgentRun& run) { return removed.contains(run.id); });
+		std::erase_if(loaded.inert_managed, [&](const AgentRun& run) { return removed.contains(run.id); });
+		return removed.size();
 	}
 
-	std::vector<AgentRun> AgentRunLedger::InterruptManagedRecords(const std::filesystem::path&, std::vector<AgentRun>,
-	                                                              std::string_view, std::vector<std::string>*)
+	std::vector<AgentRun> AgentRunLedger::InterruptManagedRecords(const std::filesystem::path& data_root, std::vector<AgentRun> records,
+	                                                              std::string_view diagnostic_code, std::vector<std::string>* errors)
 	{
-		return {}; // Implemented by the following fix commit.
+		std::vector<AgentRun> owed;
+		if (diagnostic_code.empty() || diagnostic_code.size() > 80) return owed;
+		const auto recent = std::filesystem::file_time_type::clock::now() - kOwedResultWindow;
+		const int64_t now_epoch_ms = uam::time::SystemEpochMillisecondsNow();
+		const std::string now = uam::time::detail::FormatTimestamp(
+		    uam::time::detail::LocalTimeSnapshot(static_cast<std::time_t>(now_epoch_ms / 1000)), uam::time::kLocalDisplayTimestampFormat);
+		for (AgentRun& run : records)
+		{
+			if (!run.managed_continuation || run.managed_continuation->turns.empty()) continue;
+			// Read before any rewrite below: this is when the previous process last touched the run.
+			std::error_code time_error;
+			const auto written = std::filesystem::last_write_time(RunPath(data_root, run.id), time_error);
+			if (run.status == "queued" || run.status == "running")
+			{
+				AgentRun interrupted = run;
+				++interrupted.managed_continuation->state_revision;
+				interrupted.status = "interrupted";
+				interrupted.finished_at = interrupted.updated_at = now;
+				interrupted.finished_at_epoch_ms = now_epoch_ms;
+				interrupted.diagnostic_code = std::string(diagnostic_code);
+				interrupted.diagnostic = "UAM restarted while this run was unfinished. It was not relaunched, and its provider process was not observed.";
+				ManagedRunTurnReceipt& turn = interrupted.managed_continuation->turns.back();
+				turn.status = ManagedRunTurnStatus::Interrupted;
+				turn.finished_at_epoch_ms = now_epoch_ms;
+				turn.diagnostic_code = interrupted.diagnostic_code;
+				std::string error;
+				const auto prepared = PrepareSave(data_root, run, interrupted, &error);
+				const AgentRunPublishResult published = prepared ? PublishPreparedSave(prepared, [] { return true; }) : AgentRunPublishResult{AgentRunPublishState::Rejected, error};
+				if (published.state != AgentRunPublishState::Committed)
+				{
+					if (errors != nullptr) errors->push_back("Managed continuation record " + run.id + " could not be marked interrupted: " + published.error);
+					continue;
+				}
+				run = std::move(interrupted);
+			}
+			const ManagedRunTurnReceipt& turn = run.managed_continuation->turns.back();
+			const bool delivered = turn.result_delivered || (run.managed_continuation->turns.size() == 1 && run.root_result_delivered);
+			if (!time_error && written >= recent && run.deliver_result_to_root_chat && !delivered) owed.push_back(run);
+		}
+		return owed;
 	}
 
 	std::shared_ptr<PreparedAgentRunSave> AgentRunLedger::PrepareInitialSave(

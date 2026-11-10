@@ -754,10 +754,12 @@ UAM_TEST(UamControlAgentWaitRejectsUnprovenOrReplacedTerminalRetirement)
 			UAM_ASSERT(!hidden.front().managed_terminal_retirement_witness); // Catalogue cannot mint retirement.
 		}
 		if (mode == 12) fixture.Run(child_id).root_chat_id = "foreign-root";
-		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		// The original read is answered once with an explicit error and no child data, never left to time out.
+		const auto refused = AwaitWaitResponse(fixture, "guarded-terminal-wait");
+		UAM_ASSERT(!refused.value("ok", true) && !refused.contains("result"));
 		UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_agent_wait);
-		UAM_ASSERT(!fs::exists(fixture.capability_directory / "responses" / "guarded-terminal-wait.json"));
-		UAM_ASSERT_EQ(fixture.app.chats.front().uam_control_audit.size(), audits_before);
+		UAM_ASSERT_EQ(fixture.app.chats.front().uam_control_audit.size(), audits_before + 1);
+		UAM_ASSERT_EQ(fixture.app.chats.front().uam_control_audit.back().result, std::string("rejected"));
 		UAM_ASSERT(fixture.app.acp_sessions.front()->running && fixture.app.acp_sessions.front()->processing);
 		// A fresh wait cannot adopt unproven hidden metadata either. A genuinely replaced
 		// live row is governed by a new capture, so mode0 tests only the original read.
@@ -861,10 +863,10 @@ UAM_TEST(UamControlAgentWaitSidebarMergeRejectsChangedOrUnprovenRetirement)
 		UAM_ASSERT(std::ranges::none_of(fixture.app.hidden_agent_chat_ownership.chats, [](const auto& chat)
 		    { return bool(chat.managed_terminal_retirement_witness); }));
 		const auto audit_count = ChatDomainService().FindChatById(fixture.app, fixture.root_id)->uam_control_audit.size();
-		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		const auto refused = AwaitWaitResponse(fixture, "reject-changed-sidebar-binding");
+		UAM_ASSERT(!refused.value("ok", true) && !refused.contains("result"));
 		UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_agent_wait);
-		UAM_ASSERT(!fs::exists(fixture.capability_directory / "responses" / "reject-changed-sidebar-binding.json"));
-		UAM_ASSERT_EQ(ChatDomainService().FindChatById(fixture.app, fixture.root_id)->uam_control_audit.size(), audit_count);
+		UAM_ASSERT_EQ(ChatDomainService().FindChatById(fixture.app, fixture.root_id)->uam_control_audit.size(), audit_count + 1);
 	}
 }
 

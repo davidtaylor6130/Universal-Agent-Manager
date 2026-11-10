@@ -243,6 +243,8 @@ namespace uam
 		std::shared_ptr<platform::ObservedProcessStopResult> stop_result;
 		std::shared_ptr<std::atomic<bool>> stop_finished;
 		bool orphan_stop_transferred = false, parent_result_uncertain = false, parent_retry_prepared = false;
+		int parent_confirmations = 0;
+		InitialClock::time_point orphaned_at{};
 		std::function<bool(ChatPublicationFile, io::AtomicWriteStage)> parent_stage_hook_for_tests;
 		bool parent_stage_hook_used = false;
 	};
@@ -279,6 +281,11 @@ namespace uam
 		constexpr int64_t kProviderCrashWindowMs = 60LL * 1000LL;
 		constexpr int64_t kProviderCircuitCooldownMs = 5LL * 60LL * 1000LL;
 		constexpr std::size_t kProviderCrashThreshold = 3;
+		// A queued run waits for a routing slot no longer than a started run may execute.
+		constexpr int64_t kMaxRoutingWaitMs = kMaxRunElapsedMs;
+		constexpr int64_t kResultDeliveryRetryMs = 2000;
+		constexpr int kMaxParentConfirmations = 10;
+		constexpr auto kOrphanStopLimit = std::chrono::seconds(30);
 
 		int64_t SteadyMillisecondsNow()
 		{
@@ -380,13 +387,47 @@ namespace uam
 
 		bool InitialStoredChatMatches(const std::filesystem::path& root, ChatSession saved, const ChatSession& captured);
 
-		bool DeliverRootResult(AppState& app, AgentRun& run)
+		bool HasResultCard(const ChatSession& chat, const std::string& delivery_id)
+		{
+			const std::string tool_id = "uam-agent-result-" + delivery_id;
+			return std::ranges::any_of(chat.messages, [&](const Message& message)
+			{
+				return std::ranges::any_of(message.tool_calls, [&](const ToolCall& tool) { return tool.id == tool_id; });
+			});
+		}
+
+		/// The one result card a parent transcript shows for a terminal run; its tool id de-duplicates delivery.
+		void AppendResultCard(ChatSession& chat, const AgentRun& run, const std::string& delivery_id, bool followup_turn)
+		{
+			ChatDomainService().AddMessage(chat, MessageRole::Assistant, "Managed agent " + run.agent_id + " " + run.status + ".");
+			ToolCall tool;
+			tool.id = "uam-agent-result-" + delivery_id;
+			tool.name = "uam_agent_result";
+			tool.args_json = nlohmann::json{{"runId", run.id}}.dump();
+			nlohmann::json result{{"runId", run.id}, {"status", run.status}, {"agentId", run.agent_id}, {"providerId", run.provider_id}, {"executionCapability", run.execution_capability}, {"startedAtEpochMs", run.started_at_epoch_ms}, {"finishedAtEpochMs", run.finished_at_epoch_ms}, {"startedAt", run.started_at}, {"completedAt", run.finished_at}, {"transcriptChatId", run.transcript_chat_id}, {"result", run.result_excerpt}, {"diagnosticCode", run.diagnostic_code}, {"diagnostic", run.diagnostic}};
+			if (followup_turn)
+			{
+				result["turnId"] = run.managed_continuation->current_turn_id;
+				result["turnNumber"] = run.managed_continuation->current_turn_number;
+			}
+			tool.result_text = result.dump();
+			tool.status = run.status == "completed" ? "completed" : "failed";
+			tool.is_sub_agent = true;
+			tool.sub_agent_id = run.id;
+			tool.sub_agent_title = run.agent_id;
+			chat.messages.back().tool_calls.push_back(std::move(tool));
+		}
+
+		bool DeliverRootResult(AppState& app, AgentRun& run, int64_t now_steady_ms = 0)
 		{
 			if (!run.deliver_result_to_root_chat || run.root_result_delivered ||
 			    !IsTerminal(run.status) || run.root_result_delivery_attempts >= 3)
 			{
 				return false;
 			}
+			// The saved parent was just found behind memory; do not load and compare it again on every tick.
+			const auto retry = app.agent_result_retry_steady_ms.find(run.id);
+			if (retry != app.agent_result_retry_steady_ms.end() && now_steady_ms < retry->second) return false;
 			ChatSession* root = ChatDomainService().FindChatById(app, run.root_chat_id);
 			if (root == nullptr || !root->agent_run_id.empty())
 			{
@@ -399,6 +440,9 @@ namespace uam
 			if (!ChatRepository::HydrateChatMessages(app.data_root, *root, &warning))
 			{
 				diagnostics::Write("agent result: could not load parent chat " + root->id + ": " + warning);
+				// An unreadable parent is a failed attempt, so this ends after three spaced tries.
+				++run.root_result_delivery_attempts;
+				app.agent_result_retry_steady_ms[run.id] = now_steady_ms + kResultDeliveryRetryMs;
 				(void)AgentRunLedger::Save(app.data_root, run);
 				return true;
 			}
@@ -409,36 +453,18 @@ namespace uam
 			if (!revision || !saved || !InitialStoredChatMatches(app.data_root, *saved, *root) ||
 			    ChatRepository::ChatStorageRevision(app.data_root, root->id) != revision)
 			{
+				app.agent_result_retry_steady_ms[run.id] = now_steady_ms + kResultDeliveryRetryMs;
 				return false;
 			}
+			app.agent_result_retry_steady_ms.erase(run.id);
 			// A pending authored save is not a failed delivery attempt.
 			++run.root_result_delivery_attempts;
 
-			const std::string tool_id = "uam-agent-result-" + run.id;
-			const bool already_delivered = std::ranges::any_of(root->messages, [&](const Message& message)
-			{
-				return std::ranges::any_of(message.tool_calls, [&](const ToolCall& tool)
-				{
-					return tool.id == tool_id;
-				});
-			});
-			if (!already_delivered)
+			if (!HasResultCard(*root, run.id))
 			{
 				const std::size_t previous_count = root->messages.size();
 				const std::string previous_updated_at = root->updated_at;
-				ChatDomainService().AddMessage(
-				    *root, MessageRole::Assistant,
-				    "Managed agent " + run.agent_id + " " + run.status + ".");
-				ToolCall tool;
-				tool.id = tool_id;
-				tool.name = "uam_agent_result";
-				tool.args_json = nlohmann::json{{"runId", run.id}}.dump();
-				tool.result_text = nlohmann::json{{"runId", run.id}, {"status", run.status}, {"agentId", run.agent_id}, {"providerId", run.provider_id}, {"executionCapability", run.execution_capability}, {"startedAtEpochMs", run.started_at_epoch_ms}, {"finishedAtEpochMs", run.finished_at_epoch_ms}, {"startedAt", run.started_at}, {"completedAt", run.finished_at}, {"transcriptChatId", run.transcript_chat_id}, {"result", run.result_excerpt}, {"diagnosticCode", run.diagnostic_code}, {"diagnostic", run.diagnostic}}.dump();
-				tool.status = run.status == "completed" ? "completed" : "failed";
-				tool.is_sub_agent = true;
-				tool.sub_agent_id = run.id;
-				tool.sub_agent_title = run.agent_id;
-				root->messages.back().tool_calls.push_back(std::move(tool));
+				AppendResultCard(*root, run, run.id, false);
 				const auto prepared = ChatRepository::PrepareChatSave(app.data_root, *root, *revision);
 				if (!ChatRepository::PublishPreparedChatSave(prepared, true, root))
 				{
@@ -496,6 +522,12 @@ namespace uam
 			{
 				app.agent_provider_circuit_open_until_epoch_ms[key] = now_epoch_ms + kProviderCircuitCooldownMs;
 			}
+		}
+
+		std::string RoutingWaitReason(const AppState& app, const std::string& chat_id, std::string fallback)
+		{
+			const auto found = app.execution_routing_waits.find(chat_id);
+			return found == app.execution_routing_waits.end() || found->second.empty() ? fallback : found->second;
 		}
 
 		bool ProviderCircuitOpen(AppState& app, std::string_view provider_id, int64_t now_epoch_ms)
@@ -2531,29 +2563,8 @@ namespace uam
 					                        work.parent_metadata = ChatRepository::ChatMetadataFingerprint(root_path, work.parent_before);
 				                        }
 				                        work.parent_candidate = work.parent_before;
-				                        const auto tool_id = "uam-agent-result-" + delivery_id;
-				                        const bool present = std::ranges::any_of(work.parent_before.messages, [&](const Message& message) { return std::ranges::any_of(message.tool_calls, [&](const ToolCall& tool) { return tool.id == tool_id; }); });
-				                        if (!present)
-				                        {
-					                        ChatDomainService().AddMessage(work.parent_candidate, MessageRole::Assistant, "Managed agent " + work.expected.agent_id + " " + work.expected.status + ".");
-					                        ToolCall tool;
-					                        tool.id = tool_id;
-					                        tool.name = "uam_agent_result";
-					                        tool.status = work.expected.status == "completed" ? "completed" : "failed";
-					                        tool.args_json = nlohmann::json{{"runId", work.expected.id}}.dump();
-					                        tool.result_text = nlohmann::json{{"runId", work.expected.id}, {"status", work.expected.status}, {"agentId", work.expected.agent_id}, {"providerId", work.expected.provider_id}, {"executionCapability", work.expected.execution_capability}, {"transcriptChatId", work.expected.transcript_chat_id}, {"startedAtEpochMs", work.expected.started_at_epoch_ms}, {"finishedAtEpochMs", work.expected.finished_at_epoch_ms}, {"startedAt", work.expected.started_at}, {"completedAt", work.expected.finished_at}, {"result", work.expected.result_excerpt}, {"diagnosticCode", work.expected.diagnostic_code}, {"diagnostic", work.expected.diagnostic}}.dump();
-					                        if (followup)
-					                        {
-						                        auto result = nlohmann::json::parse(tool.result_text);
-						                        result["turnId"] = work.expected.managed_continuation->current_turn_id;
-						                        result["turnNumber"] = work.expected.managed_continuation->current_turn_number;
-						                        tool.result_text = result.dump();
-					                        }
-					                        tool.is_sub_agent = true;
-					                        tool.sub_agent_id = work.expected.id;
-					                        tool.sub_agent_title = work.expected.agent_id;
-					                        work.parent_candidate.messages.back().tool_calls.push_back(std::move(tool));
-				                        }
+				                        if (!HasResultCard(work.parent_before, delivery_id))
+					                        AppendResultCard(work.parent_candidate, work.expected, delivery_id, followup);
 				                        const auto revision = ChatRepository::ChatStorageRevision(root_path, work.parent_before.id);
 				                        const auto saved = ChatRepository::LoadLocalChat(root_path, work.parent_before.id, true, nullptr, false);
 				                        if (!revision || !saved || !InitialStoredChatMatches(root_path, *saved, work.parent_before) || ChatRepository::ChatStorageRevision(root_path, work.parent_before.id) != revision)
@@ -2646,14 +2657,68 @@ namespace uam
 			owner.retry_at = InitialClock::now() + std::chrono::milliseconds(500);
 			if (result.state == ChatPublicationState::Uncertain || owner.parent_result_uncertain)
 			{
+				if (++owner.parent_confirmations > kMaxParentConfirmations)
+				{
+					// Confirmation is not coming. Stop refusing the parent's Send; the ordinary bounded result attempts follow.
+					owner.parent_result_uncertain = owner.parent_retry_prepared = false;
+					owner.parent_confirmations = 0;
+					owner.phase = ManagedInitialRuntimeOwner::Phase::Result;
+					owner.transition.reset();
+					app.status_line = "A managed agent result could not be confirmed in this chat's saved history. The chat is usable again; the result stays in the agent's own conversation.";
+					diagnostics::Write("[agent-runs] result publication for " + owner.expected.id + " stayed unconfirmed after " + std::to_string(kMaxParentConfirmations) + " checks; released the parent chat.");
+					return true;
+				}
 				owner.parent_result_uncertain = true;
 				owner.parent_retry_prepared = false;
 				return true; // Retain the exact worker-owned candidate; only bookkeeping confirmation may retry.
 			}
+			owner.parent_confirmations = 0;
 			if (result.state != ChatPublicationState::Committed)
 				owner.phase = ManagedInitialRuntimeOwner::Phase::Result;
 			owner.transition.reset();
 			return true;
+		}
+		void ReleaseInitialOwner(AppState& app, const std::string& id, const std::shared_ptr<ManagedInitialRuntimeOwner>& owner, bool erase_chat)
+		{
+			app.pending_agent_run_cancellation_ids.erase(id);
+			app.managed_subagent_cancellation_receipts.erase(id);
+			app.agent_run_deadline_steady_ms.erase(id);
+			std::erase(app.queued_agent_run_ids, id);
+			if (erase_chat) EraseRuntimeChat(app, owner->transcript_id);
+			else if (auto* session = FindAcpSessionForChat(app, owner->transcript_id); session && session->managed_initial_owner == owner)
+				session->managed_initial_owner.reset();
+			app.managed_initial_runtime_owners.erase(id);
+		}
+		bool InitialOrphanSettled(const AppState& app, ManagedInitialRuntimeOwner& owner)
+		{
+			const auto now = InitialClock::now();
+			if (owner.orphaned_at == InitialClock::time_point{}) owner.orphaned_at = now;
+			const auto* session = FindAcpSessionForChat(app, owner.transcript_id);
+			const bool own_session = session && session == owner.session && session->managed_initial_owner.get() == &owner;
+			if (owner.orphan_stop_transferred ? owner.stop_finished && owner.stop_finished->load(std::memory_order_acquire) : !own_session || InitialStopped(app, owner))
+				return true;
+			// ponytail: fixed 30 s wait for the Stop; a process still unconfirmed then is logged, not held forever.
+			return now - owner.orphaned_at >= kOrphanStopLimit;
+		}
+		void RetireOrphanedInitialRun(AppState& app, const std::string& id, const std::shared_ptr<ManagedInitialRuntimeOwner>& owner)
+		{
+			// Memory only: the saved record no longer belongs to this owner, so it is not rewritten here.
+			// The next startup marks a record left unfinished on disk interrupted.
+			AgentRun* run = app.data_root == owner->root ? FindRun(app, id) : nullptr;
+			if (run && run->managed_continuation && !IsTerminal(run->status) && run->root_chat_id == owner->root_id && run->transcript_chat_id == owner->transcript_id)
+			{
+				run->status = "failed";
+				run->diagnostic_code = "initial_ownership_changed";
+				run->diagnostic = strings::NonEmptyOrFallback(owner->diagnostic, "Managed initial ownership changed.");
+				run->finished_at = run->updated_at = time::TimestampNow();
+				run->finished_at_epoch_ms = time::SystemEpochMillisecondsNow();
+				if (auto* root = ChatDomainService().FindChatById(app, owner->root_id)) ++root->managed_subagent_revision;
+			}
+			const auto* transcript = ChatDomainService().FindChatById(app, owner->transcript_id);
+			const bool original_transcript = transcript && transcript->metadata_incarnation == owner->transcript_incarnation && transcript->agent_run_id == id;
+			const bool stopped = InitialStopped(app, *owner);
+			diagnostics::Write("[agent-runs] managed run " + id + " lost its owner and was ended" + (stopped ? "." : "; its provider process was not confirmed stopped."));
+			ReleaseInitialOwner(app, id, owner, original_transcript && stopped);
 		}
 		bool PollInitialRuntimes(AppState& app, int64_t now_epoch_ms, int64_t now_steady_ms)
 		{
@@ -2685,7 +2750,14 @@ namespace uam
 						original->running = false;
 						original->reconnect_pending = false;
 					}
-					continue; // Retain bookkeeping; never publish or Stop through a replacement transcript/data root.
+					// Never publish or Stop through a replacement transcript/data root. Lost ownership does not come back,
+					// so once nothing of ours can still be running the run ends here instead of holding its slot.
+					if (!owner->transition && (!owner->retired || owner->retired->load(std::memory_order_acquire)) && InitialOrphanSettled(app, *owner))
+					{
+						RetireOrphanedInitialRun(app, id, owner);
+						changed = true;
+					}
+					continue;
 				}
 				if (!InitialRuntimeOwned(app, *owner) && !IsTerminal(owner->expected.status))
 					ForbidInitialInput(*owner);
@@ -2737,7 +2809,16 @@ namespace uam
 					if (owner->phase == ManagedInitialRuntimeOwner::Phase::Result)
 					{
 						if (InitialResultAttempts(*owner) >= 3)
+						{
+							// The card could not be written. The terminal record stays and the next startup retries the card;
+							// the owner, child chat and session are released instead of being held until restart.
+							if (InitialStopped(app, *owner))
+							{
+								ReleaseInitialOwner(app, id, owner, true);
+								changed = true;
+							}
 							continue;
+						}
 						auto candidate = InitialCandidate(*owner);
 						++candidate.managed_continuation->turns.back().result_delivery_attempts;
 						if (!owner->resume_only) candidate.root_result_delivery_attempts = candidate.managed_continuation->turns.back().result_delivery_attempts;
@@ -2790,8 +2871,17 @@ namespace uam
 					auto* routed = ChatDomainService().FindChatById(app, owner->transcript_id);
 					const ChatSession before_routing = *routed;
 					const auto routing = AdmitExecutionRouting(app, *routed);
-					if (routing.status == ExecutionRoutingStatus::Waiting || routing.status == ExecutionRoutingStatus::Invalid)
+					if (routing.status == ExecutionRoutingStatus::Invalid)
+					{
+						RequestInitialStop(*owner, "failed", "routing_invalid", RoutingWaitReason(app, owner->transcript_id, "No execution host can run this agent."));
 						continue;
+					}
+					if (routing.status == ExecutionRoutingStatus::Waiting)
+					{
+						if (now_steady_ms >= app.agent_run_deadline_steady_ms.try_emplace(id, now_steady_ms + kMaxRoutingWaitMs).first->second)
+							RequestInitialStop(*owner, "failed", "routing_wait_timeout", RoutingWaitReason(app, owner->transcript_id, "No execution host became available in time."));
+						continue;
+					}
 					if (routing.status == ExecutionRoutingStatus::Assigned && routed->routing_mode == "automatic")
 					{
 						ChatSession admitted = before_routing;
@@ -3527,12 +3617,76 @@ namespace uam
 		return true;
 	}
 
+	namespace
+	{
+		/// Startup recovery, one saved terminal v2 record per call: write the result card its previous process still
+		/// owed the parent, then record the receipt. The card's tool id keeps this exactly-once across repeats.
+		bool RecoverSavedInitialResult(AppState& app, int64_t now_steady_ms)
+		{
+			auto& queue = app.managed_result_recoveries;
+			if (queue.empty() || app.managed_initial_shutdown || now_steady_ms < app.managed_result_recovery_retry_steady_ms) return false;
+			const AgentRun run = queue.front();
+			const auto finish = [&](const std::string& note)
+			{
+				if (!note.empty()) diagnostics::Write("[agent-runs] saved result of " + run.id + " was not delivered: " + note);
+				queue.pop_front();
+				app.managed_result_recovery_failures = 0;
+				return false;
+			};
+			const auto later = [&](bool failure)
+			{
+				app.managed_result_recovery_retry_steady_ms = now_steady_ms + kResultDeliveryRetryMs;
+				if (failure && ++app.managed_result_recovery_failures >= 3) return finish("the parent chat could not be updated; the next start retries.");
+				std::ranges::rotate(queue, queue.begin() + 1); // A busy parent does not hold up the others.
+				return false;
+			};
+			if (!run.managed_continuation || run.managed_continuation->turns.empty() || !IsTerminal(run.status) || !run.deliver_result_to_root_chat) return finish("the record is not a deliverable terminal run.");
+			const auto& turn = run.managed_continuation->turns.back();
+			ChatSession* root = ChatDomainService().FindChatById(app, run.root_chat_id);
+			if (!root || root->managed_followup_incarnation != run.managed_continuation->owner.root_birth_id || root->imported_read_only || !root->agent_run_id.empty())
+				return finish("its parent chat no longer exists.");
+			if (!InitialRootIdle(app, *root, false) || AgentRunScheduler::HasPendingInitialMention(app, root->id)) return later(false);
+			std::string warning;
+			if (!ChatRepository::HydrateChatMessages(app.data_root, *root, &warning)) return later(true);
+			// Same stale-parent refusal as live delivery: never replace authored messages or adopt a foreign graph.
+			const auto revision = ChatRepository::ChatStorageRevision(app.data_root, root->id);
+			const auto saved = ChatRepository::LoadLocalChat(app.data_root, root->id, true, nullptr, false);
+			if (!revision || !saved || !InitialStoredChatMatches(app.data_root, *saved, *root) || ChatRepository::ChatStorageRevision(app.data_root, root->id) != revision)
+				return later(true);
+			if (!HasResultCard(*root, turn.delivery_id))
+			{
+				const std::size_t previous_count = root->messages.size();
+				const std::string previous_updated_at = root->updated_at;
+				AppendResultCard(*root, run, turn.delivery_id, run.managed_continuation->turns.size() > 1);
+				if (!ChatRepository::PublishPreparedChatSave(ChatRepository::PrepareChatSave(app.data_root, *root, *revision), true, root))
+				{
+					root->messages.resize(previous_count);
+					root->updated_at = previous_updated_at;
+					return later(true);
+				}
+			}
+			++root->managed_subagent_revision;
+			AgentRun delivered = run;
+			++delivered.managed_continuation->state_revision;
+			delivered.updated_at = time::TimestampNow();
+			delivered.managed_continuation->turns.back().result_delivered = true;
+			if (delivered.managed_continuation->turns.size() == 1) delivered.root_result_delivered = true;
+			std::string error;
+			const auto prepared = AgentRunLedger::PrepareSave(app.data_root, run, delivered, &error);
+			const auto published = prepared ? AgentRunLedger::PublishPreparedSave(prepared, [] { return true; }) : AgentRunPublishResult{AgentRunPublishState::Rejected, error};
+			// An unrecorded receipt only means the next start finds the card already present and records it then.
+			(void)finish(published.state == AgentRunPublishState::Committed ? std::string{} : "the card was written but its receipt was not recorded (" + published.error + ").");
+			return true;
+		}
+	} // namespace
+
 	static bool PollAt(AppState& app, int64_t now_epoch_ms, int64_t now_steady_ms)
 	{
 		PruneFollowupWitnesses(app);
 		bool changed = PollFollowupCreations(app);
 		changed = PollInitialCreations(app) || changed;
 		changed = PollInitialRuntimes(app, now_epoch_ms, now_steady_ms) || changed;
+		changed = RecoverSavedInitialResult(app, now_steady_ms) || changed;
 		const std::vector<std::string> pending_cancellations(app.pending_agent_run_cancellation_ids.begin(), app.pending_agent_run_cancellation_ids.end());
 		for (const std::string& id : pending_cancellations)
 		{
@@ -3541,7 +3695,7 @@ namespace uam
 		}
 		for (AgentRun& run : app.agent_runs)
 		{
-			if (!run.managed_continuation && DeliverRootResult(app, run))
+			if (!run.managed_continuation && DeliverRootResult(app, run, now_steady_ms))
 				changed = true;
 		}
 		for (AgentRun& run : app.agent_runs)
@@ -3664,6 +3818,7 @@ namespace uam
 			{
 				FinishRun(app, *run, "failed", "provider_crash_circuit_open",
 				          "The provider crashed three times within one minute; managed launches are paused for five minutes.");
+				if (run->status == "queued") app.queued_agent_run_ids.push_back(id); // The terminal save failed; retry next tick.
 				changed = true;
 				continue;
 			}
@@ -3671,8 +3826,19 @@ namespace uam
 			const ExecutionRoutingDecision routing = AdmitExecutionRouting(app, *transcript);
 			if (routing.status == ExecutionRoutingStatus::Waiting || routing.status == ExecutionRoutingStatus::Invalid)
 			{
+				const bool invalid = routing.status == ExecutionRoutingStatus::Invalid;
+				// The deadline map is free while queued; a successful start below overwrites it with the run's own limit.
+				const auto wait = app.agent_run_deadline_steady_ms.try_emplace(id, now_steady_ms + kMaxRoutingWaitMs);
+				if (invalid || now_steady_ms >= wait.first->second)
+				{
+					FinishRun(app, *run, "failed", invalid ? "routing_invalid" : "routing_wait_timeout",
+					          RoutingWaitReason(app, run->transcript_chat_id, invalid ? "No execution host can run this agent." : "No execution host became available in time."));
+					if (run->status == "queued") app.queued_agent_run_ids.push_back(id); // The terminal save failed; retry next tick.
+					changed = true;
+					continue;
+				}
 				app.queued_agent_run_ids.push_back(id);
-				changed = true;
+				changed = wait.second || changed; // Only the start of a wait is a state change.
 				continue;
 			}
 			run->status = "running";

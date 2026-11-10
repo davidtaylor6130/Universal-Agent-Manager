@@ -1421,6 +1421,10 @@ namespace uam
 		std::shared_ptr<const std::uint8_t> managed_subagent_control_incarnation = std::make_shared<const std::uint8_t>(0);
 		std::unordered_map<std::string, std::shared_ptr<const ManagedSubagentCancellationReceipt>> managed_subagent_cancellation_receipts;
 		std::unordered_map<std::string, int64_t> agent_run_deadline_steady_ms;
+		/// Earliest next attempt to write a run's result card after its saved parent was found out of date.
+		std::unordered_map<std::string, int64_t> agent_result_retry_steady_ms;
+		int64_t managed_result_recovery_retry_steady_ms = 0;
+		int managed_result_recovery_failures = 0;
 		std::unordered_map<std::string, std::deque<int64_t>> agent_provider_crash_times_epoch_ms;
 		std::unordered_map<std::string, int64_t> agent_provider_circuit_open_until_epoch_ms;
 		int selected_chat_index = -1;

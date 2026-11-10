@@ -806,11 +806,18 @@ bool Application::InitializeState()
 	{
 		// Runs under an excluded provider's chats stay on disk unchanged, so set them aside before marking interrupted runs.
 		std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(m_app.data_root);
-		uam::excluded_provider_data::RemoveRunsOfHiddenChats(agent_runs.runs, uam::excluded_provider_data::TakeChats(chats));
+		const std::vector<ChatSession> hidden_chats = uam::excluded_provider_data::TakeChats(chats);
+		uam::excluded_provider_data::RemoveRunsOfHiddenChats(agent_runs.runs, hidden_chats);
+		uam::excluded_provider_data::RemoveRunsOfHiddenChats(agent_runs.inert_managed, hidden_chats);
 	}
 #endif
+	(void)uam::AgentRunLedger::PruneExpired(m_app.data_root, agent_runs, &agent_runs.errors);
 	(void)uam::AgentRunLedger::MarkNonterminalInterrupted(
 	    m_app.data_root, &agent_runs.runs, "manager_restarted", &agent_runs.errors);
+	// Version-2 records stay out of runtime admission. What a previous process left unfinished is closed, and a recent
+	// terminal run still owing its parent a result card is queued for one idempotent delivery by the scheduler.
+	for (AgentRun& owed : uam::AgentRunLedger::InterruptManagedRecords(m_app.data_root, std::move(agent_runs.inert_managed), "manager_restarted", &agent_runs.errors))
+		m_app.managed_result_recoveries.push_back(std::move(owed));
 	m_app.agent_runs = std::move(agent_runs.runs);
 	for (const std::string& error : agent_runs.errors)
 	{
