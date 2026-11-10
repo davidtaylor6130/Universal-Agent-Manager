@@ -36,6 +36,8 @@ namespace uam::remote
 		bool HasManagedProcesses();
 		/// <summary>Removes sibling spools whose owning helper is provably gone. Call with the service endpoint lock held; failures are tolerated.</summary>
 		void RemoveOrphanedSpools();
+		/// <summary>Call after a response frame was written: a written exit report stops the exit counting as owed.</summary>
+		void ConfirmResponseDelivered(const nlohmann::json& request, const nlohmann::json& response);
 
 		// Kept public only so the translation unit's drain helpers stay small; it is
 		// never exposed by the protocol.
@@ -76,7 +78,7 @@ namespace uam::remote
 			std::atomic<bool> lease_terminating{false};
 			std::atomic<bool> ready{false};
 			std::atomic<bool> exited{false};
-			/// A client has received this process's exit; until then the exit is state a reconnect can still need.
+			/// Set once a response carrying this process's exit was written; until then a reconnect can still need it.
 			std::atomic<bool> exit_reported{false};
 			std::atomic<int> exit_code{-1};
 			std::string spool_error;

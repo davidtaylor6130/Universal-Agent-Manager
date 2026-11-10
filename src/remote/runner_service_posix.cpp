@@ -419,6 +419,7 @@ namespace uam::remote
 						    else
 							    response = HandleRunnerRequest(request, runner_version, &state);
 						    if (!WriteSocketFrame(client.Get(), response)) break;
+						    state.ConfirmResponseDelivered(request, response);
 					    }
 				    }
 				    done->store(true, std::memory_order_release);

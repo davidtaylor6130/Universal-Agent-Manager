@@ -98,6 +98,8 @@ namespace uam::remote
 		inline constexpr std::size_t kMaxListedDirectories = 200;
 		inline constexpr std::uintmax_t kMaxUploadBytes = 25ull * 1024ull * 1024ull;
 		inline constexpr std::uintmax_t kSpoolReclaimThreshold = 1024ull * 1024ull;
+		// Copying happens under the process mutex, so a larger unacknowledged tail waits for the client to catch up (or for the 1 GiB path).
+		inline constexpr std::uintmax_t kSpoolReclaimMaxCopyBytes = 8ull * 1024ull * 1024ull;
 		inline constexpr auto kSpoolReclaimRetryDelay = std::chrono::seconds(5);
 		inline constexpr std::string_view kSpoolPrefix = "uam-runner-spool-";
 		inline constexpr std::string_view kSpoolOwnerLock = ".owner-lock";
@@ -493,6 +495,12 @@ namespace uam::remote
 		                 std::string& error)
 		{
 			if (bytes.empty()) return true;
+			if (!stream.is_open())
+			{
+				// A failed reclaim may have left the stream closed; reopen rather than fail the process.
+				stream.clear();
+				stream.open(path, std::ios::binary | std::ios::app);
+			}
 			std::error_code size_error;
 			const std::uintmax_t size = std::filesystem::file_size(path, size_error);
 			if (size_error)
@@ -527,7 +535,7 @@ namespace uam::remote
 			std::error_code size_error;
 			const std::uintmax_t size = std::filesystem::file_size(path, size_error);
 			const std::uintmax_t prefix = acknowledged_cursor - base_cursor;
-			if (size_error || prefix > size || size - prefix > prefix) return true;
+			if (size_error || prefix > size || size - prefix > prefix || size - prefix > kSpoolReclaimMaxCopyBytes) return true;
 			std::string ignored;
 			if (ReclaimSpoolPrefix(path, stream, base_cursor, acknowledged_cursor, ignored)) return true;
 			if (!stream.is_open()) stream.open(path, std::ios::binary | std::ios::app);
@@ -788,6 +796,22 @@ namespace uam::remote
 		std::error_code cleanup_error;
 		if (!m_spoolDirectory.empty())
 			std::filesystem::remove_all(m_spoolDirectory, cleanup_error);
+	}
+
+	void RunnerState::ConfirmResponseDelivered(const nlohmann::json& request, const nlohmann::json& response)
+	{
+		if (!response.value("ok", false) || !request.contains("sessionId") || !request["sessionId"].is_string() ||
+		    !request.contains("controlToken") || !request["controlToken"].is_string()) return;
+		const std::string type = request.value("type", "");
+		const auto result = response.find("result");
+		const bool reports_exit = type == "process.stop" ||
+		    (type == "process.poll" && result != response.end() && result->is_object() && result->contains("exitCode") && !(*result)["exitCode"].is_null());
+		if (!reports_exit) return;
+		std::scoped_lock lock(m_stateMutex);
+		const auto found = m_processes.find(request["sessionId"].get<std::string>());
+		if (found == m_processes.end() || found->second->control_token != request["controlToken"].get_ref<const std::string&>() ||
+		    !found->second->exited.load(std::memory_order_acquire)) return;
+		found->second->exit_reported.store(true, std::memory_order_release);
 	}
 
 	void RunnerState::RemoveOrphanedSpools()
@@ -2095,7 +2119,6 @@ namespace uam::remote
 				else ProcessService().TerminateStdioProcess(process.fields, true);
 				process.exit_code.store(exit_code, std::memory_order_release);
 				process.exited.store(true, std::memory_order_release);
-				process.exit_reported.store(true, std::memory_order_release);
 			}
 			return ProcessSuccess(request, {{"sessionId", session_id}, {"running", false}, {"stopOutcome", outcome}, {"exitCode", exit_code}});
 		}
@@ -2164,7 +2187,6 @@ namespace uam::remote
 			}
 			if (!output_error.empty())
 				return ProcessError(request, "read_failed", std::move(output_error));
-			if (exited && !output_pending) process.exit_reported.store(true, std::memory_order_release);
 			return ProcessSuccess(request,
 			                      {{"sessionId", session_id},
 			                       {"running", !exited || output_pending},

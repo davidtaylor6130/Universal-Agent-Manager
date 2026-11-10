@@ -3,7 +3,11 @@
 #include "remote/runner_state.h"
 #include "common/utils/base64.h"
 #include "test_harness.h"
+#include <cstdio>
+#include <fstream>
+#include <functional>
 #include <future>
+#include <optional>
 
 using namespace uam_test;
 namespace uam::remote
@@ -137,42 +141,52 @@ UAM_TEST(RemoteDrainedProcessAllowsShutdownWhileLiveProcessBlocksIt)
 {
 	TempDir temp("uam-retirement-drained");
 	RunnerState state;
-	const auto request = [&](nlohmann::json value)
+	const auto request = [](nlohmann::json value)
 	{
 		value["id"] = "drained";
 		value["sessionId"] = "drained-session";
 		value["controlToken"] = "drained-token";
-		return state.HandleProcessRequest(value);
+		return value;
 	};
 #if defined(_WIN32)
 	const nlohmann::json argv = nlohmann::json::array({"cmd.exe", "/d", "/v:on", "/s", "/c", "set /p value=& <nul set /p =!value!"});
 #else
 	const nlohmann::json argv = nlohmann::json::array({"/bin/sh", "-c", "IFS= read -r value; printf %s \"$value\""});
 #endif
-	UAM_ASSERT(request({{"type", "process.start"}, {"cwd", uam::paths::Utf8PathString(temp.root)}, {"argv", argv}}).value("ok", false));
+	UAM_ASSERT(state.HandleProcessRequest(request({{"type", "process.start"}, {"cwd", uam::paths::Utf8PathString(temp.root)}, {"argv", argv}})).value("ok", false));
 	UAM_ASSERT(state.HasManagedProcesses());
-	UAM_ASSERT(request({{"type", "process.write"}, {"dataBase64", uam::base64::Encode("done\n")}}).value("ok", false));
+	UAM_ASSERT(state.HandleProcessRequest(request({{"type", "process.write"}, {"dataBase64", uam::base64::Encode("done\n")}})).value("ok", false));
 	std::string output;
+	nlohmann::json poll_request = request({{"type", "process.poll"}, {"acknowledgedOutput", true}});
+	nlohmann::json polled;
 	bool exited = false;
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 	while (!exited && std::chrono::steady_clock::now() < deadline)
 	{
-		const nlohmann::json polled = request({{"type", "process.poll"}, {"acknowledgedOutput", true}});
+		polled = state.HandleProcessRequest(poll_request);
 		UAM_ASSERT(polled.value("ok", false));
 		const nlohmann::json& result = polled["result"];
 		std::string chunk;
 		UAM_ASSERT(uam::base64::Decode(result.value("stdoutBase64", ""), chunk));
 		output += chunk;
-		UAM_ASSERT(request({{"type", "process.ack"}, {"stdoutCursor", result["stdoutCursor"]}, {"stderrCursor", result["stderrCursor"]}}).value("ok", false));
+		UAM_ASSERT(state.HandleProcessRequest(request({{"type", "process.ack"}, {"stdoutCursor", result["stdoutCursor"]}, {"stderrCursor", result["stderrCursor"]}})).value("ok", false));
 		exited = !result.value("running", true);
 		if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	UAM_ASSERT(exited);
 	UAM_ASSERT_EQ(uam::strings::Trim(output), std::string("done"));
+	// The exit is owed until a response carrying it was written to the client.
+	UAM_ASSERT(state.HasManagedProcesses());
+	state.ConfirmResponseDelivered(request({{"type", "process.poll"}}), {{"ok", true}, {"result", {{"running", true}, {"exitCode", nullptr}}}});
+	UAM_ASSERT(state.HasManagedProcesses());
+	nlohmann::json foreign = poll_request;
+	foreign["controlToken"] = "foreign";
+	state.ConfirmResponseDelivered(foreign, polled);
+	UAM_ASSERT(state.HasManagedProcesses());
+	state.ConfirmResponseDelivered(poll_request, polled);
 	UAM_ASSERT(!state.HasManagedProcesses());
 }
 
-#if !defined(_WIN32)
 UAM_TEST(RemoteAcknowledgedSpoolIsReclaimedProgressivelyAndReplayStaysCorrect)
 {
 	TempDir temp("uam-retirement-reclaim");
@@ -186,7 +200,21 @@ UAM_TEST(RemoteAcknowledgedSpoolIsReclaimedProgressivelyAndReplayStaysCorrect)
 	};
 	// 8 bytes per line makes every cursor identifiable; the final read keeps the process running while the spool is checked.
 	const std::uintmax_t total = 4000000, acknowledged = 3200000;
-	UAM_ASSERT(request({{"type", "process.start"}, {"cwd", uam::paths::Utf8PathString(temp.root)}, {"argv", nlohmann::json::array({"/bin/sh", "-c", "awk 'BEGIN{for(i=0;i<500000;i++)printf \"%07d\\n\",i}'; IFS= read -r reply"})}}).value("ok", false));
+	std::string lines;
+	lines.reserve(total);
+	for (int index = 0; index < 500000; ++index)
+	{
+		char line[16];
+		std::snprintf(line, sizeof(line), "%07d\n", index);
+		lines += line;
+	}
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "lines.txt", lines));
+#if defined(_WIN32)
+	const nlohmann::json argv = nlohmann::json::array({"cmd.exe", "/d", "/s", "/c", "type lines.txt & set /p reply="});
+#else
+	const nlohmann::json argv = nlohmann::json::array({"/bin/sh", "-c", "cat lines.txt; IFS= read -r reply"});
+#endif
+	UAM_ASSERT(request({{"type", "process.start"}, {"cwd", uam::paths::Utf8PathString(temp.root)}, {"argv", argv}}).value("ok", false));
 	const auto poll = [&](std::uintmax_t cursor) { return request({{"type", "process.poll"}, {"acknowledgedOutput", true}, {"stdoutCursor", cursor}, {"stderrCursor", 0u}}); };
 	std::string read_back;
 	const auto read_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
@@ -200,17 +228,19 @@ UAM_TEST(RemoteAcknowledgedSpoolIsReclaimedProgressivelyAndReplayStaysCorrect)
 		if (chunk.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	UAM_ASSERT_EQ(read_back.size(), std::size_t(total));
+	UAM_ASSERT(read_back == lines);
 	const fs::path spool = RunnerStateRetirementTestAccess::SpoolDirectory(state) / "reclaim.stdout";
 	UAM_ASSERT_EQ(fs::file_size(spool), total);
 	UAM_ASSERT(request({{"type", "process.ack"}, {"stdoutCursor", acknowledged}, {"stderrCursor", 0u}}).value("ok", false));
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 	while (fs::file_size(spool) == total && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	UAM_ASSERT_EQ(fs::file_size(spool), total - acknowledged); // Exactly the unacknowledged tail remains.
+	UAM_ASSERT_EQ(fs::file_size(spool), total - acknowledged); // Exactly the unacknowledged tail remains (MoveFileExW on Windows).
 	const nlohmann::json replay = poll(acknowledged);
 	UAM_ASSERT(replay.value("ok", false));
 	std::string replayed;
 	UAM_ASSERT(uam::base64::Decode(replay["result"].value("stdoutBase64", ""), replayed));
 	UAM_ASSERT(replayed.starts_with("0400000\n"));
+	UAM_ASSERT(lines.compare(acknowledged, replayed.size(), replayed) == 0);
 	UAM_ASSERT_EQ(replay["result"].value("stdoutCursor", std::uintmax_t{0}), acknowledged + replayed.size());
 	// A cursor below the reclaimed prefix keeps failing the existing way, never returning other bytes.
 	const nlohmann::json stale = poll(acknowledged - 1);
@@ -218,7 +248,6 @@ UAM_TEST(RemoteAcknowledgedSpoolIsReclaimedProgressivelyAndReplayStaysCorrect)
 	UAM_ASSERT_EQ(stale["error"].value("code", ""), std::string("invalid_request"));
 	UAM_ASSERT(request({{"type", "process.stop"}}).value("ok", false));
 }
-#endif
 
 UAM_TEST(RemoteOrphanedSpoolsAreRemovedOnlyWhenTheirOwnerIsGone)
 {
@@ -257,71 +286,259 @@ UAM_TEST(RemoteOrphanedSpoolsAreRemovedOnlyWhenTheirOwnerIsGone)
 UAM_TEST(RemoteRetirementScriptsTerminateOnlyVerifiedIdleHelpersByPath)
 {
 	const std::string windows = uam::remote::WindowsHelperRetirementScript();
-	UAM_ASSERT(windows.find("Stop-Process") != std::string::npos);
-	UAM_ASSERT(windows.find("ParentProcessId=") != std::string::npos);
-	// The forced stop needs a stop refusal, no other process from that exact executable and no children, checked per process.
-	UAM_ASSERT(windows.find("-not $stopped -and -not $shared -and $sameRoot") != std::string::npos);
+	// A forced stop needs a real refusal, a binary that predates --stop-contract, no other process from that executable,
+	// and, per process, an unchanged creation time and no children.
+	UAM_ASSERT(windows.find("$refused=$r -and $r.Code -eq 2 -and $r.Err -match 'still owns remote processes'") != std::string::npos);
+	UAM_ASSERT(windows.find("-not $stopped -and $refused -and $sameRoot") != std::string::npos);
+	UAM_ASSERT(windows.find("Invoke-UamHelper $path '--stop-contract'") != std::string::npos);
+	UAM_ASSERT(windows.find("$c.Code -eq 2 -and -not $c.Out -and $c.Err.StartsWith('Usage: uam-runner ')") != std::string::npos);
 	UAM_ASSERT(windows.find("Where-Object { $_.CommandLine -notmatch") != std::string::npos);
-	const std::size_t child_check = windows.find("Get-UamChildren $helper.ProcessId");
+	const std::size_t creation = windows.find("$fresh.CreationDate -eq $helper.CreationDate -and @(Get-UamChildren $helper.ProcessId).Count -eq 0");
 	const std::size_t forced = windows.find("Stop-Process -Id $helper.ProcessId");
-	UAM_ASSERT(child_check != std::string::npos && forced != std::string::npos && child_check < forced);
+	UAM_ASSERT(creation != std::string::npos && forced != std::string::npos && creation < forced);
 	UAM_ASSERT(windows.find("Stop-Process -Name") == std::string::npos);
-	UAM_ASSERT(windows.find("uam-runner-spool-*") != std::string::npos);
+	const std::string spools = uam::remote::WindowsHelperSpoolCleanupScript();
+	UAM_ASSERT(spools.find("if (-not $process.ExecutablePath) { $uamKnown=$false }") != std::string::npos);
+	UAM_ASSERT(spools.find("[IO.File]::Open($lock,'Open','ReadWrite','None').Dispose() } catch { continue }") != std::string::npos);
 
 	const std::string linux_script = uam::remote::LinuxHelperRetirementScript();
 	UAM_ASSERT(linux_script.find("readlink \"/proc/$1/exe\"") != std::string::npos);
-	UAM_ASSERT(linux_script.find("uam_owned") != std::string::npos);
 	UAM_ASSERT(linux_script.find("test \"$uam_ppid\" = \"$1\" && test \"$uam_state\" != Z") != std::string::npos);
-	// Termination re-verifies identity, start time and children immediately before the signal.
+	const std::size_t refusal = linux_script.find("2:*'still owns remote processes'*) ;;");
+	const std::size_t contract = linux_script.find(":2:'Usage: uam-runner '*) ;;");
 	const std::size_t reverified = linux_script.find("uam_born\" = \"$uam_helper_born\" && ! uam_has_child \"$uam_pid\"");
 	const std::size_t signal = linux_script.find("kill -TERM \"$uam_pid\"");
-	UAM_ASSERT(reverified != std::string::npos && signal != std::string::npos && reverified < signal);
+	UAM_ASSERT(refusal != std::string::npos && contract != std::string::npos && reverified != std::string::npos && signal != std::string::npos);
+	UAM_ASSERT(refusal < contract && contract < reverified && reverified < signal);
 	UAM_ASSERT(linux_script.find("pkill") == std::string::npos && linux_script.find("killall") == std::string::npos);
-	UAM_ASSERT(linux_script.find("uam-runner-spool-*") != std::string::npos);
+	UAM_ASSERT(linux_script.find("if test -n \"$uam_runner_alive\"; then echo 'UAM_HELPER_SPOOLS_KEPT'") != std::string::npos);
+	UAM_ASSERT(linux_script.find("case \"$uam_open\" in *\"$uam_dir/\"*) continue;; esac") != std::string::npos);
 #if !defined(_WIN32)
 	TempDir temp("uam-retirement-script");
 	const fs::path script = temp.root / "retire.sh";
-	UAM_ASSERT(uam::io::WriteTextFile(script, "uam_root=/none; uam_version=1; uam_endpoint=uam-1-p3\n" + linux_script));
+	UAM_ASSERT(uam::io::WriteTextFile(script, "uam_root=/none; uam_version=1; uam_endpoint=uam-1-p3; uam_assume_pre_fix=\n" + linux_script));
 	const ProcessExecutionResult syntax = PlatformServicesFactory::Instance().process_service.ExecuteCommand("/bin/sh -n \"" + script.string() + "\" 2>&1", 10000);
 	UAM_ASSERT_EQ(syntax.exit_code, 0);
 #endif
 }
 
+UAM_TEST(RemoteRetirementCommandsStayUnderTheWindowsLimitOrAreSkipped)
+{
+	uam::remote::BootstrapPlan plan;
+	plan.ssh_alias = "windows-lab";
+	plan.version = "5.1.0";
+	plan.nonce = std::string(64, 'n');
+	const std::vector<uam::remote::BootstrapStep> defaults = uam::remote::BuildBootstrapRetirementSteps(plan, "windows");
+	UAM_ASSERT_EQ(defaults.size(), std::size_t{2});
+	for (const uam::remote::BootstrapStep& step : defaults) UAM_ASSERT(step.argv.back().size() < 8000);
+	for (const std::size_t length : {std::size_t{120}, std::size_t{240}})
+	{
+		plan.runner_directory = std::string(length, 'd');
+		const std::vector<uam::remote::BootstrapStep> steps = uam::remote::BuildBootstrapRetirementSteps(plan, "windows");
+		UAM_ASSERT(steps.empty() || steps.size() == 2);
+		for (const uam::remote::BootstrapStep& step : steps) UAM_ASSERT(step.argv.back().size() < 8000);
+	}
+	UAM_ASSERT_EQ(uam::remote::BuildBootstrapRetirementSteps(plan, "linux").size(), std::size_t{1});
+	UAM_ASSERT(uam::remote::BuildBootstrapRetirementSteps(plan, "linux").front().argv.back().find("uam_assume_pre_fix=;") != std::string::npos);
+}
+
+UAM_TEST(RemoteRunnerAnswersTheStopContract)
+{
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+#if defined(_WIN32)
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner.exe";
+#else
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+#endif
+	UAM_ASSERT(fs::exists(runner));
+	const ProcessExecutionResult answered = service.ExecuteCommand("\"" + runner.string() + "\" --stop-contract", 30000);
+	UAM_ASSERT_EQ(answered.exit_code, 0);
+	UAM_ASSERT_EQ(uam::strings::Trim(answered.output), std::string("1"));
+}
+
 #if defined(__linux__)
-UAM_TEST(LinuxRetirementScriptStopsIdleHelpersAndKeepsBusyOnes)
+UAM_TEST(LinuxRetirementHonoursOwedRefusalsAndKeepsSpoolsWhileAnyHelperRuns)
 {
 	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
 	const fs::path built = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
 	UAM_ASSERT(fs::exists(built));
 	TempDir temp("uam-retirement-linux");
-	const fs::path root = fs::canonical(temp.root);
-	const auto install = [&](const std::string& version)
+	TempDir foreign_temp("uam-retirement-foreign");
+	const fs::path root = fs::canonical(temp.root), foreign_root = fs::canonical(foreign_temp.root);
+	fs::create_directories(root / "tmp");
+	ScopedEnvVar tmpdir("TMPDIR", (root / "tmp").string());
+	const auto install = [&](const fs::path& base, const std::string& version)
 	{
-		const fs::path executable = root / version / "uam-runner";
+		const fs::path executable = base / version / "uam-runner";
 		fs::create_directories(executable.parent_path());
 		fs::copy_file(built, executable);
 		return executable;
 	};
-	const fs::path idle = install("4.11.0"), busy = install("5.0.0");
-	const fs::path idle_socket = root / "uam-4.11.0-p3.sock", busy_socket = root / "uam-5.0.0-p3.sock";
-	UAM_ASSERT_EQ(service.ExecuteCommand("\"" + idle.string() + "\" start --socket \"" + idle_socket.string() + "\"", 30000).exit_code, 0);
-	UAM_ASSERT_EQ(service.ExecuteCommand("\"" + busy.string() + "\" start --socket \"" + busy_socket.string() + "\"", 30000).exit_code, 0);
-	uam::remote::RunnerClient busy_client(service, {busy.string(), "bridge", "--socket", busy_socket.string()});
+	const fs::path owed = install(root, "5.0.0"), busy = install(root, "4.11.0"), foreign = install(foreign_root, "5.0.0");
+	const fs::path owed_socket = root / "uam-5.0.0-p3.sock", busy_socket = root / "uam-4.11.0-p3.sock", foreign_socket = foreign_root / "uam-5.0.0-p3.sock";
+	const auto runner = [&](const fs::path& executable, const std::string& verb, const fs::path& socket)
+	{ return service.ExecuteCommand("\"" + executable.string() + "\" " + verb + " --socket \"" + socket.string() + "\"", 30000).exit_code; };
+	const auto connected = [&](const fs::path& executable, const fs::path& socket)
+	{
+		std::string ignored;
+		uam::remote::RunnerClient probe(service, {executable.string(), "bridge", "--socket", socket.string()});
+		return probe.Connect(&ignored);
+	};
+	struct Cleanup { std::function<void()> run; ~Cleanup() { run(); } };
+	std::optional<uam::remote::RunnerClient> busy_client;
+	Cleanup cleanup{[&]
+	{
+		try {
+		std::string ignored;
+		if (busy_client) { (void)busy_client->CloseProcessInput("retire-busy", &ignored); std::this_thread::sleep_for(std::chrono::milliseconds(300)); (void)busy_client->RemoveProcess("retire-busy", &ignored); busy_client->Disconnect(); }
+		(void)runner(busy, "stop", busy_socket);
+		(void)runner(foreign, "stop", foreign_socket);
+		} catch (...) {}
+	}};
+	UAM_ASSERT_EQ(runner(owed, "start", owed_socket), 0);
+	UAM_ASSERT_EQ(runner(busy, "start", busy_socket), 0);
 	std::string error;
-	UAM_ASSERT(busy_client.Connect(&error));
-	UAM_ASSERT(busy_client.StartProcess("retire-busy", root, {"/bin/sh", "-c", "IFS= read -r value"}, {}, &error));
-	const std::string script = "uam_root='" + root.string() + "'; uam_version=5.1.0; uam_endpoint=uam-5.1.0-p3\n" + uam::remote::LinuxHelperRetirementScript();
-	UAM_ASSERT(uam::io::WriteTextFile(root / "retire.sh", script));
-	const ProcessExecutionResult retired = service.ExecuteCommand("/bin/sh \"" + (root / "retire.sh").string() + "\"", 90000);
-	(void)busy_client.CloseProcessInput("retire-busy", &error);
-	std::this_thread::sleep_for(std::chrono::milliseconds(300));
-	(void)busy_client.RemoveProcess("retire-busy", &error);
-	busy_client.Disconnect();
-	(void)service.ExecuteCommand("\"" + busy.string() + "\" stop --socket \"" + busy_socket.string() + "\"", 30000);
-	UAM_ASSERT(retired.output.find("UAM_HELPER_RETIRED:" + idle.string()) != std::string::npos);
-	UAM_ASSERT(retired.output.find("UAM_HELPER_KEPT_CHILDREN:" + busy.string()) != std::string::npos);
-	uam::remote::RunnerClient stopped_client(service, {idle.string(), "bridge", "--socket", idle_socket.string()});
-	UAM_ASSERT(!stopped_client.Connect(&error));
+	{
+		// A finished process whose output nobody read is owed work: this helper's refusal is truthful.
+		uam::remote::RunnerClient owed_client(service, {owed.string(), "bridge", "--socket", owed_socket.string()});
+		UAM_ASSERT(owed_client.Connect(&error));
+		UAM_ASSERT(owed_client.StartProcess("owed", root, {"/bin/sh", "-c", "printf owed-output"}, {}, &error));
+		std::this_thread::sleep_for(std::chrono::seconds(1));
+		owed_client.Disconnect();
+	}
+	busy_client.emplace(service, std::vector<std::string>{busy.string(), "bridge", "--socket", busy_socket.string()});
+	UAM_ASSERT(busy_client->Connect(&error));
+	UAM_ASSERT(busy_client->StartProcess("retire-busy", root, {"/bin/sh", "-c", "IFS= read -r value"}, {}, &error));
+	const auto retire = [&](const std::string& assume_pre_fix)
+	{
+		const std::string script = "uam_root='" + root.string() + "'; uam_version=5.1.0; uam_endpoint=uam-5.1.0-p3; uam_assume_pre_fix=" + assume_pre_fix + "\n" + uam::remote::LinuxHelperRetirementScript();
+		UAM_ASSERT(uam::io::WriteTextFile(root / "retire.sh", script));
+		return service.ExecuteCommand("/bin/sh \"" + (root / "retire.sh").string() + "\"", 120000).output;
+	};
+	const std::string honoured = retire("");
+	UAM_ASSERT(honoured.find("UAM_HELPER_KEPT_BUSY:" + owed.string()) != std::string::npos);
+	UAM_ASSERT(honoured.find("UAM_HELPER_KEPT_CHILDREN:" + busy.string()) != std::string::npos);
+	UAM_ASSERT(honoured.find("UAM_HELPER_TERMINATED") == std::string::npos);
+	UAM_ASSERT(connected(owed, owed_socket));
+	// A pre-fix stand-in: the same refusal is untrustworthy, there is no child, so only this helper is terminated.
+	const std::string forced = retire("1");
+	UAM_ASSERT(forced.find("UAM_HELPER_TERMINATED:" + owed.string()) != std::string::npos);
+	UAM_ASSERT(forced.find("UAM_HELPER_RETIRED:" + owed.string()) != std::string::npos);
+	UAM_ASSERT(forced.find("UAM_HELPER_KEPT_CHILDREN:" + busy.string()) != std::string::npos);
+	UAM_ASSERT(!connected(owed, owed_socket));
+	UAM_ASSERT(connected(busy, busy_socket));
+
+	// An unmarked spool may belong to a helper in another runner root: it is kept while any helper runs.
+	if (busy_client) { (void)busy_client->CloseProcessInput("retire-busy", &error); std::this_thread::sleep_for(std::chrono::milliseconds(300)); (void)busy_client->RemoveProcess("retire-busy", &error); busy_client->Disconnect(); busy_client.reset(); }
+	(void)runner(busy, "stop", busy_socket);
+	const fs::path unmarked = root / "tmp" / "uam-runner-spool-unmarked";
+	fs::create_directories(unmarked);
+	UAM_ASSERT(uam::io::WriteTextFile(unmarked / "session.stdout", "owed bytes"));
+	fs::last_write_time(unmarked, fs::file_time_type::clock::now() - std::chrono::minutes(10));
+	UAM_ASSERT_EQ(runner(foreign, "start", foreign_socket), 0);
+	const std::string kept = retire("");
+	UAM_ASSERT(kept.find("UAM_HELPER_SPOOLS_KEPT") != std::string::npos);
+	UAM_ASSERT(fs::exists(unmarked / "session.stdout"));
+	(void)runner(foreign, "stop", foreign_socket);
+	const std::string swept = retire("");
+	// Another test's helper may still be running on this machine; then the spool must still be kept.
+	UAM_ASSERT(swept.find("UAM_HELPER_SPOOLS_KEPT") != std::string::npos ? fs::exists(unmarked) : !fs::exists(unmarked));
+}
+#endif
+
+#if defined(_WIN32)
+UAM_TEST(WindowsRetirementHonoursOwedRefusalsAndKeepsSpoolsWhileForeignHelpersRun)
+{
+	TempDir temp("uam-helper-owed");
+	const fs::path root = fs::canonical(temp.root);
+	ScopedEnvVar no_namespace("UAM_RUNNER_SERVICE_NAMESPACE", "");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path built = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner.exe";
+	UAM_ASSERT(fs::exists(built));
+	const auto install = [&](const fs::path& executable, const fs::path& source)
+	{
+		fs::create_directories(executable.parent_path());
+		fs::copy_file(source, executable);
+		return executable;
+	};
+	const fs::path owed = install(root / "helpers" / "5.0.0" / "uam-runner.exe", built);
+	const fs::path foreign = install(root / "other" / "5.0.0" / "uam-runner.exe", built);
+	// The current helper must report another version, or the owed helper would count as sharing its pipe; any small executable stands in.
+	const fs::path current = install(root / "helpers" / "5.1.0" / "uam-runner.exe", fs::path(uam::env::GetNonEmptyString("SystemRoot").value_or("C:\\Windows")) / "System32" / "hostname.exe");
+	int script_index = 0;
+	const auto powershell = [&](const std::string& script)
+	{
+		const fs::path file = temp.root / ("script-" + std::to_string(script_index++) + ".ps1");
+		if (!uam::io::WriteTextFile(file, script)) return ProcessExecutionResult{};
+		return service.ExecuteCommand("powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + file.string() + "\"", 180000);
+	};
+	const std::string variables = "$uamHelperRoot='" + root.string() + "'; $uamRunKey='HKCU:\\Software\\UAM-Tests\\" + service.GenerateUuid() + "\\Run'; $uamCurrent='" + current.string() + "'; ";
+	const auto connected = [&](const fs::path& executable)
+	{
+		std::string ignored;
+		uam::remote::RunnerClient probe(service, {executable.string(), "bridge"});
+		return probe.Connect(&ignored);
+	};
+	std::vector<uam::platform::StdioProcessPlatformFields> services(2);
+	struct Cleanup { std::function<void()> run; ~Cleanup() { run(); } };
+	Cleanup cleanup{[&]
+	{
+		try { for (auto& fields : services) { service.TerminateStdioProcess(fields, true); service.CloseStdioProcessHandles(fields); } } catch (...) {}
+	}};
+	const auto serve = [&](std::size_t index, const fs::path& executable)
+	{
+		std::string start_error;
+		UAM_ASSERT(service.StartStdioProcess(services[index], fs::temp_directory_path(), {executable.string(), "serve"}, &start_error));
+		service.CloseStdioProcessInput(services[index]);
+		bool ready = false;
+		for (int attempt = 0; attempt < 100 && !ready; ++attempt)
+		{
+			ready = connected(executable);
+			if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		}
+		UAM_ASSERT(ready);
+	};
+	serve(0, owed);
+	std::string error;
+	{
+		// A finished process whose output nobody read is owed work: this helper's refusal is truthful.
+		uam::remote::RunnerClient owed_client(service, {owed.string(), "bridge"});
+		UAM_ASSERT(owed_client.Connect(&error));
+		UAM_ASSERT(owed_client.StartProcess("owed", fs::temp_directory_path(), {"cmd.exe", "/d", "/s", "/c", "echo owed-output"}, {}, &error));
+		std::this_thread::sleep_for(std::chrono::seconds(1));
+		owed_client.Disconnect();
+	}
+	const ProcessExecutionResult honoured = powershell(variables + "$uamAssumePreFix=$false; " + uam::remote::WindowsHelperRetirementScript());
+	UAM_ASSERT(honoured.output.find("UAM_HELPER_KEPT_BUSY:" + owed.string()) != std::string::npos);
+	UAM_ASSERT(honoured.output.find("UAM_HELPER_TERMINATED") == std::string::npos);
+	UAM_ASSERT(honoured.output.find("UAM_HELPER_RETIREMENT_FAILED") == std::string::npos);
+	UAM_ASSERT(connected(owed));
+	// A pre-fix stand-in: the same refusal is untrustworthy and there is no child, so the helper is terminated.
+	const ProcessExecutionResult forced = powershell(variables + "$uamAssumePreFix=$true; " + uam::remote::WindowsHelperRetirementScript());
+	UAM_ASSERT(forced.output.find("UAM_HELPER_TERMINATED:" + owed.string()) != std::string::npos);
+	UAM_ASSERT(forced.output.find("UAM_HELPER_RETIRED:" + owed.string()) != std::string::npos);
+	UAM_ASSERT(!connected(owed));
+
+	// The killed helper's spool stays while a helper outside this root runs, then goes; a held owner lock always keeps its spool.
+	std::vector<fs::path> spools;
+	for (const fs::directory_entry& entry : fs::directory_iterator(owed.parent_path()))
+		if (entry.path().filename().string().starts_with("uam-runner-spool-")) spools.push_back(entry.path());
+	UAM_ASSERT(!spools.empty());
+	const fs::path held = root / "helpers" / "4.0.0" / "uam-runner-spool-held";
+	fs::create_directories(held);
+	std::ofstream held_lock(held / ".owner-lock");
+	UAM_ASSERT(held_lock.good());
+	serve(1, foreign);
+	const ProcessExecutionResult kept = powershell(variables + uam::remote::WindowsHelperSpoolCleanupScript());
+	UAM_ASSERT(kept.output.find("UAM_HELPER_SPOOLS_KEPT") != std::string::npos);
+	for (const fs::path& spool : spools) UAM_ASSERT(fs::exists(spool));
+	UAM_ASSERT_EQ(service.ExecuteCommand("\"" + foreign.string() + "\" stop", 30000).exit_code, 0);
+	for (int attempt = 0; attempt < 100 && connected(foreign); ++attempt) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	const ProcessExecutionResult swept = powershell(variables + uam::remote::WindowsHelperSpoolCleanupScript());
+	UAM_ASSERT(swept.output.find("UAM_HELPER_RETIREMENT_FAILED") == std::string::npos);
+	if (swept.output.find("UAM_HELPER_SPOOLS_KEPT") == std::string::npos) // Another test's helper may run elsewhere on this machine.
+		for (const fs::path& spool : spools) UAM_ASSERT(!fs::exists(spool));
+	UAM_ASSERT(fs::exists(held / ".owner-lock"));
 }
 #endif
 

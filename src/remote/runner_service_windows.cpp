@@ -351,6 +351,7 @@ namespace uam::remote
 					else
 						response = HandleRunnerRequest(request, runner_version, &state);
 					if (!WritePipeFrame(client.Get(), response, stop_event.Get())) break;
+					state.ConfirmResponseDelivered(request, response);
 				}
 				done->store(true, std::memory_order_release);
 			})});
