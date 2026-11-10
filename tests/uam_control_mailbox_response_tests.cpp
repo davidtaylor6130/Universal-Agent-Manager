@@ -2,6 +2,10 @@
 #include "test_harness.h"
 #include "app/uam_control_service.h"
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 using namespace uam_test;
 
 namespace
@@ -483,6 +487,33 @@ UAM_TEST(UamControlStdioWaitCancellationPreservesNextCallAndEofExits)
 	fixture.Reply(eof);
 	fixture.Exit(0);
 	UAM_ASSERT(!fixture.Read().has_value()); // No abandoned wait4 response on EOF.
+}
+
+UAM_TEST(UamControlStdioRereadsBrieflyUnreadableReplyInsteadOfFailingTheCall)
+{
+#ifdef _WIN32
+	return; // POSIX mode 000 stages an unreadable reply deterministically; Windows cannot rename a locked file into place.
+#else
+	if (::geteuid() == 0) return;
+	WaitProxyFixture fixture;
+	(void)fixture.Initialize();
+	fixture.Send({{"jsonrpc", "2.0"}, {"id", 5}, {"method", "tools/call"},
+	    {"params", {{"name", "goal_get"}, {"arguments", nlohmann::json::object()}}}});
+	const auto request = fixture.Take("goal_get");
+	// Publish atomically but unreadable, as a reply another handle briefly refuses to share looks to the proxy.
+	const fs::path staged = fixture.temp.root / "staged-reply.json";
+	UAM_ASSERT(uam::io::WriteTextFile(staged, nlohmann::json{{"ok", true}, {"result", {{"sentinel", "reread"}}}}.dump()));
+	fs::permissions(staged, fs::perms::none, fs::perm_options::replace);
+	const fs::path reply = fixture.capability / "responses" / (request.at("requestId").get<std::string>() + ".json");
+	fs::rename(staged, reply);
+	std::this_thread::sleep_for(std::chrono::milliseconds(300)); // The proxy polls every 25 ms.
+	UAM_ASSERT(!fixture.Read().has_value()); // No error reply while the file cannot be opened.
+	fs::permissions(reply, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace);
+	const auto response = fixture.Native(5);
+	UAM_ASSERT_EQ(response.at("result").at("isError"), nlohmann::json(false));
+	UAM_ASSERT_EQ(nlohmann::json::parse(response.at("result").at("content")[0].at("text").get<std::string>()),
+	    (nlohmann::json{{"sentinel", "reread"}}));
+#endif
 }
 
 UAM_TEST(UamControlStdioOversizePartialLineExitsWithInputStillOpen)
