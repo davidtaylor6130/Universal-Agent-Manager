@@ -418,6 +418,9 @@ describe('ChatView outgoing admission without a delivery witness', () => {
     expect(host.querySelector('[data-message-index="2"] article')!.getAttribute('data-delivery')).toBe('unconfirmed')
     publish([...HISTORY, lost, { role: 'assistant', content: 'Output with no provider named', createdAt: '2026-01-02T00:00:03Z' }], {})
     expect(host.querySelector('[data-message-index="2"] article')!.getAttribute('data-delivery')).toBe('unconfirmed')
+    // A row this build dispatched and the native gates did not confirm keeps its marker even behind a normal answer.
+    publish([...HISTORY, { ...lost, inputDeliveryTracked: true }, { role: 'assistant', content: 'Output after a lost prompt', createdAt: '2026-01-02T00:00:03Z', providerId: 'codex-cli' }], {})
+    expect(host.querySelector('[data-message-index="2"] article')!.getAttribute('data-delivery')).toBe('unconfirmed')
     // A response that is still streaming is output, not a completion: the marker stays until the turn settles.
     const streaming: CppMessage = { role: 'assistant', content: 'Still answering', createdAt: '2026-01-02T00:00:03Z', providerId: 'codex-cli' }
     publish([...HISTORY, lost, streaming], { processing: true, lifecycleState: 'processing', turnAssistantMessageIndex: 3 })

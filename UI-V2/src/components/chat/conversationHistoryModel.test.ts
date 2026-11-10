@@ -35,6 +35,12 @@ describe('responseFlags receivedByProvider', () => {
     expect(responseFlags(messages, 1).receivedByProvider).toBe(true)
   })
 
+  it('never applies to a row this build dispatched, whatever follows it', () => {
+    // The native gates refused to confirm it (lost, cancelled, receipt never came): the marker must stay.
+    const tracked = row('user', 'Dispatched and not confirmed', { ...INPUT, inputDeliveryTracked: true })
+    expect(responseFlags([tracked, row('assistant', 'Output that followed')], 0).receivedByProvider).toBe(false)
+  })
+
   it('does not treat a compaction marker as an answer', () => {
     const marker = row('assistant', '', { blocks: [{ type: 'context_compaction', text: 'Summary' }] })
     expect(responseFlags([row('user', 'Question', INPUT), marker], 0).receivedByProvider).toBe(false)

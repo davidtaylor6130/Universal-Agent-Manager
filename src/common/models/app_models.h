@@ -406,6 +406,9 @@ struct Message
 	std::optional<std::string> native_input_id;
 	/// Exact original local stdio entry completed at the OS sink; not provider processing or input authority.
 	bool input_write_completed = false;
+	// This build dispatched the row, so its delivery is judged only by write facts, receipts and the provider's own
+	// completion. Rows without it are older history, where a directly following answer is the only evidence left.
+	bool input_delivery_tracked = false;
 	std::optional<std::string> origin_request_id;
 	bool operator==(const Message&) const = default;
 };

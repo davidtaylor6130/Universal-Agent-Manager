@@ -1026,6 +1026,7 @@ namespace
 		uam::json::SetString(obj, kMessageCreatedAtField, msg.created_at);
 		if (msg.native_input_id && uam::input_provenance::ValidNativeInputId(*msg.native_input_id)) uam::json::SetString(obj, "native_input_id", *msg.native_input_id);
 		if (msg.role == MessageRole::User && msg.input_write_completed && msg.native_input_id && uam::input_provenance::ValidNativeInputId(*msg.native_input_id)) uam::json::SetBool(obj, "input_write_completed", true);
+		if (msg.role == MessageRole::User && msg.input_delivery_tracked) uam::json::SetBool(obj, "input_delivery_tracked", true);
 		if (msg.origin_request_id && uam::input_provenance::ValidOriginRequestId(*msg.origin_request_id)) uam::json::SetString(obj, "origin_request_id", *msg.origin_request_id);
 
 		SetNonEmptyString(obj, kMessageProviderField, msg.provider);
@@ -1180,6 +1181,7 @@ namespace
 		msg.model_id = JsonStringOrEmpty(obj.Find("model_id"));
 		msg.native_input_id = InputProvenanceFromJson(obj.Find("native_input_id"), true);
 		if (const auto* completed = obj.Find("input_write_completed"); completed && completed->type == JsonValue::Type::Bool && completed->bool_value && msg.role == MessageRole::User && msg.native_input_id) msg.input_write_completed = true;
+		if (const auto* tracked = obj.Find("input_delivery_tracked"); tracked && tracked->type == JsonValue::Type::Bool && tracked->bool_value && msg.role == MessageRole::User) msg.input_delivery_tracked = true;
 		msg.origin_request_id = InputProvenanceFromJson(obj.Find("origin_request_id"), false);
 		if (const auto* origin = obj.Find("managed_origin_run_id"); origin && origin->type == JsonValue::Type::String && uam::uuid::IsCanonicalUuid(origin->string_value)) msg.managed_origin_run_id = origin->string_value;
 		msg.tokens_input = NonNegativeIntFieldOrZero(obj.Find(kMessageTokensInputField));
@@ -1424,7 +1426,7 @@ namespace
 
 	bool MessageIdentityFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
 	{
-		return lhs.input_write_completed == rhs.input_write_completed && lhs.native_input_id == rhs.native_input_id && lhs.origin_request_id == rhs.origin_request_id && lhs.managed_origin_run_id == rhs.managed_origin_run_id && lhs.role == rhs.role && lhs.content == rhs.content && lhs.created_at == rhs.created_at && lhs.provider == rhs.provider && lhs.model_id == rhs.model_id && lhs.provider_event_ids == rhs.provider_event_ids;
+		return lhs.input_write_completed == rhs.input_write_completed && lhs.input_delivery_tracked == rhs.input_delivery_tracked && lhs.native_input_id == rhs.native_input_id && lhs.origin_request_id == rhs.origin_request_id && lhs.managed_origin_run_id == rhs.managed_origin_run_id && lhs.role == rhs.role && lhs.content == rhs.content && lhs.created_at == rhs.created_at && lhs.provider == rhs.provider && lhs.model_id == rhs.model_id && lhs.provider_event_ids == rhs.provider_event_ids;
 	}
 
 	bool MessageUsageFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)

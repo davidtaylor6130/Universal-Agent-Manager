@@ -4659,6 +4659,9 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		{
 			unsent_messages.push_back(static_cast<std::size_t>(index));
 			user_message.acp_prompt_not_sent = false;
+			// Every row this build dispatches is stamped: from here on only a write fact, a receipt or the provider's
+			// own completion can clear its marker, never the looser rule kept for older history.
+			user_message.input_delivery_tracked = true;
 		}
 	}
 	if (session.defer_prompt_save && chat.execution_host_id == execution_hosts::kLocalHostId)

@@ -450,6 +450,41 @@ UAM_TEST(CompletionNeverConfirmsQueuedUnsentRemovedDuplicateOrUnidentifiedRows)
 	}
 }
 
+UAM_TEST(GoalInternalOrUnanchoredTurnsNeverConfirmInput)
+{
+	{
+		// A goal's internal turn has no authored row of its own.
+		AnsweredTurnFixture fixture;
+		fixture.session->goal_internal_session = true;
+		UAM_ASSERT(!uam::acp_detail::ConfirmTurnInputReceived(*fixture.session, fixture.Chat()));
+		UAM_ASSERT(!fixture.Written(1) && !fixture.Written(2));
+	}
+	{
+		// Without a recorded first row the turn's rows are unknown; the last index alone confirms nothing.
+		AnsweredTurnFixture fixture;
+		fixture.session->turn_first_user_message_index = -1;
+		UAM_ASSERT(!uam::acp_detail::ConfirmTurnInputReceived(*fixture.session, fixture.Chat()));
+		UAM_ASSERT(!fixture.Written(1) && !fixture.Written(2));
+	}
+}
+
+UAM_TEST(DeliveryTrackedStampIsSavedWithItsRow)
+{
+	TempDir temp("uam-delivery-tracked-stamp");
+	ChatSession chat;
+	chat.id = "delivery-tracked-stamp";
+	chat.provider_id = "gemini-cli";
+	chat.messages.push_back({.role = MessageRole::User, .content = "Saved before delivery was recorded",
+	    .native_input_id = "33333333-3333-4333-8333-000000000005"});
+	chat.messages.push_back({.role = MessageRole::User, .content = "Dispatched by this build",
+	    .native_input_id = "33333333-3333-4333-8333-000000000006", .input_delivery_tracked = true});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(saved && saved->messages.size() == 2);
+	UAM_ASSERT(!saved->messages[0].input_delivery_tracked && saved->messages[1].input_delivery_tracked);
+	UAM_ASSERT(!saved->messages[1].input_write_completed);
+}
+
 UAM_TEST(RemoteDeliveryInputIdsAreSavedOnlyBesideTheirMarker)
 {
 	TempDir temp("uam-remote-delivery-input-ids");

@@ -103,7 +103,9 @@ export function responseFlags(messages: Message[], index: number) {
   // output that merely preceded a failed turn (a background task, a late line) proves nothing; only the immediately
   // following row counts; and a compaction marker is UAM's own row, not an answer.
   // Computed only for input that would otherwise show as unconfirmed, so other rows never re-render when an answer starts.
-  const receivedByProvider = Boolean(followingResponse && hasUnconfirmedNativeInput(message) &&
+  // Only for rows saved before delivery was recorded. A row this build dispatched carries inputDeliveryTracked, and if
+  // the native gates did not confirm it, its marker stays whatever follows it.
+  const receivedByProvider = Boolean(followingResponse && !message.inputDeliveryTracked && hasUnconfirmedNativeInput(message) &&
     followingResponse.providerId?.trim() && followingResponse.providerId.trim() === message.providerId?.trim() &&
     !followingResponse.interrupted && !stoppedResponseLabel(followingResponse.stopReason, followingResponse.interrupted) &&
     hasSubstantiveOutput(followingResponse) &&
