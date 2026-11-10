@@ -251,7 +251,11 @@ namespace uam
 			m_retiredScan = std::move(scan);
 		}
 		const std::chrono::steady_clock::time_point publication_finished = std::chrono::steady_clock::now();
-		if (!m_scan.valid() && GetAppTimeSeconds() >= m_nextScanTime)
+		// A scan's result is published only while Computer Use is globally enabled, so a disabled install copies no catalog.
+		// Its last snapshot is released on a worker as usual instead of being held until Computer Use is enabled again.
+		if (!m_scan.valid() && !app.settings.computer_use_globally_enabled && m_retiredScan)
+			uam::platform::StartBackgroundThread([retired = std::move(m_retiredScan)]() mutable { retired.reset(); }).detach();
+		if (!m_scan.valid() && app.settings.computer_use_globally_enabled && GetAppTimeSeconds() >= m_nextScanTime)
 		{
 			std::shared_ptr<Scan> scan = std::make_shared<Scan>();
 			scan->state.data_root = app.data_root;

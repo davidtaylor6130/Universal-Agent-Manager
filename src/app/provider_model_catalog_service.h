@@ -79,7 +79,7 @@ class ProviderModelCatalogService
 	/// Read models, config and discovery state together, resolving the scope once.
 	nlohmann::json GetCatalogSnapshot(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 
-	nlohmann::json GetCatalogScopes() const;
+	nlohmann::json GetCatalogScopes(bool recent_workspace = false) const;
 	/// Start discovery only when no usable cache exists or its last successful refresh is stale.
 	bool BeginDiscoveryIfStale(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
 	/// Start a user-requested discovery even when the cache is fresh.
@@ -186,7 +186,8 @@ class ProviderModelCatalogService
 	void WriteOpenCodeZenFreeModelsCache(const nlohmann::json& models) const;
 	std::optional<nlohmann::json> FetchOpenCodeZenModels(std::stop_token stop_token);
 	void RefreshConfiguredOpenCodeModels();
-	std::string CatalogKey(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+	/// recent_workspace reuses a two-second-old canonical workspace; only the per-push display readers pass it.
+	std::string CatalogKey(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local", bool recent_workspace = false) const;
 	void LoadPersistentCatalogs();
 	bool WritePersistentCatalogs() const;
 

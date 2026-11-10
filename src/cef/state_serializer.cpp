@@ -25,6 +25,7 @@
 #include "common/config/settings_frontend_json.h"
 #include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
+#include "common/paths/recent_path_probe.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "app/chat_lifecycle_service.h"
@@ -150,6 +151,36 @@ namespace uam
 			std::map<WorkspaceKey, std::filesystem::path> workspaces;
 		};
 
+		/// <summary>Results that stay valid while AppState is unchanged; shared by every serialization inside one StablePass.</summary>
+		struct StablePassState
+		{
+			CatalogSnapshotCache cache;
+			std::unordered_map<const ChatSession*, std::string> transcript_digests;
+		};
+
+		thread_local StablePassState* g_stable_pass = nullptr;
+		thread_local std::size_t g_hashed_transcript_messages = 0;
+
+		/// <summary>The pass's catalog cache, or a private one outside a pass, with this call's catalog compaction.</summary>
+		class ScopedCatalogCache
+		{
+		  private:
+			CatalogSnapshotCache m_local;
+
+		  public:
+			CatalogSnapshotCache& cache;
+			explicit ScopedCatalogCache(bool compact_catalogs) : cache(g_stable_pass != nullptr ? g_stable_pass->cache : m_local), m_previous_compact(cache.compact_catalogs)
+			{
+				cache.compact_catalogs = compact_catalogs;
+			}
+			~ScopedCatalogCache() { cache.compact_catalogs = m_previous_compact; }
+			ScopedCatalogCache(const ScopedCatalogCache&) = delete;
+			ScopedCatalogCache& operator=(const ScopedCatalogCache&) = delete;
+
+		  private:
+			bool m_previous_compact;
+		};
+
 		/// <summary>Reuse identical workspace scopes only within this serialization.</summary>
 		const std::filesystem::path& WorkspaceSnapshotForChat(const AppState& app, const ChatSession& chat,
 		                                                       CatalogSnapshotCache& cache)
@@ -197,6 +228,8 @@ namespace uam
 			        {"modelsLoading", false}, {"modelRefreshError", ""}};
 		}
 
+		std::uint64_t JsonDigest(const nlohmann::json& value);
+
 		/// Fingerprint each inactive scope once per scan; changed patches hydrate its full catalog.
 		const nlohmann::json& CatalogFingerprintForChat(const AppState& app, const ChatSession& chat,
 		                                               CatalogSnapshotCache& cache)
@@ -205,8 +238,9 @@ namespace uam
 			const std::string key = CatalogSnapshotKey(chat.provider_id, workspace, chat.execution_host_id);
 			if (const std::unordered_map<std::string, nlohmann::json>::const_iterator found = cache.fingerprints.find(key); found != cache.fingerprints.end()) return found->second;
 			const nlohmann::json snapshot = CatalogSnapshotForChat(app, chat, cache);
+			// The token never leaves this process (patches hydrate the full catalog), so it is hashed without dumping the catalog to text.
 			return cache.fingerprints.emplace(key, nlohmann::json{
-			    {"catalogDigest", std::to_string(std::hash<std::string>{}(snapshot.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)))},
+			    {"catalogDigest", std::to_string(JsonDigest(snapshot))},
 			    {"modelsLoading", snapshot.value("modelsLoading", false)},
 			    {"modelRefreshError", snapshot.value("modelRefreshError", "")},
 			}).first->second;
@@ -229,7 +263,11 @@ namespace uam
 				const bool remote = host != uam::execution_hosts::kLocalHostId;
 				auto scope_key_it = scope_keys.find({host, workspace});
 				if (scope_key_it == scope_keys.end())
-					scope_key_it = scope_keys.emplace(std::pair{host, workspace}, uam::paths::WorkspaceOwnershipKey(app, host, workspace)).first;
+				{
+					// Local keys canonicalise on disk; RecentPathProbe keeps that off the per-push path. Remote keys depend on the host's platform.
+					scope_key_it = scope_keys.emplace(std::pair{host, workspace}, remote ? uam::paths::WorkspaceOwnershipKey(app, host, workspace)
+					    : uam::paths::RecentPathProbe(uam::paths::RecentPathProbeKind::WorkspaceOwnership, workspace, [&] { return uam::paths::WorkspaceOwnershipKey(app, host, workspace); })).first;
+				}
 				const std::string& scope_key = scope_key_it->second;
 				if (!seen.insert(provider_id + "\n" + scope_key).second) return;
 				ChatSession scope;
@@ -255,7 +293,7 @@ namespace uam
 					append_catalog(provider.id, workspace, folder.execution_host_id);
 				}
 			}
-			for (const nlohmann::json& scope : app.provider_model_catalog->GetCatalogScopes())
+			for (const nlohmann::json& scope : app.provider_model_catalog->GetCatalogScopes(true))
 			{
 				if (!scope.is_object() || uam::excluded_provider_data::IsExcluded(scope.value("providerId", ""))) continue;
 				const std::string host = scope.value("executionHostId", "local");
@@ -430,6 +468,13 @@ namespace uam
 
 			std::uint64_t m_hash = uam::hashing::kFnv1a64OffsetBasis;
 		};
+
+		std::uint64_t JsonDigest(const nlohmann::json& value)
+		{
+			SummaryDigestWriter writer;
+			writer.Merge(value);
+			return writer.Digest();
+		}
 
 		template <class Writer>
 		void WriteWorkspaceIsolationFields(Writer& w, const ChatSession& chat)
@@ -998,6 +1043,13 @@ namespace uam
 
 		std::string MessageDigestForFingerprint(const ChatSession& session, bool cache_selected)
 		{
+			// One push reads a changed chat's digest up to three times (digest scan, summary build, catalog hydration).
+			// Checked first so a repeat inside the pass keeps the selected cache's rehash count from the real computation.
+			if (g_stable_pass != nullptr)
+			{
+				if (const auto known = g_stable_pass->transcript_digests.find(&session); known != g_stable_pass->transcript_digests.end()) return known->second;
+			}
+
 			SelectedHistoryDigestCache* cache = cache_selected ? &g_selected_history_digest : nullptr;
 			if (cache != nullptr)
 			{
@@ -1036,6 +1088,7 @@ namespace uam
 			{
 				const Message& message = session.messages[index];
 				chat_pages::AppendMessageDigest(hash, message);
+				++g_hashed_transcript_messages;
 				if (cache != nullptr)
 				{
 					cache->messages.push_back(message);
@@ -1058,7 +1111,9 @@ namespace uam
 					" ms across " + std::to_string(session.messages.size()) + " messages.");
 				last_slow_digest_report = finished;
 			}
-			return chat_pages::FinishMessageDigest(hash, session.messages.size());
+			std::string digest = chat_pages::FinishMessageDigest(hash, session.messages.size());
+			if (g_stable_pass != nullptr) g_stable_pass->transcript_digests.emplace(&session, digest);
+			return digest;
 		}
 
 		std::size_t MessageCountForFrontend(const ChatSession& session)
@@ -2110,9 +2165,28 @@ namespace uam
 		    {"importedCount", snapshot.imported_count}, {"errors", snapshot.errors}};
 	}
 
+	bool StateSerializer::BeginStablePass()
+	{
+		if (g_stable_pass != nullptr) return false;
+		g_stable_pass = new StablePassState();
+		return true;
+	}
+
+	void StateSerializer::EndStablePass()
+	{
+		delete g_stable_pass;
+		g_stable_pass = nullptr;
+	}
+
+	std::size_t StateSerializer::HashedTranscriptMessageCountForTests()
+	{
+		return g_hashed_transcript_messages;
+	}
+
 	nlohmann::json StateSerializer::Serialize(const AppState& app, bool summary_only)
 	{
-		CatalogSnapshotCache catalog_cache;
+		ScopedCatalogCache scoped_cache(false);
+		CatalogSnapshotCache& catalog_cache = scoped_cache.cache;
 		nlohmann::json j;
 		j["stateRevision"] = app.state_revision;
 		j["appVersion"] = uam::constants::kAppVersion;
@@ -2199,14 +2273,15 @@ namespace uam
 
 	nlohmann::json StateSerializer::SerializeChatSummary(const AppState& app, const ChatSession& chat)
 	{
-		CatalogSnapshotCache catalog_cache;
+		ScopedCatalogCache scoped_cache(false);
+		CatalogSnapshotCache& catalog_cache = scoped_cache.cache;
 		return SerializeFingerprintSession(app, chat, catalog_cache);
 	}
 
 	std::vector<StateSerializer::ChatSummaryDigest> StateSerializer::SerializeChatFingerprintDigests(const AppState& app)
 	{
-		CatalogSnapshotCache catalog_cache;
-		catalog_cache.compact_catalogs = true;
+		ScopedCatalogCache scoped_cache(true);
+		CatalogSnapshotCache& catalog_cache = scoped_cache.cache;
 		std::vector<ChatSummaryDigest> digests;
 		digests.reserve(app.chats.size());
 		ScanFingerprintChats(app, [&](const ChatSession& chat, bool selected, std::size_t managed_count)
@@ -2232,8 +2307,8 @@ namespace uam
 
 	std::vector<nlohmann::json> StateSerializer::SerializeChatFingerprints(const AppState& app, const std::vector<const ChatSession*>& chats)
 	{
-		CatalogSnapshotCache catalog_cache;
-		catalog_cache.compact_catalogs = true;
+		ScopedCatalogCache scoped_cache(true);
+		CatalogSnapshotCache& catalog_cache = scoped_cache.cache;
 		const auto managed_counts = ManagedSubagentCounts(app);
 		const std::string selected_chat_id = SelectedVisibleChatId(app);
 		std::vector<nlohmann::json> summaries;
@@ -2250,8 +2325,8 @@ namespace uam
 
 	nlohmann::json StateSerializer::SerializeFingerprint(const AppState& app, bool compact_catalogs, bool include_chats)
 	{
-		CatalogSnapshotCache catalog_cache;
-		catalog_cache.compact_catalogs = compact_catalogs;
+		ScopedCatalogCache scoped_cache(compact_catalogs);
+		CatalogSnapshotCache& catalog_cache = scoped_cache.cache;
 		nlohmann::json j;
 
 		j["folders"] = SerializeFoldersForFrontend(app.folders, app.data_root);

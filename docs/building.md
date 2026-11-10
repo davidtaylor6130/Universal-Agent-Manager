@@ -46,6 +46,8 @@ cmake -S . -B Builds/dev \
 cmake --build Builds/dev --config Release --parallel 4
 ```
 
+Make and Ninja pick the build type when configuring and ignore `--config`. A configure that names no `CMAKE_BUILD_TYPE` now uses Release; before, it compiled the app without optimisation and without `NDEBUG`. Pass `-DCMAKE_BUILD_TYPE=Debug` for a debug build with those generators. An existing Make or Ninja build folder whose cached build type is empty becomes a Release build the next time it is configured, and rebuilds its objects once.
+
 On Windows, initialize MSVC before running the same commands:
 
 ```bat
@@ -108,6 +110,7 @@ npm --prefix UI-V2 run test
 npm --prefix UI-V2 run build
 
 cmake -S . -B Builds/tests \
+  -DCMAKE_BUILD_TYPE=Debug \
   -DUAM_BUILD_TESTS=ON \
   -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
 cmake --build Builds/tests --config Debug --parallel 4

@@ -8,6 +8,7 @@
 #include "common/config/execution_host_config.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/paths/path_utils.h"
+#include "common/paths/recent_path_probe.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_ids.h"
@@ -138,10 +139,13 @@ namespace
 	}
 
 	std::string NormalizedCatalogWorkspace(std::string_view workspace_directory,
-	                                      std::string_view execution_host_id)
+	                                      std::string_view execution_host_id, bool recent = false)
 	{
 		if (execution_host_id.empty() || execution_host_id == "local")
-			return NormalizedWorkspace(workspace_directory);
+		{
+			if (!recent) return NormalizedWorkspace(workspace_directory);
+			return uam::paths::RecentPathProbe(uam::paths::RecentPathProbeKind::CatalogWorkspace, std::string(workspace_directory), [&] { return NormalizedWorkspace(workspace_directory); });
+		}
 		std::string workspace = uam::strings::Trim(std::string(workspace_directory));
 		if (uam::execution_hosts::IsAbsoluteRemotePath("windows", workspace))
 			std::ranges::replace(workspace, '\\', '/');
@@ -626,14 +630,14 @@ std::string ProviderModelCatalogService::CaptureScopeKey(const std::string& prov
 }
 
 std::string ProviderModelCatalogService::CatalogKey(const std::string& provider_id,
-	std::string_view workspace_directory, std::string_view execution_host_id) const
+	std::string_view workspace_directory, std::string_view execution_host_id, bool recent_workspace) const
 {
 	const std::string normalized = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
 	const auto configured = m_catalog_key_by_provider_id.find(normalized);
 	const std::string provider_key = configured == m_catalog_key_by_provider_id.end() ? normalized : configured->second;
 	const std::string host = uam::strings::NonEmptyOrFallback(
 	    uam::strings::Trim(std::string(execution_host_id)), "local");
-	const std::string workspace = NormalizedCatalogWorkspace(workspace_directory, host);
+	const std::string workspace = NormalizedCatalogWorkspace(workspace_directory, host, recent_workspace);
 	std::string key = workspace.empty() ? provider_key : provider_key + "-workspace-" + StableCatalogFingerprint(workspace);
 	if (host != "local")
 	{
@@ -761,7 +765,8 @@ nlohmann::json ProviderModelCatalogService::GetCatalogSnapshot(const std::string
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	const std::string host = uam::strings::NonEmptyOrFallback(uam::strings::Trim(std::string(execution_host_id)), "local");
-	const std::string key = CatalogKey(provider_id, workspace_directory, host);
+	// Read on every state push for every visible scope, so the workspace is not canonicalised on disk each time.
+	const std::string key = CatalogKey(provider_id, workspace_directory, host, true);
 	if (key.empty()) return {{"availableModels", nlohmann::json::array()}, {"configOptions", nlohmann::json::array()}, {"modelsLoading", false}, {"modelRefreshError", ""}};
 
 	nlohmann::json models = nlohmann::json::array();
@@ -874,12 +879,12 @@ std::string ProviderModelCatalogService::GetProviderRefreshError(const std::stri
 	return error == m_refresh_error_by_provider_id.end() ? std::string{} : error->second;
 }
 
-nlohmann::json ProviderModelCatalogService::GetCatalogScopes() const
+nlohmann::json ProviderModelCatalogService::GetCatalogScopes(bool recent_workspace) const
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	nlohmann::json scopes = nlohmann::json::array();
 	for (const auto& [key, scope] : m_scope_by_catalog_key)
-		if (!key.empty() && key == CatalogKey(scope.value("providerId", ""), scope.value("workspaceDirectory", ""), scope.value("executionHostId", "local"))) scopes.push_back(scope);
+		if (!key.empty() && key == CatalogKey(scope.value("providerId", ""), scope.value("workspaceDirectory", ""), scope.value("executionHostId", "local"), recent_workspace)) scopes.push_back(scope);
 	return scopes;
 }
 
