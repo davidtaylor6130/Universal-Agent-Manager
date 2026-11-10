@@ -202,6 +202,8 @@ namespace uam
 		std::string pending_steer_prompt;
 		double pending_steer_started_time_s = 0.0;
 		bool pending_steer_restart_attempted = false;
+		// The pending steer's delivery or recovery was reported as failed; it is only retained for retry.
+		bool pending_steer_failed = false;
 		std::string last_error;
 	};
 
@@ -1106,6 +1108,9 @@ namespace uam
 		std::optional<double> exit_wait_started_s;
 		int exit_escalations = 0;
 		bool exit_abandoned = false;
+		double exit_next_force_s = 0.0;
+		// The session projection of this stop was finalised (or retired); it is never finalised twice.
+		bool settled = false;
 		// Optional owned platform dependency; retained through asynchronous stop and exit polling.
 		std::shared_ptr<IPlatformProcessService> stop_service;
 		std::shared_ptr<std::atomic<bool>> finished;
@@ -1507,6 +1512,10 @@ namespace uam
 		std::unordered_map<std::string, double> remote_recovery_hydration_retry_not_before_by_chat_id;
 		std::optional<DeletionProgress> deletion_progress;
 		std::unordered_set<std::string> worktree_operation_chat_ids;
+		// Chats and folders of a deletion whose commit was rejected. Its parked recovery record completes the deletion
+		// at the next start, so only these stay unavailable until then; nothing else in the app is held by it.
+		std::unordered_set<std::string> restart_deletion_chat_ids;
+		std::unordered_set<std::string> restart_deletion_folder_ids;
 		std::unordered_map<std::string, std::shared_ptr<ChatBaselinePreparation>> repository_baseline_preparations;
 		std::vector<std::shared_ptr<ChatBaselinePreparation>> retired_repository_baseline_preparations;
 		struct GitPortRequest

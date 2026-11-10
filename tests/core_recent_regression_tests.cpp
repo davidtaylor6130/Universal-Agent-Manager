@@ -4,6 +4,9 @@
 #include "cef/uam_bridge_request.h"
 #include "common/platform/platform_speech_output.h"
 #include "test_harness.h"
+#include "common/runtime/terminal/terminal_provider_cli.h"
+#include "app/git_worktree_service.h"
+#include "common/config/provider_availability.h"
 #include "common/platform/file_explorer_application.h"
 #include "common/platform/powershell_selection.h"
 #include "remote/remote_workspace_terminal.h"
@@ -559,7 +562,7 @@ namespace
 
 UAM_TEST(AcpLocalStopReachesIdleFromEveryStateWithoutLosingTranscript)
 {
-	for (const std::string state : {"hung", "ignoring-cancel", "approval-pending", "tool-running", "queue", "held-queue", "goal-active", "save-failing", "held-queue-save-failing", "pending-save"})
+	for (const std::string state : {"hung", "ignoring-cancel", "approval-pending", "tool-running", "queue", "held-queue", "goal-active", "save-failing", "held-queue-save-failing", "pending-save", "native-children"})
 	{
 		for (const uam::AcpStopPurpose purpose : {uam::AcpStopPurpose::Timeout, uam::AcpStopPurpose::Interrupt})
 		{
@@ -610,6 +613,8 @@ UAM_TEST(AcpLocalStopReachesIdleFromEveryStateWithoutLosingTranscript)
 				owned->queue_held = app.chats.front().acp_queue_held = state.starts_with("held-queue");
 				UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
 			}
+			// Live native child tasks make even a plain Interrupt wait for the observed exit.
+			if (state == "native-children") owned->claude_live_background_task_ids.insert("child-task-1");
 			std::string goal_id;
 			if (state == "goal-active")
 			{
@@ -637,6 +642,9 @@ UAM_TEST(AcpLocalStopReachesIdleFromEveryStateWithoutLosingTranscript)
 			}
 			UAM_ASSERT(idle());
 			UAM_ASSERT(!session.cancel_requested);
+			(void)uam::PollCompletedAcpProcessStops(app, nullptr); // Erases the task whose exit the loop just observed.
+			UAM_ASSERT(app.acp_process_stop_tasks.empty() && !uam::AcpStopExitUnobserved(app, chat.id));
+			if (state == "native-children") UAM_ASSERT(session.claude_live_background_task_ids.empty());
 
 			const ChatSession& current = app.chats.front();
 			UAM_ASSERT(current.messages.size() >= std::size_t{2});
@@ -666,67 +674,67 @@ UAM_TEST(AcpLocalStopReachesIdleFromEveryStateWithoutLosingTranscript)
 	}
 }
 
-UAM_TEST(AcpLocalStopEscalatesAndSettlesAtItsExitDeadline)
+namespace
 {
-	for (const bool past_deadline : {false, true})
+	struct UnobservedStopFixture
 	{
-		TempDir temp("uam-stop-exit-deadline");
+		TempDir temp{"uam-stop-exit-deadline"};
 		uam::AppState app;
-		app.data_root = temp.root / "data";
-		ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
-		chat.messages.push_back({.role = MessageRole::Assistant, .content = "Answer before the stop."});
-		app.chats.push_back(chat);
-		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
-		auto owned = std::make_unique<uam::AcpSessionState>();
-		owned->chat_id = chat.id;
-		owned->provider_id = chat.provider_id;
-		owned->local_stop_pending = true;
-		owned->stop_purpose = uam::AcpStopPurpose::Timeout;
-		owned->turn_serial = 1;
-		uam::AcpSessionState& session = *owned;
-		app.acp_sessions.push_back(std::move(owned));
-		// A stop whose own worker finished without seeing the process exit: the state that used to wait forever.
-		uam::AsyncAcpProcessStopTask task;
-		task.chat_id = chat.id;
-		task.purpose = uam::AcpStopPurpose::Timeout;
-		task.turn_serial = 1;
-		task.result = std::make_shared<uam::platform::ObservedProcessStopResult>();
-		task.owned_process = std::make_shared<uam::platform::StdioProcessPlatformFields>();
-		task.finished = std::make_shared<std::atomic<bool>>(true);
-		std::string error;
-		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
-		UAM_ASSERT(service.StartStdioProcess(*task.owned_process, temp.root, StopMatrixStubbornProcess(), &error));
-		app.acp_process_stop_tasks.push_back(std::move(task));
-		(void)uam::PollCompletedAcpProcessStops(app, nullptr);
-		UAM_ASSERT(uam::AcpStopInProgress(app, chat.id) && session.local_stop_pending);
-		UAM_ASSERT(app.acp_process_stop_tasks.front().exit_wait_started_s.has_value());
-		UAM_ASSERT_EQ(app.acp_process_stop_tasks.front().exit_escalations, 0);
-		if (!past_deadline)
+		uam::AcpSessionState* session = nullptr;
+		std::string chat_id;
+		explicit UnobservedStopFixture(uam::AcpStopPurpose purpose = uam::AcpStopPurpose::Timeout, std::size_t buffered_lines = 0)
 		{
-			// After the first escalation step the owned tree is forced again, and its exit settles the stop.
-			app.acp_process_stop_tasks.front().exit_wait_started_s = uam::GetAppTimeSeconds() - 2.5;
-			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-			while (session.local_stop_pending && std::chrono::steady_clock::now() < deadline)
-			{
-				(void)uam::PollCompletedAcpProcessStops(app, nullptr);
-				std::this_thread::sleep_for(std::chrono::milliseconds(10));
-			}
-			UAM_ASSERT(!session.local_stop_pending && !uam::AcpStopInProgress(app, chat.id));
-			UAM_ASSERT(app.acp_process_stop_tasks.empty());
-			UAM_ASSERT(!uam::AcpStopExitUnobserved(app, chat.id));
-			UAM_ASSERT_EQ(session.stop_outcome, uam::platform::ProcessStopOutcome::Forced);
-		}
-		else
-		{
-			// At the deadline the chat is settled without the observation; the task only keeps reaping.
-			app.acp_process_stop_tasks.front().exit_wait_started_s = uam::GetAppTimeSeconds() - 60.0;
+			app.data_root = temp.root / "data";
+			app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+			ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+			chat.native_session_id = "01a13bf6-87d5-7691-889f-79a8bf5a7b27";
+			chat.messages.push_back({.role = MessageRole::User, .content = "Request before the stop.", .created_at = "2026-11-10T09:00:00.000Z"});
+			chat.messages.push_back({.role = MessageRole::Assistant, .content = "Answer before the stop."});
+			chat_id = chat.id;
+			app.chats.push_back(chat);
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+			auto owned = std::make_unique<uam::AcpSessionState>();
+			owned->chat_id = chat.id;
+			owned->provider_id = chat.provider_id;
+			owned->local_stop_pending = true;
+			owned->stop_purpose = purpose;
+			owned->turn_serial = 1;
+			for (std::size_t line = 0; line < buffered_lines; ++line) owned->stdout_buffer += "{\"type\":\"uam-test-noise\"}\n";
+			session = owned.get();
+			app.acp_sessions.push_back(std::move(owned));
+			// A stop whose own worker finished without seeing the process exit: the state that used to wait forever.
+			uam::AsyncAcpProcessStopTask task;
+			task.chat_id = chat.id;
+			task.purpose = purpose;
+			task.observe_exit = true;
+			task.turn_serial = 1;
+			task.result = std::make_shared<uam::platform::ObservedProcessStopResult>();
+			task.owned_process = std::make_shared<uam::platform::StdioProcessPlatformFields>();
+			task.finished = std::make_shared<std::atomic<bool>>(true);
+			std::string error;
+			UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*task.owned_process, temp.root, StopMatrixStubbornProcess(), &error));
+			app.acp_process_stop_tasks.push_back(std::move(task));
 			(void)uam::PollCompletedAcpProcessStops(app, nullptr);
-			UAM_ASSERT(!session.local_stop_pending && !uam::AcpStopInProgress(app, chat.id));
-			UAM_ASSERT_EQ(session.stop_outcome, uam::platform::ProcessStopOutcome::Failed);
-			UAM_ASSERT_EQ(app.acp_process_stop_tasks.size(), std::size_t{1});
-			UAM_ASSERT(app.acp_process_stop_tasks.front().exit_abandoned);
-			UAM_ASSERT(uam::AcpStopExitUnobserved(app, chat.id));
-			service.TerminateStdioProcess(*app.acp_process_stop_tasks.front().owned_process, true);
+			UAM_ASSERT(uam::AcpStopInProgress(app, chat_id) && session->local_stop_pending);
+			UAM_ASSERT_EQ(Task().exit_wait_started_s.has_value(), purpose != uam::AcpStopPurpose::WorkspaceChange);
+			UAM_ASSERT_EQ(Task().exit_escalations, 0);
+		}
+		~UnobservedStopFixture()
+		{
+			for (uam::AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
+			{
+				task.worker.reset();
+				if (task.owned_process) PlatformServicesFactory::Instance().process_service.StopStdioProcess(*task.owned_process, true);
+			}
+		}
+		uam::AsyncAcpProcessStopTask& Task() { return app.acp_process_stop_tasks.front(); }
+		ChatSession& Chat() { return app.chats.front(); }
+		void Backdate(double seconds) { Task().exit_wait_started_s = uam::GetAppTimeSeconds() - seconds; }
+		/// Ends the stubborn process for real and polls until its stop task is reaped.
+		void ReapProcess()
+		{
+			Task().worker.reset();
+			PlatformServicesFactory::Instance().process_service.TerminateStdioProcess(*Task().owned_process, true);
 			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
 			while (!app.acp_process_stop_tasks.empty() && std::chrono::steady_clock::now() < deadline)
 			{
@@ -734,10 +742,142 @@ UAM_TEST(AcpLocalStopEscalatesAndSettlesAtItsExitDeadline)
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
 			UAM_ASSERT(app.acp_process_stop_tasks.empty());
-			UAM_ASSERT(!uam::AcpStopExitUnobserved(app, chat.id));
 		}
-		UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Answer before the stop."));
+	};
+}
+
+UAM_TEST(AcpLocalStopEscalatesToAForcedStopBeforeItsDeadline)
+{
+	UnobservedStopFixture fixture;
+	// After the first escalation step the owned tree is forced again, and its exit settles the stop.
+	fixture.Backdate(2.5);
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	while (!fixture.app.acp_process_stop_tasks.empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::PollCompletedAcpProcessStops(fixture.app, nullptr);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
+	UAM_ASSERT(fixture.app.acp_process_stop_tasks.empty());
+	UAM_ASSERT(!fixture.session->local_stop_pending && !uam::AcpStopInProgress(fixture.app, fixture.chat_id));
+	UAM_ASSERT(!uam::AcpStopExitUnobserved(fixture.app, fixture.chat_id));
+	UAM_ASSERT_EQ(fixture.session->stop_outcome, uam::platform::ProcessStopOutcome::Forced);
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].content, std::string("Answer before the stop."));
+}
+
+UAM_TEST(AcpStopSettledAtItsDeadlineRefusesEveryNewProcessUntilTheExitIsObserved)
+{
+	UnobservedStopFixture fixture;
+	uam::AppState& app = fixture.app;
+	const std::string unobserved = uam::kAcpProcessExitUnobservedMessage;
+	fixture.Backdate(60.0);
+	(void)uam::PollCompletedAcpProcessStops(app, nullptr);
+	// The chat is settled for the user: not stopping, transcript intact, the stop outcome recorded.
+	UAM_ASSERT(!fixture.session->local_stop_pending && !fixture.session->running && !fixture.session->processing);
+	UAM_ASSERT_EQ(fixture.session->stop_outcome, uam::platform::ProcessStopOutcome::Failed);
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].content, std::string("Answer before the stop."));
+	UAM_ASSERT_EQ(app.acp_process_stop_tasks.size(), std::size_t{1});
+	UAM_ASSERT(fixture.Task().exit_abandoned && fixture.Task().settled);
+	// The process may still be alive, so nothing may start a second one beside it.
+	UAM_ASSERT(uam::AcpStopExitUnobserved(app, fixture.chat_id));
+	UAM_ASSERT(uam::AcpStopInProgress(app, fixture.chat_id));
+	// Launch, send, retry (timeout Restart), CLI launch and branch switch, in that order.
+	const auto attempts = [&]()
+	{
+		std::vector<std::pair<bool, std::string>> results;
+		std::string error;
+		results.emplace_back(uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, fixture.Chat(), &error), error); error.clear();
+		results.emplace_back(uam::SendAcpPrompt(app, fixture.chat_id, "A new message.", &error), error); error.clear();
+		results.emplace_back(uam::RetryFailedAcpMessage(app, fixture.chat_id, 0, &error), error); error.clear();
+		results.emplace_back(uam::PrepareAcpSessionForCliTerminalLaunch(app, fixture.Chat(), &error), error); error.clear();
+		results.emplace_back(uam::GitWorktreeService().SwitchChatBranch(app, fixture.Chat(), "another-branch", false, error), error);
+		return results;
+	};
+	const std::size_t rows = fixture.Chat().messages.size();
+	int action = 0;
+	for (const auto& [accepted, error] : attempts())
+	{
+		if (accepted || error != unobserved) throw uam_test::TestFailure("Action " + std::to_string(action) + " was not refused for the unobserved exit: " + error);
+		++action;
+	}
+	UAM_ASSERT_EQ(fixture.Chat().messages.size(), rows);
+	UAM_ASSERT(!fixture.session->running);
+	// A later Stop changes nothing about that: the chat stays settled and the gate stays closed.
+	(void)uam::StopAcpSession(app, fixture.chat_id);
+	if (fixture.Task().worker) fixture.Task().worker.reset();
+	UAM_ASSERT(uam::AcpStopExitUnobserved(app, fixture.chat_id) || app.acp_process_stop_tasks.empty());
+	// It clears by itself once the exit is observed; none of those actions is refused for this reason again.
+	if (!app.acp_process_stop_tasks.empty()) fixture.ReapProcess();
+	UAM_ASSERT(!uam::AcpStopExitUnobserved(app, fixture.chat_id) && !uam::AcpStopInProgress(app, fixture.chat_id));
+	UAM_ASSERT(uam::provider_availability::Set(app.settings, uam::provider_ids::kClaudeCli, "local", false));
+	for (const auto& [accepted, error] : attempts()) UAM_ASSERT(error != unobserved);
+}
+
+UAM_TEST(AcpStopKeepsForcingAnUnobservedProcessInTheBackground)
+{
+	UnobservedStopFixture fixture;
+	fixture.Backdate(60.0);
+	(void)uam::PollCompletedAcpProcessStops(fixture.app, nullptr);
+	UAM_ASSERT(fixture.Task().exit_abandoned && uam::AcpStopExitUnobserved(fixture.app, fixture.chat_id));
+	// Nobody presses anything: the next background attempt ends the process and the gate opens by itself.
+	fixture.Task().exit_next_force_s = 0.0;
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	while (!fixture.app.acp_process_stop_tasks.empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::PollCompletedAcpProcessStops(fixture.app, nullptr);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(fixture.app.acp_process_stop_tasks.empty());
+	UAM_ASSERT(!uam::AcpStopExitUnobserved(fixture.app, fixture.chat_id) && !uam::AcpStopInProgress(fixture.app, fixture.chat_id));
+}
+
+UAM_TEST(AcpStopAtItsDeadlineWithBufferedOutputIsStillFinalisedExactlyOnce)
+{
+	for (const bool exits_before_settling : {false, true})
+	{
+		// More buffered lines than one poll processes: the deadline poll cannot finalise yet.
+		UnobservedStopFixture fixture(uam::AcpStopPurpose::Timeout, 900);
+		fixture.Backdate(60.0);
+		(void)uam::PollCompletedAcpProcessStops(fixture.app, nullptr);
+		UAM_ASSERT(fixture.Task().exit_abandoned);
+		UAM_ASSERT(!fixture.Task().settled && fixture.session->local_stop_pending);
+		if (exits_before_settling)
+		{
+			fixture.Task().worker.reset();
+			PlatformServicesFactory::Instance().process_service.TerminateStdioProcess(*fixture.Task().owned_process, true);
+		}
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+		while (fixture.session->local_stop_pending && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::PollCompletedAcpProcessStops(fixture.app, nullptr);
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		// The stop is finalised by a later poll instead of staying "stopping" with no owner.
+		UAM_ASSERT(!fixture.session->local_stop_pending);
+		UAM_ASSERT(fixture.session->stdout_buffer.find('\n') == std::string::npos);
+		UAM_ASSERT_EQ(fixture.Chat().messages[1].content, std::string("Answer before the stop."));
+		// Processing the buffered output may itself end the process; either way the task is settled once and reaped.
+		if (!fixture.app.acp_process_stop_tasks.empty())
+		{
+			UAM_ASSERT(fixture.Task().settled);
+			fixture.ReapProcess();
+		}
+		UAM_ASSERT(!uam::AcpStopInProgress(fixture.app, fixture.chat_id));
+	}
+}
+
+UAM_TEST(AcpWorkspaceChangeStopIsNeitherForcedNorGivenUpByTheDeadline)
+{
+	UnobservedStopFixture fixture(uam::AcpStopPurpose::WorkspaceChange);
+	fixture.Backdate(600.0);
+	for (int poll = 0; poll < 5; ++poll) (void)uam::PollCompletedAcpProcessStops(fixture.app, nullptr);
+	// Cooperative by design: still waiting, never escalated, never settled without its exit.
+	UAM_ASSERT(fixture.session->local_stop_pending && uam::AcpStopInProgress(fixture.app, fixture.chat_id));
+	UAM_ASSERT_EQ(fixture.Task().exit_escalations, 0);
+	UAM_ASSERT(!fixture.Task().exit_abandoned && !fixture.Task().settled && fixture.Task().worker == nullptr);
+	int code = 0;
+	UAM_ASSERT(!PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(*fixture.Task().owned_process, &code));
+	fixture.ReapProcess();
+	UAM_ASSERT(!fixture.session->local_stop_pending && !uam::AcpStopInProgress(fixture.app, fixture.chat_id));
 }
 
 UAM_TEST(CliTerminalHandoffIsBlockedOnlyByWorkThatCanFinish)
@@ -754,7 +894,10 @@ UAM_TEST(CliTerminalHandoffIsBlockedOnlyByWorkThatCanFinish)
 	terminal.pending_steer_restart_attempted = true;
 	UAM_ASSERT_EQ(uam::CliTerminalSteerRecovery(terminal, 1.0 + uam::kCliTerminalSteerFailureTimeoutSeconds), uam::CliTerminalSteerRecoveryAction::ReportTimeout);
 	// Once that recovery has reported its failure the prompt is only retained for retry: nothing is busy.
-	terminal.last_error = "Terminal steering timed out after restart; prompt retained for retry.";
+	// An unrelated error text is not a failed steer; only the explicit flag is.
+	terminal.last_error = "Some other terminal error.";
+	UAM_ASSERT(uam::CliTerminalBlocksAcpHandoff(terminal));
+	terminal.pending_steer_failed = true;
 	UAM_ASSERT(!uam::CliTerminalBlocksAcpHandoff(terminal));
 	UAM_ASSERT_EQ(terminal.pending_steer_prompt, std::string("Change direction."));
 	// Running work still blocks, and a terminal already shutting down never does.
