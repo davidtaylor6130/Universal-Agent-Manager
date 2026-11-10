@@ -81,7 +81,12 @@ namespace uam
 
 		// Writing: every entry point goes through Mutable().
 		operator Items&() & { return Mutable(); }
-		operator Items() && { Items items = std::move(m_items); Reset(); return items; }
+		operator Items() && { return take(); }
+		/// <summary>
+		/// Moves the content out as a plain vector and leaves this empty. Assigning `std::move(revisioned)` to an
+		/// existing plain vector is ambiguous between its copy and move assignment; this is the spelling for that.
+		/// </summary>
+		Items take() { Items items = std::move(m_items); Reset(); return items; }
 		reference operator[](size_type index) { return Mutable()[index]; }
 		reference at(size_type index) { return Mutable().at(index); }
 		reference front() { return Mutable().front(); }

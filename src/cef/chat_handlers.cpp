@@ -716,7 +716,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    std::optional<ChatSession> loaded = ChatHistorySyncService().LoadLocalCodexChildChat(
 			        chat_snapshot, &transcript->error);
 			    transcript->success = loaded.has_value();
-			    if (loaded) transcript->messages = std::move(loaded->messages);
+			    if (loaded) transcript->messages = loaded->messages.take();
 		    }
 		    else if (provider_id == uam::provider_ids::kCodexCli)
 		    {
@@ -732,7 +732,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			        ? ChatHistorySyncService().LoadRemoteNativeTranscript(*host_snapshot, chat_snapshot, &transcript->error, request->get_token())
 			        : ChatHistorySyncService().LoadLocalNativeTranscript(chat_snapshot, &transcript->error, request->get_token());
 			    transcript->success = loaded.has_value();
-			    if (loaded) transcript->messages = std::move(loaded->messages);
+			    if (loaded) transcript->messages = loaded->messages.take();
 		    }
 		    else
 		    {
@@ -995,7 +995,7 @@ void UamQueryHandler::HandleRefreshLocalGeminiMedia(CefRefPtr<CefBrowser> browse
 			    auto loaded = ChatHistorySyncService().LoadLocalNativeTranscript(parse_identity, &work->error, request->get_token());
 			    if (request->stop_requested()) return AsyncFailure(409, "A newer history refresh was requested.");
 			    if (!loaded) return AsyncFailure(502, uam::strings::NonEmptyOrFallback(work->error, "Native chat history is not available yet."));
-			    work->messages = std::move(loaded->messages);
+			    work->messages = loaded->messages.take();
 			    return AsyncSuccess({{"ok", true}});
 		    },
 		    [this, browser, cb, work, root, revision, request, admitted, finish, known_digest, page, defer_tool_call_content](AsyncCefResult& response)
@@ -1359,7 +1359,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 			        : ChatHistorySyncService().LoadRemoteNativeTranscript(host, parse_identity, &work->error, request->get_token());
 			    if (request->stop_requested()) return AsyncFailure(409, "A newer history refresh was requested.");
 			    if (!loaded) return AsyncFailure(502, uam::strings::NonEmptyOrFallback(work->error, "Remote native history is unavailable."));
-			    work->messages = std::move(loaded->messages);
+			    work->messages = loaded->messages.take();
 			    return AsyncSuccess(nlohmann::json::object());
 		    },
 		    [this, browser, cb, work, root, revision, summary_revision, request, admitted, same_owner, finish, id, known_digest, page, defer_tool_call_content](AsyncCefResult& response)
