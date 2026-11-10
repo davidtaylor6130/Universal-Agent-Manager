@@ -1,6 +1,6 @@
 # Remote Hosts settings
 
-Remote Hosts configures execution environments using existing SSH aliases and a compatible installed UAM helper. Saved installation/startup preferences are distinct from observed connection, version and startup registration state. Installation and updates must respect active provider work and show failed or uncertain activation honestly; selecting a host does not authorize silently replaying a prompt or changing a chat’s workspace.
+Remote Hosts configures execution environments using existing SSH aliases and a compatible installed UAM helper. Saved installation/startup preferences are distinct from observed connection, version and startup registration state. A host whose health check failed is rechecked in the background and returns to Ready by itself once its helper answers. Installation and updates must respect active provider work and show failed or uncertain activation honestly; selecting a host does not authorize silently replaying a prompt or changing a chat’s workspace.
 
 The page lists configured hosts as identity and status rows. Each host opens its own sub-page with its status, helper actions and host options, Back to hosts returns focus to that host's Open button (or to Add a host once it is removed), and leaving with unsaved host options asks first. These follow the [settings list agreement](../ui/settings.md#copy-and-lists).
 

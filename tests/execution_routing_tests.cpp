@@ -625,6 +625,18 @@ UAM_TEST(ExecutionRoutingMcpChangesInvalidateHostConfirmation)
 
 namespace
 {
+	/// Runs host recovery until the condition holds; each contact finishes on its own thread.
+	template <typename Condition>
+	bool PollRemoteHostRecoveryUntil(uam::AppState& app, Condition condition)
+	{
+		for (int attempt = 0; attempt < 600 && !condition(); ++attempt)
+		{
+			(void)uam::PollRemoteHostRecovery(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		return condition();
+	}
+
 	void ConfirmCurrentRoutingConfiguration(uam::AppState& app)
 	{
 		ExecutionRoutingProviderConfirmation& confirmation = app.settings.execution_routing.hosts.front().provider_confirmations.front();
@@ -710,3 +722,85 @@ UAM_TEST(ExecutionRoutingOwnedWorkKeepsItsConnectionAndAdoptsOnlyProviderSetting
 	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, chat).status, uam::ExecutionRoutingStatus::Assigned);
 	UAM_ASSERT(chat.routing_assigned_connection_identity != assigned_connection);
 }
+
+UAM_TEST(ExecutionRoutingAssignedChatMayTryItsHostAfterAFailedHealthCheck)
+{
+	TempDir temp("uam-routing-failed-health");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	const ChatSession fresh = app.chats.front();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+	app.settings.execution_hosts.back().runner_status = "error";
+	app.runtime_cli_versions_by_provider_id.at(CliProviderVersionStateKey("codex-cli", "remote")).execution_host = app.settings.execution_hosts.back();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+	// New work is still not sent to a host whose last health check failed.
+	app.settings.execution_routing.hosts.front().max_active_turns = 2;
+	ChatSession next = fresh;
+	next.id = "next-chat";
+	app.chats.push_back(next);
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.back()).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(app.chats.back().execution_host_id, std::string("local"));
+	// An install fence is not a failed health check and still refuses.
+	app.settings.execution_hosts.back().runner_install_unresolved = true;
+	app.runtime_cli_versions_by_provider_id.at(CliProviderVersionStateKey("codex-cli", "remote")).execution_host = app.settings.execution_hosts.back();
+	app.execution_routing_retry_at_by_chat_id.clear();
+	const uam::ExecutionRoutingDecision fenced = uam::AdmitExecutionRouting(app, app.chats.front());
+	UAM_ASSERT_EQ(fenced.status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(fenced.reason, uam::ExecutionRoutingReason::HostUnavailable);
+}
+
+#if UAM_ENABLE_SSH
+UAM_TEST(RemoteHostRecoveryRestoresReadyAfterAContactAndBacksOffWhileUnreachable)
+{
+	TempDir temp("uam-routing-host-recovery");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	app.settings.execution_hosts.back().runner_status = "error";
+	std::shared_ptr<std::atomic<int>> contacts = std::make_shared<std::atomic<int>>(0);
+	std::shared_ptr<std::atomic<bool>> reachable = std::make_shared<std::atomic<bool>>(false);
+	app.remote_host_probe = [contacts, reachable](const ExecutionHost&, const std::string& session_id, std::stop_token)
+	{
+		contacts->fetch_add(1);
+		return session_id.empty() && reachable->load() ? uam::RemoteHostProbeOutcome::Reachable : uam::RemoteHostProbeOutcome::Unreachable;
+	};
+	const auto probe = [&app]() -> uam::RemoteHostProbeTask* { const auto found = app.remote_host_probes.find("health:remote"); return found == app.remote_host_probes.end() ? nullptr : found->second.get(); };
+	UAM_ASSERT(PollRemoteHostRecoveryUntil(app, [&] { return probe() != nullptr && !probe()->worker && probe()->delay_s > 0.0; }));
+	UAM_ASSERT_EQ(app.settings.execution_hosts.back().runner_status, std::string("error"));
+	UAM_ASSERT_EQ(contacts->load(), 1);
+	// The next contact waits for its delay instead of running on every poll.
+	(void)uam::PollRemoteHostRecovery(app);
+	UAM_ASSERT(!probe()->worker);
+	UAM_ASSERT(probe()->retry_at_s > uam::GetAppTimeSeconds());
+	reachable->store(true);
+	probe()->retry_at_s = 0.0;
+	UAM_ASSERT(PollRemoteHostRecoveryUntil(app, [&] { return app.settings.execution_hosts.back().runner_status == "ready"; }));
+	UAM_ASSERT(app.remote_host_health_changed);
+	UAM_ASSERT(!app.settings.execution_hosts.back().last_seen_at.empty());
+	// A host that is Ready, or held by an install fence, is never contacted from here.
+	const int settled = contacts->load();
+	app.settings.execution_hosts.back().runner_status = "error";
+	app.settings.execution_hosts.back().runner_install_unresolved = true;
+	(void)uam::PollRemoteHostRecovery(app);
+	std::this_thread::sleep_for(std::chrono::milliseconds(30));
+	(void)uam::PollRemoteHostRecovery(app);
+	UAM_ASSERT_EQ(contacts->load(), settled);
+	UAM_ASSERT_EQ(app.settings.execution_hosts.back().runner_status, std::string("error"));
+}
+
+UAM_TEST(RemoteHostRecoveryTreatsAnAttachedProviderSessionAsAContact)
+{
+	TempDir temp("uam-routing-host-recovery-attached");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	app.settings.execution_hosts.back().runner_status = "error";
+	app.remote_host_probe = [](const ExecutionHost&, const std::string&, std::stop_token) { return uam::RemoteHostProbeOutcome::Unreachable; };
+	std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "attached";
+	session->process_execution_host_id = "remote";
+	session->running = session->session_ready = true;
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(uam::PollRemoteHostRecovery(app));
+	UAM_ASSERT_EQ(app.settings.execution_hosts.back().runner_status, std::string("ready"));
+	UAM_ASSERT(app.remote_host_probes.empty());
+}
+#endif

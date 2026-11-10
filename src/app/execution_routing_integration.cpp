@@ -20,6 +20,10 @@
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/utils/hash_utils.h"
+#include "common/platform/background_thread_priority.h"
+#include "common/platform/platform_services.h"
+#include "common/utils/time_utils.h"
+#include "remote/runner_client.h"
 #include "remote/runner_protocol.h"
 
 #include <nlohmann/json.hpp>
@@ -76,6 +80,62 @@ namespace uam
 			}
 		}
 
+		RemoteHostProbeOutcome ContactRemoteHost(const ExecutionHost& host, const std::string& session_id, std::stop_token stop)
+		{
+			remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, host);
+			if (!client.Connect(nullptr, stop)) return RemoteHostProbeOutcome::Unreachable;
+			if (session_id.empty()) return RemoteHostProbeOutcome::Reachable;
+			// The helper looks a session up before it checks the token, so a placeholder token
+			// reads existence without renewing, reading or controlling the process.
+			client.SetProcessControlToken(session_id, "ownership-probe");
+			remote::ProcessPollResult ignored;
+			bool missing = false;
+			(void)client.PollProcess(session_id, ignored, nullptr, {}, nullptr, nullptr, &missing);
+			return missing ? RemoteHostProbeOutcome::SessionMissing : RemoteHostProbeOutcome::Reachable;
+		}
+
+		/// Returns a finished contact once, otherwise Pending. A contact that is due starts on its own thread;
+		/// each finished one doubles the wait before the next, from 15 seconds up to five minutes.
+		RemoteHostProbeOutcome PollRemoteHostProbe(AppState& app, const std::string& key, const ExecutionHost& host, const std::string& session_id, double now)
+		{
+			std::shared_ptr<RemoteHostProbeTask>& task = app.remote_host_probes[key];
+			if (!task) task = std::make_shared<RemoteHostProbeTask>();
+			if (task->worker)
+			{
+				const RemoteHostProbeOutcome outcome = task->outcome.load(std::memory_order_acquire);
+				if (outcome == RemoteHostProbeOutcome::Pending) return outcome;
+				task->worker.reset();
+				// An answer about an earlier host configuration is discarded and asked again.
+				if (task->host != host || task->session_id != session_id) { task->retry_at_s = now; return RemoteHostProbeOutcome::Pending; }
+				task->delay_s = task->delay_s <= 0.0 ? 15.0 : std::min(task->delay_s * 2.0, 300.0);
+				task->retry_at_s = now + task->delay_s;
+				return outcome;
+			}
+			if (now < task->retry_at_s) return RemoteHostProbeOutcome::Pending;
+			task->host = host;
+			task->session_id = session_id;
+			task->outcome.store(RemoteHostProbeOutcome::Pending, std::memory_order_release);
+			task->worker = std::make_unique<std::jthread>([state = task.get(), probe = app.remote_host_probe](std::stop_token stop)
+			{
+				uam::platform::LowerCurrentThreadToBackgroundPriority();
+				RemoteHostProbeOutcome outcome = RemoteHostProbeOutcome::Unreachable;
+				try { outcome = probe ? probe(state->host, state->session_id, stop) : ContactRemoteHost(state->host, state->session_id, stop); }
+				catch (...) {}
+				state->outcome.store(outcome == RemoteHostProbeOutcome::Pending ? RemoteHostProbeOutcome::Unreachable : outcome, std::memory_order_release);
+			});
+			return RemoteHostProbeOutcome::Pending;
+		}
+
+		/// The one place a helper contact outside a health check restores Ready. Install fences and installs stay as they are.
+		bool MarkRemoteHostReachable(AppState& app, const ExecutionHost& observed)
+		{
+			const std::vector<ExecutionHost>::iterator current = std::ranges::find_if(app.settings.execution_hosts,
+			    [&observed](const ExecutionHost& host) { return host.id == observed.id; });
+			if (current == app.settings.execution_hosts.end() || current->runner_status != "error" ||
+			    !execution_hosts::ApplyHealthObservation(*current, observed, true, uam::time::IsoUtcTimestampNow())) return false;
+			app.remote_host_health_changed = true;
+			return true;
+		}
 	}
 
 	std::string ExecutionRoutingConnectionConfiguration(const ExecutionHost& host)
@@ -140,7 +200,10 @@ namespace uam
 			candidate.host_id = host.id;
 			candidate.connection_identity = ExecutionRoutingConnectionIdentity(host);
 			candidate.provider_configuration_identity = ExecutionRoutingProviderIdentity(app, *provider, host.id);
-			candidate.runner_ready = host.id == "local" || host.runner_status == "ready";
+			// New work goes only to a host last seen Ready. A chat already assigned to this host may try it
+			// after a failed health check, exactly as an explicit SSH chat does.
+			const bool assigned_here = automatic && !chat.routing_assigned_connection_identity.empty() && chat.execution_host_id == host.id;
+			candidate.runner_ready = host.id == "local" || host.runner_status == "ready" || (assigned_here && execution_hosts::CanConnectRunner(host));
 			candidate.runner_compatible = host.id == "local" || (!host.runner_version.empty() && host.runner_protocol_version == remote::kRunnerProtocolVersion);
 			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider->id, host.id));
 			const bool version_usable = version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked && version->second.supported &&
@@ -402,6 +465,32 @@ namespace uam
 				app.execution_routing_retry_at_by_chat_id.erase(id);
 			}
 		}
+		return changed;
+	}
+
+	bool PollRemoteHostRecovery(AppState& app)
+	{
+		const double now = GetAppTimeSeconds();
+		bool changed = false;
+		std::unordered_set<std::string> wanted;
+		for (const ExecutionHost& host : std::vector<ExecutionHost>(app.settings.execution_hosts))
+		{
+			if (host.id == execution_hosts::kLocalHostId || host.runner_status != "error" || !remote::CanAttemptRunnerConnection(host)) continue;
+			// A provider session attached through this helper is a contact that already succeeded.
+			if (std::ranges::any_of(app.acp_sessions, [&host](const std::unique_ptr<AcpSessionState>& session)
+			    { return session && session->running && session->session_ready && session->process_execution_host_id == host.id &&
+			          !session->remote_stop_unconfirmed && !session->recovering_remote_turn && !session->recovering_remote_process; }))
+			{
+				changed = MarkRemoteHostReachable(app, host) || changed;
+				continue;
+			}
+			const std::string key = "health:" + host.id;
+			wanted.insert(key);
+			if (PollRemoteHostProbe(app, key, host, {}, now) == RemoteHostProbeOutcome::Reachable) changed = MarkRemoteHostReachable(app, host) || changed;
+		}
+		// A contact still in flight is kept so this thread never waits for it.
+		std::erase_if(app.remote_host_probes, [&wanted](const std::pair<const std::string, std::shared_ptr<RemoteHostProbeTask>>& probe)
+		{ return !wanted.contains(probe.first) && !(probe.second->worker && probe.second->outcome.load(std::memory_order_acquire) == RemoteHostProbeOutcome::Pending); });
 		return changed;
 	}
 

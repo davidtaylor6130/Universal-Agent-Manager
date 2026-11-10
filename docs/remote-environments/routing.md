@@ -7,6 +7,7 @@ Routing chooses where work executes while retaining its provider, workspace and 
 ## Waiting and recovery
 
 A chat that routing cannot start waits with its reason shown; no wait is permanent, and none needs the chat recreated. Once assigned, an automatic chat stays on its computer: a later configuration change never moves it. A helper update does not change a computer's identity and needs no new confirmation. When the computer's connection, instructions, MCP servers, extra flags or provider defaults change, the provider must be confirmed again in Routing settings; an assigned chat with no turn, delivery or pending answer then adopts the confirmed configuration at its next admission and continues by itself. A chat with work still running keeps its connection: it adopts changed provider settings, which apply at the next launch, but a changed connection waits until the turn is stopped, because the changed connection may be another machine.
+
 A failed health check on the assigned computer does not stop an assigned chat from trying it, as an explicit SSH chat may; new work is still sent only to a computer last seen Ready.
 Repository matching reads each computer on its own connection with its own 15-second budget, in parallel, and a read that times out keeps the last identity read for that folder: a timeout is not evidence that a checkout changed.
 

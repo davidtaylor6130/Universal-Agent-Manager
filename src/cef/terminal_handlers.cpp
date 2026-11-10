@@ -1,3 +1,4 @@
+#include "remote/runner_client.h"
 #include "cef/uam_query_handler.h"
 #include "app/vcs_commit_service.h"
 #include "cef/uam_query_handler_internal.h"
@@ -402,7 +403,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		if (!uam::paths::IsControllerLocalWorkspace(*chat))
 		{
 			const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, chat->execution_host_id);
-			if (host == nullptr || host->transport != "ssh" || host->runner_status != "ready" ||
+			if (host == nullptr || !uam::remote::CanAttemptRunnerConnection(*host) ||
 			    host->runner_protocol_version < 3)
 			{
 				terminal.last_error = "Native session creation needs a ready, current remote runner. Recheck it in Settings.";
