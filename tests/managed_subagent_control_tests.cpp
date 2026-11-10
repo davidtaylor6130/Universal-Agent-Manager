@@ -1604,3 +1604,390 @@ UAM_TEST(ManagedSubagentDeadlineDataPendingStopTaskPreventsTerminalPublication)
 	cleanup.Retire(); // Remove only the synthetic inert record; this is not wait/reap evidence.
 	fixture.RequireInert();
 }
+
+// Subagent stability regressions: every queued, running or undelivered state must reach a terminal outcome.
+namespace
+{
+	template <class Predicate> bool PumpScheduler(uam::AppState& app, Predicate done, int seconds = 30)
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+		while (!done() && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			(void)uam::AgentRunScheduler::Poll(app);
+			(void)uam::FlushPendingChatSaves(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		return done();
+	}
+
+	std::size_t ResultCards(const ChatSession& chat, const std::string& run_id)
+	{
+		std::size_t count = 0;
+		for (const Message& row : chat.messages)
+			count += std::ranges::count(row.tool_calls, "uam-agent-result-" + run_id, &ToolCall::id);
+		return count;
+	}
+
+	AgentRun SavedRun(const std::filesystem::path& data_root, const std::string& run_id)
+	{
+		const auto ledger = uam::AgentRunLedger::LoadAllReadOnly(data_root);
+		const auto found = std::ranges::find(ledger.runs, run_id, &AgentRun::id);
+		UAM_ASSERT(found != ledger.runs.end());
+		return *found;
+	}
+
+	/// A real "@agent task" request from a visible root chat. No provider process is ever started:
+	/// four unrelated running runs hold every execution slot, so the new run stays queued and owned.
+	struct InitialMentionFixture
+	{
+		TempDir temp{"uam-initial-mention-stability"};
+		uam::AppState app;
+		std::string root_id;
+		const std::string agent = "stability-worker";
+
+		InitialMentionFixture()
+		{
+			app.data_root = temp.root / "data";
+			app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
+			app.provider_profiles = {ProviderProfileStore::DefaultCodexProfile()};
+			std::filesystem::create_directories(temp.root / "workspace");
+			uam::AgentDefinition definition;
+			definition.id = agent;
+			definition.description = "Stability regression worker";
+			definition.mode = "subagent";
+			definition.workspace_access = "read";
+			definition.instructions = "Inspect only the fixture.";
+			std::string error;
+			UAM_ASSERT(uam::AgentDefinitionService::SaveGlobalAgent(app.data_root, definition, &error));
+			ChatSession root = ChatDomainService().CreateNewChat({}, "codex-cli");
+			root_id = root.id;
+			root.execution_host_id = "local";
+			root.routing_mode = "explicit";
+			root.workspace_directory = (temp.root / "workspace").string();
+			root.model_id = "fixture-model";
+			ChatDomainService().AddMessage(root, MessageRole::User, "Earlier authored parent request.");
+			app.chats.push_back(std::move(root));
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+			for (int index = 0; index < 4; ++index)
+			{
+				AgentRun busy;
+				busy.id = uam::AgentRunLedger::NewRunId();
+				busy.root_chat_id = "unrelated-root";
+				busy.transcript_chat_id = "unrelated-transcript-" + std::to_string(index);
+				busy.status = "running";
+				app.agent_runs.push_back(std::move(busy));
+			}
+		}
+
+		~InitialMentionFixture()
+		{
+			(void)uam::AgentRunScheduler::QuiesceInitialForShutdown(app);
+			uam::FastStopAcpSessionsForExit(app);
+		}
+
+		ChatSession& Root()
+		{
+			auto* root = ChatDomainService().FindChatById(app, root_id);
+			UAM_ASSERT(root);
+			return *root;
+		}
+
+		AgentRun* LiveRun(const std::string& run_id)
+		{
+			const auto found = std::ranges::find(app.agent_runs, run_id, &AgentRun::id);
+			return found == app.agent_runs.end() ? nullptr : &*found;
+		}
+
+		std::string Begin(const std::string& task, const std::function<bool(ChatPublicationFile, uam::io::AtomicWriteStage)>& parent_hook = {})
+		{
+			auto result = std::make_shared<std::optional<uam::ManagedInitialMentionResult>>();
+			std::string error;
+			UAM_ASSERT_EQ(uam::AgentRunScheduler::TryBeginInitialMention(app, root_id, "@" + agent + " " + task,
+			                  [result](const uam::ManagedInitialMentionResult& value) { *result = value; return true; }, &error, {}, parent_hook),
+			              uam::ManagedInitialMentionAdmission::Pending);
+			UAM_ASSERT(PumpScheduler(app, [&] { return result->has_value() && app.managed_initial_mentions.empty(); }));
+			UAM_ASSERT((*result)->input_recorded);
+			UAM_ASSERT_EQ((*result)->delegation_state, uam::ManagedInitialDelegationState::Committed);
+			const std::string run_id = (*result)->run_id;
+			UAM_ASSERT(app.managed_initial_runtime_owners.contains(run_id));
+			UAM_ASSERT(LiveRun(run_id) && LiveRun(run_id)->status == "queued");
+			UAM_ASSERT_EQ(SavedRun(app.data_root, run_id).status, std::string("queued"));
+			return run_id;
+		}
+
+		void Cancel(const std::string& run_id)
+		{
+			std::string error;
+			(void)uam::AgentRunScheduler::CancelTree(app, run_id, &error); // Accepted; the terminal record follows on later polls.
+			UAM_ASSERT(PumpScheduler(app, [&] { return SavedRun(app.data_root, run_id).status == "cancelled"; }));
+		}
+	};
+
+	/// A later process over the same data root, following the application's startup order:
+	/// load, prune, interrupt what a previous process left unfinished, then queue owed result cards.
+	struct RestartedApp
+	{
+		uam::AppState app;
+		std::vector<std::string> errors;
+		std::size_t inert_records = 0;
+
+		RestartedApp(const std::filesystem::path& data_root, const uam::AppState& before, const std::string& root_id)
+		{
+			app.data_root = data_root;
+			app.settings = before.settings;
+			app.provider_profiles = before.provider_profiles;
+			auto root = ChatRepository::LoadLocalChat(app.data_root, root_id, false);
+			UAM_ASSERT(root.has_value());
+			if (!root->metadata_incarnation) root->metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+			app.chats.push_back(std::move(*root));
+			auto loaded = uam::AgentRunLedger::LoadAll(app.data_root);
+			UAM_ASSERT(loaded.runs.empty()); // Version-2 records never enter runtime admission.
+			inert_records = loaded.inert_managed.size();
+			(void)uam::AgentRunLedger::PruneExpired(app.data_root, loaded, &errors);
+			auto owed = uam::AgentRunLedger::InterruptManagedRecords(app.data_root, std::move(loaded.inert_managed), "manager_restarted", &errors);
+			app.managed_result_recoveries.assign(owed.begin(), owed.end());
+		}
+
+		~RestartedApp()
+		{
+			(void)uam::AgentRunScheduler::QuiesceInitialForShutdown(app);
+			uam::FastStopAcpSessionsForExit(app);
+		}
+	};
+
+	void AgeFile(const std::filesystem::path& path, int days)
+	{
+		std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * days));
+	}
+}
+
+UAM_TEST(ManagedInitialOwnerThatLosesOwnershipEndsItsRunAndFreesItsSlot)
+{
+	InitialMentionFixture fixture;
+	const std::string run_id = fixture.Begin("Stay queued until the parent changes.");
+	// The parent becomes read-only under the queued child: its owner can never start or publish again.
+	fixture.Root().imported_read_only = true;
+	UAM_ASSERT(PumpScheduler(fixture.app, [&] { return !fixture.app.managed_initial_runtime_owners.contains(run_id); }, 10));
+	const AgentRun* run = fixture.LiveRun(run_id);
+	UAM_ASSERT(run != nullptr);
+	UAM_ASSERT_EQ(run->status, std::string("failed"));
+	UAM_ASSERT_EQ(run->diagnostic_code, std::string("initial_ownership_changed"));
+	// Nothing nonterminal is left to hold a running slot or refuse deleting the parent.
+	UAM_ASSERT(std::ranges::none_of(fixture.app.agent_runs, [&](const AgentRun& candidate)
+	    { return candidate.root_chat_id == fixture.root_id && candidate.status != "failed"; }));
+	UAM_ASSERT(std::ranges::find(fixture.app.queued_agent_run_ids, run_id) == fixture.app.queued_agent_run_ids.end());
+	UAM_ASSERT(!fixture.app.pending_agent_run_cancellation_ids.contains(run_id));
+	UAM_ASSERT(!uam::AgentRunScheduler::HasPendingInitialMention(fixture.app, fixture.root_id));
+}
+
+UAM_TEST(ManagedInitialTerminalResultIsDeliveredExactlyOnceAfterRestart)
+{
+	InitialMentionFixture fixture;
+	const std::string run_id = fixture.Begin("Finish while the parent is busy.");
+	// The child ends while its parent is busy, so the result card waits; then the app goes away.
+	fixture.app.worktree_operation_chat_ids.insert(fixture.root_id);
+	fixture.Cancel(run_id);
+	const auto ledger_path = fixture.app.data_root / "agent-runs" / (run_id + ".json");
+	const std::string undelivered_record = uam::io::ReadTextFile(ledger_path);
+	UAM_ASSERT(!SavedRun(fixture.app.data_root, run_id).root_result_delivered);
+	const auto before = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.root_id);
+	UAM_ASSERT(before && ResultCards(*before, run_id) == 0);
+	{
+		RestartedApp restarted(fixture.app.data_root, fixture.app, fixture.root_id);
+		UAM_ASSERT_EQ(restarted.inert_records, std::size_t{1});
+		UAM_ASSERT_EQ(restarted.app.managed_result_recoveries.size(), std::size_t{1});
+		UAM_ASSERT(PumpScheduler(restarted.app, [&] { return SavedRun(restarted.app.data_root, run_id).root_result_delivered; }));
+		UAM_ASSERT(restarted.app.managed_result_recoveries.empty());
+		const auto saved = ChatRepository::LoadLocalChat(restarted.app.data_root, fixture.root_id);
+		UAM_ASSERT(saved && ResultCards(*saved, run_id) == 1);
+		UAM_ASSERT_EQ(ResultCards(*ChatDomainService().FindChatById(restarted.app, fixture.root_id), run_id), std::size_t{1});
+		UAM_ASSERT_EQ(saved->messages.size(), before->messages.size() + 1);
+		UAM_ASSERT(std::equal(before->messages.begin(), before->messages.end(), saved->messages.begin()));
+		UAM_ASSERT_EQ(SavedRun(restarted.app.data_root, run_id).status, std::string("cancelled"));
+	}
+	{
+		// A delivered record owes nothing on the next start.
+		RestartedApp again(fixture.app.data_root, fixture.app, fixture.root_id);
+		UAM_ASSERT(again.app.managed_result_recoveries.empty());
+	}
+	// A crash after the card was saved but before its receipt: the card is found, never written twice.
+	UAM_ASSERT(uam::io::WriteTextFile(ledger_path, undelivered_record));
+	UAM_ASSERT(!SavedRun(fixture.app.data_root, run_id).root_result_delivered);
+	{
+		RestartedApp crashed(fixture.app.data_root, fixture.app, fixture.root_id);
+		UAM_ASSERT_EQ(crashed.app.managed_result_recoveries.size(), std::size_t{1});
+		UAM_ASSERT(PumpScheduler(crashed.app, [&] { return SavedRun(crashed.app.data_root, run_id).root_result_delivered; }));
+		const auto saved = ChatRepository::LoadLocalChat(crashed.app.data_root, fixture.root_id);
+		UAM_ASSERT(saved && ResultCards(*saved, run_id) == 1);
+		UAM_ASSERT_EQ(saved->messages.size(), before->messages.size() + 1);
+	}
+}
+
+UAM_TEST(ManagedInitialRecordLeftUnfinishedByACrashIsInterruptedAtStartup)
+{
+	for (const bool stale : {false, true})
+	{
+		InitialMentionFixture fixture;
+		const std::string run_id = fixture.Begin("Still queued when the process dies.");
+		const auto ledger_path = fixture.app.data_root / "agent-runs" / (run_id + ".json");
+		const auto before = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.root_id);
+		UAM_ASSERT(before.has_value());
+		if (stale) AgeFile(ledger_path, 8);
+		RestartedApp restarted(fixture.app.data_root, fixture.app, fixture.root_id);
+		UAM_ASSERT_EQ(restarted.inert_records, std::size_t{1});
+		const AgentRun saved = SavedRun(restarted.app.data_root, run_id);
+		UAM_ASSERT_EQ(saved.status, std::string("interrupted"));
+		UAM_ASSERT_EQ(saved.diagnostic_code, std::string("manager_restarted"));
+		UAM_ASSERT(saved.finished_at_epoch_ms > 0 && saved.managed_continuation);
+		UAM_ASSERT(saved.managed_continuation->turns.back().status == uam::ManagedRunTurnStatus::Interrupted);
+		UAM_ASSERT(restarted.app.agent_runs.empty() && restarted.app.queued_agent_run_ids.empty()); // Never relaunched.
+		// Only a recent run reports into its parent; an old leftover is closed without touching the conversation.
+		UAM_ASSERT_EQ(restarted.app.managed_result_recoveries.size(), static_cast<std::size_t>(stale ? 0 : 1));
+		if (!stale)
+			UAM_ASSERT(PumpScheduler(restarted.app, [&] { return SavedRun(restarted.app.data_root, run_id).root_result_delivered; }));
+		for (int index = 0; index < 20; ++index) (void)uam::AgentRunScheduler::Poll(restarted.app);
+		const auto after = ChatRepository::LoadLocalChat(restarted.app.data_root, fixture.root_id);
+		UAM_ASSERT(after && ResultCards(*after, run_id) == static_cast<std::size_t>(stale ? 0 : 1));
+		UAM_ASSERT_EQ(after->messages.size(), before->messages.size() + static_cast<std::size_t>(stale ? 0 : 1));
+		UAM_ASSERT(restarted.app.acp_sessions.empty());
+	}
+}
+
+UAM_TEST(ManagedInitialUnconfirmedParentResultStopsBlockingTheParentAfterBoundedRetries)
+{
+	InitialMentionFixture fixture;
+	auto faults = std::make_shared<int>(0);
+	const std::string run_id = fixture.Begin("Cancel me so one result publication is attempted.",
+	    [faults](ChatPublicationFile file, uam::io::AtomicWriteStage stage)
+	    {
+		    if (file != ChatPublicationFile::Primary || stage != uam::io::AtomicWriteStage::AfterReplaceBeforeDirectorySync) return true;
+		    ++*faults;
+		    return false;
+	    });
+	fixture.Cancel(run_id);
+	UAM_ASSERT(PumpScheduler(fixture.app, [&] { return *faults == 1 && uam::AgentRunScheduler::HasUnconfirmedInitialRootPublication(fixture.app, fixture.Root()); }));
+	UAM_ASSERT(uam::AgentRunScheduler::HasPendingInitialMention(fixture.app, fixture.root_id)); // Send is refused here.
+	// The publication can never be confirmed while the parent stays busy with unrelated work.
+	fixture.app.worktree_operation_chat_ids.insert(fixture.root_id);
+	UAM_ASSERT(PumpScheduler(fixture.app, [&] { return !uam::AgentRunScheduler::HasUnconfirmedInitialRootPublication(fixture.app, fixture.Root()); }, 30));
+	UAM_ASSERT(!fixture.app.status_line.empty()); // The give-up is reported, not silent.
+	// Once the parent is free again the run retires instead of holding its owner and child chat forever.
+	fixture.app.worktree_operation_chat_ids.erase(fixture.root_id);
+	UAM_ASSERT(PumpScheduler(fixture.app, [&] { return fixture.app.managed_initial_runtime_owners.empty(); }, 30));
+	UAM_ASSERT(!uam::AgentRunScheduler::HasPendingInitialMention(fixture.app, fixture.root_id));
+	UAM_ASSERT(fixture.app.acp_sessions.empty());
+	UAM_ASSERT_EQ(SavedRun(fixture.app.data_root, run_id).status, std::string("cancelled"));
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.root_id);
+	UAM_ASSERT(saved && ResultCards(*saved, run_id) <= 1);
+}
+
+UAM_TEST(AgentRunQueueFailsInvalidRoutingAndBoundsRoutingWaits)
+{
+	const int64_t now = uam::time::SystemEpochMillisecondsNow();
+	{
+		// No provider profile can serve this automatically routed child: routing is invalid, not pending.
+		ManagedControlFixture fixture;
+		const std::string run_id = fixture.Add();
+		fixture.app.chats.back().routing_mode = "automatic";
+		(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, now);
+		const AgentRun& run = fixture.app.agent_runs.front();
+		UAM_ASSERT_EQ(run.status, std::string("failed"));
+		UAM_ASSERT_EQ(run.diagnostic_code, std::string("routing_invalid"));
+		UAM_ASSERT(fixture.app.queued_agent_run_ids.empty());
+		UAM_ASSERT_EQ(uam::AgentRunLedger::LoadAll(fixture.app.data_root).runs.front().status, std::string("failed"));
+	}
+	{
+		ManagedControlFixture fixture;
+		const std::string run_id = fixture.Add();
+		fixture.app.chats.back().routing_mode = "automatic";
+		fixture.app.execution_routing_restored_unresolved_chat_ids.insert(fixture.app.chats.back().id);
+		(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, now);
+		UAM_ASSERT_EQ(fixture.app.agent_runs.front().status, std::string("queued"));
+		// An unchanged wait is not a state change on every tick.
+		UAM_ASSERT(!uam::AgentRunScheduler::PollAtForTests(fixture.app, now + 1000));
+		UAM_ASSERT(!uam::AgentRunScheduler::PollAtForTests(fixture.app, now + 2000));
+		UAM_ASSERT_EQ(fixture.app.agent_runs.front().status, std::string("queued"));
+		UAM_ASSERT_EQ(fixture.app.queued_agent_run_ids.size(), std::size_t{1});
+		// The wait is bounded and ends with the reason the user was shown.
+		UAM_ASSERT(uam::AgentRunScheduler::PollAtForTests(fixture.app, now + 30LL * 60LL * 1000LL + 1));
+		const AgentRun& run = fixture.app.agent_runs.front();
+		UAM_ASSERT_EQ(run.status, std::string("failed"));
+		UAM_ASSERT_EQ(run.diagnostic_code, std::string("routing_wait_timeout"));
+		UAM_ASSERT(run.diagnostic.find("unresolved ownership") != std::string::npos);
+		UAM_ASSERT(fixture.app.queued_agent_run_ids.empty());
+	}
+}
+
+UAM_TEST(AgentRunResultDeliveryBacksOffWhileTheSavedParentDiffers)
+{
+	TempDir temp("uam-agent-result-backoff");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession root = ChatDomainService().CreateNewChat({}, "codex-cli");
+	const std::string root_id = root.id;
+	ChatDomainService().AddMessage(root, MessageRole::User, "Delegate and keep working.");
+	app.chats.push_back(std::move(root));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	AgentRun run;
+	run.id = uam::AgentRunLedger::NewRunId();
+	run.root_chat_id = root_id;
+	run.transcript_chat_id = "retired-transcript";
+	run.agent_id = "worker";
+	run.provider_id = "codex-cli";
+	run.definition_snapshot = "PRIVATE-DEFINITION";
+	run.task = "Inspect the fixture.";
+	run.effective_workspace_access = "read";
+	run.status = "completed";
+	run.depth = 1;
+	run.created_at = run.updated_at = run.finished_at = "2026-11-10 10:00:00";
+	run.result_delivery_id = run.id;
+	run.deliver_result_to_root_chat = true;
+	run.result_excerpt = "Child result.";
+	UAM_ASSERT(uam::AgentRunLedger::Save(app.data_root, run));
+	app.agent_runs.push_back(run);
+	const auto delivered = [&] { return app.agent_runs.front().root_result_delivered; };
+	// The parent is still streaming: memory is ahead of its saved history.
+	ChatDomainService().AddMessage(app.chats.front(), MessageRole::Assistant, "Unsaved streaming answer.");
+	const int64_t now = uam::time::SystemEpochMillisecondsNow();
+	(void)uam::AgentRunScheduler::PollAtForTests(app, now);
+	UAM_ASSERT(!delivered() && app.agent_runs.front().root_result_delivery_attempts == 0);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	// The very next ticks must not load and compare the whole parent again.
+	(void)uam::AgentRunScheduler::PollAtForTests(app, now + 1);
+	(void)uam::AgentRunScheduler::PollAtForTests(app, now + 500);
+	UAM_ASSERT(!delivered());
+	UAM_ASSERT(uam::AgentRunScheduler::PollAtForTests(app, now + 2000));
+	UAM_ASSERT(delivered());
+	UAM_ASSERT_EQ(ResultCards(app.chats.front(), run.id), std::size_t{1});
+	const auto saved = ChatRepository::LoadLocalChat(app.data_root, root_id);
+	UAM_ASSERT(saved && ResultCards(*saved, run.id) == 1);
+	(void)uam::AgentRunScheduler::PollAtForTests(app, now + 4000);
+	UAM_ASSERT_EQ(ResultCards(app.chats.front(), run.id), std::size_t{1});
+}
+
+UAM_TEST(AgentRunLedgerStartupPrunesExpiredTerminalRecordsAndKeepsLiveLineage)
+{
+	ManagedControlFixture fixture;
+	const std::string expired = fixture.Add("root", {}, "completed");
+	const std::string old_parent = fixture.Add("root", {}, "completed");
+	const std::string recent_child = fixture.Add("root", old_parent, "failed");
+	const std::string old_running = fixture.Add("root", {}, "running");
+	const std::string recent = fixture.Add("root", {}, "cancelled");
+	const auto path = [&](const std::string& id) { return fixture.app.data_root / "agent-runs" / (id + ".json"); };
+	for (const std::string& id : {expired, old_parent, old_running}) AgeFile(path(id), 91);
+	auto loaded = uam::AgentRunLedger::LoadAll(fixture.app.data_root);
+	UAM_ASSERT(loaded.errors.empty());
+	UAM_ASSERT_EQ(loaded.runs.size(), std::size_t{5});
+	std::vector<std::string> errors;
+	UAM_ASSERT_EQ(uam::AgentRunLedger::PruneExpired(fixture.app.data_root, loaded, &errors), std::size_t{1});
+	UAM_ASSERT(errors.empty());
+	UAM_ASSERT(!std::filesystem::exists(path(expired)) && !std::filesystem::exists(uam::io::MakeBackupPath(path(expired))));
+	// A parent stays while a kept child names it; unfinished work is never pruned, only interrupted.
+	for (const std::string& id : {old_parent, recent_child, old_running, recent}) UAM_ASSERT(std::filesystem::exists(path(id)));
+	UAM_ASSERT_EQ(loaded.runs.size(), std::size_t{4});
+	UAM_ASSERT(std::ranges::find(loaded.runs, expired, &AgentRun::id) == loaded.runs.end());
+	const auto reloaded = uam::AgentRunLedger::LoadAll(fixture.app.data_root);
+	UAM_ASSERT(reloaded.errors.empty());
+	UAM_ASSERT_EQ(reloaded.runs.size(), std::size_t{4});
+}

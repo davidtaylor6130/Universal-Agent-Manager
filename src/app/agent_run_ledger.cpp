@@ -1163,6 +1163,17 @@ namespace uam
 		return success;
 	}
 
+	std::size_t AgentRunLedger::PruneExpired(const std::filesystem::path&, AgentRunLoadResult&, std::vector<std::string>*)
+	{
+		return 0; // Implemented by the following fix commit.
+	}
+
+	std::vector<AgentRun> AgentRunLedger::InterruptManagedRecords(const std::filesystem::path&, std::vector<AgentRun>,
+	                                                              std::string_view, std::vector<std::string>*)
+	{
+		return {}; // Implemented by the following fix commit.
+	}
+
 	std::shared_ptr<PreparedAgentRunSave> AgentRunLedger::PrepareInitialSave(
 	    const std::filesystem::path& data_root, const AgentRun& candidate, std::string* error_out)
 	try

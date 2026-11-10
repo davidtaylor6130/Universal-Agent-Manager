@@ -1412,6 +1412,8 @@ namespace uam
 		std::deque<std::shared_ptr<UamAgentWait>> uam_wait_retirements;
 		std::string uam_control_manager_id;
 		std::deque<std::string> queued_agent_run_ids;
+		/// Terminal v2 records whose result card a previous process never wrote; the scheduler delivers each once.
+		std::deque<AgentRun> managed_result_recoveries;
 		std::size_t managed_parent_continuation_cursor = 0;
 		/// <summary>Retains cancellation intent across failed ledger writes until polling can retry.</summary>
 		std::unordered_set<std::string> pending_agent_run_cancellation_ids;
