@@ -17,16 +17,23 @@ namespace uam::remote
 {
 	inline constexpr const char* kRemoteProcessSpecEnvironment = "UAM_REMOTE_PROCESS_SPEC";
 	inline constexpr std::string_view kRemoteStopOutcomePrefix = "UAM_REMOTE_STOP_OUTCOME ";
-	/// Last stderr line of an attach whose bridge failed on a reachable host where neither a helper of that version nor a
-	/// process of that session is left running.
+	/// Last stderr line of an attach whose bridge failed on a reachable host where neither a helper nor a process of that
+	/// session is left running. It settles a stop like the helper's own "does not exist".
 	inline constexpr std::string_view kRemoteHelperNotRunningLine = "The remote helper is not running on this host.";
-	/// The host-side check behind that line; empty for a platform or input it cannot check. It prints
-	/// kRemoteHelperNotRunningToken only after it could list this account's processes and found no helper of that version
-	/// (deleted binary included). On Linux, where a process can outlive its helper, it must also find no process carrying
-	/// this session's marker and none working in the session's workspace. proc_root is /proc outside tests.
+	/// Last stderr lines that settle nothing: the host shows a process that may belong to the session, a helper that is
+	/// running but did not answer, or a process table that could not be read after the helper answered "does not exist".
+	inline constexpr std::string_view kRemoteSessionProcessRunningLine = "A process is still running in this chat's folder on the host.";
+	inline constexpr std::string_view kRemoteHelperUnreachableLine = "The remote helper is running but did not answer.";
+	inline constexpr std::string_view kRemoteProcessUncheckedLine = "The host could not be checked for a process of this chat.";
+	/// The host-side check behind those lines; empty for a platform or input it cannot check. It is read-only on the host.
+	/// It prints kRemoteHelperNotRunningToken only after it could read this account's processes and found, with
+	/// check_helper, no helper of that version (deleted binary included) and, on
+	/// Linux, no process of that session: none carrying its marker and no unmarked one working in its workspace. It prints
+	/// UAM_HELPER_RUNNING or UAM_SESSION_PROCESS_RUNNING for what it found and exits 3 when it could not tell.
+	/// Without check_helper only the session's processes are looked for (Linux only). proc_root is /proc outside tests.
 	inline constexpr std::string_view kRemoteHelperNotRunningToken = "UAM_HELPER_NOT_RUNNING";
-	std::string RemoteHelperNotRunningCommand(const std::string& platform, const std::string& version, const std::string& session_id,
-	    const std::string& workspace, const std::string& proc_root = "/proc");
+	std::string RemoteProcessCheckCommand(const std::string& platform, const std::string& version, const std::string& session_id,
+	    const std::string& workspace, bool check_helper = true, const std::string& proc_root = "/proc");
 	// Only the proxy emits this before attempting to create a provider process.
 	inline constexpr int kRemoteConfigurationStartupFailureExitCode = 71;
 	inline constexpr std::string_view kRemoteStartupFailurePrefix = "UAM_REMOTE_STARTUP_FAILURE ";

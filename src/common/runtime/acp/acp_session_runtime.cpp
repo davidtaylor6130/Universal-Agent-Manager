@@ -722,11 +722,17 @@ namespace uam
 			}
 		}
 
+		/// The one place a failed reconnect or failed stop retry is counted, so anything recorded with the count stays with it.
+		void CountAcpReconnectFailure(AcpSessionState& session)
+		{
+			++session.reconnect_attempts;
+		}
+
 		void RecordAcpReconnectFailure(AppState& app, AcpSessionState& session,
 		                               ChatSession& chat, double now_seconds,
 		                               const std::string& error)
 		{
-			++session.reconnect_attempts;
+			CountAcpReconnectFailure(session);
 			// Stamped once per turn and withdrawn when a launch or reattach succeeds; never inferred from the attempt
 			// count, which other code also raises and resets.
 			if (session.reconnect_first_failure_turn_serial != session.turn_serial)
@@ -6794,7 +6800,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session.remote_stop_pending = false;
 		session.remote_stop_unconfirmed = true;
 		// A stop retry reattaches before it fails here, so the reattach alone never counted and the retry repeated every half second.
-		++session.reconnect_attempts;
+		CountAcpReconnectFailure(session);
 		session.restart_after_remote_stop_cleanup =
 		    session.restart_after_remote_stop_cleanup || restart_after_cleanup;
 		const bool deferred_goal_restart = restart_after_cleanup &&
@@ -6999,6 +7005,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 	{
 		session.remote_stop_pending = false;
 		session.remote_stop_unconfirmed = false;
+		// Failed stop retries counted for their backoff. Whatever follows a confirmed stop, by any route, starts a fresh budget.
+		session.reconnect_attempts = 0;
 		if (session.last_error.starts_with("Remote stop could not be confirmed")) session.last_error.clear();
 		if (restart_after_stop && session.queue_held && chat != nullptr)
 			return FinalizeStoppedAcpSession(app, session, chat, true);
@@ -7018,8 +7026,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 				acp_detail::ScheduleChatSave(app, *chat, 0.0);
 		}
 		session.restart_after_remote_stop_cleanup = !cleanup_marker_saved;
-		// Failed stop retries counted here for their backoff; the relaunch after the confirmed stop has its own budget.
-		session.reconnect_attempts = 0;
 		ScheduleAcpReconnect(session, GetAppTimeSeconds());
 		return cleanup_marker_saved;
 	}

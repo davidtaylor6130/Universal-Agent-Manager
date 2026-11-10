@@ -12342,6 +12342,51 @@ UAM_TEST(HelperVerifiablyNotRunningSettlesSavedStopCleanup)
 	CheckSavedStopCleanupSettlesOn(std::string(uam::remote::kRemoteHelperNotRunningLine));
 }
 
+UAM_TEST(AbsentAnswerDoesNotSettleAStopWhileTheHostShowsASurvivorOrCannotBeChecked)
+{
+	// The helper said the process does not exist, then the host's process table said otherwise or could not be read.
+	for (const std::string_view closing : {uam::remote::kRemoteSessionProcessRunningLine, uam::remote::kRemoteProcessUncheckedLine, uam::remote::kRemoteHelperUnreachableLine})
+	{
+		TempDir temp("uam-acp-absent-answer-unsettled");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "chat-absent-answer-unsettled";
+		chat.execution_host_id = "ssh-test";
+		chat.remote_stop_cleanup_pending = true;
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = "fixture-unsettled-token";
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->running = true;
+		session->remote_stop_unconfirmed = true;
+		session->recovering_remote_process = true;
+		uam::AcpSessionState* raw_session = session.get();
+		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "stderr.txt", "The remote process does not exist.\n" + std::string(closing) + "\n"));
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", "type stderr.txt 1>&2 & exit /b 70"};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", "cat stderr.txt >&2; exit 70"};
+#endif
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, temp.root, argv, &error));
+		app.acp_sessions.push_back(std::move(session));
+		for (int attempt = 0; attempt < 300 && raw_session->running; ++attempt)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(!raw_session->running);
+		UAM_ASSERT(app.chats.front().remote_stop_cleanup_pending && app.chats.front().remote_process_exists);
+		UAM_ASSERT(raw_session->remote_stop_unconfirmed);
+		UAM_ASSERT(raw_session->recent_stderr.find(closing) != std::string::npos);
+		const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(persisted.has_value() && persisted->remote_stop_cleanup_pending && persisted->remote_process_exists);
+	}
+}
+
 UAM_TEST(RestartAfterConfirmedStopIsScheduledAfterRepeatedFailedStopRetries)
 {
 	TempDir temp("uam-acp-restart-after-failed-stops");

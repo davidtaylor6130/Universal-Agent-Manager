@@ -7,8 +7,10 @@
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/state/app_state.h"
+#include "remote/runner_proxy.h"
 
 #include <algorithm>
+#include <array>
 #include <optional>
 #include <unordered_map>
 #include <string>
@@ -423,11 +425,26 @@ namespace uam::remote_install
 				return name + " has a goal continuation waiting to run on this host. Let it run or pause the goal, then update the helper.";
 			if (chat != app.chats.end() && ChatAdmittingInput(app, chat_id))
 				return name + " is saving or preparing input on this host. Try the update again in a moment.";
-			// Each update attempt asks the installed helper again, so the advice is to make that helper answerable.
 			if (unconfirmed_stop && chat != app.chats.end() && ChatHasRemoteTurnState(*chat))
 				return name + " has a turn in progress on this host. Stop it or let it finish, then update the helper.";
 			if (unconfirmed_stop)
-				return "UAM could not confirm that " + inner_name + " stopped on this host, and this update would replace the helper that ran it. Check that the host is reachable, then try the update again; UAM asks that helper again each time.";
+			{
+				// The last attempt's closing line says why the host gave no answer; each update attempt asks again.
+				const std::string intro = "UAM could not confirm that " + inner_name + " stopped on this host";
+				const std::string_view tail = session != nullptr ? std::string_view(session->recent_stderr) : std::string_view();
+				const auto at = [&tail](std::string_view line) { const std::size_t found = tail.rfind(line); return found == std::string_view::npos ? std::string_view::npos : found + 1; };
+				const std::size_t survivor = at(uam::remote::kRemoteSessionProcessRunningLine), helper = at(uam::remote::kRemoteHelperUnreachableLine),
+				    unchecked = at(uam::remote::kRemoteProcessUncheckedLine);
+				const auto latest = [&](std::size_t value) { return value != std::string_view::npos && std::ranges::all_of(std::array{survivor, helper, unchecked},
+				    [value](std::size_t other) { return other == std::string_view::npos || other <= value; }); };
+				if (latest(survivor))
+					return intro + ": a process is still running in its folder there, or something else is working in that folder. Close whatever is using the folder on the host, then try the update again.";
+				if (latest(helper))
+					return intro + ": its helper is running there but does not answer. Check the helper on the host, then try the update again.";
+				if (latest(unchecked))
+					return intro + ": the processes running there could not be checked. Try the update again; if it keeps refusing, look on the host for a process still using this chat's folder.";
+				return intro + ", and this update would replace the helper that ran it. Check that the host is reachable, then try the update again; UAM asks that helper again each time.";
+			}
 			if (session != nullptr && !session->running && session->reconnect_pending)
 				return "UAM is reconnecting to the process for " + inner_name + " on this host before updating its helper. Try the update again in a moment.";
 			if (session != nullptr && session->running && (session->recovering_remote_process || !session->session_ready))
