@@ -9663,6 +9663,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 		catch (...) { return false; }
 	}
 
+	// The one-transcript bound limits serialization and disk work that is still running. A finished result
+	// waiting to be collected is not such work: its chat may be skipped for a long time (an unconfirmed
+	// initial publication, a worktree operation), and counting it would stop every other chat's save.
+	static bool TranscriptWorkerIsRunning(const std::shared_ptr<PendingChatSaveTask>& task)
+	{
+		const auto running = [](const auto& future) { return future.valid() && future.wait_for(std::chrono::seconds(0)) != std::future_status::ready; };
+		return task && (running(task->prepared) || running(task->baseline) || running(task->published) ||
+		    (task->owned_publication && running(task->owned_publication->publication)));
+	}
+
 	// Returns true while this iteration belongs exclusively to the opt-in branch. A successor
 	// ordinary save is left scheduled and can proceed on the next normal poll after actual settlement.
 	static bool PollOwnedChatPublication(AppState& app, std::shared_ptr<PendingChatSaveTask> task, bool force,
@@ -9678,9 +9688,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (!own->publication.valid() && !own->retired)
 		{
 			// Share the existing single full-transcript work bound; never start a second scheduler.
-			if (std::ranges::any_of(app.pending_chat_save_tasks, [](const auto& entry)
-			    { return entry.second && (entry.second->prepared.valid() || entry.second->baseline.valid() || entry.second->published.valid() ||
-			        (entry.second->owned_publication && entry.second->owned_publication->publication.valid())); })) return true;
+			if (std::ranges::any_of(app.pending_chat_save_tasks, [](const auto& entry) { return TranscriptWorkerIsRunning(entry.second); })) return true;
 			ChatSession snapshot = std::move(own->snapshot);
 			// Retain metadata for owner-thread comparisons; the worker owns its complete candidate.
 			own->snapshot = snapshot;
@@ -10304,9 +10312,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			if (app.pending_chat_save_at_by_chat_id[chat_id] > now || app.worktree_operation_chat_ids.contains(chat_id)) continue;
 			// Bound serialization and disk pressure to one pending transcript preparation.
-			if (std::ranges::any_of(app.pending_chat_save_tasks, [](const auto& entry)
-			    { return entry.second && (entry.second->prepared.valid() || entry.second->baseline.valid() || entry.second->published.valid() ||
-			        (entry.second->owned_publication && entry.second->owned_publication->publication.valid())); })) continue;
+			if (std::ranges::any_of(app.pending_chat_save_tasks, [](const auto& entry) { return TranscriptWorkerIsRunning(entry.second); })) continue;
 			if (!task || !task->baseline_requested)
 			{
 				if (!task) task = std::make_shared<PendingChatSaveTask>();
