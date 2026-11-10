@@ -126,12 +126,13 @@ function codexOptionsTitle(options: { reasoningEffort?: string; serviceTier?: st
 }
 
 /**
- * A refused chat control: the title names the control and the detail carries the backend's reason, or a generic
- * next step when it sent none. A caller that already names the change takes the raw reason for its own notice.
+ * A refused chat control: one message names the control, then the backend's reason, or a generic next step when it
+ * sent none. The toast shows only the message (its detail is never displayed), so the reason belongs in it.
+ * A caller that already names the change takes the raw reason for its own notice.
  */
 function reportRefusal(title: string, reason: string | undefined, onFailure?: (reason: string) => void) {
   if (onFailure) onFailure(reason ?? '')
-  else reportAppFailure(title, reason || 'Try again.')
+  else reportAppFailure(`${title}. ${reason || 'Try again.'}`, '')
 }
 
 type AcceptedModel = Pick<Session, 'modelId' | 'reasoningEffort' | 'serviceTier' | 'serviceTierExplicit' | 'updatedAt'>

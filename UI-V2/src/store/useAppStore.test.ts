@@ -5502,7 +5502,7 @@ describe('useAppStore Gemini CLI slice', () => {
           await pending
           await new Promise((resolve) => setTimeout(resolve, 0))
           // An empty backend reason still says what to do next instead of reverting silently.
-          expect(capture.failures.map(({ message, detail }) => ({ message, detail }))).toEqual([{ message: title, detail: reason || 'Try again.' }])
+          expect(capture.failures.map(({ message, detail }) => ({ message, detail }))).toEqual([{ message: `${title}. ${reason || 'Try again.'}`, detail: '' }])
           expect(useAppStore.getState().sessions[0]).toMatchObject(rolledBack)
         } finally { capture.stop() }
       }
@@ -5559,7 +5559,7 @@ describe('useAppStore Gemini CLI slice', () => {
       const capture = captureFailures()
       try {
         await expect(useAppStore.getState().setSessionCodexOptions('chat-1', { reasoningEffort: 'high' })).resolves.toBe(false)
-        expect(capture.failures.map(({ message, detail }) => ({ message, detail }))).toEqual([{ message: 'Reasoning was not changed', detail: 'Reasoning and speed can change once the current turn finishes.' }])
+        expect(capture.failures.map(({ message, detail }) => ({ message, detail }))).toEqual([{ message: 'Reasoning was not changed. Reasoning and speed can change once the current turn finishes.', detail: '' }])
         expect(requests).toEqual([])
       } finally { capture.stop() }
     })
