@@ -228,6 +228,68 @@ UAM_TEST(CancelTurnRequestHoldsDesktopQueueButKeepsCompanionDiscard)
 	}
 }
 
+UAM_TEST(ChatControlRefusalsNameTheirOwnReasonWithoutPathsOrStaleStatus)
+{
+	TempDir temp("uam-control-refusals");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-refusals";
+	chat.provider_id = "gemini-cli";
+	chat.title = "Stand-in";
+	chat.execution_host_id = "remote-host";
+	chat.remote_process_exists = true;
+	app.chats.push_back(chat);
+	auto owned = std::make_unique<uam::AcpSessionState>();
+	owned->chat_id = chat.id;
+	owned->provider_id = chat.provider_id;
+	uam::AcpSessionState& session = *owned;
+	app.acp_sessions.push_back(std::move(owned));
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	const std::string stale = "Unrelated status naming " + uam::paths::Utf8PathString(temp.root);
+	const auto run = [&](const char* action, const nlohmann::json& payload)
+	{
+		app.status_line = stale;
+		CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+		UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(*handler_owner, action, payload, callback));
+		return callback;
+	};
+
+	// A disconnected remote turn: Stop names that cause, never the earlier status line.
+	CefRefPtr<RecordingIconCallback> stop = run("stopAcpSession", {{"chatId", chat.id}});
+	UAM_ASSERT_EQ(stop->failures, 1);
+	UAM_ASSERT_EQ(stop->failure_message, std::string("The remote host is disconnected. Reconnect it before stopping, so UAM can confirm the turn ended."));
+
+	// A remote stop UAM is still confirming is progress for both Stop and Cancel turn.
+	session.remote_stop_pending = true;
+	CefRefPtr<RecordingIconCallback> cancel = run("cancelAcpTurn", {{"chatId", chat.id}});
+	UAM_ASSERT_EQ(cancel->failures, 0);
+	UAM_ASSERT(cancel->success_message.find("pending") != std::string::npos);
+	session.remote_stop_pending = false;
+	session.remote_stop_unconfirmed = true;
+	cancel = run("cancelAcpTurn", {{"chatId", chat.id}});
+	UAM_ASSERT_EQ(cancel->failures, 0);
+	stop = run("stopAcpSession", {{"chatId", chat.id}});
+	UAM_ASSERT_EQ(stop->failures, 0);
+	session.remote_stop_unconfirmed = false;
+
+	// A rename that cannot be saved names no path.
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked"));
+	CefRefPtr<RecordingIconCallback> rename = run("renameSession", {{"chatId", chat.id}, {"title", "Renamed"}});
+	UAM_ASSERT_EQ(rename->failures, 1);
+	UAM_ASSERT_EQ(rename->failure_message, std::string("The chat could not be saved. Try again."));
+	UAM_ASSERT_EQ(app.chats.front().title, std::string("Stand-in"));
+	CefRefPtr<RecordingIconCallback> agent = run("setChatUamAgent", {{"chatId", chat.id}, {"agentId", "plan"}});
+	UAM_ASSERT_EQ(agent->failures, 1);
+	UAM_ASSERT_EQ(agent->failure_message, std::string("The chat could not be saved. Try again."));
+	CefRefPtr<RecordingIconCallback> small = run("setChatSmallModelMode", {{"chatId", chat.id}, {"enabled", true}});
+	UAM_ASSERT_EQ(small->failures, 1);
+	UAM_ASSERT_EQ(small->failure_message, std::string("The chat could not be saved. Try again."));
+	for (const auto& callback : {stop, rename, agent, small})
+		UAM_ASSERT(callback->failure_message.find(uam::paths::Utf8PathString(temp.root)) == std::string::npos);
+}
+
 UAM_TEST(ChatIconHandlerSupersededCancellationCannotRollbackNewerIntent)
 {
 	TempDir temp("uam-icon-handler-superseded");

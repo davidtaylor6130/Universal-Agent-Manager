@@ -2801,11 +2801,12 @@ bool ChatHistorySyncService::SaveNativeTranscript(uam::AppState& app, ChatSessio
 	return true;
 }
 
-bool ChatHistorySyncService::SaveChatWithStatus(uam::AppState& app, ChatSession& chat, const std::string& success, const std::string& failure) const
+bool ChatHistorySyncService::SaveChatWithStatus(uam::AppState& app, ChatSession& chat, const std::string& success, const std::string& failure, std::string* refusal_out) const
 {
 	if (uam::AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, chat))
 	{
 		app.status_line = "Wait for the saved request to be confirmed before changing this chat.";
+		if (refusal_out != nullptr) *refusal_out = app.status_line;
 		return false;
 	}
 	if (TerminalMediaColdMetadataSavePending(app, chat))
@@ -2814,6 +2815,7 @@ bool ChatHistorySyncService::SaveChatWithStatus(uam::AppState& app, ChatSession&
 		// Keep the original cold primary intact until final import has its actual
 		// message witness; a later explicit retry saves against completed history.
 		app.status_line = "Final terminal history is being saved. Retry changing this chat after it finishes.";
+		if (refusal_out != nullptr) *refusal_out = app.status_line;
 		return false;
 	}
 	// The mutable cold owner must acknowledge the serializer's actual history metadata.
@@ -2828,10 +2830,11 @@ bool ChatHistorySyncService::SaveChatWithStatus(uam::AppState& app, ChatSession&
 	}
 
 	app.status_line = failure;
+	if (refusal_out != nullptr) *refusal_out = "The chat could not be saved. Try again.";
 	return false;
 }
 
-bool ChatHistorySyncService::RenameChat(uam::AppState& app, ChatSession& chat, const std::string& requested_title) const
+bool ChatHistorySyncService::RenameChat(uam::AppState& app, ChatSession& chat, const std::string& requested_title, std::string* refusal_out) const
 {
 	const std::string previous_title = chat.title;
 	const std::string previous_updated_at = chat.updated_at;
@@ -2840,6 +2843,7 @@ bool ChatHistorySyncService::RenameChat(uam::AppState& app, ChatSession& chat, c
 	if (trimmed_title.empty())
 	{
 		app.status_line = "Chat title is required.";
+		if (refusal_out != nullptr) *refusal_out = app.status_line;
 		return false;
 	}
 
@@ -2852,7 +2856,7 @@ bool ChatHistorySyncService::RenameChat(uam::AppState& app, ChatSession& chat, c
 	chat.updated_at = uam::time::TimestampNow();
 
 	const bool final_save_deferred = TerminalMediaColdMetadataSavePending(app, chat);
-	if (SaveChatWithStatus(app, chat, "Chat title updated.", "Chat title changed in UI, but failed to save."))
+	if (SaveChatWithStatus(app, chat, "Chat title updated.", "Chat title changed in UI, but failed to save.", refusal_out))
 	{
 		return true;
 	}
