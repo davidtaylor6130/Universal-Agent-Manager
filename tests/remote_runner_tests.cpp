@@ -8078,6 +8078,42 @@ UAM_TEST(AcpRemoteUntransportedPromptStopsReconnectingAfterElapsedBudget)
 	}
 }
 
+UAM_TEST(AcpRemoteUnwrittenGoalTurnWithNoRowKeepsNoCopy)
+{
+	TempDir temp("uam-remote-goal-no-row");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+	ChatSession chat;
+	chat.id = "private-goal-no-row";
+	chat.provider_id = "gemini-cli";
+	chat.execution_host_id = "private-host";
+	chat.workspace_directory = temp.root.string();
+	chat.messages.push_back({.role = MessageRole::User, .content = "Earlier answered request"});
+	// A goal turn's prompt exists only as prepared wire text: no message row of its own.
+	uam::AcpQueuedUserPromptState head{"Private goal wire text"};
+	head.prepared_for_delivery = true;
+	chat.acp_queued_prompts.push_back(head);
+	chat.acp_dispatched_queued_prompt_count = 1;
+	app.chats.push_back(std::move(chat));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+	uam::AcpSessionState& session = *owned;
+	session.chat_id = app.chats.front().id;
+	session.provider_id = "gemini-cli";
+	session.processing = true;
+	session.queued_prompt = "Private goal wire text";
+	session.turn_serial = 1;
+	app.acp_sessions.push_back(std::move(owned));
+	uam::acp_detail::ReturnUnwrittenRemotePromptAsUnsent(app, session, app.chats.front(), "The remote runner bridge closed.");
+	const ChatSession& ended = app.chats.front();
+	// No copy of the prompt remains and no row was invented or marked; the error is what the goal is blocked with.
+	UAM_ASSERT(ended.acp_queued_prompts.empty() && ended.acp_dispatched_queued_prompt_count == 0 && !ended.acp_queue_held);
+	UAM_ASSERT(ended.messages.size() == 1 && !ended.messages.front().acp_prompt_not_sent && !ended.messages.front().interrupted);
+	UAM_ASSERT(!session.processing && session.queued_prompt.empty() && !session.queue_held);
+	UAM_ASSERT_EQ(session.last_error, std::string("The remote runner bridge closed."));
+}
+
 UAM_TEST(AcpRemoteReconnectBudgetRestartsAfterAReattachWhateverElseCountsAttempts)
 {
 	TempDir temp("uam-remote-budget-restamp");

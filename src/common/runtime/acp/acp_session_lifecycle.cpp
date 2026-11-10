@@ -5276,8 +5276,9 @@ void ReturnUnwrittenRemotePromptAsUnsent(AppState& app, AcpSessionState& session
 	}
 	// Ends the turn, as a process exit does.
 	FailAcpTurnOrSession(session, &chat, message);
-	// The unsent rows are now the prompt's only copy: a prepared head left beside them could be resumed as a second
-	// send. A prompt with no row of its own (a goal turn) keeps its head, which is then its only copy.
+	// FailAcpTurnOrSession has already retired the prepared head when nothing else was owed, rows or not, so a prompt
+	// with no row of its own (a goal turn) keeps no copy; its goal is blocked with the error instead. This covers a
+	// head it left because consumed request records remain: beside unsent rows it could be resumed as a second send.
 	if (authored_rows && chat.acp_dispatched_queued_prompt_count == 1 && !chat.acp_queued_prompts.empty() &&
 	    chat.acp_queued_prompts.front().prepared_for_delivery && chat.acp_queued_prompts.front().text == prompt)
 	{

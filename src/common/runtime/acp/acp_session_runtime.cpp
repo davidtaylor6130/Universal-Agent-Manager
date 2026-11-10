@@ -849,6 +849,8 @@ namespace uam
 			if (session.ephemeral_model_discovery && session.discovery_cleanup_attaches >= kAcpReconnectMaxAttempts)
 			{
 				// Releasing the unconfirmed stop lets the completed-discovery sweep retire this session and its chat.
+				// Logged here, where the stop is given up: a cleanup whose last attach confirmed the stop never gets here.
+				diagnostics::Write("Background model discovery cleanup gave up unconfirmed after bounded reattach attempts; the helper's lease retires the process: " + session.provider_id);
 				session.reconnect_pending = false;
 				session.remote_stop_unconfirmed = false;
 				session.recovering_remote_process = false;
@@ -8412,9 +8414,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 				changed = true;
 				continue;
 			}
-			// The helper stops and forgets a discovery process once its 60 s lease is no longer renewed by a proxy.
-			if (session->discovery_cleanup_attaches >= kAcpReconnectMaxAttempts)
-				diagnostics::Write("Background model discovery cleanup ended after bounded reattach attempts; the helper's lease retires the process: " + session->provider_id);
 			completed_ephemeral_ids.insert(session->chat_id);
 		}
 		if (!completed_ephemeral_ids.empty())
