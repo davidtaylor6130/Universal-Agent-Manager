@@ -2250,6 +2250,62 @@ UAM_TEST(AcpStoppedNativeRetryResumesOnlyExplicitCapturedIntent)
 	}
 }
 
+UAM_TEST(AcpTimeoutStoppedTurnRestartsItsOutputLessDeliveredPrompt)
+{
+	for (const std::string scenario : {"timeout", "plain-stop", "output", "uncertain"})
+	{
+		TempDir temp("uam-timeout-restart");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatSession chat;
+		chat.id = "chat-timeout-restart";
+		chat.provider_id = "codex-cli";
+		chat.native_session_id = "01a13bf6-87d5-7691-889f-79a8bf5a7b25";
+		chat.created_at = chat.updated_at = "2026-10-14T20:17:11.000Z";
+		chat.messages.push_back({.role = MessageRole::User, .content = "Earlier request."});
+		chat.messages.push_back({.role = MessageRole::Assistant, .content = "Earlier reply."});
+		chat.messages.push_back({.role = MessageRole::User, .content = "Delivered request without output.", .created_at = "2026-10-14T20:17:08.000Z"});
+		chat.messages.push_back({.role = MessageRole::Assistant, .content = scenario == "output" ? "Partial provider output." : ""});
+		if (scenario == "uncertain") chat.remote_prompt_delivery_id = "possibly-delivered";
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+		// The state every timeout path leaves behind: process stopped, the timeout notice still current.
+		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->session_id = chat.native_session_id;
+		session->lifecycle_state = "error";
+		session->last_error = "Codex turn timed out after 60 seconds without provider activity. The delivered prompt was not replayed.";
+		if (scenario != "plain-stop") session->timeout_stop_error = session->last_error;
+		app.acp_sessions.push_back(std::move(session));
+		const std::vector<Message> original = app.chats.front().messages;
+		std::string error;
+		const bool restarted = uam::RetryFailedAcpMessage(app, chat.id, 2, &error);
+		ChatSession& current = app.chats.front();
+		if (scenario != "timeout")
+		{
+			UAM_ASSERT(!restarted);
+			if (scenario == "plain-stop") UAM_ASSERT_EQ(error, std::string("Reconnect the original native session before retrying."));
+			if (scenario == "output") UAM_ASSERT_EQ(error, std::string("The failed message is no longer the latest message."));
+			UAM_ASSERT_EQ(current.messages, original);
+			UAM_ASSERT(current.acp_queued_prompts.empty());
+			continue;
+		}
+		if (!restarted) throw uam_test::TestFailure("Timeout restart was refused: " + error);
+		const uam::AcpSessionState* holder = uam::FindAcpSessionForChat(app, chat.id);
+		UAM_ASSERT(holder && !holder->running && holder->reconnect_pending && !holder->queue_held && holder->last_error.empty());
+		UAM_ASSERT_EQ(current.messages.size(), original.size());
+		UAM_ASSERT_EQ(current.messages[2].content, original[2].content);
+		UAM_ASSERT(current.messages[2].acp_prompt_not_sent);
+		UAM_ASSERT_EQ(current.acp_queued_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(current.acp_queued_prompts.front().existing_user_message_index, 2);
+		UAM_ASSERT_EQ(current.acp_queued_prompts.front().text, original[2].content);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved && saved->acp_queued_prompts.size() == 1 && saved->messages.size() == original.size());
+	}
+}
+
 UAM_TEST(AcpStoppingReferencedHeldDraftRetainsOriginalInputAndSaveFailureRollsBack)
 {
 	for (const bool fail_save : {false, true})

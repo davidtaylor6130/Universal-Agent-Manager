@@ -5927,7 +5927,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 		                            !session->recovering_remote_process && !session->remote_stop_pending &&
 		                            !session->remote_stop_unconfirmed)))
 			return RetryLastAcpPrompt(app, chat_id, error_out);
-		const bool stopped_native = !fresh_retry.empty() && fresh_retry.back() == message_index && CanStageStoppedNativeRetry(app, *chat, session);
+		// A timeout stop ends the process after its prompt was delivered. With no output after that row (checked above)
+		// and no uncertain remote delivery, the explicit Restart may stage the same row for the resumed native session.
+		const bool timeout_stopped = session != nullptr && !session->timeout_stop_error.empty() && session->timeout_stop_error == session->last_error &&
+		    !message.created_at.empty() && !ChatHasUncertainRemoteInput(*chat) && CanStageStoppedNativeRetry(app, *chat, session);
+		const bool stopped_native = timeout_stopped || (!fresh_retry.empty() && fresh_retry.back() == message_index && CanStageStoppedNativeRetry(app, *chat, session));
 		if (!HasOriginalAcpRetrySession(*chat, session) && !stopped_native)
 			return reject("Reconnect the original native session before retrying.");
 		if (session == nullptr) session = &EnsureAcpSessionForChat(app, *chat);
@@ -5973,7 +5977,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 		if (held_prepared || stopped_native)
 		{
-			if (fresh_retry.empty() || fresh_retry.back() != message_index)
+			if (!timeout_stopped && (fresh_retry.empty() || fresh_retry.back() != message_index))
 				return reject("The prepared input cannot be safely associated with this unsent message.");
 			queued.existing_user_message_index = message_index;
 			queued.existing_user_message_created_at = message.created_at;
@@ -5985,6 +5989,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			const bool previous_reconnect = session->reconnect_pending;
 			const std::string previous_lifecycle = session->lifecycle_state;
 			queued.direct_admission = stopped_native;
+			// A referenced queue row is owned only while marked undelivered; this redelivery has not been sent yet.
+			if (timeout_stopped) chat->messages[user_index].acp_prompt_not_sent = true;
 			session->queue_held = chat->acp_queue_held = !stopped_native;
 			if (stopped_native)
 			{
