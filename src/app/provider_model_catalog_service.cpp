@@ -274,7 +274,7 @@ ProviderModelCatalogService::ProviderModelCatalogService()
 
 void ProviderModelCatalogService::Initialize(const fs::path& data_root, const std::vector<ProviderProfile>& profiles, std::string_view configuration_context)
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Write lock(m_mutex);
 	m_native_model_discoveries.clear();
 	m_configuration_worker.reset();
 	m_configuration_refresh.reset();
@@ -311,7 +311,7 @@ void ProviderModelCatalogService::Initialize(const fs::path& data_root, const st
 bool ProviderModelCatalogService::MaybeStartRefresh()
 {
 	if (!UAM_ENABLE_RUNTIME_OPENCODE_CLI) return false; // The only remote catalogue is OpenCode Zen.
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Write lock(m_mutex);
 
 	if (m_refresh_task->running)
 	{
@@ -342,7 +342,7 @@ bool ProviderModelCatalogService::Poll()
 	std::vector<std::unique_ptr<NativeModelDiscovery>> completed;
 
 	{
-		std::lock_guard<std::mutex> lock(m_mutex);
+		const GenerationMutex::WriteUnlessUnchanged lock(m_mutex);
 		for (auto task = m_native_model_discoveries.begin(); task != m_native_model_discoveries.end();)
 		{
 			if (!task->second->state->completed.load(std::memory_order_acquire)) { ++task; continue; }
@@ -366,6 +366,8 @@ bool ProviderModelCatalogService::Poll()
 			m_configuration_worker.reset();
 			m_configuration_refresh.reset();
 		}
+		// Poll runs every tick; only a tick that folded a finished task into the service state changes what readers see.
+		if (!updated && completed.empty()) lock.NothingChanged();
 	}
 	for (const auto& task : completed)
 	{
@@ -373,7 +375,7 @@ bool ProviderModelCatalogService::Poll()
 		{
 			if (task->metadata_only && !task->state->models->empty())
 			{
-				std::lock_guard<std::mutex> lock(m_mutex);
+				const GenerationMutex::Write lock(m_mutex);
 				m_refresh_attempted_provider_ids.erase(task->scope_key + "\neffort:" + uam::nlohmann_json::TrimmedStringValue(task->state->models->front(), {"id"}));
 			}
 			auto previous = GetCachedProviderModels(uam::provider_ids::kAntigravityCli, task->workspace, task->host_id);
@@ -463,7 +465,7 @@ bool ProviderModelCatalogService::StartAntigravityEffortDiscovery(const Provider
 	std::vector<std::string> argv = uam::command_line::SplitWords(profile.interactive_command);
 	if (argv.empty()) argv.push_back("agy");
 	argv.insert(argv.end(), {"-p", "/effort", "--output-format", "json", "--model", model_id});
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Write lock(m_mutex);
 	const std::string scope = CatalogKey(profile.id, workspace, host.id), key = scope + "\neffort:" + model_id;
 	if (scope.empty()) return fail("The model catalogue host is no longer configured.");
 	if (m_native_model_discoveries.contains(key) || m_refresh_attempted_provider_ids.contains(key)) return true;
@@ -501,7 +503,7 @@ bool ProviderModelCatalogService::StartAntigravityEffortDiscovery(const Provider
 
 std::size_t ProviderModelCatalogService::ActiveNativeModelDiscoveries() const
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Read lock(m_mutex);
 	return m_native_model_discoveries.size();
 }
 
@@ -520,7 +522,7 @@ bool ProviderModelCatalogService::StartAntigravityModelDiscovery(const ProviderP
 	const std::vector<std::string> command = uam::command_line::SplitWords(profile.interactive_command);
 	std::vector<std::string> argv = command.empty() ? std::vector<std::string>{"agy"} : command;
 	argv.push_back("models");
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Write lock(m_mutex);
 	const std::string key = CatalogKey(profile.id, workspace, host.id);
 	if (key.empty()) return fail("The model catalogue execution host is no longer configured.");
 	if (m_native_model_discoveries.contains(key)) return true;
@@ -578,26 +580,26 @@ bool ProviderModelCatalogService::StartAntigravityModelDiscovery(const ProviderP
 
 nlohmann::json ProviderModelCatalogService::GetOpenCodeZenFreeModels() const
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Read lock(m_mutex);
 	return m_open_code_zen_free_models;
 }
 
 nlohmann::json ProviderModelCatalogService::GetConfiguredOpenCodeModels() const
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Read lock(m_mutex);
 	return m_configured_open_code_models;
 }
 
 std::string ProviderModelCatalogService::GetConfiguredOpenCodeDefaultModel() const
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Read lock(m_mutex);
 	return m_configured_open_code_default_model;
 }
 
 
 void ProviderModelCatalogService::SetExecutionHostContext(const std::vector<ExecutionHost>& hosts)
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Write lock(m_mutex);
 	m_connection_key_by_host_id.clear();
 	for (const ExecutionHost& host : hosts)
 	{
@@ -625,7 +627,7 @@ void ProviderModelCatalogService::SetExecutionHostContext(const std::vector<Exec
 std::string ProviderModelCatalogService::CaptureScopeKey(const std::string& provider_id,
 	std::string_view workspace_directory, std::string_view execution_host_id) const
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Read lock(m_mutex);
 	return CatalogKey(provider_id, workspace_directory, execution_host_id);
 }
 
@@ -690,7 +692,7 @@ bool ProviderModelCatalogService::RememberSuccessfulModels(const std::string& pr
 		return false;
 	}
 
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Write lock(m_mutex);
 	const std::string normalized_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
 	const std::string host = uam::strings::NonEmptyOrFallback(
 	    uam::strings::Trim(std::string(execution_host_id)), "local");
@@ -739,7 +741,7 @@ void ProviderModelCatalogService::RememberRefreshFailure(const std::string& prov
 	std::string error, std::string_view workspace_directory, std::string_view execution_host_id,
 	std::optional<std::string_view> expected_scope_key)
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Write lock(m_mutex);
 	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
 	if (key.empty() || (expected_scope_key.has_value() && (expected_scope_key->empty() || *expected_scope_key != key))) return;
 	m_scope_by_catalog_key[key] = CatalogScope(provider_id, workspace_directory, execution_host_id);
@@ -763,7 +765,7 @@ void ProviderModelCatalogService::ApplyLaunchOptionMetadata(nlohmann::json& mode
 nlohmann::json ProviderModelCatalogService::GetCatalogSnapshot(const std::string& provider_id,
 	std::string_view workspace_directory, std::string_view execution_host_id) const
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Read lock(m_mutex);
 	const std::string host = uam::strings::NonEmptyOrFallback(uam::strings::Trim(std::string(execution_host_id)), "local");
 	// Read on every state push for every visible scope, so the workspace is not canonicalised on disk each time.
 	const std::string key = CatalogKey(provider_id, workspace_directory, host, true);
@@ -791,7 +793,7 @@ nlohmann::json ProviderModelCatalogService::GetCatalogSnapshot(const std::string
 nlohmann::json ProviderModelCatalogService::GetCachedProviderModels(const std::string& provider_id,
 	std::string_view workspace_directory, std::string_view execution_host_id) const
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Read lock(m_mutex);
 	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
 	if (key.empty()) return nlohmann::json::array();
 	const auto entry = m_persistent_catalogs.find(key);
@@ -808,7 +810,7 @@ nlohmann::json ProviderModelCatalogService::GetCachedProviderModels(const std::s
 nlohmann::json ProviderModelCatalogService::GetCachedProviderModelChoices(const std::string& provider_id,
 	std::string_view workspace_directory, std::string_view execution_host_id) const
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Read lock(m_mutex);
 	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
 	if (key.empty()) return nlohmann::json::array();
 	const auto entry = m_persistent_catalogs.find(key);
@@ -860,7 +862,7 @@ nlohmann::json ProviderModelCatalogService::GetCachedProviderModelChoices(const 
 nlohmann::json ProviderModelCatalogService::GetCachedProviderConfigOptions(const std::string& provider_id,
 	std::string_view workspace_directory, std::string_view execution_host_id) const
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Read lock(m_mutex);
 	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
 	if (key.empty()) return nlohmann::json::array();
 	const auto entry = m_persistent_catalogs.find(key);
@@ -872,7 +874,7 @@ nlohmann::json ProviderModelCatalogService::GetCachedProviderConfigOptions(const
 std::string ProviderModelCatalogService::GetProviderRefreshError(const std::string& provider_id,
 	std::string_view workspace_directory, std::string_view execution_host_id) const
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Read lock(m_mutex);
 	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
 	if (key.empty()) return {};
 	const auto error = m_refresh_error_by_provider_id.find(key);
@@ -881,7 +883,7 @@ std::string ProviderModelCatalogService::GetProviderRefreshError(const std::stri
 
 nlohmann::json ProviderModelCatalogService::GetCatalogScopes(bool recent_workspace) const
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Read lock(m_mutex);
 	nlohmann::json scopes = nlohmann::json::array();
 	for (const auto& [key, scope] : m_scope_by_catalog_key)
 		if (!key.empty() && key == CatalogKey(scope.value("providerId", ""), scope.value("workspaceDirectory", ""), scope.value("executionHostId", "local"), recent_workspace)) scopes.push_back(scope);
@@ -891,7 +893,7 @@ nlohmann::json ProviderModelCatalogService::GetCatalogScopes(bool recent_workspa
 bool ProviderModelCatalogService::BeginDiscoveryIfStale(const std::string& provider_id,
 	std::string_view workspace_directory, std::string_view execution_host_id)
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Write lock(m_mutex);
 	const std::string normalized = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
 	const std::string key = CatalogKey(normalized, workspace_directory, execution_host_id);
 	if (key.empty()) return false;
@@ -912,7 +914,7 @@ bool ProviderModelCatalogService::BeginDiscoveryIfStale(const std::string& provi
 bool ProviderModelCatalogService::BeginDiscovery(const std::string& provider_id,
 	std::string_view workspace_directory, std::string_view execution_host_id)
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Write lock(m_mutex);
 	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
 	if (key.empty()) return false;
 	m_scope_by_catalog_key[key] = CatalogScope(provider_id, workspace_directory, execution_host_id);
@@ -931,14 +933,14 @@ bool ProviderModelCatalogService::BeginDiscoveryIfMissing(const std::string& pro
 bool ProviderModelCatalogService::IsDiscoveryPending(const std::string& provider_id,
 	std::string_view workspace_directory, std::string_view execution_host_id) const
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Read lock(m_mutex);
 	return m_pending_discovery_provider_ids.contains(CatalogKey(provider_id, workspace_directory, execution_host_id));
 }
 
 void ProviderModelCatalogService::MarkDiscoveryLaunchStarted(const std::string& provider_id,
 	std::string_view workspace_directory, std::string_view execution_host_id)
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Write lock(m_mutex);
 	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
 	if (key.empty()) return;
 	m_scope_by_catalog_key[key] = CatalogScope(provider_id, workspace_directory, execution_host_id);
@@ -949,7 +951,7 @@ void ProviderModelCatalogService::MarkDiscoveryLaunchStarted(const std::string& 
 void ProviderModelCatalogService::RememberDiscoveryCompatibilityBlocked(const std::string& provider_id,
 	std::string error, std::string_view workspace_directory, std::string_view execution_host_id)
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Write lock(m_mutex);
 	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
 	if (key.empty()) return;
 	m_scope_by_catalog_key[key] = CatalogScope(provider_id, workspace_directory, execution_host_id);
@@ -1008,7 +1010,7 @@ nlohmann::json ProviderModelCatalogService::MergeAcpModelArrays(nlohmann::json f
 nlohmann::json ProviderModelCatalogService::FallbackAcpModelsForChat(const std::string& provider_id, std::string_view workspace_directory) const
 {
 	nlohmann::json cached = GetCachedProviderModels(provider_id, workspace_directory);
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Read lock(m_mutex);
 	return MergeLocalModelFallbacksLocked(provider_id, std::move(cached));
 }
 
@@ -1209,7 +1211,7 @@ void ProviderModelCatalogService::RefreshConfiguredOpenCodeModels()
 bool ProviderModelCatalogService::StartConfiguredOpenCodeRefresh()
 {
 	if (!UAM_ENABLE_RUNTIME_OPENCODE_CLI) return false;
-	std::lock_guard<std::mutex> lock(m_mutex);
+	const GenerationMutex::Write lock(m_mutex);
 	if (m_configuration_refresh != nullptr) return false;
 	const std::vector<fs::path> paths = OpenCodeConfigPaths();
 	const std::shared_ptr<ConfiguredOpenCodeRefresh> state = std::make_shared<ConfiguredOpenCodeRefresh>();
@@ -1247,7 +1249,7 @@ void ProviderModelCatalogService::StartRefreshTask()
 		    {
 			    WriteOpenCodeZenFreeModelsCache(models);
 
-			    std::lock_guard<std::mutex> lock(m_mutex);
+			    const GenerationMutex::Write lock(m_mutex);
 			    m_open_code_zen_free_models = models;
 		    }
 

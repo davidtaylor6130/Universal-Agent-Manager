@@ -148,18 +148,84 @@ namespace uam
 			std::unordered_map<std::string, nlohmann::json> catalogs;
 			std::unordered_map<std::string, nlohmann::json> fingerprints;
 			bool compact_catalogs = false;
-			std::map<WorkspaceKey, std::filesystem::path> workspaces;
+			// Transparent comparison: a chat is looked up through views of its own strings, without copying them.
+			using WorkspaceKeyView = std::tuple<bool, bool, std::string_view, std::string_view, std::string_view, std::string_view>;
+			std::map<WorkspaceKey, std::filesystem::path, std::less<>> workspaces;
+			// A chat's compact catalogue fingerprint by provider, resolved workspace and host. The views point into
+			// chats, which outlive this cache: it lives for one serialization, or one push during which state is fixed.
+			std::map<std::tuple<std::string_view, const std::filesystem::path*, std::string_view>, const nlohmann::json*> chat_fingerprints;
+			// The provider's agent execution capability depends on the provider alone.
+			std::map<std::string, std::string, std::less<>> execution_capabilities;
+			// Queued and running managed runs per root chat, counted once instead of scanning every run for every chat.
+			std::optional<std::unordered_map<std::string, std::size_t>> active_run_counts;
+			// A chat's summary reads its attention revision three times; unopened chats compare two timestamps for it.
+			bool attention_known = false;
+			std::string attention_chat_id;
+			std::string attention_revision;
 		};
+
+		/// <summary>The chat's attention revision, computed once per chat within one serialization.</summary>
+		const std::string& AttentionRevisionForChat(const AppState& app, const ChatSession& chat, CatalogSnapshotCache& cache)
+		{
+			if (!cache.attention_known || cache.attention_chat_id != chat.id)
+			{
+				cache.attention_revision = ChatDomainService().AttentionRevision(app, chat);
+				cache.attention_chat_id = chat.id;
+				cache.attention_known = true;
+			}
+			return cache.attention_revision;
+		}
 
 		/// <summary>Results that stay valid while AppState is unchanged; shared by every serialization inside one StablePass.</summary>
 		struct StablePassState
 		{
 			CatalogSnapshotCache cache;
-			std::unordered_map<const ChatSession*, std::string> transcript_digests;
+			// Everything a catalogue snapshot reads other than workspace paths resolved on disk; computed once per pass.
+			std::optional<std::string> catalog_inputs;
 		};
+
+		// Catalogue values a push reuses while the inputs above are unchanged: the digest of the providerModelCatalogs
+		// slice it last compared with the pushed baseline, and each scope's compact fingerprint.
+		struct CatalogMemo
+		{
+			std::string inputs;
+			std::optional<std::uint64_t> slice_digest;
+			std::unordered_map<std::string, nlohmann::json> fingerprints;
+		};
+		thread_local CatalogMemo g_catalog_memo;
 
 		thread_local StablePassState* g_stable_pass = nullptr;
 		thread_local std::size_t g_hashed_transcript_messages = 0;
+
+		// Values a state push reuses while their source's revision stamp is unchanged. A stamp cannot see a write
+		// through a reference kept from before it was read, so only pushes trust stamps: they are followed by a
+		// verifying pass that recomputes each trusted value and reports and repairs any difference. Every other
+		// caller (a message page, a handler's reply) computes from the source as before.
+		thread_local StateSerializer::StampedCacheMode g_stamped_cache_mode = StateSerializer::StampedCacheMode::Exact;
+		thread_local std::size_t g_trusted_cache_reads = 0;
+		// Process-wide: handler test programs push on the CEF UI thread and check the total from the main thread.
+		std::atomic<std::size_t> g_cache_divergences{0};
+		// Found by the current verifying pass; FlushCacheDivergenceReport writes them as one log line.
+		thread_local std::vector<std::string> g_unreported_divergences;
+		thread_local std::size_t g_unreported_divergence_count = 0;
+		// Transcripts whose stamp moved while their digest did not: a non-const read restamped them and they were rehashed for nothing.
+		thread_local std::size_t g_restamped_unchanged_transcripts = 0;
+
+		void ReportCacheDivergence(std::string_view what, std::string_view owner)
+		{
+			++g_cache_divergences;
+			++g_unreported_divergence_count;
+			// Identifiers only: the diverged content is private.
+			if (g_unreported_divergences.size() < 5) g_unreported_divergences.push_back(std::string(what) + " of " + std::string(owner));
+		}
+
+		struct StampedTranscriptDigest
+		{
+			std::uint64_t revision = 0;
+			std::string digest;
+		};
+		// Loaded transcript digests by chat id, valid while the transcript's stamp is unchanged.
+		thread_local std::unordered_map<std::string, StampedTranscriptDigest> g_transcript_digests;
 
 		/// <summary>The pass's catalog cache, or a private one outside a pass, with this call's catalog compaction.</summary>
 		class ScopedCatalogCache
@@ -185,10 +251,12 @@ namespace uam
 		const std::filesystem::path& WorkspaceSnapshotForChat(const AppState& app, const ChatSession& chat,
 		                                                       CatalogSnapshotCache& cache)
 		{
-			const CatalogSnapshotCache::WorkspaceKey key{chat.imported_read_only, uam::paths::IsGitWorktreeIsolated(chat),
+			const CatalogSnapshotCache::WorkspaceKeyView view{chat.imported_read_only, uam::paths::IsGitWorktreeIsolated(chat),
 			    chat.execution_host_id, chat.workspace_directory, chat.workspace_worktree_directory, chat.folder_id};
-			if (const auto found = cache.workspaces.find(key); found != cache.workspaces.end()) return found->second;
-			return cache.workspaces.emplace(key, uam::paths::ResolveWorkspaceRootPath(app, chat)).first->second;
+			if (const auto found = cache.workspaces.find(view); found != cache.workspaces.end()) return found->second;
+			return cache.workspaces.emplace(CatalogSnapshotCache::WorkspaceKey{chat.imported_read_only, std::get<1>(view),
+			    chat.execution_host_id, chat.workspace_directory, chat.workspace_worktree_directory, chat.folder_id},
+			    uam::paths::ResolveWorkspaceRootPath(app, chat)).first->second;
 		}
 
 		std::string CatalogSnapshotKey(const std::string& provider_id,
@@ -231,23 +299,117 @@ namespace uam
 		std::uint64_t JsonDigest(const nlohmann::json& value);
 
 		/// Fingerprint each inactive scope once per scan; changed patches hydrate its full catalog.
+		/// <summary>
+		/// Every input of a catalogue snapshot or of the providerModelCatalogs slice, apart from workspace paths
+		/// resolved on disk: the service's state (its generation), the provider profiles, the folders, the execution
+		/// hosts and the checked CLI versions that decide launch-option metadata. Equal text means equal inputs.
+		/// </summary>
+		std::string CatalogInputs(const AppState& app)
+		{
+			std::string inputs = std::to_string(app.provider_model_catalog->InstanceId()) + ':' + std::to_string(app.provider_model_catalog->Generation());
+			const auto add = [&inputs](std::string_view text)
+			{
+				inputs += '\n';
+				inputs += std::to_string(text.size());
+				inputs += ':';
+				inputs += text;
+			};
+			for (const ProviderProfile& provider : app.provider_profiles)
+			{
+				add(provider.id);
+				inputs += provider.supports_structured ? 's' : '-';
+			}
+			inputs += "\nfolders";
+			for (const ChatFolder& folder : app.folders)
+			{
+				add(folder.directory);
+				add(folder.execution_host_id);
+			}
+			inputs += "\nhosts";
+			for (const ExecutionHost& host : app.settings.execution_hosts)
+			{
+				add(host.id);
+				add(host.platform);
+			}
+			// The local host is used even when it is not configured: Find then supplies a built-in one.
+			const ExecutionHost* const local_host = execution_hosts::Find(app.settings.execution_hosts, execution_hosts::kLocalHostId);
+			add(local_host->platform);
+			// Unordered map: sort so the text does not depend on bucket order.
+			std::vector<std::string> versions;
+			for (const auto& [key, version] : app.runtime_cli_versions_by_provider_id)
+			{
+				std::string entry = key + '\n' + (version.checked ? 'c' : '-') + (version.supported ? 's' : '-') + version.installed_version + '\n';
+				for (const ExecutionHost& host : app.settings.execution_hosts) entry += execution_hosts::SameConnection(version.execution_host, host) ? '1' : '0';
+				entry += execution_hosts::SameConnection(version.execution_host, *local_host) ? 'L' : 'l';
+				versions.push_back(std::move(entry));
+			}
+			std::sort(versions.begin(), versions.end());
+			inputs += "\nversions";
+			for (const std::string& entry : versions) add(entry);
+			return inputs;
+		}
+
+		/// <summary>
+		/// The memo for this pass's catalogue inputs, or nullptr when stamped caches are not in use (outside a push).
+		/// A memo left from other inputs is emptied, so whatever it returns belongs to the current inputs.
+		/// </summary>
+		CatalogMemo* CurrentCatalogMemo(const AppState& app)
+		{
+			if (g_stable_pass == nullptr || g_stamped_cache_mode == StateSerializer::StampedCacheMode::Exact || app.provider_model_catalog == nullptr) return nullptr;
+			if (!g_stable_pass->catalog_inputs) g_stable_pass->catalog_inputs = CatalogInputs(app);
+			if (g_catalog_memo.inputs != *g_stable_pass->catalog_inputs)
+			{
+				g_catalog_memo = CatalogMemo{};
+				g_catalog_memo.inputs = *g_stable_pass->catalog_inputs;
+			}
+			return &g_catalog_memo;
+		}
+
+		const nlohmann::json& CatalogFingerprintForScope(const AppState& app, const ChatSession& chat, CatalogSnapshotCache& cache, const std::string& workspace);
+
 		const nlohmann::json& CatalogFingerprintForChat(const AppState& app, const ChatSession& chat,
 		                                               CatalogSnapshotCache& cache)
 		{
-			const std::string workspace = WorkspaceSnapshotForChat(app, chat, cache).generic_string();
+			// Most chats share a provider, workspace and host with an earlier one: answer those without building the scope key.
+			const std::filesystem::path& workspace_root = WorkspaceSnapshotForChat(app, chat, cache);
+			const std::tuple<std::string_view, const std::filesystem::path*, std::string_view> chat_key{chat.provider_id, &workspace_root, chat.execution_host_id};
+			if (const auto known = cache.chat_fingerprints.find(chat_key); known != cache.chat_fingerprints.end()) return *known->second;
+			const nlohmann::json& fingerprint = CatalogFingerprintForScope(app, chat, cache, workspace_root.generic_string());
+			cache.chat_fingerprints.emplace(chat_key, &fingerprint);
+			return fingerprint;
+		}
+
+		const nlohmann::json& CatalogFingerprintForScope(const AppState& app, const ChatSession& chat, CatalogSnapshotCache& cache, const std::string& workspace)
+		{
 			const std::string key = CatalogSnapshotKey(chat.provider_id, workspace, chat.execution_host_id);
 			if (const std::unordered_map<std::string, nlohmann::json>::const_iterator found = cache.fingerprints.find(key); found != cache.fingerprints.end()) return found->second;
+			CatalogMemo* memo = CurrentCatalogMemo(app);
+			const auto remembered = memo != nullptr ? memo->fingerprints.find(key) : std::unordered_map<std::string, nlohmann::json>::iterator{};
+			if (memo != nullptr && remembered != memo->fingerprints.end() && g_stamped_cache_mode == StateSerializer::StampedCacheMode::Trust)
+			{
+				++g_trusted_cache_reads;
+				return cache.fingerprints.emplace(key, remembered->second).first->second;
+			}
 			const nlohmann::json snapshot = CatalogSnapshotForChat(app, chat, cache);
 			// The token never leaves this process (patches hydrate the full catalog), so it is hashed without dumping the catalog to text.
-			return cache.fingerprints.emplace(key, nlohmann::json{
+			nlohmann::json fingerprint{
 			    {"catalogDigest", std::to_string(JsonDigest(snapshot))},
 			    {"modelsLoading", snapshot.value("modelsLoading", false)},
 			    {"modelRefreshError", snapshot.value("modelRefreshError", "")},
-			}).first->second;
+			};
+			if (memo != nullptr)
+			{
+				if (remembered != memo->fingerprints.end() && remembered->second != fingerprint) ReportCacheDivergence("model catalogue", key);
+				memo->fingerprints[key] = fingerprint;
+			}
+			return cache.fingerprints.emplace(key, std::move(fingerprint)).first->second;
 		}
+
+		thread_local std::size_t g_catalog_slice_builds = 0;
 
 		nlohmann::json SerializeProviderModelCatalogs(const AppState& app, CatalogSnapshotCache& cache)
 		{
+			++g_catalog_slice_builds;
 			nlohmann::json catalogs = nlohmann::json::array();
 			if (app.provider_model_catalog == nullptr) return catalogs;
 			std::unordered_set<std::string> seen;
@@ -1043,13 +1205,6 @@ namespace uam
 
 		std::string MessageDigestForFingerprint(const ChatSession& session, bool cache_selected)
 		{
-			// One push reads a changed chat's digest up to three times (digest scan, summary build, catalog hydration).
-			// Checked first so a repeat inside the pass keeps the selected cache's rehash count from the real computation.
-			if (g_stable_pass != nullptr)
-			{
-				if (const auto known = g_stable_pass->transcript_digests.find(&session); known != g_stable_pass->transcript_digests.end()) return known->second;
-			}
-
 			SelectedHistoryDigestCache* cache = cache_selected ? &g_selected_history_digest : nullptr;
 			if (cache != nullptr)
 			{
@@ -1069,6 +1224,28 @@ namespace uam
 					return session.persisted_messages_digest;
 				}
 				return session.updated_at + ":" + std::to_string(session.persisted_message_count);
+			}
+
+			// An unchanged stamp means an unchanged transcript: nothing is hashed, compared or copied.
+			const std::uint64_t revision = session.messages.revision();
+			if (const auto known = g_transcript_digests.find(session.id); g_stamped_cache_mode != StateSerializer::StampedCacheMode::Exact &&
+			    revision != 0 && known != g_transcript_digests.end() && known->second.revision == revision)
+			{
+				if (g_stamped_cache_mode == StateSerializer::StampedCacheMode::Trust)
+				{
+					++g_trusted_cache_reads;
+					return known->second.digest;
+				}
+				std::uint64_t truth_hash = uam::hashing::kFnv1a64OffsetBasis;
+				for (const Message& message : session.messages.items()) chat_pages::AppendMessageDigest(truth_hash, message);
+				g_hashed_transcript_messages += session.messages.size();
+				std::string truth = chat_pages::FinishMessageDigest(truth_hash, session.messages.size());
+				if (truth != known->second.digest)
+				{
+					ReportCacheDivergence("transcript digest", session.id);
+					known->second.digest = truth;
+				}
+				return truth;
 			}
 
 			const auto started = std::chrono::steady_clock::now();
@@ -1112,7 +1289,16 @@ namespace uam
 				last_slow_digest_report = finished;
 			}
 			std::string digest = chat_pages::FinishMessageDigest(hash, session.messages.size());
-			if (g_stable_pass != nullptr) g_stable_pass->transcript_digests.emplace(&session, digest);
+			// Only a push stores: its Verify pass is what makes a stored digest safe to trust later. A digest stored by
+			// any other caller could be pinned by a write through a reference taken before that caller ran.
+			if (revision != 0 && g_stamped_cache_mode != StateSerializer::StampedCacheMode::Exact)
+			{
+				const auto previous = g_transcript_digests.find(session.id);
+				if (previous != g_transcript_digests.end() && previous->second.digest == digest) ++g_restamped_unchanged_transcripts;
+				// Entries of deleted chats are bounded by evicting one, not by clearing: a clear would rehash every loaded chat.
+				if (previous == g_transcript_digests.end() && g_transcript_digests.size() >= 8192) g_transcript_digests.erase(g_transcript_digests.begin());
+				g_transcript_digests[session.id] = StampedTranscriptDigest{revision, digest};
+			}
 			return digest;
 		}
 
@@ -1137,9 +1323,8 @@ namespace uam
 		}
 
 		template <class Writer>
-		void WriteChatTerminalSummary(Writer& w, const AppState& app, const ChatSession& chat)
+		void WriteChatTerminalSummary(Writer& w, const AppState& app, const ChatSession& chat, bool ready_since_last_select)
 		{
-			const bool ready_since_last_select = ChatHasUnseenUpdate(app, chat);
 
 			if (const CliTerminalState* terminal = FindTerminalForChat(app, chat); terminal != nullptr)
 			{
@@ -1178,7 +1363,7 @@ namespace uam
 		{
 			nlohmann::json terminal_json = nlohmann::json::object();
 			SummaryJsonWriter w(terminal_json);
-			WriteChatTerminalSummary(w, app, chat);
+			WriteChatTerminalSummary(w, app, chat, ChatHasUnseenUpdate(app, chat));
 			return terminal_json;
 		}
 
@@ -1223,6 +1408,46 @@ namespace uam
 				tool_calls_json.push_back(std::move(tool_call_json));
 			}
 			return tool_calls_json;
+		}
+
+		struct StampedToolCallJson
+		{
+			std::uint64_t revision = 0;
+			nlohmann::json tool_calls;
+		};
+		// A live session's serialized tool calls by chat id, valid while the tool call list's stamp is unchanged.
+		thread_local std::unordered_map<std::string, StampedToolCallJson> g_live_tool_call_json;
+		thread_local std::size_t g_live_tool_call_serializations = 0;
+		thread_local std::size_t g_restamped_unchanged_tool_calls = 0;
+
+		/// <summary>
+		/// The session's tool calls as the frontend receives them. A streamed token leaves the tool calls alone, so
+		/// inside a push their JSON (each call's arguments and output, up to 64 KB inline) is reused by stamp instead
+		/// of being rebuilt from the session on every 100 ms rebuild.
+		/// </summary>
+		nlohmann::json SerializeLiveAcpToolCalls(const AcpSessionState& session)
+		{
+			const std::uint64_t revision = session.tool_calls.revision();
+			const auto known = g_live_tool_call_json.find(session.chat_id);
+			const bool stamped = g_stamped_cache_mode != StateSerializer::StampedCacheMode::Exact && revision != 0 &&
+			    known != g_live_tool_call_json.end() && known->second.revision == revision;
+			const bool restamped = g_stamped_cache_mode != StateSerializer::StampedCacheMode::Exact && known != g_live_tool_call_json.end() && known->second.revision != revision;
+			if (stamped && g_stamped_cache_mode == StateSerializer::StampedCacheMode::Trust)
+			{
+				++g_trusted_cache_reads;
+				return known->second.tool_calls;
+			}
+			++g_live_tool_call_serializations;
+			nlohmann::json tool_calls = SerializeAcpToolCalls(session.tool_calls);
+			if (stamped && known->second.tool_calls != tool_calls) ReportCacheDivergence("live tool calls", session.chat_id);
+			// Opened for writing since the last push, yet identical: a non-const read restamped them and they were rebuilt for nothing.
+			if (restamped && known->second.tool_calls == tool_calls) ++g_restamped_unchanged_tool_calls;
+			if (revision != 0 && g_stamped_cache_mode != StateSerializer::StampedCacheMode::Exact)
+			{
+				if (known == g_live_tool_call_json.end() && g_live_tool_call_json.size() >= 256) g_live_tool_call_json.erase(g_live_tool_call_json.begin());
+				g_live_tool_call_json[session.chat_id] = StampedToolCallJson{revision, tool_calls};
+			}
+			return tool_calls;
 		}
 
 		nlohmann::json SerializeAcpPlanEntries(const std::vector<AcpPlanEntryState>& plan_entries)
@@ -1482,12 +1707,16 @@ namespace uam
 			return input_json;
 		}
 
-		std::size_t ManagedChildRunCountForChat(const AppState& app, const ChatSession& chat)
+		std::size_t ManagedChildRunCountForChat(const AppState& app, const ChatSession& chat, CatalogSnapshotCache& cache)
 		{
-			return static_cast<std::size_t>(std::ranges::count_if(app.agent_runs, [&chat](const AgentRun& run)
+			if (!cache.active_run_counts)
 			{
-				return run.root_chat_id == chat.id && (run.status == "queued" || run.status == "running");
-			}));
+				cache.active_run_counts.emplace();
+				for (const AgentRun& run : app.agent_runs)
+					if (run.status == "queued" || run.status == "running") ++(*cache.active_run_counts)[run.root_chat_id];
+			}
+			const auto found = cache.active_run_counts->find(chat.id);
+			return found == cache.active_run_counts->end() ? std::size_t{0} : found->second;
 		}
 
 		bool ManualCompactionAvailable(const AppState& app, const ChatSession& chat, const AcpSessionState* session)
@@ -1546,12 +1775,15 @@ namespace uam
 			w.Set("sessionId", session_id);
 			w.Set("providerId", chat.provider_id);
 			w.Object("manualCompaction", [&](auto& compaction) { WriteManualCompactionAvailability(compaction, app, chat, nullptr); });
-			w.Set("uamAgentExecutionCapability", AgentDefinitionService::ExecutionCapabilityForProvider(chat.provider_id));
+			auto capability = cache.execution_capabilities.find(chat.provider_id);
+			if (capability == cache.execution_capabilities.end())
+				capability = cache.execution_capabilities.emplace(chat.provider_id, AgentDefinitionService::ExecutionCapabilityForProvider(chat.provider_id)).first;
+			w.Set("uamAgentExecutionCapability", capability->second);
 			w.Set("protocolKind", "");
 			w.Set("threadId", session_id);
 			w.Set("running", false);
 			w.Set("processing", (chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "held"));
-			w.Set("backgroundTaskCount", ManagedChildRunCountForChat(app, chat));
+			w.Set("backgroundTaskCount", ManagedChildRunCountForChat(app, chat, cache));
 			w.Set("readySinceLastSelect", ready_since_last_select);
 			w.Set("lastStopReason", chat.last_stop_reason);
 			w.Set("attentionKind", nullptr);
@@ -1586,7 +1818,8 @@ namespace uam
 			w.Set("waitSeconds", 0);
 			w.Set("pendingPermission", nullptr);
 			w.Set("pendingUserInput", nullptr);
-			const auto approval = UamControlService::PendingApprovalForChat(app, chat.id);
+			// Without any control capability there is no approval to find, and looking reads the system clock per chat.
+			const auto approval = app.uam_control_capabilities.empty() ? std::optional<AcpPendingUserInputState>{} : UamControlService::PendingApprovalForChat(app, chat.id);
 			if (approval.has_value())
 			{
 				w.Set("pendingUserInput", SerializePendingAcpUserInput(*approval));
@@ -1608,7 +1841,7 @@ namespace uam
 		                                          CatalogSnapshotCache& cache)
 		{
 			const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
-			const bool ready_since_last_select = ChatHasUnseenUpdate(app, chat);
+			const bool ready_since_last_select = !AttentionRevisionForChat(app, chat, cache).empty();
 			if (session == nullptr)
 			{
 				return SerializeStoppedAcpSessionSummary(app, chat, ready_since_last_select, cache);
@@ -1625,7 +1858,7 @@ namespace uam
 			acp_json["running"] = session->running;
 			acp_json["processing"] = session->processing || (chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "held");
 			acp_json["compacting"] = session->pending_compaction != nullptr || (session->running && (session->manual_compaction_pending || session->context_compaction_in_progress));
-			acp_json["backgroundTaskCount"] = ProviderRuntimeRegistry::ResolveById(session->provider_id).AcpBackgroundTaskCount(*session) + ManagedChildRunCountForChat(app, chat);
+			acp_json["backgroundTaskCount"] = ProviderRuntimeRegistry::ResolveById(session->provider_id).AcpBackgroundTaskCount(*session) + ManagedChildRunCountForChat(app, chat, cache);
 			if (AcpSessionCanIdleShutdown(*session, chat))
 				SerializeIdleDeadline(acp_json, session->idle_interaction_started_time_s, app.settings.cli_idle_timeout_seconds);
 			acp_json["readySinceLastSelect"] = ready_since_last_select;
@@ -1657,7 +1890,7 @@ namespace uam
 			};
 
 			acp_json["diagnostics"] = SerializeAcpDiagnostics(session->diagnostics);
-			acp_json["toolCalls"] = SerializeAcpToolCalls(session->tool_calls);
+			acp_json["toolCalls"] = SerializeLiveAcpToolCalls(*session);
 			acp_json["planSummary"] = session->plan_summary;
 			acp_json["planEntries"] = SerializeAcpPlanEntries(session->plan_entries);
 			acp_json["availableCommands"] = SerializeAcpCommands(session->available_commands);
@@ -1709,12 +1942,14 @@ namespace uam
 			const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
 			w.Set("routingWaitReason", routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second);
 			w.Set("routingUnresolvedReservation", app.execution_routing_restored_unresolved_chat_ids.contains(chat.id));
-			w.Set("attentionRevision", ChatDomainService().AttentionRevision(app, chat));
+			w.Set("attentionRevision", AttentionRevisionForChat(app, chat, cache));
 			w.Set("attentionSource", chat.attention_source);
-			w.Object("cliTerminal", [&](auto& terminal) { WriteChatTerminalSummary(terminal, app, chat); });
+			w.Object("cliTerminal", [&](auto& terminal) { WriteChatTerminalSummary(terminal, app, chat, !AttentionRevisionForChat(app, chat, cache).empty()); });
 			if (FindAcpSessionForChat(app, chat.id) == nullptr)
 			{
-				const bool ready_since_last_select = ChatHasUnseenUpdate(app, chat);
+				// The session ended: its serialized tool calls are not needed again.
+				if (!g_live_tool_call_json.empty()) g_live_tool_call_json.erase(chat.id);
+				const bool ready_since_last_select = !AttentionRevisionForChat(app, chat, cache).empty();
 				w.Object("acpSession", [&](auto& acp) { WriteStoppedAcpSessionSummary(acp, app, chat, ready_since_last_select, cache); });
 			}
 			else
@@ -2118,14 +2353,16 @@ namespace uam
 			const auto chats_started = std::chrono::steady_clock::now();
 			std::chrono::microseconds slowest_chat{0};
 			std::size_t loaded_chats = 0;
+			auto previous_chat_finished = chats_started;
 			for (const auto& chat : app.chats)
 			{
 				if (IsInternalChat(chat)) continue;
-				const auto chat_started = std::chrono::steady_clock::now();
 				const auto managed_count = managed_counts.find(chat.id);
 				visit(chat, chat.id == selected_chat_id, managed_count == managed_counts.end() ? std::size_t{0} : managed_count->second);
-				slowest_chat = std::max(slowest_chat, std::chrono::duration_cast<std::chrono::microseconds>(
-					std::chrono::steady_clock::now() - chat_started));
+				// One clock read per chat: each chat is timed from the end of the previous one.
+				const auto chat_finished = std::chrono::steady_clock::now();
+				slowest_chat = std::max(slowest_chat, std::chrono::duration_cast<std::chrono::microseconds>(chat_finished - previous_chat_finished));
+				previous_chat_finished = chat_finished;
 				loaded_chats += chat.messages_loaded ? 1 : 0;
 			}
 			const auto chats_finished = std::chrono::steady_clock::now();
@@ -2181,6 +2418,63 @@ namespace uam
 	std::size_t StateSerializer::HashedTranscriptMessageCountForTests()
 	{
 		return g_hashed_transcript_messages;
+	}
+
+	StateSerializer::StampedCacheMode StateSerializer::SetStampedCacheMode(StampedCacheMode mode)
+	{
+		return std::exchange(g_stamped_cache_mode, mode);
+	}
+
+	std::size_t StateSerializer::TrustedCacheReadCount()
+	{
+		return g_trusted_cache_reads;
+	}
+
+	std::size_t StateSerializer::LiveToolCallSerializationCountForTests()
+	{
+		return g_live_tool_call_serializations;
+	}
+
+	std::size_t StateSerializer::CatalogSliceBuildCountForTests()
+	{
+		return g_catalog_slice_builds;
+	}
+
+	void StateSerializer::ForgetCatalogMemo()
+	{
+		g_catalog_memo = CatalogMemo{};
+	}
+
+	std::size_t StateSerializer::CacheDivergenceCount()
+	{
+		return g_cache_divergences;
+	}
+
+	std::size_t StateSerializer::RestampedUnchangedTranscriptCount()
+	{
+		return g_restamped_unchanged_transcripts;
+	}
+
+	std::size_t StateSerializer::RestampedUnchangedToolCallCount()
+	{
+		return g_restamped_unchanged_tool_calls;
+	}
+
+	void StateSerializer::CaptureCatalogInputs(const AppState& app)
+	{
+		(void)CurrentCatalogMemo(app);
+	}
+
+	void StateSerializer::FlushCacheDivergenceReport()
+	{
+		if (g_unreported_divergence_count == 0) return;
+		std::string names;
+		for (const std::string& name : g_unreported_divergences) names += (names.empty() ? "" : ", ") + name;
+		uam::diagnostics::Write("[desync] " + std::to_string(g_unreported_divergence_count) + " cached value(s) differed from their source and were repaired (" +
+		    names + (g_unreported_divergence_count > g_unreported_divergences.size() ? ", ..." : "") +
+		    "); a write bypassed a revision stamp. Total so far: " + std::to_string(g_cache_divergences.load()) + ".");
+		g_unreported_divergences.clear();
+		g_unreported_divergence_count = 0;
 	}
 
 	nlohmann::json StateSerializer::Serialize(const AppState& app, bool summary_only)
@@ -2361,7 +2655,20 @@ namespace uam
 		j["selectedChatId"] = uam::nlohmann_json::StringOrNull(selected_chat_id);
 
 		j["providers"] = SerializeProvidersForFrontend(app.provider_profiles);
-		j["providerModelCatalogs"] = SerializeProviderModelCatalogs(app, catalog_cache);
+		// A push whose catalogue inputs are unchanged omits the slice: it equals the one last compared with the pushed baseline.
+		if (CatalogMemo* memo = CurrentCatalogMemo(app); memo != nullptr && memo->slice_digest && g_stamped_cache_mode == StampedCacheMode::Trust)
+			++g_trusted_cache_reads;
+		else
+		{
+			nlohmann::json catalogs = SerializeProviderModelCatalogs(app, catalog_cache);
+			if (memo != nullptr)
+			{
+				const std::uint64_t digest = JsonDigest(catalogs);
+				if (memo->slice_digest && *memo->slice_digest != digest) ReportCacheDivergence("model catalogues", "the provider catalogue list");
+				memo->slice_digest = digest;
+			}
+			j["providerModelCatalogs"] = std::move(catalogs);
+		}
 		j["memoryActivity"] = SerializeMemoryActivity(app);
 		j["cliVersionManager"] = SerializeCliVersionManager(app);
 

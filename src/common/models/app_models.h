@@ -16,6 +16,7 @@
 
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/utils/uuid.h"
+#include "common/models/revisioned_vector.h"
 
 // Inert authored-input provenance. Never delivery, replay, cancellation or ownership authority.
 namespace uam::input_provenance
@@ -773,7 +774,8 @@ struct ChatSession
 	std::string interaction_at;
 	bool pinned = false;
 	std::vector<std::string> linked_files;
-	std::vector<Message> messages;
+	/// Stamped so the transcript digest is recomputed only after the transcript was opened for writing.
+	uam::RevisionedVector<Message> messages;
 	bool messages_loaded = true;
 	std::size_t persisted_message_count = 0;
 	std::string persisted_messages_digest;

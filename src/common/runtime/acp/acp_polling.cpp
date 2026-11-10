@@ -17,6 +17,7 @@
 #include "common/utils/string_utils.h"
 #include "remote/runner_proxy.h"
 
+#include <utility>
 #include <charconv>
 
 #include <algorithm>
@@ -883,11 +884,28 @@ bool SettleClaudeBackgroundTasks(AcpSessionState& session, ChatSession* chat, co
 		return true;
 	};
 	bool changed = false;
-	for (AcpToolCallState& tool : session.tool_calls) changed |= settle_child(tool.task_id, tool.status);
+	// Read through const access and write only the rows that settle: opening the stamped tool calls or the
+	// transcript for writing restamps them, and the next state push would rebuild or rehash them for nothing.
+	const auto& tool_calls = std::as_const(session.tool_calls);
+	for (std::size_t index = 0; index < tool_calls.size(); ++index)
+	{
+		std::string settled = tool_calls[index].status;
+		if (!settle_child(tool_calls[index].task_id, settled)) continue;
+		session.tool_calls[index].status = std::move(settled);
+		changed = true;
+	}
 	if (chat != nullptr)
 	{
-		for (Message& message : chat->messages)
-			for (ToolCall& tool : message.tool_calls) changed |= settle_child(tool.task_id, tool.status);
+		const auto& messages = std::as_const(chat->messages);
+		for (std::size_t message_index = 0; message_index < messages.size(); ++message_index)
+			for (std::size_t tool_index = 0; tool_index < messages[message_index].tool_calls.size(); ++tool_index)
+			{
+				const ToolCall& tool = messages[message_index].tool_calls[tool_index];
+				std::string settled = tool.status;
+				if (!settle_child(tool.task_id, settled)) continue;
+				chat->messages[message_index].tool_calls[tool_index].status = std::move(settled);
+				changed = true;
+			}
 		if (changed) chat->updated_at = AcpTimestampNow();
 	}
 	session.claude_live_background_task_ids.clear();

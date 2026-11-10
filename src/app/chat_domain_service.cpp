@@ -861,12 +861,12 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	}
 
 	const ChatSession& source = app.chats[source_index];
-	const std::vector<Message>* source_messages = source.messages_loaded ? &source.messages : nullptr;
+	const std::vector<Message>* source_messages = source.messages_loaded ? &source.messages.items() : nullptr;
 	if (source_messages == nullptr && prepared_source != nullptr)
 	{
 		const BranchHistoryIdentity expected = CaptureBranchHistoryIdentity(source);
 		if (prepared_source->messages_loaded && MatchesBranchHistoryIdentity(*prepared_source, expected))
-			source_messages = &prepared_source->messages;
+			source_messages = &prepared_source->messages.items();
 		else
 		{
 			app.status_line = "Branch source history changed while loading. Retry the branch.";
@@ -881,7 +881,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 			app.status_line = uam::strings::NonEmptyOrFallback(hydrate_warning, "Failed to load branch source messages.");
 			return false;
 		}
-		source_messages = &app.chats[source_index].messages;
+		source_messages = &std::as_const(app.chats[source_index]).messages.items();
 	}
 
 	if (message_index < 0 || message_index >= static_cast<int>(source_messages->size()))

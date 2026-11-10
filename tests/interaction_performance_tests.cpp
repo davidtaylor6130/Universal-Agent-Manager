@@ -432,6 +432,7 @@ namespace
 
 UAM_TEST(PerformanceStreamingStatePushTick)
 {
+	const WithoutStateCacheVerification unverified;
 	TempDir temp("uam-performance-streaming-push");
 	uam::AppState app;
 	BuildStreamingPushFixture(app, temp.root);
@@ -921,6 +922,7 @@ UAM_TEST(StatePushPublishesEverySummaryInputChange)
 
 UAM_TEST(PerformanceLargeCatalogStateFingerprint)
 {
+	const WithoutStateCacheVerification unverified;
 	for (const int chat_count : {1000, 5000})
 	{
 		TempDir temp("uam-performance-large-catalog");
@@ -1014,11 +1016,12 @@ namespace
 }
 
 // Guarded by assertions that fail without the change: the per-push path memo on both display readers (probe
-// counts) and hashing a changed loaded transcript once per push (hashed message counts).
+// counts), and hashing no transcript on an unchanged push and only the changed one otherwise (hashed message counts).
 // Not guarded here: hashing the catalogue token from the JSON tree instead of a dump, which only the printed
 // timings show, and the 250 ms budget, which the code before these changes also met.
 UAM_TEST(PerformanceIdleInstallPushTick)
 {
+	const WithoutStateCacheVerification unverified;
 	FakeStatePushClock clock;
 	FakePathProbeClock probe_clock;
 	StatePatchObserver observer;
@@ -1052,15 +1055,28 @@ UAM_TEST(PerformanceIdleInstallPushTick)
 		// and must hash each loaded transcript once.
 		const std::size_t probes_before = probes();
 		std::size_t hashed_before = uam::StateSerializer::HashedTranscriptMessageCountForTests();
+		const std::size_t trusted_before = uam::StateSerializer::TrustedCacheReadCount();
 		for (int repeat = 0; repeat < 3; ++repeat) UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
 		UAM_ASSERT_EQ(probes(), probes_before);
-		const std::size_t hashed_per_unchanged_push = (uam::StateSerializer::HashedTranscriptMessageCountForTests() - hashed_before) / 3;
+		// Unchanged transcripts are vouched for by their revision stamps: nothing is hashed, whatever their size.
+		UAM_ASSERT_EQ(uam::StateSerializer::HashedTranscriptMessageCountForTests(), hashed_before);
+		UAM_ASSERT(uam::StateSerializer::TrustedCacheReadCount() > trusted_before);
+		// Trusting the stamps owes one verifying push when the reconciliation interval ends, and only one.
+		UAM_ASSERT(!uam::StateReconciliationDue());
+		clock.Advance(std::chrono::seconds(3));
+		UAM_ASSERT(uam::StateReconciliationDue());
+		UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+		UAM_ASSERT(!uam::StateReconciliationDue());
+		clock.Advance(std::chrono::seconds(3));
+		UAM_ASSERT(!uam::StateReconciliationDue());
+		UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+
 		clock.Advance(std::chrono::milliseconds(120));
 		app.chats[4].messages.back().content += " first token";
 		hashed_before = uam::StateSerializer::HashedTranscriptMessageCountForTests();
 		UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
-		// Building the changed chat's summary and hydrating its catalog reuse the digest the scan computed.
-		UAM_ASSERT_EQ(uam::StateSerializer::HashedTranscriptMessageCountForTests() - hashed_before, hashed_per_unchanged_push);
+		// Only the changed transcript is hashed, and once: its summary build and catalog hydration reuse the new digest.
+		UAM_ASSERT_EQ(uam::StateSerializer::HashedTranscriptMessageCountForTests() - hashed_before, app.chats[4].messages.size());
 
 		const double slices = MedianMs(11, [&] { (void)uam::StateSerializer::SerializeFingerprint(app, true, false); });
 		const double digests = MedianMs(11, [&] { (void)uam::StateSerializer::SerializeChatFingerprintDigests(app); });
@@ -1097,4 +1113,345 @@ UAM_TEST(PerformanceIdleInstallPushTick)
 		if (std::max({unchanged, one_changed, large_changed}) > static_cast<double>(kInteractionBudget.count()))
 			throw TestFailure(std::to_string(chat_count) + "-chat idle install push tick p50 exceeded " + std::to_string(kInteractionBudget.count()) + " ms");
 	}
+}
+
+UAM_TEST(StatePushReconciliationRepairsAWriteThatBypassedTheTranscriptStamp)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	StatePatchObserver observer;
+	uam::AppState app;
+	for (const char* id : {"selected", "background"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.provider_id = "claude-cli";
+		chat.messages.push_back(Message{MessageRole::User, "Hello"});
+		chat.messages.push_back(Message{MessageRole::Assistant, "First answer"});
+		app.chats.push_back(std::move(chat));
+	}
+	app.selected_chat_index = 0;
+	// Start a fresh reconciliation interval: this push verifies, the ones in the next three seconds trust the stamps.
+	clock.Advance(std::chrono::seconds(3));
+	uam::PushStateUpdate(nullptr, app);
+
+	// The supported way to write: any non-const access restamps the transcript, so the next push publishes it.
+	clock.Advance(std::chrono::milliseconds(120));
+	app.chats[1].messages.back().content = "Second answer";
+	g_observed_state_patch.clear();
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(nlohmann::json::parse(g_observed_state_patch)["data"]["chats"][0]["id"], "background");
+
+	// The one write the stamp cannot see: through a reference kept from before the digest was read.
+	Message& kept = app.chats[1].messages.back();
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	kept.content = "Third answer";
+	clock.Advance(std::chrono::milliseconds(120));
+	const std::size_t divergences_before = uam::StateSerializer::CacheDivergenceCount();
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::CacheDivergenceCount(), divergences_before);
+
+	// It is not lost: the poll loop owes a verifying push when the interval ends, which finds, repairs and publishes it.
+	UAM_ASSERT(!uam::StateReconciliationDue());
+	clock.Advance(std::chrono::seconds(3));
+	UAM_ASSERT(uam::StateReconciliationDue());
+	g_observed_state_patch.clear();
+	++uam_test::g_expected_state_cache_divergences;
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::CacheDivergenceCount(), divergences_before + 1);
+	UAM_ASSERT_EQ(nlohmann::json::parse(g_observed_state_patch)["data"]["chats"][0]["id"], "background");
+	UAM_ASSERT(!uam::StateReconciliationDue());
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+}
+
+UAM_TEST(PerformancePushDoesNotScanEveryManagedRunForEveryChat)
+{
+	const WithoutStateCacheVerification unverified;
+	TempDir temp("uam-performance-managed-runs");
+	uam::AppState app;
+	BuildLargeCatalogFixture(app, temp.root, 2000);
+	uam::PushStateUpdate(nullptr, app);
+	const double without_runs = MedianMs(11, [&] { UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app)); });
+
+	// A long-lived install keeps finished managed runs; each chat's summary needs only its own active count.
+	for (int index = 0; index < 50000; ++index)
+	{
+		AgentRun run;
+		run.id = "run-" + std::to_string(index);
+		run.root_chat_id = app.chats[1000 + index % 1000].id;
+		run.status = index == 0 ? "running" : "completed";
+		app.agent_runs.push_back(std::move(run));
+	}
+	StatePatchObserver observer;
+	g_observed_state_patch.clear();
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+	// Only the chat that gained an active run changes, with that run counted.
+	const nlohmann::json& changed = patch["chats"];
+	UAM_ASSERT(std::ranges::any_of(changed, [&](const nlohmann::json& chat)
+	{ return chat["id"] == app.chats[1000].id && chat["acpSession"]["backgroundTaskCount"] == 1; }));
+	const double with_runs = MedianMs(11, [&] { UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app)); });
+	std::cout << "[TIMING] 2000 chats unchanged push: no managed runs=" << without_runs << " ms, 50000 managed runs=" << with_runs << " ms\n";
+	// Scanning every run for every chat adds 100 million comparisons, several hundred milliseconds; the index adds one pass over the runs.
+	if (with_runs - without_runs > 50.0)
+		throw TestFailure("50000 managed runs added " + std::to_string(with_runs - without_runs) + " ms to an unchanged push; limit 50 ms");
+}
+
+UAM_TEST(StatePushStampsAreNotPinnedByOtherReadersAndTheirCostIsVisible)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	StatePatchObserver observer;
+	uam::AppState app;
+	for (const char* id : {"selected", "background"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.provider_id = "claude-cli";
+		chat.messages.push_back(Message{MessageRole::User, "Hello"});
+		chat.messages.push_back(Message{MessageRole::Assistant, "First answer"});
+		app.chats.push_back(std::move(chat));
+	}
+	app.selected_chat_index = 0;
+	clock.Advance(std::chrono::seconds(3));
+	uam::PushStateUpdate(nullptr, app);
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+
+	// A reader outside a push (a message page, a handler's reply) computes a digest between taking a reference and
+	// writing through it. It must not leave that digest behind for the next push to trust.
+	Message& kept = app.chats[1].messages.back();
+	const std::string before = uam::StateSerializer::MessageDigest(app.chats[1]);
+	kept.content = "Second answer";
+	UAM_ASSERT(uam::StateSerializer::MessageDigest(app.chats[1]) != before);
+	clock.Advance(std::chrono::milliseconds(120));
+	g_observed_state_patch.clear();
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(nlohmann::json::parse(g_observed_state_patch)["data"]["chats"][0]["id"], "background");
+
+	// A non-const read restamps without changing anything: the push rehashes that transcript, publishes nothing, and counts it.
+	const std::size_t restamped_before = uam::StateSerializer::RestampedUnchangedTranscriptCount();
+	const std::size_t hashed_before = uam::StateSerializer::HashedTranscriptMessageCountForTests();
+	(void)app.chats[1].messages.back();
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::RestampedUnchangedTranscriptCount(), restamped_before + 1);
+	UAM_ASSERT_EQ(uam::StateSerializer::HashedTranscriptMessageCountForTests(), hashed_before + app.chats[1].messages.size());
+
+	// The poll loop wakes for the owed reconciliation instead of sleeping through its idle second.
+	// The reconciling push's hashing shows in the hash count.
+	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(1000), 1000);
+	clock.Advance(std::chrono::milliseconds(2140));
+	UAM_ASSERT(!uam::StateReconciliationDue());
+	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(1000), 500);
+	clock.Advance(std::chrono::milliseconds(500));
+	UAM_ASSERT(uam::StateReconciliationDue());
+	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(1000), 1);
+	const std::size_t verify_hashed_before = uam::StateSerializer::HashedTranscriptMessageCountForTests();
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT(uam::StateSerializer::HashedTranscriptMessageCountForTests() > verify_hashed_before);
+	UAM_ASSERT(!uam::StateReconciliationDue());
+	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(1000), 1000);
+}
+
+UAM_TEST(StatePushRebuildsModelCataloguesOnlyWhenTheirInputsChange)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	StatePatchObserver observer;
+	TempDir temp("uam-catalogue-generation");
+	uam::AppState app;
+	BuildIdleInstallFixture(app, temp.root, 60);
+	clock.Advance(std::chrono::seconds(3));
+	uam::PushStateUpdate(nullptr, app);
+	clock.Advance(std::chrono::milliseconds(120));
+	// The first push after the baselines were replaced compares the slice once more.
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+
+	// Unchanged inputs: the slice (every provider and folder's model list) is not built at all.
+	std::size_t builds = uam::StateSerializer::CatalogSliceBuildCountForTests();
+	for (int repeat = 0; repeat < 3; ++repeat)
+	{
+		clock.Advance(std::chrono::milliseconds(120));
+		UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	}
+	UAM_ASSERT_EQ(uam::StateSerializer::CatalogSliceBuildCountForTests(), builds);
+
+	const auto pushed_catalogs = [&]
+	{
+		clock.Advance(std::chrono::milliseconds(120));
+		g_observed_state_patch.clear();
+		UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+		const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+		UAM_ASSERT(patch.contains("providerModelCatalogs"));
+		return patch["providerModelCatalogs"];
+	};
+
+	// Every write to the service takes its write lock, which advances the generation: the next push publishes it.
+	const std::uint64_t generation = app.provider_model_catalog->Generation();
+	nlohmann::json models = nlohmann::json::array({{{"id", "fixture/only-model"}, {"name", "Only model"}}});
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("claude-cli", models, app.folders[0].directory));
+	UAM_ASSERT(app.provider_model_catalog->Generation() != generation);
+	nlohmann::json catalogs = pushed_catalogs();
+	UAM_ASSERT(std::ranges::any_of(catalogs, [](const nlohmann::json& catalog)
+	{ return catalog["providerId"] == "claude-cli" && catalog["availableModels"].size() == 1 && catalog["availableModels"][0]["id"] == "fixture/only-model"; }));
+
+	app.provider_model_catalog->RememberRefreshFailure("codex-cli", "Fixture refresh failed", app.folders[1].directory);
+	catalogs = pushed_catalogs();
+	UAM_ASSERT(std::ranges::any_of(catalogs, [](const nlohmann::json& catalog) { return catalog["modelRefreshError"] == "Fixture refresh failed"; }));
+
+	// Inputs outside the service are compared directly: a folder moved to another directory rebuilds the slice.
+	const fs::path moved = temp.root / "moved-folder";
+	fs::create_directories(moved);
+	builds = uam::StateSerializer::CatalogSliceBuildCountForTests();
+	app.folders[2].directory = moved.generic_string();
+	clock.Advance(std::chrono::milliseconds(120));
+	(void)uam::PushStateUpdateIfChanged(nullptr, app);
+	UAM_ASSERT_EQ(uam::StateSerializer::CatalogSliceBuildCountForTests(), builds + 1);
+
+	// And a checked CLI version, which decides the launch options shown for each model.
+	builds = uam::StateSerializer::CatalogSliceBuildCountForTests();
+	uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("claude-cli", "local")];
+	version.checked = true;
+	version.supported = true;
+	version.installed_version = "9.9.9";
+	clock.Advance(std::chrono::milliseconds(120));
+	(void)uam::PushStateUpdateIfChanged(nullptr, app);
+	UAM_ASSERT_EQ(uam::StateSerializer::CatalogSliceBuildCountForTests(), builds + 1);
+
+	// Settled again: no further builds until the three-second reconciliation push, which builds and compares it.
+	builds = uam::StateSerializer::CatalogSliceBuildCountForTests();
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::CatalogSliceBuildCountForTests(), builds);
+	clock.Advance(std::chrono::seconds(3));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::CatalogSliceBuildCountForTests(), builds + 1);
+}
+
+UAM_TEST(StatePushSerializesLiveToolCallsOnlyWhenTheyChange)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	StatePatchObserver observer;
+	TempDir temp("uam-live-tool-calls");
+	uam::AppState app;
+	BuildStreamingPushFixture(app, temp.root);
+	clock.Advance(std::chrono::seconds(3));
+	uam::PushStateUpdate(nullptr, app);
+	clock.Advance(std::chrono::milliseconds(120));
+	(void)uam::PushStateUpdateIfChanged(nullptr, app);
+
+	// Streaming text changes the turn events of the three live chats, not their tool calls (40 calls of 50 KB each).
+	std::size_t serialized = uam::StateSerializer::LiveToolCallSerializationCountForTests();
+	for (int token = 0; token < 5; ++token)
+	{
+		AppendStreamToken(app, token);
+		clock.Advance(std::chrono::milliseconds(120));
+		g_observed_state_patch.clear();
+		UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+		const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+		UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{3});
+		// The published summary still carries every tool call.
+		UAM_ASSERT_EQ(patch["chats"][0]["acpSession"]["toolCalls"].size(), app.acp_sessions[0]->tool_calls.size());
+	}
+	UAM_ASSERT_EQ(uam::StateSerializer::LiveToolCallSerializationCountForTests(), serialized);
+
+	// A tool call that changes is serialized again for its session only, and published.
+	app.acp_sessions[1]->tool_calls.back().status = "failed";
+	clock.Advance(std::chrono::milliseconds(120));
+	g_observed_state_patch.clear();
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+	UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(patch["chats"][0]["id"], app.chats[1].id);
+	UAM_ASSERT_EQ(patch["chats"][0]["acpSession"]["toolCalls"].back()["status"], "failed");
+	UAM_ASSERT(uam::StateSerializer::LiveToolCallSerializationCountForTests() > serialized);
+	UAM_ASSERT(uam::StateSerializer::LiveToolCallSerializationCountForTests() <= serialized + 3);
+}
+
+UAM_TEST(StatePushReconciliationRepairsABypassedToolCallStampAndCatalogueMemo)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	FakePathProbeClock probe_clock;
+	StatePatchObserver observer;
+	TempDir temp("uam-reconcile-tool-calls");
+	uam::AppState app;
+	BuildStreamingPushFixture(app, temp.root);
+	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	app.provider_model_catalog->Initialize(app.data_root);
+	clock.Advance(std::chrono::seconds(10));
+	uam::PushStateUpdate(nullptr, app);
+	clock.Advance(std::chrono::milliseconds(120));
+	(void)uam::PushStateUpdateIfChanged(nullptr, app);
+
+	// A tool call written through a reference kept from before the push read the stamp.
+	uam::AcpToolCallState& kept = app.acp_sessions[1]->tool_calls.back();
+	clock.Advance(std::chrono::milliseconds(120));
+	(void)uam::PushStateUpdateIfChanged(nullptr, app);
+	kept.status = "failed";
+	clock.Advance(std::chrono::milliseconds(120));
+	std::size_t divergences = uam::StateSerializer::CacheDivergenceCount();
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::CacheDivergenceCount(), divergences);
+	clock.Advance(std::chrono::seconds(3));
+	UAM_ASSERT(uam::StateReconciliationDue());
+	g_observed_state_patch.clear();
+	++uam_test::g_expected_state_cache_divergences;
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::CacheDivergenceCount(), divergences + 1);
+	nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+	UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(patch["chats"][0]["id"], app.chats[1].id);
+	UAM_ASSERT_EQ(patch["chats"][0]["acpSession"]["toolCalls"].back()["status"], "failed");
+
+	// A non-const read of the tool calls restamps them: rebuilt, unchanged, counted.
+	const std::size_t restamped = uam::StateSerializer::RestampedUnchangedToolCallCount();
+	(void)app.acp_sessions[2]->tool_calls.back();
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::RestampedUnchangedToolCallCount(), restamped + 1);
+
+#if !defined(_WIN32)
+	// The catalogue memo's one input outside its key is how a workspace path resolves on disk. Retarget a folder's
+	// symlink to a directory with a different model list: trusting pushes keep the old list, the verifying push
+	// (after the path memo has expired too) rebuilds it, reports the difference and publishes the new one.
+	const fs::path first = temp.root / "catalogue-first";
+	const fs::path second = temp.root / "catalogue-second";
+	const fs::path link = temp.root / "catalogue-link";
+	fs::create_directories(first);
+	fs::create_directories(second);
+	fs::create_directory_symlink(first, link);
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("claude-cli", nlohmann::json::array({{{"id", "fixture/first"}}}), first.generic_string()));
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("claude-cli", nlohmann::json::array({{{"id", "fixture/second"}}}), second.generic_string()));
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.folders[0].directory = link.generic_string();
+	clock.Advance(std::chrono::seconds(10));
+	(void)uam::PushStateUpdateIfChanged(nullptr, app);
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+
+	fs::remove(link);
+	fs::create_directory_symlink(second, link);
+	clock.Advance(std::chrono::milliseconds(120));
+	divergences = uam::StateSerializer::CacheDivergenceCount();
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::CacheDivergenceCount(), divergences);
+	clock.Advance(std::chrono::seconds(10));
+	g_observed_state_patch.clear();
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	const std::size_t found = uam::StateSerializer::CacheDivergenceCount() - divergences;
+	UAM_ASSERT(found >= 1);
+	uam_test::g_expected_state_cache_divergences += found;
+	patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+	UAM_ASSERT(patch.contains("providerModelCatalogs"));
+	UAM_ASSERT(std::ranges::any_of(patch["providerModelCatalogs"], [&](const nlohmann::json& catalog)
+	{
+		return catalog["providerId"] == "claude-cli" && catalog["workspaceDirectory"] == link.generic_string() &&
+		    catalog["availableModels"].size() == 1 && catalog["availableModels"][0]["id"] == "fixture/second";
+	}));
+#endif
 }

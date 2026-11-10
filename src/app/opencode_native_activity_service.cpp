@@ -13,6 +13,7 @@
 #include "common/runtime/acp/acp_statuses.h"
 #include "remote/runner_client.h"
 
+#include <utility>
 #include <algorithm>
 #include <chrono>
 #include <deque>
@@ -775,7 +776,8 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 		// Native Task normally completes with its parent. Retained owned child activity keeps
 		// the relay alive when a provider emits a background task beyond the parent turn.
 		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
-		const bool child_tool_pending = std::ranges::any_of(session.tool_calls, [&](const AcpToolCallState& tool)
+		// Const access: this runs on every poll for the session, and a non-const read would restamp its tool calls each time.
+		const bool child_tool_pending = std::ranges::any_of(std::as_const(session.tool_calls), [&](const AcpToolCallState& tool)
 		{
 			return (tool.is_sub_agent || runtime.ProviderRecognizesSubagentTool(tool.title)) &&
 			    (acp_statuses::IsActiveStatus(tool.status) || acp_statuses::IsActiveStatus(tool.child_activity));

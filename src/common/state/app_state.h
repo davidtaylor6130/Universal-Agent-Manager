@@ -966,7 +966,8 @@ namespace uam
 		};
 		/// Current-process protocol receipts only; saved tool history cannot create live activity.
 		std::unordered_map<std::string, OpenCodeChildActivity> opencode_child_activity_by_tool;
-		std::vector<AcpToolCallState> tool_calls;
+		/// Stamped so a state push serializes the live turn's tool calls only after they were opened for writing.
+		uam::RevisionedVector<AcpToolCallState> tool_calls;
 		RecentIdentitySet claude_seen_child_messages;
 		/// <summary>Native parent envelope identities prevent repeated delivery from appending twice.</summary>
 		RecentIdentitySet claude_seen_parent_messages;
