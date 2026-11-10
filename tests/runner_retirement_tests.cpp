@@ -311,8 +311,7 @@ UAM_TEST(RemoteRetirementScriptsTerminateOnlyVerifiedIdleHelpersByPath)
 	UAM_ASSERT(refusal != std::string::npos && contract != std::string::npos && reverified != std::string::npos && signal != std::string::npos);
 	UAM_ASSERT(refusal < contract && contract < reverified && reverified < signal);
 	UAM_ASSERT(linux_script.find("pkill") == std::string::npos && linux_script.find("killall") == std::string::npos);
-	UAM_ASSERT(linux_script.find("if test -n \"$uam_runner_alive\"; then echo 'UAM_HELPER_SPOOLS_KEPT'") != std::string::npos);
-	UAM_ASSERT(linux_script.find("case \"$uam_open\" in *\"$uam_dir/\"*) continue;; esac") != std::string::npos);
+	UAM_ASSERT(linux_script.find("rm -rf") == std::string::npos); // Linux retirement never deletes spools.
 #if !defined(_WIN32)
 	TempDir temp("uam-retirement-script");
 	const fs::path script = temp.root / "retire.sh";
@@ -354,19 +353,29 @@ UAM_TEST(RemoteRunnerAnswersTheStopContract)
 	const ProcessExecutionResult answered = service.ExecuteCommand("\"" + runner.string() + "\" --stop-contract", 30000);
 	UAM_ASSERT_EQ(answered.exit_code, 0);
 	UAM_ASSERT_EQ(uam::strings::Trim(answered.output), std::string("1"));
+	// Pins the real pre-fix probe pattern: a helper without --stop-contract treats it as an unknown flag.
+#if defined(_WIN32)
+	const std::string discard = "nul";
+#else
+	const std::string discard = "/dev/null";
+#endif
+	const std::string unknown = "\"" + runner.string() + "\" --no-such-flag";
+	const ProcessExecutionResult standard_output = service.ExecuteCommand(unknown + " 2>" + discard, 30000);
+	const ProcessExecutionResult standard_error = service.ExecuteCommand(unknown + " 2>&1 >" + discard, 30000);
+	UAM_ASSERT_EQ(standard_output.exit_code, 2);
+	UAM_ASSERT(standard_output.output.empty());
+	UAM_ASSERT_EQ(standard_error.exit_code, 2);
+	UAM_ASSERT(standard_error.output.starts_with("Usage: uam-runner "));
 }
 
 #if defined(__linux__)
-UAM_TEST(LinuxRetirementHonoursOwedRefusalsAndKeepsSpoolsWhileAnyHelperRuns)
+UAM_TEST(LinuxRetirementHonoursOwedRefusalsAndTerminatesOnlyPreFixHelpers)
 {
 	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
 	const fs::path built = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
 	UAM_ASSERT(fs::exists(built));
 	TempDir temp("uam-retirement-linux");
-	TempDir foreign_temp("uam-retirement-foreign");
-	const fs::path root = fs::canonical(temp.root), foreign_root = fs::canonical(foreign_temp.root);
-	fs::create_directories(root / "tmp");
-	ScopedEnvVar tmpdir("TMPDIR", (root / "tmp").string());
+	const fs::path root = fs::canonical(temp.root);
 	const auto install = [&](const fs::path& base, const std::string& version)
 	{
 		const fs::path executable = base / version / "uam-runner";
@@ -374,8 +383,8 @@ UAM_TEST(LinuxRetirementHonoursOwedRefusalsAndKeepsSpoolsWhileAnyHelperRuns)
 		fs::copy_file(built, executable);
 		return executable;
 	};
-	const fs::path owed = install(root, "5.0.0"), busy = install(root, "4.11.0"), foreign = install(foreign_root, "5.0.0");
-	const fs::path owed_socket = root / "uam-5.0.0-p3.sock", busy_socket = root / "uam-4.11.0-p3.sock", foreign_socket = foreign_root / "uam-5.0.0-p3.sock";
+	const fs::path owed = install(root, "5.0.0"), busy = install(root, "4.11.0");
+	const fs::path owed_socket = root / "uam-5.0.0-p3.sock", busy_socket = root / "uam-4.11.0-p3.sock";
 	const auto runner = [&](const fs::path& executable, const std::string& verb, const fs::path& socket)
 	{ return service.ExecuteCommand("\"" + executable.string() + "\" " + verb + " --socket \"" + socket.string() + "\"", 30000).exit_code; };
 	const auto connected = [&](const fs::path& executable, const fs::path& socket)
@@ -392,7 +401,6 @@ UAM_TEST(LinuxRetirementHonoursOwedRefusalsAndKeepsSpoolsWhileAnyHelperRuns)
 		std::string ignored;
 		if (busy_client) { (void)busy_client->CloseProcessInput("retire-busy", &ignored); std::this_thread::sleep_for(std::chrono::milliseconds(300)); (void)busy_client->RemoveProcess("retire-busy", &ignored); busy_client->Disconnect(); }
 		(void)runner(busy, "stop", busy_socket);
-		(void)runner(foreign, "stop", foreign_socket);
 		} catch (...) {}
 	}};
 	UAM_ASSERT_EQ(runner(owed, "start", owed_socket), 0);
@@ -427,22 +435,6 @@ UAM_TEST(LinuxRetirementHonoursOwedRefusalsAndKeepsSpoolsWhileAnyHelperRuns)
 	UAM_ASSERT(forced.find("UAM_HELPER_KEPT_CHILDREN:" + busy.string()) != std::string::npos);
 	UAM_ASSERT(!connected(owed, owed_socket));
 	UAM_ASSERT(connected(busy, busy_socket));
-
-	// An unmarked spool may belong to a helper in another runner root: it is kept while any helper runs.
-	if (busy_client) { (void)busy_client->CloseProcessInput("retire-busy", &error); std::this_thread::sleep_for(std::chrono::milliseconds(300)); (void)busy_client->RemoveProcess("retire-busy", &error); busy_client->Disconnect(); busy_client.reset(); }
-	(void)runner(busy, "stop", busy_socket);
-	const fs::path unmarked = root / "tmp" / "uam-runner-spool-unmarked";
-	fs::create_directories(unmarked);
-	UAM_ASSERT(uam::io::WriteTextFile(unmarked / "session.stdout", "owed bytes"));
-	fs::last_write_time(unmarked, fs::file_time_type::clock::now() - std::chrono::minutes(10));
-	UAM_ASSERT_EQ(runner(foreign, "start", foreign_socket), 0);
-	const std::string kept = retire("");
-	UAM_ASSERT(kept.find("UAM_HELPER_SPOOLS_KEPT") != std::string::npos);
-	UAM_ASSERT(fs::exists(unmarked / "session.stdout"));
-	(void)runner(foreign, "stop", foreign_socket);
-	const std::string swept = retire("");
-	// Another test's helper may still be running on this machine; then the spool must still be kept.
-	UAM_ASSERT(swept.find("UAM_HELPER_SPOOLS_KEPT") != std::string::npos ? fs::exists(unmarked) : !fs::exists(unmarked));
 }
 #endif
 

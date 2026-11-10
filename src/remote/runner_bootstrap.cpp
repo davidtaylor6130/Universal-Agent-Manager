@@ -513,7 +513,7 @@ namespace uam::remote
 		// A helper is the exact /proc/PID/exe path inside this runner root with a service command line, never a process name. Its stop refusal is honoured unless its running image predates
 		// --stop-contract (such helpers count finished records as busy). Only then, after a real refusal, with no other process from that executable (terminals and bridges are launched by SSH,
 		// not the service), is it signalled, re-verified by start time and children just before. /proc/PID/exe reaches the running image even when its file was replaced.
-		// Unmarked spools may belong to any live helper, so they are removed only while no uam-runner process runs at all and no process holds a file in them.
+		// Spools are left alone: marked ones are removed by the next helper start, and unmarked ones in the temporary folder may belong to any live helper.
 		return R"SH(uam_real=$(cd "$uam_root" 2>/dev/null && pwd -P) || { echo 'UAM_HELPER_RETIREMENT_FAILED:root'; exit 0; }
 test -r /proc/self/stat || { echo 'UAM_HELPER_RETIREMENT_FAILED:proc'; exit 0; }
 uam_current="$uam_real/$uam_version/uam-runner"
@@ -551,11 +551,9 @@ for uam_pid in $uam_serves; do
 	echo "UAM_HELPER_RETIRED:$uam_helper"
 done
 uam_alive='
-'; uam_runner_alive=''
+'
 for uam_path in /proc/[0-9]*; do
-	uam_exe "${uam_path#/proc/}" || continue
-	test "${uam_e##*/}" = uam-runner && uam_runner_alive=1
-	uam_owned "$uam_e" && uam_alive="$uam_alive$uam_e
+	uam_exe "${uam_path#/proc/}" && uam_owned "$uam_e" && uam_alive="$uam_alive$uam_e
 "
 done
 uam_reload=''
@@ -572,19 +570,6 @@ $uam_unit_exe
 	printf '# UAM managed runner startup\n[Unit]\nDescription=Universal Agent Manager runner\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart="%s" start --socket "%s"\n[Install]\nWantedBy=default.target\n' "$uam_current" "$uam_real/$uam_endpoint.sock" >"$uam_unit.new" && mv -f "$uam_unit.new" "$uam_unit" && uam_reload=1
 done;; esac
 test -z "$uam_reload" || systemctl --user daemon-reload >/dev/null 2>&1
-if test -n "$uam_runner_alive"; then echo 'UAM_HELPER_SPOOLS_KEPT'; else
-	uam_open=$(ls -l /proc/[0-9]*/fd 2>/dev/null | grep -F uam-runner-spool-)
-	for uam_tmp in "${TMPDIR:-/tmp}" /tmp; do
-		uam_tmp=${uam_tmp%/}
-		test -n "$uam_tmp" || continue
-		find "$uam_tmp" -maxdepth 1 -type d -name 'uam-runner-spool-*' -user "$(id -u)" -mmin +1 2>/dev/null | while IFS= read -r uam_dir; do
-			case "${uam_dir#"$uam_tmp"/}" in */*) continue;; uam-runner-spool-*) ;; *) continue;; esac
-			test -d "$uam_dir" && test ! -L "$uam_dir" && test ! -e "$uam_dir/.owner-lock" || continue
-			case "$uam_open" in *"$uam_dir/"*) continue;; esac
-			rm -rf "$uam_dir"
-		done
-	done
-fi
 )SH";
 	}
 
@@ -750,8 +735,8 @@ fi
 			    "test ! -L \"$root/install.operation\"; exec 8>\"$root/install.operation\"; "
 			    "if ! flock -n 8; then echo UAM_INSTALL_BUSY; echo 'A helper operation is still active.' >&2; exit 73; fi; " +
 			    // A controller that goes silent (sleep, dropped network) must not hold both locks until sshd notices: after ten idle minutes the guard
-			    // exits, rolling back through its trap once authorized, like the Windows guard's deadline. Without timeout(1) it waits as before.
-			    "uam_timeout=$(command -v timeout || :); uam_read() { ${uam_timeout:+$uam_timeout 600} sh -c 'IFS= read -r line || exit 1; printf %s \"$line\"' 8>&- 9>&-; }; "
+			    // exits, rolling back through its trap once authorized, like the Windows guard's deadline. Without a timeout(1) taking `timeout SECONDS COMMAND` (BusyBox before 1.30 wants -t) it waits as before.
+			    "uam_timeout=$(command -v timeout || :); if test -n \"$uam_timeout\" && ! \"$uam_timeout\" 1 true </dev/null >/dev/null 2>&1 8>&- 9>&-; then uam_timeout=; fi; uam_read() { ${uam_timeout:+$uam_timeout 600} sh -c 'IFS= read -r line || exit 1; printf %s \"$line\"' 8>&- 9>&-; }; "
 			    "printf '%s\\n' 'UAM_INSTALL_LOCK_READY:" + plan.nonce + "'; "
 			    "authorization=$(uam_read); test \"$authorization\" = 'UAM_INSTALL_AUTHORIZE:" + plan.nonce + "'; trap " + quoted_trap + " EXIT; "
 			    "while line=$(uam_read); do id=${line%%:*}; line=${line#*:}; case \"$id\" in *[!0-9]*|'') exit 2;; esac; case \"$line\" in *[!a-zA-Z0-9+/=]*|'') exit 2;; esac; "
@@ -1117,7 +1102,7 @@ fi
 			    {"Create private runner directory", SshCommand(plan.ssh_alias,
 			        "umask 077; mkdir -p " + directory), ""},
 			    {"Copy runner", {"scp", "-q", "-o", "BatchMode=yes", "-o",
-			        "ConnectTimeout=10", artifact->path.string(), plan.ssh_alias + ":" +
+			        "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", artifact->path.string(), plan.ssh_alias + ":" +
 			        relative + "/uam-runner.tmp-" + plan.nonce}, ""},
 			    {"Verify and activate runner", SshCommand(plan.ssh_alias, verify), ""},
 			    {"Verify runner version", SshCommand(plan.ssh_alias, installed + " --version"),
@@ -1171,7 +1156,7 @@ fi
 			        PowerShellUtf8Command(WindowsRunnerOwnedScript(root, plan.nonce,
 			            "New-Item -ItemType Directory -Force -Path (Join-Path $HOME '" + relative + "') -ErrorAction Stop | Out-Null"))), ""},
 			    {"Copy runner", {"scp", "-q", "-o", "BatchMode=yes", "-o",
-			        "ConnectTimeout=10", artifact->path.string(), plan.ssh_alias + ":" + temporary}, ""},
+			        "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", artifact->path.string(), plan.ssh_alias + ":" + temporary}, ""},
 			    {"Prepare runner metadata", SshCommand(plan.ssh_alias, prepare), ""},
 			    {"Verify and activate runner", SshCommand(plan.ssh_alias, verify), ""},
 			    {"Verify and publish runner metadata", SshCommand(plan.ssh_alias, publish), ""},

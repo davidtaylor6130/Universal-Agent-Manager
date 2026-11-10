@@ -4290,6 +4290,42 @@ except subprocess.TimeoutExpired: sys.exit(124)
 	UAM_ASSERT(uam::remote::AcquireBootstrapInstallLease(plan, "linux", error) != nullptr);
 }
 
+UAM_TEST(RemoteBootstrapGuardFallsBackWhenTimeoutRejectsTheModernSyntax)
+{
+	TempDir temp("uam-bootstrap-guard-old-timeout");
+	WriteBootstrapLockTransport(temp.root);
+	// BusyBox before 1.30 accepts only `timeout -t SECONDS COMMAND`; the guard must not let it reject every read.
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "timeout", "#!/bin/sh\ncase \"$1\" in -t) shift 2; exec \"$@\";; esac\necho 'timeout: invalid number' >&2\nexit 1\n"));
+	fs::permissions(temp.root / "timeout", fs::perms::owner_all);
+	ScopedEnvVar path("PATH", temp.root.string() + ":/usr/bin:/bin");
+	ScopedEnvVar home("HOME", (temp.root / "home").string());
+	ScopedEnvVar pid("UAM_TEST_LOCK_PID", (temp.root / "pid").string());
+	uam::remote::BootstrapPlan plan;
+	plan.ssh_alias = "fixture"; plan.version = "4.11.0"; plan.nonce = "oldtimeout"; plan.runner_directory = "tools/uam";
+	const std::vector<std::string> argv = uam::remote::BuildBootstrapLockArgv(plan, "linux");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields process;
+	const std::unique_ptr<uam::platform::StdioProcessPlatformFields, std::function<void(uam::platform::StdioProcessPlatformFields*)>> cleanup(&process, [&](uam::platform::StdioProcessPlatformFields* fields) { service.StopStdioProcess(*fields, true); });
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcess(process, temp.root, argv, &error));
+	std::string output;
+	const auto read_until = [&](std::string_view marker)
+	{
+		return WaitForLockFixture([&]()
+		{
+			std::array<char, 4096> bytes{};
+			const std::ptrdiff_t count = service.ReadStdioProcessStdout(process, bytes.data(), bytes.size(), &error);
+			if (count > 0) output.append(bytes.data(), static_cast<std::size_t>(count));
+			return output.find(marker) != std::string::npos;
+		});
+	};
+	UAM_ASSERT(read_until("UAM_INSTALL_LOCK_READY:oldtimeout"));
+	const std::string command = "UAM_INSTALL_AUTHORIZE:oldtimeout\n1:" + uam::base64::Encode("printf guarded") + "\n";
+	UAM_ASSERT(service.WriteToStdioProcess(process, command.data(), command.size(), &error));
+	UAM_ASSERT(read_until("UAM_INSTALL_RESULT:"));
+	UAM_ASSERT(output.find("UAM_INSTALL_RESULT:1:0:" + uam::base64::Encode("guarded")) != std::string::npos);
+}
+
 UAM_TEST(RemoteBootstrapLockCompetingAliasesShareTargetRootAndRecoverAfterRelease)
 {
 	TempDir temp("uam-bootstrap-lock");
