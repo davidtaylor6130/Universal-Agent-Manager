@@ -1003,23 +1003,57 @@ namespace
 	}
 }
 
+namespace
+{
+	/// <summary>Runs the path-probe memo on the stepped push clock and restores the real clock even when an assertion throws.</summary>
+	struct FakePathProbeClock
+	{
+		FakePathProbeClock() { uam::paths::SetRecentPathProbeClockForTests([] { return g_fake_push_now; }); }
+		~FakePathProbeClock() { uam::paths::SetRecentPathProbeClockForTests(nullptr); }
+	};
+}
+
+// Guarded by assertions that fail without the change: the per-push path memo on both display readers (probe
+// counts) and hashing a changed loaded transcript once per push (hashed message counts).
+// Not guarded here: hashing the catalogue token from the JSON tree instead of a dump, which only the printed
+// timings show, and the 250 ms budget, which the code before these changes also met.
 UAM_TEST(PerformanceIdleInstallPushTick)
 {
 	FakeStatePushClock clock;
+	FakePathProbeClock probe_clock;
 	StatePatchObserver observer;
 	for (const int chat_count : {500, 2000})
 	{
 		TempDir temp("uam-performance-idle-install");
 		uam::AppState app;
 		BuildIdleInstallFixture(app, temp.root, chat_count);
+		// Expire every memo entry, then require each display reader to probe through the memo exactly once per path.
+		// A reader that goes back to probing the disk directly leaves its own count where it was.
+		using uam::paths::RecentPathProbeCount;
+		using uam::paths::RecentPathProbeKind;
+		const auto probes = [] { return RecentPathProbeCount(RecentPathProbeKind::CatalogWorkspace) + RecentPathProbeCount(RecentPathProbeKind::WorkspaceOwnership); };
+		clock.Advance(std::chrono::seconds(10));
+		std::size_t catalog_probes = RecentPathProbeCount(RecentPathProbeKind::CatalogWorkspace);
+		(void)app.provider_model_catalog->GetCatalogSnapshot("claude-cli", app.folders[0].directory, "local");
+		UAM_ASSERT_EQ(RecentPathProbeCount(RecentPathProbeKind::CatalogWorkspace).load(), catalog_probes + 1);
+		(void)app.provider_model_catalog->GetCatalogSnapshot("codex-cli", app.folders[0].directory, "local");
+		UAM_ASSERT_EQ(RecentPathProbeCount(RecentPathProbeKind::CatalogWorkspace).load(), catalog_probes + 1);
+		clock.Advance(std::chrono::seconds(10));
+		catalog_probes = RecentPathProbeCount(RecentPathProbeKind::CatalogWorkspace);
+		UAM_ASSERT(!app.provider_model_catalog->GetCatalogScopes(true).empty());
+		UAM_ASSERT(RecentPathProbeCount(RecentPathProbeKind::CatalogWorkspace).load() > catalog_probes);
+		clock.Advance(std::chrono::seconds(10));
+		const std::size_t ownership_probes = RecentPathProbeCount(RecentPathProbeKind::WorkspaceOwnership);
 		uam::PushStateUpdate(nullptr, app);
+		UAM_ASSERT(RecentPathProbeCount(RecentPathProbeKind::WorkspaceOwnership).load() - ownership_probes >= app.folders.size());
 		UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
 
-		// A repeated push must not canonicalise workspaces on disk again, and must hash each loaded transcript once.
-		const std::size_t probes_before = uam::paths::RecentPathProbeCount();
+		// Repeated pushes inside the memo window (the stepped clock does not move) must not probe again,
+		// and must hash each loaded transcript once.
+		const std::size_t probes_before = probes();
 		std::size_t hashed_before = uam::StateSerializer::HashedTranscriptMessageCountForTests();
 		for (int repeat = 0; repeat < 3; ++repeat) UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
-		UAM_ASSERT_EQ(uam::paths::RecentPathProbeCount().load(), probes_before);
+		UAM_ASSERT_EQ(probes(), probes_before);
 		const std::size_t hashed_per_unchanged_push = (uam::StateSerializer::HashedTranscriptMessageCountForTests() - hashed_before) / 3;
 		clock.Advance(std::chrono::milliseconds(120));
 		app.chats[4].messages.back().content += " first token";

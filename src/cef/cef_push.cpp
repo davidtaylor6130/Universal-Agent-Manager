@@ -167,16 +167,25 @@ namespace
 		return msg;
 	}
 
-	/// <summary>Reports a slow or large patch in every build, at most once per five seconds.</summary>
+	/// <summary>Reports slow patches and large patches in every build, each at most once per five seconds.</summary>
 	void MaybeLogLargePatch(const std::string& message, int changed_chat_count, std::chrono::steady_clock::duration elapsed)
 	{
 		const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
-		if (elapsed_ms <= kStatePatchSlowSerializationMs && message.size() <= kStatePatchLargeMessageBytes) return;
-		static auto last_report = std::chrono::steady_clock::time_point::min();
 		const auto now = std::chrono::steady_clock::now();
-		if (last_report != std::chrono::steady_clock::time_point::min() && now - last_report < std::chrono::seconds(5)) return;
-		last_report = now;
-		uam::diagnostics::Write("[performance] statePatch serialization took " + std::to_string(elapsed_ms) + " ms, bytes=" + std::to_string(message.size()) + ", changedChats=" + std::to_string(changed_chat_count));
+		const auto due = [now](std::chrono::steady_clock::time_point& last_report)
+		{
+			if (last_report != std::chrono::steady_clock::time_point::min() && now - last_report < std::chrono::seconds(5)) return false;
+			last_report = now;
+			return true;
+		};
+		const std::string detail = "bytes=" + std::to_string(message.size()) + ", changedChats=" + std::to_string(changed_chat_count);
+		// Separate limits: a large but fast patch must not hide a slow one, nor be reported as slow.
+		static auto last_slow_report = std::chrono::steady_clock::time_point::min();
+		static auto last_large_report = std::chrono::steady_clock::time_point::min();
+		if (elapsed_ms > kStatePatchSlowSerializationMs && due(last_slow_report))
+			uam::diagnostics::Write("[performance] statePatch serialization took " + std::to_string(elapsed_ms) + " ms, " + detail);
+		else if (elapsed_ms <= kStatePatchSlowSerializationMs && message.size() > kStatePatchLargeMessageBytes && due(last_large_report))
+			uam::diagnostics::Write("[performance] statePatch is large: " + detail + ", built in " + std::to_string(elapsed_ms) + " ms");
 	}
 
 	// Structural comparison: dumping these slices (folder icons carry PNG data URLs) cost milliseconds per tick.

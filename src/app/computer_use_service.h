@@ -16,6 +16,8 @@ namespace uam
 		static bool Poll(AppState& app, std::string_view chat_id = {});
 		/// <summary>Scans control files off-thread and adopts only unchanged chat/control identities.</summary>
 		bool PollInBackground(AppState& app);
+		/// <summary>Whether a background scan is running or waiting to be adopted.</summary>
+		bool ScanPendingForTests() const { return m_scan.valid(); }
 		static bool SetControlState(AppState& app, const std::string& chat_id, std::string_view state,
 		    std::string* error = nullptr);
 		static bool PersistTrustedTask(AppState& app, const std::string& chat_id,

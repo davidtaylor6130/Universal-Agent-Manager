@@ -144,7 +144,7 @@ namespace
 		if (execution_host_id.empty() || execution_host_id == "local")
 		{
 			if (!recent) return NormalizedWorkspace(workspace_directory);
-			return uam::paths::RecentPathProbe("catalog\n" + std::string(workspace_directory), [&] { return NormalizedWorkspace(workspace_directory); });
+			return uam::paths::RecentPathProbe(uam::paths::RecentPathProbeKind::CatalogWorkspace, std::string(workspace_directory), [&] { return NormalizedWorkspace(workspace_directory); });
 		}
 		std::string workspace = uam::strings::Trim(std::string(workspace_directory));
 		if (uam::execution_hosts::IsAbsoluteRemotePath("windows", workspace))

@@ -266,7 +266,7 @@ namespace uam
 				{
 					// Local keys canonicalise on disk; RecentPathProbe keeps that off the per-push path. Remote keys depend on the host's platform.
 					scope_key_it = scope_keys.emplace(std::pair{host, workspace}, remote ? uam::paths::WorkspaceOwnershipKey(app, host, workspace)
-					    : uam::paths::RecentPathProbe("ownership\n" + workspace, [&] { return uam::paths::WorkspaceOwnershipKey(app, host, workspace); })).first;
+					    : uam::paths::RecentPathProbe(uam::paths::RecentPathProbeKind::WorkspaceOwnership, workspace, [&] { return uam::paths::WorkspaceOwnershipKey(app, host, workspace); })).first;
 				}
 				const std::string& scope_key = scope_key_it->second;
 				if (!seen.insert(provider_id + "\n" + scope_key).second) return;
@@ -1043,6 +1043,13 @@ namespace uam
 
 		std::string MessageDigestForFingerprint(const ChatSession& session, bool cache_selected)
 		{
+			// One push reads a changed chat's digest up to three times (digest scan, summary build, catalog hydration).
+			// Checked first so a repeat inside the pass keeps the selected cache's rehash count from the real computation.
+			if (g_stable_pass != nullptr)
+			{
+				if (const auto known = g_stable_pass->transcript_digests.find(&session); known != g_stable_pass->transcript_digests.end()) return known->second;
+			}
+
 			SelectedHistoryDigestCache* cache = cache_selected ? &g_selected_history_digest : nullptr;
 			if (cache != nullptr)
 			{
@@ -1062,12 +1069,6 @@ namespace uam
 					return session.persisted_messages_digest;
 				}
 				return session.updated_at + ":" + std::to_string(session.persisted_message_count);
-			}
-
-			// One push reads a changed chat's digest up to three times (digest scan, summary build, catalog hydration).
-			if (g_stable_pass != nullptr)
-			{
-				if (const auto known = g_stable_pass->transcript_digests.find(&session); known != g_stable_pass->transcript_digests.end()) return known->second;
 			}
 
 			const auto started = std::chrono::steady_clock::now();

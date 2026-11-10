@@ -117,7 +117,7 @@ npm --prefix UI-V2 ci
 npm --prefix UI-V2 run test
 npm --prefix UI-V2 run build
 
-cmake -S . -B Builds/tests -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
+cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Debug -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
 cmake --build Builds/tests --config Debug
 ctest --test-dir Builds/tests -C Debug --output-on-failure
 ```
