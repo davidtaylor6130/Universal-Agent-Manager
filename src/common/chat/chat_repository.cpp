@@ -145,6 +145,7 @@ namespace
 	constexpr std::string_view kChatRemotePromptDeliverySessionIdField = "remote_prompt_delivery_session_id";
 	constexpr std::string_view kChatRemotePromptDeliveryIdField = "remote_prompt_delivery_id";
 	constexpr std::string_view kChatRemotePromptDeliveryPayloadField = "remote_prompt_delivery_payload";
+	constexpr std::string_view kChatRemotePromptDeliveryInputIdsField = "remote_prompt_delivery_input_ids";
 	constexpr std::string_view kChatAcpQueuedPromptsField = "acp_queued_prompts";
 	constexpr std::string_view kChatAcpQueueHeldField = "acp_queue_held";
 	constexpr std::string_view kChatAcpDispatchedQueuedPromptCountField = "acp_dispatched_queued_prompt_count";
@@ -1647,6 +1648,7 @@ namespace
 		       lhs.remote_prompt_delivery_session_id == rhs.remote_prompt_delivery_session_id &&
 		       lhs.remote_prompt_delivery_id == rhs.remote_prompt_delivery_id &&
 		       lhs.remote_prompt_delivery_payload == rhs.remote_prompt_delivery_payload &&
+		       lhs.remote_prompt_delivery_input_ids == rhs.remote_prompt_delivery_input_ids &&
 		       lhs.remote_pending_requests == rhs.remote_pending_requests &&
 		       lhs.remote_next_request_id == rhs.remote_next_request_id &&
 		       lhs.remote_active_turn_id == rhs.remote_active_turn_id &&
@@ -2137,6 +2139,11 @@ namespace
 			chat.remote_prompt_delivery_id.clear();
 			chat.remote_prompt_delivery_payload.clear();
 		}
+		// Row confirmation only: malformed or oversized lists are dropped, which leaves those rows unconfirmed.
+		chat.remote_prompt_delivery_input_ids = JsonStringArrayOrEmpty(root.Find(kChatRemotePromptDeliveryInputIdsField));
+		if (chat.remote_prompt_delivery_id.empty() || chat.remote_prompt_delivery_input_ids.size() > 64 ||
+		    !std::ranges::all_of(chat.remote_prompt_delivery_input_ids, [](const std::string& id) { return uam::input_provenance::ValidNativeInputId(id); }))
+			chat.remote_prompt_delivery_input_ids.clear();
 		chat.remote_active_turn_id = JsonStringOrEmpty(root.Find(kChatRemoteActiveTurnIdField));
 		if (chat.remote_active_turn_id.size() > 256) chat.remote_active_turn_id.clear();
 		const double turn_serial = JsonNumberOrDefault(root.Find(kChatRemoteTurnSerialField), 0);
@@ -2285,6 +2292,7 @@ namespace
 			chat.remote_prompt_delivery_session_id.clear();
 			chat.remote_prompt_delivery_id.clear();
 			chat.remote_prompt_delivery_payload.clear();
+			chat.remote_prompt_delivery_input_ids.clear();
 			chat.remote_pending_requests.clear();
 			chat.remote_next_request_id = 1;
 			chat.remote_active_turn_id.clear();
@@ -4107,6 +4115,8 @@ try
 	                     chat.remote_prompt_delivery_id);
 	uam::json::SetString(root, kChatRemotePromptDeliveryPayloadField,
 	                     chat.remote_prompt_delivery_payload);
+	if (!chat.remote_prompt_delivery_id.empty() && !chat.remote_prompt_delivery_input_ids.empty())
+		uam::json::SetValue(root, kChatRemotePromptDeliveryInputIdsField, StringArrayToJson(chat.remote_prompt_delivery_input_ids));
 	uam::json::SetString(root, kChatRemotePromptDeliverySessionIdField,
 	                     chat.remote_prompt_delivery_session_id);
 	if (chat.remote_active_turn_id.size() > 256 || chat.remote_turn_serial < 0 ||
@@ -5511,6 +5521,7 @@ namespace
 		hydrated.remote_prompt_delivery_session_id = summary.remote_prompt_delivery_session_id;
 		hydrated.remote_prompt_delivery_id = summary.remote_prompt_delivery_id;
 		hydrated.remote_prompt_delivery_payload = summary.remote_prompt_delivery_payload;
+		hydrated.remote_prompt_delivery_input_ids = summary.remote_prompt_delivery_input_ids;
 		hydrated.remote_pending_requests = summary.remote_pending_requests;
 		hydrated.remote_next_request_id = summary.remote_next_request_id;
 		hydrated.remote_active_turn_id = summary.remote_active_turn_id;

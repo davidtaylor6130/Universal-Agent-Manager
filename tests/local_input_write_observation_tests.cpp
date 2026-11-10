@@ -1,5 +1,7 @@
 #include "test_harness.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_goal_loop.h"
+#include "common/chat/chat_repository.h"
 #include "common/platform/async_byte_writer.h"
 #include "common/provider/provider_runtime.h"
 
@@ -301,4 +303,125 @@ UAM_TEST(LocalInputWriteIncompleteSinkNeverPromotesHistoricalFact)
 	UAM_ASSERT(fixture.app.local_input_write_observations.empty());
 	UAM_ASSERT(!fixture.Chat().messages.front().input_write_completed);
 	UAM_ASSERT(!fixture.app.pending_chat_save_at_by_chat_id.contains(fixture.Chat().id));
+}
+
+namespace
+{
+	/// <summary>One chat with a two-row turn whose write was never observed: the state every sent input starts in.</summary>
+	struct AnsweredTurnFixture
+	{
+		TempDir temp{"uam-answered-turn"};
+		uam::AppState app;
+		uam::AcpSessionState* session = nullptr;
+
+		AnsweredTurnFixture()
+		{
+			app.data_root = temp.root / "data";
+			app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+			ChatSession chat;
+			chat.id = "answered-turn";
+			chat.provider_id = "gemini-cli";
+			chat.workspace_directory = temp.root.string();
+			chat.messages.push_back({.role = MessageRole::User, .content = "Earlier input that was never answered",
+			    .native_input_id = "33333333-3333-4333-8333-000000000001"});
+			chat.messages.push_back({.role = MessageRole::User, .content = "First row of the turn",
+			    .native_input_id = "33333333-3333-4333-8333-000000000002"});
+			chat.messages.push_back({.role = MessageRole::User, .content = "Second row of the turn",
+			    .native_input_id = "33333333-3333-4333-8333-000000000003"});
+			app.chats.push_back(std::move(chat));
+			auto owned = std::make_unique<uam::AcpSessionState>();
+			owned->chat_id = "answered-turn";
+			owned->provider_id = "gemini-cli";
+			owned->processing = true;
+			owned->turn_serial = 1;
+			owned->turn_first_user_message_index = 1;
+			owned->turn_user_message_index = 2;
+			owned->prompt_request_id = 7;
+			session = owned.get();
+			app.acp_sessions.push_back(std::move(owned));
+		}
+		ChatSession& Chat() { return app.chats.front(); }
+		bool Written(std::size_t index) { return Chat().messages[index].input_write_completed; }
+	};
+}
+
+UAM_TEST(ProviderOutputForTheTurnConfirmsItsInputRowsOnly)
+{
+	AnsweredTurnFixture fixture;
+	(void)uam::acp_detail::EnsureAssistantMessage(fixture.Chat(), *fixture.session);
+	// The provider answered this turn: both of its rows were received. The earlier, unanswered row proves nothing.
+	UAM_ASSERT(fixture.Written(1) && fixture.Written(2));
+	UAM_ASSERT(!fixture.Written(0));
+	UAM_ASSERT(!fixture.Chat().messages.back().input_write_completed);
+}
+
+UAM_TEST(ProviderOutputBeforeThePromptLeftTheQueueConfirmsNothing)
+{
+	AnsweredTurnFixture fixture;
+	// Still queued for this turn (startup, staged remote delivery): a background task or a late line of the
+	// previous turn can produce output now, and it says nothing about this prompt.
+	fixture.session->queued_prompt = "First row of the turn\nSecond row of the turn";
+	fixture.session->prompt_request_id = 0;
+	(void)uam::acp_detail::EnsureAssistantMessage(fixture.Chat(), *fixture.session);
+	UAM_ASSERT(!fixture.Written(0) && !fixture.Written(1) && !fixture.Written(2));
+	// Nor does output outside any turn.
+	AnsweredTurnFixture idle;
+	idle.session->processing = false;
+	(void)uam::acp_detail::EnsureAssistantMessage(idle.Chat(), *idle.session);
+	UAM_ASSERT(!idle.Written(1) && !idle.Written(2));
+}
+
+UAM_TEST(ProviderOutputNeverConfirmsUnsentRemovedOrUnidentifiedRows)
+{
+	AnsweredTurnFixture fixture;
+	fixture.Chat().messages[1].acp_prompt_not_sent = true;
+	fixture.Chat().messages[2].native_input_id = "not-a-native-id";
+	(void)uam::acp_detail::EnsureAssistantMessage(fixture.Chat(), *fixture.session);
+	UAM_ASSERT(!fixture.Written(1) && !fixture.Written(2));
+	AnsweredTurnFixture removed;
+	removed.Chat().messages[1].acp_prompt_discarded = true;
+	UAM_ASSERT(uam::acp_detail::ConfirmTurnInputReceived(*removed.session, removed.Chat()));
+	UAM_ASSERT(!removed.Written(1) && removed.Written(2));
+	UAM_ASSERT(!uam::acp_detail::ConfirmTurnInputReceived(*removed.session, removed.Chat()));
+}
+
+UAM_TEST(CompletedTurnConfirmsItsInputAndAFailedTurnDoesNot)
+{
+	{
+		// A turn the provider completed without any assistant message was still received.
+		AnsweredTurnFixture fixture;
+		uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(fixture.app, *fixture.session, fixture.Chat(), "ready", nullptr, false);
+		UAM_ASSERT(fixture.Written(1) && fixture.Written(2) && !fixture.Written(0));
+	}
+	{
+		// A turn that ended in an error without provider output stays unconfirmed: the write may not have landed.
+		AnsweredTurnFixture fixture;
+		uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(fixture.app, *fixture.session, fixture.Chat(), "error", nullptr, false);
+		UAM_ASSERT(!fixture.Written(1) && !fixture.Written(2));
+	}
+}
+
+UAM_TEST(RemoteDeliveryInputIdsAreSavedOnlyBesideTheirMarker)
+{
+	TempDir temp("uam-remote-delivery-input-ids");
+	ChatSession chat;
+	chat.id = "remote-delivery-input-ids";
+	chat.provider_id = "gemini-cli";
+	chat.execution_host_id = "private-host";
+	chat.messages.push_back({.role = MessageRole::User, .content = "Saved with its delivery marker",
+	    .native_input_id = "33333333-3333-4333-8333-000000000004"});
+	chat.remote_turn_reconnect_pending = true;
+	chat.remote_prompt_delivery_session_id = "acp-remote-delivery-input-ids";
+	chat.remote_prompt_delivery_id = "private-delivery";
+	chat.remote_prompt_delivery_payload = "private-payload";
+	chat.remote_prompt_delivery_input_ids = {"33333333-3333-4333-8333-000000000004"};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(saved && saved->remote_prompt_delivery_input_ids == chat.remote_prompt_delivery_input_ids);
+	// Without the marker the IDs name nothing and are not kept.
+	chat.remote_prompt_delivery_id.clear();
+	chat.remote_prompt_delivery_payload.clear();
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(saved && saved->remote_prompt_delivery_input_ids.empty());
 }

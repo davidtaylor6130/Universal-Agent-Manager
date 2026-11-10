@@ -715,6 +715,10 @@ struct ChatSession
 	std::string remote_prompt_delivery_session_id;
 	std::string remote_prompt_delivery_id;
 	std::string remote_prompt_delivery_payload;
+	// Native input IDs of the rows this delivery carries. Saved with the marker so the helper's receipt confirms the
+	// right rows after a reconnect or an app restart, when the runtime's own copy is gone. Meaningful only beside
+	// the delivery ID it was written with.
+	std::vector<std::string> remote_prompt_delivery_input_ids;
 	std::vector<uam::AcpRemotePendingRequestState> remote_pending_requests;
 	int remote_next_request_id = 1;
 	std::string remote_active_turn_id;

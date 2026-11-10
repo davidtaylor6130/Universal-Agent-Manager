@@ -180,6 +180,9 @@ void ApplySubAgentMetadata(AcpToolCallState& tool_call, const nlohmann::json& up
 
 // Message sync helpers
 Message& EnsureAssistantMessage(ChatSession& chat, AcpSessionState& session);
+/// The provider's own answer to a turn proves it received that turn's authored input: marks the turn's sent rows as
+/// written. Display evidence only; it never authorizes or suppresses a delivery, retry or replay. Returns whether a row changed.
+bool ConfirmTurnInputReceived(const AcpSessionState& session, ChatSession& chat);
 bool AppendThoughtChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk);
 std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk, const std::string& identity = {});
 ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call);

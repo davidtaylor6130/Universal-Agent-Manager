@@ -32,6 +32,7 @@ export const PersistedConversationMessage = memo(function PersistedConversationM
   message,
   hasDeliveredResponse,
   hasStoppedResponse,
+  receivedByProvider = false,
   pendingDirectAdmission,
   delivery,
   deliveryActions,
@@ -56,6 +57,8 @@ export const PersistedConversationMessage = memo(function PersistedConversationM
   message: Message
   hasDeliveredResponse: boolean
   hasStoppedResponse: boolean
+  /** The provider's own output directly follows this input, so it is not presented as unconfirmed. */
+  receivedByProvider?: boolean
   pendingDirectAdmission: boolean
   delivery?: ConversationDelivery
   deliveryActions?: ReactNode
@@ -83,7 +86,7 @@ export const PersistedConversationMessage = memo(function PersistedConversationM
     return <CompactionSeparator summary={block.text} tokensBefore={block.tokensBefore} tokensAfter={block.tokensAfter} interrupted={block.type === 'context_compaction_interrupted'} />
   }
   const isUserMessage = message.role === 'user'
-  const historicalInputUnknown = delivery === undefined && hasUnconfirmedNativeInput(message)
+  const historicalInputUnknown = delivery === undefined && !receivedByProvider && hasUnconfirmedNativeInput(message)
   const effectiveDelivery = delivery ?? (historicalInputUnknown ? { state: 'unconfirmed' as const,
     label: 'Delivery not confirmed. Kept here and not sent again automatically.' } : undefined)
   const branchParentId = sessionParentChatId && sessionBranchFromMessageIndex === index
@@ -188,7 +191,7 @@ export function PersistedConversationHistory({ messages, start, end, nativeStart
             onSelectTool={selectTool} launchesOnly />
         </div> : null
       }
-      const { followingResponse, hasDeliveredResponse, hasStoppedResponse } = responseFlags(messages, index)
+      const { followingResponse, hasDeliveredResponse, hasStoppedResponse, receivedByProvider } = responseFlags(messages, index)
       const firstVisibleInSection = index === Math.max(section.firstIndex, start) ||
         (sectionCollapsed && section.firstIndex < start && index === section.lastAssistantIndex)
       const sectionStart = messages[section.firstIndex]
@@ -213,7 +216,7 @@ export function PersistedConversationHistory({ messages, start, end, nativeStart
           {turnStart && <TurnStartTime timestamp={turnStart.createdAt.getTime()} timezoneOffset={turnStart.createdAt.getTimezoneOffset()} identity={turnIdentity}
             showIdentity={Boolean(turnIdentity && (!previousAssistant || turnIdentity !== previousIdentity))} />}
           {message.role !== 'user' && heading}
-          <PersistedConversationMessage passive message={message} hasDeliveredResponse={hasDeliveredResponse} hasStoppedResponse={hasStoppedResponse}
+          <PersistedConversationMessage passive message={message} hasDeliveredResponse={hasDeliveredResponse} hasStoppedResponse={hasStoppedResponse} receivedByProvider={receivedByProvider}
             pendingDirectAdmission={false} disclosureState={disclosureState} index={index + nativeStartIndex}
             assistantLabel={reviewAssistantLabel(providerName(messageProviderId), message)} sessionId={sessionId}
             workingMode={workingMode} onSelectTool={selectTool} />

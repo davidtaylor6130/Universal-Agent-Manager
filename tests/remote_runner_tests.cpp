@@ -7973,6 +7973,9 @@ UAM_TEST(AcpRemotePersistedUntransportedMarkerDeliversOnceAfterRestart)
 	UAM_ASSERT(!persisted->remote_prompt_delivery_id.empty() && !persisted->remote_prompt_delivery_payload.empty());
 	UAM_ASSERT(!persisted->remote_prompt_delivery_session_id.empty() && persisted->acp_queued_prompts.empty());
 	UAM_ASSERT(!persisted->remote_stop_cleanup_pending && !persisted->remote_restart_pending && !persisted->messages.back().acp_prompt_not_sent);
+	// The marker carries the input row's ID, so the helper's receipt can confirm that row after this restart.
+	UAM_ASSERT(persisted->messages.back().native_input_id && !persisted->messages.back().input_write_completed);
+	UAM_ASSERT(persisted->remote_prompt_delivery_input_ids == std::vector<std::string>{*persisted->messages.back().native_input_id});
 	const std::string payload = persisted->remote_prompt_delivery_payload;
 	app.chats.front() = std::move(*persisted);
 
@@ -7995,6 +7998,9 @@ UAM_TEST(AcpRemotePersistedUntransportedMarkerDeliversOnceAfterRestart)
 	const std::string input = fs::exists(fixture.input_log) ? ReadFile(fixture.input_log) : std::string{};
 	const bool delivered_once = std::count(input.begin(), input.end(), '\n') == 1 && uam::strings::Trim(input) == uam::strings::Trim(payload);
 	const bool still_active = restored != nullptr && restored->running && restored->processing;
+	// The receipt arrived in a runtime that never held the input IDs; the saved ones confirmed the exact row.
+	const bool receipt_confirmed_row = app.chats.front().messages.back().input_write_completed &&
+	    app.chats.front().remote_prompt_delivery_id.empty() && app.chats.front().remote_prompt_delivery_input_ids.empty();
 	if (restored != nullptr)
 	{
 		service.StopStdioProcess(*restored, true);
@@ -8002,6 +8008,7 @@ UAM_TEST(AcpRemotePersistedUntransportedMarkerDeliversOnceAfterRestart)
 	}
 	UAM_ASSERT(delivered_once);
 	UAM_ASSERT(still_active);
+	UAM_ASSERT(receipt_confirmed_row);
 }
 
 UAM_TEST(AcpRemoteUntransportedPromptStopsReconnectingAfterElapsedBudget)

@@ -3631,6 +3631,7 @@ void RestorePendingPromptDelivery(AcpSessionState& session, ChatSession& chat)
 		chat.remote_prompt_delivery_session_id.clear();
 		chat.remote_prompt_delivery_id.clear();
 		chat.remote_prompt_delivery_payload.clear();
+		chat.remote_prompt_delivery_input_ids.clear();
 		if (packet->remote_prepared_head && std::ranges::none_of(chat.acp_queued_prompts, [&packet](const AcpQueuedUserPromptState& prompt)
 		    { return prompt.id == packet->remote_prepared_head->id && prompt.text == packet->remote_prepared_head->text; }))
 		{
@@ -3815,6 +3816,8 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 			for (const std::size_t index : unsent_messages)
 				if (index < chat.messages.size() && chat.messages[index].native_input_id)
 					session.pending_remote_delivery_input_ids.push_back(*chat.messages[index].native_input_id);
+			// Saved with the marker: the receipt may arrive after a reconnect or restart has dropped the runtime's copy.
+			chat.remote_prompt_delivery_input_ids = session.pending_remote_delivery_input_ids;
 		}
 		if (session.cold_retry_binding || CanDeferRemotePromptAdmission(app, session, chat) || CanStageRemoteGoalPromptAdmission(app, session, chat))
 		{
@@ -3838,6 +3841,7 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 			chat.remote_prompt_delivery_session_id.clear();
 			chat.remote_prompt_delivery_id.clear();
 			chat.remote_prompt_delivery_payload.clear();
+			chat.remote_prompt_delivery_input_ids.clear();
 			session.pending_remote_delivery_input_ids.clear();
 			session.pending_request_methods.erase(id);
 			session.prompt_request_id = 0;

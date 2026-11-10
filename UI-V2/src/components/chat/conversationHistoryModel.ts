@@ -1,3 +1,4 @@
+import { hasUnconfirmedNativeInput } from '../../utils/outgoingMessagePresentation'
 import type { Message } from '../../types/message'
 import { stoppedResponseLabel } from './MessageBlocks'
 
@@ -96,5 +97,14 @@ export function responseFlags(messages: Message[], index: number) {
   const hasDeliveredResponse = Boolean(message.interrupted && message.acpPromptNotSent && followingResponse?.providerId?.trim() &&
     followingResponse.providerId.trim() === message.providerId?.trim() && hasSubstantiveOutput(followingResponse))
   const hasStoppedResponse = Boolean(hasDeliveredResponse && stoppedResponseLabel(followingResponse?.stopReason, followingResponse?.interrupted))
-  return { followingResponse, hasDeliveredResponse, hasStoppedResponse }
+  // The provider answering directly after this input is proof it received it, also for rows saved before UAM recorded that
+  // answer as a write fact. Only the immediately following row counts: input sent later and answered proves nothing about
+  // this one. A compaction marker is UAM's own row, not an answer.
+  // Computed only for input that would otherwise show as unconfirmed, so other rows never re-render when an answer starts.
+  const receivedByProvider = Boolean(followingResponse && hasUnconfirmedNativeInput(message) &&
+    (!message.providerId?.trim() || !followingResponse.providerId?.trim() || followingResponse.providerId.trim() === message.providerId.trim()) &&
+    hasSubstantiveOutput(followingResponse) &&
+    !(followingResponse.blocks?.length && !followingResponse.content.trim() && !followingResponse.toolCalls?.length &&
+      followingResponse.blocks.every((block) => block.type.startsWith('context_compaction'))))
+  return { followingResponse, hasDeliveredResponse, hasStoppedResponse, receivedByProvider }
 }

@@ -10,12 +10,33 @@
 namespace uam::acp_detail
 {
 
+bool ConfirmTurnInputReceived(const AcpSessionState& session, ChatSession& chat)
+{
+	bool changed = false;
+	const int last = session.turn_user_message_index;
+	for (int index = session.turn_first_user_message_index >= 0 ? session.turn_first_user_message_index : last;
+	     index >= 0 && index <= last && index < static_cast<int>(chat.messages.size()); ++index)
+	{
+		Message& row = chat.messages[static_cast<std::size_t>(index)];
+		// A row held back as unsent or removed was not part of what the provider answered.
+		if (row.role != MessageRole::User || row.input_write_completed || row.acp_prompt_not_sent || row.acp_prompt_discarded ||
+		    !row.native_input_id || !input_provenance::ValidNativeInputId(*row.native_input_id)) continue;
+		row.input_write_completed = true;
+		changed = true;
+	}
+	return changed;
+}
+
 Message& EnsureAssistantMessage(ChatSession& chat, AcpSessionState& session)
 {
 	if (Message* message = CurrentAssistantMessage(chat, session))
 	{
 		return *message;
 	}
+
+	// Provider output for a turn whose prompt has left the queue is the provider answering that prompt. Output while
+	// the prompt is still queued (a background task, a late line of the previous turn) proves nothing about it.
+	if (session.processing && session.queued_prompt.empty()) (void)ConfirmTurnInputReceived(session, chat);
 
 	Message message;
 	message.role = MessageRole::Assistant;

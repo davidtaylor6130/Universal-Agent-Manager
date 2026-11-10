@@ -12081,17 +12081,18 @@ describe('ChatView', () => {
 
 
   it.each([
-    { label: 'identified unknown', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action' }, expected: 'unconfirmed' },
-    { label: 'positive write', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action', inputWriteCompleted: true }, expected: null },
-    { label: 'malformed boolean', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', inputWriteCompleted: 'true' }, expected: 'unconfirmed' },
-    { label: 'malformed input ID', fields: { nativeInputId: 'bad-id', inputWriteCompleted: true }, expected: null },
-    { label: 'legacy absent fields', fields: {}, expected: null },
-  ])('shares historical input presentation across main, managed and passive native routes: $label', async ({ fields, expected }) => {
+    // answered: the provider's output directly follows the input, which is proof it was received.
+    { label: 'identified unknown', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action' }, answered: false, expected: 'unconfirmed' },
+    { label: 'identified unknown but answered', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action' }, answered: true, expected: null },
+    { label: 'positive write', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action', inputWriteCompleted: true }, answered: true, expected: null },
+    { label: 'malformed boolean', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', inputWriteCompleted: 'true' }, answered: false, expected: 'unconfirmed' },
+    { label: 'malformed input ID', fields: { nativeInputId: 'bad-id', inputWriteCompleted: true }, answered: true, expected: null },
+    { label: 'legacy absent fields', fields: {}, answered: true, expected: null },
+  ])('shares historical input presentation across main, managed and passive native routes: $label', async ({ fields, answered, expected }) => {
     const previous = useAppStore.getState()
-    const rows = [
-      { role: 'user', content: 'Historical **input** remains readable', createdAt: '2026-10-16T16:00:00Z', ...fields },
-      { role: 'assistant', content: 'Recorded answer\n\n```ts\nconst kept = true\n```', createdAt: '2026-10-16T16:00:01Z' },
-    ] as unknown as Parameters<typeof reconcileCppMessages>[2]
+    const input = { role: 'user', content: 'Historical **input** remains readable', createdAt: '2026-10-16T16:00:00Z', ...fields }
+    const output = { role: 'assistant', content: 'Recorded answer\n\n```ts\nconst kept = true\n```', createdAt: '2026-10-16T16:00:01Z' }
+    const rows = (answered ? [input, output] : [output, input]) as unknown as Parameters<typeof reconcileCppMessages>[2]
     const child = { ...previous.sessions[0], id: 'input-child', name: 'Input child', providerId: 'codex-cli', importedReadOnly: true,
       subagentParentChatId: 'absent-parent', subagentParentCreatedAt: '2026-01-01T00:00:00.000Z' }
     const native = vi.fn(async () => ''); const load = vi.fn(async () => true)
