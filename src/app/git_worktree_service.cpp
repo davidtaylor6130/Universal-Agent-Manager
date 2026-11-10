@@ -21,6 +21,7 @@
 #include "common/utils/time_utils.h"
 #include "remote/runner_client.h"
 
+#include <atomic>
 #include <fstream>
 #include <functional>
 #include <chrono>
@@ -222,7 +223,7 @@ namespace uam
 		{
 			std::string branch, tracking, dirty;
 			if (!GitOutput(repository, "symbolic-ref --quiet --short HEAD", &branch, &error, stop))
-			{ error = "Pull before chat requires a checked-out local branch."; return false; }
+			{ error = "Pull before chat requires a checked-out local branch. Check out a branch or turn off Pull before first chat in Git settings, then retry."; return false; }
 			const std::string local_ref = "refs/heads/" + branch;
 			if (!GitOutput(repository, "for-each-ref --format=" + uam::shell::EscapeArg("%(refname):%(upstream)") +
 			    " -- " + uam::shell::EscapeArg(local_ref), &tracking, &error, stop)) return false;
@@ -239,7 +240,7 @@ namespace uam
 			// Pull is optional for a local-only branch. A failed Git lookup never authorizes this bypass.
 			if (uam::strings::Trim(tracking.substr(tracking_prefix.size())).empty()) return true;
 			if (!configured_base.empty() && configured_base != branch)
-			{ error = "Pull before chat requires the default base to be the checked-out branch."; return false; }
+			{ error = "Pull before chat requires the default base to be the checked-out branch. Check out that branch or turn off Pull before first chat in Git settings, then retry."; return false; }
 			const auto checked_output = [&](const std::string& arguments, std::string& output)
 			{
 				const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(repository, arguments), kDefaultGitCommandTimeoutMs, stop);
@@ -500,7 +501,7 @@ namespace uam
 			files.clear();
 			error.clear();
 			if (!uam::paths::IsDirectoryNoThrow(source_root))
-			{ error = "Source workspace is not an available directory."; return false; }
+			{ error = "Source workspace is not an available directory. Restore the folder, then retry."; return false; }
 			if (!app.data_root.empty() && PathIsWithin(source_root, app.data_root))
 			{ error = "Source workspace cannot be inside UAM's managed data directory."; return false; }
 
@@ -1793,12 +1794,99 @@ namespace uam
 		catch (const std::exception&) { return false; }
 	}
 
-	bool GitWorktreeService::WorkspaceIntentLeftNoArtifacts(const std::filesystem::path& root, const std::string& receipt_text, const ChatSession& metadata, std::stop_token stop) const
+	namespace
+	{
+		// Journals written before this moment belong to an earlier process, whose `git worktree add` may still be running.
+		std::atomic<std::filesystem::file_time_type::rep> g_workspace_intent_epoch{std::filesystem::file_time_type::clock::now().time_since_epoch().count()};
+		constexpr std::chrono::seconds kWorkspaceIntentQuietPeriod{60};
+
+		struct LinkedWorktree
+		{
+			std::filesystem::path path;
+			std::string branch;
+			bool locked = false;
+			bool prunable = false;
+		};
+
+		bool ListLinkedWorktrees(const std::filesystem::path& repository, std::vector<LinkedWorktree>& linked, std::stop_token stop)
+		{
+			linked.clear();
+			std::string text;
+			if (!GitOutput(repository, "worktree list --porcelain", &text, nullptr, stop)) return false;
+			std::istringstream lines(text);
+			std::string line;
+			while (std::getline(lines, line))
+			{
+				if (!line.empty() && line.back() == '\r') line.pop_back();
+				if (line.starts_with("worktree ")) linked.push_back({paths::PathFromUtf8(line.substr(9)), {}, false, false});
+				else if (linked.empty()) continue;
+				else if (line.starts_with("branch ")) linked.back().branch = line.substr(7);
+				else if (line == "locked" || line.starts_with("locked ")) linked.back().locked = true;
+				else if (line == "prunable" || line.starts_with("prunable ")) linked.back().prunable = true;
+			}
+			return true;
+		}
+
+		bool SamePhysicalPath(const std::filesystem::path& left, const std::filesystem::path& right)
+		{
+			std::error_code left_error, right_error;
+			const std::filesystem::path a = std::filesystem::weakly_canonical(left, left_error);
+			const std::filesystem::path b = std::filesystem::weakly_canonical(right, right_error);
+			return !left_error && !right_error && uam::paths::NormalizedPortablePathString(a) == uam::paths::NormalizedPortablePathString(b);
+		}
+
+		/// True only when every file under the directory is byte-identical to the base commit, so removing it loses nothing.
+		/// Missing files are expected after an interrupted checkout; any changed, added or unreadable entry answers false.
+		bool DirectoryHoldsOnlyBaseFiles(const std::filesystem::path& repository, const std::filesystem::path& directory, const std::string& base, std::stop_token stop)
+		{
+			const std::string scope = "--no-optional-locks -c core.quotePath=false --work-tree=" + uam::shell::EscapeArg(uam::paths::Utf8PathString(directory)) + " ";
+			const auto read = [&](const std::string& arguments, std::string& output)
+			{
+				const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(repository, scope + arguments), kDefaultGitCommandTimeoutMs, stop);
+				if (stop.stop_requested() || !CommandSucceeded(result) || result.output_truncated) return false;
+				output = result.output;
+				return true;
+			};
+			std::string changed, present, tracked;
+			if (!read("diff --no-renames --name-status " + uam::shell::EscapeArg(base) + " --", changed) ||
+			    !read("ls-files --others", present) || !read("ls-tree -r --name-only " + uam::shell::EscapeArg(base), tracked)) return false;
+			const auto each = [](const std::string& text, const std::function<bool(const std::string&)>& accept)
+			{
+				std::istringstream lines(text);
+				std::string line;
+				while (std::getline(lines, line))
+				{
+					if (!line.empty() && line.back() == '\r') line.pop_back();
+					if (!line.empty() && !accept(line)) return false;
+				}
+				return true;
+			};
+			std::set<std::string> base_files;
+			(void)each(tracked, [&](const std::string& line) { base_files.insert(line); return true; });
+			return each(changed, [](const std::string& line) { return line.starts_with("D\t"); }) &&
+			    each(present, [&](const std::string& line) { return base_files.contains(line); });
+		}
+	}
+
+	std::filesystem::file_time_type SetWorkspaceIntentProcessEpochForTests(std::filesystem::file_time_type epoch)
+	{
+		return std::filesystem::file_time_type(std::filesystem::file_time_type::duration(g_workspace_intent_epoch.exchange(epoch.time_since_epoch().count())));
+	}
+
+	bool GitWorktreeService::WorkspaceCreationUnfinished(const std::filesystem::path& worktree, std::stop_token stop) const
+	{
+		// Git holds this lock from registering a new worktree until its checkout completes.
+		std::string lock;
+		return !GitOutput(worktree, "rev-parse --path-format=absolute --git-path locked", &lock, nullptr, stop) || lock.empty() ||
+		    uam::paths::PathExistsNoThrow(uam::paths::PathFromUtf8(lock));
+	}
+
+	FailedWorkspaceIntent GitWorktreeService::ClearFailedWorkspaceIntent(const std::filesystem::path& root, const std::filesystem::path& receipt, const std::string& receipt_text, const ChatSession& metadata, std::string& notice, std::stop_token stop) const
 	{
 		try
 		{
 			const nlohmann::json record = nlohmann::json::parse(receipt_text);
-			if (record.at("chatId") != metadata.id || record.at("createdAt") != metadata.created_at) return false;
+			if (record.at("chatId") != metadata.id || record.at("createdAt") != metadata.created_at) return FailedWorkspaceIntent::Preserved;
 			const std::filesystem::path source = paths::PathFromUtf8(record.at("source").get<std::string>());
 			const std::filesystem::path repository = paths::PathFromUtf8(record.at("repository").get<std::string>());
 			const std::filesystem::path worktree = paths::PathFromUtf8(record.at("worktree").get<std::string>());
@@ -1810,24 +1898,80 @@ namespace uam
 				const auto status = std::filesystem::symlink_status(path, error);
 				return error == std::errc::no_such_file_or_directory || (!error && status.type() == std::filesystem::file_type::not_found);
 			};
-			if (worktree.empty() || !paths::IsSameOrInsideRoot(root, worktree) || !absent(worktree)) return false;
+			if (worktree.empty() || !paths::IsSameOrInsideRoot(root, worktree)) return FailedWorkspaceIntent::Preserved;
 			if (record.at("managedRepository").get<bool>())
 			{
 				AppState snapshot;
 				snapshot.data_root = root;
-				// ponytail: a leftover managed repository is never removed here, so a crash mid-snapshot stays refused; resume or remove it once the owner decides.
-				return repository == ManagedRepositoryRoot(snapshot, source, metadata.id) && absent(repository);
+				// ponytail: a leftover managed repository or its worktree is never removed here, so a crash mid-snapshot stays refused; resume or remove it once the owner decides.
+				return repository == ManagedRepositoryRoot(snapshot, source, metadata.id) && absent(worktree) && absent(repository) ? FailedWorkspaceIntent::Cleared : FailedWorkspaceIntent::Preserved;
 			}
-			if (repository != source) return false;
-			// Without a recorded branch, creation never reached `git worktree add`.
-			if (branch.empty()) return true;
+			if (repository != source) return FailedWorkspaceIntent::Preserved;
+			const bool directory = !absent(worktree);
+			// Without a recorded branch, creation never reached `git worktree add`, so an occupied target is not this chat's.
+			if (branch.empty()) return directory ? FailedWorkspaceIntent::Preserved : FailedWorkspaceIntent::Cleared;
+			if (base.empty()) return FailedWorkspaceIntent::Preserved;
+			const std::string branch_ref = "refs/heads/" + branch;
+			std::vector<LinkedWorktree> linked;
+			if (!ListLinkedWorktrees(repository, linked, stop)) return FailedWorkspaceIntent::Preserved;
+			const auto names_intent = [&](const LinkedWorktree& candidate) { return candidate.branch == branch_ref || SamePhysicalPath(candidate.path, worktree); };
+			const auto entry = std::ranges::find_if(linked, names_intent);
+			// A registered worktree that Git finished creating, or the branch checked out elsewhere, is never a failed creation.
+			if (entry != linked.end() && (!SamePhysicalPath(entry->path, worktree) || !(entry->locked || entry->prunable))) return FailedWorkspaceIntent::Preserved;
+			const bool registered = entry != linked.end();
+
+			std::error_code time_error;
+			const std::filesystem::file_time_type written = std::filesystem::last_write_time(receipt, time_error);
+			if (time_error) return FailedWorkspaceIntent::Preserved;
+			if (written.time_since_epoch().count() < g_workspace_intent_epoch.load())
+			{
+				// ponytail: activity is judged from the journal and the first 5000 entries; a silent longer stall is treated as dead. Track the Git process itself if that ever misfires.
+				std::filesystem::file_time_type newest = written;
+				std::error_code walk_error;
+				int seen = 0;
+				if (directory)
+					for (std::filesystem::recursive_directory_iterator entries(worktree, std::filesystem::directory_options::skip_permission_denied, walk_error), end; !walk_error && entries != end && seen < 5000; entries.increment(walk_error), ++seen)
+					{
+						std::error_code entry_error;
+						const std::filesystem::file_time_type modified = entries->last_write_time(entry_error);
+						if (!entry_error && modified > newest) newest = modified;
+					}
+				if (std::filesystem::file_time_type::clock::now() - newest < kWorkspaceIntentQuietPeriod) return FailedWorkspaceIntent::InProgress;
+			}
+
 			// A branch left by a failed `git worktree add` holds no work while it still names the recorded base.
-			const ProcessExecutionResult reference = RunCommand(BuildGitCommandInDirectory(repository, "rev-parse --verify --quiet --end-of-options " + shell::EscapeArg("refs/heads/" + branch)), kDefaultGitCommandTimeoutMs, stop);
-			if (stop.stop_requested() || reference.timed_out || reference.canceled || reference.output_truncated) return false;
+			const ProcessExecutionResult reference = RunCommand(BuildGitCommandInDirectory(repository, "rev-parse --verify --quiet --end-of-options " + shell::EscapeArg(branch_ref)), kDefaultGitCommandTimeoutMs, stop);
+			if (stop.stop_requested() || reference.timed_out || reference.canceled || reference.output_truncated) return FailedWorkspaceIntent::Preserved;
 			const std::string head = strings::Trim(reference.output);
-			return reference.exit_code == 1 ? head.empty() : CommandSucceeded(reference) && !base.empty() && head == base;
+			const bool branch_exists = reference.exit_code != 1;
+			if (branch_exists ? !(CommandSucceeded(reference) && head == base) : !head.empty()) return FailedWorkspaceIntent::Preserved;
+
+			if (directory)
+			{
+				const std::filesystem::path owned = paths::AbsolutePathNoThrow(root).lexically_normal();
+				for (std::filesystem::path path = paths::AbsolutePathNoThrow(worktree).lexically_normal(); path != owned; path = path.parent_path())
+					if (paths::IsLinkOrReparsePointNoThrow(path) || path.empty() || path == path.parent_path()) return FailedWorkspaceIntent::Preserved;
+				if (DirectoryHoldsOnlyBaseFiles(repository, worktree, base, stop))
+				{
+					if (registered) (void)GitCommand(repository, "worktree remove --force --force " + shell::EscapeArg(paths::Utf8PathString(worktree)));
+					else (void)paths::RemoveAllNoThrow(worktree);
+				}
+				if (!absent(worktree))
+				{
+					// Anything UAM cannot prove unchanged is kept: moved beside its planned path, never deleted.
+					const std::filesystem::path aside = paths::PathFromUtf8(paths::Utf8PathString(worktree) + ".interrupted-" + time::SteadyEpochNanosecondsTokenNow());
+					std::error_code move_error;
+					std::filesystem::rename(worktree, aside, move_error);
+					if (move_error) return FailedWorkspaceIntent::Preserved;
+					notice = "An interrupted worktree for this chat held files that differ from its base commit. It was kept at " + paths::Utf8PathString(aside) + " and a new worktree was created.";
+				}
+			}
+			// The retry picks its own branch, so one that still names the base and that no worktree uses is removed.
+			if (branch_exists && ListLinkedWorktrees(repository, linked, {}) && std::ranges::none_of(linked, [&](const LinkedWorktree& candidate) { return candidate.branch == branch_ref; }))
+				(void)GitCommand(repository, "update-ref -d " + shell::EscapeArg(branch_ref) + " " + shell::EscapeArg(base));
+			return FailedWorkspaceIntent::Cleared;
 		}
-		catch (const std::exception&) { return false; }
+		catch (const std::exception&) { return FailedWorkspaceIntent::Preserved; }
 	}
 
 	bool GitWorktreeService::ValidatePreparedWorkspace(const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop) const
@@ -1905,7 +2049,7 @@ namespace uam
 		    !chat.git_base_branch_override && uam::strings::Trim(app.settings.git_default_base_branch).empty() &&
 		    IsVerifiedUnbornRepository(source_root, stop);
 		if (unborn_source && !app.settings.git_snapshot_plain_folders)
-		{ result.message = "This repository has no commits and automatic plain-folder snapshots are disabled."; return result; }
+		{ result.message = "This repository has no commits and automatic plain-folder snapshots are disabled. Make a first commit or turn on plain-folder snapshots in Git settings, then retry."; return result; }
 		const bool managed_repository = !result.status.is_git_repository || unborn_source;
 		LocalSnapshotSource source_kind = LocalSnapshotSource::Unknown;
 		if (managed_repository && !unborn_source)
@@ -1913,7 +2057,7 @@ namespace uam
 			source_kind = ClassifyLocalSnapshotSource(source_root);
 			if (source_kind == LocalSnapshotSource::Git || source_kind == LocalSnapshotSource::Unknown)
 			{
-				result.message = source_kind == LocalSnapshotSource::Git ? "Source Git metadata could not be verified. No managed snapshot was created." : "Source workspace is not an available directory.";
+				result.message = source_kind == LocalSnapshotSource::Git ? "Source Git metadata could not be verified. No managed snapshot was created." : "Source workspace is not an available directory. Restore the folder, then retry.";
 				return result;
 			}
 			result.message = ManagedSnapshotDisabledReason(app, chat);
@@ -2009,7 +2153,7 @@ namespace uam
 		{
 			if (!base_branch.empty())
 			{
-				result.message = "The default Git base branch is unavailable: " + base_branch;
+				result.message = "The default Git base branch is unavailable: " + base_branch + ". Create that branch or clear the default base branch in Git settings, then retry.";
 				return result;
 			}
 			std::string head_ref;

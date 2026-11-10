@@ -539,7 +539,12 @@ UAM_TEST(WorktreeLaunchPreparationRestartRejectsChangedOwnership)
 		const uam::WorktreeLaunchPreparationResult refusal = uam::PrepareWorktreeForLaunch(fixture.app, chat);
 		UAM_ASSERT_EQ(refusal.state, uam::WorktreeLaunchPreparationState::Failed);
 		if (change == "oversized") UAM_ASSERT(refusal.error.find("size limit") != std::string::npos);
-		if (change == "policy") UAM_ASSERT(refusal.error.find("turn off automatic worktrees") != std::string::npos);
+		if (change == "policy")
+		{
+			// The refusal names the setting that changed and the way out.
+			UAM_ASSERT(refusal.error.find("default base branch (was not set)") != std::string::npos);
+			UAM_ASSERT(refusal.error.find("turn off automatic worktrees") != std::string::npos);
+		}
 		UAM_ASSERT(chat.workspace_worktree_directory.empty());
 		UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
 		UAM_ASSERT(fs::exists(artifact));
@@ -1175,39 +1180,201 @@ UAM_TEST(WorktreeLaunchRecordedIntentWithoutWorktreeRetriesFresh)
 	}
 }
 
-UAM_TEST(WorktreeLaunchOlderSshHelperStartsInWorkspaceFolder)
+UAM_TEST(WorktreeLaunchOlderSshHelperRefusesWithUpdateActionAndNeverDropsIsolation)
 {
 	TempDir temp("uam-old-helper-launch");
 	uam::AppState app;
 	app.data_root = temp.root / "data";
 	ExecutionHost host;
 	host.id = "old-helper";
+	host.label = "Build box";
 	host.transport = "ssh";
 	host.ssh_alias = "old-helper";
 	host.runner_status = "ready";
+	host.runner_version = "4.0.0";
 	host.runner_protocol_version = 2;
 	app.settings.execution_hosts.push_back(host);
-	for (const bool explicit_create : {false, true})
+	ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = "/srv/project";
+	app.chats = {chat};
+	for (int attempt = 0; attempt < 2; ++attempt)
 	{
-		ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
-		chat.execution_host_id = host.id;
-		chat.workspace_directory = "/srv/project";
-		UAM_ASSERT_EQ(chat.workspace_isolation_kind, uam::paths::kPendingGitWorktreeIsolationKind);
-		app.chats = {chat};
-		app.status_line.clear();
-		const uam::WorktreeLaunchPreparationResult result = uam::PrepareWorktreeForLaunch(app, app.chats.front(), explicit_create);
-		UAM_ASSERT(app.worktree_launch_preparations.empty());
-		if (explicit_create)
-		{
-			// An explicit request for isolation is never silently downgraded.
-			UAM_ASSERT_EQ(result.state, uam::WorktreeLaunchPreparationState::Failed);
-			UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, uam::paths::kPendingGitWorktreeIsolationKind);
-			continue;
-		}
-		UAM_ASSERT_EQ(result.state, uam::WorktreeLaunchPreparationState::Ready);
-		UAM_ASSERT(app.chats.front().workspace_isolation_kind.empty());
-		UAM_ASSERT(app.status_line.find("too old for isolated worktrees") != std::string::npos);
+		const uam::WorktreeLaunchPreparationResult refused = uam::PrepareWorktreeForLaunch(app, app.chats.front());
+		UAM_ASSERT_EQ(refused.state, uam::WorktreeLaunchPreparationState::Failed);
+		UAM_ASSERT(refused.error.find("Update the SSH helper on Build box, then retry") != std::string::npos);
+		// The chat keeps its isolation request and nothing about the refusal is stored on it.
+		UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, uam::paths::kPendingGitWorktreeIsolationKind);
+		UAM_ASSERT(app.worktree_launch_preparations.empty() && app.worktree_operation_chat_ids.empty());
 	}
+	// The refusal is read from the host record on every attempt, so it stops as soon as the record names a current helper.
+	app.settings.execution_hosts.back().runner_protocol_version = 3;
+	app.settings.execution_hosts.back().runner_install_unresolved = true;
+	const uam::WorktreeLaunchPreparationResult updated = uam::PrepareWorktreeForLaunch(app, app.chats.front());
+	UAM_ASSERT(updated.error.find("too old") == std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, uam::paths::kPendingGitWorktreeIsolationKind);
+}
+
+namespace
+{
+	/// A finished, unpublished preparation: the on-disk state after the app stops between `git worktree add` and the chat save.
+	struct InterruptedLaunch
+	{
+		LaunchFixture fixture;
+		std::shared_ptr<uam::WorktreeLaunchPreparationTask> task;
+		fs::path worktree, receipt;
+		std::string branch, base;
+
+		InterruptedLaunch()
+		{
+			ChatSession& chat = fixture.app.chats.front();
+			UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+			task = fixture.app.worktree_launch_preparations.at(chat.id);
+			fixture.WaitForWorker(task);
+			const uam::PreparedLaunchWorktree prepared = task->worker.get();
+			UAM_ASSERT(prepared.operation.ok);
+			fixture.app.worktree_launch_preparations.clear();
+			fixture.app.worktree_operation_chat_ids.clear();
+			task->lease.reset();
+			worktree = uam::paths::PathFromUtf8(prepared.metadata.workspace_worktree_directory);
+			branch = prepared.metadata.workspace_branch_name;
+			base = prepared.metadata.workspace_base_ref;
+			receipt = task->receipt_file;
+		}
+
+		/// What a `git worktree add` killed during checkout leaves: Git's creation lock, no index and only some files.
+		void KillMidCheckout()
+		{
+			const fs::path admin = uam::paths::PathFromUtf8(uam::strings::Trim(FirstSendGitOutput(worktree, "rev-parse --path-format=absolute --git-dir")));
+			UAM_ASSERT(uam::io::WriteTextFile(admin / "locked", "initializing"));
+			fs::remove(admin / "index");
+			fs::remove(worktree / "source.txt");
+		}
+
+		std::shared_ptr<uam::WorktreeLaunchPreparationTask> Retry()
+		{
+			ChatSession& chat = fixture.app.chats.front();
+			UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+			const auto retry = fixture.app.worktree_launch_preparations.at(chat.id);
+			fixture.WaitForWorker(retry);
+			return retry;
+		}
+
+		void AssertFreshWorktree(const std::shared_ptr<uam::WorktreeLaunchPreparationTask>& retry)
+		{
+			ChatSession& chat = fixture.app.chats.front();
+			(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+			UAM_ASSERT(retry->error.empty());
+			UAM_ASSERT(retry->merged);
+			UAM_ASSERT(retry->receipt_file != receipt);
+			UAM_ASSERT(!fs::exists(receipt) && fs::exists(fs::path(receipt.string() + ".failed")));
+			const fs::path fresh = uam::paths::PathFromUtf8(chat.workspace_worktree_directory);
+			UAM_ASSERT_EQ(ReadFile(fresh / "source.txt"), std::string("source survivor\n"));
+			std::string validation_error;
+			UAM_ASSERT(uam::GitWorktreeService().ValidatePreparedWorkspace(fixture.app.data_root, retry->receipt_file, chat, validation_error));
+			UAM_ASSERT(!uam::GitWorktreeService().WorkspaceCreationUnfinished(fresh));
+			fixture.WaitForSave(retry);
+			UAM_ASSERT(*retry->saved);
+			UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Ready);
+			fixture.AssertForeignSurvivors();
+		}
+
+		std::size_t BranchCount() { return static_cast<std::size_t>(std::ranges::count(FirstSendGitOutput(fixture.repository, "for-each-ref refs/heads"), '\n')); }
+	};
+
+	struct EarlierProcessJournals
+	{
+		std::filesystem::file_time_type previous = uam::SetWorkspaceIntentProcessEpochForTests(std::filesystem::file_time_type::clock::now() + std::chrono::hours(1));
+		~EarlierProcessJournals() { (void)uam::SetWorkspaceIntentProcessEpochForTests(previous); }
+		EarlierProcessJournals() = default;
+		EarlierProcessJournals(const EarlierProcessJournals&) = delete;
+		EarlierProcessJournals& operator=(const EarlierProcessJournals&) = delete;
+	};
+}
+
+UAM_TEST(WorktreeLaunchKilledMidCheckoutIsClearedAndRetried)
+{
+	if (!GitAvailableForTests()) return;
+	for (const std::string_view leftover : {"partial", "unregistered", "user-file", "modified"})
+	{
+		InterruptedLaunch launch;
+		if (leftover == "unregistered")
+		{
+			// Git never registered the directory: only files matching the base remain in it.
+			UAM_ASSERT(RunGitForTest(launch.fixture.repository, "worktree remove --force " + ShellQuoteForTest(launch.worktree.string())));
+			UAM_ASSERT(uam::io::WriteTextFile(launch.worktree / "source.txt", "source survivor\n"));
+		}
+		else
+		{
+			launch.KillMidCheckout();
+			// Unchanged settings used to validate this half-checked-out directory and publish it as the chat's workspace.
+			UAM_ASSERT(uam::GitWorktreeService().WorkspaceCreationUnfinished(launch.worktree));
+		}
+		if (leftover == "user-file") UAM_ASSERT(uam::io::WriteTextFile(launch.worktree / "mine.txt", "work to keep\n"));
+		if (leftover == "modified")
+		{
+			UAM_ASSERT(uam::io::WriteTextFile(launch.worktree / "source.txt", "edited by hand\n"));
+		}
+		const bool kept = leftover == "user-file" || leftover == "modified";
+		const auto retry = launch.Retry();
+		launch.AssertFreshWorktree(retry);
+		// The interrupted worktree is never adopted, and its branch at the base does not pile up.
+		if (!kept) UAM_ASSERT_EQ(launch.BranchCount(), std::size_t{3});
+		fs::path aside;
+		for (const fs::directory_entry& entry : fs::directory_iterator(launch.worktree.parent_path()))
+			if (entry.path().filename().string().find(".interrupted-") != std::string::npos) aside = entry.path();
+		UAM_ASSERT_EQ(!aside.empty(), kept);
+		if (leftover == "user-file") UAM_ASSERT_EQ(ReadFile(aside / "mine.txt"), std::string("work to keep\n"));
+		if (leftover == "modified") UAM_ASSERT_EQ(ReadFile(aside / "source.txt"), std::string("edited by hand\n"));
+		// The user is told where a kept leftover went.
+		if (kept) UAM_ASSERT(launch.fixture.app.status_line.find(uam::paths::Utf8PathString(aside.filename())) != std::string::npos);
+	}
+}
+
+UAM_TEST(WorktreeLaunchEarlierSessionCreationStillRunningIsNotDuplicated)
+{
+	if (!GitAvailableForTests()) return;
+	InterruptedLaunch launch;
+	// Git creates the branch before the directory: an earlier session's `git worktree add` may be at exactly this point.
+	UAM_ASSERT(RunGitForTest(launch.fixture.repository, "worktree remove --force " + ShellQuoteForTest(launch.worktree.string())));
+	const std::string receipt = ReadFile(launch.receipt);
+	const std::size_t branches = launch.BranchCount();
+	ChatSession& chat = launch.fixture.app.chats.front();
+	{
+		const EarlierProcessJournals earlier;
+		const auto waiting = launch.Retry();
+		const uam::WorktreeLaunchPreparationResult refusal = uam::PrepareWorktreeForLaunch(launch.fixture.app, chat);
+		UAM_ASSERT_EQ(refusal.state, uam::WorktreeLaunchPreparationState::Failed);
+		UAM_ASSERT(refusal.error.find("Wait a minute, then retry") != std::string::npos);
+		// No second worktree or branch, and the journal still owns whatever the earlier session finishes.
+		UAM_ASSERT_EQ(ReadFile(launch.receipt), receipt);
+		UAM_ASSERT_EQ(launch.BranchCount(), branches);
+		UAM_ASSERT(!fs::exists(launch.worktree) && chat.workspace_worktree_directory.empty());
+		// Once the journal has been quiet for the bounded period, the earlier creation is known dead and the retry proceeds.
+		fs::last_write_time(launch.receipt, fs::last_write_time(launch.receipt) - std::chrono::minutes(10));
+		const auto retry = launch.Retry();
+		launch.AssertFreshWorktree(retry);
+	}
+}
+
+UAM_TEST(WorktreeLaunchEarlierSessionCreationFinishingIsAdopted)
+{
+	if (!GitAvailableForTests()) return;
+	InterruptedLaunch launch;
+	// The earlier session's checkout is complete except for releasing Git's creation lock.
+	const fs::path lock = uam::paths::PathFromUtf8(uam::strings::Trim(FirstSendGitOutput(launch.worktree, "rev-parse --path-format=absolute --git-path locked")));
+	UAM_ASSERT(uam::io::WriteTextFile(lock, "initializing"));
+	const EarlierProcessJournals earlier;
+	std::jthread finishing([lock] { std::this_thread::sleep_for(std::chrono::milliseconds(1500)); std::error_code ignored; fs::remove(lock, ignored); });
+	const auto retry = launch.Retry();
+	(void)uam::PollWorktreeLaunchPreparations(launch.fixture.app);
+	ChatSession& chat = launch.fixture.app.chats.front();
+	UAM_ASSERT(retry->error.empty() && retry->merged);
+	UAM_ASSERT_EQ(retry->receipt_file, launch.receipt);
+	UAM_ASSERT_EQ(uam::paths::PathFromUtf8(chat.workspace_worktree_directory), launch.worktree);
+	UAM_ASSERT_EQ(chat.workspace_branch_name, launch.branch);
+	launch.fixture.WaitForSave(retry);
+	UAM_ASSERT(*retry->saved);
 }
 
 UAM_TEST(WorktreeLaunchLegacyEarlyUnbornReceiptRecoversPrivateBaseline)

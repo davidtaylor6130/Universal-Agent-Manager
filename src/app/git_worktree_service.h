@@ -112,6 +112,11 @@ namespace uam
 	/// <summary>Pending explicit-base creation never silently falls back to an unisolated launch.</summary>
 	bool ValidatePendingGitBaseOverrideScope(const AppState& app, const ChatSession& chat, std::string& error);
 
+	/// InProgress: an earlier process may still be running `git worktree add` for this intent.
+	enum class FailedWorkspaceIntent { Preserved, InProgress, Cleared };
+	/// Journals older than the epoch are treated as an earlier process's; returns the previous epoch.
+	std::filesystem::file_time_type SetWorkspaceIntentProcessEpochForTests(std::filesystem::file_time_type epoch);
+
 	class GitWorktreeService
 	{
 	  public:
@@ -138,8 +143,12 @@ namespace uam
 		bool ValidateRemotePreparedWorkspace(const ExecutionHost& host, const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop = {}, bool* definite_failure_out = nullptr) const;
 		/// Validates only an owned journal whose planned artifacts have not been created; never accepts it as a ready workspace.
 		bool ValidateUncreatedWorkspaceIntent(const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop = {}) const;
-		/// Read-only. True when this chat's recorded intent left no worktree, no managed repository and no branch beyond its base, so discarding the journal loses nothing.
-		bool WorkspaceIntentLeftNoArtifacts(const std::filesystem::path& root, const std::string& receipt_text, const ChatSession& metadata, std::stop_token stop = {}) const;
+		/// Settles this chat's recorded intent after a failed creation. Cleared means nothing of it remains: an absent or
+		/// interrupted worktree is removed only when every file matches the base commit, anything else is moved aside and named
+		/// in notice, and a branch still at the base is deleted. A finished worktree, branch work or a managed repository stays Preserved.
+		FailedWorkspaceIntent ClearFailedWorkspaceIntent(const std::filesystem::path& root, const std::filesystem::path& receipt, const std::string& receipt_text, const ChatSession& metadata, std::string& notice, std::stop_token stop = {}) const;
+		/// True while Git's creation lock is present, so a worktree interrupted mid-checkout is never accepted as ready.
+		bool WorkspaceCreationUnfinished(const std::filesystem::path& worktree, std::stop_token stop = {}) const;
 		bool ValidatePreparedWorkspace(const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop = {}) const;
 		GitWorktreeOperationResult CreateBranchForChat(const AppState& app, const ChatSession& source, ChatSession& branch, const std::string& checkpoint_sha) const;
 		bool RemoveUnusedBranchWorktree(const AppState& app, const ChatSession& branch, std::string* error_out = nullptr) const;
