@@ -801,6 +801,8 @@ namespace
 		chat.routing_assigned_connection_identity = connection;
 		chat.routing_assigned_provider_configuration_identity = provider;
 		chat.routing_reservation_pending = false;
+		chat.routing_reservation_runner_version.clear();
+		chat.routing_identity_current_format = false;
 		app.settings.execution_routing.hosts.front().provider_confirmations.front() = {"codex-cli", connection, provider};
 		app.execution_routing_service.reset();
 		app.execution_routing_reserved_chat_ids.clear();
@@ -824,6 +826,9 @@ UAM_TEST(ExecutionRoutingUpgradeCarriesUnchangedOldFormatIdentitiesForward)
 	UAM_ASSERT_EQ(confirmation.provider_configuration_identity, uam::ExecutionRoutingProviderIdentity(app, app.provider_profiles.front(), "remote"));
 	UAM_ASSERT_EQ(chat.routing_assigned_connection_identity, confirmation.connection_identity);
 	UAM_ASSERT_EQ(chat.routing_assigned_provider_configuration_identity, confirmation.provider_configuration_identity);
+	// The rewrite is saved, so a helper update after this start cannot make the saved identity unprovable.
+	UAM_ASSERT(chat.routing_identity_current_format);
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(chat.id));
 	// Nothing changed, so nobody is asked: the chat is admitted as before the upgrade.
 	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, chat).status, uam::ExecutionRoutingStatus::Assigned);
 	UAM_ASSERT(!uam::MigrateExecutionRoutingIdentities(app));
@@ -839,6 +844,65 @@ UAM_TEST(ExecutionRoutingUpgradeCarriesUnchangedOldFormatIdentitiesForward)
 	UAM_ASSERT_EQ(late.chats.front().routing_assigned_connection_identity, old_stamp);
 	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(late, late.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
 	UAM_ASSERT(late.chats.front().routing_assigned_connection_identity != old_stamp);
+}
+
+UAM_TEST(ExecutionRoutingOldFormatIdentityAfterAHelperUpdateAsksOnlyForConfirmation)
+{
+	// Saved by an earlier version, then the helper was updated: the saved identity can no longer be proven
+	// unchanged, and nothing can tell whether the connection changed. The wait must name an action that works.
+	for (int state = 0; state < 2; ++state)
+	{
+		TempDir temp("uam-routing-upgrade-unprovable");
+		uam::AppState app;
+		ConfigureRoutingFixture(app, temp.root);
+		SaveRoutingFixtureInOldFormat(app);
+		ChatSession& chat = app.chats.front();
+		app.settings.execution_hosts.back().runner_version = "updated-helper";
+		app.runtime_cli_versions_by_provider_id.at(CliProviderVersionStateKey("codex-cli", "remote")).execution_host = app.settings.execution_hosts.back();
+		if (state == 0) chat.remote_process_exists = true;
+		else chat.remote_active_turn_id = "turn-from-before-the-upgrade";
+		UAM_ASSERT(!uam::MigrateExecutionRoutingIdentities(app));
+		UAM_ASSERT(!chat.routing_identity_current_format);
+		UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(chat.id));
+		UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, chat).status, uam::ExecutionRoutingStatus::Waiting);
+		UAM_ASSERT(app.execution_routing_waits[chat.id].find("SSH settings") == std::string::npos);
+		UAM_ASSERT(app.execution_routing_waits[chat.id].find("Routing settings") != std::string::npos);
+		ConfirmCurrentRoutingConfiguration(app);
+		if (state == 1)
+		{
+			// A turn that is still running holds the chat; stopping it is the stated way out.
+			UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, chat).status, uam::ExecutionRoutingStatus::Waiting);
+			UAM_ASSERT(app.execution_routing_waits[chat.id].find("Stop the turn") != std::string::npos);
+			UAM_ASSERT(app.execution_routing_waits[chat.id].find("SSH settings") == std::string::npos);
+			chat.remote_active_turn_id.clear();
+			app.execution_routing_retry_at_by_chat_id.clear();
+		}
+		UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, chat).status, uam::ExecutionRoutingStatus::Assigned);
+		UAM_ASSERT(chat.routing_identity_current_format);
+	}
+}
+
+UAM_TEST(ExecutionRoutingAdoptedConnectionMakesTheLaunchCheckLookAgain)
+{
+	TempDir temp("uam-routing-restamp-launch-check");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	ChatSession& chat = app.chats.front();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, chat).status, uam::ExecutionRoutingStatus::Assigned);
+	const std::string assigned_connection = chat.routing_assigned_connection_identity;
+	// What the launch check remembered for this chat, under the connection it was assigned on.
+	app.repository_route_assignments[chat.id] = {{"source", "local", chat.routing_source_directory, "local", {}}, {"destination", "remote", "/mapped/repo", assigned_connection, {}}};
+	// A provider-only change keeps it: the checkouts are where they were.
+	app.settings.provider_extra_flags = "--changed-default";
+	ConfirmCurrentRoutingConfiguration(app);
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, chat).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT(app.repository_route_assignments.contains(chat.id));
+	app.settings.execution_hosts.back().ssh_alias = "fixture-renamed-alias";
+	app.runtime_cli_versions_by_provider_id.at(CliProviderVersionStateKey("codex-cli", "remote")).execution_host = app.settings.execution_hosts.back();
+	ConfirmCurrentRoutingConfiguration(app);
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, chat).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT(chat.routing_assigned_connection_identity != assigned_connection);
+	UAM_ASSERT(!app.repository_route_assignments.contains(chat.id));
 }
 
 UAM_TEST(ExecutionRoutingUpgradeStillAsksAfterARealChange)
@@ -975,7 +1039,13 @@ UAM_TEST(ExecutionRoutingStartsTheVersionCheckItWaitsOn)
 	UAM_ASSERT(refusal.empty());
 	UAM_ASSERT_EQ(app.runtime_cli_version_check_queue.size(), std::size_t(1));
 	UAM_ASSERT_EQ(app.runtime_cli_version_check_queue.front().second, std::string("remote"));
+	// The user's check shows its waiting status, and is still refused for the reasons it always was.
+	UAM_ASSERT(app.runtime_cli_versions_by_provider_id.at(key).message.find("Waiting to check installed") != std::string::npos);
+	UAM_ASSERT(!ProviderCliCompatibilityService().StartProviderVersionCheck(app, "unknown-provider", true, "remote", &refusal));
+	UAM_ASSERT(!refusal.empty());
+	UAM_ASSERT_EQ(app.runtime_cli_version_check_queue.size(), std::size_t(1));
 	app.runtime_cli_version_check_queue.clear();
+	app.runtime_cli_versions_by_provider_id.at(key).message.clear();
 	// A waiting chat asks again only after the delay, not on every admission.
 	uam::ResetAsyncCommandTask(app.runtime_cli_version_check_task);
 	app.execution_routing_retry_at_by_chat_id.clear();
@@ -1033,7 +1103,8 @@ UAM_TEST(ExecutionRoutingRestoredReservationReleasesOnlyWhenTheHelperReportsNoPr
 	UAM_ASSERT(uam::RestoreExecutionRoutingReservations(restored));
 	const std::string chat_id = restored.chats.front().id;
 	UAM_ASSERT(restored.execution_routing_restored_unresolved_chat_ids.contains(chat_id));
-	// A helper updated since startup is another service, and an edited alias may be another machine: neither is asked.
+	UAM_ASSERT_EQ(restored.chats.front().routing_reservation_runner_version, std::string("test-version"));
+	// A helper updated since the reservation was made is another service, and an edited alias may be another machine: neither is asked.
 	const ExecutionHost at_startup = restored.settings.execution_hosts.back();
 	for (int change = 0; change < 2; ++change)
 	{
@@ -1051,6 +1122,27 @@ UAM_TEST(ExecutionRoutingRestoredReservationReleasesOnlyWhenTheHelperReportsNoPr
 		restored.settings.execution_hosts.back() = at_startup;
 	}
 	answer->store(static_cast<int>(uam::RemoteHostProbeOutcome::Unreachable));
+	// A helper updated before this start: the new helper's service never held the reserved process, however
+	// many restarts ago the update was. Data saved without a helper version is treated the same way.
+	for (int saved = 0; saved < 2; ++saved)
+	{
+		uam::AppState later;
+		ConfigureRoutingFixture(later, temp.root);
+		later.chats.front() = original.chats.front();
+		if (saved == 0) later.settings.execution_hosts.back().runner_version = "updated-helper";
+		else later.chats.front().routing_reservation_runner_version.clear();
+		later.remote_host_probe = [](const ExecutionHost&, const std::string&, std::stop_token) { return uam::RemoteHostProbeOutcome::SessionMissing; };
+		UAM_ASSERT(uam::RestoreExecutionRoutingReservations(later));
+		UAM_ASSERT(later.execution_routing_restored_unresolved_chat_ids.contains(chat_id));
+		for (int attempt = 0; attempt < 5; ++attempt)
+		{
+			(void)uam::PollRemoteHostRecovery(later);
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT(later.remote_host_probes.empty());
+		UAM_ASSERT(later.execution_routing_restored_unresolved_chat_ids.contains(chat_id));
+		UAM_ASSERT(later.chats.front().routing_reservation_pending);
+	}
 	const auto probe = [&restored, &chat_id]() -> uam::RemoteHostProbeTask* { const auto found = restored.remote_host_probes.find("owner:" + chat_id); return found == restored.remote_host_probes.end() ? nullptr : found->second.get(); };
 	const auto answered = [&] { return probe() != nullptr && !probe()->worker && probe()->delay_s > 0.0; };
 	// An unreachable host proves nothing about its processes.

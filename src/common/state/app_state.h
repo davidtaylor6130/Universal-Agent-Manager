@@ -1384,8 +1384,6 @@ namespace uam
 		/// Test seam: replaces the SSH helper contact made by a recovery probe.
 		RemoteHostProbe remote_host_probe;
 		std::unordered_map<std::string, std::pair<double, double>> execution_routing_version_check_retry;
-		/// Helper version each restored reservation's host had at startup; a later helper update ends automatic release.
-		std::unordered_map<std::string, std::string> execution_routing_restored_runner_versions;
 		/// The running version check was started by routing, so a user-started check queues behind it instead of being refused.
 		bool runtime_cli_version_check_background = false;
 		/// When each entry of repository_route_workspaces was last read; a missing entry counts as the last refresh.

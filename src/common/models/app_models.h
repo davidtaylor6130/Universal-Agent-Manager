@@ -659,6 +659,10 @@ struct ChatSession
 	std::string routing_assigned_connection_identity;
 	std::string routing_assigned_provider_configuration_identity;
 	bool routing_reservation_pending = false;
+	/// Helper version of the host when the pending reservation was made. Empty in older data, which is never released automatically.
+	std::string routing_reservation_runner_version;
+	/// The assigned identities are in the current format. False for data saved before the format changed.
+	bool routing_identity_current_format = false;
 	std::vector<std::string> routing_inherited_default_fields;
 	std::string provider_id;
 	std::string native_session_id;

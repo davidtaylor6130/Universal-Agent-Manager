@@ -1636,6 +1636,8 @@ namespace
 		       lhs.routing_assigned_connection_identity == rhs.routing_assigned_connection_identity &&
 		       lhs.routing_assigned_provider_configuration_identity == rhs.routing_assigned_provider_configuration_identity &&
 		       lhs.routing_reservation_pending == rhs.routing_reservation_pending &&
+		       lhs.routing_reservation_runner_version == rhs.routing_reservation_runner_version &&
+		       lhs.routing_identity_current_format == rhs.routing_identity_current_format &&
 		       lhs.remote_process_control_token == rhs.remote_process_control_token &&
 		       lhs.remote_delivered_stdout_cursor == rhs.remote_delivered_stdout_cursor &&
 		       lhs.remote_delivered_stderr_cursor == rhs.remote_delivered_stderr_cursor &&
@@ -2070,6 +2072,8 @@ namespace
 		chat.routing_assigned_provider_configuration_identity = JsonStringOrEmpty(root.Find("routing_assigned_provider_configuration_identity"));
 		if (chat.routing_mode != "automatic") chat.routing_mode = "explicit";
 		chat.routing_reservation_pending = JsonBoolOrDefault(root.Find("routing_reservation_pending"), false);
+		chat.routing_reservation_runner_version = JsonStringOrEmpty(root.Find("routing_reservation_runner_version"));
+		chat.routing_identity_current_format = JsonBoolOrDefault(root.Find("routing_identity_current_format"), false);
 		chat.remote_restart_pending = JsonBoolOrDefault(
 		    root.Find(kChatRemoteRestartPendingField), false);
 		if (root.Find(kChatRemoteProcessExistsField) == nullptr)
@@ -4069,6 +4073,8 @@ try
 	uam::json::SetString(root, "routing_assigned_connection_identity", chat.routing_assigned_connection_identity);
 	uam::json::SetString(root, "routing_assigned_provider_configuration_identity", chat.routing_assigned_provider_configuration_identity);
 	uam::json::SetBool(root, "routing_reservation_pending", chat.routing_reservation_pending);
+	uam::json::SetString(root, "routing_reservation_runner_version", chat.routing_reservation_runner_version);
+	uam::json::SetBool(root, "routing_identity_current_format", chat.routing_identity_current_format);
 	uam::json::SetBool(root, kChatRemoteRestartPendingField,
 	                   chat.remote_restart_pending);
 	uam::json::SetString(root, kChatRemoteProcessControlTokenField,
@@ -5502,6 +5508,8 @@ namespace
 		hydrated.routing_assigned_connection_identity = summary.routing_assigned_connection_identity;
 		hydrated.routing_assigned_provider_configuration_identity = summary.routing_assigned_provider_configuration_identity;
 		hydrated.routing_reservation_pending = summary.routing_reservation_pending;
+		hydrated.routing_reservation_runner_version = summary.routing_reservation_runner_version;
+		hydrated.routing_identity_current_format = summary.routing_identity_current_format;
 		hydrated.remote_delivered_stdout_cursor = summary.remote_delivered_stdout_cursor;
 		hydrated.remote_delivered_stderr_cursor = summary.remote_delivered_stderr_cursor;
 		hydrated.remote_source_exit_pending = summary.remote_source_exit_pending;

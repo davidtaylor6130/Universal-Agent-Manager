@@ -230,7 +230,19 @@ namespace uam
 		{
 			std::vector<std::jthread> readers;
 			for (const std::pair<const std::string, std::vector<RepositoryRouteWorkspace*>>& group : by_host)
-				readers.emplace_back([&read_host, &group] { try { read_host(group.second); } catch (...) {} });
+				readers.emplace_back([&read_host, &group, &unfinished, &workspaces]
+				{
+					try { read_host(group.second); }
+					catch (...)
+					{
+						// A reader that failed read nothing it can vouch for: its host's entries are unknown, not empty.
+						for (RepositoryRouteWorkspace* workspace : group.second)
+						{
+							workspace->repository.reset();
+							unfinished[static_cast<std::size_t>(workspace - workspaces.data())] = 1;
+						}
+					}
+				});
 		}
 		if (unread != nullptr)
 		{

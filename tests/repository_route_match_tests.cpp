@@ -307,7 +307,10 @@ UAM_TEST(RepositoryRoutesLaunchGuardNeverPassesOnAnUnfinishedRead)
 	chat.workspace_directory = destination.directory;
 	chat.execution_host_id = remote.id;
 	app.chats.push_back(chat);
-	// Both checkouts were read as the same repository earlier; the launch must not take that on trust.
+	// The local checkout really is this repository, so only the remote read decides the outcome: a guard that
+	// took the remote identity on trust would find both sides equal and launch.
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(source.directory)));
+	UAM_ASSERT(RunTestCommand("git -C " + ShellQuoteForTest(source.directory) + " config remote.origin.url https://github.com/Owner/Repo.git"));
 	app.repository_route_workspaces = uam::CaptureRepositoryRouteWorkspaces(app.folders, app.settings.execution_hosts);
 	for (uam::RepositoryRouteWorkspace& workspace : app.repository_route_workspaces)
 		workspace.repository = uam::RepositoryRouteIdentity{"git", "github.com/Owner/Repo", ""};
@@ -324,7 +327,17 @@ UAM_TEST(RepositoryRoutesLaunchGuardNeverPassesOnAnUnfinishedRead)
 	UAM_ASSERT_EQ(state, uam::RepositoryRouteLaunchState::Failed);
 	UAM_ASSERT(error.find("could not be read") != std::string::npos);
 	UAM_ASSERT_EQ(app.repository_route_tasks.size(), std::size_t(1));
-	UAM_ASSERT(!app.repository_route_tasks.front()->unread.empty());
-	UAM_ASSERT(!app.repository_route_tasks.front()->matches);
+	const uam::RepositoryRouteTask& read = *app.repository_route_tasks.front();
+	UAM_ASSERT(!read.matches);
+	UAM_ASSERT_EQ(read.observed.size(), std::size_t(2));
+	for (std::size_t index = 0; index < read.observed.size(); ++index)
+	{
+		// The local read finished and matched; the remote one alone is unread, and is not reported as changed.
+		const bool remote_entry = read.observed[index].host_id == remote.id;
+		UAM_ASSERT_EQ(std::ranges::find(read.unread, index) != read.unread.end(), remote_entry);
+		UAM_ASSERT_EQ(read.observed[index].repository.has_value(), !remote_entry);
+		if (!remote_entry) UAM_ASSERT(read.observed[index].repository == read.captured[index].repository);
+	}
+	UAM_ASSERT(error.find("changed") == std::string::npos);
 }
 #endif
