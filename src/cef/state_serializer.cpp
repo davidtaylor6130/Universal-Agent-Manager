@@ -331,12 +331,16 @@ namespace uam
 				add(host.id);
 				add(host.platform);
 			}
+			// The local host is used even when it is not configured: Find then supplies a built-in one.
+			const ExecutionHost* const local_host = execution_hosts::Find(app.settings.execution_hosts, execution_hosts::kLocalHostId);
+			add(local_host->platform);
 			// Unordered map: sort so the text does not depend on bucket order.
 			std::vector<std::string> versions;
 			for (const auto& [key, version] : app.runtime_cli_versions_by_provider_id)
 			{
 				std::string entry = key + '\n' + (version.checked ? 'c' : '-') + (version.supported ? 's' : '-') + version.installed_version + '\n';
 				for (const ExecutionHost& host : app.settings.execution_hosts) entry += execution_hosts::SameConnection(version.execution_host, host) ? '1' : '0';
+				entry += execution_hosts::SameConnection(version.execution_host, *local_host) ? 'L' : 'l';
 				versions.push_back(std::move(entry));
 			}
 			std::sort(versions.begin(), versions.end());
@@ -1414,6 +1418,7 @@ namespace uam
 		// A live session's serialized tool calls by chat id, valid while the tool call list's stamp is unchanged.
 		thread_local std::unordered_map<std::string, StampedToolCallJson> g_live_tool_call_json;
 		thread_local std::size_t g_live_tool_call_serializations = 0;
+		thread_local std::size_t g_restamped_unchanged_tool_calls = 0;
 
 		/// <summary>
 		/// The session's tool calls as the frontend receives them. A streamed token leaves the tool calls alone, so
@@ -1426,6 +1431,7 @@ namespace uam
 			const auto known = g_live_tool_call_json.find(session.chat_id);
 			const bool stamped = g_stamped_cache_mode != StateSerializer::StampedCacheMode::Exact && revision != 0 &&
 			    known != g_live_tool_call_json.end() && known->second.revision == revision;
+			const bool restamped = g_stamped_cache_mode != StateSerializer::StampedCacheMode::Exact && known != g_live_tool_call_json.end() && known->second.revision != revision;
 			if (stamped && g_stamped_cache_mode == StateSerializer::StampedCacheMode::Trust)
 			{
 				++g_trusted_cache_reads;
@@ -1434,6 +1440,8 @@ namespace uam
 			++g_live_tool_call_serializations;
 			nlohmann::json tool_calls = SerializeAcpToolCalls(session.tool_calls);
 			if (stamped && known->second.tool_calls != tool_calls) ReportCacheDivergence("live tool calls", session.chat_id);
+			// Opened for writing since the last push, yet identical: a non-const read restamped them and they were rebuilt for nothing.
+			if (restamped && known->second.tool_calls == tool_calls) ++g_restamped_unchanged_tool_calls;
 			if (revision != 0 && g_stamped_cache_mode != StateSerializer::StampedCacheMode::Exact)
 			{
 				if (known == g_live_tool_call_json.end() && g_live_tool_call_json.size() >= 256) g_live_tool_call_json.erase(g_live_tool_call_json.begin());
@@ -1939,6 +1947,8 @@ namespace uam
 			w.Object("cliTerminal", [&](auto& terminal) { WriteChatTerminalSummary(terminal, app, chat, !AttentionRevisionForChat(app, chat, cache).empty()); });
 			if (FindAcpSessionForChat(app, chat.id) == nullptr)
 			{
+				// The session ended: its serialized tool calls are not needed again.
+				if (!g_live_tool_call_json.empty()) g_live_tool_call_json.erase(chat.id);
 				const bool ready_since_last_select = !AttentionRevisionForChat(app, chat, cache).empty();
 				w.Object("acpSession", [&](auto& acp) { WriteStoppedAcpSessionSummary(acp, app, chat, ready_since_last_select, cache); });
 			}
@@ -2443,6 +2453,16 @@ namespace uam
 	std::size_t StateSerializer::RestampedUnchangedTranscriptCount()
 	{
 		return g_restamped_unchanged_transcripts;
+	}
+
+	std::size_t StateSerializer::RestampedUnchangedToolCallCount()
+	{
+		return g_restamped_unchanged_tool_calls;
+	}
+
+	void StateSerializer::CaptureCatalogInputs(const AppState& app)
+	{
+		(void)CurrentCatalogMemo(app);
 	}
 
 	void StateSerializer::FlushCacheDivergenceReport()

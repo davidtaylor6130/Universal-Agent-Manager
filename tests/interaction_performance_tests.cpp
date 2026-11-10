@@ -1371,3 +1371,87 @@ UAM_TEST(StatePushSerializesLiveToolCallsOnlyWhenTheyChange)
 	UAM_ASSERT(uam::StateSerializer::LiveToolCallSerializationCountForTests() > serialized);
 	UAM_ASSERT(uam::StateSerializer::LiveToolCallSerializationCountForTests() <= serialized + 3);
 }
+
+UAM_TEST(StatePushReconciliationRepairsABypassedToolCallStampAndCatalogueMemo)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	FakePathProbeClock probe_clock;
+	StatePatchObserver observer;
+	TempDir temp("uam-reconcile-tool-calls");
+	uam::AppState app;
+	BuildStreamingPushFixture(app, temp.root);
+	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	app.provider_model_catalog->Initialize(app.data_root);
+	clock.Advance(std::chrono::seconds(10));
+	uam::PushStateUpdate(nullptr, app);
+	clock.Advance(std::chrono::milliseconds(120));
+	(void)uam::PushStateUpdateIfChanged(nullptr, app);
+
+	// A tool call written through a reference kept from before the push read the stamp.
+	uam::AcpToolCallState& kept = app.acp_sessions[1]->tool_calls.back();
+	clock.Advance(std::chrono::milliseconds(120));
+	(void)uam::PushStateUpdateIfChanged(nullptr, app);
+	kept.status = "failed";
+	clock.Advance(std::chrono::milliseconds(120));
+	std::size_t divergences = uam::StateSerializer::CacheDivergenceCount();
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::CacheDivergenceCount(), divergences);
+	clock.Advance(std::chrono::seconds(3));
+	UAM_ASSERT(uam::StateReconciliationDue());
+	g_observed_state_patch.clear();
+	++uam_test::g_expected_state_cache_divergences;
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::CacheDivergenceCount(), divergences + 1);
+	nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+	UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(patch["chats"][0]["id"], app.chats[1].id);
+	UAM_ASSERT_EQ(patch["chats"][0]["acpSession"]["toolCalls"].back()["status"], "failed");
+
+	// A non-const read of the tool calls restamps them: rebuilt, unchanged, counted.
+	const std::size_t restamped = uam::StateSerializer::RestampedUnchangedToolCallCount();
+	(void)app.acp_sessions[2]->tool_calls.back();
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::RestampedUnchangedToolCallCount(), restamped + 1);
+
+#if !defined(_WIN32)
+	// The catalogue memo's one input outside its key is how a workspace path resolves on disk. Retarget a folder's
+	// symlink to a directory with a different model list: trusting pushes keep the old list, the verifying push
+	// (after the path memo has expired too) rebuilds it, reports the difference and publishes the new one.
+	const fs::path first = temp.root / "catalogue-first";
+	const fs::path second = temp.root / "catalogue-second";
+	const fs::path link = temp.root / "catalogue-link";
+	fs::create_directories(first);
+	fs::create_directories(second);
+	fs::create_directory_symlink(first, link);
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("claude-cli", nlohmann::json::array({{{"id", "fixture/first"}}}), first.generic_string()));
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("claude-cli", nlohmann::json::array({{{"id", "fixture/second"}}}), second.generic_string()));
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.folders[0].directory = link.generic_string();
+	clock.Advance(std::chrono::seconds(10));
+	(void)uam::PushStateUpdateIfChanged(nullptr, app);
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+
+	fs::remove(link);
+	fs::create_directory_symlink(second, link);
+	clock.Advance(std::chrono::milliseconds(120));
+	divergences = uam::StateSerializer::CacheDivergenceCount();
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::CacheDivergenceCount(), divergences);
+	clock.Advance(std::chrono::seconds(10));
+	g_observed_state_patch.clear();
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	const std::size_t found = uam::StateSerializer::CacheDivergenceCount() - divergences;
+	UAM_ASSERT(found >= 1);
+	uam_test::g_expected_state_cache_divergences += found;
+	patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+	UAM_ASSERT(patch.contains("providerModelCatalogs"));
+	UAM_ASSERT(std::ranges::any_of(patch["providerModelCatalogs"], [&](const nlohmann::json& catalog)
+	{
+		return catalog["providerId"] == "claude-cli" && catalog["workspaceDirectory"] == link.generic_string() &&
+		    catalog["availableModels"].size() == 1 && catalog["availableModels"][0]["id"] == "fixture/second";
+	}));
+#endif
+}

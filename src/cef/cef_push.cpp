@@ -93,11 +93,14 @@ namespace
 	{
 		static std::size_t reported = 0;
 		static auto last_report = std::chrono::steady_clock::time_point::min();
-		const std::size_t total = uam::StateSerializer::RestampedUnchangedTranscriptCount();
+		const std::size_t transcripts = uam::StateSerializer::RestampedUnchangedTranscriptCount();
+		const std::size_t tool_calls = uam::StateSerializer::RestampedUnchangedToolCallCount();
+		const std::size_t total = transcripts + tool_calls;
 		const auto now = std::chrono::steady_clock::now();
 		if (total == reported || (last_report != std::chrono::steady_clock::time_point::min() && now - last_report < std::chrono::seconds(60))) return;
-		uam::diagnostics::Write("[performance] State pushes rehashed " + std::to_string(total - reported) +
-		    " loaded transcript(s) whose content had not changed since the last report: a non-const read restamped them. Total: " + std::to_string(total) + ".");
+		uam::diagnostics::Write("[performance] State pushes recomputed " + std::to_string(total - reported) +
+		    " stamped value(s) whose content had not changed since the last report: a non-const read restamped them. Totals: loaded transcripts rehashed " +
+		    std::to_string(transcripts) + ", live tool call lists rebuilt " + std::to_string(tool_calls) + ".");
 		reported = total;
 		last_report = now;
 	}
@@ -136,6 +139,7 @@ namespace
 		if (!g_verify_state_caches_after_every_push) return;
 		const uam::StateSerializer::ScopedStampedCacheMode verification(uam::StateSerializer::StampedCacheMode::Verify);
 		const uam::StateSerializer::StablePass stable_pass;
+		uam::StateSerializer::CaptureCatalogInputs(app);
 		(void)uam::StateSerializer::SerializeFingerprint(app, true, false);
 		(void)uam::StateSerializer::SerializeChatFingerprintDigests(app);
 	}
@@ -614,6 +618,7 @@ namespace uam
 		const ReconciledPush reconciled_push;
 		// The slices, the digest scan and the summaries built for changed chats read the same unchanged state.
 		const uam::StateSerializer::StablePass stable_pass;
+		uam::StateSerializer::CaptureCatalogInputs(app);
 		const auto fingerprint_started = std::chrono::steady_clock::now();
 		nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app, true, false);
 		const auto fingerprint_finished = std::chrono::steady_clock::now();
@@ -696,6 +701,7 @@ namespace uam
 			const ReconciledPush reconciled_push;
 			// The full state and the digest baselines taken from it read the same unchanged state.
 			const uam::StateSerializer::StablePass stable_pass;
+			uam::StateSerializer::CaptureCatalogInputs(app);
 			nlohmann::json message = BuildFullStateUpdateMessage(app);
 			const std::string serialized_message = DumpFrontendJson(message);
 			// Reuse this push snapshot; strip baseline telemetry only after serializing its wire payload.

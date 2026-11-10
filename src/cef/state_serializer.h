@@ -92,6 +92,16 @@ class StateSerializer
 	/// </summary>
 	static std::size_t RestampedUnchangedTranscriptCount();
 
+	/// <summary>The same for live sessions' tool calls: rebuilt after a restamp although nothing in them had changed.</summary>
+	static std::size_t RestampedUnchangedToolCallCount();
+
+	/// <summary>
+	/// Reads the catalogue inputs (including the service generation) for the current StablePass now. A push calls
+	/// it before it serializes anything, so a catalogue value computed during the pass is never stored under a
+	/// generation read after a writer on another thread had already changed the service.
+	/// </summary>
+	static void CaptureCatalogInputs(const AppState& app);
+
 	/// Serialise the application state, optionally omitting loaded chat messages.
 	static nlohmann::json Serialize(const AppState& app, bool summary_only = false);
 
