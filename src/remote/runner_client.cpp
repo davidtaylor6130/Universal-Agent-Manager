@@ -24,7 +24,6 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <limits>
 #include <mutex>
@@ -87,17 +86,9 @@ namespace uam::remote
 
 		constexpr std::chrono::steady_clock::time_point kNotQueued = std::chrono::steady_clock::time_point::max();
 		thread_local std::chrono::steady_clock::time_point t_queuedAt = kNotQueued;
-		// The UI gives up on a request after 30 seconds, so work it queued must report its own connection error first.
-		constexpr std::chrono::seconds kQueuedWorkHandshakeLimit{25};
 		std::mutex g_connectFailuresMutex;
 		// One entry per bridge command, so it stays as small as the list of hosts and helper versions.
 		std::unordered_map<std::string, std::pair<std::chrono::steady_clock::time_point, std::string>> g_connectFailures;
-
-		// sshd drops handshakes beyond its MaxStartups (10 by default), so only a few may be open to one host at a time.
-		constexpr int kMaxHandshakesPerHost = 4;
-		std::mutex g_handshakesMutex;
-		std::condition_variable g_handshakesChanged;
-		std::unordered_map<std::string, int> g_handshakes;
 
 		std::string BridgeKey(const std::vector<std::string>& argv)
 		{
@@ -352,38 +343,8 @@ namespace uam::remote
 			return false;
 		}
 		// One deadline covers the wait for a handshake slot, every attempt and the pauses between them.
-		m_handshakeLimit = t_queuedAt == kNotQueued ? m_handshakeDeadline
-		    : std::min<std::chrono::milliseconds>(m_handshakeDeadline, kQueuedWorkHandshakeLimit);
-		const std::chrono::milliseconds handshake_limit = m_handshakeLimit;
-		m_handshakeEndsAt = std::chrono::steady_clock::now() + handshake_limit;
-		{
-			std::unique_lock lock(g_handshakesMutex);
-			while (g_handshakes[bridge_key] >= kMaxHandshakesPerHost)
-			{
-				const bool timed_out = std::chrono::steady_clock::now() >= m_handshakeEndsAt;
-				if (timed_out || canceled() || ShuttingDown())
-				{
-					if (error_out != nullptr)
-						*error_out = ShuttingDown() ? kShutdownError : !timed_out ? "The remote runner request was canceled."
-						    : "The remote runner did not respond within " + std::to_string((handshake_limit.count() + 999) / 1000) + " seconds.";
-					return false;
-				}
-				g_handshakesChanged.wait_for(lock, std::chrono::milliseconds(20));
-			}
-			++g_handshakes[bridge_key];
-		}
-		struct HandshakeSlot
-		{
-			const std::string& key;
-			~HandshakeSlot()
-			{
-				{
-					const std::scoped_lock lock(g_handshakesMutex);
-					--g_handshakes[key];
-				}
-				g_handshakesChanged.notify_all();
-			}
-		} handshake_slot{bridge_key};
+		// One deadline covers every attempt and the pauses between them.
+		m_handshakeEndsAt = std::chrono::steady_clock::now() + m_handshakeDeadline;
 		nlohmann::json response;
 		for (int attempt = 0;; ++attempt)
 		{
@@ -507,7 +468,7 @@ namespace uam::remote
 		std::string error;
 		if (!m_processService.WriteToStdioProcess(m_bridge, frame.data(), frame.size(), &error) ||
 		    !(request.value("type", "") == "hello"
-		        ? ReadResponse(response, &error, interrupt, interrupted_out, m_handshakeEndsAt, m_handshakeLimit)
+		        ? ReadResponse(response, &error, interrupt, interrupted_out, m_handshakeEndsAt, m_handshakeDeadline)
 		        : ReadResponse(response, &error, interrupt, interrupted_out, std::chrono::steady_clock::now() + m_requestDeadline, m_requestDeadline)))
 		{
 			if (error_out != nullptr)

@@ -14,7 +14,7 @@ Target-lock acquisition must pause before recovery or mutation until the owning 
 
 ## Connection waits
 
-Waiting on a remote host must never hold up the app. The first contact with a host covers the SSH connection, the remote shell and helper start, so it is allowed 45 seconds in total, including any wait for a turn and any retry; a request made from the app window is allowed 25 seconds, so its own error arrives before the window gives up on the request. Each later request is allowed 15 seconds for its reply. At most four first contacts to one host run at a time and the rest wait their turn, because an SSH server refuses connections beyond its limit of pending ones. A first contact the SSH server dropped before either side identified itself is tried again up to twice after a short random pause; only the handshake has been sent then, so no work can repeat. A refused login, a connection closed during authentication, an unreachable host or jump host, and a timeout are not retried.
+Waiting on a remote host must never hold up the app. The first contact with a host covers the SSH connection, the remote shell and helper start, so it is allowed 45 seconds in total, including any retry. Each later request is allowed 15 seconds for its reply. A first contact the SSH server dropped before either side identified itself is tried again up to twice after a short random pause; only the handshake has been sent then, so no work can repeat. A refused login, a connection closed during authentication, an unreachable host or jump host, and a timeout are not retried.
 
 Cancelling or stopping the work that is waiting interrupts the wait at once, including a first contact and a remote command that is still starting. A command that did not finish still asks the host to stop its worker, for no more than five seconds, and the helper reclaims an abandoned worker itself. If the command's start was never confirmed and the host could not be reached to stop it, the error says the command may still be running there; a start the helper refused reports only that refusal. A command that finished keeps its result even when the cancel or deadline arrives during its last acknowledgement.
 
@@ -22,7 +22,7 @@ Closing UAM must not wait on remote hosts. From the moment it starts closing, no
 
 When a connection closes, the error ends with the last line SSH or the helper reported, so an authentication failure, a rejected host key and a missing helper can be told apart. That line is reduced to at most 300 printable characters with accounts, host names, addresses and file paths masked, is not written to a separate log, and is never attached to a timeout or to a failure later in a connection that had started normally. Queued Git reads for a host that stopped answering after they were queued fail with that same error instead of each repeating the wait; a new request, or any successful connection, clears it.
 
-**Implementation: Implemented**, with native tests against a stand-in bridge on macOS and Windows; not exercised against a live unreachable host or a live SSH server at its connection limit.
+**Implementation: Implemented**, with native tests against a stand-in bridge on macOS and Windows; not exercised against a live unreachable host or a live SSH server at its connection limit. Many first contacts to one host can still start at once; limiting them is not implemented.
 
 ## Bootstrap failures
 

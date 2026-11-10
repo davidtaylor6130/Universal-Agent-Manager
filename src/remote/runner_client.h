@@ -70,7 +70,7 @@ namespace uam::remote
 
 	/// Work queued before its host's latest connection failure fails with that error at once, on this
 	/// thread, instead of repeating the same wait for every queued request; a later successful connection
-	/// clears the failure. Its first contact is also held to 25 seconds, inside the UI's own request timeout.
+	/// clears the failure.
 	class ScopedRunnerQueuedWork
 	{
 	  public:
@@ -235,7 +235,6 @@ namespace uam::remote
 		std::chrono::milliseconds m_requestDeadline = std::chrono::seconds(15);
 		std::chrono::milliseconds m_cleanupLimit = std::chrono::seconds(5);
 		std::chrono::steady_clock::time_point m_handshakeEndsAt;
-		std::chrono::milliseconds m_handshakeLimit = std::chrono::seconds(45);
 		bool m_bridgeClosed = false;
 		bool m_everConnected = false;
 		std::string m_expectedVersion;

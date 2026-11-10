@@ -9705,43 +9705,6 @@ UAM_TEST(RemoteRunnerRetriesOnlyAHandshakeThatSshDropped)
 	UAM_ASSERT_EQ(BridgeLaunches(always).first, 4);
 }
 
-UAM_TEST(RemoteRunnerLimitsConcurrentHandshakesPerHost)
-{
-	TempDir temp("uam-runner-handshake-cap");
-	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
-	// Startup opens a connection for every remote chat, scan and probe at once; sshd refuses handshakes beyond its limit.
-	const std::vector<std::string> bridge = TestBridge(temp.root / "host", "slowhello");
-	std::atomic<int> connected{0};
-	std::vector<std::thread> workers;
-	for (int index = 0; index < 10; ++index)
-		workers.emplace_back([&]
-		{
-			uam::remote::RunnerClient client(service, bridge);
-			if (client.Connect()) ++connected;
-		});
-	for (std::thread& worker : workers) worker.join();
-	UAM_ASSERT_EQ(connected.load(), 10);
-	const std::pair<int, int> launches = BridgeLaunches(temp.root / "host");
-	UAM_ASSERT_EQ(launches.first, 10);
-	UAM_ASSERT(launches.second <= 4);
-	// Another host is not held up by this one, and a cancel ends the wait for a slot.
-	std::vector<std::thread> holders;
-	const std::vector<std::string> silent = TestBridge(temp.root / "silent-host", "silent");
-	std::stop_source release;
-	for (int index = 0; index < 4; ++index)
-		holders.emplace_back([&] { (void)uam::remote::RunnerClient(service, silent).Connect(nullptr, release.get_token()); });
-	while (BridgeLaunches(temp.root / "silent-host").first < 4) std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	UAM_ASSERT(uam::remote::RunnerClient(service, TestBridge(temp.root / "other-host", "serve")).Connect());
-	std::stop_source stop;
-	const std::jthread cancel = StopAfter(stop, std::chrono::milliseconds(150));
-	const auto started = std::chrono::steady_clock::now();
-	UAM_ASSERT(!uam::remote::RunnerClient(service, silent).Connect(nullptr, stop.get_token()));
-	UAM_ASSERT(ElapsedSince(started) < std::chrono::seconds(3));
-	UAM_ASSERT_EQ(BridgeLaunches(temp.root / "silent-host").first, 4);
-	release.request_stop();
-	for (std::thread& holder : holders) holder.join();
-}
-
 UAM_TEST(RemoteQueuedWorkFailsAtOnceAfterItsHostStoppedAnswering)
 {
 	TempDir temp("uam-runner-queued-work");
