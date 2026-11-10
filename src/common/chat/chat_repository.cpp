@@ -1914,13 +1914,20 @@ namespace
 		// Preserve uncertainty for this owner, without importing a known foreign owner's marker.
 		if (managed_marker && (raw_owner.empty() || raw_owner == owner))
 			chat.managed_followup_input_unavailable = true;
-		const bool matches = journal && journal->owner == owner &&
-		    journal->base_queue_revision == chat.acp_queue_storage_revision &&
+		// The journal extends exactly the queue revision this primary carries. Every UAM full save either
+		// consumes the journal (handled above) or is refused while it exists, so a primary whose size or
+		// time witness alone differs was restored, synced or touched outside UAM, not saved past the journal.
+		const bool extends_saved_queue = journal && journal->owner == owner &&
+		    journal->base_queue_revision == chat.acp_queue_storage_revision;
+		const bool matches = extends_saved_queue &&
 		    ChatRepository::ChatStorageRevision(data_root, chat.id) == journal->base_revision;
-		if (matches)
+		if (extends_saved_queue)
 		{
 			chat.acp_queued_prompts = journal->prompts;
-			chat.acp_queue_held = journal->held;
+			// A rebound journal never sends on its own: its input stays held and visible until the user
+			// resumes it. The next queue or full save records the current primary as its base.
+			chat.acp_queue_held = journal->held || (!matches && !journal->prompts.empty());
+			if (!matches) uam::diagnostics::Write("Queued inputs kept held: journal rebound to a saved chat whose file witness changed " + chat.id);
 			chat.acp_dispatched_queued_prompt_count = journal->dispatched;
 			chat.acp_queue_storage_revision = journal->revision;
 			if (journal->memory_progress)

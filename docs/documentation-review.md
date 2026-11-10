@@ -276,3 +276,7 @@ Issue #688 asks for the Send during a running turn preference to apply in both C
 **Resolved, 2026-11-09.** Issue #631 also asked whether startup import should treat sessions that still have a provider's default name specially. Startup import now leaves out sessions carrying OpenCode's generated `New session - <timestamp>` or `Child session - <timestamp>` name, the only provider-generated default, and explicit discovery still lists them ([policy](chat/native-imports.md)).
 
 **Age limit default resolved by David, 2026-11-07.** The startup age limit defaults to 30 days for anyone who has not saved a value ([policy](chat/native-imports.md)). Settings written before that decision recorded 0 on every save, so a saved 0 from those builds counts as no choice; a positive value is kept.
+
+## Unrepairable queue journal
+
+A queued-input journal that extends the queue revision carried by its saved chat file is bound to that file again at load, with its input held. A journal that is unreadable, belongs to another owner or was written against a different queue revision (for example after a backup fallback to an older file) still leaves the chat held with a storage error, and its refusal text still suggests a restart that cannot help. Which queue is newer is not provable there, so the way out must be an explicit user action: discard the journalled input, or keep it as held input over the current file. Neither control exists yet. Interim interpretation: keep the hold and the stored journal untouched.

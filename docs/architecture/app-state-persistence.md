@@ -8,6 +8,8 @@ Saving a transcript rewrites the whole chat file, so it is kept off the interfac
 
 Durable temporary-file cleanup lists a directory at most once every ten minutes per launch instead of on every write, and still removes only temporaries at least 24 hours old that belong to the destination being written.
 
+A queued-input journal whose saved chat file was restored, synced or touched outside UAM, but which still extends the queue revision that file carries, is bound to the file again when the chat loads: its input stays held and visible, nothing is sent until the user resumes it, and the chat can be saved and used. A journal that is unreadable, belongs to another owner or was written against a different queue revision is not repaired automatically, because which side is newer cannot be proven; that chat stays held with its storage error, see [open decisions](../documentation-review.md#unrepairable-queue-journal).
+
 [Chat](../chat/chat.md) · [Storage](../settings/storage.md).
 
 [Engineering reference](../reference/architecture/app-state-persistence.md).
