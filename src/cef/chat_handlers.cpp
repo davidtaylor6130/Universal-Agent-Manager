@@ -233,6 +233,24 @@ void UamQueryHandler::HandleGetChatRuntimeMetrics(CefRefPtr<CefBrowser>, const n
 	cb->Success(result.dump());
 }
 
+void UamQueryHandler::DeferRecencySave(const std::string& chat_id)
+{
+	const ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id);
+	if (chat == nullptr) return;
+	// A loaded chat or one with no saved-history read in flight has nothing to wait for.
+	if (chat->messages_loaded || !m_savedHistoryReadsInFlight.contains(chat_id)) ScheduleDeferredRecencySave(chat_id, true);
+	else m_recencySaveAfterRead.insert(chat_id);
+}
+
+void UamQueryHandler::ScheduleDeferredRecencySave(const std::string& chat_id, bool force)
+{
+	if (!force && m_recencySaveAfterRead.erase(chat_id) == 0) return;
+	m_recencySaveAfterRead.erase(chat_id);
+	if (ChatDomainService().FindChatById(m_app, chat_id) == nullptr || m_app.pending_chat_save_at_by_chat_id.contains(chat_id)) return;
+	// ponytail: fixed low-priority delay, long enough for the page read a selection starts just after this.
+	m_app.pending_chat_save_at_by_chat_id[chat_id] = uam::GetAppTimeSeconds() + 2.0;
+}
+
 void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
@@ -283,7 +301,7 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 		metadata.snoozed_until_ms = selected_chat->snoozed_until_ms;
 		const std::filesystem::path data_root = m_app.data_root;
 		std::shared_ptr<std::shared_ptr<PreparedChatSave>> prepared = std::make_shared<std::shared_ptr<PreparedChatSave>>();
-		(void)uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, nullptr,
+		if (!uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, nullptr,
 		    [data_root, metadata, prepared]()
 		    {
 			    // Opening a chat writes its summary overlay only. It never rewrites the transcript, which would change
@@ -294,12 +312,14 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 		    [this, data_root, metadata, prepared](uam::query_handler_async::AsyncCefResult&)
 		    {
 			    ChatSession* current = ChatDomainService().FindChatById(m_app, metadata.id);
-			    if (!*prepared || current == nullptr || m_app.data_root != data_root || current->last_opened_at != metadata.last_opened_at ||
+			    if (current == nullptr || m_app.data_root != data_root || current->last_opened_at != metadata.last_opened_at ||
 			        current->interaction_at != metadata.interaction_at || current->attention_revision != metadata.attention_revision || current->settled_at != metadata.settled_at || current->snoozed_until_ms != metadata.snoozed_until_ms) return;
-			    if (m_app.pending_chat_save_at_by_chat_id.contains(metadata.id) || m_app.worktree_operation_chat_ids.contains(metadata.id)) return;
-			    // An unpublished recency value stays in memory and is written by the chat's next save.
-			    (void)ChatRepository::PublishPreparedChatSave(*prepared, true, current);
-		    }, TID_FILE_USER_BLOCKING);
+			    if (m_app.pending_chat_save_at_by_chat_id.contains(metadata.id)) return;
+			    if (*prepared && !m_app.worktree_operation_chat_ids.contains(metadata.id) && ChatRepository::PublishPreparedChatSave(*prepared, true, current)) return;
+			    // A stale summary cannot take the overlay. The value is saved by an ordinary background save, which also
+			    // repairs the summary, but only once this selection's history read is no longer reading the file.
+			    DeferRecencySave(metadata.id);
+		    }, TID_FILE_USER_BLOCKING)) DeferRecencySave(chat_id);
 	}
 	m_app.status_line.clear();
 
@@ -450,11 +470,11 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		auto cached_revision = std::make_shared<std::optional<std::string>>();
 		auto unsent_revision = std::make_shared<std::optional<std::string>>();
 		auto loaded_revision = std::make_shared<std::optional<std::string>>();
+		auto page_refused = std::make_shared<bool>(false);
 		auto hydrate_unsent = std::make_shared<bool>(false);
 		// Opening history must not queue behind background VCS subprocess checks.
-		uam::query_handler_async::RunAsyncCefQuery(
-		    m_asyncLifetime, cb,
-		    [data_root, chat_id, known_digest, page, defer_tool_call_content, search_target, loaded, tail, cached_revision, expected_count, expected_digest, expected, indexed, lifetime, recover_cold_unsent, recover_direct_receipt, hydrate_unsent, unsent_revision, loaded_revision]()
+		const ManagedSubagentWorker read_saved_history =
+		    [data_root, chat_id, known_digest, page, defer_tool_call_content, search_target, loaded, tail, cached_revision, expected_count, expected_digest, expected, indexed, lifetime, recover_cold_unsent, recover_direct_receipt, hydrate_unsent, unsent_revision, loaded_revision, page_refused]()
 		    {
 			    *hydrate_unsent = recover_direct_receipt;
 			    if (!*hydrate_unsent && page && !page->second && page->first <= 50 && defer_tool_call_content && !search_target)
@@ -486,11 +506,15 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    std::string warning;
 			    if (page && !*hydrate_unsent)
 			    {
-				    *indexed = ChatRepository::ReadMessagePage(data_root, expected, page->first, page->second, &warning, [lifetime]() { return lifetime.expired(); });
+				    uam::TranscriptRetentionService::SavedPageRead paged = uam::TranscriptRetentionService::ReadSavedPage(
+				        data_root, expected, page->first, page->second, [lifetime]() { return lifetime.expired(); });
+				    *indexed = std::move(paged.page);
 				    // A refused page read (index or saved metadata disagreeing with memory) is not a failed open:
-				    // the full read below still serves the page when the saved transcript itself is unchanged.
-				    if (!*indexed && lifetime.expired()) return uam::query_handler_async::AsyncFailure(500,
-				        uam::query_handler_internal::FailureDetailOrFallback(warning, "Failed to load chat messages."));
+				    // the full read below serves the page when the saved transcript itself is unchanged, and that copy
+				    // stays loaded so scrolling back does not repeat a full read per page.
+				    if (!*indexed && !paged.refused) return uam::query_handler_async::AsyncFailure(500,
+				        uam::query_handler_internal::FailureDetailOrFallback(paged.warning, "Failed to load chat messages."));
+				    *page_refused = paged.refused;
 				    if (*indexed)
 				    {
 					    *hydrate_unsent = recover_cold_unsent && std::ranges::any_of((*indexed)->chat.messages,
@@ -522,9 +546,10 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 				    return uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
 			    *tail = uam::MessageTailCache::Prepare(data_root, **loaded);
 			    return SerializeGuardedChatMessagesResult(**loaded, known_digest, page, defer_tool_call_content, search_target);
-		    },
+		    };
+		const ManagedSubagentCompletion complete_saved_history =
 		    [this, browser, chat_id, known_digest, page, defer_tool_call_content, search_target, expected_count,
-		     expected_digest, loaded, tail, cached_revision, data_root, indexed, expected, hydrate_unsent, unsent_revision, loaded_revision, recover_cold_unsent](uam::query_handler_async::AsyncCefResult& response)
+		     expected_digest, loaded, tail, cached_revision, data_root, indexed, expected, hydrate_unsent, unsent_revision, loaded_revision, page_refused, recover_cold_unsent](uam::query_handler_async::AsyncCefResult& response)
 		    {
 			    m_promotableHistoryReads.erase(chat_id);
 			    bool publish_tail = false;
@@ -558,8 +583,8 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 				    {
 					    ChatMessagePage identity;
 					    identity.chat = expected; identity.total_count = expected_count;
-					    if (!ChatRepository::MatchesMessagePage(*current, identity) ||
-					        m_app.pending_chat_save_at_by_chat_id.contains(chat_id) || m_app.worktree_operation_chat_ids.contains(chat_id) ||
+					    // As for an indexed page, a queued save alone does not refuse a tail that still matches its file.
+					    if (!ChatRepository::MatchesMessagePage(*current, identity) || m_app.worktree_operation_chat_ids.contains(chat_id) ||
 					        ChatRepository::ChatStorageRevision(data_root, chat_id) != *cached_revision)
 						    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
 					    return;
@@ -578,7 +603,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 				        !m_app.worktree_operation_chat_ids.contains(chat_id) && uam::FindAcpSessionForChat(m_app, chat_id) == nullptr &&
 				        ChatRepository::ChatStorageRevision(data_root, chat_id) == *loaded_revision;
 				    if (!uam::TranscriptRetentionService::CompleteHistoryLoad(
-				            *current, std::move(**loaded), expected_count, expected_digest, !page.has_value() || *hydrate_unsent, primary_is_authority))
+				            *current, std::move(**loaded), expected_count, expected_digest, !page.has_value() || *hydrate_unsent || *page_refused, primary_is_authority))
 					    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
 				    else if (uam::SettleStoppedDirectAcpAdmissions(m_app, *current))
 				    {
@@ -619,7 +644,17 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    }
 			    catch (...) { dispose(); throw; }
 			    dispose();
-		    }, history_read_thread, history_read_thread == TID_FILE_USER_VISIBLE ? &promotable_read : nullptr);
+			    if (const auto reads = m_savedHistoryReadsInFlight.find(chat_id); reads != m_savedHistoryReadsInFlight.end() && --reads->second <= 0)
+			    {
+				    m_savedHistoryReadsInFlight.erase(reads);
+				    ScheduleDeferredRecencySave(chat_id);
+			    }
+		    };
+		const bool read_queued = m_savedHistoryDispatcherForTests
+		    ? m_savedHistoryDispatcherForTests(cb, read_saved_history, complete_saved_history)
+		    : uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, read_saved_history,
+		          complete_saved_history, history_read_thread, history_read_thread == TID_FILE_USER_VISIBLE ? &promotable_read : nullptr);
+		if (read_queued) ++m_savedHistoryReadsInFlight[chat_id];
 		if (promotable_read) m_promotableHistoryReads[chat_id] = promotable_read;
 		return;
 	}

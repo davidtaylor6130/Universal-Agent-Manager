@@ -418,6 +418,14 @@ namespace uam
 		return matches == 1;
 	}
 
+	TranscriptRetentionService::SavedPageRead TranscriptRetentionService::ReadSavedPage(const std::filesystem::path& data_root, const ChatSession& expected, std::size_t limit, std::optional<std::size_t> before, const std::function<bool()>& cancelled)
+	{
+		SavedPageRead result;
+		result.page = ChatRepository::ReadMessagePage(data_root, expected, limit, before, &result.warning, cancelled);
+		result.refused = !result.page && !(cancelled && cancelled());
+		return result;
+	}
+
 	bool TranscriptRetentionService::CompleteHistoryLoad(ChatSession& current, ChatSession&& loaded, std::size_t expected_count, std::string_view expected_digest, bool retain_history, bool primary_is_authority)
 	{
 		if (primary_is_authority && !current.messages_loaded && loaded.messages_loaded && current.id == loaded.id &&

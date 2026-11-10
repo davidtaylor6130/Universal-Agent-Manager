@@ -197,19 +197,27 @@ UAM_TEST(UnloadedChatOpensFromSavedPrimaryWhenPageReadIsRefused)
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, original));
 	std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(temp.root, original.id, false);
 	UAM_ASSERT(summary.has_value() && !summary->messages_loaded);
-	UAM_ASSERT(ChatRepository::ReadMessagePage(temp.root, *summary, 50, std::nullopt).has_value());
+	uam::TranscriptRetentionService::SavedPageRead paged = uam::TranscriptRetentionService::ReadSavedPage(temp.root, *summary, 50, std::nullopt);
+	UAM_ASSERT(paged.page.has_value() && !paged.refused);
 
-	// Memory metadata ahead of the file (an unsaved recency change) refuses the paged read; the full read still opens the chat.
+	// Memory metadata ahead of the file (an unsaved recency change) refuses the paged read. That is reported as a
+	// refusal to fall back from, not as a failed open; a cancelled read is neither.
 	summary->updated_at = "2099-01-01T00:00:00.000Z";
-	std::string warning;
-	UAM_ASSERT(!ChatRepository::ReadMessagePage(temp.root, *summary, 50, std::nullopt, &warning).has_value());
-	UAM_ASSERT_EQ(warning, std::string("Could not read chat history. Retry to refresh it."));
+	paged = uam::TranscriptRetentionService::ReadSavedPage(temp.root, *summary, 50, std::nullopt);
+	UAM_ASSERT(!paged.page.has_value() && paged.refused);
+	UAM_ASSERT_EQ(paged.warning, std::string("Could not read chat history. Retry to refresh it."));
+	UAM_ASSERT(!uam::TranscriptRetentionService::ReadSavedPage(temp.root, *summary, 50, std::nullopt, []() { return true; }).refused);
+	// The fallback is one full read whose copy stays loaded, so later pages are served from memory.
 	std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
 	UAM_ASSERT(loaded.has_value());
-	UAM_ASSERT(uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), summary->persisted_message_count, summary->persisted_messages_digest, false));
-	UAM_ASSERT_EQ(loaded->messages.size(), original.messages.size());
+	UAM_ASSERT(uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), summary->persisted_message_count, summary->persisted_messages_digest, paged.refused));
+	UAM_ASSERT(summary->messages_loaded);
+	UAM_ASSERT_EQ(summary->messages.size(), original.messages.size());
+	UAM_ASSERT(uam::TranscriptRetentionService::ReadSavedPage(temp.root, *summary, 50, std::nullopt).refused);
 
 	// A stale in-memory count is refused unless the caller proved the saved primary is the authority; then it is corrected.
+	summary = ChatRepository::LoadLocalChat(temp.root, original.id, false);
+	UAM_ASSERT(summary.has_value());
 	const std::size_t saved_count = summary->persisted_message_count;
 	const std::string saved_digest = summary->persisted_messages_digest;
 	summary->persisted_message_count = saved_count - 1;
@@ -218,19 +226,23 @@ UAM_TEST(UnloadedChatOpensFromSavedPrimaryWhenPageReadIsRefused)
 	UAM_ASSERT(loaded.has_value());
 	UAM_ASSERT(!uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), summary->persisted_message_count, summary->persisted_messages_digest, false));
 	UAM_ASSERT_EQ(summary->persisted_message_count, saved_count - 1);
+	loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+	UAM_ASSERT(loaded.has_value());
 	UAM_ASSERT(uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), summary->persisted_message_count, summary->persisted_messages_digest, false, true));
 	UAM_ASSERT_EQ(summary->persisted_message_count, saved_count);
 	UAM_ASSERT_EQ(summary->persisted_messages_digest, saved_digest);
 	UAM_ASSERT(!summary->messages_loaded && summary->messages.empty());
-	UAM_ASSERT_EQ(loaded->messages.size(), original.messages.size());
 
 	// The correction never replaces a loaded transcript or another chat's history.
 	loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+	UAM_ASSERT(loaded.has_value());
 	summary->persisted_message_count = 1;
 	summary->messages_loaded = true;
 	UAM_ASSERT(!uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), 1, summary->persisted_messages_digest, true, true));
 	UAM_ASSERT_EQ(summary->persisted_message_count, std::size_t{1});
 	summary->messages_loaded = false;
+	loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+	UAM_ASSERT(loaded.has_value());
 	loaded->id = "another-chat";
 	UAM_ASSERT(!uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), 1, summary->persisted_messages_digest, true, true));
 	UAM_ASSERT_EQ(summary->persisted_message_count, std::size_t{1});

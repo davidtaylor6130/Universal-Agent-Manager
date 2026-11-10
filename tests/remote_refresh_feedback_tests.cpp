@@ -29,6 +29,15 @@ struct RemoteRefreshFeedbackTestAccess
 	{
 		handler.HandleSelectSession(nullptr, {{"chatId", id}}, cb);
 	}
+	static void SavedHistory(UamQueryHandler& handler, std::function<bool(CefRefPtr<UamQueryHandler::Callback>, std::function<AsyncCefResult()>, std::function<void(AsyncCefResult&)>)> dispatch)
+	{
+		handler.m_savedHistoryDispatcherForTests = std::move(dispatch);
+	}
+	static void ReadOlder(UamQueryHandler& handler, const std::string& id, CefRefPtr<UamQueryHandler::Callback> cb, std::size_t limit, std::size_t before)
+	{
+		handler.HandleGetChatMessages(nullptr, {{"chatId", id}, {"limit", limit}, {"before", before}, {"deferToolCallContent", true}, {"messagesDigest", ""}}, cb);
+	}
+	static bool RecencyDeferred(const UamQueryHandler& handler, const std::string& id) { return handler.m_recencySaveAfterRead.contains(id); }
 	static void ObserveDispatchThreads(UamQueryHandler& handler, std::function<void(CefThreadId)> observer)
 	{
 		handler.m_nativeMediaDispatchThreadObserverForTests = std::move(observer);
@@ -424,6 +433,89 @@ UAM_TEST(RemoteRefreshFeedbackRecoverySurvivesActualReopening)
 	UAM_ASSERT_EQ(ReadFile(fixture.Primary()), primary); UAM_ASSERT_EQ(ReadFile(fixture.Summary()), summary);
 	UAM_ASSERT(!fs::exists(fixture.Generation() / "published.receipt"));
 	UAM_ASSERT_EQ(fixture.reads->load(), 1); UAM_ASSERT_EQ(fixture.app.composer_text, selection_draft);
+}
+
+namespace
+{
+	/// A local chat saved to disk and present in memory as an unloaded summary, with saved-history reads captured.
+	std::string AddColdLocalChat(FeedbackFixture& fixture, const std::string& id, int rows)
+	{
+		RemoteRefreshFeedbackTestAccess::SavedHistory(*fixture.handler, [&fixture](auto cb, auto worker, auto completion)
+		{
+			fixture.pending.push_back({cb, std::move(worker), std::move(completion)});
+			return true;
+		});
+		ChatSession chat;
+		chat.id = id; chat.provider_id = "gemini-cli";
+		chat.created_at = chat.updated_at = "2026-10-18T08:00:00Z";
+		for (int row = 0; row < rows; ++row)
+			chat.messages.push_back(Message{row % 2 ? MessageRole::Assistant : MessageRole::User, "Saved row " + std::to_string(row)});
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		const auto summary = ChatRepository::LoadLocalChat(fixture.app.data_root, id, false);
+		UAM_ASSERT(summary && !summary->messages_loaded);
+		fixture.app.chats.push_back(*summary);
+		return id;
+	}
+}
+
+UAM_TEST(RefusedSavedPageFallsBackOnceAndThenPagesFromTheLoadedCopy)
+{
+	FeedbackFixture fixture;
+	const std::string id = AddColdLocalChat(fixture, "cold-page-refused", 6);
+	// Memory metadata ahead of the file refuses the paged read: this used to answer "Could not read chat history".
+	ChatDomainService().FindChatById(fixture.app, id)->updated_at = "2099-01-01T00:00:00Z";
+	const auto revision = ChatRepository::ChatStorageRevision(fixture.app.data_root, id);
+	CefRefPtr<FeedbackCallback> first = new FeedbackCallback;
+	const std::size_t queued = fixture.pending.size();
+	RemoteRefreshFeedbackTestAccess::ReadSaved(*fixture.handler, id, first);
+	UAM_ASSERT_EQ(fixture.pending.size(), queued + 1);
+	fixture.Complete(queued);
+	if (first->failures) throw uam_test::TestFailure("Opening after a refused page read failed: " + first->error);
+	UAM_ASSERT_EQ(first->successes, 1);
+	UAM_ASSERT_EQ(first->body.at("messages").size(), std::size_t{6});
+	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(fixture.app.data_root, id), revision);
+	// The fallback copy stays loaded, so an older page is answered from memory with no second full read.
+	const ChatSession* current = ChatDomainService().FindChatById(fixture.app, id);
+	UAM_ASSERT(current && current->messages_loaded && current->messages.size() == 6);
+	CefRefPtr<FeedbackCallback> older = new FeedbackCallback;
+	const std::size_t before_older = fixture.pending.size();
+	RemoteRefreshFeedbackTestAccess::ReadOlder(*fixture.handler, id, older, 2, 4);
+	UAM_ASSERT_EQ(fixture.pending.size(), before_older);
+	UAM_ASSERT_EQ(older->successes, 1);
+	UAM_ASSERT_EQ(older->body.at("messages").size(), std::size_t{2});
+}
+
+UAM_TEST(SelectingAChatWithAStaleSummarySavesItsRecencyAfterTheHistoryRead)
+{
+	FeedbackFixture fixture;
+	const std::string id = AddColdLocalChat(fixture, "stale-summary-recency", 4);
+	fs::remove(AppPaths::UamChatSummaryFilePath(fixture.app.data_root, id));
+	const auto revision = ChatRepository::ChatStorageRevision(fixture.app.data_root, id);
+	// A history read is reading the file: the recency save waits for it instead of changing the file under it.
+	CefRefPtr<FeedbackCallback> read = new FeedbackCallback;
+	const std::size_t queued = fixture.pending.size();
+	RemoteRefreshFeedbackTestAccess::ReadSaved(*fixture.handler, id, read);
+	UAM_ASSERT_EQ(fixture.pending.size(), queued + 1);
+	CefRefPtr<FeedbackCallback> selected = new FeedbackCallback;
+	RemoteRefreshFeedbackTestAccess::Select(*fixture.handler, id, selected);
+	UAM_ASSERT_EQ(selected->successes, 1);
+	UAM_ASSERT(!ChatDomainService().FindChatById(fixture.app, id)->last_opened_at.empty());
+	UAM_ASSERT(!fixture.app.pending_chat_save_at_by_chat_id.contains(id));
+	UAM_ASSERT(RemoteRefreshFeedbackTestAccess::RecencyDeferred(*fixture.handler, id));
+	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(fixture.app.data_root, id), revision);
+	fixture.Complete(queued);
+	if (read->failures) throw uam_test::TestFailure("History read beside a deferred recency save failed: " + read->error);
+	UAM_ASSERT_EQ(read->successes, 1);
+	// Once the read has finished, the value is queued for an ordinary background save, so it is not lost at restart.
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains(id));
+	UAM_ASSERT(!RemoteRefreshFeedbackTestAccess::RecencyDeferred(*fixture.handler, id));
+	// With no read in flight there is nothing to wait for.
+	fixture.app.pending_chat_save_at_by_chat_id.erase(id);
+	CefRefPtr<FeedbackCallback> again = new FeedbackCallback;
+	RemoteRefreshFeedbackTestAccess::Select(*fixture.handler, id, again);
+	UAM_ASSERT_EQ(again->successes, 1);
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains(id));
+	fixture.app.pending_chat_save_at_by_chat_id.erase(id);
 }
 
 UAM_TEST(SelectingAChatSucceedsWhenSettingsCannotBeSaved)

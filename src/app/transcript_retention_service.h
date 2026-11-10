@@ -124,6 +124,9 @@ namespace uam
 	{
 	public:
 		/// <summary>Validate a background history load; page requests must leave cold transcripts detached.</summary>
+		/// <summary>A paged read of an unloaded chat. `refused` (not cancelled) is not a failed open: the caller serves the page from one full read and keeps that copy loaded, so later pages come from memory rather than repeating the full read.</summary>
+		struct SavedPageRead { std::optional<ChatMessagePage> page; bool refused = false; std::string warning; };
+		static SavedPageRead ReadSavedPage(const std::filesystem::path& data_root, const ChatSession& expected, std::size_t limit, std::optional<std::size_t> before, const std::function<bool()>& cancelled = {});
 		/// <summary>primary_is_authority: the caller proved nothing is queued to save and the file is unchanged, so a stale in-memory count is corrected from the saved primary.</summary>
 		static bool CompleteHistoryLoad(ChatSession& current, ChatSession&& loaded, std::size_t expected_count, std::string_view expected_digest, bool retain_history, bool primary_is_authority = false);
 		void SetVisibleChatIds(const std::vector<std::string>& chat_ids);
