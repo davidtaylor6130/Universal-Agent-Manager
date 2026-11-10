@@ -254,18 +254,11 @@ void UamQueryHandler::StartPreparedDeletion(CefRefPtr<CefBrowser> browser,
 	{
 		const std::shared_ptr<uam::WorkspaceDeletionTask> current = weak_task.lock();
 		if (!current || m_workspaceDeletionTask.lock() != current) return;
-		if (m_app.data_root == data_root)
+		// A rejected commit keeps its recovery record, which completes the deletion at restart: its chats stay fenced
+		// until then and no other deletion can start. The app-wide lock itself is released on every path.
+		if (current->commit_rejected) m_deletionAwaitsRestart = true;
+		else if (m_app.data_root == data_root)
 			for (const std::string& id : current->deleted_ids) m_app.worktree_operation_chat_ids.erase(id);
-		// A rejected commit keeps its recovery record, which completes the deletion at restart. Only what that
-		// deletion owns stays fenced until then, in its own sets, and the record is parked so the transaction file
-		// is free: other chats, other folders and later deletions are not held by it.
-		if (current->commit_rejected && m_app.data_root == data_root)
-		{
-			m_app.restart_deletion_chat_ids.insert(current->deleted_ids.begin(), current->deleted_ids.end());
-			m_app.restart_deletion_folder_ids.insert(current->folder_ids.begin(), current->folder_ids.end());
-			if (!uam::ParkRejectedDeletionTransaction(data_root))
-				uam::diagnostics::Write("[deletion] A rejected deletion's recovery record could not be parked; later deletions wait for restart.");
-		}
 		m_workspaceDeletionTask.reset();
 		m_workspaceDeletionPending = false;
 		m_app.deletion_progress.reset();

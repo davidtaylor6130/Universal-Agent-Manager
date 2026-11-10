@@ -138,6 +138,11 @@ bool PollCompletedAcpProcessStops(AppState& app, CefRefPtr<CefBrowser> browser);
 bool PollAllAcpSessions(AppState& app, CefRefPtr<CefBrowser> browser = nullptr);
 bool AcpStopInProgress(const AppState& app, std::string_view chat_id);
 bool EnsureAcpStopProgress(AppState& app, std::string_view chat_id);
+/// <summary>What to tell the user when EnsureAcpStopProgress refuses: the unobserved-exit explanation when that is the reason, otherwise the caller's ordinary "stopping" text.</summary>
+inline const char* AcpStopRefusalMessage(const AppState& app, std::string_view chat_id, const char* fallback)
+{
+	return AcpStopExitUnobserved(app, chat_id) ? kAcpProcessExitUnobservedMessage : fallback;
+}
 void TransferStdioProcessFields(platform::StdioProcessPlatformFields& source, platform::StdioProcessPlatformFields& destination);
 void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process, std::string_view chat_id = {}, AcpStopPurpose purpose = AcpStopPurpose::Interrupt, bool observe_exit = false, std::shared_ptr<IPlatformProcessService> stop_service = {});
 bool PrepareCodexThreadForRuntimeLaunch(AppState& app, const ChatSession& chat, std::string* error_out = nullptr);

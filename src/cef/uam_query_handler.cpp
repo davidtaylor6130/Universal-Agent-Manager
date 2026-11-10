@@ -230,13 +230,13 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		}
 		cb = new WorkspaceMutationCallback(cb, std::move(lease));
 	}
-	if (const std::string_view refusal = uam::cef::PendingOperationRefusal(action, !chat_id.empty() && m_app.worktree_operation_chat_ids.contains(chat_id),
-	        !m_app.worktree_operation_chat_ids.empty(), m_workspaceDeletionPending); !refusal.empty())
+	if (const std::string_view refusal = uam::cef::UnfinishedDeletionRefusal(action, m_deletionAwaitsRestart); !refusal.empty())
 	{
 		cb->Failure(409, std::string(refusal));
 		return true;
 	}
-	if (const std::string_view refusal = uam::cef::RestartDeletionRefusal(action, payload, m_app.restart_deletion_chat_ids, m_app.restart_deletion_folder_ids); !refusal.empty())
+	if (const std::string_view refusal = uam::cef::PendingOperationRefusal(action, !chat_id.empty() && m_app.worktree_operation_chat_ids.contains(chat_id),
+	        !m_app.worktree_operation_chat_ids.empty(), m_workspaceDeletionPending); !refusal.empty())
 	{
 		cb->Failure(409, std::string(refusal));
 		return true;

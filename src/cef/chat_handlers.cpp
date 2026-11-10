@@ -237,8 +237,9 @@ void UamQueryHandler::DeferRecencySave(const std::string& chat_id)
 {
 	const ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id);
 	if (chat == nullptr) return;
-	// A loaded chat or one with no saved-history read in flight has nothing to wait for.
-	if (chat->messages_loaded || !m_savedHistoryReadsInFlight.contains(chat_id)) ScheduleDeferredRecencySave(chat_id, true);
+	// A loaded chat has no saved-history read to wait for. Otherwise the save is armed only when a read of this chat
+	// completes: the read a selection starts may not have been requested yet, and it must not find the file changing.
+	if (chat->messages_loaded) ScheduleDeferredRecencySave(chat_id, true);
 	else m_recencySaveAfterRead.insert(chat_id);
 }
 
@@ -682,6 +683,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	     provider_id == uam::provider_ids::kClaudeCli || provider_id == uam::provider_ids::kCopilotCli || provider_id == uam::provider_ids::kGeminiCli);
 	if (!hydrate_native_chat)
 	{
+		ScheduleDeferredRecencySave(chat_id); // This read was served from memory, so nothing is reading the file.
 		const uam::query_handler_async::AsyncCefResult result = SerializeGuardedChatMessagesResult(*chat, known_digest, page, defer_tool_call_content, search_target, ChatDomainService().SelectedChatId(m_app) == chat->id);
 		if (result.ok) cb->Success(result.body);
 		else cb->Failure(result.status, result.error);

@@ -509,11 +509,18 @@ UAM_TEST(SelectingAChatWithAStaleSummarySavesItsRecencyAfterTheHistoryRead)
 	// Once the read has finished, the value is queued for an ordinary background save, so it is not lost at restart.
 	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains(id));
 	UAM_ASSERT(!RemoteRefreshFeedbackTestAccess::RecencyDeferred(*fixture.handler, id));
-	// With no read in flight there is nothing to wait for.
+	// A selection whose read has not been requested yet still waits for that read instead of saving under it.
 	fixture.app.pending_chat_save_at_by_chat_id.erase(id);
 	CefRefPtr<FeedbackCallback> again = new FeedbackCallback;
 	RemoteRefreshFeedbackTestAccess::Select(*fixture.handler, id, again);
 	UAM_ASSERT_EQ(again->successes, 1);
+	UAM_ASSERT(!fixture.app.pending_chat_save_at_by_chat_id.contains(id));
+	UAM_ASSERT(RemoteRefreshFeedbackTestAccess::RecencyDeferred(*fixture.handler, id));
+	CefRefPtr<FeedbackCallback> later = new FeedbackCallback;
+	const std::size_t next = fixture.pending.size();
+	RemoteRefreshFeedbackTestAccess::ReadSaved(*fixture.handler, id, later);
+	if (!later->successes && !later->failures) fixture.Complete(next);
+	UAM_ASSERT_EQ(later->successes, 1);
 	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains(id));
 	fixture.app.pending_chat_save_at_by_chat_id.erase(id);
 }

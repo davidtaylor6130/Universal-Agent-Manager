@@ -1512,10 +1512,6 @@ namespace uam
 		std::unordered_map<std::string, double> remote_recovery_hydration_retry_not_before_by_chat_id;
 		std::optional<DeletionProgress> deletion_progress;
 		std::unordered_set<std::string> worktree_operation_chat_ids;
-		// Chats and folders of a deletion whose commit was rejected. Its parked recovery record completes the deletion
-		// at the next start, so only these stay unavailable until then; nothing else in the app is held by it.
-		std::unordered_set<std::string> restart_deletion_chat_ids;
-		std::unordered_set<std::string> restart_deletion_folder_ids;
 		std::unordered_map<std::string, std::shared_ptr<ChatBaselinePreparation>> repository_baseline_preparations;
 		std::vector<std::shared_ptr<ChatBaselinePreparation>> retired_repository_baseline_preparations;
 		struct GitPortRequest

@@ -1,10 +1,6 @@
 #pragma once
 
-#include <algorithm>
-#include <nlohmann/json.hpp>
-#include <string>
 #include <string_view>
-#include <unordered_set>
 
 namespace uam::cef
 {
@@ -29,26 +25,14 @@ namespace uam::cef
 	}
 
 	/// <summary>
-	/// The refusal for a change to something a rejected deletion still owns: its recovery record completes that
-	/// deletion at restart, so its chats stay unavailable and nothing new may be placed in its folders. Reads,
-	/// selection and runtime stops stay available, and everything outside that deletion is unaffected.
+	/// A deletion whose commit was rejected keeps its recovery record, which completes it when UAM restarts. Until
+	/// then another deletion (or a folder rescan) cannot start; it says so instead of asking the user to wait for
+	/// something that never finishes. Everything else stays available.
 	/// </summary>
-	inline std::string_view RestartDeletionRefusal(std::string_view action, const nlohmann::json& payload,
-	    const std::unordered_set<std::string>& chat_ids, const std::unordered_set<std::string>& folder_ids)
+	inline std::string_view UnfinishedDeletionRefusal(std::string_view action, bool deletion_awaits_restart)
 	{
-		if ((chat_ids.empty() && folder_ids.empty()) || !payload.is_object() || action.starts_with("get") || action.starts_with("list") ||
-		    action == "selectSession" || action == "cancelAcpTurn" || action == "stopAcpSession" || action == "cancelChatTitle") return {};
-		const auto names = [&payload](const char* key, const std::unordered_set<std::string>& ids)
-		{
-			const auto value = payload.find(key);
-			if (value == payload.end()) return false;
-			if (value->is_string()) return ids.contains(value->get_ref<const std::string&>());
-			return value->is_array() && std::ranges::any_of(*value, [&ids](const nlohmann::json& id)
-			    { return id.is_string() && ids.contains(id.get_ref<const std::string&>()); });
-		};
-		if (names("chatId", chat_ids) || names("chatIds", chat_ids)) return "Chat deletion is in progress.";
-		if (names("folderId", folder_ids) || names("folderIds", folder_ids) || names("destinationFolderId", folder_ids) || names("targetFolderId", folder_ids))
-			return "Wait for workspace deletion to finish.";
-		return {};
+		return deletion_awaits_restart && (action == "deleteSession" || action == "deleteSessions" || action == "deleteFolder" ||
+		        action == "deleteFolders" || action == "rescanFolderChats")
+		    ? "An earlier deletion is unfinished and completes when UAM restarts. Restart UAM first, then try again." : std::string_view{};
 	}
 }
