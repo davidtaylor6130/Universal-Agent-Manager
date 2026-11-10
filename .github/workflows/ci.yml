@@ -221,7 +221,15 @@ jobs:
       - name: Run native core tests
         # Two processes, except cases with tight wall-clock budgets, which run alone afterwards; a failed case
         # gets one fresh serial retry. Budgets are unchanged; together the shards run every case once.
-        run: python3 scripts/run_native_tests.py --shard ${{ matrix.shard }}/4 --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --quarantine tests/ci_quarantine.txt Builds/tests/uam_core_tests
+        run: python3 scripts/run_native_tests.py --shard ${{ matrix.shard }}/4 --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --flaky-report Builds/flaky-native-tests.json --quarantine tests/ci_quarantine.txt Builds/tests/uam_core_tests
+      # Written only when a case failed and then passed on retry.
+      - name: Upload flaky native test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flaky-native-tests-macos-arm64-${{ matrix.shard }}
+          path: Builds/flaky-native-tests.json
+          if-no-files-found: ignore
 
   test:
     name: Test ${{ matrix.name }}
@@ -305,7 +313,15 @@ jobs:
         if: matrix.name != 'macOS ARM'
         # Two processes, except cases with tight wall-clock budgets, which run alone afterwards; a failed case
         # gets one fresh serial retry. Budgets are unchanged.
-        run: python3 scripts/run_native_tests.py --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --quarantine tests/ci_quarantine.txt Builds/tests/uam_core_tests
+        run: python3 scripts/run_native_tests.py --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --flaky-report Builds/flaky-native-tests.json --quarantine tests/ci_quarantine.txt Builds/tests/uam_core_tests
+      # Written only when a case failed and then passed on retry.
+      - name: Upload flaky native test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flaky-native-tests-${{ matrix.artifact }}
+          path: Builds/flaky-native-tests.json
+          if-no-files-found: ignore
       - name: Package macOS review build
         run: ditto -c -k --keepParent Builds/tests/universal_agent_manager.app ${{ matrix.archive }}
       - name: Smoke test packaged macOS app
@@ -462,7 +478,15 @@ jobs:
             if [ ! -s "$RUNNER_TEMP/selected.txt" ]; then echo 'No native core case covers this change.'; exit 0; fi
             if [ "$(cat "$RUNNER_TEMP/selected.txt")" != '*' ]; then names=("@$RUNNER_TEMP/selected.txt"); fi
           fi
-          "$python" scripts/run_native_tests.py --shard ${{ matrix.shard }}/4 --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --quarantine tests/ci_quarantine.txt "$binary" "${names[@]}"
+          "$python" scripts/run_native_tests.py --shard ${{ matrix.shard }}/4 --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --flaky-report Builds/flaky-native-tests.json --quarantine tests/ci_quarantine.txt "$binary" "${names[@]}"
+      # Written only when a case failed and then passed on retry.
+      - name: Upload flaky native test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flaky-native-tests-windows-x64-${{ matrix.shard }}
+          path: Builds/flaky-native-tests.json
+          if-no-files-found: ignore
 
   # Each save adds a dated cache copy; keep only the newest per key family on this branch so the
   # repository stays under the 10 GB Actions cache limit and pull requests restore the latest one.

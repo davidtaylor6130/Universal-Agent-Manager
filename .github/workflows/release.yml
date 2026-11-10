@@ -232,7 +232,15 @@ jobs:
         run: |
           binary=Builds/uam_core_tests python=python3
           if [ "$RUNNER_OS" = Windows ]; then binary=Builds/Release/uam_core_tests.exe python=python; fi
-          "$python" scripts/run_native_tests.py --jobs 1 --retry-failed-once --quarantine tests/ci_quarantine.txt "$binary"
+          "$python" scripts/run_native_tests.py --jobs 1 --retry-failed-once --flaky-report Builds/flaky-native-tests.json --quarantine tests/ci_quarantine.txt "$binary"
+      # Written only when a case failed and then passed on retry.
+      - name: Upload flaky native test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flaky-native-tests-${{ matrix.artifact }}
+          path: Builds/flaky-native-tests.json
+          if-no-files-found: ignore
 
       # macOS output: Builds/universal_agent_manager.app (ad-hoc signed via
       # `codesign --sign -`, no certificate required). ditto preserves the bundle.
