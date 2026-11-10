@@ -10865,11 +10865,146 @@ UAM_TEST(AcpQueuedUserPromptsPreserveFifoPayloadAndBeatGoalReview)
 	raw_session->processing = true;
 	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-queue", "Cancel me", {}, {}, false, &error));
 	raw_session->running = false;
-	UAM_ASSERT(uam::CancelAcpTurn(app, "chat-queue", &error));
+	// Cancel turn (the user's control) keeps queued input and holds it.
+	UAM_ASSERT(uam::CancelAcpTurn(app, "chat-queue", &error, true, true, true));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("Cancel me"));
+	UAM_ASSERT(raw_session->queue_held && app.chats.front().acp_queue_held);
+	// Internal non-preserving cancellation (goal stop) still discards it.
+	UAM_ASSERT(uam::CancelAcpTurn(app, "chat-queue", &error, false));
 	UAM_ASSERT(raw_session->queued_user_prompts.empty());
 	raw_session->queued_user_prompts.push_back(uam::AcpQueuedUserPromptState{"Stop me"});
 	UAM_ASSERT(uam::StopAcpSession(app, "chat-queue"));
 	UAM_ASSERT(raw_session->queued_user_prompts.empty());
+}
+
+UAM_TEST(AcpCancelTurnHoldsQueuedInputIncludingDispatchedFrontAndGoalTurns)
+{
+	for (const bool dispatched_front : {false, true})
+	{
+		TempDir temp("uam-acp-cancel-holds-queue");
+		const fs::path workspace = temp.root / "workspace";
+		fs::create_directories(workspace);
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		app.settings.active_provider_id = app.provider_profiles.front().id;
+		ChatSession chat;
+		chat.id = "chat-cancel-hold";
+		chat.provider_id = app.provider_profiles.front().id;
+		chat.workspace_directory = workspace.string();
+		Goal goal;
+		goal.id = "goal-cancel-hold";
+		goal.objective = "Finish queued work.";
+		chat.active_goal_id = goal.id;
+		chat.goals.push_back(goal);
+		app.chats.push_back(std::move(chat));
+		auto owned = std::make_unique<uam::AcpSessionState>();
+		owned->chat_id = "chat-cancel-hold";
+		owned->provider_id = app.provider_profiles.front().id;
+		owned->running = true;
+		owned->processing = true;
+		owned->session_ready = false;
+		uam::AcpSessionState& session = *owned;
+		app.acp_sessions.push_back(std::move(owned));
+		ChatSession& stored = app.chats.front();
+
+		MessageAttachment attachment;
+		attachment.id = "attachment-held";
+		attachment.name = "notes.txt";
+		attachment.kind = "file";
+		attachment.path = "attachments/notes.txt";
+		std::string error;
+		if (dispatched_front)
+			UAM_ASSERT(uam::SendAcpPrompt(app, stored.id, "Already dispatched", {}, {}, true, &error, goal.id));
+		UAM_ASSERT(uam::SendAcpPrompt(app, stored.id, "Queued one", {}, {attachment}, true, &error, goal.id));
+		UAM_ASSERT(uam::SendAcpPrompt(app, stored.id, "Queued two", {}, {}, true, &error, goal.id));
+		if (dispatched_front)
+		{
+			// The running turn ends and the queue's front is dispatched as the next turn.
+			uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, session, stored, "ready", nullptr);
+			UAM_ASSERT(session.queued_prompt.find("Already dispatched") != std::string::npos);
+			UAM_ASSERT_EQ(stored.acp_dispatched_queued_prompt_count, std::size_t{1});
+			UAM_ASSERT_EQ(stored.acp_queued_prompts.size(), std::size_t{3});
+		}
+		const std::size_t messages_before = stored.messages.size();
+		session.running = false;
+		UAM_ASSERT(uam::CancelAcpTurn(app, stored.id, &error, true, true, true));
+
+		UAM_ASSERT(session.queue_held && stored.acp_queue_held);
+		UAM_ASSERT(session.goal_resume_suppressed);
+		UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{2});
+		UAM_ASSERT_EQ(session.queued_user_prompts.front().text, std::string("Queued one"));
+		UAM_ASSERT_EQ(session.queued_user_prompts.front().attachments.front().id, std::string("attachment-held"));
+		UAM_ASSERT_EQ(stored.acp_dispatched_queued_prompt_count, std::size_t{0});
+		UAM_ASSERT_EQ(stored.acp_queued_prompts.size(), std::size_t{2});
+		UAM_ASSERT_EQ(stored.acp_queued_prompts.front().text, std::string("Queued one"));
+		UAM_ASSERT_EQ(stored.acp_queued_prompts.back().text, std::string("Queued two"));
+
+		const nlohmann::json acp = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		UAM_ASSERT(acp.value("queueHeld", false));
+		UAM_ASSERT_EQ(acp["queuedPrompts"].size(), std::size_t{2});
+		UAM_ASSERT_EQ(acp["queuedPrompts"][0].value("text", ""), std::string("Queued one"));
+
+		uam::FlushPendingChatSaves(app, true);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, stored.id);
+		UAM_ASSERT(saved.has_value() && saved->acp_queue_held);
+		UAM_ASSERT_EQ(saved->acp_dispatched_queued_prompt_count, std::size_t{0});
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{2});
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.front().attachments.size(), std::size_t{1});
+
+		// Nothing sends after the cancelled turn settles.
+		uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, session, stored, "ready", nullptr);
+		UAM_ASSERT(session.queued_prompt.empty());
+		UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{2});
+		UAM_ASSERT_EQ(stored.messages.size(), messages_before);
+
+		// The existing Resume control releases the held queue.
+		std::vector<std::pair<std::string, int>> expected;
+		for (const uam::AcpQueuedUserPromptState& prompt : session.queued_user_prompts) expected.emplace_back(prompt.id, prompt.revision);
+		UAM_ASSERT(uam::ResumeQueuedAcpPrompts(app, stored.id, expected, &error));
+		UAM_ASSERT(!session.queue_held && !stored.acp_queue_held);
+	}
+}
+
+UAM_TEST(AcpCancelTurnOnDisconnectedSshTurnHoldsQueueUntilStopIsConfirmed)
+{
+	TempDir temp("uam-acp-cancel-holds-ssh");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-cancel-ssh";
+	chat.provider_id = app.provider_profiles.front().id;
+	chat.execution_host_id = "remote-host";
+	chat.remote_turn_reconnect_pending = true;
+	for (const std::string& text : {"Remote queued one", "Remote queued two"})
+	{
+		uam::AcpQueuedUserPromptState prompt;
+		prompt.id = text;
+		prompt.revision = 1;
+		prompt.text = text;
+		chat.acp_queued_prompts.push_back(prompt);
+	}
+	app.chats.push_back(chat);
+	auto owned = std::make_unique<uam::AcpSessionState>();
+	owned->chat_id = chat.id;
+	owned->provider_id = chat.provider_id;
+	owned->queued_user_prompts.assign(chat.acp_queued_prompts.begin(), chat.acp_queued_prompts.end());
+	uam::AcpSessionState& session = *owned;
+	app.acp_sessions.push_back(std::move(owned));
+
+	std::string error;
+	UAM_ASSERT(!uam::CancelAcpTurn(app, chat.id, &error, true, true, true));
+	UAM_ASSERT_EQ(error, std::string("The remote turn is disconnected. Reconnecting to confirm it stops."));
+	UAM_ASSERT(session.remote_stop_unconfirmed);
+	UAM_ASSERT(session.queue_held && app.chats.front().acp_queue_held);
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{2});
+	UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.size(), std::size_t{2});
+	uam::FlushPendingChatSaves(app, true);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value() && saved->acp_queue_held && saved->remote_stop_cleanup_pending);
+	UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{2});
 }
 
 UAM_TEST(AcpRecallPrefaceIsSentOncePerChatBeforeFollowup)

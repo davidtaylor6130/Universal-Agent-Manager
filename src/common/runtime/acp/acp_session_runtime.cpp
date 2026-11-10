@@ -6297,6 +6297,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session->reconnect_pending = true;
 			session->reconnect_not_before_time_s = GetAppTimeSeconds();
 			chat->remote_stop_cleanup_pending = true;
+			// The confirmed stop must not release queued input the user cancelled behind.
+			if (preserve_queued_prompts && hold_preserved_queue && !session->queued_user_prompts.empty())
+				session->queue_held = chat->acp_queue_held = true;
 			if (!acp_detail::SaveChatQuietly(app, *chat))
 				acp_detail::ScheduleChatSave(app, *chat, 0.0);
 			if (error_out != nullptr)
@@ -6311,15 +6314,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session->reconnect_attempts = 0;
 		session->reconnect_not_before_time_s = 0.0;
 		bool chat_changed = staged_delivery_canceled || referenced_queue_canceled;
-		if (preserve_queued_prompts && hold_preserved_queue && !session->queued_user_prompts.empty())
+		const bool hold_queue = preserve_queued_prompts && hold_preserved_queue && !session->queued_user_prompts.empty();
+		if (hold_queue) session->queue_held = true;
+		// The cancelled turn's dispatched prefix already owns its transcript rows; only future input stays queued.
+		if (chat != nullptr && preserve_queued_prompts && hold_preserved_queue &&
+		    (hold_queue || chat->acp_dispatched_queued_prompt_count != 0))
 		{
-			session->queue_held = true;
-			if (chat != nullptr)
-			{
-				chat->acp_queue_held = true;
-				chat->acp_queued_prompts.assign(session->queued_user_prompts.begin(), session->queued_user_prompts.end());
-				chat_changed = true;
-			}
+			if (hold_queue) chat->acp_queue_held = true;
+			chat->acp_queued_prompts.assign(session->queued_user_prompts.begin(), session->queued_user_prompts.end());
+			chat->acp_dispatched_queued_prompt_count = 0;
+			chat_changed = true;
 		}
 		if (chat != nullptr)
 		{

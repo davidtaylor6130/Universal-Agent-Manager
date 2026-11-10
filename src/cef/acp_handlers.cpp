@@ -1409,7 +1409,8 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const n
 	const std::string chat_id = payload.value("chatId", "");
 
 	std::string error;
-	if (!uam::CancelAcpTurn(m_app, chat_id, &error))
+	// Cancel turn keeps queued input and holds it, so nothing sends until the user resumes or removes it.
+	if (!uam::CancelAcpTurn(m_app, chat_id, &error, true, true, true))
 	{
 		cb->Failure(500, FailureDetailOrFallback(error, "Failed to cancel ACP turn."));
 		return;

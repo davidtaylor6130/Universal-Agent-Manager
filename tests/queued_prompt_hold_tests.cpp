@@ -388,6 +388,16 @@ UAM_TEST(HeldQueueAllowsEditsAndRemovalButSteeringAndFailedLastRemovalStayHeld)
 	UAM_ASSERT(!fixture.Session().reconnect_pending);
 	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(good_root, "held-queue");
 	UAM_ASSERT(saved.has_value() && !saved->acp_queue_held && saved->acp_queued_prompts.empty());
+	{
+		// The user's Cancel turn keeps a held queue held; only internal cancellation discards it.
+		HeldQueueFixture kept;
+		(void)uam::RestoreRemoteAcpSessionsAfterRestart(kept.app);
+		UAM_ASSERT(uam::CancelAcpTurn(kept.app, "held-queue", &error, true, true, true));
+		UAM_ASSERT(kept.Session().queue_held && kept.app.chats.front().acp_queue_held);
+		UAM_ASSERT_EQ(kept.Session().queued_user_prompts.size(), std::size_t{2});
+		UAM_ASSERT_EQ(kept.app.chats.front().acp_queued_prompts.size(), std::size_t{2});
+		UAM_ASSERT_EQ(kept.app.chats.front().acp_queued_prompts.front().attachments.size(), std::size_t{1});
+	}
 	for (const bool stop : {false, true})
 	{
 		HeldQueueFixture discard;
