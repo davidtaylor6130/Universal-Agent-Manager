@@ -1133,6 +1133,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			if (turn.contains("id") && turn["id"].is_string())
 				ManagedParentContinuationService::ObserveNormalCompletion(app, session, chat, turn["id"].get<std::string>());
 			RecordCompletedAcpPromptRecoveries(app, session, chat);
+			(void)ConfirmTurnInputReceived(session, chat);
 		}
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser, !completed_cancelled_turn);
 		StartPendingCodexNativeGoalTurn(app, session, chat);

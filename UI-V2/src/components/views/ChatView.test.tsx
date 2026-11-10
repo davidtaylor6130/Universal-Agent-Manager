@@ -12090,8 +12090,8 @@ describe('ChatView', () => {
     { label: 'legacy absent fields', fields: {}, answered: true, expected: null },
   ])('shares historical input presentation across main, managed and passive native routes: $label', async ({ fields, answered, expected }) => {
     const previous = useAppStore.getState()
-    const input = { role: 'user', content: 'Historical **input** remains readable', createdAt: '2026-10-16T16:00:00Z', ...fields }
-    const output = { role: 'assistant', content: 'Recorded answer\n\n```ts\nconst kept = true\n```', createdAt: '2026-10-16T16:00:01Z' }
+    const input = { role: 'user', content: 'Historical **input** remains readable', createdAt: '2026-10-16T16:00:00Z', providerId: 'codex-cli', ...fields }
+    const output = { role: 'assistant', content: 'Recorded answer\n\n```ts\nconst kept = true\n```', createdAt: '2026-10-16T16:00:01Z', providerId: 'codex-cli' }
     const rows = (answered ? [input, output] : [output, input]) as unknown as Parameters<typeof reconcileCppMessages>[2]
     const child = { ...previous.sessions[0], id: 'input-child', name: 'Input child', providerId: 'codex-cli', importedReadOnly: true,
       subagentParentChatId: 'absent-parent', subagentParentCreatedAt: '2026-01-01T00:00:00.000Z' }

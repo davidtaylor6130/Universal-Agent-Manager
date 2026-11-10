@@ -12,6 +12,11 @@ namespace uam::acp_detail
 
 bool ConfirmTurnInputReceived(const AcpSessionState& session, ChatSession& chat)
 {
+	// Called only where a provider has proved it completed this turn's own prompt. Even then nothing is confirmed
+	// while a helper receipt is still owed (the receipt is the only proof for that delivery), for a cancelled turn,
+	// or for a prompt that has not left the queue. A stale marker is acceptable; a falsely confirmed loss is not.
+	if (!session.processing || session.cancel_requested || uam::AcpSessionHasPendingCancel(session) || !session.queued_prompt.empty() ||
+	    !chat.remote_prompt_delivery_id.empty()) return false;
 	bool changed = false;
 	const int last = session.turn_user_message_index;
 	for (int index = session.turn_first_user_message_index >= 0 ? session.turn_first_user_message_index : last;
@@ -21,6 +26,8 @@ bool ConfirmTurnInputReceived(const AcpSessionState& session, ChatSession& chat)
 		// A row held back as unsent or removed was not part of what the provider answered.
 		if (row.role != MessageRole::User || row.input_write_completed || row.acp_prompt_not_sent || row.acp_prompt_discarded ||
 		    !row.native_input_id || !input_provenance::ValidNativeInputId(*row.native_input_id)) continue;
+		// Same rule as the helper receipt: an ID shared by two rows identifies neither.
+		if (std::ranges::count_if(chat.messages, [&row](const Message& other) { return other.role == MessageRole::User && other.native_input_id == row.native_input_id; }) != 1) continue;
 		row.input_write_completed = true;
 		changed = true;
 	}
@@ -33,10 +40,6 @@ Message& EnsureAssistantMessage(ChatSession& chat, AcpSessionState& session)
 	{
 		return *message;
 	}
-
-	// Provider output for a turn whose prompt has left the queue is the provider answering that prompt. Output while
-	// the prompt is still queued (a background task, a late line of the previous turn) proves nothing about it.
-	if (session.processing && session.queued_prompt.empty()) (void)ConfirmTurnInputReceived(session, chat);
 
 	Message message;
 	message.role = MessageRole::Assistant;

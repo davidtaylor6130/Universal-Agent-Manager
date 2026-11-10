@@ -2229,7 +2229,11 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 			(void)FinalizeActiveAcpToolCallsAsCancelled(chat, session);
 			if (Message* message = CurrentAssistantMessage(chat, session)) message->interrupted = true;
 		}
-		if (!cancelled) RecordCompletedAcpPromptRecoveries(app, session, chat);
+		if (!cancelled)
+		{
+			RecordCompletedAcpPromptRecoveries(app, session, chat);
+			(void)ConfirmTurnInputReceived(session, chat);
+		}
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser, !cancelled);
 		(void)FlushAutoRoutingRefresh(session, chat);
 		if (browser) uam::PushStreamDone(browser, chat.id);

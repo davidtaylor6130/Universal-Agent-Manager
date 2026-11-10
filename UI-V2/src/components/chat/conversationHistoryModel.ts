@@ -97,12 +97,15 @@ export function responseFlags(messages: Message[], index: number) {
   const hasDeliveredResponse = Boolean(message.interrupted && message.acpPromptNotSent && followingResponse?.providerId?.trim() &&
     followingResponse.providerId.trim() === message.providerId?.trim() && hasSubstantiveOutput(followingResponse))
   const hasStoppedResponse = Boolean(hasDeliveredResponse && stoppedResponseLabel(followingResponse?.stopReason, followingResponse?.interrupted))
-  // The provider answering directly after this input is proof it received it, also for rows saved before UAM recorded that
-  // answer as a write fact. Only the immediately following row counts: input sent later and answered proves nothing about
-  // this one. A compaction marker is UAM's own row, not an answer.
+  // The same provider answering directly after this input, in a response that ended normally, shows it received it,
+  // also for rows saved before UAM recorded that as a write fact. When in doubt the marker stays: both provider IDs
+  // must be present and equal, as for hasDeliveredResponse; an interrupted or stopped response does not count, because
+  // output that merely preceded a failed turn (a background task, a late line) proves nothing; only the immediately
+  // following row counts; and a compaction marker is UAM's own row, not an answer.
   // Computed only for input that would otherwise show as unconfirmed, so other rows never re-render when an answer starts.
   const receivedByProvider = Boolean(followingResponse && hasUnconfirmedNativeInput(message) &&
-    (!message.providerId?.trim() || !followingResponse.providerId?.trim() || followingResponse.providerId.trim() === message.providerId.trim()) &&
+    followingResponse.providerId?.trim() && followingResponse.providerId.trim() === message.providerId?.trim() &&
+    !followingResponse.interrupted && !stoppedResponseLabel(followingResponse.stopReason, followingResponse.interrupted) &&
     hasSubstantiveOutput(followingResponse) &&
     !(followingResponse.blocks?.length && !followingResponse.content.trim() && !followingResponse.toolCalls?.length &&
       followingResponse.blocks.every((block) => block.type.startsWith('context_compaction'))))

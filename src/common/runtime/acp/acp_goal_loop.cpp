@@ -1134,9 +1134,6 @@ void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session
 	(void)RecordAcpTurnDuration(session, chat);
 	if (session.processing && lifecycle_state == kAcpLifecycleReady && continue_goal_loop)
 		chat.last_stop_reason.clear();
-	// A turn the provider completed is one it received, even when it produced no assistant message.
-	if (session.processing && lifecycle_state == kAcpLifecycleReady && session.queued_prompt.empty())
-		(void)ConfirmTurnInputReceived(session, chat);
 	CompletePromptTurn(session, lifecycle_state);
 	session.crash_restart_attempts = 0;
 	session.reconnect_attempts = 0;

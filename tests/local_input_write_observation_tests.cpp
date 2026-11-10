@@ -345,59 +345,108 @@ namespace
 	};
 }
 
-UAM_TEST(ProviderOutputForTheTurnConfirmsItsInputRowsOnly)
+namespace
+{
+	/// <summary>The provider's reply to a `session/prompt` request, as the generic ACP handler receives it.</summary>
+	bool PromptResponse(AnsweredTurnFixture& fixture, int id, const char* stop_reason)
+	{
+		fixture.session->pending_request_methods[id] = "session/prompt";
+		return uam::ProcessAcpLineForTests(fixture.app, *fixture.session, fixture.Chat(),
+		    nlohmann::json{{"jsonrpc", "2.0"}, {"id", id}, {"result", {{"stopReason", stop_reason}}}}.dump());
+	}
+}
+
+UAM_TEST(NormalCompletionOfTheTurnsOwnRequestConfirmsItsInputRowsOnly)
 {
 	AnsweredTurnFixture fixture;
-	(void)uam::acp_detail::EnsureAssistantMessage(fixture.Chat(), *fixture.session);
-	// The provider answered this turn: both of its rows were received. The earlier, unanswered row proves nothing.
+	UAM_ASSERT(PromptResponse(fixture, 7, "end_turn"));
+	// The provider ended this turn's own request normally: both of its rows were received. The earlier row proves nothing.
 	UAM_ASSERT(fixture.Written(1) && fixture.Written(2));
 	UAM_ASSERT(!fixture.Written(0));
-	UAM_ASSERT(!fixture.Chat().messages.back().input_write_completed);
 }
 
-UAM_TEST(ProviderOutputBeforeThePromptLeftTheQueueConfirmsNothing)
+UAM_TEST(ProviderOutputAloneNeverConfirmsInput)
 {
+	// Output can come from a background task or an earlier turn, so it is not proof for this prompt, on any host.
 	AnsweredTurnFixture fixture;
-	// Still queued for this turn (startup, staged remote delivery): a background task or a late line of the
-	// previous turn can produce output now, and it says nothing about this prompt.
-	fixture.session->queued_prompt = "First row of the turn\nSecond row of the turn";
-	fixture.session->prompt_request_id = 0;
 	(void)uam::acp_detail::EnsureAssistantMessage(fixture.Chat(), *fixture.session);
+	UAM_ASSERT(fixture.Chat().messages.back().role == MessageRole::Assistant);
 	UAM_ASSERT(!fixture.Written(0) && !fixture.Written(1) && !fixture.Written(2));
-	// Nor does output outside any turn.
-	AnsweredTurnFixture idle;
-	idle.session->processing = false;
-	(void)uam::acp_detail::EnsureAssistantMessage(idle.Chat(), *idle.session);
-	UAM_ASSERT(!idle.Written(1) && !idle.Written(2));
 }
 
-UAM_TEST(ProviderOutputNeverConfirmsUnsentRemovedOrUnidentifiedRows)
+UAM_TEST(OwedHelperReceiptIsTheOnlyProofForARemoteDelivery)
 {
+	// The prompt line went to the proxy and a receipt is owed. Buffered output arrives and even a normal completion
+	// is reported, but the bridge may die before the helper writes: the rows must not look delivered.
 	AnsweredTurnFixture fixture;
-	fixture.Chat().messages[1].acp_prompt_not_sent = true;
-	fixture.Chat().messages[2].native_input_id = "not-a-native-id";
+	fixture.Chat().execution_host_id = "private-host";
+	fixture.Chat().remote_turn_reconnect_pending = true;
+	fixture.Chat().remote_prompt_delivery_id = "private-delivery";
+	fixture.Chat().remote_prompt_delivery_payload = "private-payload";
 	(void)uam::acp_detail::EnsureAssistantMessage(fixture.Chat(), *fixture.session);
 	UAM_ASSERT(!fixture.Written(1) && !fixture.Written(2));
-	AnsweredTurnFixture removed;
-	removed.Chat().messages[1].acp_prompt_discarded = true;
-	UAM_ASSERT(uam::acp_detail::ConfirmTurnInputReceived(*removed.session, removed.Chat()));
-	UAM_ASSERT(!removed.Written(1) && removed.Written(2));
-	UAM_ASSERT(!uam::acp_detail::ConfirmTurnInputReceived(*removed.session, removed.Chat()));
+	UAM_ASSERT(!uam::acp_detail::ConfirmTurnInputReceived(*fixture.session, fixture.Chat()));
+	UAM_ASSERT(!fixture.Written(1) && !fixture.Written(2));
+	// The turn then ends as lost; nothing was ever marked.
+	uam::acp_detail::FailAcpTurnOrSession(*fixture.session, &fixture.Chat(), "The remote turn no longer exists on the selected runner.");
+	UAM_ASSERT(!fixture.Written(1) && !fixture.Written(2));
 }
 
-UAM_TEST(CompletedTurnConfirmsItsInputAndAFailedTurnDoesNot)
+UAM_TEST(StaleOrCancelledCompletionNeverConfirmsInput)
 {
 	{
-		// A turn the provider completed without any assistant message was still received.
+		// A late response to another request also completes the turn, but it is not this prompt's answer.
 		AnsweredTurnFixture fixture;
-		uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(fixture.app, *fixture.session, fixture.Chat(), "ready", nullptr, false);
-		UAM_ASSERT(fixture.Written(1) && fixture.Written(2) && !fixture.Written(0));
+		UAM_ASSERT(PromptResponse(fixture, 6, "end_turn"));
+		UAM_ASSERT(!fixture.session->processing);
+		UAM_ASSERT(!fixture.Written(1) && !fixture.Written(2));
 	}
 	{
-		// A turn that ended in an error without provider output stays unconfirmed: the write may not have landed.
+		// A cancelled turn completes as ready too.
 		AnsweredTurnFixture fixture;
-		uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(fixture.app, *fixture.session, fixture.Chat(), "error", nullptr, false);
+		UAM_ASSERT(PromptResponse(fixture, 7, "cancelled"));
 		UAM_ASSERT(!fixture.Written(1) && !fixture.Written(2));
+	}
+	{
+		AnsweredTurnFixture fixture;
+		fixture.session->cancel_requested = true;
+		UAM_ASSERT(!uam::acp_detail::ConfirmTurnInputReceived(*fixture.session, fixture.Chat()));
+		UAM_ASSERT(!fixture.Written(1) && !fixture.Written(2));
+	}
+	{
+		// A turn completed without any provider proof (any other ready completion) confirms nothing.
+		AnsweredTurnFixture fixture;
+		uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(fixture.app, *fixture.session, fixture.Chat(), "ready", nullptr, false);
+		UAM_ASSERT(!fixture.Written(1) && !fixture.Written(2));
+	}
+}
+
+UAM_TEST(CompletionNeverConfirmsQueuedUnsentRemovedDuplicateOrUnidentifiedRows)
+{
+	{
+		AnsweredTurnFixture fixture;
+		fixture.session->queued_prompt = "Still queued for this turn";
+		UAM_ASSERT(!uam::acp_detail::ConfirmTurnInputReceived(*fixture.session, fixture.Chat()));
+	}
+	{
+		AnsweredTurnFixture fixture;
+		fixture.Chat().messages[1].acp_prompt_not_sent = true;
+		fixture.Chat().messages[2].native_input_id = "not-a-native-id";
+		UAM_ASSERT(!uam::acp_detail::ConfirmTurnInputReceived(*fixture.session, fixture.Chat()));
+		UAM_ASSERT(!fixture.Written(1) && !fixture.Written(2));
+	}
+	{
+		AnsweredTurnFixture fixture;
+		fixture.Chat().messages[1].acp_prompt_discarded = true;
+		// An ID shared with another row identifies neither, exactly as for the helper receipt.
+		fixture.Chat().messages[0].native_input_id = fixture.Chat().messages[2].native_input_id;
+		UAM_ASSERT(!uam::acp_detail::ConfirmTurnInputReceived(*fixture.session, fixture.Chat()));
+		UAM_ASSERT(!fixture.Written(0) && !fixture.Written(1) && !fixture.Written(2));
+	}
+	{
+		AnsweredTurnFixture fixture;
+		fixture.session->processing = false;
+		UAM_ASSERT(!uam::acp_detail::ConfirmTurnInputReceived(*fixture.session, fixture.Chat()));
 	}
 }
 
