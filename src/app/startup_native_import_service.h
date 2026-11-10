@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <chrono>
 #include <map>
 #include <set>
 #include <mutex>
@@ -49,6 +50,19 @@ namespace uam
 		std::uint64_t generation = 0;
 		/// <summary>Shared by scopes admitted since the last pause; a pause stops them and installs a fresh source.</summary>
 		std::stop_source cancel;
+		/// <summary>An unreachable host's pending scopes wait until this time; the delay doubles per failed pass.</summary>
+		std::chrono::steady_clock::time_point retry_at{};
+		std::chrono::milliseconds retry_delay{0};
+		bool unreachable_reported = false;
+	};
+
+	/// <summary>How an unreachable host is retried: one reconnect after reconnect_delay in the same pass, then later passes
+	/// from first_retry, doubling up to max_retry.</summary>
+	struct StartupNativeImportRemoteRetry
+	{
+		std::chrono::milliseconds reconnect_delay{3000};
+		std::chrono::milliseconds first_retry{60000};
+		std::chrono::milliseconds max_retry{900000};
 	};
 
 	struct StartupNativeImportRemoteScope
@@ -77,7 +91,7 @@ namespace uam
 	  public:
 		using Scanner = std::function<ChatHistorySyncService::LocalHistoryDiscovery(const StartupNativeImportScanRequest&, std::stop_token)>;
 		using RemoteScanner = std::function<ChatHistorySyncService::LocalHistoryDiscovery(const StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)>;
-		explicit StartupNativeImportService(Scanner scanner = {}, RemoteScanner remote_scanner = {});
+		explicit StartupNativeImportService(Scanner scanner = {}, RemoteScanner remote_scanner = {}, StartupNativeImportRemoteRetry retry = {});
 		~StartupNativeImportService();
 		void Initialize(const AppState& app);
 		/// <summary>Starts a fresh controller-local scan without changing saved chats or overlapping active discovery/import.</summary>
@@ -117,6 +131,9 @@ namespace uam
 		void FinishImport(AppState& app);
 		std::vector<StartupNativeImportRemoteScope> PendingRemoteScopes(const AppState& app);
 		bool StartPendingRemoteScans(const AppState& app);
+		/// <summary>True while a remote scope still needs a scan now; scopes of an unreachable host waiting for their retry time do not count.</summary>
+		bool RemoteScansOutstanding() const;
+		bool RemoteRetryDue() const;
 		Scanner m_scanner;
 		bool m_scoped_scanner = false;
 		std::vector<StartupNativeImportRemoteScope> m_remote_scopes;

@@ -1471,7 +1471,7 @@ namespace
 	}
 }
 
-UAM_TEST(StartupRemoteScanSkipsAHostAfterItsFirstConnectFailureAndKeepsOtherHosts)
+UAM_TEST(StartupRemoteScanReconnectsOnceThenDefersAnUnreachableHostAndKeepsOtherHosts)
 {
 	TempDir temp("uam-startup-remote-dead-host");
 	uam::AppState app;
@@ -1483,30 +1483,49 @@ UAM_TEST(StartupRemoteScanSkipsAHostAfterItsFirstConnectFailureAndKeepsOtherHost
 	app.folders.push_back({"live", "Live", "C:\\work\\live", false, "healthy"});
 	std::atomic<int> dead_calls{0};
 	std::atomic<int> healthy_calls{0};
+	std::atomic<bool> dead_reachable{false};
 	uam::StartupNativeImportService service(
 	    [](const uam::StartupNativeImportScanRequest&, std::stop_token) { return ChatHistorySyncService::LocalHistoryDiscovery{}; },
 	    [&](const uam::StartupNativeImportRemoteScope& scope, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
 	    {
 		    ChatHistorySyncService::LocalHistoryDiscovery result;
-		    if (scope.host.id == "dead")
+		    if (scope.host.id == "dead" && !dead_reachable)
 		    {
 			    ++dead_calls;
 			    result.remote_host_unreachable = true;
 			    result.result.Fail("The remote runner bridge closed.");
 			    return result;
 		    }
-		    ++healthy_calls;
-		    result.chats.push_back(StartupRemoteHistory(scope.host.id, scope.folder.id, scope.folder.directory, "ses_live"));
+		    if (scope.host.id == "healthy") ++healthy_calls;
+		    result.chats.push_back(StartupRemoteHistory(scope.host.id, scope.folder.id, scope.folder.directory, "ses_" + scope.folder.id));
 		    return result;
-	    });
+	    },
+	    uam::StartupNativeImportRemoteRetry{std::chrono::milliseconds(10), std::chrono::milliseconds(200), std::chrono::milliseconds(200)});
 	service.Initialize(app);
 	WaitForStartup(service, app);
-	UAM_ASSERT_EQ(dead_calls.load(), 1);
+	// The first folder gets one reconnect; the host's other folder is not tried again in the same pass.
+	UAM_ASSERT_EQ(dead_calls.load(), 2);
 	UAM_ASSERT_EQ(healthy_calls.load(), 1);
 	const uam::StartupNativeImportSnapshot snapshot = service.Snapshot();
 	UAM_ASSERT_EQ(snapshot.phase, std::string("ready"));
 	UAM_ASSERT_EQ(snapshot.total_count, std::size_t{1});
-	UAM_ASSERT_EQ(std::ranges::count(snapshot.errors, std::string("The remote runner bridge closed.")), std::ptrdiff_t{1});
+	const auto notices = std::ranges::count_if(snapshot.errors, [](const std::string& error)
+	{
+		return error.find("Remote history on dead could not be reached (The remote runner bridge closed.)") != std::string::npos &&
+		    error.find("retry automatically") != std::string::npos && error.find("Dead A, Dead B") != std::string::npos;
+	});
+	UAM_ASSERT_EQ(notices, std::ptrdiff_t{1});
+	// The deferred workspaces are retried automatically once the host answers, without a new startup scan.
+	dead_reachable = true;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (service.Snapshot().total_count < 3)
+	{
+		UAM_ASSERT(std::chrono::steady_clock::now() < deadline);
+		service.Poll(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT_EQ(healthy_calls.load(), 1);
+	UAM_ASSERT_EQ(dead_calls.load(), 2);
 }
 
 UAM_TEST(StartupRemoteScanReportsAnUnavailableHostOncePerHost)
