@@ -407,9 +407,19 @@ UAM_TEST(UamControlAgentWaitCyclicAncestryRetiresWithoutOwnerHang)
 	const auto started = std::chrono::steady_clock::now();
 	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
 	UAM_ASSERT(std::chrono::steady_clock::now() - started < std::chrono::milliseconds(500));
+	// The broken graph is answered once with an explicit error and no child data; it is never walked or left to time out.
+	const auto response_path = fixture.capability_directory / "responses" / "pending-cycle-wait.json";
+	const auto reply_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	while ((!fs::exists(response_path) || fixture.app.uam_control_capabilities.front().pending_agent_wait) && std::chrono::steady_clock::now() < reply_deadline)
+	{
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(fs::exists(response_path));
+	const auto refused = nlohmann::json::parse(uam::io::ReadTextFile(response_path));
+	UAM_ASSERT(!refused.value("ok", true) && !refused.contains("result"));
 	UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_agent_wait);
-	UAM_ASSERT_EQ(fixture.app.chats.front().uam_control_audit.size(), audit_count);
-	UAM_ASSERT(!fs::exists(fixture.capability_directory / "responses" / "pending-cycle-wait.json"));
+	UAM_ASSERT_EQ(fixture.app.chats.front().uam_control_audit.size(), audit_count + 1);
 	UAM_ASSERT_EQ(fixture.Run(child_id).status, std::string("queued"));
 	UAM_ASSERT_EQ(fixture.Run(ancestor_id).status, std::string("running"));
 	const auto retry_started = std::chrono::steady_clock::now();
@@ -632,6 +642,12 @@ namespace
 			std::this_thread::sleep_for(std::chrono::milliseconds(5));
 		}
 		UAM_ASSERT(fs::exists(path));
+		// The owner observes its finished publication on a later tick.
+		while (fixture.app.uam_control_capabilities.front().pending_agent_wait && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
 		return nlohmann::json::parse(uam::io::ReadTextFile(path));
 	}
 	ChatSession& WaitChildTranscript(ControlAgentWaitFixture& fixture, const std::string& child_id)

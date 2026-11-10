@@ -92,7 +92,7 @@ namespace uam
 		std::string session_id, native_session_id, process_id, process_host_id, remote_delivery_token, native_turn_id;
 		int turn_serial = 0;
 		ExecutionHost host;
-		std::string root_workspace, root_worktree, workspace, worktree;
+		std::string root_workspace, root_worktree, workspace, worktree, root_host_id;
 		std::string root_provider_id, root_model_id, root_native_id, chat_provider_id, chat_model_id, origin_agent_run_id;
 		std::vector<RunIdentity> ancestry;
 		Clock::time_point semantic_deadline, publication_deadline, retry_at;
@@ -1345,7 +1345,7 @@ namespace uam
 			    chat->provider_id != wait.chat_provider_id || chat->model_id != wait.chat_model_id || capability.agent_run_id != wait.origin_agent_run_id ||
 			    root->metadata_incarnation != wait.root_incarnation || chat->metadata_incarnation != wait.chat_incarnation ||
 			    root->workspace_directory != wait.root_workspace || root->workspace_worktree_directory != wait.root_worktree ||
-			    root->execution_host_id != wait.host.id || chat->execution_host_id != wait.host.id ||
+			    root->execution_host_id != wait.root_host_id || chat->execution_host_id != wait.host.id ||
 			    chat->workspace_directory != wait.workspace || chat->workspace_worktree_directory != wait.worktree ||
 			    chat->native_session_id != wait.native_session_id || session != wait.original_session || !session ||
 			    session->permission_review_incarnation != wait.launch_incarnation || !session->running || !session->processing ||
@@ -1453,6 +1453,7 @@ namespace uam
 			wait->turn_serial = session->turn_serial; wait->host = *host;
 			wait->workspace = chat->workspace_directory; wait->worktree = chat->workspace_worktree_directory;
 			wait->root_workspace = root->workspace_directory; wait->root_worktree = root->workspace_worktree_directory;
+			wait->root_host_id = root->execution_host_id; // A nested caller may itself run away from its root.
 			wait->root_provider_id = root->provider_id; wait->root_model_id = root->model_id; wait->root_native_id = root->native_session_id;
 			wait->chat_provider_id = chat->provider_id; wait->chat_model_id = chat->model_id; wait->origin_agent_run_id = capability.agent_run_id;
 			const auto now = UamAgentWait::Clock::now();

@@ -5918,8 +5918,8 @@ void ChatHistorySyncService::RetainHiddenAgentChatOwnership(uam::AppState& app, 
 		const bool terminal = run->status == "completed" || run->status == "failed" ||
 		                      run->status == "cancelled" || run->status == "interrupted";
 		const auto live_count = std::ranges::count(app.chats, chat.id, &ChatSession::id);
-		if (terminal && root && root->execution_host_id == chat.execution_host_id &&
-		    run->transcript_chat_id == chat.id && run->provider_id == chat.provider_id)
+		// The proof records the child's own host; automatic routing may run a child away from its root.
+		if (terminal && root && run->transcript_chat_id == chat.id && run->provider_id == chat.provider_id)
 		{
 			if (live_count == 1 && ChatDomainService().FindChatById(app, chat.id) == &chat && chat.metadata_incarnation)
 			{
