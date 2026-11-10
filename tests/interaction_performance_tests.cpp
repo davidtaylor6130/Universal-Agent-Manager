@@ -1165,3 +1165,36 @@ UAM_TEST(StatePushReconciliationRepairsAWriteThatBypassedTheTranscriptStamp)
 	clock.Advance(std::chrono::milliseconds(120));
 	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
 }
+
+UAM_TEST(PerformancePushDoesNotScanEveryManagedRunForEveryChat)
+{
+	const WithoutStateCacheVerification unverified;
+	TempDir temp("uam-performance-managed-runs");
+	uam::AppState app;
+	BuildLargeCatalogFixture(app, temp.root, 2000);
+	uam::PushStateUpdate(nullptr, app);
+	const double without_runs = MedianMs(11, [&] { UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app)); });
+
+	// A long-lived install keeps finished managed runs; each chat's summary needs only its own active count.
+	for (int index = 0; index < 50000; ++index)
+	{
+		AgentRun run;
+		run.id = "run-" + std::to_string(index);
+		run.root_chat_id = app.chats[1000 + index % 1000].id;
+		run.status = index == 0 ? "running" : "completed";
+		app.agent_runs.push_back(std::move(run));
+	}
+	StatePatchObserver observer;
+	g_observed_state_patch.clear();
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+	// Only the chat that gained an active run changes, with that run counted.
+	const nlohmann::json& changed = patch["chats"];
+	UAM_ASSERT(std::ranges::any_of(changed, [&](const nlohmann::json& chat)
+	{ return chat["id"] == app.chats[1000].id && chat["acpSession"]["backgroundTaskCount"] == 1; }));
+	const double with_runs = MedianMs(11, [&] { UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app)); });
+	std::cout << "[TIMING] 2000 chats unchanged push: no managed runs=" << without_runs << " ms, 50000 managed runs=" << with_runs << " ms\n";
+	// Scanning every run for every chat adds 100 million comparisons, several hundred milliseconds; the index adds one pass over the runs.
+	if (with_runs - without_runs > 50.0)
+		throw TestFailure("50000 managed runs added " + std::to_string(with_runs - without_runs) + " ms to an unchanged push; limit 50 ms");
+}

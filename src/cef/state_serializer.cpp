@@ -149,7 +149,23 @@ namespace uam
 			std::unordered_map<std::string, nlohmann::json> fingerprints;
 			bool compact_catalogs = false;
 			std::map<WorkspaceKey, std::filesystem::path> workspaces;
+			// Queued and running managed runs per root chat, counted once instead of scanning every run for every chat.
+			std::optional<std::unordered_map<std::string, std::size_t>> active_run_counts;
+			// A chat's summary reads its attention revision three times; unopened chats compare two timestamps for it.
+			const ChatSession* attention_chat = nullptr;
+			std::string attention_revision;
 		};
+
+		/// <summary>The chat's attention revision, computed once per chat within one serialization.</summary>
+		const std::string& AttentionRevisionForChat(const AppState& app, const ChatSession& chat, CatalogSnapshotCache& cache)
+		{
+			if (cache.attention_chat != &chat)
+			{
+				cache.attention_revision = ChatDomainService().AttentionRevision(app, chat);
+				cache.attention_chat = &chat;
+			}
+			return cache.attention_revision;
+		}
 
 		/// <summary>Results that stay valid while AppState is unchanged; shared by every serialization inside one StablePass.</summary>
 		struct StablePassState
@@ -1182,9 +1198,8 @@ namespace uam
 		}
 
 		template <class Writer>
-		void WriteChatTerminalSummary(Writer& w, const AppState& app, const ChatSession& chat)
+		void WriteChatTerminalSummary(Writer& w, const AppState& app, const ChatSession& chat, bool ready_since_last_select)
 		{
-			const bool ready_since_last_select = ChatHasUnseenUpdate(app, chat);
 
 			if (const CliTerminalState* terminal = FindTerminalForChat(app, chat); terminal != nullptr)
 			{
@@ -1223,7 +1238,7 @@ namespace uam
 		{
 			nlohmann::json terminal_json = nlohmann::json::object();
 			SummaryJsonWriter w(terminal_json);
-			WriteChatTerminalSummary(w, app, chat);
+			WriteChatTerminalSummary(w, app, chat, ChatHasUnseenUpdate(app, chat));
 			return terminal_json;
 		}
 
@@ -1527,12 +1542,16 @@ namespace uam
 			return input_json;
 		}
 
-		std::size_t ManagedChildRunCountForChat(const AppState& app, const ChatSession& chat)
+		std::size_t ManagedChildRunCountForChat(const AppState& app, const ChatSession& chat, CatalogSnapshotCache& cache)
 		{
-			return static_cast<std::size_t>(std::ranges::count_if(app.agent_runs, [&chat](const AgentRun& run)
+			if (!cache.active_run_counts)
 			{
-				return run.root_chat_id == chat.id && (run.status == "queued" || run.status == "running");
-			}));
+				cache.active_run_counts.emplace();
+				for (const AgentRun& run : app.agent_runs)
+					if (run.status == "queued" || run.status == "running") ++(*cache.active_run_counts)[run.root_chat_id];
+			}
+			const auto found = cache.active_run_counts->find(chat.id);
+			return found == cache.active_run_counts->end() ? std::size_t{0} : found->second;
 		}
 
 		bool ManualCompactionAvailable(const AppState& app, const ChatSession& chat, const AcpSessionState* session)
@@ -1596,7 +1615,7 @@ namespace uam
 			w.Set("threadId", session_id);
 			w.Set("running", false);
 			w.Set("processing", (chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "held"));
-			w.Set("backgroundTaskCount", ManagedChildRunCountForChat(app, chat));
+			w.Set("backgroundTaskCount", ManagedChildRunCountForChat(app, chat, cache));
 			w.Set("readySinceLastSelect", ready_since_last_select);
 			w.Set("lastStopReason", chat.last_stop_reason);
 			w.Set("attentionKind", nullptr);
@@ -1653,7 +1672,7 @@ namespace uam
 		                                          CatalogSnapshotCache& cache)
 		{
 			const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
-			const bool ready_since_last_select = ChatHasUnseenUpdate(app, chat);
+			const bool ready_since_last_select = !AttentionRevisionForChat(app, chat, cache).empty();
 			if (session == nullptr)
 			{
 				return SerializeStoppedAcpSessionSummary(app, chat, ready_since_last_select, cache);
@@ -1670,7 +1689,7 @@ namespace uam
 			acp_json["running"] = session->running;
 			acp_json["processing"] = session->processing || (chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "held");
 			acp_json["compacting"] = session->pending_compaction != nullptr || (session->running && (session->manual_compaction_pending || session->context_compaction_in_progress));
-			acp_json["backgroundTaskCount"] = ProviderRuntimeRegistry::ResolveById(session->provider_id).AcpBackgroundTaskCount(*session) + ManagedChildRunCountForChat(app, chat);
+			acp_json["backgroundTaskCount"] = ProviderRuntimeRegistry::ResolveById(session->provider_id).AcpBackgroundTaskCount(*session) + ManagedChildRunCountForChat(app, chat, cache);
 			if (AcpSessionCanIdleShutdown(*session, chat))
 				SerializeIdleDeadline(acp_json, session->idle_interaction_started_time_s, app.settings.cli_idle_timeout_seconds);
 			acp_json["readySinceLastSelect"] = ready_since_last_select;
@@ -1754,12 +1773,12 @@ namespace uam
 			const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
 			w.Set("routingWaitReason", routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second);
 			w.Set("routingUnresolvedReservation", app.execution_routing_restored_unresolved_chat_ids.contains(chat.id));
-			w.Set("attentionRevision", ChatDomainService().AttentionRevision(app, chat));
+			w.Set("attentionRevision", AttentionRevisionForChat(app, chat, cache));
 			w.Set("attentionSource", chat.attention_source);
-			w.Object("cliTerminal", [&](auto& terminal) { WriteChatTerminalSummary(terminal, app, chat); });
+			w.Object("cliTerminal", [&](auto& terminal) { WriteChatTerminalSummary(terminal, app, chat, !AttentionRevisionForChat(app, chat, cache).empty()); });
 			if (FindAcpSessionForChat(app, chat.id) == nullptr)
 			{
-				const bool ready_since_last_select = ChatHasUnseenUpdate(app, chat);
+				const bool ready_since_last_select = !AttentionRevisionForChat(app, chat, cache).empty();
 				w.Object("acpSession", [&](auto& acp) { WriteStoppedAcpSessionSummary(acp, app, chat, ready_since_last_select, cache); });
 			}
 			else
