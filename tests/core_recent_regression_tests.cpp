@@ -740,6 +740,32 @@ UAM_TEST(AcpLocalStopEscalatesAndSettlesAtItsExitDeadline)
 	}
 }
 
+UAM_TEST(CliTerminalHandoffIsBlockedOnlyByWorkThatCanFinish)
+{
+	uam::CliTerminalState terminal;
+	terminal.running = true;
+	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+	UAM_ASSERT(!uam::CliTerminalBlocksAcpHandoff(terminal));
+	// A steer still being delivered or recovered blocks; its recovery is bounded by the steer timeouts.
+	terminal.pending_steer_prompt = "Change direction.";
+	terminal.pending_steer_started_time_s = 1.0;
+	UAM_ASSERT(uam::CliTerminalBlocksAcpHandoff(terminal));
+	UAM_ASSERT_EQ(uam::CliTerminalSteerRecovery(terminal, 1.0 + uam::kCliTerminalSteerRestartTimeoutSeconds), uam::CliTerminalSteerRecoveryAction::Restart);
+	terminal.pending_steer_restart_attempted = true;
+	UAM_ASSERT_EQ(uam::CliTerminalSteerRecovery(terminal, 1.0 + uam::kCliTerminalSteerFailureTimeoutSeconds), uam::CliTerminalSteerRecoveryAction::ReportTimeout);
+	// Once that recovery has reported its failure the prompt is only retained for retry: nothing is busy.
+	terminal.last_error = "Terminal steering timed out after restart; prompt retained for retry.";
+	UAM_ASSERT(!uam::CliTerminalBlocksAcpHandoff(terminal));
+	UAM_ASSERT_EQ(terminal.pending_steer_prompt, std::string("Change direction."));
+	// Running work still blocks, and a terminal already shutting down never does.
+	uam::MarkCliTerminalTurnBusy(terminal);
+	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	terminal.turn_state = uam::CliTerminalTurnState::Busy;
+	UAM_ASSERT(uam::CliTerminalBlocksAcpHandoff(terminal));
+	uam::MarkCliTerminalShuttingDown(terminal);
+	UAM_ASSERT(!uam::CliTerminalBlocksAcpHandoff(terminal));
+}
+
 UAM_TEST(AcpOwnedStopGuardWaitsForActualExitAndRetainsTimeoutPurposeOnRetry)
 {
 	uam::AppState app;
