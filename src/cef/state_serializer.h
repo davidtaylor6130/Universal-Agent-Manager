@@ -28,6 +28,25 @@ struct StartupNativeImportSnapshot;
 class StateSerializer
 {
   public:
+	/// <summary>
+	/// While one is alive on this thread, serializations share catalog snapshots, workspace roots and loaded
+	/// transcript digests instead of recomputing them per call. AppState must not change during its lifetime.
+	/// </summary>
+	class StablePass
+	{
+	  public:
+		StablePass() : m_owner(BeginStablePass()) {}
+		~StablePass() { if (m_owner) EndStablePass(); }
+		StablePass(const StablePass&) = delete;
+		StablePass& operator=(const StablePass&) = delete;
+
+	  private:
+		bool m_owner;
+	};
+
+	/// <summary>Transcript messages hashed on this thread so far, so tests can bound the hashing one push performs.</summary>
+	static std::size_t HashedTranscriptMessageCountForTests();
+
 	/// Serialise the application state, optionally omitting loaded chat messages.
 	static nlohmann::json Serialize(const AppState& app, bool summary_only = false);
 
@@ -99,6 +118,10 @@ class StateSerializer
 
 	/// Serialise a provider profile.
 	static nlohmann::json SerializeProvider(const ProviderProfile& profile);
+
+  private:
+	static bool BeginStablePass();
+	static void EndStablePass();
 };
 
 } // namespace uam

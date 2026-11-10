@@ -33,7 +33,7 @@ namespace
 	constexpr const char* kPushTypeStreamDone = "streamDone";
 	constexpr const char* kPushTypeCliOutput = "cliOutput";
 	constexpr const char* kPushTypeDictation = "dictation";
-	constexpr long long kStatePatchSlowSerializationMs = 8;
+	constexpr long long kStatePatchSlowSerializationMs = 50;
 	constexpr std::size_t kStatePatchLargeMessageBytes = 64 * 1024;
 	// Streaming chat summaries (selected or background) carry the live turn
 	// timeline (turnEvents), which grows on nearly every tick during a turn;
@@ -167,19 +167,16 @@ namespace
 		return msg;
 	}
 
+	/// <summary>Reports a slow or large patch in every build, at most once per five seconds.</summary>
 	void MaybeLogLargePatch(const std::string& message, int changed_chat_count, std::chrono::steady_clock::duration elapsed)
 	{
-#ifndef NDEBUG
 		const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
-		if (elapsed_ms > kStatePatchSlowSerializationMs || message.size() > kStatePatchLargeMessageBytes)
-		{
-			uam::diagnostics::Write("[UAM] statePatch serialization took " + std::to_string(elapsed_ms) + "ms, bytes=" + std::to_string(message.size()) + ", changedChats=" + std::to_string(changed_chat_count));
-		}
-#else
-		(void)message;
-		(void)changed_chat_count;
-		(void)elapsed;
-#endif
+		if (elapsed_ms <= kStatePatchSlowSerializationMs && message.size() <= kStatePatchLargeMessageBytes) return;
+		static auto last_report = std::chrono::steady_clock::time_point::min();
+		const auto now = std::chrono::steady_clock::now();
+		if (last_report != std::chrono::steady_clock::time_point::min() && now - last_report < std::chrono::seconds(5)) return;
+		last_report = now;
+		uam::diagnostics::Write("[performance] statePatch serialization took " + std::to_string(elapsed_ms) + " ms, bytes=" + std::to_string(message.size()) + ", changedChats=" + std::to_string(changed_chat_count));
 	}
 
 	// Structural comparison: dumping these slices (folder icons carry PNG data URLs) cost milliseconds per tick.
@@ -505,6 +502,8 @@ namespace uam
 
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app)
 	{
+		// The slices, the digest scan and the summaries built for changed chats read the same unchanged state.
+		const uam::StateSerializer::StablePass stable_pass;
 		const auto fingerprint_started = std::chrono::steady_clock::now();
 		nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app, true, false);
 		const auto fingerprint_finished = std::chrono::steady_clock::now();
@@ -583,6 +582,8 @@ namespace uam
 	void PushStateUpdate(CefRefPtr<CefBrowser> browser, AppState& app)
 	{
 		BumpStateRevision(app);
+		// The full state and the digest baselines taken from it read the same unchanged state.
+		const uam::StateSerializer::StablePass stable_pass;
 		nlohmann::json message = BuildFullStateUpdateMessage(app);
 		const std::string serialized_message = DumpFrontendJson(message);
 		// Reuse this push snapshot; strip baseline telemetry only after serializing its wire payload.

@@ -46,6 +46,8 @@ cmake -S . -B Builds/dev \
 cmake --build Builds/dev --config Release --parallel 4
 ```
 
+Make and Ninja pick the build type when configuring and ignore `--config`. A configure that names no `CMAKE_BUILD_TYPE` now uses Release; before, it compiled the app without optimisation and without `NDEBUG`. Pass `-DCMAKE_BUILD_TYPE=Debug` for a debug build with those generators.
+
 On Windows, initialize MSVC before running the same commands:
 
 ```bat

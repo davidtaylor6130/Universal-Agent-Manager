@@ -3,6 +3,7 @@
 #include "common/config/custom_icon.h"
 #include "common/memory/memory_levels.h"
 #include "common/memory/memory_policy.h"
+#include "common/paths/recent_path_probe.h"
 
 #include <algorithm>
 #include <array>
@@ -948,5 +949,118 @@ UAM_TEST(PerformanceLargeCatalogStateFingerprint)
 		// The printed figures are the regression signal; the shared interaction budget only catches gross regressions.
 		if (Median(ticks) > static_cast<double>(kInteractionBudget.count()))
 			throw TestFailure(std::to_string(chat_count) + "-chat unchanged push tick p50 exceeded " + std::to_string(kInteractionBudget.count()) + " ms");
+	}
+}
+
+namespace
+{
+	/// <summary>Shape of a long-lived install: mostly unloaded chats, PNG folder icons, live sessions, managed runs and retained transcripts.</summary>
+	void BuildIdleInstallFixture(uam::AppState& app, const fs::path& root, int chat_count)
+	{
+		BuildLargeCatalogFixture(app, root, chat_count);
+		fs::create_directories(root / "icons");
+		nlohmann::json models = nlohmann::json::array();
+		for (int index = 0; index < 256; ++index)
+			models.push_back({{"id", "fixture/model-" + std::to_string(index)}, {"name", "Fixture model " + std::to_string(index)}});
+		for (std::size_t index = 0; index < app.folders.size(); ++index)
+		{
+			const CustomIcon icon{"png", "00000000-0000-4000-8000-0000000000" + std::to_string(10 + index) + ".png"};
+			UAM_ASSERT(uam::icons::IsValid(icon));
+			UAM_ASSERT(uam::io::WriteBinaryFile(root / "icons" / icon.value, FixturePng(100 * 1024)));
+			app.folders[index].custom_icon = icon;
+			fs::create_directories(app.folders[index].directory);
+			for (const char* provider : {"claude-cli", "codex-cli"})
+				UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels(provider, models, app.folders[index].directory));
+		}
+		// Chats 1..3 stream in the background; chat 4 keeps a transcript of about 60 MB of tool output in memory.
+		for (int index = 1; index <= 3; ++index)
+		{
+			app.chats[index].messages.push_back(StreamingTurn(5, 50 * 1024));
+			app.acp_sessions.push_back(StreamingSession(app.chats[index], 5, 50 * 1024));
+		}
+		for (int message = 0; message < 40; ++message) app.chats[4].messages.push_back(StreamingTurn(30, 50 * 1024));
+		for (int index = 0; index < 24; ++index)
+		{
+			AgentRun run;
+			run.id = "run-" + std::to_string(index);
+			run.root_chat_id = app.chats[20 + index % 6].id;
+			run.status = index % 2 == 0 ? "running" : "completed";
+			app.agent_runs.push_back(std::move(run));
+		}
+	}
+
+	template <class Work>
+	double MedianMs(int iterations, Work&& work)
+	{
+		std::vector<double> samples;
+		for (int iteration = 0; iteration < iterations; ++iteration)
+		{
+			const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+			work();
+			samples.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+		}
+		return Median(samples);
+	}
+}
+
+UAM_TEST(PerformanceIdleInstallPushTick)
+{
+	FakeStatePushClock clock;
+	StatePatchObserver observer;
+	for (const int chat_count : {500, 2000})
+	{
+		TempDir temp("uam-performance-idle-install");
+		uam::AppState app;
+		BuildIdleInstallFixture(app, temp.root, chat_count);
+		uam::PushStateUpdate(nullptr, app);
+		UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+
+		// A repeated push must not canonicalise workspaces on disk again, and must hash each loaded transcript once.
+		const std::size_t probes_before = uam::paths::RecentPathProbeCount();
+		std::size_t hashed_before = uam::StateSerializer::HashedTranscriptMessageCountForTests();
+		for (int repeat = 0; repeat < 3; ++repeat) UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+		UAM_ASSERT_EQ(uam::paths::RecentPathProbeCount().load(), probes_before);
+		const std::size_t hashed_per_unchanged_push = (uam::StateSerializer::HashedTranscriptMessageCountForTests() - hashed_before) / 3;
+		clock.Advance(std::chrono::milliseconds(120));
+		app.chats[4].messages.back().content += " first token";
+		hashed_before = uam::StateSerializer::HashedTranscriptMessageCountForTests();
+		UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+		// Building the changed chat's summary and hydrating its catalog reuse the digest the scan computed.
+		UAM_ASSERT_EQ(uam::StateSerializer::HashedTranscriptMessageCountForTests() - hashed_before, hashed_per_unchanged_push);
+
+		const double slices = MedianMs(11, [&] { (void)uam::StateSerializer::SerializeFingerprint(app, true, false); });
+		const double digests = MedianMs(11, [&] { (void)uam::StateSerializer::SerializeChatFingerprintDigests(app); });
+		// (a) nothing changed.
+		const double unchanged = MedianMs(21, [&] { UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app)); });
+		// (b) one unloaded chat changed on every tick; each change must be published as exactly that chat.
+		int revision = 0;
+		const double one_changed = MedianMs(21, [&]
+		{
+			clock.Advance(std::chrono::milliseconds(120));
+			app.chats[chat_count - 1].title = "Renamed " + std::to_string(++revision);
+			g_observed_state_patch.clear();
+			UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+			const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+			UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{1});
+			UAM_ASSERT_EQ(patch["chats"][0]["title"], app.chats[chat_count - 1].title);
+		});
+		// (c) the chat holding the very large loaded transcript changed (a streamed token on its last message).
+		const double large_changed = MedianMs(21, [&]
+		{
+			clock.Advance(std::chrono::milliseconds(120));
+			app.chats[4].messages.back().content += " token";
+			g_observed_state_patch.clear();
+			UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+			const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+			UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{1});
+			UAM_ASSERT_EQ(patch["chats"][0]["id"], app.chats[4].id);
+		});
+		UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+		std::cout << "[TIMING] idle install " << chat_count << " chats: slices=" << slices << " ms digests=" << digests
+		          << " ms; push tick p50 unchanged=" << unchanged << " ms, one chat changed=" << one_changed
+		          << " ms, large loaded chat changed=" << large_changed << " ms\n";
+		// The printed figures are the regression signal; the shared interaction budget only catches gross regressions.
+		if (std::max({unchanged, one_changed, large_changed}) > static_cast<double>(kInteractionBudget.count()))
+			throw TestFailure(std::to_string(chat_count) + "-chat idle install push tick p50 exceeded " + std::to_string(kInteractionBudget.count()) + " ms");
 	}
 }
