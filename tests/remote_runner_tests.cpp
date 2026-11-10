@@ -8019,6 +8019,9 @@ UAM_TEST(AcpRemoteUntransportedPromptStopsReconnectingAfterElapsedBudget)
 		chat.execution_host_id = "private-host";
 		chat.workspace_directory = temp.root.string();
 		chat.messages.push_back({.role = MessageRole::User, .content = "Never reached the connection"});
+		// A row of the same turn the user already removed, and input queued behind the turn.
+		chat.messages.push_back({.role = MessageRole::User, .content = "Removed before the turn ended", .acp_prompt_discarded = true});
+		chat.acp_queued_prompts.push_back(uam::AcpQueuedUserPromptState{"Queued behind the turn"});
 		if (written)
 		{
 			chat.remote_turn_reconnect_pending = true;
@@ -8036,7 +8039,9 @@ UAM_TEST(AcpRemoteUntransportedPromptStopsReconnectingAfterElapsedBudget)
 		session.recovering_remote_turn = true;
 		session.queued_prompt = written ? std::string{} : std::string("Never reached the connection");
 		session.turn_serial = 1;
-		session.turn_user_message_index = session.turn_first_user_message_index = 0;
+		session.turn_first_user_message_index = 0;
+		session.turn_user_message_index = 1;
+		session.queued_user_prompts.push_back(uam::AcpQueuedUserPromptState{"Queued behind the turn"});
 		app.acp_sessions.push_back(std::move(owned));
 		// Six failures inside the first minute keep reconnecting with growing delays; the budget is elapsed time.
 		for (int attempt = 0; attempt < 6; ++attempt)
@@ -8062,7 +8067,57 @@ UAM_TEST(AcpRemoteUntransportedPromptStopsReconnectingAfterElapsedBudget)
 		UAM_ASSERT_EQ(session.last_error, std::string("The remote runner bridge closed."));
 		UAM_ASSERT_EQ(std::ranges::count_if(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "retry_scheduled"; }), 7);
 		UAM_ASSERT(std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "exhausted"; }));
+		// The same end state as a prompt returned while staged: one interrupted unsent row, a removed row left
+		// removed, and the input queued behind held rather than turned into an interrupted message.
+		const ChatSession& ended = app.chats.front();
+		UAM_ASSERT_EQ(ended.messages.size(), std::size_t{2});
+		UAM_ASSERT(ended.messages[0].acp_prompt_not_sent && ended.messages[0].interrupted);
+		UAM_ASSERT(!ended.messages[1].acp_prompt_not_sent && ended.messages[1].acp_prompt_discarded);
+		UAM_ASSERT(ended.acp_queue_held && session.queue_held && session.queued_user_prompts.size() == 1);
+		UAM_ASSERT(ended.acp_queued_prompts.size() == 1 && ended.acp_queued_prompts.front().text == "Queued behind the turn");
 	}
+}
+
+UAM_TEST(AcpRemoteReconnectBudgetRestartsAfterAReattachWhateverElseCountsAttempts)
+{
+	TempDir temp("uam-remote-budget-restamp");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+	ChatSession chat;
+	chat.id = "private-budget-restamp";
+	chat.provider_id = "gemini-cli";
+	chat.execution_host_id = "private-host";
+	chat.workspace_directory = temp.root.string();
+	chat.messages.push_back({.role = MessageRole::User, .content = "Never reached the connection"});
+	app.chats.push_back(std::move(chat));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+	uam::AcpSessionState& session = *owned;
+	session.chat_id = app.chats.front().id;
+	session.provider_id = "gemini-cli";
+	session.process_execution_host_id = "private-host";
+	session.processing = true;
+	session.recovering_remote_turn = true;
+	session.queued_prompt = "Never reached the connection";
+	session.turn_serial = 1;
+	session.turn_user_message_index = session.turn_first_user_message_index = 0;
+	app.acp_sessions.push_back(std::move(owned));
+	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 100.0, "The remote runner bridge closed.");
+	UAM_ASSERT_EQ(session.reconnect_first_failure_time_s, 100.0);
+	// The helper process is reached again, in the same turn.
+	session.running = true;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"jsonrpc":"2.0","method":"uam/remoteAttached"})"));
+	UAM_ASSERT_EQ(session.reconnect_attempts, 0);
+	session.running = false;
+	session.recovering_remote_turn = true;
+	// Another counter of attempts (a failed stop retry) raises the count before the next recorded failure.
+	++session.reconnect_attempts;
+	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 200.0, "The remote runner bridge closed.");
+	// The minute is measured from this new failure, not from the one before the reattach.
+	UAM_ASSERT_EQ(session.reconnect_first_failure_time_s, 200.0);
+	UAM_ASSERT(session.processing && session.reconnect_pending);
+	UAM_ASSERT(!app.chats.front().messages.front().acp_prompt_not_sent);
 }
 
 UAM_TEST(AcpRemoteUntransportedPromptExitsCountBackOffAndEndThroughTheExitHandler)
@@ -8084,6 +8139,9 @@ UAM_TEST(AcpRemoteUntransportedPromptExitsCountBackOffAndEndThroughTheExitHandle
 	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Never reached the connection", &error));
 	fixture.AwaitSave();
 	UAM_ASSERT(session.processing && !session.queued_prompt.empty() && !session.pending_prompt_delivery && chat.remote_prompt_delivery_id.empty());
+	// A chat save that stays pending keeps every relaunched process from staging the prompt, so each exit meets a
+	// prompt that was never staged and the exit handler alone decides what happens.
+	uam::acp_detail::ScheduleChatSave(app, chat, 0.0);
 	session.crash_restart_attempts = 1;
 	service.StopStdioProcess(fixture.runner_service.process, true);
 	int code = -1;
@@ -8096,21 +8154,41 @@ UAM_TEST(AcpRemoteUntransportedPromptExitsCountBackOffAndEndThroughTheExitHandle
 	UAM_ASSERT_EQ(session.reconnect_attempts, 1);
 	UAM_ASSERT(session.processing && session.reconnect_pending && session.recovering_remote_turn);
 	UAM_ASSERT(std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "retry_scheduled"; }));
-	// Each relaunch reaches no helper and exits again, staged or not. Further exits back off; none gives the turn up.
+	UAM_ASSERT(session.reconnect_not_before_time_s > 0.0);
+	// Each relaunch reaches no helper and exits again. Further exits back off further; none gives the turn up.
+	// The scheduled delay is asserted, then skipped, instead of being waited out.
+	double previous_delay = 0.0;
 	deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-	while (session.reconnect_attempts < 3 && std::chrono::steady_clock::now() < deadline)
+	while (session.reconnect_attempts < 4 && std::chrono::steady_clock::now() < deadline)
 	{
+		if (session.reconnect_pending && session.reconnect_not_before_time_s > 0.0)
+		{
+			const double delay = uam::RemoteTurnReconnectDelaySecondsForTests(session.reconnect_attempts);
+			UAM_ASSERT(delay >= previous_delay);
+			previous_delay = delay;
+			session.reconnect_not_before_time_s = 0.0;
+		}
 		(void)uam::PollAllAcpSessions(app);
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
 	}
-	UAM_ASSERT_EQ(session.reconnect_attempts, 3);
-	UAM_ASSERT(session.processing && !chat.messages.back().interrupted && session.lifecycle_state != "error");
-	// Once the minute has passed, the prompt returns as one interrupted unsent row with a visible error.
-	PollUntilRemoteTurnSettles(app, session, true);
+	UAM_ASSERT_EQ(session.reconnect_attempts, 4);
+	UAM_ASSERT(previous_delay >= 2.0);
+	UAM_ASSERT(session.processing && !session.pending_prompt_delivery && !chat.messages.back().interrupted && session.lifecycle_state != "error");
+	// Once the minute has passed, the next exit returns the prompt: through the exit handler, never the launch gate.
+	deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while ((session.running || session.processing || session.reconnect_pending) && std::chrono::steady_clock::now() < deadline)
+	{
+		session.reconnect_first_failure_time_s = -1.0e6;
+		if (session.reconnect_pending) session.reconnect_not_before_time_s = 0.0;
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
 	UAM_ASSERT(!session.running && !session.processing && !session.reconnect_pending && !session.pending_prompt_delivery);
 	UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
 	UAM_ASSERT(!session.last_error.empty());
-	UAM_ASSERT(std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "exhausted" || entry.reason == "staged_prompt_returned_unsent"; }));
+	UAM_ASSERT(std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "exhausted"; }));
+	UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry)
+	    { return entry.reason == "staged_prompt_returned_unsent" || entry.reason == "staged_prompt_requeued"; }));
 	UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
 	UAM_ASSERT(chat.acp_queued_prompts.empty() && chat.remote_prompt_delivery_id.empty() && !chat.remote_turn_reconnect_pending);
 	UAM_ASSERT(!fs::exists(fixture.input_log));

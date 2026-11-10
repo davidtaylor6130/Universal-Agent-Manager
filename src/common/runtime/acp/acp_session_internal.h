@@ -525,6 +525,9 @@ void RestorePendingPromptDelivery(AcpSessionState& session, ChatSession& chat);
 /// A remote prompt that never reached the connection keeps reconnecting this long before it returns as unsent,
 /// so a short network loss still recovers by itself.
 inline constexpr double kUntransportedPromptReconnectBudgetSeconds = 60.0;
+/// Gives up a remote prompt that was never written to its connection, staged or not: its rows become interrupted
+/// unsent rows, no prepared copy of it stays in the queue, input queued behind it is held, and the turn ends.
+void ReturnUnwrittenRemotePromptAsUnsent(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& message);
 void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state);
 bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSession& chat,
                              const std::string& prompt, bool review_turn,

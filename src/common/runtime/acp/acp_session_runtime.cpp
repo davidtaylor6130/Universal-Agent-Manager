@@ -724,7 +724,10 @@ namespace uam
 		                               ChatSession& chat, double now_seconds,
 		                               const std::string& error)
 		{
-			if (++session.reconnect_attempts == 1 || session.reconnect_first_failure_turn_serial != session.turn_serial)
+			++session.reconnect_attempts;
+			// Stamped once per turn and withdrawn when a launch or reattach succeeds; never inferred from the attempt
+			// count, which other code also raises and resets.
+			if (session.reconnect_first_failure_turn_serial != session.turn_serial)
 			{
 				session.reconnect_first_failure_time_s = now_seconds;
 				session.reconnect_first_failure_turn_serial = session.turn_serial;
@@ -755,14 +758,14 @@ namespace uam
 			session.reconnect_pending = false;
 			session.reconnect_not_before_time_s = 0.0;
 			chat.remote_turn_reconnect_pending = false;
-			// A never-sent prompt returns as the same interrupted unsent rows as one returned while staged.
-			if (untransported_prompt)
-				for (int index = session.turn_first_user_message_index >= 0 ? session.turn_first_user_message_index : session.turn_user_message_index;
-				     index >= 0 && index <= session.turn_user_message_index && index < static_cast<int>(chat.messages.size()); ++index)
-					if (chat.messages[static_cast<std::size_t>(index)].role == MessageRole::User) chat.messages[static_cast<std::size_t>(index)].acp_prompt_not_sent = true;
 			(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
-			(void)PersistQueuedAcpUserPromptsAsInterrupted(session, chat);
-			FailAcpTurnOrSession(session, &chat, message);
+			// A never-sent prompt returns exactly as one returned while staged, with input queued behind it held.
+			if (untransported_prompt) ReturnUnwrittenRemotePromptAsUnsent(app, session, chat, message);
+			else
+			{
+				(void)PersistQueuedAcpUserPromptsAsInterrupted(session, chat);
+				FailAcpTurnOrSession(session, &chat, message);
+			}
 			AppendAcpDiagnostic(session, "reconnect", "exhausted", "", "", false, 0, message);
 			BlockActiveGoalForSetupFailure(app, session, chat, message);
 			MarkAcpChatUnseenIfBackground(app, chat);
@@ -5206,6 +5209,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			return false;
 		}
+		session.reconnect_first_failure_turn_serial = -1; // The provider answered session setup: a later failure starts a new budget.
 		if (session.processing)
 		{
 			return SendQueuedPromptIfReady(app, session, chat);
@@ -8722,6 +8726,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 	double AcpReconnectDelaySecondsForTests(int attempt)
 	{
 		return AcpReconnectDelaySeconds(attempt);
+	}
+
+	double RemoteTurnReconnectDelaySecondsForTests(int attempt)
+	{
+		return RemoteTurnReconnectDelaySeconds(attempt);
 	}
 
 	void ScheduleAcpReconnectForTests(AcpSessionState& session, double now_seconds)
