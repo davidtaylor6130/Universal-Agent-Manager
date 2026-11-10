@@ -205,7 +205,8 @@ namespace
 		uam::AppState* live_app = &app;
 		app.worktree_operation_chat_ids.insert(chat_id);
 
-		RunAsyncCefQuery(std::move(lifetime),
+		// A query that could not be queued never runs its completion, so its gate entry is released here.
+		const bool queued = RunAsyncCefQuery(std::move(lifetime),
 		    callback,
 		    [snapshot_inputs = std::move(snapshot_inputs), state, chat_id, operation, failure_fallback = std::move(failure_fallback)]() mutable
 		    {
@@ -253,6 +254,7 @@ namespace
 			    ApplyWorktreeFields(*live_chat, *state);
 			    uam::PushStateUpdateIfChanged(browser, *live_app);
 		    });
+		if (!queued) app.worktree_operation_chat_ids.erase(chat_id);
 	}
 
 	nlohmann::json SerializeVcsCommitStatus(const uam::VcsCommitStatus& status)
@@ -627,7 +629,8 @@ void UamQueryHandler::HandleRollbackChatTurn(CefRefPtr<CefBrowser> browser, cons
 	const std::shared_ptr<std::optional<ChatSession>> persisted_after = std::make_shared<std::optional<ChatSession>>();
 	m_app.worktree_operation_chat_ids.insert(chat_id);
 	uam::AppState* live_app = &m_app;
-	RunAsyncCefQuery(m_asyncLifetime, cb,
+	// A query that could not be queued never runs its completion, so its gate entry is released below.
+	const bool queued = RunAsyncCefQuery(m_asyncLifetime, cb,
 		[snapshot_inputs = std::move(snapshot_inputs), chat_id, index, rollback_snapshot, loaded_checkpoint_snapshot, result_state, persisted_after]() mutable {
 			uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 			std::string warning;
@@ -656,6 +659,7 @@ void UamQueryHandler::HandleRollbackChatTurn(CefRefPtr<CefBrowser> browser, cons
 			}
 			uam::PushStateUpdateIfChanged(browser, *live_app);
 		});
+	if (!queued) m_app.worktree_operation_chat_ids.erase(chat_id);
 }
 
 void UamQueryHandler::HandleCaptureChatRepositoryBaseline(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)

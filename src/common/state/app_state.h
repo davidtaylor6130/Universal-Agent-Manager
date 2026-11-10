@@ -1211,6 +1211,8 @@ namespace uam
 		bool completed_review_turn = false;
 		bool cancelled = false;
 		std::string goal_id;
+		// App time after which a finished commit stops retrying to record itself on its message (0 = not retrying).
+		double metadata_retry_until_s = 0.0;
 		std::shared_ptr<AsyncTurnCheckpointState> state;
 		std::unique_ptr<std::jthread> worker;
 	};

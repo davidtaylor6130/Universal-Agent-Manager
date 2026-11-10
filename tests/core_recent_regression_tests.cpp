@@ -496,6 +496,54 @@ UAM_TEST(AcpTimeoutStopPreservesContentAndPersistsObservedOutcome)
 	}
 }
 
+UAM_TEST(CheckpointMetadataRetryReleasesTheChatWorktreeGateAfterItsDeadline)
+{
+	TempDir temp("uam-checkpoint-metadata-deadline");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+	chat.messages.push_back({.role = MessageRole::User, .content = "Change a file."});
+	chat.messages.push_back({.role = MessageRole::Assistant, .content = "Changed.", .created_at = "assistant-created"});
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->provider_id = chat.provider_id;
+	session->turn_serial = 1;
+	session->turn_checkpoint_commit_pending = true;
+	uam::AcpSessionState* raw = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	uam::AsyncTurnCheckpointTask task;
+	task.kind = uam::AsyncTurnCheckpointTaskKind::Commit;
+	task.chat_id = chat.id;
+	task.turn_serial = 1;
+	task.assistant_message_index = 1;
+	task.expected_message_created_at = "assistant-created";
+	task.cancelled = true; // Settles the turn without starting a continuation.
+	task.state = std::make_shared<uam::AsyncTurnCheckpointState>();
+	task.state->ok = task.state->changed = true;
+	task.state->checkpoint_sha = std::string(40, 'a');
+	task.state->finished.store(true);
+	app.turn_checkpoint_tasks.push_back(std::move(task));
+	app.worktree_operation_chat_ids.insert(chat.id);
+	// The chat cannot be saved: the finished commit retries, still holding the gate.
+	app.data_root = temp.root / "blocked";
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocks the save"));
+	UAM_ASSERT(uam::acp_detail::PollTurnCheckpointTasks(app, nullptr));
+	UAM_ASSERT_EQ(app.turn_checkpoint_tasks.size(), std::size_t{1});
+	UAM_ASSERT(app.worktree_operation_chat_ids.contains(chat.id));
+	UAM_ASSERT(raw->turn_checkpoint_commit_pending);
+	UAM_ASSERT(app.turn_checkpoint_tasks.front().metadata_retry_until_s > 0.0);
+	// Once its deadline has passed, the retry gives up: the gate and the turn are released, the transcript is intact.
+	app.turn_checkpoint_tasks.front().metadata_retry_until_s = 1e-9;
+	UAM_ASSERT(uam::acp_detail::PollTurnCheckpointTasks(app, nullptr));
+	UAM_ASSERT(app.turn_checkpoint_tasks.empty());
+	UAM_ASSERT(!app.worktree_operation_chat_ids.contains(chat.id));
+	UAM_ASSERT(!raw->turn_checkpoint_commit_pending);
+	UAM_ASSERT(app.chats.front().messages[1].checkpoint_sha.empty());
+	UAM_ASSERT_EQ(app.chats.front().messages[1].content, std::string("Changed."));
+}
+
 UAM_TEST(AcpOwnedStopGuardWaitsForActualExitAndRetainsTimeoutPurposeOnRetry)
 {
 	uam::AppState app;

@@ -1724,6 +1724,23 @@ UAM_TEST(PendingOperationGatesNeverRefuseSelectionReadsOrStops)
 	UAM_ASSERT(PendingOperationRefusal("sendAcpPrompt", false, false, false).empty());
 }
 
+UAM_TEST(RejectedDeletionCommitFencesOnlyItsOwnFolders)
+{
+	using uam::cef::RestartDeletionFolderRefusal;
+	const std::unordered_set<std::string> pending = {"folder-pending-restart"};
+	const std::string_view refused = "Wait for workspace deletion to finish.";
+	// Nothing new may be placed in a folder whose deletion completes at restart.
+	UAM_ASSERT_EQ(RestartDeletionFolderRefusal("createSession", {{"folderId", "folder-pending-restart"}}, pending), refused);
+	UAM_ASSERT_EQ(RestartDeletionFolderRefusal("moveChatWorkspace", {{"chatId", "other"}, {"folderId", "folder-pending-restart"}}, pending), refused);
+	UAM_ASSERT_EQ(RestartDeletionFolderRefusal("deleteFolders", {{"folderIds", nlohmann::json::array({"another", "folder-pending-restart"})}}, pending), refused);
+	// Every other chat and folder, and every read, stays available: the app is not locked.
+	UAM_ASSERT(RestartDeletionFolderRefusal("createSession", {{"folderId", "another"}}, pending).empty());
+	UAM_ASSERT(RestartDeletionFolderRefusal("sendAcpPrompt", {{"chatId", "other"}}, pending).empty());
+	UAM_ASSERT(RestartDeletionFolderRefusal("getFolderState", {{"folderId", "folder-pending-restart"}}, pending).empty());
+	UAM_ASSERT(RestartDeletionFolderRefusal("createSession", {{"folderId", "folder-pending-restart"}}, {}).empty());
+	UAM_ASSERT(RestartDeletionFolderRefusal("createSession", nlohmann::json::array(), pending).empty());
+}
+
 UAM_TEST(DeletionRejectsOwnershipPublicationFailureBeforeChangingLiveHistory)
 {
 	for (const bool primary_failure : {false, true})

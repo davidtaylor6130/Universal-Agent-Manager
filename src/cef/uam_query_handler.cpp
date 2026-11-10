@@ -236,6 +236,11 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		cb->Failure(409, std::string(refusal));
 		return true;
 	}
+	if (const std::string_view refusal = uam::cef::RestartDeletionFolderRefusal(action, payload, m_restartDeletionFolderIds); !refusal.empty())
+	{
+		cb->Failure(409, std::string(refusal));
+		return true;
+	}
 
 	struct Route
 	{

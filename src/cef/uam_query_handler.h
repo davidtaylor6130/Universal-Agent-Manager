@@ -164,6 +164,9 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	};
 	std::unordered_map<std::string, UnconfirmedNativeMediaHistory> m_unconfirmedNativeMediaHistory;
 	bool m_workspaceDeletionPending = false;
+	// Folders of a deletion whose commit was rejected: its recovery file completes the deletion at restart, so
+	// nothing new may be placed in them, while every other chat and folder stays usable.
+	std::unordered_set<std::string> m_restartDeletionFolderIds;
 	std::weak_ptr<uam::WorkspaceDeletionTask> m_workspaceDeletionTask;
 	std::string m_trustedUiIndexUrl;
 	using ActionHandler = void (UamQueryHandler::*)(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback>);
