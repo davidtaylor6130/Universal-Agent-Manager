@@ -263,3 +263,42 @@ UAM_TEST(ToolCallUpdateDoesNotWriteTranscriptOnCallingThread)
 	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
 	UAM_ASSERT_EQ(fixture.SavedTail(), fixture.Chat().messages.back().content);
 }
+
+UAM_TEST(ChatSaveFailureSurfacesOnceAndBacksOff)
+{
+	SaveStallFixture fixture(4, 64);
+	const fs::path primary = AppPaths::UamChatFilePath(fixture.app.data_root, "stall-chat");
+	fs::rename(primary, fixture.temporary.root / "preserved.json"); fs::create_directory(primary);
+	fixture.Chat().messages.back().content += " unsaved output";
+	uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 0.0, true);
+	const auto poll_for = [&](std::chrono::milliseconds duration)
+	{
+		const Clock::time_point until = Clock::now() + duration;
+		while (Clock::now() < until)
+		{
+			// The stream keeps producing output while the disk refuses it.
+			uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 0.5, true);
+			uam::FlushPendingChatSaves(fixture.app); std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+	};
+	poll_for(std::chrono::milliseconds(300));
+	UAM_ASSERT_EQ(fixture.app.status_line, std::string(uam::acp_detail::kChatSaveFailedStatus));
+	UAM_ASSERT_EQ(fixture.app.chat_save_failures_by_chat_id.at("stall-chat").attempts, 1);
+	// Told once: later failures of the same streak neither repeat the status nor retry every second.
+	fixture.app.status_line.clear();
+	poll_for(std::chrono::milliseconds(3500));
+	UAM_ASSERT(fixture.app.status_line.empty());
+	const int attempts = fixture.app.chat_save_failures_by_chat_id.at("stall-chat").attempts;
+	UAM_ASSERT(attempts >= 2 && attempts <= 3); // 1 s, then 2 s, then 4 s apart; 1 Hz would have made 4 or 5.
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains("stall-chat")); // Still owed, never marked clean.
+	// The quit barrier tries once more and leaves the failure on record rather than dropping it.
+	uam::FlushPendingChatSaves(fixture.app, true);
+	UAM_ASSERT(fixture.app.chat_save_failures_by_chat_id.at("stall-chat").attempts > attempts);
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains("stall-chat"));
+
+	fs::remove(primary); fs::rename(fixture.temporary.root / "preserved.json", primary);
+	uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 0.0);
+	fixture.Drain();
+	UAM_ASSERT(fixture.app.chat_save_failures_by_chat_id.empty());
+	UAM_ASSERT_EQ(fixture.SavedTail(), fixture.Chat().messages.back().content);
+}

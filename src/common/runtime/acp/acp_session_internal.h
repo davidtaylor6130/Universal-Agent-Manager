@@ -523,6 +523,12 @@ bool HasActiveChatSaveWorker(const AppState& app, std::string_view chat_id);
 void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5, bool append_only = false);
 /// <summary>Saves a mid-turn display update in the background when no caller needs its durable receipt.</summary>
 void SaveChatSoon(AppState& app, const ChatSession& chat);
+/// <summary>Shown once per failing chat through the status line while its transcript cannot be saved.</summary>
+inline constexpr const char* kChatSaveFailedStatus = "Chat history could not be saved. Check disk space and folder access. UAM keeps the chat open and retries.";
+/// <summary>Records a failed transcript save and returns the retry delay: 1 s doubling to 60 s.</summary>
+/// The first failure of a streak sets the status line and writes one diagnostic line; later ones stay quiet.
+double NoteChatSaveFailed(AppState& app, const std::string& chat_id);
+void NoteChatSaveSucceeded(AppState& app, const std::string& chat_id);
 /// <summary>Owner-thread due time for a scheduled save; call after NoteChatSaveScheduled.</summary>
 double ArmChatSave(AppState& app, const std::string& chat_id, double delay_seconds, bool append_only);
 bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id);

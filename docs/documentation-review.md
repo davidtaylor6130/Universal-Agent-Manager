@@ -280,3 +280,7 @@ Issue #688 asks for the Send during a running turn preference to apply in both C
 ## Unrepairable queue journal
 
 A queued-input journal that extends the queue revision carried by its saved chat file is bound to that file again at load, with its input held. A journal that is unreadable, belongs to another owner or was written against a different queue revision (for example after a backup fallback to an older file) still leaves the chat held with a storage error, and its refusal text still suggests a restart that cannot help. Which queue is newer is not provable there, so the way out must be an explicit user action: discard the journalled input, or keep it as held input over the current file. Neither control exists yet. Interim interpretation: keep the hold and the stored journal untouched.
+
+## Chat save failure at quit
+
+A transcript save that fails while UAM is running is reported once through the status line and retried with backoff. The forced save at quit runs after the interface is gone, so a chat that first fails there is only recorded in the diagnostic log. Telling the user needs a decision between a native dialog at quit and a notice at the next launch backed by a small durable marker; neither exists yet. Interim interpretation: keep the diagnostic line and the two forced attempts around provider stop.

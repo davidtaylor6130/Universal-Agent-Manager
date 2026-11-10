@@ -1495,6 +1495,9 @@ namespace uam
 		// When each chat's last background save finished and what it cost; paces whole-transcript rewrites of a stream.
 		struct ChatSavePace { double finished_at = 0.0; double cost_seconds = 0.0; };
 		std::unordered_map<std::string, ChatSavePace> chat_save_pace_by_chat_id;
+		// Consecutive failed transcript saves per chat: told to the user once, then retried with backoff.
+		struct ChatSaveFailure { int attempts = 0; double retry_at = 0.0; };
+		std::unordered_map<std::string, ChatSaveFailure> chat_save_failures_by_chat_id;
 		std::unordered_map<std::string, std::shared_ptr<PendingChatSaveTask>> pending_chat_save_tasks;
 		std::unordered_map<std::string, std::shared_ptr<PendingAcpCompletedPromptRecoveries>> pending_acp_completed_prompt_recoveries;
 		// A failed durable barrier can retain a scoped retry after removing its active task.

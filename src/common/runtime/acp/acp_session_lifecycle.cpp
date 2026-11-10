@@ -4840,10 +4840,11 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat, AcpChatSavePurpose 
 		if (active)
 			active->queued_rollback_save_pending = false;
 		app.pending_chat_save_at_by_chat_id.erase(chat.id);
+		NoteChatSaveSucceeded(app, chat.id);
 	}
 	else if (persisted != nullptr)
 	{
-		ScheduleChatSave(app, *persisted, 1.0);
+		ScheduleChatSave(app, *persisted, NoteChatSaveFailed(app, chat.id));
 	}
 	ResolvePendingChatSaveResults(app, chat.id, saved);
 	return saved;

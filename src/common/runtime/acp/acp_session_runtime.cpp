@@ -4,6 +4,7 @@
 #include "common/platform/background_thread_priority.h"
 #include "common/platform/observed_process_stop.h"
 #include "common/runtime/acp/acp_process_handoff.h"
+#include <cmath>
 #include <type_traits>
 #include "common/chat/acp_prompt_recovery.h"
 #include "app/worktree_launch_preparation_service.h"
@@ -9601,6 +9602,30 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return due;
 	}
 
+	double acp_detail::NoteChatSaveFailed(AppState& app, const std::string& chat_id)
+	{
+		AppState::ChatSaveFailure& failure = app.chat_save_failures_by_chat_id[chat_id];
+		const double delay = std::min(60.0, std::ldexp(1.0, std::min(failure.attempts, 6)));
+		failure.retry_at = GetAppTimeSeconds() + delay;
+		if (++failure.attempts == 1)
+		{
+			// A held queue journal or unavailable managed input refuses the save and already states its own reason.
+			const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+			if (chat == nullptr || (!chat->acp_queue_storage_error && !chat->managed_followup_input_unavailable)) app.status_line = kChatSaveFailedStatus;
+			diagnostics::Write("Chat save failed; retrying with backoff up to 60 s: " + chat_id);
+		}
+		return delay;
+	}
+
+	void acp_detail::NoteChatSaveSucceeded(AppState& app, const std::string& chat_id)
+	{
+		const auto failure = app.chat_save_failures_by_chat_id.find(chat_id);
+		if (failure == app.chat_save_failures_by_chat_id.end()) return;
+		diagnostics::Write("Chat save recovered after " + std::to_string(failure->second.attempts) + " failed attempts: " + chat_id);
+		app.chat_save_failures_by_chat_id.erase(failure);
+		if (app.chat_save_failures_by_chat_id.empty() && app.status_line == kChatSaveFailedStatus) app.status_line.clear();
+	}
+
 	double acp_detail::ArmChatSave(AppState& app, const std::string& chat_id, double delay_seconds, bool append_only)
 	{
 		const double now = GetAppTimeSeconds();
@@ -9611,6 +9636,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		++task.arm_count;
 		if (append_only) task.append_only_since_capture = true;
 		double due = append_only ? AppendOnlySaveDueAt(app, task, now, delay_seconds) : now + delay_seconds;
+		// Stream output does not retry a failing whole-transcript write on every chunk; an explicit save still does.
+		if (const auto failure = app.chat_save_failures_by_chat_id.find(chat_id); append_only && failure != app.chat_save_failures_by_chat_id.end())
+			due = std::max(due, failure->second.retry_at);
 		// Only a stream still inside its debounce may move later, and only up to its maximum wait.
 		if (armed && (!append_only || pending->second <= now)) due = std::min(due, pending->second);
 		return due;
@@ -10138,6 +10166,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				{
 					acp_detail::CommitCompletedAcpPromptRecoverySave(app, *chat, completed);
 					AgentRunScheduler::InitialChatSaved(app, *chat);
+					acp_detail::NoteChatSaveSucceeded(app, chat_id);
 				}
 				else if (!completed.records.empty())
 					chat->acp_unsent_prompt_recoveries = previous_recoveries;
@@ -10145,15 +10174,18 @@ For desktop observation and input, use only the provider's built-in controller; 
 				    chat->metadata_incarnation, !saved, acknowledgements);
 				CollectChatIconResults(app, task, saved ? std::optional<CustomIcon>(chat->custom_icon) : std::nullopt, chat->metadata_incarnation, !saved, acknowledgements);
 				defer_results(task, saved);
+				// The barrier may be the last chance before exit, so a failure is always on record.
+				const double retry_at = saved ? now : now + acp_detail::NoteChatSaveFailed(app, chat_id);
+				if (!saved) diagnostics::Write("Chat history was not saved at the durable barrier: " + chat_id);
 				if (!saved && task)
 				{
-					task->failed_backoff_at = now + 1.0;
+					task->failed_backoff_at = retry_at;
 					app.pending_chat_save_retry_owners[chat_id] = task;
 				}
 				else app.pending_chat_save_retry_owners.erase(chat_id);
 				app.pending_chat_save_tasks.erase(chat_id);
 				if (saved) app.pending_chat_save_at_by_chat_id.erase(chat_id);
-				else app.pending_chat_save_at_by_chat_id[chat_id] = now + 1.0;
+				else app.pending_chat_save_at_by_chat_id[chat_id] = retry_at;
 				continue;
 			}
 			if (task && task->published.valid())
@@ -10163,7 +10195,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 				try { published = task->published.get(); }
 				catch (const std::exception& error) { diagnostics::Write(std::string("Background chat publication failed: ") + error.what()); }
 				CollectControlAuditSaveResults(app, task, published, acknowledgements);
-				if (published) app.chat_save_pace_by_chat_id[chat_id] = {now, std::max(0.0, now - task->captured_at)};
+				if (published)
+				{
+					app.chat_save_pace_by_chat_id[chat_id] = {now, std::max(0.0, now - task->captured_at)};
+					acp_detail::NoteChatSaveSucceeded(app, chat_id);
+				}
 				const bool metadata_matches = ChatRepository::ChatMetadataFingerprint(app.data_root, *chat) == task->metadata;
 				const bool admission_matches = AdmissionSnapshotMatches(task, *chat);
 				const bool recovery_revision_matches = task->completed_recovery_save.records.empty() || (published && task->publishing && app.data_root == task->data_root && chat->acp_queue_full_save_revision == task->full_revision_at_capture && chat->acp_queue_storage_revision == task->publishing->queue_storage_revision && ChatRepository::QueueStorageOwner(*chat) == task->queue_owner_at_capture && ChatRepository::ChatStorageRevision(app.data_root, chat_id) == std::optional<std::string>(task->publishing->primary_revision));
@@ -10198,8 +10234,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 				}
 				else
 				{
-					if (task->binding_receipt || (!published && task->publication_owned->load(std::memory_order_acquire))) defer_results(task, false);
-					app.pending_chat_save_at_by_chat_id[chat_id] = now + 1.0;
+					// A revoked or outgrown snapshot is retried shortly; a write this owner still wanted has failed.
+					const bool failed = !published && task->publication_owned->load(std::memory_order_acquire);
+					if (task->binding_receipt || failed) defer_results(task, false);
+					app.pending_chat_save_at_by_chat_id[chat_id] = now + (failed ? acp_detail::NoteChatSaveFailed(app, chat_id) : 1.0);
 				}
 				const bool icon_published = published && metadata_matches && task->publishing && app.data_root == task->data_root &&
 				    ChatRepository::ChatStorageRevision(app.data_root, chat_id) == std::optional<std::string>(task->publishing->primary_revision);
@@ -10257,12 +10295,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 					task->completed_recovery_save = {};
 					if (task->binding_receipt && !prepared && !task->publishing && !task->published.valid())
 						task->binding_receipt->preparation_rejected_before_publication = true;
-					if (task->binding_receipt || (!prepared && task->publication_owned->load(std::memory_order_acquire)))
+					const bool failed = !prepared && task->publication_owned->load(std::memory_order_acquire);
+					if (task->binding_receipt || failed)
 					{
 						CollectWorkspaceSaveResults(app, task, std::nullopt, {}, true, acknowledgements);
 						defer_results(task, false);
 					}
-					app.pending_chat_save_at_by_chat_id[chat_id] = now + 1.0;
+					app.pending_chat_save_at_by_chat_id[chat_id] = now + (failed ? acp_detail::NoteChatSaveFailed(app, chat_id) : 1.0);
 				}
 			}
 			if (task && task->binding_terminal)
@@ -10366,7 +10405,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			ChatSession snapshot = PendingSaveMetadata(*chat);
 			acp_detail::ApplyCompletedAcpPromptRecoverySave(snapshot, task->completed_recovery_save);
 			const std::optional<std::string> revision = ChatRepository::ChatStorageRevision(app.data_root, chat_id);
-			if (!revision) { CollectWorkspaceSaveResults(app, task, std::nullopt, {}, true, acknowledgements); defer_results(task, false); app.pending_chat_save_at_by_chat_id[chat_id] = now + 1.0; continue; }
+			if (!revision) { CollectWorkspaceSaveResults(app, task, std::nullopt, {}, true, acknowledgements); defer_results(task, false); app.pending_chat_save_at_by_chat_id[chat_id] = now + acp_detail::NoteChatSaveFailed(app, chat_id); continue; }
 			std::packaged_task<std::shared_ptr<PreparedChatSave>()> worker([root = app.data_root, snapshot = std::move(snapshot), messages = task->messages, revision = *revision, binding = task->binding_expected_primary]() mutable
 			{
 				for (const std::shared_ptr<const Message>& message : messages) snapshot.messages.push_back(*message);
