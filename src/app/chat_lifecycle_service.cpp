@@ -1706,7 +1706,7 @@ const char* uam::NativeResetRefusalReason(const AppState& app, const ChatSession
 	if (chat.acp_queue_storage_error || chat.managed_followup_input_unavailable) return kQueueStorageRefusal;
 	if (!chat.acp_queued_prompts.empty() || chat.acp_dispatched_queued_prompt_count != 0 || (session != nullptr && !session->queued_user_prompts.empty()))
 		return ScanProviderSwitchQueue(app, chat).clearable ? kHeldQueueRefusal : "This chat has held input with no control. Change the chat's provider and accept the warning, then try again.";
-	if (ChatHasUnsentAcpPrompt(app, chat) || !chat.acp_unsent_prompt_recoveries.empty()) return kUnsentRefusal;
+	if (ChatHasUnsentAcpPrompt(app, chat) || ChatHasActionableUnsentRecovery(chat)) return kUnsentRefusal;
 	// The old turn may already have run this row; a handoff would send it again.
 	if (ChatHasUncertainRemoteInput(chat) && std::ranges::any_of(chat.messages, &Message::AcpPromptAwaitsDecision))
 		return "UAM cannot confirm whether this chat's latest message reached the provider. Wait for that turn to settle, or change the chat's provider and accept the warning, then try again.";

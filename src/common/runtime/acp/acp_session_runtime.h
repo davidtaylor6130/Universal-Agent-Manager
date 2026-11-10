@@ -69,6 +69,10 @@ bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* 
 std::vector<int> KnownUnsentAcpMessageIndices(const AppState& app, const ChatSession& chat);
 /// True while the chat has a row the user can still retry, edit or remove; a removed row or one with later output does not count.
 bool ChatHasUnsentAcpPrompt(const AppState& app, const ChatSession& chat);
+/// A saved unsent-prompt record whose message is still an unanswered, unremoved unsent row of the chat's provider. It reads
+/// saved rows only, never runtime state, so the answer does not change while a reconnect or stop retry runs. A record with
+/// no such row can be neither sent nor removed. Unloaded history counts, because its rows are unknown.
+bool ChatHasActionableUnsentRecovery(const ChatSession& chat);
 /// True while a remote turn or delivery may already have received the chat's latest input.
 bool ChatHasUncertainRemoteInput(const ChatSession& chat);
 /// Gives up a turn the user accepted may have run: settles its rows and saves stranded input as an unsent row, before a provider switch saves.

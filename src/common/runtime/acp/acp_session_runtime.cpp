@@ -383,9 +383,11 @@ namespace uam
 		bool RemoteProxyExitConfirmsMissingProcess(const std::string& stderr_tail)
 		{
 			const std::string_view line = RemoteProxyExitLine(stderr_tail);
+			// The last line also covers a reachable host with no helper left to own the process.
 			return line == "The remote process does not exist." ||
 			       line == "The remote process is no longer available." ||
-			       line == "The remote process has exited.";
+			       line == "The remote process has exited." ||
+			       line == uam::remote::kRemoteHelperNotRunningLine;
 		}
 
 		bool RemoteStopExitConfirmed(bool exited, int exit_code, const std::string& stderr_tail)
@@ -5356,6 +5358,21 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return indices;
 	}
 
+	bool ChatHasActionableUnsentRecovery(const ChatSession& chat)
+	{
+		if (chat.acp_unsent_prompt_recoveries.empty() || !chat.messages_loaded) return !chat.acp_unsent_prompt_recoveries.empty();
+		return std::ranges::any_of(chat.acp_unsent_prompt_recoveries, [&chat](const AcpUnsentPromptRecovery& value)
+		{
+			if (value.user_message_index < 0 || static_cast<std::size_t>(value.user_message_index) >= chat.messages.size()) return false;
+			const std::size_t index = static_cast<std::size_t>(value.user_message_index);
+			const Message& row = chat.messages[index];
+			if (row.role != MessageRole::User || !row.AcpPromptAwaitsDecision() || (!row.provider.empty() && row.provider != chat.provider_id)) return false;
+			for (std::size_t after = index + 1; after < chat.messages.size() && chat.messages[after].role != MessageRole::User; ++after)
+				if (!IsEmptyAcpRetryAssistantPlaceholder(chat.messages[after])) return false;
+			return true;
+		});
+	}
+
 	bool ChatHasUncertainRemoteInput(const ChatSession& chat)
 	{
 		return chat.remote_turn_reconnect_pending || !chat.remote_active_turn_id.empty() ||
@@ -7001,6 +7018,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 				acp_detail::ScheduleChatSave(app, *chat, 0.0);
 		}
 		session.restart_after_remote_stop_cleanup = !cleanup_marker_saved;
+		// Failed stop retries counted here for their backoff; the relaunch after the confirmed stop has its own budget.
+		session.reconnect_attempts = 0;
 		ScheduleAcpReconnect(session, GetAppTimeSeconds());
 		return cleanup_marker_saved;
 	}

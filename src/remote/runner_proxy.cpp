@@ -628,6 +628,61 @@ namespace uam::remote
 #endif
 	}
 
+	std::string RemoteHelperNotRunningCommand(const std::string& platform, const std::string& version)
+	{
+		if (version.empty() || !std::ranges::all_of(version, [](unsigned char character)
+		    { return std::isalnum(character) != 0 || character == '-' || character == '_' || character == '.'; })) return {};
+		const std::string token(kRemoteHelperNotRunningToken);
+		if (platform == "linux" || platform == "Linux")
+			// Matching the version folder and file name survives a symlinked home; a helper whose binary was deleted still shows here.
+			return "LC_ALL=C; export LC_ALL; test -r /proc/self/exe || exit 3; for p in /proc/[0-9]*; do "
+			       "l=$(readlink \"$p/exe\" 2>/dev/null) || continue; case \"$l\" in */" + version + "/uam-runner|*/\"" + version +
+			       "/uam-runner (deleted)\") echo UAM_HELPER_RUNNING; exit 0;; esac; done; echo " + token;
+		if (platform == "windows" || platform == "Windows")
+		{
+			// A process whose path cannot be read counts as running.
+			const std::string script = "$p=@(Get-CimInstance Win32_Process -Filter \"Name='uam-runner.exe'\" -ErrorAction Stop | Where-Object { "
+			    "-not $_.ExecutablePath -or $_.ExecutablePath -like '*\\" + version + "\\uam-runner.exe' -or $_.ExecutablePath -like '*/" + version +
+			    "/uam-runner.exe' }); if ($p.Count -gt 0) { 'UAM_HELPER_RUNNING' } else { '" + token + "' }";
+			std::string utf16_le;
+			for (const char character : script) { utf16_le.push_back(character); utf16_le.push_back('\0'); }
+			return "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + uam::base64::Encode(utf16_le);
+		}
+		return {};
+	}
+
+	namespace
+	{
+		/// One bounded SSH command; true only for a clean exit whose whole output is the not-running token.
+		bool RemoteHelperVerifiablyNotRunning(IPlatformProcessService& service, const std::string& ssh_alias, const std::string& platform, const std::string& version)
+		{
+			const std::string command = RemoteHelperNotRunningCommand(platform, version);
+			const std::optional<std::filesystem::path> directory = uam::paths::CurrentPathNoThrow();
+			if (command.empty() || !directory) return false;
+			uam::platform::StdioProcessPlatformFields probe;
+			std::string error;
+			if (!service.StartStdioProcess(probe, *directory, {"ssh", "-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=10", ssh_alias, command}, &error))
+				return false;
+			service.CloseStdioProcessInput(probe);
+			std::string output;
+			std::array<char, 256> buffer{};
+			int exit_code = -1;
+			bool exited = false;
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+			while (output.size() < 4096 && std::chrono::steady_clock::now() < deadline)
+			{
+				const std::ptrdiff_t count = service.ReadStdioProcessStdout(probe, buffer.data(), buffer.size(), &error);
+				if (count > 0) { output.append(buffer.data(), static_cast<std::size_t>(count)); continue; }
+				if (exited) break; // one more read after the exit drained the pipe
+				exited = service.PollStdioProcessExited(probe, &exit_code);
+				if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+			if (!exited) service.StopStdioProcess(probe, true);
+			service.CloseStdioProcessHandles(probe);
+			return exited && exit_code == 0 && uam::strings::TrimAsciiView(output) == kRemoteHelperNotRunningToken;
+		}
+	}
+
 	int RunProcessProxy(const std::string& ssh_alias, const std::string& platform,
 	                    const std::string& version, const std::string& runner_directory,
 	                    int protocol_version)
@@ -686,6 +741,9 @@ namespace uam::remote
 		if (!client.Connect(&error))
 		{
 			std::cerr << (error.empty() ? "Remote process could not start." : error) << '\n';
+			// A helper that cannot be reached because it no longer exists owns nothing; an unreachable host proves nothing.
+			if (spec->attach_only && RemoteHelperVerifiablyNotRunning(process_service, ssh_alias, platform, version))
+				std::cerr << kRemoteHelperNotRunningLine << '\n';
 			return 70;
 		}
 		std::filesystem::path configuration_directory;

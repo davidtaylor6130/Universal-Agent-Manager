@@ -17,6 +17,13 @@ namespace uam::remote
 {
 	inline constexpr const char* kRemoteProcessSpecEnvironment = "UAM_REMOTE_PROCESS_SPEC";
 	inline constexpr std::string_view kRemoteStopOutcomePrefix = "UAM_REMOTE_STOP_OUTCOME ";
+	/// Last stderr line of an attach whose bridge failed on a reachable host where no helper of that version is running,
+	/// so no helper owns the process any more.
+	inline constexpr std::string_view kRemoteHelperNotRunningLine = "The remote helper is not running on this host.";
+	/// The host-side check behind that line; empty for a platform it cannot check. It prints kRemoteHelperNotRunningToken
+	/// only after listing this account's processes and finding no helper of that version, deleted binary included.
+	inline constexpr std::string_view kRemoteHelperNotRunningToken = "UAM_HELPER_NOT_RUNNING";
+	std::string RemoteHelperNotRunningCommand(const std::string& platform, const std::string& version);
 	// Only the proxy emits this before attempting to create a provider process.
 	inline constexpr int kRemoteConfigurationStartupFailureExitCode = 71;
 	inline constexpr std::string_view kRemoteStartupFailurePrefix = "UAM_REMOTE_STARTUP_FAILURE ";

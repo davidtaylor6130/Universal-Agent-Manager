@@ -3106,6 +3106,69 @@ UAM_TEST(RemoteRunnerProxyUsesTheConfiguredVersionAndAttachOnlyNeverStartsOrDupl
 	                       source_exit_token + " 70\n") != std::string::npos);
 }
 
+#if !defined(_WIN32)
+UAM_TEST(RemoteRunnerProxyReportsAHelperThatIsVerifiablyNotRunningOnlyForAttach)
+{
+	// The stand-in `ssh` fails the bridge as a host does once the helper folder is deleted, and answers the process check as told.
+	const fs::path runner = RunnerBesideTests();
+	auto& processes = PlatformServicesFactory::Instance().process_service;
+	const auto last_stderr_line = [&](const std::string& check, bool attach_only, int& exit_code)
+	{
+		TempDir temp("uam-runner-proxy-helper-gone");
+		const fs::path script = temp.root / "ssh";
+		UAM_ASSERT(uam::io::WriteTextFile(script, "#!/bin/sh\nfor last; do :; done\ncase \"$last\" in\n*" +
+		    std::string(uam::remote::kRemoteHelperNotRunningToken) + "*) " + check + ";;\n"
+		    "*) echo 'sh: uam-runner: No such file or directory' >&2; exit 127;;\nesac\n"));
+		fs::permissions(script, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		uam::platform::StdioProcessPlatformFields proxy;
+		std::string error;
+		UAM_ASSERT(processes.StartStdioProcess(proxy, temp.root,
+		    {runner.string(), "proxy", "--alias", "test-host", "--platform", "linux", "--version", "1.2.3"}, &error,
+		    {{"PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin")},
+		     {std::string(uam::remote::kRemoteProcessSpecEnvironment),
+		      uam::remote::BuildProcessProxySpec("gone-session", temp.root, {"/bin/true"}, {}, attach_only, "gone-token")}}));
+		std::string diagnostic;
+		std::array<char, 256> buffer{};
+		exit_code = -1;
+		bool exited = false;
+		for (int attempt = 0; attempt < ProxyPollAttempts(3000); ++attempt)
+		{
+			const std::ptrdiff_t count = processes.ReadStdioProcessStderr(proxy, buffer.data(), buffer.size(), &error);
+			if (count > 0) { diagnostic.append(buffer.data(), static_cast<std::size_t>(count)); continue; }
+			if (exited) break;
+			exited = processes.PollStdioProcessExited(proxy, &exit_code);
+			if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		processes.StopStdioProcess(proxy, true);
+		processes.CloseStdioProcessHandles(proxy);
+		UAM_ASSERT(exited);
+		const std::string_view trimmed = uam::strings::TrimAsciiView(diagnostic);
+		const std::size_t line = trimmed.find_last_of('\n');
+		return std::string(line == std::string_view::npos ? trimmed : trimmed.substr(line + 1));
+	};
+	const std::string gone(uam::remote::kRemoteHelperNotRunningLine);
+	const std::string token(uam::remote::kRemoteHelperNotRunningToken);
+	int exit_code = -1;
+	// Reachable host, bridge cannot run, and the host lists no helper of that version: the attach says so as its last line.
+	UAM_ASSERT_EQ(last_stderr_line("echo " + token, true, exit_code), gone);
+	UAM_ASSERT_EQ(exit_code, 70);
+	// A helper still running, an unreachable host, a failed check or extra output is never reported as gone.
+	for (const std::string& check : {std::string("echo UAM_HELPER_RUNNING"), std::string("exit 255"), "echo " + token + "; exit 1",
+	         "echo warning; echo " + token, std::string("exit 3")})
+	{
+		UAM_ASSERT(last_stderr_line(check, true, exit_code) != gone);
+		UAM_ASSERT_EQ(exit_code, 70);
+	}
+	// A fresh launch never asks: it has no saved process to settle.
+	UAM_ASSERT(last_stderr_line("echo " + token, false, exit_code) != gone);
+	// The check exists for hosts that can list a process's executable; others get no check and so never the line.
+	UAM_ASSERT(uam::remote::RemoteHelperNotRunningCommand("linux", "1.2.3").find("*/1.2.3/uam-runner|*/\"1.2.3/uam-runner (deleted)\")") != std::string::npos);
+	UAM_ASSERT(!uam::remote::RemoteHelperNotRunningCommand("windows", "1.2.3").empty());
+	UAM_ASSERT(uam::remote::RemoteHelperNotRunningCommand("macos", "1.2.3").empty());
+	UAM_ASSERT(uam::remote::RemoteHelperNotRunningCommand("linux", "1.2.3; rm -rf x").empty());
+}
+#endif
+
 UAM_TEST(RemoteRunnerProxyRelaysRealProviderStdioWithoutBlockingTheAppTransport)
 {
 	TempDir temp("uam-runner-proxy");

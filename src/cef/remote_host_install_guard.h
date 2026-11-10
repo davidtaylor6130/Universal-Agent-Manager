@@ -125,35 +125,24 @@ namespace uam::remote_install
 		    AgentRunScheduler::HasPendingInitialMention(app, chat_id); // also covers managed follow-ups
 	}
 
-	/// <summary>An unsent-prompt record whose row the chat still shows as unsent, so the user can send or remove it.
-	/// A record with no such row can be neither, so it holds nothing. Unloaded history counts: its rows are not known yet.</summary>
-	inline bool ChatHasActionableUnsentPrompt(const AppState& app, const ChatSession& chat)
-	{
-		if (chat.acp_unsent_prompt_recoveries.empty() || !chat.messages_loaded) return !chat.acp_unsent_prompt_recoveries.empty();
-		const std::vector<int> shown = KnownUnsentAcpMessageIndices(app, chat);
-		return std::ranges::any_of(chat.acp_unsent_prompt_recoveries, [&](const AcpUnsentPromptRecovery& value)
-		    { return std::ranges::find(shown, value.user_message_index) != shown.end() &&
-		          chat.messages[static_cast<std::size_t>(value.user_message_index)].AcpPromptAwaitsDecision(); });
-	}
-
 	/// <summary>Saved chat fields that mean a turn, its input, a restart or a compaction may still be live on the host.</summary>
-	inline bool ChatHasRemoteTurnState(const AppState& app, const ChatSession& chat)
+	inline bool ChatHasRemoteTurnState(const ChatSession& chat)
 	{
 		return chat.remote_turn_reconnect_pending || chat.remote_restart_pending || chat.remote_source_exit_pending ||
 		    chat.remote_manual_compaction_pending || !chat.remote_active_turn_id.empty() ||
 		    !chat.remote_prompt_delivery_id.empty() || !chat.remote_prompt_delivery_session_id.empty() ||
 		    !chat.remote_pending_requests.empty() || !chat.remote_interaction_responses.empty() ||
 		    !chat.acp_queued_prompts.empty() || chat.acp_dispatched_queued_prompt_count != 0 ||
-		    ChatHasActionableUnsentPrompt(app, chat);
+		    ChatHasActionableUnsentRecovery(chat);
 	}
 
 	/// <summary>A stop that is queued, running or creating a process for this chat; an unconfirmed remote stop alone is not counted.</summary>
 	inline bool ChatStopInFlight(const AppState& app, const std::string& chat_id)
 	{
-		return std::ranges::any_of(app.pending_acp_remote_stops, [&](const auto& stop) { return stop && stop->chat_id == chat_id; }) ||
+		// The runtime's rule, plus any local stop task whose exit is not confirmed, whatever its purpose.
+		return AcpStopInFlight(app, chat_id) ||
 		    std::ranges::any_of(app.acp_process_stop_tasks, [&](const auto& stop)
-		        { return stop.chat_id == chat_id && (!stop.finished || !stop.finished->load() || (stop.result && !stop.result->exit_confirmed)); }) ||
-		    acp_detail::AbandonedAcpProcessCreationPending(app, chat_id);
+		        { return stop.chat_id == chat_id && (!stop.finished || (stop.result && !stop.result->exit_confirmed)); });
 	}
 
 	/// <summary>No turn, input, launch, stop, compaction, goal, managed run or provider background work is held by this runtime.
@@ -216,12 +205,21 @@ namespace uam::remote_install
 		Unreachable,
 	};
 
-	inline RetainedProcess ClassifyRetainedProcess(const AppState& app, const ChatSession& chat, const std::string& host_id, const ReattachProbes* probes = nullptr)
+	/// <summary>Whether an install of this version into this folder replaces the helper already saved for the host, at the same
+	/// endpoint. That helper is then asked to stop by the install itself and refuses while it owns a process.</summary>
+	inline bool InstallKeepsHelperEndpoint(const ExecutionHost& installed, const std::string& version, const std::string& runner_directory, int protocol_version)
+	{
+		return !version.empty() && installed.runner_version == version && installed.runner_directory == runner_directory &&
+		    installed.runner_protocol_version == protocol_version;
+	}
+
+	/// same_helper: the install keeps the helper endpoint (InstallKeepsHelperEndpoint); false is the cautious answer.
+	inline RetainedProcess ClassifyRetainedProcess(const AppState& app, const ChatSession& chat, const std::string& host_id, const ReattachProbes* probes = nullptr, bool same_helper = false)
 	{
 		// A waiting or claimed usage-limit continuation can still dispatch during the install, and input still being saved,
 		// routed or prepared can still launch, so both keep blocking. A continued one with no live runtime has nothing to continue in.
 		const std::string& quota = chat.claude_quota_continuation.state;
-		if (chat.execution_host_id != host_id || host_id == execution_hosts::kLocalHostId || ChatHasRemoteTurnState(app, chat) ||
+		if (chat.execution_host_id != host_id || host_id == execution_hosts::kLocalHostId || ChatHasRemoteTurnState(chat) ||
 		    quota == "waiting" || quota == "claimed" || !chat.goal_pending_continuation_id.empty() ||
 		    ChatStopInFlight(app, chat.id) || ChatAdmittingInput(app, chat.id)) return RetainedProcess::NotRetained;
 		const auto found = std::ranges::find_if(app.acp_sessions, [&](const auto& value) { return value && value->chat_id == chat.id; });
@@ -236,22 +234,26 @@ namespace uam::remote_install
 			if (AcpSessionCanIdleShutdown(*session, chat)) return RetainedProcess::StopIdle;
 			return session->recovering_remote_process || !session->session_ready ? RetainedProcess::Connecting : RetainedProcess::NotRetained;
 		}
-		// A saved stop cleanup with no saved turn, input or restart (checked above) and no running stop is authority UAM cannot
-		// reach, like any other: holding the update for it would be permanent, because only the host can settle it. The helper
-		// refuses to shut down while it owns a process, so the update cannot end one that is in fact still alive.
+		// A saved stop cleanup with no saved turn, input or restart (checked above) and no running stop can only be settled by
+		// the helper that ran the process, so the installed helper is asked first (below).
 		const bool saved_authority = chat.remote_process_exists || chat.remote_stop_cleanup_pending;
 		const bool reattaching = session != nullptr && (session->reconnect_pending || session->recovering_remote_process);
 		if (!saved_authority && !reattaching) return RetainedProcess::NotRetained;
 		if (session != nullptr && !SessionIsInertOffline(*session, chat.remote_stop_cleanup_pending)) return RetainedProcess::NotRetained;
 		// A process that only lost its connection may still be alive under the current helper; once a newer helper is
-		// committed it could no longer be reached, so a pending reattach or unconfirmed stop gets one fresh attempt before it is set aside.
+		// committed it could no longer be reached, so a pending reattach or a saved stop gets one fresh attempt before it is set aside.
 		// Only a reattach to an existing process can succeed during the wait; a plain relaunch is refused while the host is reserved.
-		if (session != nullptr && (session->remote_stop_unconfirmed || (session->reconnect_pending && session->recovering_remote_process)))
+		const bool stop_marker = chat.remote_stop_cleanup_pending;
+		if (stop_marker || (session != nullptr && session->reconnect_pending && session->recovering_remote_process))
 		{
 			const auto probe = probes == nullptr ? ReattachProbes::const_iterator{} : probes->find(chat.id);
 			// Only a recorded failed attempt counts; a launch gate or routing wait that merely deferred the retry does not.
-			const bool failed = probes != nullptr && probe != probes->end() && session->reconnect_attempts > probe->second.attempts;
+			const bool failed = probes != nullptr && session != nullptr && probe != probes->end() && session->reconnect_attempts > probe->second.attempts;
 			if (!failed) return RetainedProcess::Reattaching;
+			// An answer from the helper (stopped, gone, or no helper left running) clears the saved stop, so reaching here
+			// means it gave none. An install that keeps the endpoint asks that same helper to stop and is refused while it owns
+			// a process; any other install never asks it, and the new helper could not see a process it still runs.
+			if (stop_marker && !same_helper) return RetainedProcess::NotRetained;
 		}
 		return RetainedProcess::Unreachable;
 	}
@@ -277,7 +279,7 @@ namespace uam::remote_install
 	/// <summary>Strict by default; initial quiesce admission may wait for owned discovery, background scans and idle kept-alive
 	/// provider processes; both install scopes set aside unreachable saved process authority (#771).</summary>
 	inline bool HostHasRuntimeWork(const AppState& app, const std::string& host_id, HostWorkScope scope, HostRuntimeBlockReason* reason_out = nullptr,
-	    std::string* chat_id_out = nullptr, const ReattachProbes* probes = nullptr)
+	    std::string* chat_id_out = nullptr, const ReattachProbes* probes = nullptr, bool same_helper = false)
 	{
 		const bool allow_quiesce = scope == HostWorkScope::InstallAdmission;
 		if (reason_out) *reason_out = HostRuntimeBlockReason::None;
@@ -319,7 +321,7 @@ namespace uam::remote_install
 			if (session != app.acp_sessions.end() && IsStaleOrphanSession(app, **session, host_id)) return true;
 			const auto chat = std::ranges::find(app.chats, chat_id, &ChatSession::id);
 			if (chat == app.chats.end()) return false;
-			const RetainedProcess retained = ClassifyRetainedProcess(app, *chat, host_id, probes);
+			const RetainedProcess retained = ClassifyRetainedProcess(app, *chat, host_id, probes, same_helper);
 			return retained == RetainedProcess::Unreachable ||
 			    (allow_quiesce && (retained == RetainedProcess::StopIdle || retained == RetainedProcess::Connecting || retained == RetainedProcess::Reattaching));
 		};
@@ -393,27 +395,26 @@ namespace uam::remote_install
 		// The first saved or runtime flag that matched is often not the real hold, so describe what the chat is actually doing.
 		const auto chat_hold = [&]() -> std::string
 		{
-			// An unconfirmed stop alone no longer holds the update, so input the user can still act on is the hold to name.
-			if (chat != app.chats.end() && !ChatStopInFlight(app, chat_id) && ChatHasActionableUnsentPrompt(app, *chat))
-				return name + " has queued or unsent input for this host. Send or remove it in that chat, then update the helper.";
 			if (discovery && AcpStopInProgress(app, chat_id))
 				return "Model discovery is still stopping on this host. UAM is confirming the stop; update the helper once the host answers.";
-			if (session != nullptr && session->remote_stop_unconfirmed && !session->running && !session->reconnect_pending && !ChatStopInFlight(app, chat_id))
-				return "UAM could not confirm that " + inner_name + " stopped on this host. Restart UAM so it retries the stop, then update the helper.";
-			if (session == nullptr && chat != app.chats.end() && chat->remote_stop_cleanup_pending)
-				return "UAM could not confirm that " + inner_name + " stopped on this host. Restart UAM so it retries the stop, then update the helper.";
-			if (!chat_id.empty() && AcpStopInProgress(app, chat_id))
+			// A stop the host never confirmed, with nothing running now. It is named only after every more specific hold below.
+			const bool unconfirmed_stop = !chat_id.empty() && !ChatStopInFlight(app, chat_id) &&
+			    (session != nullptr ? session->remote_stop_unconfirmed && !session->running : chat != app.chats.end() && chat->remote_stop_cleanup_pending);
+			if (!chat_id.empty() && !unconfirmed_stop && AcpStopInProgress(app, chat_id))
 				return name + " is still stopping on this host. UAM is confirming the stop; update the helper once the host answers.";
 			if (session != nullptr && (session->processing || AcpSessionIsWaitingForInput(*session) || session->prompt_request_id != 0 ||
-			    !session->queued_prompt.empty() || session->recovering_remote_turn))
+			    // A stop retry marks its reattach as a turn recovery; a turn it still holds keeps processing set.
+			    !session->queued_prompt.empty() || (session->recovering_remote_turn && !unconfirmed_stop)))
 				return name + " has a turn in progress on this host. Stop it or let it finish, then update the helper.";
 			if (chat != app.chats.end() && (chat->claude_quota_continuation.state == "waiting" || chat->claude_quota_continuation.state == "held"))
 				return name + " is waiting to continue after a usage limit. Cancel that continuation in the chat or let it run, then update the helper.";
 			if (chat != app.chats.end() && ChatHasQuotaContinuation(*chat))
 				return name + " is continuing after a usage limit on this host. Let that turn finish or stop it in the chat, then update the helper.";
 			if ((session != nullptr && (session->queue_held || !session->queued_user_prompts.empty())) ||
-			    (chat != app.chats.end() && (chat->acp_queue_held || !chat->acp_queued_prompts.empty() || ChatHasActionableUnsentPrompt(app, *chat))))
-				return name + " has queued or unsent input for this host. Send or remove it in that chat, then update the helper.";
+			    (chat != app.chats.end() && (chat->acp_queue_held || !chat->acp_queued_prompts.empty() || ChatHasActionableUnsentRecovery(*chat))))
+				// Sending is refused until the stop is confirmed, so only removal is offered then.
+				return unconfirmed_stop ? name + " has queued or unsent input for this host, and UAM could not confirm that its earlier process stopped. Remove that input in the chat, then update the helper."
+				                        : name + " has queued or unsent input for this host. Send or remove it in that chat, then update the helper.";
 			if (session != nullptr && (!session->claude_live_background_task_ids.empty() || ProviderRuntimeRegistry::ResolveById(session->provider_id).AcpBackgroundTaskCount(*session) > 0))
 				return name + " has background tasks running on this host. Let them finish or stop the chat, then update the helper.";
 			if ((chat != app.chats.end() && !chat->goal_pending_continuation_id.empty()) ||
@@ -421,11 +422,16 @@ namespace uam::remote_install
 				return name + " has a goal continuation waiting to run on this host. Let it run or pause the goal, then update the helper.";
 			if (chat != app.chats.end() && ChatAdmittingInput(app, chat_id))
 				return name + " is saving or preparing input on this host. Try the update again in a moment.";
+			// Each update attempt asks the installed helper again, so the advice is to make that helper answerable.
+			if (unconfirmed_stop && chat != app.chats.end() && ChatHasRemoteTurnState(*chat))
+				return name + " has a turn in progress on this host. Stop it or let it finish, then update the helper.";
+			if (unconfirmed_stop)
+				return "UAM could not confirm that " + inner_name + " stopped on this host, and this update would replace the helper that ran it. Check that the host is reachable, then try the update again; UAM asks that helper again each time.";
 			if (session != nullptr && !session->running && session->reconnect_pending)
 				return "UAM is reconnecting to the process for " + inner_name + " on this host before updating its helper. Try the update again in a moment.";
 			if (session != nullptr && session->running && (session->recovering_remote_process || !session->session_ready))
 				return name + " is still connecting to its process on this host. Try the update again in a moment; if it keeps connecting, check the SSH connection or stop its runtime in that chat.";
-			if (chat != app.chats.end() && ChatHasRemoteTurnState(app, *chat))
+			if (chat != app.chats.end() && ChatHasRemoteTurnState(*chat))
 				return name + " has a turn in progress on this host. Stop it or let it finish, then update the helper.";
 			return name + " still has work on this host. Stop it in that chat, then update the helper.";
 		};
@@ -489,7 +495,8 @@ namespace uam::remote_install
 
 	/// <summary>Before a helper update: confirmed-stops idle kept-alive provider processes. Saved chat fields and unreachable
 	/// reattach loops are left alone; their reattach retries against the committed helper.</summary>
-	/// Pending reattaches and unconfirmed stops are retried once at once and recorded in probes. Returns how many stops are in progress.
+	/// Pending reattaches and saved stops are retried once at once and recorded in probes; a saved stop with no runtime, or one
+	/// that was not retrying, gets a stop-only reattach for it. Returns how many stops are in progress.
 	inline std::size_t QuiesceRetainedProcessesOnHost(AppState& app, const std::string& host_id, ReattachProbes* probes = nullptr)
 	{
 		std::size_t stopping = 0;
@@ -501,13 +508,23 @@ namespace uam::remote_install
 			if (retained == RetainedProcess::StopIdle) stop_ids.push_back(chat.id);
 			if (retained != RetainedProcess::Reattaching || probes == nullptr || probes->contains(chat.id)) continue;
 			const auto session = std::ranges::find_if(app.acp_sessions, [&](const auto& value) { return value && value->chat_id == chat.id; });
-			if (session == app.acp_sessions.end()) continue;
-			const double now = GetAppTimeSeconds();
-			(*probes)[chat.id] = ReattachProbe{(*session)->reconnect_attempts, now};
-			if ((*session)->reconnect_pending) (*session)->reconnect_not_before_time_s = now;
-			else stop_retry_ids.push_back(chat.id); // an unconfirmed stop that was waiting for a restart to retry it
+			if (session != app.acp_sessions.end() && (*session)->reconnect_pending)
+			{
+				const double now = GetAppTimeSeconds();
+				(*probes)[chat.id] = ReattachProbe{(*session)->reconnect_attempts, now};
+				(*session)->reconnect_not_before_time_s = now;
+			}
+			else if (chat.remote_stop_cleanup_pending) stop_retry_ids.push_back(chat.id);
 		}
-		for (const std::string& chat_id : stop_retry_ids) (void)EnsureAcpStopProgress(app, chat_id);
+		for (const std::string& chat_id : stop_retry_ids)
+		{
+			const auto chat = std::ranges::find(app.chats, chat_id, &ChatSession::id);
+			if (chat == app.chats.end()) continue;
+			// Reattach to the saved process only to stop it; this launches nothing.
+			RetireRemoteHelper(app, *chat);
+			if (const AcpSessionState* session = FindAcpSessionForChat(app, chat_id))
+				(*probes)[chat_id] = ReattachProbe{session->reconnect_attempts, GetAppTimeSeconds()};
+		}
 		for (const std::string& chat_id : stop_ids)
 		{
 			(void)StopAcpSession(app, chat_id, AcpStopPurpose::ProviderUpdate);
