@@ -71,6 +71,56 @@ namespace
 	nlohmann::json g_last_pushed_chat_order_fingerprint;
 	// Digest of each chat's compact summary at its last push; a poll tick builds JSON only for chats whose digest moved.
 	std::unordered_map<std::string, std::uint64_t> g_last_pushed_chat_digests_by_chat_id;
+	// Pushes reuse values by revision stamp (see StateSerializer::StampedCacheMode). A push that starts at least
+	// this long after the last verifying one recomputes them instead, so a write that bypassed a stamp reaches the
+	// frontend after this delay at most, with a [desync] log line, instead of never.
+	constexpr std::chrono::seconds kStateReconciliationInterval{3};
+	std::chrono::steady_clock::time_point g_last_state_reconciliation_at{};
+	// A push since then trusted a stamp; the poll loop runs one more push when the interval ends even if nothing reports a change.
+	bool g_state_reconciliation_pending = false;
+	// Tests: after every push, recompute everything the stamps vouch for and count differences.
+	bool g_verify_state_caches_after_every_push = false;
+
+	/// <summary>A clock that moved backwards (stepped test clocks) counts as elapsed, so verification is never postponed by it.</summary>
+	bool ReconciliationIntervalElapsed(std::chrono::steady_clock::time_point now)
+	{
+		return now < g_last_state_reconciliation_at || now - g_last_state_reconciliation_at >= kStateReconciliationInterval;
+	}
+
+	/// <summary>Chooses whether this push verifies or trusts stamped values, and records what it did.</summary>
+	class ReconciledPush
+	{
+	  public:
+		ReconciledPush()
+		    : m_now(g_state_push_clock()), m_verify(ReconciliationIntervalElapsed(m_now)),
+		      m_mode(m_verify ? uam::StateSerializer::StampedCacheMode::Verify : uam::StateSerializer::StampedCacheMode::Trust),
+		      m_trusted_before(uam::StateSerializer::TrustedCacheReadCount())
+		{
+		}
+		~ReconciledPush()
+		{
+			if (m_verify)
+			{
+				g_last_state_reconciliation_at = m_now;
+				g_state_reconciliation_pending = false;
+			}
+			else if (uam::StateSerializer::TrustedCacheReadCount() != m_trusted_before) g_state_reconciliation_pending = true;
+		}
+
+	  private:
+		std::chrono::steady_clock::time_point m_now;
+		bool m_verify;
+		uam::StateSerializer::ScopedStampedCacheMode m_mode;
+		std::size_t m_trusted_before;
+	};
+
+	void VerifyStateCachesForTests(const uam::AppState& app)
+	{
+		if (!g_verify_state_caches_after_every_push) return;
+		const uam::StateSerializer::ScopedStampedCacheMode verification(uam::StateSerializer::StampedCacheMode::Verify);
+		(void)uam::StateSerializer::SerializeChatFingerprintDigests(app);
+	}
+
 	// Tests observe every built statePatch message; nullptr in production.
 	void (*g_state_patch_observer)(const std::string& message) = nullptr;
 
@@ -510,8 +560,28 @@ namespace uam
 		return g_state_push_deferred && g_state_push_clock() >= g_deferred_state_push_due_at;
 	}
 
+	bool StateReconciliationDue()
+	{
+		return g_state_reconciliation_pending && ReconciliationIntervalElapsed(g_state_push_clock());
+	}
+
+	void SetStateCacheVerificationAfterEveryPushForTests(bool verify)
+	{
+		g_verify_state_caches_after_every_push = verify;
+	}
+
+	static bool PushStateUpdateIfChangedOnce(CefRefPtr<CefBrowser> browser, AppState& app);
+
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app)
 	{
+		const bool pushed = PushStateUpdateIfChangedOnce(browser, app);
+		VerifyStateCachesForTests(app);
+		return pushed;
+	}
+
+	static bool PushStateUpdateIfChangedOnce(CefRefPtr<CefBrowser> browser, AppState& app)
+	{
+		const ReconciledPush reconciled_push;
 		// The slices, the digest scan and the summaries built for changed chats read the same unchanged state.
 		const uam::StateSerializer::StablePass stable_pass;
 		const auto fingerprint_started = std::chrono::steady_clock::now();
@@ -592,13 +662,17 @@ namespace uam
 	void PushStateUpdate(CefRefPtr<CefBrowser> browser, AppState& app)
 	{
 		BumpStateRevision(app);
-		// The full state and the digest baselines taken from it read the same unchanged state.
-		const uam::StateSerializer::StablePass stable_pass;
-		nlohmann::json message = BuildFullStateUpdateMessage(app);
-		const std::string serialized_message = DumpFrontendJson(message);
-		// Reuse this push snapshot; strip baseline telemetry only after serializing its wire payload.
-		ResetPatchBaselines(app, std::move(message["data"]));
-		PostPush(browser, serialized_message);
+		{
+			const ReconciledPush reconciled_push;
+			// The full state and the digest baselines taken from it read the same unchanged state.
+			const uam::StateSerializer::StablePass stable_pass;
+			nlohmann::json message = BuildFullStateUpdateMessage(app);
+			const std::string serialized_message = DumpFrontendJson(message);
+			// Reuse this push snapshot; strip baseline telemetry only after serializing its wire payload.
+			ResetPatchBaselines(app, std::move(message["data"]));
+			PostPush(browser, serialized_message);
+		}
+		VerifyStateCachesForTests(app);
 	}
 
 	void PushStreamToken(CefRefPtr<CefBrowser> browser, const std::string& chat_id, int message_index, const std::string& token)

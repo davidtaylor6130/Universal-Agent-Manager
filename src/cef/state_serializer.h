@@ -29,8 +29,8 @@ class StateSerializer
 {
   public:
 	/// <summary>
-	/// While one is alive on this thread, serializations share catalog snapshots, workspace roots and loaded
-	/// transcript digests instead of recomputing them per call. AppState must not change during its lifetime.
+	/// While one is alive on this thread, serializations share catalog snapshots and workspace roots instead of
+	/// recomputing them per call. AppState must not change during its lifetime.
 	/// </summary>
 	class StablePass
 	{
@@ -46,6 +46,32 @@ class StateSerializer
 
 	/// <summary>Transcript messages hashed on this thread so far, so tests can bound the hashing one push performs.</summary>
 	static std::size_t HashedTranscriptMessageCountForTests();
+
+	/// <summary>
+	/// How serializations on this thread treat values cached by revision stamp (a loaded transcript digest).
+	/// Exact, the default, computes from the source. Trust reuses a value whose stamp is unchanged; only state
+	/// pushes do, because only they are followed by a Verify pass. Verify recomputes every value Trust would
+	/// have reused; a difference is repaired, counted and logged. That is the full reconciliation behind the stamps.
+	/// </summary>
+	enum class StampedCacheMode { Exact, Trust, Verify };
+
+	class ScopedStampedCacheMode
+	{
+	  public:
+		explicit ScopedStampedCacheMode(StampedCacheMode mode) : m_previous(SetStampedCacheMode(mode)) {}
+		~ScopedStampedCacheMode() { SetStampedCacheMode(m_previous); }
+		ScopedStampedCacheMode(const ScopedStampedCacheMode&) = delete;
+		ScopedStampedCacheMode& operator=(const ScopedStampedCacheMode&) = delete;
+
+	  private:
+		StampedCacheMode m_previous;
+	};
+
+	/// <summary>Values reused by revision stamp on this thread so far without recomputing them.</summary>
+	static std::size_t TrustedCacheReadCount();
+
+	/// <summary>Reused values a verifying pass found different from their source on this thread so far.</summary>
+	static std::size_t CacheDivergenceCount();
 
 	/// Serialise the application state, optionally omitting loaded chat messages.
 	static nlohmann::json Serialize(const AppState& app, bool summary_only = false);
@@ -122,6 +148,7 @@ class StateSerializer
   private:
 	static bool BeginStablePass();
 	static void EndStablePass();
+	static StampedCacheMode SetStampedCacheMode(StampedCacheMode mode);
 };
 
 } // namespace uam

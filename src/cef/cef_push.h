@@ -36,6 +36,13 @@ namespace uam
 	/// </summary>
 	bool DeferredStatePushDue();
 	/// <summary>
+	/// True when a push reused stamped values and the reconciliation interval has since elapsed: the poll loop
+	/// then runs one verifying push even though no stage reported a change.
+	/// </summary>
+	bool StateReconciliationDue();
+	/// <summary>After every push, recompute the stamped values from their sources and count differences (StateSerializer::CacheDivergenceCount).</summary>
+	void SetStateCacheVerificationAfterEveryPushForTests(bool verify);
+	/// <summary>
 	/// Milliseconds (at least 1) until the pending deferred summary is due; the poll
 	/// scheduler caps its next delay with this so slow idle ticks never hold it back.
 	/// </summary>

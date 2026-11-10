@@ -432,6 +432,7 @@ namespace
 
 UAM_TEST(PerformanceStreamingStatePushTick)
 {
+	const WithoutStateCacheVerification unverified;
 	TempDir temp("uam-performance-streaming-push");
 	uam::AppState app;
 	BuildStreamingPushFixture(app, temp.root);
@@ -921,6 +922,7 @@ UAM_TEST(StatePushPublishesEverySummaryInputChange)
 
 UAM_TEST(PerformanceLargeCatalogStateFingerprint)
 {
+	const WithoutStateCacheVerification unverified;
 	for (const int chat_count : {1000, 5000})
 	{
 		TempDir temp("uam-performance-large-catalog");
@@ -1014,11 +1016,12 @@ namespace
 }
 
 // Guarded by assertions that fail without the change: the per-push path memo on both display readers (probe
-// counts) and hashing a changed loaded transcript once per push (hashed message counts).
+// counts), and hashing no transcript on an unchanged push and only the changed one otherwise (hashed message counts).
 // Not guarded here: hashing the catalogue token from the JSON tree instead of a dump, which only the printed
 // timings show, and the 250 ms budget, which the code before these changes also met.
 UAM_TEST(PerformanceIdleInstallPushTick)
 {
+	const WithoutStateCacheVerification unverified;
 	FakeStatePushClock clock;
 	FakePathProbeClock probe_clock;
 	StatePatchObserver observer;
@@ -1052,15 +1055,28 @@ UAM_TEST(PerformanceIdleInstallPushTick)
 		// and must hash each loaded transcript once.
 		const std::size_t probes_before = probes();
 		std::size_t hashed_before = uam::StateSerializer::HashedTranscriptMessageCountForTests();
+		const std::size_t trusted_before = uam::StateSerializer::TrustedCacheReadCount();
 		for (int repeat = 0; repeat < 3; ++repeat) UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
 		UAM_ASSERT_EQ(probes(), probes_before);
-		const std::size_t hashed_per_unchanged_push = (uam::StateSerializer::HashedTranscriptMessageCountForTests() - hashed_before) / 3;
+		// Unchanged transcripts are vouched for by their revision stamps: nothing is hashed, whatever their size.
+		UAM_ASSERT_EQ(uam::StateSerializer::HashedTranscriptMessageCountForTests(), hashed_before);
+		UAM_ASSERT(uam::StateSerializer::TrustedCacheReadCount() > trusted_before);
+		// Trusting the stamps owes one verifying push when the reconciliation interval ends, and only one.
+		UAM_ASSERT(!uam::StateReconciliationDue());
+		clock.Advance(std::chrono::seconds(3));
+		UAM_ASSERT(uam::StateReconciliationDue());
+		UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+		UAM_ASSERT(!uam::StateReconciliationDue());
+		clock.Advance(std::chrono::seconds(3));
+		UAM_ASSERT(!uam::StateReconciliationDue());
+		UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+
 		clock.Advance(std::chrono::milliseconds(120));
 		app.chats[4].messages.back().content += " first token";
 		hashed_before = uam::StateSerializer::HashedTranscriptMessageCountForTests();
 		UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
-		// Building the changed chat's summary and hydrating its catalog reuse the digest the scan computed.
-		UAM_ASSERT_EQ(uam::StateSerializer::HashedTranscriptMessageCountForTests() - hashed_before, hashed_per_unchanged_push);
+		// Only the changed transcript is hashed, and once: its summary build and catalog hydration reuse the new digest.
+		UAM_ASSERT_EQ(uam::StateSerializer::HashedTranscriptMessageCountForTests() - hashed_before, app.chats[4].messages.size());
 
 		const double slices = MedianMs(11, [&] { (void)uam::StateSerializer::SerializeFingerprint(app, true, false); });
 		const double digests = MedianMs(11, [&] { (void)uam::StateSerializer::SerializeChatFingerprintDigests(app); });
@@ -1097,4 +1113,55 @@ UAM_TEST(PerformanceIdleInstallPushTick)
 		if (std::max({unchanged, one_changed, large_changed}) > static_cast<double>(kInteractionBudget.count()))
 			throw TestFailure(std::to_string(chat_count) + "-chat idle install push tick p50 exceeded " + std::to_string(kInteractionBudget.count()) + " ms");
 	}
+}
+
+UAM_TEST(StatePushReconciliationRepairsAWriteThatBypassedTheTranscriptStamp)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	StatePatchObserver observer;
+	uam::AppState app;
+	for (const char* id : {"selected", "background"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.provider_id = "claude-cli";
+		chat.messages.push_back(Message{MessageRole::User, "Hello"});
+		chat.messages.push_back(Message{MessageRole::Assistant, "First answer"});
+		app.chats.push_back(std::move(chat));
+	}
+	app.selected_chat_index = 0;
+	// Start a fresh reconciliation interval: this push verifies, the ones in the next three seconds trust the stamps.
+	clock.Advance(std::chrono::seconds(3));
+	uam::PushStateUpdate(nullptr, app);
+
+	// The supported way to write: any non-const access restamps the transcript, so the next push publishes it.
+	clock.Advance(std::chrono::milliseconds(120));
+	app.chats[1].messages.back().content = "Second answer";
+	g_observed_state_patch.clear();
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(nlohmann::json::parse(g_observed_state_patch)["data"]["chats"][0]["id"], "background");
+
+	// The one write the stamp cannot see: through a reference kept from before the digest was read.
+	Message& kept = app.chats[1].messages.back();
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	kept.content = "Third answer";
+	clock.Advance(std::chrono::milliseconds(120));
+	const std::size_t divergences_before = uam::StateSerializer::CacheDivergenceCount();
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::CacheDivergenceCount(), divergences_before);
+
+	// It is not lost: the poll loop owes a verifying push when the interval ends, which finds, repairs and publishes it.
+	UAM_ASSERT(!uam::StateReconciliationDue());
+	clock.Advance(std::chrono::seconds(3));
+	UAM_ASSERT(uam::StateReconciliationDue());
+	g_observed_state_patch.clear();
+	uam_test::g_expected_state_cache_divergences = 1;
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::CacheDivergenceCount(), divergences_before + 1);
+	UAM_ASSERT_EQ(nlohmann::json::parse(g_observed_state_patch)["data"]["chats"][0]["id"], "background");
+	UAM_ASSERT(!uam::StateReconciliationDue());
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
 }

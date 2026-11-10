@@ -156,6 +156,19 @@ namespace uam_test
 		using std::runtime_error::runtime_error;
 	};
 
+	/// <summary>
+	/// Stale cached values the current case provokes on purpose. The runner verifies the state caches after every
+	/// push and fails a case whose count differs from this; it resets to zero before each case.
+	/// </summary>
+	inline std::size_t g_expected_state_cache_divergences = 0;
+
+	/// <summary>Turns the after-every-push cache verification off for cases that count or time a push's own work.</summary>
+	struct WithoutStateCacheVerification
+	{
+		WithoutStateCacheVerification() { uam::SetStateCacheVerificationAfterEveryPushForTests(false); }
+		~WithoutStateCacheVerification() { uam::SetStateCacheVerificationAfterEveryPushForTests(true); }
+	};
+
 	inline void Fail(const char* expr, const char* file, int line)
 	{
 		std::ostringstream out;

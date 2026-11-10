@@ -1640,7 +1640,14 @@ int main(int argc, char** argv)
 		const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
 		try
 		{
+			// Every state push in every case is followed by a full comparison of its stamped caches with their sources.
+			const std::size_t divergences_before = uam::StateSerializer::CacheDivergenceCount();
+			uam::SetStateCacheVerificationAfterEveryPushForTests(true);
+			uam_test::g_expected_state_cache_divergences = 0;
 			test.fn();
+			if (uam::StateSerializer::CacheDivergenceCount() - divergences_before != uam_test::g_expected_state_cache_divergences)
+				throw uam_test::TestFailure("state pushes reused " + std::to_string(uam::StateSerializer::CacheDivergenceCount() - divergences_before) +
+				    " cached value(s) that no longer matched their source; expected " + std::to_string(uam_test::g_expected_state_cache_divergences));
 			std::cout << "[PASS] " << test.name << '\n';
 		}
 		catch (const std::exception& ex)

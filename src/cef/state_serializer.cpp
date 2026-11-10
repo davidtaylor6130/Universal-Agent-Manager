@@ -155,11 +155,38 @@ namespace uam
 		struct StablePassState
 		{
 			CatalogSnapshotCache cache;
-			std::unordered_map<const ChatSession*, std::string> transcript_digests;
 		};
 
 		thread_local StablePassState* g_stable_pass = nullptr;
 		thread_local std::size_t g_hashed_transcript_messages = 0;
+
+		// Values a state push reuses while their source's revision stamp is unchanged. A stamp cannot see a write
+		// through a reference kept from before it was read, so only pushes trust stamps: they are followed by a
+		// verifying pass that recomputes each trusted value and reports and repairs any difference. Every other
+		// caller (a message page, a handler's reply) computes from the source as before.
+		thread_local StateSerializer::StampedCacheMode g_stamped_cache_mode = StateSerializer::StampedCacheMode::Exact;
+		thread_local std::size_t g_trusted_cache_reads = 0;
+		thread_local std::size_t g_cache_divergences = 0;
+
+		void ReportCacheDivergence(std::string_view what, std::string_view owner)
+		{
+			++g_cache_divergences;
+			static auto last_report = std::chrono::steady_clock::time_point::min();
+			const auto now = std::chrono::steady_clock::now();
+			if (last_report != std::chrono::steady_clock::time_point::min() && now - last_report < std::chrono::seconds(5)) return;
+			last_report = now;
+			// Identifiers only: the diverged content is private.
+			uam::diagnostics::Write("[desync] Cached " + std::string(what) + " for " + std::string(owner) +
+			    " differed from its source and was repaired; a write bypassed its revision stamp. Total so far: " + std::to_string(g_cache_divergences) + ".");
+		}
+
+		struct StampedTranscriptDigest
+		{
+			std::uint64_t revision = 0;
+			std::string digest;
+		};
+		// Loaded transcript digests by chat id, valid while the transcript's stamp is unchanged.
+		thread_local std::unordered_map<std::string, StampedTranscriptDigest> g_transcript_digests;
 
 		/// <summary>The pass's catalog cache, or a private one outside a pass, with this call's catalog compaction.</summary>
 		class ScopedCatalogCache
@@ -1043,13 +1070,6 @@ namespace uam
 
 		std::string MessageDigestForFingerprint(const ChatSession& session, bool cache_selected)
 		{
-			// One push reads a changed chat's digest up to three times (digest scan, summary build, catalog hydration).
-			// Checked first so a repeat inside the pass keeps the selected cache's rehash count from the real computation.
-			if (g_stable_pass != nullptr)
-			{
-				if (const auto known = g_stable_pass->transcript_digests.find(&session); known != g_stable_pass->transcript_digests.end()) return known->second;
-			}
-
 			SelectedHistoryDigestCache* cache = cache_selected ? &g_selected_history_digest : nullptr;
 			if (cache != nullptr)
 			{
@@ -1069,6 +1089,27 @@ namespace uam
 					return session.persisted_messages_digest;
 				}
 				return session.updated_at + ":" + std::to_string(session.persisted_message_count);
+			}
+
+			// An unchanged stamp means an unchanged transcript: nothing is hashed, compared or copied.
+			const std::uint64_t revision = session.messages.revision();
+			if (const auto known = g_transcript_digests.find(session.id); g_stamped_cache_mode != StateSerializer::StampedCacheMode::Exact &&
+			    revision != 0 && known != g_transcript_digests.end() && known->second.revision == revision)
+			{
+				if (g_stamped_cache_mode == StateSerializer::StampedCacheMode::Trust)
+				{
+					++g_trusted_cache_reads;
+					return known->second.digest;
+				}
+				std::uint64_t truth_hash = uam::hashing::kFnv1a64OffsetBasis;
+				for (const Message& message : session.messages.items()) chat_pages::AppendMessageDigest(truth_hash, message);
+				std::string truth = chat_pages::FinishMessageDigest(truth_hash, session.messages.size());
+				if (truth != known->second.digest)
+				{
+					ReportCacheDivergence("transcript digest", session.id);
+					known->second.digest = truth;
+				}
+				return truth;
 			}
 
 			const auto started = std::chrono::steady_clock::now();
@@ -1112,7 +1153,11 @@ namespace uam
 				last_slow_digest_report = finished;
 			}
 			std::string digest = chat_pages::FinishMessageDigest(hash, session.messages.size());
-			if (g_stable_pass != nullptr) g_stable_pass->transcript_digests.emplace(&session, digest);
+			if (revision != 0)
+			{
+				if (g_transcript_digests.size() >= 8192) g_transcript_digests.clear(); // ponytail: wholesale reset bounds entries of deleted chats.
+				g_transcript_digests[session.id] = StampedTranscriptDigest{revision, digest};
+			}
 			return digest;
 		}
 
@@ -2181,6 +2226,21 @@ namespace uam
 	std::size_t StateSerializer::HashedTranscriptMessageCountForTests()
 	{
 		return g_hashed_transcript_messages;
+	}
+
+	StateSerializer::StampedCacheMode StateSerializer::SetStampedCacheMode(StampedCacheMode mode)
+	{
+		return std::exchange(g_stamped_cache_mode, mode);
+	}
+
+	std::size_t StateSerializer::TrustedCacheReadCount()
+	{
+		return g_trusted_cache_reads;
+	}
+
+	std::size_t StateSerializer::CacheDivergenceCount()
+	{
+		return g_cache_divergences;
 	}
 
 	nlohmann::json StateSerializer::Serialize(const AppState& app, bool summary_only)
