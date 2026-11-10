@@ -79,6 +79,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <string>
 #include <sstream>
 #include <thread>
@@ -1921,7 +1922,11 @@ namespace
 		bool Connect(std::string* error, std::stop_token stop_token)
 		{
 			const bool connected = Get().Connect(error, stop_token);
-			if (!connected && m_scan != nullptr && !stop_token.stop_requested()) m_scan->connect_failed = true;
+			if (!connected && m_scan != nullptr && !stop_token.stop_requested())
+			{
+				m_scan->connect_failed = true;
+				if (error != nullptr) m_scan->connect_error = *error;
+			}
 			return connected;
 		}
 
@@ -1930,32 +1935,65 @@ namespace
 		std::optional<uam::remote::RunnerClient> m_owned;
 	};
 
-	/// <summary>Probes the CLI on the host through the caller's client, because 2.x has no --pure or top-level export; empty on failure.</summary>
-	std::vector<std::string> RemoteOpenCodeHistoryArgv(uam::remote::RunnerClient& client, ChatHistorySyncService::RemoteHistoryScanContext* scan,
-	    const fs::path& directory, const ProviderProfile& profile, const std::string& operation, const std::string& id, bool& open_code_v2, std::string& error, std::stop_token stop_token)
+	/// <summary>Probed OpenCode versions for this app run, shared by scans and single reads. The key holds the host
+	/// connection and helper, the command and the folder, because a version manager can pin a version per folder.
+	/// A command that fails with a cached version forgets it, so a CLI changed outside UAM is probed again.</summary>
+	std::mutex& RemoteOpenCodeVersionMutex()
+	{
+		static std::mutex mutex;
+		return mutex;
+	}
+
+	std::map<std::string, std::string>& RemoteOpenCodeVersions()
+	{
+		// ponytail: never evicted; it holds one short entry per host folder that has history.
+		static std::map<std::string, std::string> versions;
+		return versions;
+	}
+
+	void ForgetRemoteOpenCodeVersion(const std::string& key)
+	{
+		if (key.empty()) return;
+		std::lock_guard lock(RemoteOpenCodeVersionMutex());
+		RemoteOpenCodeVersions().erase(key);
+	}
+
+	/// <summary>Probes the CLI on the host through the caller's client, because 2.x has no --pure or top-level export; empty on failure.
+	/// version_key names the cached version used, for ForgetRemoteOpenCodeVersion when the command then fails.</summary>
+	std::vector<std::string> RemoteOpenCodeHistoryArgv(uam::remote::RunnerClient& client, const ExecutionHost& host,
+	    const fs::path& directory, const ProviderProfile& profile, const std::string& operation, const std::string& id, bool& open_code_v2,
+	    std::string& version_key, std::string& error, std::stop_token stop_token)
 	{
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		std::vector<std::string> command = uam::provider_runtime_internal::SplitInteractiveCommandOrDefault(profile, "opencode");
-		std::optional<std::string> version = scan != nullptr ? scan->open_code_version : std::nullopt;
+		version_key = nlohmann::json({host.id, host.ssh_alias, host.platform, host.runner_directory, host.runner_version, command, uam::paths::Utf8PathString(directory)}).dump();
+		std::optional<std::string> version;
+		{
+			std::lock_guard lock(RemoteOpenCodeVersionMutex());
+			const auto cached = RemoteOpenCodeVersions().find(version_key);
+			if (cached != RemoteOpenCodeVersions().end()) version = cached->second;
+		}
 		if (!version)
 		{
 			std::vector<std::string> probe = command;
 			probe.push_back("--version");
 			const ProcessExecutionResult probed = client.ExecuteCommand("history-version-" + PlatformServicesFactory::Instance().process_service.GenerateUuid(), directory, probe, 10000, stop_token);
-			if (probed.ok) version = uam::cli_versions::ExtractSemverVersion(probed.output);
+			if (probed.ok) version = uam::cli_versions::ExtractCliReportedVersion(probed.output);
 			if (!version)
 			{
 				if (!stop_token.stop_requested())
-					error = "Remote OpenCode version check failed: " + uam::strings::NonEmptyOrFallback(probed.error, probed.ok ? std::string("no usable CLI version.") : "exit " + std::to_string(probed.exit_code) + ".");
+					error = "Remote OpenCode version check failed: " + uam::strings::NonEmptyOrFallback(probed.error,
+					    probed.ok ? std::string("the CLI did not report one clear version, so no history command was sent.") : "exit " + std::to_string(probed.exit_code) + ".");
 				return {};
 			}
-			if (scan != nullptr) scan->open_code_version = version;
+			std::lock_guard lock(RemoteOpenCodeVersionMutex());
+			RemoteOpenCodeVersions()[version_key] = *version;
 		}
 		open_code_v2 = uam::opencode_v2::IsCheckedHistoryV2(*version);
 		try { return uam::opencode_v2::RemoteHistoryArgv(*version, std::move(command), operation, id); }
 		catch (const std::exception& refusal) { error = refusal.what(); return {}; }
 #else
-		(void)client; (void)scan; (void)directory; (void)profile; (void)operation; (void)id; (void)open_code_v2; (void)stop_token;
+		(void)client; (void)host; (void)directory; (void)profile; (void)operation; (void)id; (void)open_code_v2; (void)version_key; (void)stop_token;
 		error = "This provider is not included in this build.";
 		return {};
 #endif
@@ -4847,7 +4885,8 @@ ChatHistorySyncService::RemoteOpenCodeDiscovery ChatHistorySyncService::Discover
 		if (!history_client.Connect(&result.error, stop_token)) return result;
 		const fs::path directory = uam::paths::PathFromUtf8(folder.directory);
 		bool open_code_v2 = false;
-		const std::vector<std::string> argv = RemoteOpenCodeHistoryArgv(client, scan, directory, profile, "list", {}, open_code_v2, result.error, stop_token);
+		std::string version_key;
+		const std::vector<std::string> argv = RemoteOpenCodeHistoryArgv(client, host, directory, profile, "list", {}, open_code_v2, version_key, result.error, stop_token);
 		if (argv.empty())
 		{
 			if (stop_token.stop_requested()) result.error = "Remote OpenCode discovery cancelled.";
@@ -4886,6 +4925,7 @@ ChatHistorySyncService::RemoteOpenCodeDiscovery ChatHistorySyncService::Discover
 				(void)client.RemoveProcess(session_id);
 				if (polled.exit_code != 0)
 				{
+					ForgetRemoteOpenCodeVersion(version_key);
 					result.error = "Remote OpenCode session discovery failed (exit " +
 					               std::to_string(polled.exit_code) + "): " +
 					               uam::strings::NonEmptyOrFallback(
@@ -4893,6 +4933,7 @@ ChatHistorySyncService::RemoteOpenCodeDiscovery ChatHistorySyncService::Discover
 					return result;
 				}
 				result = ParseRemoteOpenCodeSessionList(output, open_code_v2);
+				if (!result.error.empty()) ForgetRemoteOpenCodeVersion(version_key);
 				return result;
 			}
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -5441,7 +5482,8 @@ ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
 	const std::string process_id = "history-export-" +
 	    PlatformServicesFactory::Instance().process_service.GenerateUuid();
 	bool open_code_v2 = false;
-	std::vector<std::string> argv = RemoteOpenCodeHistoryArgv(client, scan, uam::paths::PathFromUtf8(chat.workspace_directory), profile, "export", chat.native_session_id, open_code_v2, result.error, stop_token);
+	std::string version_key;
+	std::vector<std::string> argv = RemoteOpenCodeHistoryArgv(client, host, uam::paths::PathFromUtf8(chat.workspace_directory), profile, "export", chat.native_session_id, open_code_v2, version_key, result.error, stop_token);
 	if (argv.empty()) return stop_token.stop_requested() ? canceled() : result;
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	if (host.platform != "windows" && host.platform != "Windows") argv = uam::opencode_v2::FileBackedStdoutArgv(std::move(argv));
@@ -5480,6 +5522,7 @@ ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
 			(void)client.RemoveProcess(process_id);
 			if (polled.exit_code != 0)
 			{
+				ForgetRemoteOpenCodeVersion(version_key);
 				result.error = "OpenCode could not export the remote session (exit " +
 				               std::to_string(polled.exit_code) + "): " +
 				               uam::strings::NonEmptyOrFallback(
@@ -5492,6 +5535,7 @@ ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
 				try { output = uam::opencode_v2::NormalizeExport(nlohmann::json::parse(output)).dump(); }
 				catch (const std::exception& refusal)
 				{
+					ForgetRemoteOpenCodeVersion(version_key);
 					result.error = std::string("OpenCode returned an unreadable remote export: ") + refusal.what();
 					return result;
 				}

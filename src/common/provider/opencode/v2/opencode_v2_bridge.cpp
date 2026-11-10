@@ -384,7 +384,7 @@ int Bridge(const std::vector<std::string>& command, IPlatformProcessService& pro
 int History(const std::string& operation, std::vector<std::string> command, const std::string& id, IPlatformProcessService& service)
 {
 	auto probe = command; probe.push_back("--version");
-	const auto parsed_version = cli_versions::ExtractSemverVersion(Capture(probe, service, 10));
+	const auto parsed_version = cli_versions::ExtractCliReportedVersion(Capture(probe, service, 10));
 	if (!parsed_version) throw std::runtime_error("OpenCode history returned no usable CLI version.");
 	const std::string version = *parsed_version;
 	const bool v2 = IsCheckedHistoryV2(version);

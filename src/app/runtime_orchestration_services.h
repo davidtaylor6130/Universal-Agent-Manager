@@ -55,13 +55,13 @@ class ChatHistorySyncService
 		std::int64_t created_epoch_seconds = 0;
 		std::int64_t updated_epoch_seconds = 0;
 	};
-	/// <summary>One scan pass on one host: a shared runner client, its probed OpenCode version and any connect failure.</summary>
+	/// <summary>One scan pass on one host: a shared runner client and its first connect failure.</summary>
 	struct RemoteHistoryScanContext
 	{
 		explicit RemoteHistoryScanContext(const ExecutionHost& host);
 		std::shared_ptr<uam::remote::RunnerClient> client;
-		std::optional<std::string> open_code_version;
 		bool connect_failed = false;
+		std::string connect_error;
 	};
 
 	struct RemoteOpenCodeDiscovery
