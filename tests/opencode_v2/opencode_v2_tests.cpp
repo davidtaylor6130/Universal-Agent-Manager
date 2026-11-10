@@ -99,6 +99,12 @@ int main(int argc, char** argv)
 			Check(HistoryArgv("2.1.2", {"opencode"}, "export", "ses_exact") == std::vector<std::string>({"opencode", "session", "export", "ses_exact", "--standalone"}), "V2 export changed");
 			Check(HistoryArgv("2.1.4", {"opencode"}, "list", {}) == std::vector<std::string>({"opencode", "session", "list", "--format", "json", "--standalone", "--max-count", "100001"}), "2.1.4 list not on the V2 route");
 			Check(HistoryArgv("2.1.4", {"opencode"}, "export", "ses_exact") == std::vector<std::string>({"opencode", "session", "export", "ses_exact", "--standalone"}), "2.1.4 export not on the V2 route");
+			Check(RemoteHistoryArgv("1.19.4", {"opencode"}, "list", {}) == std::vector<std::string>({"opencode", "session", "list", "--format", "json", "--pure", "--max-count", "200"}), "V1 remote list changed");
+			Check(RemoteHistoryArgv("1.19.4", {"opencode"}, "export", "ses_exact") == HistoryArgv("1.19.4", {"opencode"}, "export", "ses_exact"), "V1 remote export changed");
+			Check(RemoteHistoryArgv("2.1.4", {"opencode"}, "list", {}) == std::vector<std::string>({"opencode", "session", "list", "--format", "json", "--standalone", "--max-count", "200"}), "V2 remote list sent --pure or lost its bound");
+			Check(RemoteHistoryArgv("2.1.4", {"opencode"}, "export", "ses_exact") == std::vector<std::string>({"opencode", "session", "export", "ses_exact", "--standalone"}), "V2 remote export sent --pure");
+			std::string remote_refusal; try { (void)RemoteHistoryArgv("2.2.0", {"opencode"}, "list", {}); } catch (const std::exception& error) { remote_refusal = error.what(); }
+			Check(remote_refusal.find("OpenCode 2.2.0 history has not been verified") != std::string::npos, "unverified remote V2 was admitted");
 			std::string refusal; try { (void)HistoryArgv("2.2.0", {"opencode"}, "export", "ses_exact"); } catch (const std::exception& error) { refusal = error.what(); }
 			Check(refusal.find("OpenCode 2.2.0 history has not been verified") != std::string::npos, "unknown V2 history admitted or unnamed");
 			Check(AdapterError("native noise\nUAM OpenCode adapter: " + refusal + "\n") == refusal && AdapterError("native only\n").empty(), "adapter refusal not isolated from native stderr");

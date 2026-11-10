@@ -384,7 +384,7 @@ int Bridge(const std::vector<std::string>& command, IPlatformProcessService& pro
 int History(const std::string& operation, std::vector<std::string> command, const std::string& id, IPlatformProcessService& service)
 {
 	auto probe = command; probe.push_back("--version");
-	const auto parsed_version = cli_versions::ExtractSemverVersion(Capture(probe, service, 10));
+	const auto parsed_version = cli_versions::ExtractCliReportedVersion(Capture(probe, service, 10));
 	if (!parsed_version) throw std::runtime_error("OpenCode history returned no usable CLI version.");
 	const std::string version = *parsed_version;
 	const bool v2 = IsCheckedHistoryV2(version);
@@ -400,13 +400,7 @@ int History(const std::string& operation, std::vector<std::string> command, cons
 	if (operation == "list")
 	{
 		if (!result.is_array() || result.size() >= 100001) throw std::runtime_error("OpenCode history list is incomplete or exceeds its bounded limit.");
-		for (auto& entry : result)
-		{
-			if (entry.contains("location")) entry["directory"] = entry.at("location").at("directory");
-			// Internal refusal data from this checked dispatcher, not upstream
-			// metadata support or evidence authorizing a future native resume.
-			entry["opencode_v2_session_id"] = entry.at("id");
-		}
+		NormalizeHistoryList(result);
 	}
 	Output(result); return 0;
 }

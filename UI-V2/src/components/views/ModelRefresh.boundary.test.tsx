@@ -164,7 +164,8 @@ describe('post143 scoped model refresh boundary', () => {
     useAppStore.setState({ discoverProviderModels: discover })
     const f = picker(false)
     expect(discover).toHaveBeenCalledTimes(1)
-    expect(discover).toHaveBeenCalledWith('', 'claude-cli', '/project', 'ssh-lab')
+    // The picker's own request is marked automatic; the deliberate Retry below is not.
+    expect(discover).toHaveBeenCalledWith('', 'claude-cli', '/project', 'ssh-lab', true)
     await act(async () => outcome === 'throw' ? first.reject(new Error('Private discovery failure')) : first.resolve(false))
     expect(f.host.textContent).toContain(ERROR)
     act(() => button(f.host, 'Codex').click()); act(() => button(f.host, 'Claude').click())

@@ -459,7 +459,7 @@ UAM_TEST(InstallerQuiesceLocalScanCannotBlockOrStartPausedHost)
 		    wait.wait();
 		    return ChatHistorySyncService::LocalHistoryDiscovery{};
 	    },
-	    [wait = other_release.wait, other_entered, target_calls, refreshed_version](const uam::StartupNativeImportRemoteScope& scope, const ProviderProfile*, std::stop_token)
+	    [wait = other_release.wait, other_entered, target_calls, refreshed_version](const uam::StartupNativeImportRemoteScope& scope, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
 	    {
 		    if (scope.host.id == InstallerHost().id)
 		    {
@@ -529,7 +529,7 @@ UAM_TEST(InstallerQuiescePauseCancelsRunningHostScanAndRescansLater)
 	const auto remote_calls = std::make_shared<std::atomic<int>>(0);
 	app.startup_native_import_service = std::make_shared<uam::StartupNativeImportService>(
 	    [](const uam::StartupNativeImportScanRequest&, std::stop_token) { return ChatHistorySyncService::LocalHistoryDiscovery{}; },
-	    [active_entered, remote_calls](const uam::StartupNativeImportRemoteScope& scope, const ProviderProfile*, std::stop_token stop)
+	    [active_entered, remote_calls](const uam::StartupNativeImportRemoteScope& scope, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token stop)
 	    {
 		    ChatHistorySyncService::LocalHistoryDiscovery result;
 		    result.chats.push_back(InstallerScopedHistory(scope));
@@ -590,7 +590,7 @@ UAM_TEST(InstallerQuiesceDeferredScanRejectsChangedConnection)
 			    wait.wait();
 			    return ChatHistorySyncService::LocalHistoryDiscovery{};
 		    },
-		    [target_calls, other_calls](const uam::StartupNativeImportRemoteScope& scope, const ProviderProfile*, std::stop_token)
+		    [target_calls, other_calls](const uam::StartupNativeImportRemoteScope& scope, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
 		    {
 			    if (scope.host.id == InstallerHost().id) ++*target_calls;
 			    else ++*other_calls;
