@@ -51,13 +51,19 @@ namespace uam
 		double started_at_s = 0.0;
 		double completed_at_s = 0.0;
 		bool matches = false;
+		/// Indexes of observed entries whose read could not finish: unknown, never evidence of a match or a change.
+		std::vector<std::size_t> unread;
 		std::atomic<bool> finished{false};
 		std::unique_ptr<std::jthread> worker;
 	};
 
 	enum class RepositoryRouteLaunchState { Pending, Ready, Failed };
+	/// Reads every identity afresh; whatever identity was passed in is discarded. An entry whose read could not
+	/// finish (no connection, timeout, stop) comes back without an identity and with its index in unread.
 	std::vector<RepositoryRouteWorkspace> ReadRepositoryRouteInventory(std::vector<RepositoryRouteWorkspace> workspaces,
-	    const std::vector<ExecutionHost>& hosts, std::stop_token stop = {});
+	    const std::vector<ExecutionHost>& hosts, std::stop_token stop = {}, std::vector<std::size_t>* unread = nullptr);
+	/// How long routing eligibility may keep an identity whose later reads could not finish.
+	inline constexpr double kRepositoryRouteIdentityMaxAgeSeconds = 600.0;
 	bool RefreshRepositoryRoutes(AppState& app);
 	void RememberRepositoryRouteAssignment(AppState& app, const ChatSession& chat);
 	RepositoryRouteLaunchState PrepareRepositoryRouteLaunch(AppState& app, const ChatSession& chat, std::string& error);

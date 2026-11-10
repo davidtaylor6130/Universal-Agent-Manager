@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <limits>
 #include <unordered_map>
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
@@ -163,9 +164,10 @@ namespace uam
 	}
 
 	std::vector<RepositoryRouteWorkspace> ReadRepositoryRouteInventory(std::vector<RepositoryRouteWorkspace> workspaces,
-	    const std::vector<ExecutionHost>& hosts, std::stop_token stop)
+	    const std::vector<ExecutionHost>& hosts, std::stop_token stop, std::vector<std::size_t>* unread)
 	{
 		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+		std::vector<char> unfinished(workspaces.size(), 0);
 		std::unordered_map<std::string, std::vector<RepositoryRouteWorkspace*>> by_host;
 		for (RepositoryRouteWorkspace& workspace : workspaces) by_host[workspace.host_id].push_back(&workspace);
 		// Each host has its own 15 second budget and one connection, so a slow host costs the others nothing.
@@ -178,8 +180,6 @@ namespace uam
 			bool connect_attempted = false;
 			for (RepositoryRouteWorkspace* workspace : owned)
 			{
-				// A read that could not finish says nothing about the checkout, so the identity passed in stands.
-				const std::optional<RepositoryRouteIdentity> previous = std::move(workspace->repository);
 				workspace->repository.reset();
 				if (!host || workspace->directory.empty()) continue;
 				bool inconclusive = false;
@@ -219,13 +219,24 @@ namespace uam
 						output = result.output;
 						return true;
 					});
-				if (inconclusive) workspace->repository = previous;
+				// Each reader owns its own entries, so these writes never share an element.
+				if (inconclusive)
+				{
+					workspace->repository.reset();
+					unfinished[static_cast<std::size_t>(workspace - workspaces.data())] = 1;
+				}
 			}
 		};
 		{
 			std::vector<std::jthread> readers;
 			for (const std::pair<const std::string, std::vector<RepositoryRouteWorkspace*>>& group : by_host)
 				readers.emplace_back([&read_host, &group] { try { read_host(group.second); } catch (...) {} });
+		}
+		if (unread != nullptr)
+		{
+			unread->clear();
+			for (std::size_t index = 0; index < unfinished.size(); ++index)
+				if (unfinished[index] != 0) unread->push_back(index);
 		}
 		return workspaces;
 	}
@@ -239,7 +250,26 @@ namespace uam
 			const std::shared_ptr<RepositoryRouteTask> task = std::move(app.repository_route_refresh);
 			if (task->data_root == app.data_root && RepositoryRouteSnapshotMatches(task->captured, current))
 			{
+				// Routing eligibility only: a read that could not finish keeps the identity last read for that
+				// workspace, for at most ten minutes. The launch guard never uses this; it reads afresh.
+				std::vector<double> read_at(task->observed.size(), now);
+				const bool same_root = app.repository_route_data_root == task->data_root;
+				for (const std::size_t index : task->unread)
+				{
+					if (index >= task->observed.size()) continue;
+					// Never read: older than any age limit, whatever the app clock says.
+					read_at[index] = -std::numeric_limits<double>::infinity();
+					for (std::size_t known = 0; same_root && known < app.repository_route_workspaces.size(); ++known)
+					{
+						const double known_at = known < app.repository_route_read_at_s.size() ? app.repository_route_read_at_s[known] : app.repository_route_observed_at_s;
+						if (!app.repository_route_workspaces[known].repository || now - known_at > kRepositoryRouteIdentityMaxAgeSeconds ||
+						    !RepositoryRouteSnapshotMatches({task->observed[index]}, {app.repository_route_workspaces[known]})) continue;
+						task->observed[index].repository = app.repository_route_workspaces[known].repository;
+						read_at[index] = known_at;
+					}
+				}
 				app.repository_route_workspaces = task->observed;
+				app.repository_route_read_at_s = std::move(read_at);
 				app.repository_route_data_root = task->data_root;
 				app.repository_route_observed_at_s = now;
 			}
@@ -254,19 +284,14 @@ namespace uam
 		const std::shared_ptr<RepositoryRouteTask> task = std::make_shared<RepositoryRouteTask>();
 		task->data_root = app.data_root;
 		task->captured = current;
-		// Seed the last identity read for each unchanged workspace; a read that times out keeps it.
-		if (app.repository_route_data_root == app.data_root)
-			for (RepositoryRouteWorkspace& workspace : task->captured)
-				for (const RepositoryRouteWorkspace& known : app.repository_route_workspaces)
-					if (RepositoryRouteSnapshotMatches({workspace}, {known})) workspace.repository = known.repository;
 		task->started_at_s = now;
 		app.repository_route_refresh = task;
 		app.repository_route_tasks.push_back(task);
 		task->worker = std::make_unique<std::jthread>([state = task.get(), hosts = app.settings.execution_hosts](std::stop_token stop)
 		{
 			uam::platform::LowerCurrentThreadToBackgroundPriority();
-			try { state->observed = ReadRepositoryRouteInventory(state->captured, hosts, stop); }
-			catch (...) { state->observed = state->captured; }
+			try { state->observed = ReadRepositoryRouteInventory(state->captured, hosts, stop, &state->unread); }
+			catch (...) { state->observed = state->captured; state->unread.clear(); }
 			state->completed_at_s = GetAppTimeSeconds();
 			state->finished.store(true, std::memory_order_release);
 		});
@@ -313,6 +338,14 @@ namespace uam
 			if (task->chat_id != chat.id || task->chat_incarnation != chat.metadata_incarnation || task->chat_identity != identity || task->data_root != app.data_root ||
 			    task->captured != expected) continue;
 			if (!task->finished.load(std::memory_order_acquire)) return RepositoryRouteLaunchState::Pending;
+			// Unread is unknown, not unchanged: the launch waits for a read that finishes, and the user can send again.
+			if (!task->unread.empty())
+			{
+				// Sending again after this starts a new read instead of repeating the old answer.
+				if (now - task->completed_at_s > 2.0) continue;
+				error = "The assigned checkout could not be read before launch. Check the computer's connection, then send again.";
+				return RepositoryRouteLaunchState::Failed;
+			}
 			if (!task->matches) { error = "The assigned repository changed during launch preparation. Review its routing mapping."; return RepositoryRouteLaunchState::Failed; }
 			if (now - task->completed_at_s <= 2.0) return RepositoryRouteLaunchState::Ready;
 		}
@@ -331,8 +364,9 @@ namespace uam
 			uam::platform::LowerCurrentThreadToBackgroundPriority();
 			try
 			{
-				state->observed = ReadRepositoryRouteInventory(state->captured, hosts, stop);
-				state->matches = state->observed == state->captured;
+				// The reader discards the expected identities it is handed, so a match is always a fresh read.
+				state->observed = ReadRepositoryRouteInventory(state->captured, hosts, stop, &state->unread);
+				state->matches = state->unread.empty() && state->observed == state->captured;
 			}
 			catch (...) { state->matches = false; }
 			state->completed_at_s = GetAppTimeSeconds();

@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "app/repository_route_match_service.h"
+#include "remote/runner_protocol.h"
 
 using namespace uam_test;
 
@@ -203,26 +204,28 @@ UAM_TEST(RepositoryRoutesLaunchGuardFailsClosedAndAllowsExactManualOverride)
 	UAM_ASSERT_EQ(app.repository_route_tasks.size(), std::size_t(1));
 }
 
-UAM_TEST(RepositoryRoutesKeepTheLastIdentityWhenAReadCannotFinish)
+UAM_TEST(RepositoryRoutesReadDiscardsThePassedIdentityAndReportsUnfinishedReads)
 {
 	TempDir fixture("uam-repository-routing-timeout");
 	const uam::RepositoryRouteIdentity known{"git", "github.com/Owner/Repo", "src"};
 	const std::vector<uam::RepositoryRouteWorkspace> seeded{{"local-fixture", "local", fixture.root.string(), "local-identity", known}};
-	// A stopped or timed-out read is not evidence that the checkout changed.
+	// A stopped or timed-out read is unknown: it returns no identity, never the one it was handed.
 	std::stop_source stopped;
 	stopped.request_stop();
-	const std::vector<uam::RepositoryRouteWorkspace> unfinished = uam::ReadRepositoryRouteInventory(seeded, {uam::execution_hosts::LocalHost()}, stopped.get_token());
+	std::vector<std::size_t> unread;
+	const std::vector<uam::RepositoryRouteWorkspace> unfinished = uam::ReadRepositoryRouteInventory(seeded, {uam::execution_hosts::LocalHost()}, stopped.get_token(), &unread);
 	UAM_ASSERT_EQ(unfinished.size(), std::size_t(1));
-	UAM_ASSERT(unfinished.front().repository == std::optional<uam::RepositoryRouteIdentity>(known));
-	// A read that finishes replaces it.
+	UAM_ASSERT(!unfinished.front().repository.has_value());
+	UAM_ASSERT(unread == std::vector<std::size_t>{0});
 	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(fixture.root.string())));
 	UAM_ASSERT(RunTestCommand("git -C " + ShellQuoteForTest(fixture.root.string()) + " config remote.origin.url https://github.com/Owner/Other.git"));
-	const std::vector<uam::RepositoryRouteWorkspace> finished = uam::ReadRepositoryRouteInventory(seeded, {uam::execution_hosts::LocalHost()});
+	const std::vector<uam::RepositoryRouteWorkspace> finished = uam::ReadRepositoryRouteInventory(seeded, {uam::execution_hosts::LocalHost()}, {}, &unread);
+	UAM_ASSERT(unread.empty());
 	UAM_ASSERT(finished.front().repository.has_value());
 	UAM_ASSERT_EQ(finished.front().repository->identity, std::string("github.com/Owner/Other"));
 }
 
-UAM_TEST(RepositoryRoutesRefreshSeedsKnownIdentitiesAndIgnoresHostHealth)
+UAM_TEST(RepositoryRoutesEligibilityKeepsARecentIdentityAcrossAnUnfinishedReadAndIgnoresHostHealth)
 {
 	uam::AppState app;
 	app.data_root = fs::temp_directory_path() / "uam-synthetic-route-seed";
@@ -240,15 +243,88 @@ UAM_TEST(RepositoryRoutesRefreshSeedsKnownIdentitiesAndIgnoresHostHealth)
 	destination.execution_host_id = remote.id;
 	app.folders = {destination};
 	const uam::RepositoryRouteIdentity known{"git", "github.com/Owner/Repo", ""};
-	app.repository_route_workspaces = uam::CaptureRepositoryRouteWorkspaces(app.folders, app.settings.execution_hosts);
-	app.repository_route_workspaces.front().repository = known;
-	app.repository_route_data_root = app.data_root;
-	app.repository_route_observed_at_s = uam::GetAppTimeSeconds() - 31.0;
+	const std::vector<uam::RepositoryRouteWorkspace> current = uam::CaptureRepositoryRouteWorkspaces(app.folders, app.settings.execution_hosts);
 	// A failed health check changes neither the machine nor its checkouts, so the snapshot still matches.
 	app.settings.execution_hosts.back().runner_status = "error";
-	UAM_ASSERT(uam::RepositoryRouteSnapshotMatches(app.repository_route_workspaces, uam::CaptureRepositoryRouteWorkspaces(app.folders, app.settings.execution_hosts)));
-	app.settings.execution_hosts.back().runner_status = "uninstalled";
-	UAM_ASSERT(!uam::RefreshRepositoryRoutes(app));
-	UAM_ASSERT(app.repository_route_refresh != nullptr);
-	UAM_ASSERT(app.repository_route_refresh->captured.front().repository == std::optional<uam::RepositoryRouteIdentity>(known));
+	UAM_ASSERT(uam::RepositoryRouteSnapshotMatches(current, uam::CaptureRepositoryRouteWorkspaces(app.folders, app.settings.execution_hosts)));
+	const auto refresh_with_unfinished_read = [&](double identity_age_s)
+	{
+		const double now = uam::GetAppTimeSeconds();
+		app.repository_route_workspaces = current;
+		app.repository_route_workspaces.front().repository = known;
+		app.repository_route_read_at_s = {now - identity_age_s};
+		app.repository_route_data_root = app.data_root;
+		app.repository_route_observed_at_s = now - 31.0;
+		const std::shared_ptr<uam::RepositoryRouteTask> task = std::make_shared<uam::RepositoryRouteTask>();
+		task->data_root = app.data_root;
+		task->captured = current;
+		task->observed = current;
+		task->unread = {0};
+		task->started_at_s = now;
+		task->finished.store(true, std::memory_order_release);
+		app.repository_route_refresh = task;
+		UAM_ASSERT(uam::RefreshRepositoryRoutes(app));
+	};
+	refresh_with_unfinished_read(60.0);
+	UAM_ASSERT(app.repository_route_workspaces.front().repository == std::optional<uam::RepositoryRouteIdentity>(known));
+	// The kept identity keeps its original read time, so repeated unfinished reads cannot keep it alive.
+	UAM_ASSERT(app.repository_route_read_at_s.front() < uam::GetAppTimeSeconds() - 30.0);
+	refresh_with_unfinished_read(uam::kRepositoryRouteIdentityMaxAgeSeconds + 1.0);
+	UAM_ASSERT(!app.repository_route_workspaces.front().repository.has_value());
 }
+
+#if UAM_ENABLE_SSH
+UAM_TEST(RepositoryRoutesLaunchGuardNeverPassesOnAnUnfinishedRead)
+{
+	TempDir fixture("uam-repository-routing-launch-timeout");
+	uam::AppState app;
+	app.data_root = fixture.root / "private-data";
+	app.settings.execution_hosts.push_back(uam::execution_hosts::LocalHost());
+	ExecutionHost remote;
+	remote.id = "fixture-host";
+	remote.transport = "ssh";
+	remote.ssh_alias = "fixture-no-ssh";
+	remote.platform = "linux";
+	remote.architecture = "x86_64";
+	remote.runner_status = "ready";
+	remote.runner_version = "test-version";
+	remote.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+	app.settings.execution_hosts.push_back(remote);
+	ChatFolder source;
+	source.id = "source";
+	source.directory = (fixture.root / "source").string();
+	ChatFolder destination;
+	destination.id = "destination";
+	destination.directory = "/fixture/destination";
+	destination.execution_host_id = remote.id;
+	app.folders = {source, destination};
+	ChatSession chat;
+	chat.id = "fixture-chat";
+	chat.routing_mode = "automatic";
+	chat.routing_source_folder_id = source.id;
+	chat.routing_source_directory = source.directory;
+	chat.folder_id = destination.id;
+	chat.workspace_directory = destination.directory;
+	chat.execution_host_id = remote.id;
+	app.chats.push_back(chat);
+	// Both checkouts were read as the same repository earlier; the launch must not take that on trust.
+	app.repository_route_workspaces = uam::CaptureRepositoryRouteWorkspaces(app.folders, app.settings.execution_hosts);
+	for (uam::RepositoryRouteWorkspace& workspace : app.repository_route_workspaces)
+		workspace.repository = uam::RepositoryRouteIdentity{"git", "github.com/Owner/Repo", ""};
+	app.repository_route_data_root = app.data_root;
+	std::string error;
+	uam::RepositoryRouteLaunchState state = uam::RepositoryRouteLaunchState::Pending;
+	// The fixture alias cannot connect, so the remote checkout's read never finishes.
+	for (int attempt = 0; attempt < 4000 && state == uam::RepositoryRouteLaunchState::Pending; ++attempt)
+	{
+		app.repository_route_observed_at_s = uam::GetAppTimeSeconds();
+		state = uam::PrepareRepositoryRouteLaunch(app, chat, error);
+		if (state == uam::RepositoryRouteLaunchState::Pending) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT_EQ(state, uam::RepositoryRouteLaunchState::Failed);
+	UAM_ASSERT(error.find("could not be read") != std::string::npos);
+	UAM_ASSERT_EQ(app.repository_route_tasks.size(), std::size_t(1));
+	UAM_ASSERT(!app.repository_route_tasks.front()->unread.empty());
+	UAM_ASSERT(!app.repository_route_tasks.front()->matches);
+}
+#endif
