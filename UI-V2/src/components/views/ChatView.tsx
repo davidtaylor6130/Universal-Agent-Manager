@@ -2619,10 +2619,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       setSlashNotice(noticeFor(`Unsupported ${kind} "${rawValue}". Supported: ${options.map((option) => option.id || 'default').join(', ')}.`, 'error'))
       return
     }
+    // The slash notice names the change, so it carries the refusal reason instead of a second app-wide notice.
+    let refusal = ''
+    const onFailure = (reason: string) => { refusal = reason }
     const changed = kind === 'reasoning'
-      ? await setSessionCodexOptions(session.id, { reasoningEffort: requested.id })
-      : await setSessionCodexOptions(session.id, { serviceTier: requested.id === CODEX_SPEED_INHERIT_ID ? '' : requested.id, serviceTierExplicit: requested.id !== CODEX_SPEED_INHERIT_ID })
-    setSlashNotice(noticeFor(changed ? `${label} changed to ${requested.label}.` : `Failed to change ${kind} to ${requested.label}.`, changed ? 'success' : 'error'))
+      ? await setSessionCodexOptions(session.id, { reasoningEffort: requested.id }, onFailure)
+      : await setSessionCodexOptions(session.id, { serviceTier: requested.id === CODEX_SPEED_INHERIT_ID ? '' : requested.id, serviceTierExplicit: requested.id !== CODEX_SPEED_INHERIT_ID }, onFailure)
+    setSlashNotice(noticeFor(changed ? `${label} changed to ${requested.label}.` : `Failed to change ${kind} to ${requested.label}.${refusal ? ` ${refusal}` : ''}`, changed ? 'success' : 'error'))
   }
   const runVariantCommand = async (configId: string, value: string, label: string) => {
     setSlashIndex(0)
@@ -3523,10 +3526,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
             if (!changed) return refusal.replace(' Accept this in the switch dialog in the desktop app.', '') || false
             // The provider has changed from here on, so a failure below must not read as a failed switch.
             if (currentSessionIdRef.current !== session.id) return true
-            const modelSet = providerHandoffModelId === null || await setSessionModel(session.id, providerHandoffModelId)
+            let modelRefusal = ''
+            const modelSet = providerHandoffModelId === null || await setSessionModel(session.id, providerHandoffModelId, (reason) => { modelRefusal = reason })
             setProviderHandoffTargetId('')
             setProviderHandoffModelId(null)
-            if (!modelSet) reportAppFailure('The model was not changed', `This chat is now on ${providerHandoffTargetName} with its default model. Choose the model again from the model picker.`)
+            if (!modelSet) reportAppFailure('The model was not changed', `${modelRefusal ? `${modelRefusal} ` : ''}This chat is now on ${providerHandoffTargetName} with its default model. Choose the model again from the model picker.`)
             return true
           }}
         />

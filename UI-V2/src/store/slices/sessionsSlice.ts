@@ -120,6 +120,12 @@ const initialProviders: Provider[] = [
 
 let sessionCounter = 10
 
+/** A caller that names the failed change itself takes the native reason; otherwise it is the shared app-wide failure. */
+function reportRefusal(reason: string, onFailure?: (reason: string) => void) {
+  if (onFailure) onFailure(reason)
+  else reportAppFailure(reason, '')
+}
+
 function makeId(prefix: string, counter: number) {
   return `${prefix}-${counter}`
 }
@@ -1640,6 +1646,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               } : s)),
             }))
             pendingRequestIdsByKey.delete(requestKey)
+            if (resp.error) reportAppFailure(resp.error, '')
           }
         )
         return
@@ -1820,7 +1827,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    setSessionModel: async (id: string, modelId: string): Promise<boolean> => {
+    setSessionModel: async (id: string, modelId: string, onFailure?: (reason: string) => void): Promise<boolean> => {
       const requestedModelId = modelId.trim()
       if (!isAllowedAcpModelId(requestedModelId)) {
         return false
@@ -1915,6 +1922,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           }))
           pendingRequestIdsByKey.delete(requestKey)
           if (pendingModelByChatId.get(id)?.requestId === response.requestId) pendingModelByChatId.delete(id)
+          if (response.error) reportRefusal(response.error, onFailure)
         }
 
         return false
@@ -1942,18 +1950,22 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       })
       if (!isLatestPendingRequest(requestKey, response.requestId)) return response.ok
       clearPendingRequest(requestKey, response.requestId)
+      if (!response.ok && response.error) reportAppFailure(response.error, '')
       if (!response.ok || typeof response.data?.reviewerModelId !== 'string') return false
       set((state) => ({ sessions: state.sessions.map((session) => session.id === id ? { ...session, reviewerModelId: response.data!.reviewerModelId } : session) }))
       return true
     },
 
-    setSessionCodexOptions: async (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }): Promise<boolean> => {
+    setSessionCodexOptions: async (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }, onFailure?: (reason: string) => void): Promise<boolean> => {
       const previousSession = get().sessions.find((s) => s.id === id)
 	  if (!previousSession) {
         return false
       }
 	  const acp = get().acpBindingBySessionId[id]
-	  if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') return false
+	  if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') {
+	    reportRefusal('Reasoning and speed can change once the current turn finishes.', onFailure)
+	    return false
+	  }
 	  const providerId = previousSession.providerId ?? DEFAULT_PROVIDER_ID
 	  const codexProvider = providerId === CODEX_CLI_PROVIDER_ID
 	  const copilotProvider = providerId === COPILOT_CLI_PROVIDER_ID
@@ -2007,7 +2019,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           return true
         }
 
-        if (isLatestPendingRequest(requestKey, response.requestId)) pendingRequestIdsByKey.delete(requestKey)
+        if (isLatestPendingRequest(requestKey, response.requestId)) {
+          pendingRequestIdsByKey.delete(requestKey)
+          if (response.error) reportRefusal(response.error, onFailure)
+        }
         return false
       }
 
@@ -2111,7 +2126,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 		clearPendingRequest(requestKey, response.requestId)
 		return true
 	  }
-	  if (isLatestPendingRequest(requestKey, response.requestId)) pendingRequestIdsByKey.delete(requestKey)
+	  if (isLatestPendingRequest(requestKey, response.requestId)) {
+		pendingRequestIdsByKey.delete(requestKey)
+		if (response.error) reportAppFailure(response.error, '')
+	  }
 	  return false
     },
 
@@ -2349,6 +2367,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
           }))
           pendingRequestIdsByKey.delete(requestKey)
+          if (response.error) reportAppFailure(response.error, '')
         }
         return false
       }
@@ -3258,6 +3277,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           action: 'cancelAcpTurn',
           payload: { chatId: sessionId },
         })
+        if (!response.ok) reportAppFailure(response.error || 'The turn was not cancelled. Try again.', '')
         return response.ok
       }
 
@@ -3428,6 +3448,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           action: 'stopAcpSession',
           payload: purpose === 'timeout' ? { chatId: sessionId, purpose } : { chatId: sessionId },
         })
+        if (!response.ok) reportAppFailure(response.error || 'The runtime did not stop. Try again.', '')
         return response.ok
       }
 

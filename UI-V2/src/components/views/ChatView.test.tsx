@@ -1304,7 +1304,7 @@ describe('ChatView', () => {
     })
     expect(setSessionProvider).toHaveBeenCalledOnce()
     expect(setSessionProvider).toHaveBeenCalledWith('chat-1', 'codex-cli', expect.any(Function), false)
-    expect(setSessionModel).toHaveBeenCalledWith('chat-1', '')
+    expect(setSessionModel).toHaveBeenCalledWith('chat-1', '', expect.any(Function))
     expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
 
     act(() => root.unmount())
@@ -6027,7 +6027,7 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       await Promise.resolve()
     })
-    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(3, 'chat-1', { reasoningEffort: 'xhigh' })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(3, 'chat-1', { reasoningEffort: 'xhigh' }, expect.any(Function))
     expect(appNotices.join('\n')).toContain('Reasoning changed to Extra High.')
 
     await act(async () => {
@@ -6035,8 +6035,22 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       await Promise.resolve()
     })
-    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex', serviceTierExplicit: true })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex', serviceTierExplicit: true }, expect.any(Function))
     expect(appNotices.join('\n')).toContain('Speed changed to Flex.')
+
+    // A refused slash change names the backend reason in its one notice; the store reports nothing else.
+    setSessionCodexOptions.mockImplementationOnce(((_id: string, _options: unknown, onFailure?: (reason: string) => void) => {
+      onFailure?.('Reasoning is locked by the provider.')
+      return Promise.resolve(false)
+    }) as never)
+    appNotices.length = 0
+    appFailures.length = 0
+    await act(async () => {
+      setDraft('/reasoning high')
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(appFailures.map(({ message, detail }) => ({ message, detail }))).toEqual([{ message: 'Command', detail: 'Failed to change reasoning to High. Reasoning is locked by the provider.' }])
 
     act(() => root.unmount())
     host.remove()

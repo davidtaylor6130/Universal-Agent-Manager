@@ -248,9 +248,8 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
           disabled={runtimeStopState.disabled}
           onClick={() => {
             setStopRuntimeError('')
-            void stopAcpSession(session.id, 'timeout').then((ok) => {
-              if (!ok) setStopRuntimeError('The runtime did not stop. Try again.')
-            }).catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
+            // A refused stop reports its reason from the store; only a thrown bridge error is reported here.
+            void stopAcpSession(session.id, 'timeout').catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
           }}
         >
           <span className="uam-runtime-stop-icon">
