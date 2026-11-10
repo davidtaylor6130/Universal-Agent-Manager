@@ -804,7 +804,10 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		const bool defer_completion = CanDeferLocalSessionReceipt(app, session, chat);
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 		if (id == session.prompt_request_id && session.prompt_request_id > 0 && JsonDiagnosticStringValue(result, "stopReason") == "end_turn")
+		{
 			RecordCompletedAcpPromptRecoveries(app, session, chat);
+			(void)ConfirmTurnInputReceived(session, chat); // This turn's own request ended normally.
+		}
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, nullptr);
 		if (defer_completion) ScheduleChatSave(app, chat, 0.0);
 		else SaveChatQuietly(app, chat);

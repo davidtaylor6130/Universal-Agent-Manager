@@ -66,6 +66,8 @@ export type MessageBlock =
 export interface Message {
   /** Positive historical local OS-sink write fact only; absent/false is unknown, never retry authority. */
   inputWriteCompleted?: boolean
+  /** Dispatched by a build that records delivery: only a backend write fact clears its marker, never a following answer. */
+  inputDeliveryTracked?: boolean
   /** Inert per-input provenance; never admission/delivery/control proof. */
   nativeInputId?: string
   originRequestId?: string

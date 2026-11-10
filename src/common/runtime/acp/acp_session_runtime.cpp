@@ -4388,6 +4388,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			Message& row = chat->messages[static_cast<std::size_t>(item->existing_user_message_index)];
 			if (row.content != item->text || row.attachments != item->attachments)
 				row.input_write_completed = false;
+				row.input_delivery_tracked = false;
 			row.content = item->text;
 			row.attachments = item->attachments;
 			if (captured)
@@ -5410,6 +5411,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		chat.remote_active_turn_id.clear();
 		chat.remote_prompt_delivery_session_id.clear();
 		chat.remote_prompt_delivery_id.clear();
+		chat.remote_prompt_delivery_input_ids.clear();
 		chat.remote_prompt_delivery_payload.clear();
 		chat.remote_pending_requests.clear();
 		chat.remote_interaction_responses.clear();
@@ -5614,6 +5616,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (updated.content != original.content || updated.attachments != original.attachments ||
 		    updated.markdown_store_files != original.markdown_store_files || updated.markdown_store_prompt_blocks != original.markdown_store_prompt_blocks)
 			updated.input_write_completed = false;
+			updated.input_delivery_tracked = false;
 		// Rebind only the authored-row witness. Every original policy and admission
 		// field remains byte-for-byte intact; absent legacy policy remains absent.
 		if (captured)
@@ -6957,6 +6960,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			chat->remote_interaction_responses.clear();
 			chat->remote_prompt_delivery_session_id.clear();
 			chat->remote_prompt_delivery_id.clear();
+			chat->remote_prompt_delivery_input_ids.clear();
 			chat->remote_prompt_delivery_payload.clear();
 			chat->remote_pending_requests.clear();
 			if (!acp_detail::SaveChatQuietly(app, *chat, save_purpose))
@@ -8161,6 +8165,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					chat.remote_turn_reconnect_pending = false;
 					chat.remote_prompt_delivery_session_id.clear();
 					chat.remote_prompt_delivery_id.clear();
+					chat.remote_prompt_delivery_input_ids.clear();
 					chat.remote_prompt_delivery_payload.clear();
 					chat.remote_pending_requests.clear();
 					chat.remote_interaction_responses.clear();
@@ -8248,6 +8253,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					chat.remote_turn_reconnect_pending = false;
 					chat.remote_prompt_delivery_session_id.clear();
 					chat.remote_prompt_delivery_id.clear();
+					chat.remote_prompt_delivery_input_ids.clear();
 					chat.remote_prompt_delivery_payload.clear();
 					chat.remote_pending_requests.clear();
 					chat.remote_interaction_responses.clear();

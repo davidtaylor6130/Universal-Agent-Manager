@@ -401,6 +401,36 @@ describe('ChatView outgoing admission without a delivery witness', () => {
     noReplay()
   })
 
+  it('shows Delivery not confirmed only on saved input the provider never answered', () => {
+    const answered: CppMessage = { role: 'user', content: 'Answered before write facts existed', createdAt: '2026-01-02T00:00:00Z', providerId: 'codex-cli', nativeInputId: '22222222-2222-4222-8222-000000000001' }
+    const answer: CppMessage = { role: 'assistant', content: 'The provider answered it', createdAt: '2026-01-02T00:00:01Z', providerId: 'codex-cli' }
+    const lost: CppMessage = { role: 'user', content: 'Never answered', createdAt: '2026-01-02T00:00:02Z', providerId: 'codex-cli', nativeInputId: '22222222-2222-4222-8222-000000000002' }
+    publish([...HISTORY, answered, answer, lost], {})
+    expect(host.querySelector('[data-message-index="2"] article')!.hasAttribute('data-delivery')).toBe(false)
+    expect(host.querySelector('[data-message-index="4"] article')!.getAttribute('data-delivery')).toBe('unconfirmed')
+    // An answer to input sent later proves nothing about the earlier row.
+    const resent: CppMessage = { role: 'user', content: 'Sent again', createdAt: '2026-01-02T00:00:03Z', providerId: 'codex-cli', nativeInputId: '22222222-2222-4222-8222-000000000003' }
+    publish([...HISTORY, answered, answer, lost, resent, { role: 'assistant', content: 'Answer to the second send', createdAt: '2026-01-02T00:00:04Z', providerId: 'codex-cli' }], {})
+    expect(host.querySelector('[data-message-index="4"] article')!.getAttribute('data-delivery')).toBe('unconfirmed')
+    expect(host.querySelector('[data-message-index="5"] article')!.hasAttribute('data-delivery')).toBe(false)
+    // Output of a response that was then interrupted, or from an unnamed or different provider, hides nothing.
+    publish([...HISTORY, lost, { role: 'assistant', content: 'Output before the turn failed', createdAt: '2026-01-02T00:00:03Z', providerId: 'codex-cli', interrupted: true }], {})
+    expect(host.querySelector('[data-message-index="2"] article')!.getAttribute('data-delivery')).toBe('unconfirmed')
+    publish([...HISTORY, lost, { role: 'assistant', content: 'Output with no provider named', createdAt: '2026-01-02T00:00:03Z' }], {})
+    expect(host.querySelector('[data-message-index="2"] article')!.getAttribute('data-delivery')).toBe('unconfirmed')
+    // A row this build dispatched and the native gates did not confirm keeps its marker even behind a normal answer.
+    publish([...HISTORY, { ...lost, inputDeliveryTracked: true }, { role: 'assistant', content: 'Output after a lost prompt', createdAt: '2026-01-02T00:00:03Z', providerId: 'codex-cli' }], {})
+    expect(host.querySelector('[data-message-index="2"] article')!.getAttribute('data-delivery')).toBe('unconfirmed')
+    // A response that is still streaming is output, not a completion: the marker stays until the turn settles.
+    const streaming: CppMessage = { role: 'assistant', content: 'Still answering', createdAt: '2026-01-02T00:00:03Z', providerId: 'codex-cli' }
+    publish([...HISTORY, lost, streaming], { processing: true, lifecycleState: 'processing', turnAssistantMessageIndex: 3 })
+    expect(host.querySelector('[data-message-index="2"] article')!.getAttribute('data-delivery')).toBe('unconfirmed')
+    publish([...HISTORY, lost, streaming], { processing: false, lifecycleState: 'ready' })
+    expect(host.querySelector('[data-message-index="2"] article')!.hasAttribute('data-delivery')).toBe(false)
+    // Hiding the marker is display only: the answered row still offers no Edit, Revert or Retry without a write fact.
+    expect(host.querySelector('[data-message-index="2"] article')!.querySelector('[aria-label="Retry message"],[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()
+  })
+
   it('follows a strongly bound native ID after its recorded index and bytes change', async () => {
     await send(); const row = host.querySelector('[data-outgoing-message]')!; const article = row.querySelector('article')!
     const native = { ...inputIdentity(), role: 'user' as const, content: TEXT, createdAt: '2026-01-02T00:00:00Z' }
