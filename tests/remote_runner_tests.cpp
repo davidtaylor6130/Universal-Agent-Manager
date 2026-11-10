@@ -8139,9 +8139,9 @@ UAM_TEST(AcpRemoteUntransportedPromptExitsCountBackOffAndEndThroughTheExitHandle
 	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Never reached the connection", &error));
 	fixture.AwaitSave();
 	UAM_ASSERT(session.processing && !session.queued_prompt.empty() && !session.pending_prompt_delivery && chat.remote_prompt_delivery_id.empty());
-	// A chat save that stays pending keeps every relaunched process from staging the prompt, so each exit meets a
-	// prompt that was never staged and the exit handler alone decides what happens.
-	uam::acp_detail::ScheduleChatSave(app, chat, 0.0);
+	// A turn checkpoint preflight holds prompt delivery, so no relaunched process stages the prompt: each exit meets
+	// a prompt that was never staged and the exit handler alone decides what happens.
+	session.turn_checkpoint_preflight_pending = true;
 	session.crash_restart_attempts = 1;
 	service.StopStdioProcess(fixture.runner_service.process, true);
 	int code = -1;
@@ -8168,6 +8168,7 @@ UAM_TEST(AcpRemoteUntransportedPromptExitsCountBackOffAndEndThroughTheExitHandle
 			previous_delay = delay;
 			session.reconnect_not_before_time_s = 0.0;
 		}
+		session.turn_checkpoint_preflight_pending = true;
 		(void)uam::PollAllAcpSessions(app);
 		std::this_thread::sleep_for(std::chrono::milliseconds(5));
 	}
@@ -8180,6 +8181,7 @@ UAM_TEST(AcpRemoteUntransportedPromptExitsCountBackOffAndEndThroughTheExitHandle
 	{
 		session.reconnect_first_failure_time_s = -1.0e6;
 		if (session.reconnect_pending) session.reconnect_not_before_time_s = 0.0;
+		if (session.processing) session.turn_checkpoint_preflight_pending = true;
 		(void)uam::PollAllAcpSessions(app);
 		std::this_thread::sleep_for(std::chrono::milliseconds(5));
 	}

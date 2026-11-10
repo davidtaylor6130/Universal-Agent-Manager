@@ -5271,10 +5271,10 @@ void ReturnUnwrittenRemotePromptAsUnsent(AppState& app, AcpSessionState& session
 	{
 		Message& row = chat.messages[static_cast<std::size_t>(index)];
 		if (row.role != MessageRole::User || row.acp_prompt_discarded) continue; // A removed row stays removed.
-		row.acp_prompt_not_sent = true;
+		row.acp_prompt_not_sent = row.interrupted = true;
 		authored_rows = true;
 	}
-	// Marks the turn's row interrupted and ends the turn, as a process exit does.
+	// Ends the turn, as a process exit does.
 	FailAcpTurnOrSession(session, &chat, message);
 	// The unsent rows are now the prompt's only copy: a prepared head left beside them could be resumed as a second
 	// send. A prompt with no row of its own (a goal turn) keeps its head, which is then its only copy.
