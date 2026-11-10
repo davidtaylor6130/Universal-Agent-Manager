@@ -107,7 +107,7 @@ class Strings:
                     values = dict(self.values, root=args[0], nonce=args[1], script=args[2])
                     scope = self.source.split('std::string WindowsRunnerOwnedScript(', 1)[1]
                     return Strings(self.source, values).evaluate(expression_at(scope, 'return '))
-                if token == 'WindowsHelperRetirementScript':
+                if token in ('WindowsHelperRetirementScript', 'WindowsHelperSpoolCleanupScript'):
                     # This function returns only adjacent R"PS(...)PS" raw strings.
                     scope = self.source.split('std::string ' + token + '()', 1)[1]
                     body = scope[scope.index('return ') + len('return '):scope.index(')PS";') + len(')PS"')]
@@ -179,11 +179,15 @@ def scripts_for(version='4.5.7', nonce='metadata', root='r'):
     rollback = strings.evaluate(expression_at(owned_scope, 'return '))
     values['script'] = transaction + commit
     commit = strings.evaluate(expression_at(owned_scope, 'return '))
-    retire = strings.evaluate(expression_at(source.split('static std::string BootstrapRetirementCommand', 1)[1], 'return '))
+    retirement = source.split('std::vector<BootstrapStep> BuildBootstrapRetirementSteps', 1)[1]
+    retirement = retirement[retirement.index('const std::string variables ='):]
+    values['variables'] = strings.evaluate(expression_at(retirement, 'const std::string variables ='))
+    retire = strings.evaluate(expression_at(retirement, 'const std::string retire ='))
+    spools = strings.evaluate(expression_at(retirement, 'const std::string spools ='))
     return {'common': compact_powershell(common), 'prepare': strings.evaluate(expression_at(activation, 'const std::string prepare =')),
             'activate': strings.evaluate(expression_at(activation, 'const std::string verify =')),
             'publish': strings.evaluate(expression_at(activation, 'const std::string publish =')),
-            'rollback': compact_powershell(rollback), 'commit': compact_powershell(commit), 'retire': retire,
+            'rollback': compact_powershell(rollback), 'commit': compact_powershell(commit), 'retire': retire, 'spools': spools,
             'recover': compact_powershell(strings.evaluate('WindowsRunnerOwnedScript(root, plan.nonce, WindowsRunnerTransactionScript() + recover)')), 'guard': guard, 'authorize': strings.evaluate(expression_at(source.split('bool RecoverBootstrapInstallation',1)[1], 'const std::string authorize =')), 'protocol': protocol}
 
 
@@ -212,13 +216,13 @@ def main():
         guard = native['guard']
         common = guard[:guard.index("$root=Join-Path $HOME")]
         recover = native['recover']
-        compiled = {name: native[name] for name in ('prepare', 'activate', 'publish', 'rollback', 'commit', 'retire', 'guard', 'authorize')}
+        compiled = {name: native[name] for name in ('prepare', 'activate', 'publish', 'rollback', 'commit', 'retire', 'spools', 'guard', 'authorize')}
         compiled.update(common=common, recover=recover, protocol=str(bundle['protocol']))
         assert compiled == scripts, 'Source extraction disagrees with compiled production bootstrap commands.'
         scripts = compiled
         print('Using compiled production bootstrap commands; source-expression equivalence PASS.', flush=True)
     maximum = scripts_for('v' * 64, 'n' * 64, 'd' * 240)
-    lengths = {name: utf8_command_length(maximum[name]) for name in ('guard', 'prepare', 'activate', 'publish', 'rollback', 'commit', 'retire', 'authorize', 'recover')}
+    lengths = {name: utf8_command_length(maximum[name]) for name in ('guard', 'prepare', 'activate', 'publish', 'rollback', 'commit', 'retire', 'spools', 'authorize', 'recover')}
     for name, length in lengths.items():
         assert length < 8000, (name, length)
     print('Maximum-path Windows command lengths: ' + json.dumps(lengths), flush=True)

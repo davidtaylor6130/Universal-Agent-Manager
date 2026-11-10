@@ -582,14 +582,11 @@ test -z "$uam_reload" || systemctl --user daemon-reload >/dev/null 2>&1
 		// Each pass is its own SSH command: together they would pass cmd.exe's 8191-character limit, and a long helper folder skips retirement rather than send a truncated command.
 		const std::string variables = "$uamHelperRoot=$HOME; $uamRunKey='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'; "
 		    "$uamCurrent=(Join-Path $HOME '" + root + "/" + plan.version + "')+'/uam-runner.exe'; $uamAssumePreFix=$false; ";
-		std::vector<BootstrapStep> steps;
-		for (const auto& [label, script] : {std::pair<std::string, std::string>{"Retire older helpers", WindowsHelperRetirementScript()},
-		                                    {"Remove retired helper spools", WindowsHelperSpoolCleanupScript()}})
-		{
-			steps.push_back({label, SshCommand(plan.ssh_alias, PowerShellUtf8Command(WindowsRunnerOwnedScript(root, plan.nonce, variables + script))), ""});
-			if (steps.back().argv.back().size() >= 8000) return {};
-		}
-		return steps;
+		// Named single expressions so scripts/test_bootstrap_metadata.py can re-derive both commands from this source.
+		const std::string retire = PowerShellUtf8Command(WindowsRunnerOwnedScript(root, plan.nonce, variables + WindowsHelperRetirementScript()));
+		const std::string spools = PowerShellUtf8Command(WindowsRunnerOwnedScript(root, plan.nonce, variables + WindowsHelperSpoolCleanupScript()));
+		if (retire.size() >= 8000 || spools.size() >= 8000) return {};
+		return {{"Retire older helpers", SshCommand(plan.ssh_alias, retire), ""}, {"Remove retired helper spools", SshCommand(plan.ssh_alias, spools), ""}};
 	}
 
 	static std::string BootstrapFinalizationCommand(const BootstrapPlan& plan, std::string_view platform, bool keep_new_runner, bool wrap_powershell = true)
