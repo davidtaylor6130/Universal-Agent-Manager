@@ -75,6 +75,10 @@ export type GoalCreateResult = MutationResult & { goalId?: string }
 /** Optional presentation observation only; action result, child controls and delivery authority remain separate. */
 export type AcpPromptPresentationObserver = ((identity: { requestId: string; sessionId: string; createdAtMs: number }) => void) & {
   onInputRecorded?: (identity: { requestId: string; sessionId: string; createdAtMs: number; message: Message }) => void
+  /** This attempt repeated a submission native had already admitted under the earlier attempt's request ID. */
+  onDuplicateOf?: (originRequestId: string) => void
+  /** Identifies one composer submission; the same token is passed only to retry that submission. */
+  submissionToken?: string
 }
 
 export interface AppState extends VoiceInputSettings, VcsStorageSettings {
@@ -417,7 +421,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setCommitPanelWidthPx: (width: number) => void
 
   // CEF bootstrap
-  loadFromCef: (state: CppAppState, allowSameRevision?: boolean) => void
+  /** `force` applies regardless of revision; only the push resync uses it, after comparing revisions itself. */
+  loadFromCef: (state: CppAppState, force?: boolean) => void
 }
 
 export type ZustandSet = StoreApi<AppState>['setState']

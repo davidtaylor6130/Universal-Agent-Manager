@@ -651,9 +651,15 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
 
 const BOOTSTRAP_STATE_BACKOFF_MS = [100, 300, 900]
 const BOOTSTRAP_STATE_MAX_PULLS = 8
-// Delays before each state resync. The last step is the slowest rate a persistent fault can cause.
-const STATE_RESYNC_BACKOFF_MS = [100, 300, 900, 5000, 30000]
-const STATE_RESYNC_DEADLINE_MS = 15000
+// A recurring fault costs at most one full pull per spacing step. Spacing doubles from the minimum
+// to the maximum while gaps keep arriving and resets only after a quiet interval with no gap.
+const STATE_RESYNC_COALESCE_MS = 100
+const STATE_RESYNC_MIN_SPACING_MS = 1000
+const STATE_RESYNC_MAX_SPACING_MS = 30000
+const STATE_RESYNC_QUIET_RESET_MS = 60000
+const STATE_RESYNC_DEADLINE_MS = 10000
+const STATE_RESYNC_MAX_FAILURES = 5
+const STATE_RESYNC_MAX_HELD_PATCHES = 512
 
 export const useAppStore = create<AppState>((set, get) => {
   const flushPendingCliTranscriptChunks = () => {
@@ -936,14 +942,18 @@ export const useAppStore = create<AppState>((set, get) => {
   if (isCefContext() && typeof window !== 'undefined') {
     // Full state only hydrates the selected transcript. Keep buffered
     // background deltas unless this update contains that chat's messages.
-    const applyFullState = (data: CppAppState, allowSameRevision = false) => {
+    // A resync snapshot is forced (the caller compared revisions) and keeps this window's selection:
+    // a click whose selectSession is still unacknowledged must not jump back to the native choice.
+    const applyFullState = (data: CppAppState, resync = false) => {
       for (const chatId of pendingStreamTokensByChatId.keys()) {
         const chat = data.chats.find((candidate) => candidate.id === chatId)
         if (!chat || Array.isArray(chat.messages)) {
           pendingStreamTokensByChatId.delete(chatId)
         }
       }
-      get().loadFromCef(data, allowSameRevision)
+      const localSelection = get().activeSessionId
+      get().loadFromCef(resync && localSelection && data.chats.some((chat) => chat.id === localSelection)
+        ? { ...data, selectedChatId: localSelection } : data, resync)
     }
 
     // Compare the visible chat before and after a state change and reload its transcript when the change requires it.
@@ -992,35 +1002,45 @@ export const useAppStore = create<AppState>((set, get) => {
     }
 
     // Native never resends a diff it has already built, so a lost, rejected or failed patch is
-    // repaired by pulling one full state. Full states and patches share native's revision counter
-    // (each published diff is exactly last + 1), so a snapshot at revision R contains every patch
-    // up to R. Patches arriving during the pull are held and replayed in arrival order: those at
-    // or below R are made moot by the snapshot, newer ones apply on top, and a hole among them is
-    // simply the next gap. Holding them means only a full stateUpdate can move the store past the
-    // snapshot, and then that newer full state has already closed the gap.
+    // repaired by pulling one full state. This relies on two native facts: every published diff is
+    // stamped exactly last + 1 (a corrective patch is just another diff), and a snapshot at revision
+    // R contains every patch up to R because both are produced on the CEF UI thread.
+    // Patches keep applying live while the pull is in flight, so approvals and turn state never wait
+    // for it; copies are kept. A snapshot at or above the store's revision makes those copies moot.
+    // A snapshot behind it (its reply overtaken by later patches) is applied and the newer copies are
+    // replayed in order on top within the same task, unless a full stateUpdate already moved past it
+    // or the copies cannot rebuild the store's revision exactly, when it is dropped and pulled again.
     let stateResyncTimer: ReturnType<typeof setTimeout> | null = null
     let stateResyncDeadline: ReturnType<typeof setTimeout> | null = null
     let stateResyncInFlight = false
     let stateResyncGeneration = 0
-    let stateResyncAttempt = 0
+    let stateResyncFailures = 0
     // A gap is known and no snapshot has closed it yet.
     let stateResyncOutstanding = false
-    // A patch was rejected during the pull, so the snapshot may predate the lost change.
+    // A push was lost during the pull, so the snapshot may predate it.
     let stateResyncAgain = false
-    // ponytail: unbounded array, but the pull deadline bounds it to a few seconds of patches.
-    let heldPatchesDuringResync: CppStatePatch[] = []
+    let stateResyncReason = ''
+    let stateResyncSpacingMs = STATE_RESYNC_MIN_SPACING_MS
+    let lastStateResyncAt = Number.NEGATIVE_INFINITY
+    let lastStateGapAt = Number.NEGATIVE_INFINITY
+    let patchesDuringResync: CppStatePatch[] = []
+    let patchesDuringResyncOverflowed = false
+    let fullStateRevisionDuringResync = -1
 
-    const requestStateResync = () => {
+    const requestStateResync = (reason: string) => {
       // Bootstrap owns the first pull, and companion pages poll full state through CompanionShell.
       if (!bootstrapHydrated || isCompanionContext() || window.uamPush !== ownedUamPush) return
+      const now = Date.now()
+      if (now - lastStateGapAt >= STATE_RESYNC_QUIET_RESET_MS) stateResyncSpacingMs = STATE_RESYNC_MIN_SPACING_MS
+      lastStateGapAt = now
       stateResyncOutstanding = true
+      if (!stateResyncReason) stateResyncReason = reason
       if (stateResyncInFlight) {
         stateResyncAgain = true
         return
       }
       if (stateResyncTimer !== null) return
-      const delay = STATE_RESYNC_BACKOFF_MS[Math.min(stateResyncAttempt, STATE_RESYNC_BACKOFF_MS.length - 1)]
-      stateResyncAttempt += 1
+      const delay = Math.max(STATE_RESYNC_COALESCE_MS, lastStateResyncAt + stateResyncSpacingMs - now)
       stateResyncTimer = setTimeout(pullStateResync, delay)
     }
 
@@ -1029,42 +1049,59 @@ export const useAppStore = create<AppState>((set, get) => {
       if (stateResyncDeadline !== null) clearTimeout(stateResyncDeadline)
       stateResyncDeadline = null
       stateResyncInFlight = false
-      const heldPatches = heldPatchesDuringResync
-      heldPatchesDuringResync = []
+      const copies = patchesDuringResync
+      const overflowed = patchesDuringResyncOverflowed
+      const newerFullState = fullStateRevisionDuringResync
+      patchesDuringResync = []
+      patchesDuringResyncOverflowed = false
+      fullStateRevisionDuringResync = -1
       let settled = false
       if (snapshot) {
         try {
           const before = get()
-          // Equal revision is applied: the snapshot is complete and holds what the gap lost.
-          // Older means a full stateUpdate moved past this pull and already closed the gap.
-          if (cppStateRevision(snapshot) >= before.lastAppliedStateRevision) {
+          const snapshotRevision = cppStateRevision(snapshot)
+          const storeRevision = before.lastAppliedStateRevision
+          const newer = copies.filter((patch) => cppPatchRevision(patch) > snapshotRevision)
+          const rebuildsStore = !overflowed && newer.length === storeRevision - snapshotRevision &&
+            newer.every((patch, index) => cppPatchRevision(patch) === snapshotRevision + index + 1)
+          if (snapshotRevision >= storeRevision || (newerFullState <= snapshotRevision && rebuildsStore)) {
+            // Cleared first so the replayed copies are not mistaken for a still-open gap.
+            stateResyncOutstanding = false
             applyFullState(snapshot, true)
+            for (const patch of newer) applyLivePatch(patch)
             reloadActiveTranscriptIfChanged(before, false)
+            settled = true
+          } else if (newerFullState > snapshotRevision) {
+            // A newer full state arrived during the pull and already contains what the gap lost.
+            settled = true
           }
-          settled = true
         } catch (error) {
           console.error('[uamPush] State resync could not be applied:', error)
         }
       }
-      if (settled) stateResyncOutstanding = false
-      for (const patch of heldPatches) {
-        try {
-          applyLivePatch(patch)
-        } catch (error) {
-          console.error('[uamPush] Held patch failed:', error)
-          requestStateResync()
-        }
+      if (settled) {
+        stateResyncOutstanding = false
+        stateResyncFailures = 0
+        stateResyncReason = ''
+        if (stateResyncAgain) requestStateResync('state push lost during resync')
+      } else {
+        stateResyncFailures += 1
+        // After the last failure the gap stays outstanding; the next patch retries at the current spacing.
+        if (stateResyncFailures < STATE_RESYNC_MAX_FAILURES) requestStateResync('retry after failed resync')
       }
-      if (settled ? stateResyncAgain : stateResyncAttempt < STATE_RESYNC_BACKOFF_MS.length) requestStateResync()
     }
 
     const pullStateResync = () => {
       stateResyncTimer = null
       if (window.uamPush !== ownedUamPush) return
+      lastStateResyncAt = Date.now()
+      console.warn(`[uamPush] Pulling full state to repair a lost update (${stateResyncReason || 'gap'}); next pull no sooner than ${stateResyncSpacingMs} ms later.`)
+      stateResyncReason = ''
+      stateResyncSpacingMs = Math.min(STATE_RESYNC_MAX_SPACING_MS, stateResyncSpacingMs * 2)
       stateResyncInFlight = true
       stateResyncAgain = false
       const generation = ++stateResyncGeneration
-      // A reply that never arrives must not hold live patches indefinitely; a late one is ignored.
+      // A reply that never arrives counts as a failure; a late one is ignored.
       stateResyncDeadline = setTimeout(() => settleStateResync(generation, null), STATE_RESYNC_DEADLINE_MS)
       sendToCEF<CppAppState>({ action: 'getInitialState', payload: { summaryOnly: true } })
         .then((resp) => settleStateResync(generation, resp.ok ? sanitizeCppAppState(resp.data) : null))
@@ -1076,8 +1113,11 @@ export const useAppStore = create<AppState>((set, get) => {
       const lastRevision = get().lastAppliedStateRevision
       if (!isNewerStateRevision(revision, lastRevision)) return
       // The patch is still applied: its fields are current, the resync only restores what it lost.
-      if (revision !== lastRevision + 1 || stateResyncOutstanding) requestStateResync()
-      else stateResyncAttempt = 0
+      // While a pull is in flight its copies are judged against the snapshot when it settles instead.
+      if (!stateResyncInFlight) {
+        if (revision !== lastRevision + 1) requestStateResync(`revision ${revision} after ${lastRevision}`)
+        else if (stateResyncOutstanding) requestStateResync('retry after failed resync')
+      }
       // A patch that replaces a chat's messages carries the streamed text
       // authoritatively; buffered deltas for those chats must not be
       // re-applied on top.
@@ -1107,7 +1147,7 @@ export const useAppStore = create<AppState>((set, get) => {
           lastPushAtMs: state.lastPushAtMs,
         }))
         console.error('[uamPush] Rejected payload:', parsed.error, payload)
-        if (parsed.mayHaveCarriedState) requestStateResync()
+        if (parsed.mayHaveCarriedState) requestStateResync('rejected state push')
         return
       }
 
@@ -1133,11 +1173,15 @@ export const useAppStore = create<AppState>((set, get) => {
       switch (msg.type) {
         case 'stateUpdate':
           if (!isNewerStateRevision(cppStateRevision(msg.data), store.lastAppliedStateRevision)) break
+          if (stateResyncInFlight) fullStateRevisionDuringResync = Math.max(fullStateRevisionDuringResync, cppStateRevision(msg.data))
           applyFullState(msg.data)
           break
         case 'statePatch':
-          if (stateResyncInFlight) heldPatchesDuringResync.push(msg.data)
-          else applyLivePatch(msg.data)
+          if (stateResyncInFlight) {
+            if (patchesDuringResync.length < STATE_RESYNC_MAX_HELD_PATCHES) patchesDuringResync.push(msg.data)
+            else patchesDuringResyncOverflowed = true
+          }
+          applyLivePatch(msg.data)
           break
         case 'cliOutput':
           {
@@ -1250,7 +1294,7 @@ export const useAppStore = create<AppState>((set, get) => {
       } catch (error) {
         set({ pushChannelStatus: 'invalid-message', pushChannelError: `Push handling failed: ${error instanceof Error ? error.message : String(error)}` })
         console.error('[uamPush] Handler failed:', error)
-        requestStateResync()
+        requestStateResync('push handler failed')
       }
     }
   }
@@ -1282,12 +1326,12 @@ export const useAppStore = create<AppState>((set, get) => {
 
     // ---- CEF bootstrap ----
 
-    loadFromCef: (cppState, allowSameRevision = false) => {
+    loadFromCef: (cppState, force = false) => {
       const sanitized = sanitizeCppAppState(cppState)
       if (!sanitized) return
       const current = get()
       const nextRevision = cppStateRevision(sanitized)
-      if (!isNewerStateRevision(nextRevision, current.lastAppliedStateRevision) && !(allowSameRevision && nextRevision === current.lastAppliedStateRevision)) return
+      if (!force && !isNewerStateRevision(nextRevision, current.lastAppliedStateRevision)) return
       const deserialized = deserializeState(sanitized, {
         sessions: current.sessions,
         folders: current.folders,
