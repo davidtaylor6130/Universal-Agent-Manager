@@ -87,8 +87,14 @@ namespace uam::remote
 	bool RunBootstrapStepForTests(const BootstrapStep& step, IPlatformProcessService& service, std::string& output, std::string& error);
 	bool RunGuardedBootstrapStepForTests(const BootstrapStep& step, IPlatformProcessService& service, std::string& output, std::string& error);
 	/// <summary>PowerShell that stops and deregisters every other idle UAM helper under $uamHelperRoot, keeping $uamCurrent;
-	/// the caller sets $uamHelperRoot, $uamRunKey and $uamCurrent. Busy helpers refuse their own stop and are kept.</summary>
+	/// the caller sets $uamHelperRoot, $uamRunKey, $uamCurrent and $uamAssumePreFix. A helper with live work, or whose refusal is trustworthy, is kept.</summary>
 	std::string WindowsHelperRetirementScript();
+	/// <summary>Removes spools of dead helper versions under the current root; the caller sets $uamCurrent.</summary>
+	std::string WindowsHelperSpoolCleanupScript();
+	/// <summary>POSIX shell with the same contract for Linux hosts; the caller sets $uam_root, $uam_version, $uam_endpoint and $uam_assume_pre_fix.</summary>
+	std::string LinuxHelperRetirementScript();
+	/// <summary>The post-commit retirement SSH commands; empty when a Windows command would exceed cmd.exe's limit.</summary>
+	std::vector<BootstrapStep> BuildBootstrapRetirementSteps(const BootstrapPlan& plan, std::string_view platform);
 	bool FinalizeBootstrapPlan(const BootstrapPlan& plan,
 	                           const BootstrapResult& result,
 	                           bool keep_new_runner,

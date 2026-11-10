@@ -99,6 +99,7 @@ namespace
 				output = "UAM_INSTALL_COMMITTED:metadata\n";
 			}
 			else if (command.find("UAM_HELPER_RETIRED:") != std::string::npos) phase = "retire";
+			else if (command.find("'UAM_HELPER_SPOOLS_KEPT'") != std::string::npos) phase = "spools";
 			else if (command.find("install.release-") != std::string::npos) phase = "release";
 			else if (command.ends_with(" --version")) { phase = "version"; output = "4.5.7\n"; }
 			else if (command.ends_with(" --protocol-version")) { phase = "protocol"; output = std::to_string(uam::remote::kRunnerProtocolVersion) + "\n"; }
@@ -302,7 +303,8 @@ namespace
 		Require(committed.ok, committed.error);
 		Require(uam::remote::FinalizeBootstrapPlan(plan, committed, true), "Cannot capture commit");
 		commands["commit"] = service.commands.at("commit");
-		if (platform == "windows") commands["retire"] = service.commands.at("retire");
+		commands["retire"] = service.commands.at("retire");
+		if (platform == "windows") commands["spools"] = service.commands.at("spools");
 		return commands;
 	}
 
@@ -335,7 +337,9 @@ namespace
 			Require(captured.contains("rollback") && captured.contains("commit") && captured.contains("activate"), "Missing transaction route");
 			const auto index = [](const std::string& phase) { return std::ranges::find(service.phases, phase) - service.phases.begin(); };
 			Require(index("guard") < index("copy") && index("copy") < index("activate") && index("activate") < index("commit"), "Native lease/activation order");
-			if (platform == std::string("windows")) Require(index("commit") < index("retire") && index("retire") < index("release"), "Native retirement must follow the commit inside the lease");
+			Require(index("commit") < index("retire") && index("retire") < index("release"), "Native retirement must follow the commit inside the lease");
+			if (platform == std::string("windows")) Require(index("retire") < index("spools") && index("spools") < index("release"), "Native spool cleanup must follow retirement inside the lease");
+			Require(std::ranges::count(service.phases, std::string("retire")) == 1, "Native retirement must run exactly once");
 			if (platform == std::string("windows")) Require(index("prepare") < index("activate") && index("activate") < index("publish") && index("publish") < index("version"), "Native publication order");
 			Require(!service.held && service.releases == 1, "Native finalization did not release lease exactly once");
 		}

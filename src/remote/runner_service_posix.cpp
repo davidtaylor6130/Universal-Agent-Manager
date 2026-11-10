@@ -340,6 +340,7 @@ namespace uam::remote
 		}
 
 		RunnerState state;
+		state.RemoveOrphanedSpools(); // This helper holds the endpoint lock from here on.
 		std::atomic<bool> shutdown_requested{false};
 		std::mutex dispatch_mutex;
 		std::vector<ClientThread> clients;
@@ -418,6 +419,7 @@ namespace uam::remote
 						    else
 							    response = HandleRunnerRequest(request, runner_version, &state);
 						    if (!WriteSocketFrame(client.Get(), response)) break;
+						    state.ConfirmResponseDelivered(request, response);
 					    }
 				    }
 				    done->store(true, std::memory_order_release);

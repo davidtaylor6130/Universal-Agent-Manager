@@ -34,6 +34,10 @@ namespace uam::remote
 		nlohmann::json HandleProcessRequest(const nlohmann::json& request);
 		nlohmann::json HandleStartupRequest(const nlohmann::json& request, std::string_view runner_version);
 		bool HasManagedProcesses();
+		/// <summary>Removes sibling spools whose owning helper is provably gone. Call with the service endpoint lock held; failures are tolerated.</summary>
+		void RemoveOrphanedSpools();
+		/// <summary>Call after a response frame was written: a written exit report stops the exit counting as owed.</summary>
+		void ConfirmResponseDelivered(const nlohmann::json& request, const nlohmann::json& response);
 
 		// Kept public only so the translation unit's drain helpers stay small; it is
 		// never exposed by the protocol.
@@ -74,6 +78,8 @@ namespace uam::remote
 			std::atomic<bool> lease_terminating{false};
 			std::atomic<bool> ready{false};
 			std::atomic<bool> exited{false};
+			/// Set once a response carrying this process's exit was written; until then a reconnect can still need it.
+			std::atomic<bool> exit_reported{false};
 			std::atomic<int> exit_code{-1};
 			std::string spool_error;
 		};
@@ -125,6 +131,8 @@ namespace uam::remote
 		};
 		std::unordered_map<std::string, TextWorker> m_textWorkers;
 		std::filesystem::path m_spoolDirectory;
+		/// Held for this state's life (POSIX descriptor or Windows HANDLE, -1 when absent); it is how another helper proves this spool is live.
+		std::intptr_t m_spoolLock = -1;
 		std::uintmax_t m_maxSpoolBytesPerStream;
 		std::unordered_map<std::string, std::shared_ptr<Process>> m_processes;
 		std::unordered_map<std::string, std::shared_ptr<Process>> m_retiringProcesses;

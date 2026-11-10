@@ -48,8 +48,9 @@ namespace uam::remote
 
 		std::vector<std::string> SshCommand(const std::string& alias, std::string command)
 		{
+			// ServerAlive ends a step promptly after the network drops (for example the laptop sleeping), matching the bridge and proxy.
 			return {"ssh", "-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
-			        "-o", "ConnectTimeout=10", alias, std::move(command)};
+			        "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", alias, std::move(command)};
 		}
 
 		std::string PowerShellCommand(std::string_view script)
@@ -459,26 +460,133 @@ namespace uam::remote
 	std::string WindowsHelperRetirementScript()
 	{
 		// Older helper roots keep their own Run value and resident service; activation leaves only the current one.
-		// A helper with child processes (other than its console host) is busy even if it predates the stop refusal; the whole pass is bounded to stay inside the step deadline. The current root's Run value is
-		// shared across its versions, so it is repointed rather than removed. Folders stay for explicit removal.
-		// A same-root sibling reporting the current version shares the current pipe, so it is never sent stop.
+		// A helper with child processes (other than its console host) is busy; the whole pass is bounded to stay inside the step deadline. The current root's Run value is
+		// shared across its versions, so it is repointed rather than removed. A same-root sibling reporting the current version shares the current pipe, so it is never sent stop.
 		// ponytail: paths compare by full-path text; 8.3 or junction aliases of the current root are not recognised.
+		// A helper's stop refusal is honoured unless its binary predates --stop-contract: those count finished records as busy and cannot be patched. Only such a helper, in this root, that
+		// refused (not merely failed) stop, with no other process from its exact executable (terminals and bridges are launched by SSH, not the service) may be stopped by
+		// process ID, and only if that process still has the same creation time and no child just before Stop-Process. $uamAssumePreFix is a test seam; production sets it false.
 		return R"PS(try { $ErrorActionPreference='Stop'; $uamSelf=[IO.Path]::GetFullPath($uamCurrent); $uamSelfRoot=Split-Path (Split-Path $uamSelf); )PS"
 		    R"PS($uamRoot=[IO.Path]::GetFullPath($uamHelperRoot).TrimEnd('\')+'\'; $uamTargets=@{}; )PS"
-		    R"PS(function Get-UamServe($path) { @(Get-CimInstance Win32_Process -Filter "Name='uam-runner.exe'" | Where-Object { $_.ExecutablePath -and $_.CommandLine -match '\sserve\s*$' -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $path) }) }; )PS"
+		    R"PS(function Get-UamProcesses($path) { @(Get-CimInstance Win32_Process -Filter "Name='uam-runner.exe'" | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $path) }) }; )PS"
+		    R"PS(function Get-UamServe($path) { @(Get-UamProcesses $path | Where-Object { $_.CommandLine -match '\sserve\s*$' }) }; )PS"
+		    R"PS(function Get-UamChildren($id) { @(Get-CimInstance Win32_Process -Filter ('ParentProcessId='+$id+" AND Name<>'conhost.exe'")) }; )PS"
+		    R"PS(function Invoke-UamHelper($path,$arguments) { $p=New-Object Diagnostics.Process; $s=$p.StartInfo; $s.FileName=$path; $s.Arguments=$arguments; $s.UseShellExecute=$false; $s.CreateNoWindow=$true; )PS"
+		    R"PS($s.RedirectStandardInput=$true; $s.RedirectStandardOutput=$true; $s.RedirectStandardError=$true; $null=$p.Start(); $p.StandardInput.Close(); $o=$p.StandardOutput.ReadToEndAsync(); $e=$p.StandardError.ReadToEndAsync(); )PS"
+		    R"PS(if (-not $p.WaitForExit(20000)) { try { $p.Kill() } catch {}; return $null }; @{Code=$p.ExitCode; Out=$o.Result; Err=$e.Result} }; )PS"
 		    R"PS($uamRun=Get-Item -LiteralPath $uamRunKey -ErrorAction SilentlyContinue; )PS"
 		    R"PS(if ($uamRun) { foreach ($name in $uamRun.GetValueNames()) { $value=[string]$uamRun.GetValue($name); if ($name -like 'uam-runner-*' -and $value -match '^"([^"]+\\uam-runner\.exe)" start$') { $path=[IO.Path]::GetFullPath($Matches[1]); if (-not $uamTargets.ContainsKey($path)) { $uamTargets[$path]=@() }; $uamTargets[$path]+=$name } } }; )PS"
 		    R"PS(foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='uam-runner.exe'")) { if ($process.ExecutablePath -and $process.CommandLine -match '\sserve\s*$') { $path=[IO.Path]::GetFullPath($process.ExecutablePath); if (-not $uamTargets.ContainsKey($path)) { $uamTargets[$path]=@() } } }; )PS"
 		    R"PS($uamClock=[Diagnostics.Stopwatch]::StartNew(); foreach ($path in @($uamTargets.Keys)) { if ($path -ieq $uamSelf -or -not $path.StartsWith($uamRoot,[StringComparison]::OrdinalIgnoreCase)) { continue }; )PS"
 		    R"PS(if ($uamClock.Elapsed.TotalSeconds -gt 120) { 'UAM_HELPER_KEPT_TIMEOUT:'+$path; continue }; try { )PS"
-		    R"PS(if (@(Get-UamServe $path | ForEach-Object { Get-CimInstance Win32_Process -Filter ('ParentProcessId='+$_.ProcessId+" AND Name<>'conhost.exe'") }).Count -gt 0) { 'UAM_HELPER_KEPT_CHILDREN:'+$path; continue }; $stopped=$true; $sameRoot=(Split-Path (Split-Path $path)) -ieq $uamSelfRoot; )PS"
+		    R"PS(if (@(Get-UamServe $path | ForEach-Object { Get-UamChildren $_.ProcessId }).Count -gt 0) { 'UAM_HELPER_KEPT_CHILDREN:'+$path; continue }; $stopped=$true; $refused=$false; $sameRoot=(Split-Path (Split-Path $path)) -ieq $uamSelfRoot; )PS"
 		    R"PS(if ($sameRoot -and (Test-Path -LiteralPath $path) -and ((& $path --version) -eq (& $uamSelf --version))) { $shared=$true } else { $shared=$false }; )PS"
-		    R"PS(if (-not $shared -and (Test-Path -LiteralPath $path)) { $stop=Start-Process -FilePath $path -ArgumentList 'stop' -WindowStyle Hidden -PassThru; $null=$stop.Handle; if (-not $stop.WaitForExit(20000)) { try { $stop.Kill() } catch {}; $stopped=$false } elseif ($stop.ExitCode -ne 0) { $stopped=$false } }; )PS"
+		    R"PS(if (-not $shared -and (Test-Path -LiteralPath $path)) { $r=Invoke-UamHelper $path 'stop'; if (-not $r -or $r.Code -ne 0) { $stopped=$false }; $refused=$r -and $r.Code -eq 2 -and $r.Err -match 'still owns remote processes' }; )PS"
 		    R"PS(for ($i=0; -not $shared -and $stopped -and $i -lt 50 -and (Get-UamServe $path).Count -gt 0; $i++) { Start-Sleep -Milliseconds 100 }; if (-not $shared -and $stopped -and (Get-UamServe $path).Count -gt 0) { $stopped=$false }; )PS"
+		    R"PS(if (-not $stopped -and $refused -and $sameRoot -and @(Get-UamProcesses $path | Where-Object { $_.CommandLine -notmatch '\sserve\s*$' }).Count -eq 0) { $c=Invoke-UamHelper $path '--stop-contract'; )PS"
+		    R"PS(if ($uamAssumePreFix -or ($c -and $c.Code -eq 2 -and -not $c.Out -and $c.Err.StartsWith('Usage: uam-runner '))) { $uamLive=$false; foreach ($helper in @(Get-UamServe $path)) { $fresh=Get-CimInstance Win32_Process -Filter ('ProcessId='+$helper.ProcessId); )PS"
+		    R"PS(if ($fresh -and $fresh.CreationDate -eq $helper.CreationDate -and @(Get-UamChildren $helper.ProcessId).Count -eq 0) { Stop-Process -Id $helper.ProcessId -Force -ErrorAction SilentlyContinue } else { $uamLive=$true } }; )PS"
+		    R"PS(for ($i=0; -not $uamLive -and $i -lt 50 -and (Get-UamServe $path).Count -gt 0; $i++) { Start-Sleep -Milliseconds 100 }; if (-not $uamLive -and (Get-UamServe $path).Count -eq 0) { $stopped=$true; 'UAM_HELPER_TERMINATED:'+$path } } }; )PS"
 		    R"PS(if (-not $stopped) { 'UAM_HELPER_KEPT_BUSY:'+$path; continue }; )PS"
 		    R"PS(foreach ($name in $uamTargets[$path]) { if ($sameRoot) { Set-ItemProperty -LiteralPath $uamRunKey -Name $name -Value ('"'+$uamSelf+'" start') } else { Remove-ItemProperty -LiteralPath $uamRunKey -Name $name } }; 'UAM_HELPER_RETIRED:'+$path )PS"
 		    R"PS(} catch { 'UAM_HELPER_RETIREMENT_FAILED:'+$path+': '+$_.Exception.Message } } )PS"
 		    R"PS(} catch { 'UAM_HELPER_RETIREMENT_FAILED:'+$_.Exception.Message }; $ErrorActionPreference='Continue'; )PS";
+	}
+
+	std::string WindowsHelperSpoolCleanupScript()
+	{
+		// Fail closed: deletion runs only when every running helper has a readable path inside this root, so the live version folders are known exactly
+		// (an elevated, other-session, aliased or foreign-root helper stops the pass). A spool whose owner lock is still held is kept; in-use files stay for a later pass.
+		return R"PS(try { $ErrorActionPreference='Stop'; $uamSelf=[IO.Path]::GetFullPath($uamCurrent); $uamSelfRoot=Split-Path (Split-Path $uamSelf); $uamLive=@(); $uamKnown=$true; )PS"
+		    R"PS(foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='uam-runner.exe'")) { if (-not $process.ExecutablePath) { $uamKnown=$false } else { $folder=Split-Path ([IO.Path]::GetFullPath($process.ExecutablePath)); if ((Split-Path $folder) -ine $uamSelfRoot) { $uamKnown=$false }; $uamLive+=$folder } }; )PS"
+		    R"PS(if (-not $uamKnown) { 'UAM_HELPER_SPOOLS_KEPT' } else { foreach ($folder in @(Get-ChildItem -LiteralPath $uamSelfRoot -Directory -ErrorAction SilentlyContinue)) { )PS"
+		    R"PS(if ($folder.FullName -ieq (Split-Path $uamSelf) -or $uamLive -contains $folder.FullName -or ($folder.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }; )PS"
+		    R"PS(foreach ($spool in @(Get-ChildItem -LiteralPath $folder.FullName -Directory -Filter 'uam-runner-spool-*' -ErrorAction SilentlyContinue)) { if ($spool.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }; )PS"
+		    R"PS($lock=Join-Path $spool.FullName '.owner-lock'; if (Test-Path -LiteralPath $lock) { try { [IO.File]::Open($lock,'Open','ReadWrite','None').Dispose() } catch { continue } }; )PS"
+		    R"PS(Remove-Item -LiteralPath $spool.FullName -Recurse -Force -ErrorAction SilentlyContinue } } } )PS"
+		    R"PS(} catch { 'UAM_HELPER_RETIREMENT_FAILED:'+$_.Exception.Message }; $ErrorActionPreference='Continue'; )PS";
+	}
+
+	std::string LinuxHelperRetirementScript()
+	{
+		// Expects $uam_root, $uam_version, $uam_endpoint and $uam_assume_pre_fix (a test seam; production sets it empty). Runs inside the install lease and only reports, because the commit is confirmed.
+		// A helper is the exact /proc/PID/exe path inside this runner root with a service command line, never a process name. Its stop refusal is honoured unless its running image predates
+		// --stop-contract (such helpers count finished records as busy). Only then, after a real refusal, with no other process from that executable (terminals and bridges are launched by SSH,
+		// not the service), is it signalled, re-verified by start time and children just before. /proc/PID/exe reaches the running image even when its file was replaced.
+		// Spools are left alone: marked ones are removed by the next helper start, and unmarked ones in the temporary folder may belong to any live helper.
+		return R"SH(uam_real=$(cd "$uam_root" 2>/dev/null && pwd -P) || { echo 'UAM_HELPER_RETIREMENT_FAILED:root'; exit 0; }
+test -r /proc/self/stat || { echo 'UAM_HELPER_RETIREMENT_FAILED:proc'; exit 0; }
+uam_current="$uam_real/$uam_version/uam-runner"
+uam_limit=$(( $(date +%s) + 120 ))
+uam_exe() { uam_e=$(readlink "/proc/$1/exe" 2>/dev/null) || return 1; uam_e=${uam_e% (deleted)}; }
+uam_owned() { uam_rel=${1#"$uam_real"/}; test "$uam_rel" != "$1" || return 1; case "$uam_rel" in */*/*|'') return 1;; */uam-runner) return 0;; esac; return 1; }
+uam_stat() { { IFS= read -r uam_line <"/proc/$1/stat"; } 2>/dev/null || return 1; uam_line=${uam_line##*) }; set -- $uam_line; uam_state=$1; uam_ppid=$2; uam_born=${20}; }
+uam_service() { uam_argv=$(tr '\0' '\n' 2>/dev/null <"/proc/$1/cmdline") || return 1; set -f; uam_ifs=$IFS; IFS='
+'; set -- $uam_argv; IFS=$uam_ifs; set +f; test "$#" = 4 && { test "$2" = serve || test "$2" = start; } && test "$3" = --socket || return 1; uam_socket=$4; }
+uam_has_child() { uam_seen=0; for uam_path in /proc/[0-9]*; do uam_stat "${uam_path#/proc/}" || continue; test "${uam_path#/proc/}" = "$1" && uam_seen=1; test "$uam_ppid" = "$1" && test "$uam_state" != Z && test "$uam_state" != X && return 0; done; test "$uam_seen" != 1; }
+uam_has_sibling() { for uam_path in /proc/[0-9]*; do uam_exe "${uam_path#/proc/}" && test "$uam_e" = "$1" || continue; uam_service "${uam_path#/proc/}" || return 0; done; return 1; }
+uam_gone() { uam_wait=0; while test "$uam_wait" -lt 5; do { uam_stat "$1" && test "$uam_born" = "$2" && test "$uam_state" != Z; } || return 0; sleep 1; uam_wait=$((uam_wait + 1)); done; return 1; }
+uam_bounded() { "$@" </dev/null 8>&- 9>&- & uam_job=$!; uam_n=0; while uam_stat "$uam_job" && test "$uam_state" != Z && test "$uam_n" -lt 20; do sleep 1; uam_n=$((uam_n + 1)); done; test "$uam_n" -lt 20 || kill "$uam_job" 2>/dev/null; wait "$uam_job"; }
+uam_serves=''
+for uam_path in /proc/[0-9]*; do
+	uam_pid=${uam_path#/proc/}
+	uam_exe "$uam_pid" && uam_owned "$uam_e" && test "$uam_e" != "$uam_current" || continue
+	uam_service "$uam_pid" && uam_serves="$uam_serves $uam_pid"
+done
+for uam_pid in $uam_serves; do
+	uam_exe "$uam_pid" && uam_stat "$uam_pid" && uam_service "$uam_pid" || continue
+	uam_helper=$uam_e; uam_helper_born=$uam_born; uam_helper_socket=$uam_socket
+	test "${uam_helper_socket##*/}" = "$uam_endpoint.sock" && continue
+	test "$(date +%s)" -le "$uam_limit" || { echo "UAM_HELPER_KEPT_TIMEOUT:$uam_helper"; continue; }
+	if uam_has_child "$uam_pid"; then echo "UAM_HELPER_KEPT_CHILDREN:$uam_helper"; continue; fi
+	uam_said=$(uam_bounded "/proc/$uam_pid/exe" stop --socket "$uam_helper_socket" 2>&1); uam_code=$?
+	if ! uam_gone "$uam_pid" "$uam_helper_born"; then
+		case "$uam_code:$uam_said" in 2:*'still owns remote processes'*) ;; *) echo "UAM_HELPER_KEPT_BUSY:$uam_helper"; continue;; esac
+		uam_contract=$(uam_bounded "/proc/$uam_pid/exe" --stop-contract 2>&1); uam_code=$?
+		case "${uam_assume_pre_fix:-}:$uam_code:$uam_contract" in 1:*|:2:'Usage: uam-runner '*) ;; *) echo "UAM_HELPER_KEPT_BUSY:$uam_helper"; continue;; esac
+		if uam_has_sibling "$uam_helper"; then echo "UAM_HELPER_KEPT_BUSY:$uam_helper"; continue; fi
+		if uam_exe "$uam_pid" && test "$uam_e" = "$uam_helper" && uam_service "$uam_pid" && uam_stat "$uam_pid" && test "$uam_born" = "$uam_helper_born" && ! uam_has_child "$uam_pid"; then kill -TERM "$uam_pid" 2>/dev/null; else echo "UAM_HELPER_KEPT_BUSY:$uam_helper"; continue; fi
+		if uam_gone "$uam_pid" "$uam_helper_born"; then echo "UAM_HELPER_TERMINATED:$uam_helper"; else echo "UAM_HELPER_KEPT_BUSY:$uam_helper"; continue; fi
+	fi
+	echo "UAM_HELPER_RETIRED:$uam_helper"
+done
+uam_alive='
+'
+for uam_path in /proc/[0-9]*; do
+	uam_exe "${uam_path#/proc/}" && uam_owned "$uam_e" && uam_alive="$uam_alive$uam_e
+"
+done
+uam_reload=''
+case "$uam_real/$uam_version" in *[%\$\\\"]*) ;; *)
+for uam_unit in "$HOME"/.config/systemd/user/uam-runner-*.service; do
+	test -f "$uam_unit" && test ! -L "$uam_unit" || continue
+	IFS= read -r uam_first <"$uam_unit" || uam_first=''
+	test "$uam_first" = '# UAM managed runner startup' || continue
+	uam_unit_exe=$(sed -n 's/^ExecStart="\(.*\)" start --socket .*/\1/p' "$uam_unit")
+	uam_owned "$uam_unit_exe" && test "$uam_unit_exe" != "$uam_current" || continue
+	case "$uam_alive" in *"
+$uam_unit_exe
+"*) continue;; esac
+	printf '# UAM managed runner startup\n[Unit]\nDescription=Universal Agent Manager runner\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart="%s" start --socket "%s"\n[Install]\nWantedBy=default.target\n' "$uam_current" "$uam_real/$uam_endpoint.sock" >"$uam_unit.new" && mv -f "$uam_unit.new" "$uam_unit" && uam_reload=1
+done;; esac
+test -z "$uam_reload" || systemctl --user daemon-reload >/dev/null 2>&1
+)SH";
+	}
+
+	std::vector<BootstrapStep> BuildBootstrapRetirementSteps(const BootstrapPlan& plan, std::string_view platform)
+	{
+		const std::string root = uam::execution_hosts::RunnerDirectory(platform, plan.runner_directory);
+		if (platform == "linux")
+			return {{"Retire older helpers", SshCommand(plan.ssh_alias, "uam_root=\"$HOME/" + root + "\"; uam_version='" + plan.version + "'; uam_endpoint='" +
+			    RunnerEndpointName(plan.version) + "'; uam_assume_pre_fix=; " + LinuxHelperRetirementScript()), ""}};
+		// Each pass is its own SSH command: together they would pass cmd.exe's 8191-character limit, and a long helper folder skips retirement rather than send a truncated command.
+		const std::string variables = "$uamHelperRoot=$HOME; $uamRunKey='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'; "
+		    "$uamCurrent=(Join-Path $HOME '" + root + "/" + plan.version + "')+'/uam-runner.exe'; $uamAssumePreFix=$false; ";
+		// Named single expressions so scripts/test_bootstrap_metadata.py can re-derive both commands from this source.
+		const std::string retire = PowerShellUtf8Command(WindowsRunnerOwnedScript(root, plan.nonce, variables + WindowsHelperRetirementScript()));
+		const std::string spools = PowerShellUtf8Command(WindowsRunnerOwnedScript(root, plan.nonce, variables + WindowsHelperSpoolCleanupScript()));
+		if (retire.size() >= 8000 || spools.size() >= 8000) return {};
+		return {{"Retire older helpers", SshCommand(plan.ssh_alias, retire), ""}, {"Remove retired helper spools", SshCommand(plan.ssh_alias, spools), ""}};
 	}
 
 	static std::string BootstrapFinalizationCommand(const BootstrapPlan& plan, std::string_view platform, bool keep_new_runner, bool wrap_powershell = true)
@@ -515,15 +623,6 @@ namespace uam::remote
 			command = wrap_powershell ? PowerShellUtf8Command(WindowsRunnerOwnedScript(root, plan.nonce, WindowsRunnerTransactionScript() + script)) : script;
 		}
 		return command;
-	}
-
-	// Retirement is its own SSH command: appended to the commit it pushed that command past cmd.exe's 8191-character limit.
-	static std::string BootstrapRetirementCommand(const BootstrapPlan& plan)
-	{
-		const std::string root = uam::execution_hosts::RunnerDirectory("windows", plan.runner_directory);
-		return PowerShellUtf8Command(WindowsRunnerOwnedScript(root, plan.nonce,
-		    "$uamHelperRoot=$HOME; $uamRunKey='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'; "
-		    "$uamCurrent=(Join-Path $HOME '" + root + "/" + plan.version + "')+'/uam-runner.exe'; " + WindowsHelperRetirementScript()));
 	}
 
 	bool BuildBootstrapPlan(const std::string& ssh_alias, const std::string& version,
@@ -632,9 +731,12 @@ namespace uam::remote
 			    "if ! flock -n 9; then echo UAM_INSTALL_BUSY; printf '%s\\n' 'The remote helper is busy with another installation.' >&2; exit 73; fi; " +
 			    "test ! -L \"$root/install.operation\"; exec 8>\"$root/install.operation\"; "
 			    "if ! flock -n 8; then echo UAM_INSTALL_BUSY; echo 'A helper operation is still active.' >&2; exit 73; fi; " +
+			    // A controller that goes silent (sleep, dropped network) must not hold both locks until sshd notices: after ten idle minutes the guard
+			    // exits, rolling back through its trap once authorized, like the Windows guard's deadline. Without a timeout(1) taking `timeout SECONDS COMMAND` (BusyBox before 1.30 wants -t) it waits as before.
+			    "uam_timeout=$(command -v timeout || :); if test -n \"$uam_timeout\" && ! \"$uam_timeout\" 1 true </dev/null >/dev/null 2>&1 8>&- 9>&-; then uam_timeout=; fi; uam_read() { ${uam_timeout:+$uam_timeout 600} sh -c 'IFS= read -r line || exit 1; printf %s \"$line\"' 8>&- 9>&-; }; "
 			    "printf '%s\\n' 'UAM_INSTALL_LOCK_READY:" + plan.nonce + "'; "
-			    "IFS= read -r authorization; test \"$authorization\" = 'UAM_INSTALL_AUTHORIZE:" + plan.nonce + "'; trap " + quoted_trap + " EXIT; "
-			    "while IFS= read -r line; do id=${line%%:*}; line=${line#*:}; case \"$id\" in *[!0-9]*|'') exit 2;; esac; case \"$line\" in *[!a-zA-Z0-9+/=]*|'') exit 2;; esac; "
+			    "authorization=$(uam_read); test \"$authorization\" = 'UAM_INSTALL_AUTHORIZE:" + plan.nonce + "'; trap " + quoted_trap + " EXIT; "
+			    "while line=$(uam_read); do id=${line%%:*}; line=${line#*:}; case \"$id\" in *[!0-9]*|'') exit 2;; esac; case \"$line\" in *[!a-zA-Z0-9+/=]*|'') exit 2;; esac; "
 			    "command=$(printf '%s' \"$line\" | base64 -d); if output=$(sh -c \"$command\" 9>&- 2>&1); then status=0; else status=$?; fi; "
 			    "printf 'UAM_INSTALL_RESULT:%s:%s:%s\\n' \"$id\" \"$status\" \"$(printf '%s' \"$output\" | base64 -w 0)\"; done";
 		}
@@ -997,7 +1099,7 @@ namespace uam::remote
 			    {"Create private runner directory", SshCommand(plan.ssh_alias,
 			        "umask 077; mkdir -p " + directory), ""},
 			    {"Copy runner", {"scp", "-q", "-o", "BatchMode=yes", "-o",
-			        "ConnectTimeout=10", artifact->path.string(), plan.ssh_alias + ":" +
+			        "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", artifact->path.string(), plan.ssh_alias + ":" +
 			        relative + "/uam-runner.tmp-" + plan.nonce}, ""},
 			    {"Verify and activate runner", SshCommand(plan.ssh_alias, verify), ""},
 			    {"Verify runner version", SshCommand(plan.ssh_alias, installed + " --version"),
@@ -1051,7 +1153,7 @@ namespace uam::remote
 			        PowerShellUtf8Command(WindowsRunnerOwnedScript(root, plan.nonce,
 			            "New-Item -ItemType Directory -Force -Path (Join-Path $HOME '" + relative + "') -ErrorAction Stop | Out-Null"))), ""},
 			    {"Copy runner", {"scp", "-q", "-o", "BatchMode=yes", "-o",
-			        "ConnectTimeout=10", artifact->path.string(), plan.ssh_alias + ":" + temporary}, ""},
+			        "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", artifact->path.string(), plan.ssh_alias + ":" + temporary}, ""},
 			    {"Prepare runner metadata", SshCommand(plan.ssh_alias, prepare), ""},
 			    {"Verify and activate runner", SshCommand(plan.ssh_alias, verify), ""},
 			    {"Verify and publish runner metadata", SshCommand(plan.ssh_alias, publish), ""},
@@ -1138,12 +1240,19 @@ namespace uam::remote
 		if (committed_out) *committed_out = committed;
 		if (!finalized) return fail(std::move(error));
 		if (keep_new_runner && !committed) return fail("The remote helper commit could not be confirmed. Retry setup to reconcile it.");
-		if (keep_new_runner && result.platform == "windows")
+		if (keep_new_runner)
 		{
 			// The commit is already confirmed, so a failed retirement pass is only reported; it still runs under the lease.
 			output.clear();
-			if (!lease->Run({"Retire older helpers", SshCommand(plan.ssh_alias, BootstrapRetirementCommand(plan)), ""}, output, error, stop_token))
-				uam::diagnostics::Write("Remote helper activation committed, but retiring older helpers failed.");
+			const std::vector<BootstrapStep> retirement = BuildBootstrapRetirementSteps(plan, result.platform);
+			if (retirement.empty()) uam::diagnostics::Write("Remote helper activation committed; older helpers were not retired because the helper folder makes the command too long.");
+			for (const BootstrapStep& step : retirement)
+			{
+				std::string step_output;
+				if (!lease->Run(step, step_output, error, stop_token))
+					uam::diagnostics::Write("Remote helper activation committed, but retiring older helpers failed.");
+				output += step_output;
+			}
 			// Counts only: helper paths can contain private folder names.
 			const auto count = [&output](std::string_view marker)
 			{

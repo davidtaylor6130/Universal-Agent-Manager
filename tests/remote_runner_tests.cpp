@@ -4238,6 +4238,94 @@ UAM_TEST(RemoteBootstrapGuardDoesNotLeakInstallLockIntoChildCommands)
 	UAM_ASSERT(output.find("UAM_INSTALL_RESULT:1:0:") != std::string::npos);
 }
 
+UAM_TEST(RemoteBootstrapGuardRollsBackAndReleasesItsLocksWhenTheControllerGoesSilent)
+{
+	TempDir temp("uam-bootstrap-guard-idle");
+	WriteBootstrapLockTransport(temp.root);
+	// Faithful timeout(1): macOS has none, and Linux hosts use coreutils' or BusyBox's.
+	const std::string python = fs::exists("/Library/Frameworks/Python.framework/Versions/3.12/bin/python3") ? "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3" : "/usr/bin/python3";
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "timeout", "#!" + python + R"(
+import subprocess,sys
+try: sys.exit(subprocess.run(sys.argv[2:],timeout=float(sys.argv[1])).returncode)
+except subprocess.TimeoutExpired: sys.exit(124)
+)"));
+	fs::permissions(temp.root / "timeout", fs::perms::owner_all);
+	ScopedEnvVar path("PATH", temp.root.string() + ":/usr/bin:/bin");
+	ScopedEnvVar home("HOME", (temp.root / "home").string());
+	ScopedEnvVar pid("UAM_TEST_LOCK_PID", (temp.root / "pid").string());
+	uam::remote::BootstrapPlan plan;
+	plan.ssh_alias = "fixture"; plan.version = "4.11.0"; plan.nonce = "silent"; plan.runner_directory = "tools/uam";
+	std::vector<std::string> argv = uam::remote::BuildBootstrapLockArgv(plan, "linux");
+	UAM_ASSERT(uam::ranges::Contains(argv, std::string("ServerAliveInterval=15")));
+	UAM_ASSERT(uam::ranges::Contains(argv, std::string("ServerAliveCountMax=3")));
+	// Ten idle minutes in production; one second here.
+	const std::string idle = "$uam_timeout 600}";
+	const std::size_t at = argv.back().find(idle);
+	UAM_ASSERT(at != std::string::npos);
+	argv.back().replace(at, idle.size(), "$uam_timeout 1}");
+	const fs::path marker = temp.root / "home/tools/uam/4.11.0/uam-runner.activation-silent";
+	fs::create_directories(marker.parent_path());
+	UAM_ASSERT(uam::io::WriteTextFile(marker, ""));
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields process;
+	const std::unique_ptr<uam::platform::StdioProcessPlatformFields, std::function<void(uam::platform::StdioProcessPlatformFields*)>> cleanup(&process, [&](uam::platform::StdioProcessPlatformFields* fields) { service.StopStdioProcess(*fields, true); });
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcess(process, temp.root, argv, &error));
+	std::string output;
+	UAM_ASSERT(WaitForLockFixture([&]()
+	{
+		std::array<char, 4096> bytes{};
+		const std::ptrdiff_t count = service.ReadStdioProcessStdout(process, bytes.data(), bytes.size(), &error);
+		if (count > 0) output.append(bytes.data(), static_cast<std::size_t>(count));
+		return output.find("UAM_INSTALL_LOCK_READY:silent") != std::string::npos;
+	}));
+	const std::string authorization = "UAM_INSTALL_AUTHORIZE:silent\n";
+	UAM_ASSERT(service.WriteToStdioProcess(process, authorization.data(), authorization.size(), &error));
+	// Input stays open but silent, as with a sleeping laptop: the guard must give up, roll back and exit by itself.
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+	while (!service.PollStdioProcessExited(process) && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	UAM_ASSERT(service.PollStdioProcessExited(process));
+	UAM_ASSERT(!fs::exists(marker));
+	plan.nonce = "next";
+	UAM_ASSERT(uam::remote::AcquireBootstrapInstallLease(plan, "linux", error) != nullptr);
+}
+
+UAM_TEST(RemoteBootstrapGuardFallsBackWhenTimeoutRejectsTheModernSyntax)
+{
+	TempDir temp("uam-bootstrap-guard-old-timeout");
+	WriteBootstrapLockTransport(temp.root);
+	// BusyBox before 1.30 accepts only `timeout -t SECONDS COMMAND`; the guard must not let it reject every read.
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "timeout", "#!/bin/sh\ncase \"$1\" in -t) shift 2; exec \"$@\";; esac\necho 'timeout: invalid number' >&2\nexit 1\n"));
+	fs::permissions(temp.root / "timeout", fs::perms::owner_all);
+	ScopedEnvVar path("PATH", temp.root.string() + ":/usr/bin:/bin");
+	ScopedEnvVar home("HOME", (temp.root / "home").string());
+	ScopedEnvVar pid("UAM_TEST_LOCK_PID", (temp.root / "pid").string());
+	uam::remote::BootstrapPlan plan;
+	plan.ssh_alias = "fixture"; plan.version = "4.11.0"; plan.nonce = "oldtimeout"; plan.runner_directory = "tools/uam";
+	const std::vector<std::string> argv = uam::remote::BuildBootstrapLockArgv(plan, "linux");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields process;
+	const std::unique_ptr<uam::platform::StdioProcessPlatformFields, std::function<void(uam::platform::StdioProcessPlatformFields*)>> cleanup(&process, [&](uam::platform::StdioProcessPlatformFields* fields) { service.StopStdioProcess(*fields, true); });
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcess(process, temp.root, argv, &error));
+	std::string output;
+	const auto read_until = [&](std::string_view marker)
+	{
+		return WaitForLockFixture([&]()
+		{
+			std::array<char, 4096> bytes{};
+			const std::ptrdiff_t count = service.ReadStdioProcessStdout(process, bytes.data(), bytes.size(), &error);
+			if (count > 0) output.append(bytes.data(), static_cast<std::size_t>(count));
+			return output.find(marker) != std::string::npos;
+		});
+	};
+	UAM_ASSERT(read_until("UAM_INSTALL_LOCK_READY:oldtimeout"));
+	const std::string command = "UAM_INSTALL_AUTHORIZE:oldtimeout\n1:" + uam::base64::Encode("printf guarded") + "\n";
+	UAM_ASSERT(service.WriteToStdioProcess(process, command.data(), command.size(), &error));
+	UAM_ASSERT(read_until("UAM_INSTALL_RESULT:"));
+	UAM_ASSERT(output.find("UAM_INSTALL_RESULT:1:0:" + uam::base64::Encode("guarded")) != std::string::npos);
+}
+
 UAM_TEST(RemoteBootstrapLockCompetingAliasesShareTargetRootAndRecoverAfterRelease)
 {
 	TempDir temp("uam-bootstrap-lock");

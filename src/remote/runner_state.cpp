@@ -46,6 +46,11 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #if defined(__APPLE__)
@@ -92,6 +97,12 @@ namespace uam::remote
 		inline constexpr std::int64_t kMaxTransientLeaseMs = 60000;
 		inline constexpr std::size_t kMaxListedDirectories = 200;
 		inline constexpr std::uintmax_t kMaxUploadBytes = 25ull * 1024ull * 1024ull;
+		inline constexpr std::uintmax_t kSpoolReclaimThreshold = 1024ull * 1024ull;
+		// Copying happens under the process mutex, so a larger unacknowledged tail waits for the client to catch up (or for the 1 GiB path).
+		inline constexpr std::uintmax_t kSpoolReclaimMaxCopyBytes = 8ull * 1024ull * 1024ull;
+		inline constexpr auto kSpoolReclaimRetryDelay = std::chrono::seconds(5);
+		inline constexpr std::string_view kSpoolPrefix = "uam-runner-spool-";
+		inline constexpr std::string_view kSpoolOwnerLock = ".owner-lock";
 
 		bool InspectNativePath(const std::string& text, bool allow_missing_leaf,
 		    nlohmann::json& proof, std::string& error)
@@ -484,6 +495,12 @@ namespace uam::remote
 		                 std::string& error)
 		{
 			if (bytes.empty()) return true;
+			if (!stream.is_open())
+			{
+				// A failed reclaim may have left the stream closed; reopen rather than fail the process.
+				stream.clear();
+				stream.open(path, std::ios::binary | std::ios::app);
+			}
 			std::error_code size_error;
 			const std::uintmax_t size = std::filesystem::file_size(path, size_error);
 			if (size_error)
@@ -508,6 +525,21 @@ namespace uam::remote
 				return false;
 			}
 			return true;
+		}
+
+		/// <summary>Drops the acknowledged prefix once it outweighs the bytes that must be rewritten, so total copying stays linear in output. Opportunistic: on failure the spool is unchanged and the 1 GiB path in AppendSpool still applies.</summary>
+		bool ReclaimAcknowledgedSpool(const std::filesystem::path& path, std::ofstream& stream,
+		                              std::uintmax_t& base_cursor, std::uintmax_t acknowledged_cursor)
+		{
+			if (acknowledged_cursor < base_cursor || acknowledged_cursor - base_cursor < kSpoolReclaimThreshold) return true;
+			std::error_code size_error;
+			const std::uintmax_t size = std::filesystem::file_size(path, size_error);
+			const std::uintmax_t prefix = acknowledged_cursor - base_cursor;
+			if (size_error || prefix > size || size - prefix > prefix || size - prefix > kSpoolReclaimMaxCopyBytes) return true;
+			std::string ignored;
+			if (ReclaimSpoolPrefix(path, stream, base_cursor, acknowledged_cursor, ignored)) return true;
+			if (!stream.is_open()) stream.open(path, std::ios::binary | std::ios::app);
+			return false;
 		}
 
 		std::string ReadSpool(const std::filesystem::path& path, std::uintmax_t logical_offset,
@@ -536,6 +568,70 @@ namespace uam::remote
 			return !error && logical_offset < base_cursor + size;
 		}
 
+		/// <summary>A running process, or an exit or output a reconnecting client has not yet received, must not be discarded by a stop.</summary>
+		bool ProcessStillOwed(RunnerState::Process& process)
+		{
+			if (!process.exited.load(std::memory_order_acquire)) return true;
+			std::scoped_lock lock(process.mutex);
+			if (!process.spool_error.empty()) return false; // Polling can only report this failure; nothing more can be delivered.
+			return !process.exit_reported.load(std::memory_order_acquire) ||
+			       SpoolHasUnread(process.stdout_spool, process.stdout_offset, process.stdout_base_cursor) ||
+			       SpoolHasUnread(process.stderr_spool, process.stderr_offset, process.stderr_base_cursor);
+		}
+
+		/// <summary>Takes the OS lock that marks this spool live. It is published under its final name only once held, so a sweep can never see it unheld by a starting helper; descriptors stay out of children.</summary>
+		std::intptr_t AcquireSpoolOwnerLock(const std::filesystem::path& directory)
+		{
+			const std::filesystem::path path = directory / kSpoolOwnerLock;
+#if defined(_WIN32)
+			const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+			return file == INVALID_HANDLE_VALUE ? -1 : reinterpret_cast<std::intptr_t>(file);
+#else
+			std::filesystem::path pending = path;
+			pending += ".pending";
+			const int descriptor = open(pending.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+			if (descriptor < 0) return -1;
+			if (flock(descriptor, LOCK_EX | LOCK_NB) != 0 || rename(pending.c_str(), path.c_str()) != 0)
+			{
+				(void)close(descriptor);
+				(void)unlink(pending.c_str());
+				return -1;
+			}
+			return descriptor;
+#endif
+		}
+
+		void ReleaseSpoolOwnerLock(std::intptr_t& lock)
+		{
+			if (lock == -1) return;
+#if defined(_WIN32)
+			(void)CloseHandle(reinterpret_cast<HANDLE>(lock));
+#else
+			(void)close(static_cast<int>(lock));
+#endif
+			lock = -1;
+		}
+
+		/// <summary>True only for a spool carrying an owner lock this user can take: the lock dies with its holder. No lock file means a helper predating it, or one still publishing it, so that spool is left alone.</summary>
+		bool SpoolOwnerIsGone(const std::filesystem::path& directory)
+		{
+			const std::filesystem::path path = directory / kSpoolOwnerLock;
+#if defined(_WIN32)
+			const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+			if (file == INVALID_HANDLE_VALUE) return false;
+			(void)CloseHandle(file);
+			return true;
+#else
+			const int descriptor = open(path.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+			if (descriptor < 0) return false;
+			struct stat info{};
+			const bool gone = fstat(descriptor, &info) == 0 && S_ISREG(info.st_mode) && info.st_uid == geteuid() &&
+			                  flock(descriptor, LOCK_EX | LOCK_NB) == 0;
+			(void)close(descriptor);
+			return gone;
+#endif
+		}
+
 		void StartDrainer(RunnerState::Process& process)
 		{
 			process.drainer = std::jthread([&process](std::stop_token stop_token)
@@ -545,6 +641,7 @@ namespace uam::remote
 				std::condition_variable_any idle_wake;
 				bool exit_observed = false;
 				int exit_code = -1;
+				auto reclaim_after = std::chrono::steady_clock::now();
 				std::ofstream stdout_stream(process.stdout_spool,
 				                            std::ios::binary | std::ios::app);
 				std::ofstream stderr_stream(process.stderr_spool,
@@ -586,6 +683,12 @@ namespace uam::remote
 					if (spool_ok)
 					{
 						std::scoped_lock lock(process.mutex);
+						if (const auto now = std::chrono::steady_clock::now(); now >= reclaim_after)
+						{
+							const bool stdout_reclaimed = ReclaimAcknowledgedSpool(process.stdout_spool, stdout_stream, process.stdout_base_cursor, process.stdout_offset);
+							const bool stderr_reclaimed = ReclaimAcknowledgedSpool(process.stderr_spool, stderr_stream, process.stderr_base_cursor, process.stderr_offset);
+							if (!stdout_reclaimed || !stderr_reclaimed) reclaim_after = now + kSpoolReclaimRetryDelay;
+						}
 						spool_ok = AppendSpool(process.stdout_spool, stdout_stream, stdout_bytes,
 						                       process.stdout_base_cursor, process.stdout_offset,
 						                       process.max_spool_bytes, output_error) &&
@@ -666,7 +769,9 @@ namespace uam::remote
 			std::error_code cleanup_error;
 			std::filesystem::remove(m_spoolDirectory, cleanup_error);
 			m_spoolDirectory.clear();
+			return;
 		}
+		m_spoolLock = AcquireSpoolOwnerLock(m_spoolDirectory);
 	}
 
 	RunnerState::~RunnerState()
@@ -687,16 +792,50 @@ namespace uam::remote
 			std::error_code remove_error;
 			std::filesystem::remove(upload->temporary, remove_error);
 		}
+		ReleaseSpoolOwnerLock(m_spoolLock); // Windows cannot delete the directory while its lock file is open.
 		std::error_code cleanup_error;
 		if (!m_spoolDirectory.empty())
 			std::filesystem::remove_all(m_spoolDirectory, cleanup_error);
+	}
+
+	void RunnerState::ConfirmResponseDelivered(const nlohmann::json& request, const nlohmann::json& response)
+	{
+		if (!response.value("ok", false) || !request.contains("sessionId") || !request["sessionId"].is_string() ||
+		    !request.contains("controlToken") || !request["controlToken"].is_string()) return;
+		const std::string type = request.value("type", "");
+		const auto result = response.find("result");
+		const bool reports_exit = type == "process.stop" ||
+		    (type == "process.poll" && result != response.end() && result->is_object() && result->contains("exitCode") && !(*result)["exitCode"].is_null());
+		if (!reports_exit) return;
+		std::scoped_lock lock(m_stateMutex);
+		const auto found = m_processes.find(request["sessionId"].get<std::string>());
+		if (found == m_processes.end() || found->second->control_token != request["controlToken"].get_ref<const std::string&>() ||
+		    !found->second->exited.load(std::memory_order_acquire)) return;
+		found->second->exit_reported.store(true, std::memory_order_release);
+	}
+
+	void RunnerState::RemoveOrphanedSpools()
+	{
+		if (m_spoolDirectory.empty()) return;
+		std::error_code error;
+		std::filesystem::directory_iterator entry(m_spoolDirectory.parent_path(), std::filesystem::directory_options::skip_permission_denied, error);
+		for (; !error && entry != std::filesystem::directory_iterator{}; entry.increment(error))
+		{
+			const std::filesystem::path path = entry->path();
+			std::error_code status_error;
+			if (!uam::paths::Utf8PathString(path.filename()).starts_with(kSpoolPrefix) || path == m_spoolDirectory ||
+			    !std::filesystem::is_directory(entry->symlink_status(status_error)) || status_error || !SpoolOwnerIsGone(path)) continue;
+			std::error_code remove_error; // A file still in use on Windows keeps its folder until a later start.
+			std::filesystem::remove_all(path, remove_error);
+		}
 	}
 
 	bool RunnerState::HasManagedProcesses()
 	{
 		SweepExpiredTransientProcesses();
 		std::scoped_lock lock(m_stateMutex);
-		return !m_processes.empty() || !m_retiringProcesses.empty() || !m_textWorkers.empty() || std::any_of(m_channels.begin(), m_channels.end(),
+		return std::ranges::any_of(m_processes, [](const auto& entry) { return ProcessStillOwed(*entry.second); }) ||
+		       !m_retiringProcesses.empty() || !m_textWorkers.empty() || std::any_of(m_channels.begin(), m_channels.end(),
 		    [](const std::pair<const std::string, Channel>& entry) { return entry.second.expires_at_ms != 0; });
 	}
 
