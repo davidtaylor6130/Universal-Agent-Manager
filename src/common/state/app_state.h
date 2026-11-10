@@ -877,6 +877,14 @@ namespace uam
 		bool reconnect_pending = false;
 		int reconnect_attempts = 0;
 		double reconnect_not_before_time_s = 0.0;
+		// First reconnect failure of the turn named beside it: a never-sent remote prompt is given up by elapsed
+		// time, not by a few fast attempts, and attempts left over from an earlier turn do not shorten that time.
+		double reconnect_first_failure_time_s = 0.0;
+		int reconnect_first_failure_turn_serial = -1;
+		// Background discovery reattaches made only to stop a helper process, and when the last one started. Kept apart
+		// from reconnect_attempts, which stop retries and exits also count, so the number of launches is exact.
+		int discovery_cleanup_attaches = 0;
+		double discovery_cleanup_last_attach_time_s = 0.0;
 		// Counts watchdog re-queues of a stalled goal loop; the goal is marked
 		// blocked after 3 so a failing provider cannot be retried forever.
 		// Cleared when a turn completes or a new user prompt is sent.

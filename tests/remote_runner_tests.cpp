@@ -7760,6 +7760,611 @@ UAM_TEST(AcpRemoteReconnectReplaysOneCommittedDeliveryId)
 	UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
 }
 
+namespace
+{
+	/// <summary>Routes a relaunched proxy through the fixture's stand-in ssh, never a real connection.</summary>
+	struct RemoteRelaunchEnvironment
+	{
+		ScopedEnvVar path, runner, socket;
+		explicit RemoteRelaunchEnvironment(const RemoteAdmissionFixture& fixture)
+		    : path("PATH", fixture.temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin")),
+		      runner("UAM_TEST_RUNNER", fixture.runner.string()), socket("UAM_TEST_SOCKET", fixture.socket.string())
+		{
+		}
+	};
+
+	/// <summary>Polls until the turn settles. With spend_budget, the minute a never-written prompt keeps reconnecting is treated as elapsed.
+	/// Chat saves are deliberately not flushed: a pending save keeps the prompt from being released and written to a relaunched
+	/// proxy, which would make it a possibly delivered turn that correctly reconnects without end.</summary>
+	void PollUntilRemoteTurnSettles(uam::AppState& app, uam::AcpSessionState& session, bool spend_budget, int seconds = 10)
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+		while ((session.running || session.processing || session.reconnect_pending) && std::chrono::steady_clock::now() < deadline)
+		{
+			if (spend_budget && session.reconnect_attempts > 0) session.reconnect_first_failure_time_s = -1.0e6;
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+	}
+
+	/// <summary>Stages one remote prompt, then closes the bridge under it so the proxy exits 70 before transport.</summary>
+	void StageRemotePromptThenCloseBridge(RemoteAdmissionFixture& fixture, int earlier_startup_restarts)
+	{
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		// A launched session records its process; the fixture starts the proxy directly.
+		session.last_process_id = uam::acp_detail::AcpProcessHandleLabel(session);
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Staged when the bridge closed", &error));
+		fixture.AwaitSave();
+		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front()));
+		UAM_ASSERT(session.pending_prompt_delivery && session.processing && session.prompt_request_id == 0);
+		UAM_ASSERT(!app.chats.front().remote_prompt_delivery_id.empty() && app.chats.front().remote_turn_reconnect_pending);
+		session.crash_restart_attempts = earlier_startup_restarts; // A new Send resets it, so set it once the turn exists.
+		service.StopStdioProcess(fixture.runner_service.process, true);
+		int code = -1;
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!service.PollStdioProcessExited(session, &code) && std::chrono::steady_clock::now() < deadline)
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		UAM_ASSERT_EQ(code, 70);
+		// The marker save is still pending, so this poll observes the exit with the prompt staged and unwritten.
+		(void)uam::PollAllAcpSessions(app);
+		UAM_ASSERT(session.prompt_request_id == 0 && std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.event == "process_exit"; }));
+	}
+}
+
+UAM_TEST(AcpRemoteStagedPromptReturnsUnsentWhenItsBridgeCloses)
+{
+	// 1: the first immediate exit already used the startup restart, as on the affected install. 0: a single exit.
+	for (const int earlier_startup_restarts : {1, 0})
+	{
+		RemoteAdmissionFixture fixture;
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		RemoteRelaunchEnvironment relaunch(fixture);
+		// The chat is in the background with an active goal, so both entry paths must flag it and block the goal.
+		Goal goal;
+		goal.id = "private-goal";
+		goal.objective = "Private objective";
+		goal.status = GoalStatus::Active;
+		chat.goals.push_back(goal);
+		chat.active_goal_id = goal.id;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		StageRemotePromptThenCloseBridge(fixture, earlier_startup_restarts);
+		const std::size_t rows = chat.messages.size();
+		// Inside the budget the prompt is re-queued and the turn keeps reconnecting.
+		for (int poll = 0; poll < 150 && session.reconnect_attempts < 2; ++poll)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(session.processing && !chat.messages.back().interrupted && session.lifecycle_state != "error");
+		UAM_ASSERT(std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "staged_prompt_requeued"; }));
+		PollUntilRemoteTurnSettles(app, session, true);
+		UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry)
+		    { return entry.reason == "retry_scheduled" && entry.message == "Remote prompt is waiting for its owned durable receipt."; }));
+		UAM_ASSERT(!session.running && !session.processing && !session.reconnect_pending && !session.pending_prompt_delivery);
+		UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
+		UAM_ASSERT(!session.last_error.empty());
+		// Both entry paths leave the same row and chat state: one interrupted Not sent row and nothing else to send.
+		UAM_ASSERT_EQ(chat.messages.size(), rows);
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+		UAM_ASSERT(chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0);
+		UAM_ASSERT(!chat.acp_queue_held && !session.queue_held && session.queued_user_prompts.empty() && session.queued_prompt.empty());
+		UAM_ASSERT(chat.remote_prompt_delivery_id.empty() && chat.remote_prompt_delivery_payload.empty() && !chat.remote_turn_reconnect_pending);
+		UAM_ASSERT(chat.remote_pending_requests.empty());
+		UAM_ASSERT(chat.goals.front().status == GoalStatus::Blocked);
+		UAM_ASSERT(std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "goal_blocked_process_exit"; }));
+		// Nothing is left that a queue drain or a reconnect could send by itself.
+		UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, session, chat));
+		for (int poll = 0; poll < 40; ++poll)
+		{
+			uam::FlushPendingChatSaves(app);
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(!session.running && !session.processing && !session.reconnect_pending && !session.pending_prompt_delivery);
+		fixture.AwaitSave();
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved && saved->messages.back().acp_prompt_not_sent && saved->messages.back().interrupted);
+		UAM_ASSERT(saved->acp_queued_prompts.empty() && saved->remote_prompt_delivery_id.empty() && !saved->remote_turn_reconnect_pending);
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+	}
+}
+
+UAM_TEST(AcpRemoteStagedPromptBounceKeepsOneCopyAndHoldsInputQueuedBehindIt)
+{
+	RemoteAdmissionFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	RemoteRelaunchEnvironment relaunch(fixture);
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	session.last_process_id = uam::acp_detail::AcpProcessHandleLabel(session);
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Staged head", &error));
+	fixture.AwaitSave();
+	UAM_ASSERT(chat.acp_queued_prompts.size() == 1 && chat.acp_queued_prompts.front().prepared_for_delivery && chat.acp_dispatched_queued_prompt_count == 1);
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+	// The staged packet took the prepared queue head with it; a second input waits behind the turn.
+	UAM_ASSERT(session.pending_prompt_delivery && chat.acp_queued_prompts.empty());
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Queued behind it", &error));
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT(session.pending_prompt_delivery && session.prompt_request_id == 0);
+	service.StopStdioProcess(fixture.runner_service.process, true);
+	int code = -1;
+	std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!service.PollStdioProcessExited(session, &code) && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	UAM_ASSERT_EQ(code, 70);
+	(void)uam::PollAllAcpSessions(app);
+	PollUntilRemoteTurnSettles(app, session, true);
+	UAM_ASSERT(!session.running && !session.processing && !session.reconnect_pending && !session.pending_prompt_delivery);
+	// One copy of the bounced prompt (its Not sent row); the later input is the only queue entry and is held.
+	UAM_ASSERT_EQ(std::ranges::count_if(chat.messages, [](const Message& row) { return row.role == MessageRole::User && row.acp_prompt_not_sent; }), 1);
+	UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(chat.acp_queued_prompts.front().text, std::string("Queued behind it"));
+	UAM_ASSERT(!chat.acp_queued_prompts.front().prepared_for_delivery && chat.acp_dispatched_queued_prompt_count == 0);
+	UAM_ASSERT(chat.acp_queue_held && session.queue_held && session.queued_user_prompts.size() == 1);
+	UAM_ASSERT(chat.remote_prompt_delivery_id.empty() && !chat.remote_turn_reconnect_pending);
+	for (int poll = 0; poll < 40; ++poll)
+	{
+		uam::FlushPendingChatSaves(app);
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(!session.running && !session.processing && !session.reconnect_pending && session.queued_user_prompts.size() == 1);
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+}
+
+UAM_TEST(AcpRemoteStopWhileStagedPromptAwaitsReconnectLeavesChatIdleAndUnsent)
+{
+	RemoteAdmissionFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	RemoteRelaunchEnvironment relaunch(fixture);
+	StageRemotePromptThenCloseBridge(fixture, 1);
+	UAM_ASSERT(session.processing && session.reconnect_pending && session.pending_prompt_delivery);
+	std::string error;
+	UAM_ASSERT(uam::CancelAcpTurn(app, chat.id, &error));
+	UAM_ASSERT(!session.processing && !session.reconnect_pending && !session.pending_prompt_delivery && !session.remote_stop_unconfirmed);
+	UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(chat.remote_prompt_delivery_id.empty() && !chat.remote_turn_reconnect_pending && !chat.remote_stop_cleanup_pending);
+	for (int poll = 0; poll < 80; ++poll)
+	{
+		uam::FlushPendingChatSaves(app);
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(!session.running && !session.processing && !session.reconnect_pending);
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+}
+
+UAM_TEST(AcpRemotePersistedUntransportedMarkerDeliversOnceAfterRestart)
+{
+	RemoteAdmissionFixture fixture;
+	uam::AppState& app = fixture.app;
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const std::string chat_id = app.chats.front().id;
+	app.chats.front().remote_process_control_token = fixture.token;
+	app.chats.front().remote_process_exists = true;
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat_id, "Saved but never transported", &error));
+	fixture.AwaitSave();
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, app.chats.front()));
+	fixture.AwaitSave();
+	UAM_ASSERT(fixture.session->pending_prompt_delivery && !fs::exists(fixture.input_log));
+	// The app stops here: the proxy detaches, the helper keeps its process, and only the saved chat survives.
+	service.CloseStdioProcessInput(*fixture.session);
+	int code = -1;
+	std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (!service.PollStdioProcessExited(*fixture.session, &code) && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	service.StopStdioProcess(*fixture.session, true);
+	service.CloseStdioProcessHandles(*fixture.session);
+	fixture.session = nullptr;
+	app.acp_sessions.clear();
+	std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, chat_id);
+	UAM_ASSERT(persisted && persisted->remote_turn_reconnect_pending && persisted->remote_process_exists);
+	UAM_ASSERT(!persisted->remote_prompt_delivery_id.empty() && !persisted->remote_prompt_delivery_payload.empty());
+	UAM_ASSERT(!persisted->remote_prompt_delivery_session_id.empty() && persisted->acp_queued_prompts.empty());
+	UAM_ASSERT(!persisted->remote_stop_cleanup_pending && !persisted->remote_restart_pending && !persisted->messages.back().acp_prompt_not_sent);
+	const std::string payload = persisted->remote_prompt_delivery_payload;
+	app.chats.front() = std::move(*persisted);
+
+	RemoteRelaunchEnvironment relaunch(fixture);
+	UAM_ASSERT_EQ(uam::RestoreRemoteAcpSessionsAfterRestart(app), std::size_t{1});
+	deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+	while ((!fs::exists(fixture.input_log) || ReadFile(fixture.input_log).empty()) && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	for (int poll = 0; poll < 40; ++poll)
+	{
+		uam::FlushPendingChatSaves(app);
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	uam::AcpSessionState* restored = uam::FindAcpSessionForChat(app, chat_id);
+	const std::string input = fs::exists(fixture.input_log) ? ReadFile(fixture.input_log) : std::string{};
+	const bool delivered_once = std::count(input.begin(), input.end(), '\n') == 1 && uam::strings::Trim(input) == uam::strings::Trim(payload);
+	const bool still_active = restored != nullptr && restored->running && restored->processing;
+	if (restored != nullptr)
+	{
+		service.StopStdioProcess(*restored, true);
+		service.CloseStdioProcessHandles(*restored);
+	}
+	UAM_ASSERT(delivered_once);
+	UAM_ASSERT(still_active);
+}
+
+UAM_TEST(AcpRemoteUntransportedPromptStopsReconnectingAfterElapsedBudget)
+{
+	// written: the delivery marker exists, so the prompt may have reached the provider and recovery stays unbounded.
+	for (const bool written : {false, true})
+	{
+		TempDir temp("uam-remote-untransported");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+		ChatSession chat;
+		chat.id = "private-untransported";
+		chat.provider_id = "gemini-cli";
+		chat.execution_host_id = "private-host";
+		chat.workspace_directory = temp.root.string();
+		chat.messages.push_back({.role = MessageRole::User, .content = "Never reached the connection"});
+		// A row of the same turn the user already removed, and input queued behind the turn.
+		chat.messages.push_back({.role = MessageRole::User, .content = "Removed before the turn ended", .acp_prompt_discarded = true});
+		chat.acp_queued_prompts.push_back(uam::AcpQueuedUserPromptState{"Queued behind the turn"});
+		if (written)
+		{
+			chat.remote_turn_reconnect_pending = true;
+			chat.remote_prompt_delivery_id = "private-delivery";
+			chat.remote_prompt_delivery_payload = "private-payload";
+		}
+		app.chats.push_back(std::move(chat));
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+		std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+		uam::AcpSessionState& session = *owned;
+		session.chat_id = app.chats.front().id;
+		session.provider_id = "gemini-cli";
+		session.process_execution_host_id = "private-host";
+		session.processing = true;
+		session.recovering_remote_turn = true;
+		session.queued_prompt = written ? std::string{} : std::string("Never reached the connection");
+		session.turn_serial = 1;
+		session.turn_first_user_message_index = 0;
+		session.turn_user_message_index = 1;
+		session.queued_user_prompts.push_back(uam::AcpQueuedUserPromptState{"Queued behind the turn"});
+		app.acp_sessions.push_back(std::move(owned));
+		// Six failures inside the first minute keep reconnecting with growing delays; the budget is elapsed time.
+		for (int attempt = 0; attempt < 6; ++attempt)
+		{
+			uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 100.0 + attempt * 10.0, "The remote runner bridge closed.");
+			UAM_ASSERT(session.processing && session.reconnect_pending);
+		}
+		UAM_ASSERT(session.reconnect_not_before_time_s - 150.0 >= 16.0);
+		// A saved stop marker without the runtime flag (after a restart) still owes cleanup: never given up.
+		app.chats.front().remote_stop_cleanup_pending = !written;
+		uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 161.0, "The remote runner bridge closed.");
+		UAM_ASSERT(session.processing && session.reconnect_pending);
+		app.chats.front().remote_stop_cleanup_pending = false;
+		uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 162.0, "The remote runner bridge closed.");
+		if (written)
+		{
+			UAM_ASSERT(session.processing && session.reconnect_pending && session.recovering_remote_turn);
+			UAM_ASSERT_EQ(app.chats.front().remote_prompt_delivery_id, std::string("private-delivery"));
+			continue;
+		}
+		UAM_ASSERT(!session.processing && !session.reconnect_pending && !session.recovering_remote_turn);
+		UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
+		UAM_ASSERT_EQ(session.last_error, std::string("The remote runner bridge closed."));
+		UAM_ASSERT_EQ(std::ranges::count_if(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "retry_scheduled"; }), 7);
+		UAM_ASSERT(std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "exhausted"; }));
+		// The same end state as a prompt returned while staged: one interrupted unsent row, a removed row left
+		// removed, and the input queued behind held rather than turned into an interrupted message.
+		const ChatSession& ended = app.chats.front();
+		UAM_ASSERT_EQ(ended.messages.size(), std::size_t{2});
+		UAM_ASSERT(ended.messages[0].acp_prompt_not_sent && ended.messages[0].interrupted);
+		UAM_ASSERT(!ended.messages[1].acp_prompt_not_sent && ended.messages[1].acp_prompt_discarded);
+		UAM_ASSERT(ended.acp_queue_held && session.queue_held && session.queued_user_prompts.size() == 1);
+		UAM_ASSERT(ended.acp_queued_prompts.size() == 1 && ended.acp_queued_prompts.front().text == "Queued behind the turn");
+	}
+}
+
+UAM_TEST(AcpRemoteUnwrittenGoalTurnWithNoRowKeepsNoCopy)
+{
+	TempDir temp("uam-remote-goal-no-row");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+	ChatSession chat;
+	chat.id = "private-goal-no-row";
+	chat.provider_id = "gemini-cli";
+	chat.execution_host_id = "private-host";
+	chat.workspace_directory = temp.root.string();
+	chat.messages.push_back({.role = MessageRole::User, .content = "Earlier answered request"});
+	// A goal turn's prompt exists only as prepared wire text: no message row of its own.
+	uam::AcpQueuedUserPromptState head{"Private goal wire text"};
+	head.prepared_for_delivery = true;
+	chat.acp_queued_prompts.push_back(head);
+	chat.acp_dispatched_queued_prompt_count = 1;
+	app.chats.push_back(std::move(chat));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+	uam::AcpSessionState& session = *owned;
+	session.chat_id = app.chats.front().id;
+	session.provider_id = "gemini-cli";
+	session.processing = true;
+	session.queued_prompt = "Private goal wire text";
+	session.turn_serial = 1;
+	app.acp_sessions.push_back(std::move(owned));
+	uam::acp_detail::ReturnUnwrittenRemotePromptAsUnsent(app, session, app.chats.front(), "The remote runner bridge closed.");
+	const ChatSession& ended = app.chats.front();
+	// No copy of the prompt remains and no row was invented or marked; the error is what the goal is blocked with.
+	UAM_ASSERT(ended.acp_queued_prompts.empty() && ended.acp_dispatched_queued_prompt_count == 0 && !ended.acp_queue_held);
+	UAM_ASSERT(ended.messages.size() == 1 && !ended.messages.front().acp_prompt_not_sent && !ended.messages.front().interrupted);
+	UAM_ASSERT(!session.processing && session.queued_prompt.empty() && !session.queue_held);
+	UAM_ASSERT_EQ(session.last_error, std::string("The remote runner bridge closed."));
+}
+
+UAM_TEST(AcpRemoteReconnectBudgetRestartsAfterAReattachWhateverElseCountsAttempts)
+{
+	TempDir temp("uam-remote-budget-restamp");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+	ChatSession chat;
+	chat.id = "private-budget-restamp";
+	chat.provider_id = "gemini-cli";
+	chat.execution_host_id = "private-host";
+	chat.workspace_directory = temp.root.string();
+	chat.messages.push_back({.role = MessageRole::User, .content = "Never reached the connection"});
+	app.chats.push_back(std::move(chat));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+	uam::AcpSessionState& session = *owned;
+	session.chat_id = app.chats.front().id;
+	session.provider_id = "gemini-cli";
+	session.process_execution_host_id = "private-host";
+	session.processing = true;
+	session.recovering_remote_turn = true;
+	session.queued_prompt = "Never reached the connection";
+	session.turn_serial = 1;
+	session.turn_user_message_index = session.turn_first_user_message_index = 0;
+	app.acp_sessions.push_back(std::move(owned));
+	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 100.0, "The remote runner bridge closed.");
+	UAM_ASSERT_EQ(session.reconnect_first_failure_time_s, 100.0);
+	// The helper process is reached again, in the same turn.
+	session.running = true;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"jsonrpc":"2.0","method":"uam/remoteAttached"})"));
+	UAM_ASSERT_EQ(session.reconnect_attempts, 0);
+	session.running = false;
+	session.recovering_remote_turn = true;
+	// Another counter of attempts (a failed stop retry) raises the count before the next recorded failure.
+	++session.reconnect_attempts;
+	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 200.0, "The remote runner bridge closed.");
+	// The minute is measured from this new failure, not from the one before the reattach.
+	UAM_ASSERT_EQ(session.reconnect_first_failure_time_s, 200.0);
+	UAM_ASSERT(session.processing && session.reconnect_pending);
+	UAM_ASSERT(!app.chats.front().messages.front().acp_prompt_not_sent);
+}
+
+UAM_TEST(AcpRemoteUntransportedPromptExitsCountBackOffAndEndThroughTheExitHandler)
+{
+	RemoteAdmissionFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	// Every relaunch meets a stand-in ssh that cannot connect, so its proxy exits without reaching any helper.
+	TempDir unreachable("uam-remote-unreachable");
+	UAM_ASSERT(uam::io::WriteTextFile(unreachable.root / "ssh", "#!/bin/sh\nexit 255\n"));
+	fs::permissions(unreachable.root / "ssh", fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	ScopedEnvVar path("PATH", unreachable.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin"));
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	session.last_process_id = uam::acp_detail::AcpProcessHandleLabel(session);
+	// The session is still setting up, so the prompt is queued for this turn and never staged or written.
+	session.session_ready = false;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Never reached the connection", &error));
+	fixture.AwaitSave();
+	UAM_ASSERT(session.processing && !session.queued_prompt.empty() && !session.pending_prompt_delivery && chat.remote_prompt_delivery_id.empty());
+	// A turn checkpoint preflight holds prompt delivery, so no relaunched process stages the prompt: each exit meets
+	// a prompt that was never staged and the exit handler alone decides what happens.
+	session.turn_checkpoint_preflight_pending = true;
+	session.crash_restart_attempts = 1;
+	service.StopStdioProcess(fixture.runner_service.process, true);
+	int code = -1;
+	std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!service.PollStdioProcessExited(session, &code) && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	UAM_ASSERT_EQ(code, 70);
+	(void)uam::PollAllAcpSessions(app);
+	// The exit itself counts as a failed attempt and schedules a backed-off retry; the turn is still alive.
+	UAM_ASSERT_EQ(session.reconnect_attempts, 1);
+	UAM_ASSERT(session.processing && session.reconnect_pending && session.recovering_remote_turn);
+	UAM_ASSERT(std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "retry_scheduled"; }));
+	UAM_ASSERT(session.reconnect_not_before_time_s > 0.0);
+	// Each relaunch reaches no helper and exits again. Further exits back off further; none gives the turn up.
+	// The scheduled delay is asserted, then skipped, instead of being waited out.
+	double previous_delay = 0.0;
+	deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (session.reconnect_attempts < 4 && std::chrono::steady_clock::now() < deadline)
+	{
+		if (session.reconnect_pending && session.reconnect_not_before_time_s > 0.0)
+		{
+			const double delay = uam::RemoteTurnReconnectDelaySecondsForTests(session.reconnect_attempts);
+			UAM_ASSERT(delay >= previous_delay);
+			previous_delay = delay;
+			session.reconnect_not_before_time_s = 0.0;
+		}
+		session.turn_checkpoint_preflight_pending = true;
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT_EQ(session.reconnect_attempts, 4);
+	UAM_ASSERT(previous_delay >= 2.0);
+	UAM_ASSERT(session.processing && !session.pending_prompt_delivery && !chat.messages.back().interrupted && session.lifecycle_state != "error");
+	// Once the minute has passed, the next exit returns the prompt: through the exit handler, never the launch gate.
+	deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while ((session.running || session.processing || session.reconnect_pending) && std::chrono::steady_clock::now() < deadline)
+	{
+		session.reconnect_first_failure_time_s = -1.0e6;
+		if (session.reconnect_pending) session.reconnect_not_before_time_s = 0.0;
+		if (session.processing) session.turn_checkpoint_preflight_pending = true;
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(!session.running && !session.processing && !session.reconnect_pending && !session.pending_prompt_delivery);
+	UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
+	UAM_ASSERT(!session.last_error.empty());
+	UAM_ASSERT(std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "exhausted"; }));
+	UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry)
+	    { return entry.reason == "staged_prompt_returned_unsent" || entry.reason == "staged_prompt_requeued"; }));
+	UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+	UAM_ASSERT(chat.acp_queued_prompts.empty() && chat.remote_prompt_delivery_id.empty() && !chat.remote_turn_reconnect_pending);
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+}
+
+UAM_TEST(AcpRemoteStagedPromptIsDeliveredOnceAfterItsProxyDiesAndTheHelperSurvives)
+{
+	RemoteAdmissionFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	RemoteRelaunchEnvironment relaunch(fixture);
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	chat.remote_process_control_token = fixture.token;
+	chat.remote_process_exists = true;
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	session.last_process_id = uam::acp_detail::AcpProcessHandleLabel(session);
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Staged across a dropped connection", &error));
+	fixture.AwaitSave();
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+	UAM_ASSERT(session.pending_prompt_delivery && session.prompt_request_id == 0);
+	const std::string first_delivery_id = chat.remote_prompt_delivery_id;
+	UAM_ASSERT(!first_delivery_id.empty());
+	// Only the controller's proxy goes away; the helper keeps its provider process.
+	service.CloseStdioProcessInput(session);
+	int code = -1;
+	std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!service.PollStdioProcessExited(session, &code) && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while ((!fs::exists(fixture.input_log) || ReadFile(fixture.input_log).empty()) && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	for (int poll = 0; poll < 60; ++poll)
+	{
+		uam::FlushPendingChatSaves(app);
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	const std::string input = fs::exists(fixture.input_log) ? ReadFile(fixture.input_log) : std::string{};
+	UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+	UAM_ASSERT(input.find("Staged across a dropped connection") != std::string::npos);
+	UAM_ASSERT(std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "staged_prompt_requeued"; }));
+	UAM_ASSERT(session.running && session.processing && !session.pending_prompt_delivery && session.queued_prompt.empty());
+	UAM_ASSERT(std::ranges::none_of(chat.messages, [](const Message& row) { return row.acp_prompt_not_sent; }));
+	UAM_ASSERT(chat.acp_queued_prompts.empty());
+}
+
+UAM_TEST(AcpModelDiscoveryRefusesKnownIncompatibleVersionWithoutStartingASession)
+{
+	TempDir temp("uam-discovery-known-incompatible");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
+	uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", "local")];
+	version.provider_id = "opencode-cli";
+	version.execution_host = app.settings.execution_hosts.front();
+	version.checked = true;
+	version.installed_version = "2.9.9";
+	for (int request = 0; request < 3; ++request)
+	{
+		std::string error;
+		UAM_ASSERT(!uam::StartEphemeralAcpModelDiscovery(app, "opencode-cli", temp.root.string(), "local", &error));
+		UAM_ASSERT(error.find("has not been verified") != std::string::npos);
+		UAM_ASSERT(app.model_discovery_chats.empty() && app.acp_sessions.empty());
+	}
+	// A failed check says nothing about the installation, so it does not refuse here.
+	version.check_error = "The version check timed out.";
+	version.installed_version.clear();
+	std::string error;
+	(void)uam::StartEphemeralAcpModelDiscovery(app, "opencode-cli", temp.root.string(), "local", &error);
+	UAM_ASSERT(error.find("has not been verified") == std::string::npos);
+	for (const std::unique_ptr<uam::AcpSessionState>& session : app.acp_sessions)
+	{
+		PlatformServicesFactory::Instance().process_service.StopStdioProcess(*session, true);
+		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
+	}
+}
+
+UAM_TEST(AcpRemoteDiscoveryCleanupGivesUpAfterBoundedAttempts)
+{
+	TempDir temp("uam-remote-discovery-cleanup");
+	const fs::path fake_ssh = temp.root / "ssh";
+	UAM_ASSERT(uam::io::WriteTextFile(fake_ssh, "#!/bin/sh\nexit 255\n"));
+	fs::permissions(fake_ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	ScopedEnvVar path("PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+	ExecutionHost host;
+	host.id = "private-host";
+	host.transport = "ssh";
+	host.ssh_alias = "private-test-host";
+	host.platform = "linux";
+	host.runner_status = "ready";
+	host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+	host.runner_protocol_version = 3;
+	app.settings.execution_hosts.push_back(host);
+	// A discovery whose proxy exited while the helper may still own its process: UAM reattaches only to stop it.
+	ChatSession chat;
+	chat.id = "model-discovery-private";
+	chat.provider_id = "gemini-cli";
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = temp.root.string();
+	chat.memory_enabled = false;
+	chat.remote_process_exists = true;
+	chat.remote_process_control_token = "private-discovery-authority";
+	app.model_discovery_chats.push_back(std::move(chat));
+	std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+	owned->chat_id = app.model_discovery_chats.front().id;
+	owned->provider_id = "gemini-cli";
+	owned->process_execution_host_id = host.id;
+	owned->ephemeral_model_discovery = true;
+	app.acp_sessions.push_back(std::move(owned));
+	std::size_t launches = 0;
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+	while (!app.model_discovery_chats.empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		if (!app.acp_sessions.empty())
+			launches = std::max(launches, static_cast<std::size_t>(std::ranges::count_if(app.acp_sessions.front()->diagnostics,
+			    [](const uam::AcpDiagnosticEntryState& entry) { return entry.event == "process_launch" && entry.reason == "started"; })));
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	for (const std::unique_ptr<uam::AcpSessionState>& session : app.acp_sessions)
+	{
+		PlatformServicesFactory::Instance().process_service.StopStdioProcess(*session, true);
+		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
+	}
+	UAM_ASSERT(app.model_discovery_chats.empty() && app.acp_sessions.empty());
+	UAM_ASSERT_EQ(launches, std::size_t{3});
+}
+
 UAM_TEST(AcpUnreadyRemoteQueueAdmissionKeepsInputBudgetAndIntent)
 {
 	RemoteAdmissionFixture fixture;

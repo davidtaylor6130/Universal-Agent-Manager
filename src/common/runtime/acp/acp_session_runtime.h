@@ -189,6 +189,7 @@ bool UpdateAcpStaleWaitForTests(AcpSessionState& session, double now_seconds);
 std::string AutoApproveOptionIdForTests(const AcpPendingPermissionState& pending);
 bool ResumeStalledGoalLoopForTests(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds);
 double AcpReconnectDelaySecondsForTests(int attempt);
+double RemoteTurnReconnectDelaySecondsForTests(int attempt);
 void ScheduleAcpReconnectForTests(AcpSessionState& session, double now_seconds);
 void RecordAcpReconnectFailureForTests(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds, const std::string& error);
 
