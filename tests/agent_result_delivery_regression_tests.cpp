@@ -170,7 +170,7 @@ UAM_TEST(AgentResultDeliveryPreservesNewerSavedParentBeforeAcknowledging)
 	const auto incarnation = fixture.app.chats.front().metadata_incarnation;
 	fixture.app.chats.front() = fixture.LoadParent();
 	fixture.app.chats.front().metadata_incarnation = incarnation;
-	(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, 1300);
+	(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, 3300); // After the two-second delivery backoff from the stale poll.
 	const auto delivered = fixture.LoadParent();
 	UAM_ASSERT_EQ(delivered.messages.at(0), newer.messages.at(0));
 	UAM_ASSERT_EQ(delivered.messages.at(1), second);
@@ -178,7 +178,7 @@ UAM_TEST(AgentResultDeliveryPreservesNewerSavedParentBeforeAcknowledging)
 	UAM_ASSERT(fixture.app.agent_runs.front().root_result_delivered);
 	UAM_ASSERT(fixture.LoadRun().root_result_delivered);
 
-	(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, 1400);
+	(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, 3400);
 	UAM_ASSERT_EQ(fixture.LoadParent().messages, delivered.messages);
 	UAM_ASSERT_EQ(fixture.ResultCount(fixture.LoadParent()), std::size_t{1});
 }
@@ -196,14 +196,14 @@ UAM_TEST(AgentResultDeliverySurvivesPendingAuthoredParentSave)
 	for (int attempt = 0; attempt < 4; ++attempt)
 		(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, 1200 + attempt);
 	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.app.chats.front()));
-	(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, 1300);
+	(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, 3300); // After the two-second delivery backoff from the deferred polls.
 	const auto delivered = fixture.LoadParent();
 	UAM_ASSERT_EQ(delivered.messages.at(1), second);
 	if (fixture.ResultCount(delivered) == 0) fixture.DiagnoseMissingResult();
 	UAM_ASSERT_EQ(fixture.ResultCount(delivered), std::size_t{1});
 	UAM_ASSERT(fixture.app.agent_runs.front().root_result_delivered);
 	UAM_ASSERT(fixture.LoadRun().root_result_delivered);
-	(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, 1400);
+	(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, 3400);
 	UAM_ASSERT_EQ(fixture.LoadParent().messages, delivered.messages);
 	UAM_ASSERT_EQ(fixture.ResultCount(fixture.LoadParent()), std::size_t{1});
 }
