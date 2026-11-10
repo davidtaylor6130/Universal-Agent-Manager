@@ -80,6 +80,17 @@ namespace uam
 			}
 		}
 
+		/// Version state is runtime-only, so routing starts the check it waits on. A check that
+		/// did not produce a usable version is repeated with a doubling delay, up to five minutes.
+		void RetryRoutingVersionCheck(AppState& app, const ProviderProfile& provider, const ExecutionHost& host, double now)
+		{
+			const std::string key = CliProviderVersionStateKey(provider.id, host.id);
+			std::pair<double, double>& retry = app.execution_routing_version_check_retry[key];
+			if (now < retry.first || !ProviderCliCompatibilityService().StartProviderVersionCheck(app, provider.id, true, host.id)) return;
+			retry.second = retry.second <= 0.0 ? 15.0 : std::min(retry.second * 2.0, 300.0);
+			retry.first = now + retry.second;
+		}
+
 		RemoteHostProbeOutcome ContactRemoteHost(const ExecutionHost& host, const std::string& session_id, std::stop_token stop)
 		{
 			remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, host);
@@ -214,6 +225,8 @@ namespace uam
 			for (const ExecutionRoutingHostPolicy& policy : app.settings.execution_routing.hosts)
 			{
 				if (policy.host_id != host.id) continue;
+				if (version_usable) app.execution_routing_version_check_retry.erase(CliProviderVersionStateKey(provider->id, host.id));
+				else if (automatic && host.id != "local" && policy.enabled && provider_enabled) RetryRoutingVersionCheck(app, *provider, host, now);
 				candidate.pool_enabled = policy.enabled;
 				candidate.max_active_turns = policy.max_active_turns;
 				for (const ExecutionRoutingProviderConfirmation& confirmation : policy.provider_confirmations)

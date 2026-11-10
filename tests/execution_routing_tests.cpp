@@ -803,4 +803,31 @@ UAM_TEST(RemoteHostRecoveryTreatsAnAttachedProviderSessionAsAContact)
 	UAM_ASSERT_EQ(app.settings.execution_hosts.back().runner_status, std::string("ready"));
 	UAM_ASSERT(app.remote_host_probes.empty());
 }
+
+UAM_TEST(ExecutionRoutingStartsTheVersionCheckItWaitsOn)
+{
+	TempDir temp("uam-routing-version-check");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	// Version state is runtime-only: after a restart nothing has checked this provider on this host.
+	app.runtime_cli_versions_by_provider_id.clear();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT(app.runtime_cli_version_check_task.running);
+	UAM_ASSERT_EQ(app.runtime_cli_version_check_task.execution_host.id, std::string("remote"));
+	UAM_ASSERT_EQ(app.runtime_cli_version_provider_id, std::string("codex-cli"));
+	const std::pair<double, double> retry = app.execution_routing_version_check_retry.at(CliProviderVersionStateKey("codex-cli", "remote"));
+	UAM_ASSERT(retry.first > uam::GetAppTimeSeconds());
+	// A waiting chat asks again only after the delay, not on every admission.
+	uam::ResetAsyncCommandTask(app.runtime_cli_version_check_task);
+	app.execution_routing_retry_at_by_chat_id.clear();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT(!app.runtime_cli_version_check_task.running);
+	// A host outside the pool is not checked on routing's behalf.
+	uam::AppState excluded;
+	ConfigureRoutingFixture(excluded, temp.root / "excluded");
+	excluded.runtime_cli_versions_by_provider_id.clear();
+	excluded.settings.execution_routing.hosts.front().enabled = false;
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(excluded, excluded.chats.front()).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT(!excluded.runtime_cli_version_check_task.running);
+}
 #endif

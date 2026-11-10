@@ -1383,6 +1383,7 @@ namespace uam
 		std::unordered_map<std::string, std::shared_ptr<RemoteHostProbeTask>> remote_host_probes;
 		/// Test seam: replaces the SSH helper contact made by a recovery probe.
 		RemoteHostProbe remote_host_probe;
+		std::unordered_map<std::string, std::pair<double, double>> execution_routing_version_check_retry;
 		fs::path data_root;
 		fs::path native_history_chats_dir;
 		AppSettings settings;
