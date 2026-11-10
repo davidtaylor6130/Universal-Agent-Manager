@@ -539,6 +539,7 @@ UAM_TEST(WorktreeLaunchPreparationRestartRejectsChangedOwnership)
 		const uam::WorktreeLaunchPreparationResult refusal = uam::PrepareWorktreeForLaunch(fixture.app, chat);
 		UAM_ASSERT_EQ(refusal.state, uam::WorktreeLaunchPreparationState::Failed);
 		if (change == "oversized") UAM_ASSERT(refusal.error.find("size limit") != std::string::npos);
+		if (change == "policy") UAM_ASSERT(refusal.error.find("turn off automatic worktrees") != std::string::npos);
 		UAM_ASSERT(chat.workspace_worktree_directory.empty());
 		UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
 		UAM_ASSERT(fs::exists(artifact));
@@ -1086,6 +1087,92 @@ UAM_TEST(WorktreeLaunchEarlyMissingBaseReceiptRetriesAfterLocalRefRepair)
 	UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{1});
 	UAM_ASSERT_EQ(saved->acp_queued_prompts.front().text, queued.text);
 	fixture.AssertForeignSurvivors();
+}
+
+UAM_TEST(WorktreeLaunchFailedBaseReceiptRetriesAfterSettingChange)
+{
+	if (!GitAvailableForTests()) return;
+	LaunchFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	fixture.app.settings.git_default_base_branch = "first-send-missing-base";
+	fixture.app.settings.git_pull_before_chat = false;
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+	const auto failed = fixture.app.worktree_launch_preparations.at(chat.id);
+	fixture.WaitForWorker(failed);
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	const auto refusal = uam::PrepareWorktreeForLaunch(fixture.app, chat);
+	UAM_ASSERT_EQ(refusal.state, uam::WorktreeLaunchPreparationState::Failed);
+	UAM_ASSERT(refusal.error.find("first-send-missing-base") != std::string::npos);
+	const fs::path failed_receipt = failed->receipt_file;
+	UAM_ASSERT(fs::exists(failed_receipt));
+	// The user fixes the cause by changing the setting instead of creating the branch.
+	fixture.app.settings.git_default_base_branch.clear();
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+	const auto retry = fixture.app.worktree_launch_preparations.at(chat.id);
+	fixture.WaitForWorker(retry);
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	UAM_ASSERT(retry->error.empty());
+	UAM_ASSERT(retry->merged);
+	UAM_ASSERT(retry->receipt_file != failed_receipt);
+	UAM_ASSERT(!fs::exists(failed_receipt));
+	UAM_ASSERT(fs::exists(fs::path(failed_receipt.string() + ".failed")));
+	fixture.WaitForSave(retry);
+	UAM_ASSERT(*retry->saved);
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Ready);
+	UAM_ASSERT_EQ(chat.workspace_isolation_kind, uam::paths::kGitWorktreeIsolationKind);
+	UAM_ASSERT(fs::is_directory(uam::paths::PathFromUtf8(chat.workspace_worktree_directory)));
+	fixture.AssertForeignSurvivors();
+}
+
+UAM_TEST(WorktreeLaunchRecordedIntentWithoutWorktreeRetriesFresh)
+{
+	if (!GitAvailableForTests()) return;
+	for (const std::string_view variant : {"branch-at-base", "branch-removed", "branch-has-work"})
+	{
+		LaunchFixture fixture;
+		ChatSession& chat = fixture.app.chats.front();
+		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+		const auto interrupted = fixture.app.worktree_launch_preparations.at(chat.id);
+		fixture.WaitForWorker(interrupted);
+		const uam::PreparedLaunchWorktree prepared = interrupted->worker.get();
+		UAM_ASSERT(prepared.operation.ok);
+		fixture.app.worktree_launch_preparations.clear();
+		fixture.app.worktree_operation_chat_ids.clear();
+		interrupted->lease.reset();
+		// Same on-disk state as a recorded intent whose `git worktree add` failed or never ran.
+		const fs::path artifact = uam::paths::PathFromUtf8(prepared.metadata.workspace_worktree_directory);
+		const std::string branch = prepared.metadata.workspace_branch_name;
+		if (variant == "branch-has-work") UAM_ASSERT(RunGitForTest(artifact, "-c user.name=Fixture -c user.email=fixture@example.test commit --allow-empty -m work"));
+		UAM_ASSERT(RunGitForTest(fixture.repository, "worktree remove --force " + ShellQuoteForTest(artifact.string())));
+		if (variant == "branch-removed") UAM_ASSERT(RunGitForTest(fixture.repository, "branch -D " + ShellQuoteForTest(branch)));
+		UAM_ASSERT(!fs::exists(artifact));
+		const std::string receipt = ReadFile(interrupted->receipt_file);
+		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+		const auto retry = fixture.app.worktree_launch_preparations.at(chat.id);
+		fixture.WaitForWorker(retry);
+		if (variant == "branch-has-work")
+		{
+			UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Failed);
+			UAM_ASSERT(chat.workspace_worktree_directory.empty());
+			UAM_ASSERT_EQ(ReadFile(interrupted->receipt_file), receipt);
+			UAM_ASSERT(RunGitForTest(fixture.repository, "show-ref --verify " + ShellQuoteForTest("refs/heads/" + branch)));
+			fixture.AssertForeignSurvivors();
+			continue;
+		}
+		(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+		UAM_ASSERT(retry->error.empty());
+		UAM_ASSERT(retry->merged);
+		UAM_ASSERT(retry->receipt_file != interrupted->receipt_file);
+		UAM_ASSERT(!fs::exists(interrupted->receipt_file));
+		UAM_ASSERT_EQ(ReadFile(fs::path(interrupted->receipt_file.string() + ".failed")), receipt);
+		UAM_ASSERT(fs::is_directory(uam::paths::PathFromUtf8(chat.workspace_worktree_directory)));
+		std::string validation_error;
+		UAM_ASSERT(uam::GitWorktreeService().ValidatePreparedWorkspace(fixture.app.data_root, retry->receipt_file, chat, validation_error));
+		fixture.WaitForSave(retry);
+		UAM_ASSERT(*retry->saved);
+		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Ready);
+		fixture.AssertForeignSurvivors();
+	}
 }
 
 UAM_TEST(WorktreeLaunchLegacyEarlyUnbornReceiptRecoversPrivateBaseline)
