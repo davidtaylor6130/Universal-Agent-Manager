@@ -816,7 +816,7 @@ void UamQueryHandler::HandleGetWorkspaceFilePreview(CefRefPtr<CefBrowser> /*brow
 	const auto chat_incarnation = chat->metadata_incarnation;
 	const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, host_id);
 	const std::optional<ExecutionHost> expected_host = host == nullptr ? std::nullopt : std::optional<ExecutionHost>(*host);
-	if (host_id != "local" && (!expected_host || expected_host->transport != "ssh" || expected_host->runner_status != "ready"))
+	if (host_id != "local" && (!expected_host || !uam::remote::CanAttemptRunnerConnection(*expected_host)))
 	{ cb->Failure(503, "The chat's remote runner is unavailable. Recheck it in Settings."); return; }
 	const std::filesystem::path data_root = m_app.data_root;
 	++m_pendingFilePreviews;

@@ -1358,6 +1358,20 @@ namespace uam
 		std::string current_label;
 	};
 
+	/// Unreachable says nothing about the host's processes; only SessionMissing is the helper's own answer.
+	enum class RemoteHostProbeOutcome { Pending, Unreachable, Reachable, SessionMissing };
+	/// Contacts the helper; with a session ID, also asks whether that process still exists.
+	using RemoteHostProbe = std::function<RemoteHostProbeOutcome(const ExecutionHost&, const std::string& session_id, std::stop_token)>;
+	struct RemoteHostProbeTask
+	{
+		ExecutionHost host;
+		std::string session_id;
+		std::atomic<RemoteHostProbeOutcome> outcome{RemoteHostProbeOutcome::Pending};
+		double retry_at_s = 0.0;
+		double delay_s = 0.0;
+		std::unique_ptr<std::jthread> worker;
+	};
+
 	struct AppState
 	{
 		WorkspaceLeaseGate worktree_retention_gate;
@@ -1380,6 +1394,15 @@ namespace uam
 		std::unordered_set<std::string> execution_routing_reserved_chat_ids;
 		std::unordered_set<std::string> execution_routing_restored_unresolved_chat_ids;
 		double execution_routing_next_poll_s = 0.0;
+		/// One background helper contact per key, retried with a doubling delay. Results apply on the app thread.
+		std::unordered_map<std::string, std::shared_ptr<RemoteHostProbeTask>> remote_host_probes;
+		/// Test seam: replaces the SSH helper contact made by a recovery probe.
+		RemoteHostProbe remote_host_probe;
+		std::unordered_map<std::string, std::pair<double, double>> execution_routing_version_check_retry;
+		/// The running version check was started by routing, so a user-started check queues behind it instead of being refused.
+		bool runtime_cli_version_check_background = false;
+		/// When each entry of repository_route_workspaces was last read; a missing entry counts as the last refresh.
+		std::vector<double> repository_route_read_at_s;
 		fs::path data_root;
 		fs::path native_history_chats_dir;
 		AppSettings settings;
