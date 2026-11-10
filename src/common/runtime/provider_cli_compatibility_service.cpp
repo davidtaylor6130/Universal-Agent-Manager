@@ -733,7 +733,8 @@ std::string CliProviderVersionStateKey(std::string_view provider_id, std::string
 
 void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, bool force, bool include_remote) const
 {
-	if (app.runtime_cli_version_check_task.running) return;
+	// A check routing started in the background delays this sweep; it never cancels it.
+	if (app.runtime_cli_version_check_task.running && !app.runtime_cli_version_check_background) return;
 	app.runtime_cli_version_check_queue.clear();
 	std::vector<ExecutionHost> hosts{uam::execution_hosts::LocalHost()};
 	if (include_remote)
@@ -794,6 +795,12 @@ bool ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& a
 	const auto installation = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(normalized_provider_id, host->id));
 	const bool awaiting_verification = installation != app.runtime_cli_versions_by_provider_id.end() &&
 	    installation->second.last_install_status == "awaiting-verification";
+	// Behind a check routing started in the background, a requested check waits its turn instead of being refused.
+	if (app.runtime_cli_version_check_task.running && app.runtime_cli_version_check_background)
+	{
+		CheckReenabledProvider(app, normalized_provider_id, host->id);
+		return true;
+	}
 	if (app.runtime_cli_version_check_task.running || (!awaiting_verification && !ProviderCliLaunchBlockReason(app, normalized_provider_id, host->id).empty()))
 		return FailProviderCliInstall(error_out, "A provider CLI command is already running.");
 	const ProviderCliPolicy* policy = FindProviderCliPolicy(normalized_provider_id);
@@ -810,6 +817,7 @@ bool ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& a
 	// A prior failure stands until this check completes; clearing it now would read as a confirmed-missing CLI.
 	state.message = ProviderTitleMessage("Checking installed ", ProviderTitle(app, normalized_provider_id), " version...");
 	app.runtime_cli_version_provider_id = normalized_provider_id;
+	app.runtime_cli_version_check_background = false;
 	StartAsyncCommandTask(app.runtime_cli_version_check_task, *host, normalized_provider_id, command, false, kProviderCliVersionProbeTimeoutMs);
 	return true;
 }

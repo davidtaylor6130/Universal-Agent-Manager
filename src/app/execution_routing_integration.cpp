@@ -13,6 +13,7 @@
 #include "common/config/mcp_server_config.h"
 #include "common/paths/workspace_root.h"
 #include "common/paths/path_utils.h"
+#include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -80,13 +81,27 @@ namespace uam
 			}
 		}
 
-		/// Version state is runtime-only, so routing starts the check it waits on. A check that
-		/// did not produce a usable version is repeated with a doubling delay, up to five minutes.
+		/// Version state is runtime-only, so routing starts the check it waits on. Only a check that never ran or
+		/// could not finish is repeated, with a doubling delay up to five minutes: a finished check that found no
+		/// usable CLI stands until the user updates or rechecks it.
 		void RetryRoutingVersionCheck(AppState& app, const ProviderProfile& provider, const ExecutionHost& host, double now)
 		{
 			const std::string key = CliProviderVersionStateKey(provider.id, host.id);
+			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator known = app.runtime_cli_versions_by_provider_id.find(key);
+			const bool known_here = known != app.runtime_cli_versions_by_provider_id.end() && execution_hosts::SameConnection(host, known->second.execution_host);
+			if (known_here && known->second.checked && known->second.check_error.empty())
+			{
+				app.execution_routing_version_check_retry.erase(key);
+				return;
+			}
+			if (app.runtime_cli_version_check_task.running) return;
 			std::pair<double, double>& retry = app.execution_routing_version_check_retry[key];
-			if (now < retry.first || !ProviderCliCompatibilityService().StartProviderVersionCheck(app, provider.id, true, host.id)) return;
+			if (now < retry.first) return;
+			// A background check shows no "Checking..." status; its result still replaces the message.
+			const std::string message = known_here ? known->second.message : std::string();
+			if (!ProviderCliCompatibilityService().StartProviderVersionCheck(app, provider.id, true, host.id)) return;
+			app.runtime_cli_version_check_background = true;
+			app.runtime_cli_versions_by_provider_id[key].message = message;
 			retry.second = retry.second <= 0.0 ? 15.0 : std::min(retry.second * 2.0, 300.0);
 			retry.first = now + retry.second;
 		}
@@ -123,6 +138,9 @@ namespace uam
 				return outcome;
 			}
 			if (now < task->retry_at_s) return RemoteHostProbeOutcome::Pending;
+			// One contact per host at a time: a burst of SSH handshakes is dropped by sshd's MaxStartups.
+			if (std::ranges::any_of(app.remote_host_probes, [&host](const std::pair<const std::string, std::shared_ptr<RemoteHostProbeTask>>& other)
+			    { return other.second && other.second->worker && other.second->host.id == host.id; })) return RemoteHostProbeOutcome::Pending;
 			task->host = host;
 			task->session_id = session_id;
 			task->outcome.store(RemoteHostProbeOutcome::Pending, std::memory_order_release);
@@ -149,14 +167,81 @@ namespace uam
 		}
 	}
 
-	std::string ExecutionRoutingConnectionConfiguration(const ExecutionHost& host)
+	namespace
 	{
-		return nlohmann::json::array({host.id, host.transport, host.ssh_alias, host.platform, host.architecture, host.runner_directory, host.instruction_file, host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr)}).dump();
+		nlohmann::json ProviderConfigurationFields(const AppState& app, const ProviderProfile& provider, std::string_view host_id)
+		{
+			return nlohmann::json::array({provider.id, provider.execution_mode, provider.output_mode, provider.interactive_command, provider.structured_protocol, provider.runtime_flags, provider.resume_argument, provider.supports_cli, provider.supports_structured, provider.supports_interactive, provider.supports_resume, provider.history_adapter, provider.prompt_bootstrap, provider.prompt_bootstrap_path, app.settings.provider_extra_flags, central_configuration::Serialize(app.settings.central_provider_configuration), mcp_server_config::Serialize(host_scoped_settings::McpServers(app.settings, host_id)), settings_frontend_json::SerializeProviderChatDefaults({{provider.id, provider_chat_defaults::ForProvider(app.settings, provider.id, host_id)}})});
+		}
+
+		nlohmann::json HostInstructionText(const ExecutionHost& host)
+		{
+			return host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr);
+		}
+
+		/// The identities saved before the helper version left the connection and host instructions moved to the
+		/// provider half. A saved value equal to one of these proves the configuration it names is unchanged.
+		std::string LegacyConnectionIdentity(const ExecutionHost& host)
+		{
+			return ConfigurationIdentity(nlohmann::json::array({host.id, host.transport, host.ssh_alias, host.platform, host.architecture, host.runner_version, host.runner_protocol_version, host.runner_directory, host.instruction_file, HostInstructionText(host)}).dump());
+		}
+
+		std::string LegacyProviderIdentity(const AppState& app, const ProviderProfile& provider, std::string_view host_id)
+		{
+			return ConfigurationIdentity(ProviderConfigurationFields(app, provider, host_id).dump());
+		}
+
+		/// Rewrites a saved pair of identities into the current format when nothing they cover changed. The legacy
+		/// connection identity covers the instructions that now sit in the provider half, so the provider half is
+		/// carried forward only together with it. Anything else is a real change and still asks the user.
+		bool AdoptCurrentIdentityFormat(const AppState& app, const ExecutionHost& host, const ProviderProfile& provider, std::string& connection, std::string& provider_configuration)
+		{
+			if (connection.empty() || connection != LegacyConnectionIdentity(host)) return false;
+			connection = ExecutionRoutingConnectionIdentity(host);
+			if (provider_configuration == LegacyProviderIdentity(app, provider, host.id))
+				provider_configuration = ExecutionRoutingProviderIdentity(app, provider, host.id);
+			return true;
+		}
+
+		bool AdoptCurrentIdentityFormat(AppState& app, ChatSession& chat)
+		{
+			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+			const ProviderProfile* provider = ProviderResolutionService().ProviderForChat(app, chat);
+			return host != nullptr && provider != nullptr &&
+			    AdoptCurrentIdentityFormat(app, *host, *provider, chat.routing_assigned_connection_identity, chat.routing_assigned_provider_configuration_identity);
+		}
 	}
 
+	/// Where the work runs: nothing here changes without the chat possibly being on another machine.
+	std::string ExecutionRoutingConnectionConfiguration(const ExecutionHost& host)
+	{
+		return nlohmann::json::array({host.id, host.transport, host.ssh_alias, host.platform, host.architecture, host.runner_directory}).dump();
+	}
+
+	/// What a launch on that host is given, including the host's instructions; it applies at the next launch.
 	std::string ExecutionRoutingProviderConfiguration(const AppState& app, const ProviderProfile& provider, std::string_view host_id)
 	{
-		return nlohmann::json::array({provider.id, provider.execution_mode, provider.output_mode, provider.interactive_command, provider.structured_protocol, provider.runtime_flags, provider.resume_argument, provider.supports_cli, provider.supports_structured, provider.supports_interactive, provider.supports_resume, provider.history_adapter, provider.prompt_bootstrap, provider.prompt_bootstrap_path, app.settings.provider_extra_flags, central_configuration::Serialize(app.settings.central_provider_configuration), mcp_server_config::Serialize(host_scoped_settings::McpServers(app.settings, host_id)), settings_frontend_json::SerializeProviderChatDefaults({{provider.id, provider_chat_defaults::ForProvider(app.settings, provider.id, host_id)}})}).dump();
+		nlohmann::json fields = ProviderConfigurationFields(app, provider, host_id);
+		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, host_id);
+		fields.push_back(host != nullptr ? nlohmann::json(host->instruction_file) : nlohmann::json(nullptr));
+		fields.push_back(host != nullptr ? HostInstructionText(*host) : nlohmann::json(nullptr));
+		return fields.dump();
+	}
+
+	bool MigrateExecutionRoutingIdentities(AppState& app)
+	{
+		bool settings_changed = false;
+		for (ExecutionRoutingHostPolicy& policy : app.settings.execution_routing.hosts)
+		{
+			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, policy.host_id);
+			if (host == nullptr) continue;
+			for (ExecutionRoutingProviderConfirmation& confirmation : policy.provider_confirmations)
+				if (const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, confirmation.provider_id); provider != nullptr)
+					settings_changed = AdoptCurrentIdentityFormat(app, *host, *provider, confirmation.connection_identity, confirmation.provider_configuration_identity) || settings_changed;
+		}
+		// In memory only: the same rewrite repeats at each start until an admission saves the chat.
+		for (ChatSession& chat : app.chats) (void)AdoptCurrentIdentityFormat(app, chat);
+		return settings_changed;
 	}
 
 	std::string ExecutionRoutingConnectionIdentity(const ExecutionHost& host)
@@ -192,6 +277,8 @@ namespace uam
 		const bool automatic = chat.routing_mode == "automatic";
 		if (!automatic && !app.settings.execution_routing.enabled && !app.execution_routing_service)
 			return {ExecutionRoutingStatus::Disabled, ExecutionRoutingReason::None, {}};
+		// A chat loaded after startup may still carry identities in the earlier format.
+		if (AdoptCurrentIdentityFormat(app, chat) && app.execution_routing_service) (void)app.execution_routing_service->Release(chat.id, true);
 		if (automatic && app.execution_routing_restored_unresolved_chat_ids.contains(chat.id) && !ExecutionRoutingOwnsWork(app, chat))
 		{
 			app.execution_routing_waits[chat.id] = "Previous admission has unresolved ownership. Review and explicitly release its reservation before starting again. The previous runner process may still exist.";
@@ -289,18 +376,25 @@ namespace uam
 			}
 		}
 
+		bool connection_held = false;
 		if (automatic && !request.assigned.host_id.empty())
 		{
 			const std::vector<ExecutionRoutingCandidate>::const_iterator owner = std::ranges::find(candidates, request.assigned.host_id, &ExecutionRoutingCandidate::host_id);
 			if (owner != candidates.end() && (request.assigned.connection_identity != owner->connection_identity ||
 			    request.assigned.provider_configuration_identity != owner->provider_configuration_identity))
 			{
-				// The assignment pins the chat to its host, so a newer configuration never moves it. With no turn,
-				// delivery or pending answer on the old one, the chat adopts the configuration the user confirmed.
-				// Work already on the host keeps its connection and adopts only provider settings, which apply at the next launch.
+				// The assignment pins the chat to its host, so a newer configuration never moves it. The chat adopts
+				// only a configuration the user confirmed; a chat merely reattaching to its running turn launches
+				// nothing, so it may follow provider settings unconfirmed. A changed connection may be another
+				// machine: it is adopted only when nothing of the chat is left on the old one, kept process included.
 				const bool confirmed = owner->provider_confirmed && owner->connection_identity == owner->confirmed_connection_identity &&
 				    owner->provider_configuration_identity == owner->confirmed_provider_configuration_identity;
-				if (request.recovery_of_owned_work ? request.assigned.connection_identity == owner->connection_identity : confirmed)
+				const bool same_connection = request.assigned.connection_identity == owner->connection_identity;
+				const bool reattaching = chat.remote_turn_reconnect_pending || !chat.remote_active_turn_id.empty();
+				const bool process_kept = chat.remote_process_exists || std::ranges::any_of(app.acp_sessions, [&chat](const std::unique_ptr<AcpSessionState>& session)
+				    { return session && session->chat_id == chat.id && (session->running || session->remote_stop_unconfirmed); });
+				connection_held = !same_connection && (request.recovery_of_owned_work || process_kept);
+				if (request.recovery_of_owned_work ? same_connection && (reattaching || confirmed) : confirmed && !connection_held)
 				{
 					(void)RoutingService(app).Release(chat.id, true);
 					request.assigned.connection_identity = owner->connection_identity;
@@ -332,8 +426,8 @@ namespace uam
 		ExecutionRoutingDecision decision = RoutingService(app).Admit(request, candidates, occupancy);
 		if (decision.status == ExecutionRoutingStatus::Waiting || decision.status == ExecutionRoutingStatus::Invalid)
 		{
-			app.execution_routing_waits[chat.id] = decision.reason == ExecutionRoutingReason::OwnershipChanged && request.recovery_of_owned_work
-			    ? "This chat still has work on its host's previous connection. Stop the turn, or restore the host's previous SSH settings, then retry."
+			app.execution_routing_waits[chat.id] = decision.reason == ExecutionRoutingReason::OwnershipChanged && connection_held
+			    ? "This chat still has work or a kept provider process on its host's previous connection. Stop the turn and let the provider close, or restore the host's previous SSH settings, then retry."
 			    : WaitReason(decision.reason);
 			app.execution_routing_retry_at_by_chat_id[chat.id] = now + 1.0;
 			return decision;
@@ -403,6 +497,8 @@ namespace uam
 			{
 				reservations.push_back(AssignmentForChat(chat));
 				app.execution_routing_reserved_chat_ids.insert(chat.id);
+				if (const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id); host != nullptr)
+					app.execution_routing_restored_runner_versions[chat.id] = host->runner_version;
 				if (chat.routing_reservation_pending && !ExecutionRoutingOwnsWork(app, chat)) app.execution_routing_restored_unresolved_chat_ids.insert(chat.id);
 			}
 		return RoutingService(app).RestoreReservations(reservations);
@@ -486,20 +582,14 @@ namespace uam
 		const double now = GetAppTimeSeconds();
 		bool changed = false;
 		std::unordered_set<std::string> wanted;
-		for (const ExecutionHost& host : std::vector<ExecutionHost>(app.settings.execution_hosts))
+		for (std::size_t index = 0; index < app.settings.execution_hosts.size(); ++index)
 		{
+			const ExecutionHost& host = app.settings.execution_hosts[index];
 			if (host.id == execution_hosts::kLocalHostId || host.runner_status != "error" || !remote::CanAttemptRunnerConnection(host)) continue;
-			// A provider session attached through this helper is a contact that already succeeded.
-			if (std::ranges::any_of(app.acp_sessions, [&host](const std::unique_ptr<AcpSessionState>& session)
-			    { return session && session->running && session->session_ready && session->process_execution_host_id == host.id &&
-			          !session->remote_stop_unconfirmed && !session->recovering_remote_turn && !session->recovering_remote_process; }))
-			{
-				changed = MarkRemoteHostReachable(app, host) || changed;
-				continue;
-			}
 			const std::string key = "health:" + host.id;
 			wanted.insert(key);
-			if (PollRemoteHostProbe(app, key, host, {}, now) == RemoteHostProbeOutcome::Reachable) changed = MarkRemoteHostReachable(app, host) || changed;
+			// Only a contact made now restores Ready. Session flags can be stale and must not override a check that just failed.
+			if (PollRemoteHostProbe(app, key, host, {}, now) == RemoteHostProbeOutcome::Reachable) changed = MarkRemoteHostReachable(app, ExecutionHost(host)) || changed;
 		}
 		for (const std::string& chat_id : std::vector<std::string>(app.execution_routing_restored_unresolved_chat_ids.begin(), app.execution_routing_restored_unresolved_chat_ids.end()))
 		{
@@ -507,6 +597,11 @@ namespace uam
 			if (chat == nullptr || ExecutionRoutingOwnsWork(app, *chat)) continue;
 			const ExecutionHost* found = execution_hosts::Find(app.settings.execution_hosts, chat->execution_host_id);
 			if (found == nullptr || found->id == execution_hosts::kLocalHostId || !remote::CanAttemptRunnerConnection(*found)) continue;
+			// Each helper version has its own service, and an edited connection may be another machine. Only the helper
+			// the reservation was made on can speak for its process, so any change since startup leaves the manual release.
+			const std::unordered_map<std::string, std::string>::const_iterator restored = app.execution_routing_restored_runner_versions.find(chat_id);
+			if (restored == app.execution_routing_restored_runner_versions.end() || restored->second != found->runner_version ||
+			    ExecutionRoutingConnectionIdentity(*found) != chat->routing_assigned_connection_identity) continue;
 			const ExecutionHost host = *found;
 			const std::string key = "owner:" + chat_id;
 			wanted.insert(key);
