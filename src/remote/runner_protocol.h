@@ -11,6 +11,9 @@ namespace uam::remote
 {
 	class RunnerState;
 	inline constexpr int kRunnerProtocolVersion = 3;
+	/// Set by the helper on every process it starts and inherited by that process's children, so a process that outlives
+	/// its helper can still be found from the host's process table by the session it belongs to.
+	inline constexpr std::string_view kRemoteSessionEnvironment = "UAM_REMOTE_SESSION_ID";
 	inline constexpr std::size_t kMaxRunnerFrameBytes = 1024 * 1024;
 
 	inline std::string RunnerEndpointName(std::string_view runner_version,

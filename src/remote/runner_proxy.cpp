@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <streambuf>
 #include <optional>
 #include <string>
 #include <thread>
@@ -628,9 +629,165 @@ namespace uam::remote
 #endif
 	}
 
+	std::string RemoteProcessCheckCommand(const std::string& platform, const std::string& version, const std::string& session_id,
+	    const std::string& workspace, bool check_helper, const std::string& proc_root)
+	{
+		const auto token_text = [](const std::string& value, std::string_view extra)
+		{
+			return !value.empty() && std::ranges::all_of(value, [extra](unsigned char character)
+			    { return std::isalnum(character) != 0 || extra.find(static_cast<char>(character)) != std::string_view::npos; });
+		};
+		if (!token_text(version, "-_.") || !token_text(session_id, "-_")) return {};
+		const auto replace_all = [](std::string text, std::string_view from, const std::string& to)
+		{
+			for (std::size_t at = text.find(from); at != std::string::npos; at = text.find(from, at + to.size())) text.replace(at, from.size(), to);
+			return text;
+		};
+		if (platform == "linux" || platform == "Linux")
+		{
+			// Fail closed: without an absolute workspace the check for unmarked survivors cannot run.
+			if (workspace.empty() || workspace.front() != '/' || workspace.find('\0') != std::string::npos || workspace.find('\n') != std::string::npos) return {};
+			const auto quoted = [](const std::string& value)
+			{
+				std::string result = "'";
+				for (const char character : value) result += character == '\'' ? std::string("'\\''") : std::string(1, character);
+				return result + "'";
+			};
+			// Read-only: it reads the process table and resolves folder names; it creates, changes and signals nothing.
+			// Exit 3 means it could not tell, and nothing is concluded from that. Rules, for this account's live processes:
+			// - a helper of this version (binary deleted or folder renamed with the version kept) is a running helper;
+			// - a process carrying this session's marker is a survivor;
+			// - an unmarked process working in the workspace or below it is a survivor (an older helper set no marker);
+			// - a process marked for another session belongs to that session and is ignored;
+			// - a process that hides its details from its own account cannot be judged: only the SSH server's own session
+			//   process (sshd) is known to be harmless.
+			std::string script = R"SH(LC_ALL=C; export LC_ALL; R=@R@; w=@W@; readlink "$R/self/exe" >/dev/null 2>&1 || exit 3; w=$(d=$w; t=; while [ -n "$d" ] && ! cd "$d" 2>/dev/null; do t="/${d##*/}$t"; d=${d%/*}; done; [ -n "$d" ] || cd / || exit 3; r=$(pwd -P) || exit 3; printf '%s' "${r%/}$t") || exit 3; [ -n "$w" ] || w=/; for p in "$R"/[0-9]*; do [ -O "$p" ] || continue; [ -r "$p/status" ] || continue; grep -q '^State:[[:space:]]*Z' "$p/status" 2>/dev/null && continue; [ "${p##*/}" = "$$" ] && continue; if l=$(readlink "$p/exe" 2>/dev/null); then @HELPER_EXE@ else [ -d "$p" ] || continue; case "$(sed -n 's/^Name:[[:space:]]*//p' "$p/status" 2>/dev/null)" in sshd*) continue;; uam-runner*) @HELPER_NAME@;; *) [ -d "$p" ] && exit 3; continue;; esac; fi; e=$(tr '\000' '\n' < "$p/environ" 2>/dev/null) || { [ -d "$p" ] && exit 3; continue; }; case "
+$e
+" in *"
+@M@=@S@
+"*) echo UAM_SESSION_PROCESS_RUNNING; exit 0;; *"
+@M@="*) continue;; esac; c=$(readlink "$p/cwd" 2>/dev/null) || { [ -d "$p" ] && exit 3; continue; }; c=${c% (deleted)}; case "$c" in "$w"|"${w%/}"/*) echo UAM_SESSION_PROCESS_RUNNING; exit 0;; esac; done; echo @TOKEN@)SH";
+			script = replace_all(std::move(script), "@HELPER_EXE@", check_helper
+			    ? "case \"$l\" in *" + version + "*/uam-runner|*" + version + "*\"/uam-runner (deleted)\") echo UAM_HELPER_RUNNING; exit 0;; esac;" : std::string(":;"));
+			script = replace_all(std::move(script), "@HELPER_NAME@", check_helper ? std::string("echo UAM_HELPER_RUNNING; exit 0") : std::string("continue"));
+			script = replace_all(std::move(script), "@M@", std::string(kRemoteSessionEnvironment));
+			script = replace_all(std::move(script), "@S@", session_id);
+			script = replace_all(std::move(script), "@TOKEN@", std::string(kRemoteHelperNotRunningToken));
+			script = replace_all(std::move(script), "@R@", quoted(proc_root));
+			return replace_all(std::move(script), "@W@", quoted(workspace));
+		}
+		if ((platform == "windows" || platform == "Windows") && check_helper)
+		{
+			// A Windows helper's processes end with it (kill-on-close job), so the helper check alone settles it there.
+			// A process whose path cannot be read, such as another account's helper, counts as running.
+			const std::string script = "$p=@(Get-CimInstance Win32_Process -Filter \"Name='uam-runner.exe'\" -ErrorAction Stop | Where-Object { "
+			    "-not $_.ExecutablePath -or $_.ExecutablePath -like '*" + version + "*\\uam-runner.exe' -or $_.ExecutablePath -like '*" + version +
+			    "*/uam-runner.exe' }); if ($p.Count -gt 0) { 'UAM_HELPER_RUNNING' } else { '" + std::string(kRemoteHelperNotRunningToken) + "' }";
+			std::string utf16_le;
+			for (const char character : script) { utf16_le.push_back(character); utf16_le.push_back('\0'); }
+			return "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + uam::base64::Encode(utf16_le);
+		}
+		return {};
+	}
+
+	namespace
+	{
+		/// One bounded SSH command; returns the check's whole trimmed output after a clean exit, or empty when nothing is known.
+		std::string RunRemoteProcessCheck(IPlatformProcessService& service, const std::string& ssh_alias, const std::string& command)
+		{
+			const std::optional<std::filesystem::path> directory = uam::paths::CurrentPathNoThrow();
+			if (command.empty() || !directory) return {};
+			uam::platform::StdioProcessPlatformFields probe;
+			std::string error;
+			if (!service.StartStdioProcess(probe, *directory, {"ssh", "-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=10",
+			        // Keepalives end the command by itself if this proxy is killed while it runs.
+			        "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2", ssh_alias, command}, &error))
+				return {};
+			service.CloseStdioProcessInput(probe);
+			std::string output;
+			std::array<char, 256> buffer{};
+			int exit_code = -1;
+			bool exited = false;
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+			while (output.size() < 4096 && std::chrono::steady_clock::now() < deadline)
+			{
+				const std::ptrdiff_t count = service.ReadStdioProcessStdout(probe, buffer.data(), buffer.size(), &error);
+				if (count > 0) { output.append(buffer.data(), static_cast<std::size_t>(count)); continue; }
+				if (exited) break; // one more read after the exit drained the pipe
+				exited = service.PollStdioProcessExited(probe, &exit_code);
+				if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+			if (!exited) service.StopStdioProcess(probe, true);
+			service.CloseStdioProcessHandles(probe);
+			return exited && exit_code == 0 ? std::string(uam::strings::TrimAsciiView(output)) : std::string();
+		}
+
+		/// Remembers the last complete line this process wrote to stderr, which is the line the app reads its outcome from.
+		class LastStderrLine final : public std::streambuf
+		{
+		  public:
+			LastStderrLine() : m_target(std::cerr.rdbuf(this)) {}
+			~LastStderrLine() override { std::cerr.rdbuf(m_target); }
+			const std::string& Line() const { return m_last; }
+		  protected:
+			int_type overflow(int_type value) override
+			{
+				if (traits_type::eq_int_type(value, traits_type::eof())) return traits_type::not_eof(value);
+				const char character = traits_type::to_char_type(value);
+				if (character == '\n') { if (!uam::strings::TrimAsciiView(m_current).empty()) m_last = std::string(uam::strings::TrimAsciiView(m_current)); m_current.clear(); }
+				else m_current.push_back(character);
+				return m_target->sputc(character);
+			}
+			int sync() override { return m_target->pubsync(); }
+		  private:
+			std::streambuf* m_target;
+			std::string m_current;
+			std::string m_last;
+		};
+
+		/// What an attach learned that decides whether the host must be asked about surviving processes.
+		struct ProxyAttachFacts
+		{
+			bool attach_only = false;
+			bool bridge_failed = false;
+			std::string session_id;
+			std::string workspace;
+		};
+
+		int RunProcessProxyOnce(const std::string& ssh_alias, const std::string& platform, const std::string& version,
+		    const std::string& runner_directory, int protocol_version, ProxyAttachFacts& facts);
+	}
+
 	int RunProcessProxy(const std::string& ssh_alias, const std::string& platform,
 	                    const std::string& version, const std::string& runner_directory,
 	                    int protocol_version)
+	{
+		LastStderrLine last_line;
+		ProxyAttachFacts facts;
+		const int exit_code = RunProcessProxyOnce(ssh_alias, platform, version, runner_directory, protocol_version, facts);
+		std::cerr.flush();
+		// The helper's "does not exist" is only its own memory: on Linux a process can outlive the helper that started it,
+		// and a restarted helper has no record of it. So the host's process table is asked before that line stands, and
+		// when the helper could not be reached at all. A clean table leaves or adds the settling line; anything else adds
+		// a line that settles nothing.
+		const bool linux_host = platform == "linux" || platform == "Linux";
+		const bool absent_answer = linux_host && last_line.Line() == "The remote process does not exist.";
+		if (exit_code != 70 || !facts.attach_only || (!facts.bridge_failed && !absent_answer)) return exit_code;
+		const std::string result = RunRemoteProcessCheck(ProxyProcessService(), ssh_alias, RemoteProcessCheckCommand(platform, version, facts.session_id,
+		    facts.workspace, facts.bridge_failed));
+		if (result == kRemoteHelperNotRunningToken) { if (facts.bridge_failed) std::cerr << kRemoteHelperNotRunningLine << '\n'; }
+		else if (result == "UAM_SESSION_PROCESS_RUNNING") std::cerr << kRemoteSessionProcessRunningLine << '\n';
+		else if (result == "UAM_HELPER_RUNNING") std::cerr << kRemoteHelperUnreachableLine << '\n';
+		else if (absent_answer) std::cerr << kRemoteProcessUncheckedLine << '\n';
+		std::cerr.flush();
+		return exit_code;
+	}
+
+	namespace
+	{
+	int RunProcessProxyOnce(const std::string& ssh_alias, const std::string& platform,
+	                    const std::string& version, const std::string& runner_directory,
+	                    int protocol_version, ProxyAttachFacts& facts)
 	{
 #if !defined(__APPLE__) && !defined(_WIN32)
 		(void)ssh_alias;
@@ -682,10 +839,14 @@ namespace uam::remote
 		                    version, protocol_version);
 		std::string error;
 		const std::string& session_id = spec->session_id;
+		facts.attach_only = spec->attach_only;
+		facts.session_id = session_id;
+		facts.workspace = uam::paths::Utf8PathString(spec->working_directory);
 		std::optional<ProcessPollResult> prefetched_poll;
 		if (!client.Connect(&error))
 		{
 			std::cerr << (error.empty() ? "Remote process could not start." : error) << '\n';
+			facts.bridge_failed = true;
 			return 70;
 		}
 		std::filesystem::path configuration_directory;
@@ -1281,6 +1442,7 @@ namespace uam::remote
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
 #endif
+	}
 	}
 
 	int RunRemoteMcpShim(const std::string& channel_id,

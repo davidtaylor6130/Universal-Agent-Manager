@@ -383,9 +383,11 @@ namespace uam
 		bool RemoteProxyExitConfirmsMissingProcess(const std::string& stderr_tail)
 		{
 			const std::string_view line = RemoteProxyExitLine(stderr_tail);
+			// The last line also covers a reachable host with no helper left to own the process.
 			return line == "The remote process does not exist." ||
 			       line == "The remote process is no longer available." ||
-			       line == "The remote process has exited.";
+			       line == "The remote process has exited." ||
+			       line == uam::remote::kRemoteHelperNotRunningLine;
 		}
 
 		bool RemoteStopExitConfirmed(bool exited, int exit_code, const std::string& stderr_tail)
@@ -720,11 +722,17 @@ namespace uam
 			}
 		}
 
+		/// The one place a failed reconnect or failed stop retry is counted, so anything recorded with the count stays with it.
+		void CountAcpReconnectFailure(AcpSessionState& session)
+		{
+			++session.reconnect_attempts;
+		}
+
 		void RecordAcpReconnectFailure(AppState& app, AcpSessionState& session,
 		                               ChatSession& chat, double now_seconds,
 		                               const std::string& error)
 		{
-			++session.reconnect_attempts;
+			CountAcpReconnectFailure(session);
 			// Stamped once per turn and withdrawn when a launch or reattach succeeds; never inferred from the attempt
 			// count, which other code also raises and resets.
 			if (session.reconnect_first_failure_turn_serial != session.turn_serial)
@@ -5357,6 +5365,21 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return indices;
 	}
 
+	bool ChatHasActionableUnsentRecovery(const ChatSession& chat)
+	{
+		if (chat.acp_unsent_prompt_recoveries.empty() || !chat.messages_loaded) return !chat.acp_unsent_prompt_recoveries.empty();
+		return std::ranges::any_of(chat.acp_unsent_prompt_recoveries, [&chat](const AcpUnsentPromptRecovery& value)
+		{
+			if (value.user_message_index < 0 || static_cast<std::size_t>(value.user_message_index) >= chat.messages.size()) return false;
+			const std::size_t index = static_cast<std::size_t>(value.user_message_index);
+			const Message& row = chat.messages[index];
+			if (row.role != MessageRole::User || !row.AcpPromptAwaitsDecision() || (!row.provider.empty() && row.provider != chat.provider_id)) return false;
+			for (std::size_t after = index + 1; after < chat.messages.size() && chat.messages[after].role != MessageRole::User; ++after)
+				if (!IsEmptyAcpRetryAssistantPlaceholder(chat.messages[after])) return false;
+			return true;
+		});
+	}
+
 	bool ChatHasUncertainRemoteInput(const ChatSession& chat)
 	{
 		return chat.remote_turn_reconnect_pending || !chat.remote_active_turn_id.empty() ||
@@ -5494,12 +5517,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		};
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
-		if (chat && ChatIsRetiringRemoteHelper(*chat))
-			return reject("UAM is stopping the previous process on this host. Remove this message once the host is reachable and that has finished.");
+		// Only a stop that is running refuses: one the host never confirmed may never finish, and removing a row sends nothing to it.
+		if (chat && ChatIsRetiringRemoteHelper(*chat) && AcpStopInFlight(app, chat_id))
+			return reject("UAM is stopping the previous process on this host. Remove this message once that has finished.");
 		if (!chat || !chat->messages_loaded || chat->imported_read_only || chat->acp_queue_storage_error ||
 		    chat->side_cleanup_requested || message_index < 0 || static_cast<std::size_t>(message_index) >= chat->messages.size() ||
 		    expected_messages_digest.size() != 16 || app.pending_chat_save_at_by_chat_id.contains(chat_id) ||
-		    app.pending_chat_save_tasks.contains(chat_id) || app.worktree_operation_chat_ids.contains(chat_id) || AcpStopInProgress(app, chat_id))
+		    app.pending_chat_save_tasks.contains(chat_id) || app.worktree_operation_chat_ids.contains(chat_id) || AcpStopInFlight(app, chat_id))
 			return reject("The unsent prompt changed or is being saved. Refresh before removing it.");
 		std::uint64_t hash = hashing::kFnv1a64OffsetBasis;
 		for (const Message& row : chat->messages) chat_pages::AppendMessageDigest(hash, row);
@@ -6601,17 +6625,22 @@ For desktop observation and input, use only the provider's built-in controller; 
 #endif
 	}
 
-	bool AcpStopInProgress(const AppState& app, std::string_view chat_id)
+	bool AcpStopInFlight(const AppState& app, std::string_view chat_id)
 	{
 		const AcpSessionState* session = FindAcpSessionForChat(app, std::string(chat_id));
 		return std::ranges::any_of(app.acp_process_stop_tasks, [chat_id](const AsyncAcpProcessStopTask& task)
 		       { return task.chat_id == chat_id && task.finished != nullptr && (!task.finished->load() || ((task.purpose == AcpStopPurpose::Timeout || task.observe_exit) && task.result != nullptr && !task.result->exit_confirmed)); }) ||
-		       (session != nullptr &&
-		        (session->local_stop_pending || session->remote_stop_pending || session->remote_stop_unconfirmed)) ||
+		       (session != nullptr && (session->local_stop_pending || session->remote_stop_pending)) ||
 		       std::ranges::any_of(
 		    app.pending_acp_remote_stops,
 		    [&](const auto& pending) { return pending != nullptr && pending->chat_id == chat_id; }) ||
 		       acp_detail::AbandonedAcpProcessCreationPending(app, chat_id);
+	}
+
+	bool AcpStopInProgress(const AppState& app, std::string_view chat_id)
+	{
+		const AcpSessionState* session = FindAcpSessionForChat(app, std::string(chat_id));
+		return AcpStopInFlight(app, chat_id) || (session != nullptr && session->remote_stop_unconfirmed);
 	}
 
 	/// <summary>Transfers an idle Codex writer between chat aliases only after its process has exited.</summary>
@@ -6773,6 +6802,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		ChatSession* chat = FindAcpRuntimeChatById(app, session.chat_id);
 		session.remote_stop_pending = false;
 		session.remote_stop_unconfirmed = true;
+		// A stop retry reattaches before it fails here, so the reattach alone never counted and the retry repeated every half second.
+		CountAcpReconnectFailure(session);
 		session.restart_after_remote_stop_cleanup =
 		    session.restart_after_remote_stop_cleanup || restart_after_cleanup;
 		const bool deferred_goal_restart = restart_after_cleanup &&
@@ -6978,6 +7009,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 	{
 		session.remote_stop_pending = false;
 		session.remote_stop_unconfirmed = false;
+		// Failed stop retries counted for their backoff. Whatever follows a confirmed stop, by any route, starts a fresh budget.
+		session.reconnect_attempts = 0;
 		if (session.last_error.starts_with("Remote stop could not be confirmed")) session.last_error.clear();
 		if (restart_after_stop && session.queue_held && chat != nullptr)
 			return FinalizeStoppedAcpSession(app, session, chat, true);
@@ -8134,8 +8167,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 					session.recovering_remote_process = true;
 				const bool recovering_remote_process = session.recovering_remote_process;
 				const bool remote_turn_missing = remote_turn_recovery && remote_process_missing;
+				// The helper's answer that the process is gone settles a stop however it was recorded: runtime flag or saved marker.
 				const bool remote_stop_cleanup_missing =
-				    session.remote_stop_unconfirmed && remote_process_missing;
+				    (session.remote_stop_unconfirmed || chat.remote_stop_cleanup_pending) && remote_process_missing;
 				const bool undelivered_prompt = session.processing && session.prompt_request_id == 0 && !session.queued_prompt.empty();
 				const std::string pending_prompt = session.queued_prompt;
 				const int turn_user_message_index = session.turn_user_message_index;
