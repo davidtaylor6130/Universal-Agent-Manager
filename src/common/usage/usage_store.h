@@ -34,10 +34,12 @@ namespace uam::usage
 		bool Visit(const std::function<bool(const AccountingRecord&)>& visitor, std::string& error, const std::function<bool()>& cancelled = {}) const;
 	};
 	std::shared_ptr<const ReceiptSnapshot> ReadReceiptSnapshot(const std::filesystem::path& path, std::string& error, const std::function<bool()>& cancelled = {});
-	/// <summary>Removes receipt snapshots and combined-machine stores a previous run left behind once they are a day old.</summary>
-	void RemoveAbandonedScratch(const std::filesystem::path& data_root);
+	/// <summary>Removes receipt snapshots and combined-machine stores a previous run left behind: a day old always, of any age when no other collector can own them.</summary>
+	void RemoveAbandonedScratch(const std::filesystem::path& data_root, bool no_other_owner = false);
 	/// <summary>Removes pinned remote views and partial downloads a previous run left behind; call before this run pins or fetches any, because a pin inherits its source's age.</summary>
 	void RemoveAbandonedRemoteViews(const std::filesystem::path& data_root);
+	/// <summary>Rate-limited [performance] note for ledger work; a negative build_ms records a rebuild skipped as unchanged. Never logs usage figures.</summary>
+	void LogLedgerWork(std::string_view origin, std::int64_t build_ms);
 
 	struct SourceRecord
 	{
@@ -50,7 +52,8 @@ namespace uam::usage
 	class Store
 	{
 	public:
-		explicit Store(std::filesystem::path data_root);
+		/// <summary>An existing store is only opened, never created, so a deleted scratch store fails instead of reading empty.</summary>
+		explicit Store(std::filesystem::path data_root, bool existing = false);
 		bool Import(const std::vector<SourceRecord>& records, std::string& error, const std::function<bool()>& cancelled = {}) const;
 		std::optional<Ledger> Read(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled = {}) const;
 		std::optional<std::vector<AccountingRecord>> ReadRecords(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled = {}) const;
@@ -63,9 +66,14 @@ namespace uam::usage
 		/// <summary>Imports validated peer rows, preserving unidentified host receipts and the first equal-time native receipt.</summary>
 		bool ImportAccounting(const std::vector<AccountingRecord>& records, std::string_view scope, std::string& error, const std::function<bool()>& cancelled = {}) const;
 		const std::filesystem::path& Path() const { return m_path; }
+		/// <summary>SQLite's file change counter, advanced by any commit that modified the index; zero when unreadable. Compares two states, carries no count of records.</summary>
+		std::uint32_t ChangeCounter() const;
+		/// <summary>The exact lifetime scan; ordering is by index so reads never spill a sort to temporary files.</summary>
+		static std::string LifetimeRecordsSql(bool imported);
 
 	private:
 		std::optional<std::vector<AccountingRecord>> ReadRecordsImpl(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled, bool lifetime) const;
 		std::filesystem::path m_path;
+		bool m_existing = false;
 	};
 }
