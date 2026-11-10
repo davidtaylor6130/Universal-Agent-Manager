@@ -4483,8 +4483,18 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (session->queued_user_prompts.empty()) session->queue_held = false;
 		// A cancelled remote turn kept this flag only to preserve its held queue. With nothing left to hold, the
 		// confirmed stop must finalise instead of relaunching the cancelled turn.
+		std::vector<PendingAcpRemoteStop*> revoked_stops;
 		if (session->queued_user_prompts.empty() && session->remote_stop_unconfirmed && !chat->remote_restart_pending)
+		{
 			session->restart_after_remote_stop_cleanup = false;
+			// A stop already sent after reattachment copied the restart intent; revoke that copy too.
+			for (const std::unique_ptr<PendingAcpRemoteStop>& pending : app.pending_acp_remote_stops)
+				if (pending != nullptr && pending->chat_id == chat_id && pending->restart_after_stop)
+				{
+					pending->restart_after_stop = false;
+					revoked_stops.push_back(pending.get());
+				}
+		}
 		const std::array<int, 4> previous_indices = ClearRemovedTranscriptIndices(*session, removed_tail);
 		if (removed_tail >= 0)
 		{
@@ -4499,6 +4509,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (previous_chat) *chat = *previous_chat;
 			session->queue_held = previous_held;
 			session->restart_after_remote_stop_cleanup = previous_restart_after_stop;
+			for (PendingAcpRemoteStop* pending : revoked_stops) pending->restart_after_stop = true;
 			chat->acp_queue_held = previous_chat_held;
 			session->queued_user_prompts = previous_queue;
 			chat->acp_queued_prompts = previous_outbox;
@@ -4653,6 +4664,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		};
 		if (chat == nullptr || session == nullptr || chat->imported_read_only || !session->queue_held)
 			return reject("The queue is no longer held. Refresh the queue.");
+		// The cancelled turn settles only when its stop is confirmed; resuming earlier could relaunch it first.
+		if (session->remote_stop_unconfirmed)
+			return reject("Wait for the stop to be confirmed, then resume the queue.");
 		if (ChatIsRetiringRemoteHelper(*chat))
 			return reject("UAM is stopping the previous process on this host. Resume these messages once the host is reachable and that has finished.");
 		if (HasUncertainClaudeQuotaInput(*chat))

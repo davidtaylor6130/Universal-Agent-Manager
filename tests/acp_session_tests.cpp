@@ -10987,8 +10987,11 @@ UAM_TEST(AcpCancelTurnOnDisconnectedSshTurnHoldsQueueUntilStopIsConfirmed)
 	// process missing. Session: already restored with its queue, or created by this cancel from an unheld saved queue.
 	for (const bool missing_process : {false, true})
 		for (const bool fresh_session : {false, true})
-		for (const bool remove_all : {false, true})
+		// 0: keep the held queue; 1: remove it before reattachment; 2: remove it after the reattached Stop was sent.
+		for (const int remove_when : {0, 1, 2})
 		{
+			if (missing_process && remove_when == 2) continue; // That route confirms without a sent Stop.
+			const bool remove_all = remove_when != 0;
 			TempDir temp("uam-acp-cancel-holds-ssh");
 			uam::AppState app;
 			app.data_root = temp.root;
@@ -11030,13 +11033,25 @@ UAM_TEST(AcpCancelTurnOnDisconnectedSshTurnHoldsQueueUntilStopIsConfirmed)
 			const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
 			UAM_ASSERT(saved.has_value() && saved->acp_queue_held && saved->remote_stop_cleanup_pending);
 			UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{2});
-			if (remove_all)
+			// Resume would release the hold before the cancelled turn settles, so it waits for the confirmed stop.
 			{
-				// Remove stays available while the host is unreachable; emptying the hold must not leave a relaunch armed.
+				const std::vector<std::pair<std::string, int>> expected = {{"Remote queued one", 1}, {"Remote queued two", 1}};
+				UAM_ASSERT(!uam::ResumeQueuedAcpPrompts(app, chat.id, expected, &error));
+				UAM_ASSERT_EQ(error, std::string("Wait for the stop to be confirmed, then resume the queue."));
+				UAM_ASSERT(session->queue_held && app.chats.front().acp_queue_held);
+				UAM_ASSERT_EQ(session->queued_user_prompts.size(), std::size_t{2});
+			}
+			const auto remove_held = [&]
+			{
 				UAM_ASSERT(uam::RemoveQueuedAcpPrompt(app, chat.id, 0, &error, std::make_pair(std::string("Remote queued one"), 1)));
 				UAM_ASSERT(uam::RemoveQueuedAcpPrompt(app, chat.id, 0, &error, std::make_pair(std::string("Remote queued two"), 1)));
 				UAM_ASSERT(session->queued_user_prompts.empty() && !session->queue_held);
 				UAM_ASSERT(!session->restart_after_remote_stop_cleanup);
+			};
+			if (remove_when == 1)
+			{
+				// Remove stays available while the host is unreachable; emptying the hold must not leave a relaunch armed.
+				remove_held();
 			}
 
 			// Reconnect reattaches to the stop proxy, then the stop is confirmed.
@@ -11052,6 +11067,14 @@ UAM_TEST(AcpCancelTurnOnDisconnectedSshTurnHoldsQueueUntilStopIsConfirmed)
 			UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, argv, &error));
 			session->running = true;
 			if (!missing_process) (void)uam::StopAcpSession(app, chat.id, uam::AcpStopPurpose::Interrupt, true);
+			if (remove_when == 2)
+			{
+				// The sent Stop copied the restart intent; emptying the hold now must revoke that copy too.
+				UAM_ASSERT(session->remote_stop_pending);
+				UAM_ASSERT(std::ranges::any_of(app.pending_acp_remote_stops, [&](const auto& pending) { return pending && pending->chat_id == chat.id; }));
+				remove_held();
+				UAM_ASSERT(std::ranges::none_of(app.pending_acp_remote_stops, [](const auto& pending) { return pending && pending->restart_after_stop; }));
+			}
 			for (int attempt = 0; attempt < 500 && (app.chats.front().remote_stop_cleanup_pending || session->running); ++attempt)
 			{
 				(void)uam::PollAllAcpSessions(app);
