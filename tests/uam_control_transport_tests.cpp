@@ -7,6 +7,12 @@
 #include "common/chat/chat_repository.h"
 #include "cef/cef_push.h"
 
+#ifdef _WIN32
+#include <share.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace
 {
 	nlohmann::json InspectCurrentGoal(uam::AppState& app)
@@ -340,6 +346,62 @@ namespace
 			return *run;
 		}
 	};
+}
+
+UAM_TEST(UamControlListedButUnreadableRequestRetriesInsteadOfAnsweringMalformed)
+{
+#ifndef _WIN32
+	if (::geteuid() == 0) return; // Root reads through mode 000.
+#endif
+	ControlAgentWaitFixture fixture;
+	const fs::path requests = fixture.capability_directory / "requests";
+	const fs::path responses = fixture.capability_directory / "responses";
+	// Looks to the manager like a handled request Windows still lists while deleting it, or a briefly locked file.
+	struct Unreadable
+	{
+		fs::path path;
+#ifdef _WIN32
+		std::optional<std::ifstream> lock;
+		explicit Unreadable(fs::path file) : path(std::move(file)) { lock.emplace(path.c_str(), std::ios::in, _SH_DENYRW); UAM_ASSERT(lock->is_open()); }
+		void Release() { lock.reset(); }
+#else
+		explicit Unreadable(fs::path file) : path(std::move(file)) { fs::permissions(path, fs::perms::none, fs::perm_options::replace); }
+		void Release() { std::error_code removed; fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, removed); }
+#endif
+		~Unreadable() { Release(); }
+	};
+	const auto publish = [&](const std::string& id)
+	{
+		const fs::path path = requests / (id + ".json");
+		UAM_ASSERT(uam::io::WriteTextFile(path, nlohmann::json{{"requestId", id}, {"method", "goal_get"}, {"arguments", nlohmann::json::object()}}.dump()));
+		return path;
+	};
+	const fs::path ready_reply = responses / "unreadable-then-ready.json";
+	{
+		Unreadable held(publish("unreadable-then-ready"));
+		for (int poll = 0; poll < 5; ++poll)
+		{
+			(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+			UAM_ASSERT(!fs::exists(ready_reply)); // No error reply that could replace a delivered one.
+			UAM_ASSERT(fs::exists(held.path));
+		}
+		held.Release();
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	}
+	UAM_ASSERT(nlohmann::json::parse(uam::io::ReadTextFile(ready_reply)).value("ok", false));
+	// A file that never becomes readable is still rejected after a bounded number of polls.
+	Unreadable stuck(publish("never-readable"));
+	const fs::path stuck_reply = responses / "never-readable.json";
+	int polls = 0;
+	while (!fs::exists(stuck_reply) && polls < 200)
+	{
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		++polls;
+	}
+	UAM_ASSERT(polls > 5);
+	UAM_ASSERT(polls < 200);
+	const auto rejected = nlohmann::json::parse(uam::io::ReadTextFile(stuck_reply));
+	UAM_ASSERT_EQ(rejected, (nlohmann::json{{"ok", false}, {"error", "Malformed or oversized control request."}}));
 }
 
 UAM_TEST(UamControlAgentWaitCyclicAncestryRetiresWithoutOwnerHang)

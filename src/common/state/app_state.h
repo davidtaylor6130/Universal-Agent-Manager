@@ -519,6 +519,8 @@ namespace uam
 		std::unordered_set<std::string> seen_request_ids;
 		std::deque<std::string> seen_request_order; // Insertion order, so eviction drops the oldest ID.
 		std::unordered_set<std::string> owned_agent_run_ids;
+		// Listed request files not yet readable, by request ID; bounded by kMaxUnreadableRequestPolls.
+		std::unordered_map<std::string, int> unreadable_request_polls;
 		// Current-connection cancellation tombstones; overflow refuses new waits until renewal.
 		std::unordered_set<std::string> cancelled_wait_ids;
 		bool wait_cancellation_overflow = false;

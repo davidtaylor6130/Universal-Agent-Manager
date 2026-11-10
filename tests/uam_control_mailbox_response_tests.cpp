@@ -6,6 +6,15 @@ using namespace uam_test;
 
 namespace
 {
+	/// Windows can keep a removed request listed but unopenable until every handle closes, and the
+	/// proxy retires timed-out heartbeats itself, so a listed request may be gone by read time: poll again.
+	std::optional<nlohmann::json> ReadListedRequest(const fs::path& path)
+	{
+		std::string text;
+		if (!uam::io::TryReadTextFile(path, text) || text.empty()) return std::nullopt;
+		return nlohmann::json::parse(text); // Real malformed content still fails the case.
+	}
+
 	/// <summary>Drives the real MCP subprocess with private mailbox replies and checks that its next call survives rejection.</summary>
 	void VerifyMalformedControlReplyRecovery(const nlohmann::json& malformed)
 	{
@@ -62,7 +71,9 @@ namespace
 				for (const fs::directory_entry& entry : fs::directory_iterator(capability / "requests"))
 				{
 					if (entry.path().extension() != ".json") continue;
-					const nlohmann::json request = nlohmann::json::parse(uam::io::ReadTextFile(entry.path()));
+					const auto listed = ReadListedRequest(entry.path());
+					if (!listed) continue;
+					const nlohmann::json& request = *listed;
 					UAM_ASSERT_EQ(request["method"], nlohmann::json("goal_get"));
 					UAM_ASSERT_EQ(request["arguments"], nlohmann::json::object());
 					UAM_ASSERT_EQ(request["requestId"], nlohmann::json(entry.path().stem().string()));
@@ -245,7 +256,9 @@ UAM_TEST(UamControlStdioSingleWaitReturnsOwnedChildResultAfterEightSeconds)
 		for (const fs::directory_entry& entry : fs::directory_iterator(capability_directory / "requests"))
 		{
 			if (entry.path().extension() != ".json") continue;
-			const nlohmann::json request = nlohmann::json::parse(uam::io::ReadTextFile(entry.path()));
+			const auto listed = ReadListedRequest(entry.path());
+			if (!listed) continue;
+			const nlohmann::json& request = *listed;
 			const std::string method = request.at("method");
 			UAM_ASSERT(method == "agent_wait" || method == "_mcp_heartbeat");
 			if (method != "agent_wait") continue;
@@ -352,7 +365,9 @@ namespace
 				for (const auto& file : fs::directory_iterator(capability / "requests"))
 				{
 					if (file.path().extension() != ".json") continue;
-					const auto request = nlohmann::json::parse(uam::io::ReadTextFile(file.path()));
+					const auto listed = ReadListedRequest(file.path());
+					if (!listed) continue;
+					const nlohmann::json& request = *listed;
 					const std::string name = request.at("method");
 					if (name == method)
 					{
@@ -432,7 +447,9 @@ UAM_TEST(UamControlStdioWaitCancellationPreservesNextCallAndEofExits)
 		for (const auto& file : fs::directory_iterator(fixture.capability / "requests"))
 		{
 			if (file.path().extension() != ".json") continue;
-			const auto request = nlohmann::json::parse(uam::io::ReadTextFile(file.path()));
+			const auto listed = ReadListedRequest(file.path());
+			if (!listed) continue;
+			const nlohmann::json& request = *listed;
 			UAM_ASSERT_EQ(request.at("method"), nlohmann::json("_mcp_heartbeat"));
 			fs::remove(file.path());
 			fixture.Reply(request);

@@ -117,6 +117,8 @@ namespace uam
 		constexpr std::size_t kMaxSeenRequests = 256;
 		constexpr std::size_t kMaxAuditRecords = 64;
 		constexpr std::size_t kMaxProcessedPerTick = 16;
+		// Polls a listed but unreadable request gets before rejection (Windows delete-pending or a briefly locked file).
+		constexpr int kMaxUnreadableRequestPolls = 40;
 		constexpr std::size_t kMaxActiveWaits = 16;
 		constexpr std::size_t kMaxChatCreatesPerTurn = 2;
 		constexpr std::size_t kMaxChatCreatesPerCaller = 8;
@@ -2533,6 +2535,8 @@ namespace uam
 				continue;
 			}
 			std::ranges::sort(files);
+			std::erase_if(capability.unreadable_request_polls, [&](const auto& entry)
+			{ return std::ranges::none_of(files, [&](const auto& file) { return uam::paths::Utf8PathString(file.stem()) == entry.first; }); });
 			const std::string capability_id = capability.id;
 			const std::filesystem::path capability_directory = capability.directory;
 			for (const auto& file : files)
@@ -2542,6 +2546,7 @@ namespace uam
 				const std::string request_id = uam::paths::Utf8PathString(file.stem());
 				nlohmann::json response{{"ok", false}, {"error", "Malformed or oversized control request."}};
 				const auto size = uam::paths::FileSizeNoThrow(file);
+				bool unreadable = !size.has_value();
 				if (SafeRequestId(request_id) && size.has_value() && *size > 0 && *size <= html_view::kMaxRequestBytes &&
 				    file.extension() == ".json" && !uam::paths::IsLinkOrReparsePointNoThrow(file))
 				{
@@ -2555,6 +2560,16 @@ namespace uam
 						    request["requestId"].is_string() && request["requestId"] == request_id)
 							response = HandleRequest(app, capability_id, request, now);
 					}
+					else unreadable = true;
+				}
+				// Writers publish atomically, so an unreadable listed file is being retired (a timed-out heartbeat,
+				// or a handled request still listed while Windows deletes it), not malformed. Answering it would
+				// orphan an error reply or overwrite the reply already delivered for that ID; retry, then reject.
+				if (UamControlCapability* owner = unreadable ? FindCapability(app, capability_id) : nullptr)
+				{
+					if (!uam::paths::PathExistsNoThrow(file)) continue;
+					if (++owner->unreadable_request_polls[request_id] < kMaxUnreadableRequestPolls) continue;
+					owner->unreadable_request_polls.erase(request_id);
 				}
 				(void)uam::paths::RemoveFileNoThrow(file);
 				if (!response.value("pendingApproval", false) && !response.value("pendingAgentWait", false) &&
