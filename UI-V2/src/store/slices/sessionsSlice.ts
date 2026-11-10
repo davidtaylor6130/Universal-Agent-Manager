@@ -250,6 +250,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
   const boundedTailReloads = new Map<string, number>()
   const loadedMessagesDigestByChatId = new Map<string, string>()
   const messageHydrationGenerationByChatId = new Map<string, number>()
+  // One unanswered submission per chat. The window stops a deliberate repeat of the same text being mistaken for a retry.
+  const retainedSendIdsBySessionId = new Map<string, { fingerprint: string; id: string; at: number }>()
+  const SEND_RETRY_ID_WINDOW_MS = 120_000
   // ponytail: fixed caps for hover prefetch; tune when profiling shows memory or bridge pressure.
   const PREFETCH_MAX_IN_FLIGHT = 2
   const PREFETCH_MAX_RETAINED = 4
@@ -2843,6 +2846,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (isCefContext()) {
         const requestKey = `sendAcpPrompt:${sessionId}`
         rememberPendingRequest(requestKey, actionErrorId)
+        // Resending an unchanged message whose last attempt got no successful reply keeps its id, so native admits it once.
+        const sendFingerprint = JSON.stringify([prompt, markdownStoreFiles, attachments, steerNow])
+        const retainedSend = retainedSendIdsBySessionId.get(sessionId)
+        const sendIdempotencyId = retainedSend?.fingerprint === sendFingerprint && Date.now() - retainedSend.at < SEND_RETRY_ID_WINDOW_MS
+          ? retainedSend.id : createRequestId('send')
         const response = await sendToCEF({
           action: 'sendAcpPrompt',
           requestId: actionErrorId,
@@ -2855,8 +2863,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             goalId,
             computerUseMode: Boolean(state.sessions.find((session) => session.id === sessionId)?.computerUseEnabled),
             steerNow,
+            sendIdempotencyId,
           },
         })
+        if (response.ok) retainedSendIdsBySessionId.delete(sessionId)
+        else retainedSendIdsBySessionId.set(sessionId, { fingerprint: sendFingerprint, id: sendIdempotencyId, at: Date.now() })
         const ownsAttempt = isLatestPendingRequest(requestKey, actionErrorId)
         clearPendingRequest(requestKey, actionErrorId)
 		if (!get().sessions.some((session) => session.id === sessionId)) return false

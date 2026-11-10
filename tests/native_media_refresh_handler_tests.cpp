@@ -457,10 +457,12 @@ namespace
 		{
 			handler.reset();
 		}
-		CefRefPtr<MediaCallback> Send(const nlohmann::json& attachment, const std::string& text = "New authored request", bool steer = false)
+		CefRefPtr<MediaCallback> Send(const nlohmann::json& attachment, const std::string& text = "New authored request", bool steer = false, const std::string& idempotency_id = "")
 		{
 			CefRefPtr<MediaCallback> cb = new MediaCallback;
-			NativeMediaRefreshHandlerTestAccess::Send(*handler, {{"chatId", app.chats.front().id}, {"text", text}, {"attachments", attachment.is_array() ? attachment : nlohmann::json::array({attachment})}, {"steerNow", steer}}, cb);
+			nlohmann::json payload = {{"chatId", app.chats.front().id}, {"text", text}, {"attachments", attachment.is_array() ? attachment : nlohmann::json::array({attachment})}, {"steerNow", steer}};
+			if (!idempotency_id.empty()) payload["sendIdempotencyId"] = idempotency_id;
+			NativeMediaRefreshHandlerTestAccess::Send(*handler, payload, cb);
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
 			while (cb->successes + cb->failures == 0 && std::chrono::steady_clock::now() < deadline)
 			{
@@ -471,6 +473,29 @@ namespace
 		}
 	};
 } // namespace
+
+UAM_TEST(NativeSendCollapsesRepeatIdempotencyIdButAdmitsNewMessageWithSameText)
+{
+	InputFixture fixture;
+	const auto admitted = fixture.Send(nlohmann::json::array(), "Same text", false, "submission-1");
+	UAM_ASSERT_EQ(admitted->successes, 1);
+	UAM_ASSERT(!admitted->body.contains("duplicateSend"));
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
+
+	const auto repeat = fixture.Send(nlohmann::json::array(), "Same text", false, "submission-1");
+	UAM_ASSERT_EQ(repeat->successes, 1);
+	UAM_ASSERT_EQ(repeat->body.at("duplicateSend").get<bool>(), true);
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
+
+	const auto fresh = fixture.Send(nlohmann::json::array(), "Same text", false, "submission-2");
+	UAM_ASSERT_EQ(fresh->successes, 1);
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{2});
+
+	// Clients without an id keep today's behaviour.
+	const auto unstamped = fixture.Send(nlohmann::json::array(), "Same text");
+	UAM_ASSERT_EQ(unstamped->successes, 1);
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{3});
+}
 
 UAM_TEST(NativeInputHandlerRejectsRecordedUnknownAndMixedMetadataWithoutQueueMutation)
 {

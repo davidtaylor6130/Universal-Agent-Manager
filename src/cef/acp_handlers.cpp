@@ -572,6 +572,28 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	// After the cheap refusals, so a send that cannot start leaves no branch behind.
 	if (ApplyPendingChatBranch(browser, *chat, cb, [this, browser, payload, cb]() { HandleSendAcpPrompt(browser, payload, cb); }))
 		return;
+	// Claimed here because every asynchronous re-entry above replays this handler and only admission below is once-only.
+	std::string send_idempotency_id;
+	if (const auto id_it = payload.find("sendIdempotencyId"); id_it != payload.end() && id_it->is_string() && uam::input_provenance::ValidOriginRequestId(id_it->get_ref<const std::string&>()))
+		send_idempotency_id = id_it->get<std::string>();
+	if (!send_idempotency_id.empty())
+	{
+		const auto claim = m_recentSendIds.Begin(chat_id, send_idempotency_id);
+		if (claim == uam::cef::SendIdempotencyWindow::Claim::InProgress)
+		{
+			cb->Failure(409, "This message is still being sent. Check the chat before sending it again.");
+			return;
+		}
+		if (claim == uam::cef::SendIdempotencyWindow::Claim::Admitted)
+		{
+			cb->Success(R"({"duplicateSend":true})");
+			return;
+		}
+	}
+	const auto settle_send_id = [this, chat_id, send_idempotency_id](bool admitted)
+	{
+		if (!send_idempotency_id.empty()) m_recentSendIds.Settle(chat_id, send_idempotency_id, admitted);
+	};
 	const bool goal_mode = payload.value("goalMode", false);
 	const std::string goal_id = AcpPromptGoalIdFromPayload(payload);
 	const bool computer_use_mode = payload.value("computerUseMode", false);
@@ -582,10 +604,11 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	if (managed_initial_producer_enabled && chat->agent_run_id.empty() && markdown_store_files.empty() && attachments.empty() && !goal_mode && goal_id.empty() && !computer_use_mode && !steer_now)
 	{
 		const std::weak_ptr<void> lifetime = m_asyncLifetime;
-		const auto complete = [this, lifetime, browser, cb, chat_id](const uam::ManagedInitialMentionResult& result) -> bool
+		const auto complete = [this, lifetime, browser, cb, chat_id, settle_send_id](const uam::ManagedInitialMentionResult& result) -> bool
 		{
 			if (lifetime.expired())
 				return false;
+			settle_send_id(result.input_recorded);
 			nlohmann::json receipt{{"inputRecorded", result.input_recorded}, {"delegationState", result.delegation_state == uam::ManagedInitialDelegationState::Committed ? "committed" : result.delegation_state == uam::ManagedInitialDelegationState::Uncertain ? "uncertain" : "rejected"}, {"parentMessage", nullptr}, {"parentMessageIndex", nullptr}, {"error", std::string(uam::strings::Utf8Prefix(result.error, 4096))}};
 			if (result.input_recorded && result.parent_message)
 			{
@@ -628,6 +651,7 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	                    : uam::SendAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, goal_mode, &error, goal_id, computer_use_mode, origin_request_id, &input_admission);
 	if (!sent)
 	{
+		settle_send_id(false);
 		cb->Failure(chat_id.empty() || text.empty() ? 400 : 500, FailureDetailOrFallback(error, "Failed to send ACP prompt."));
 		return;
 	}
@@ -660,13 +684,16 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;
 	const std::filesystem::path data_root = m_app.data_root;
-	if (uam::DeferChatSaveResult(m_app, chat_id, [this, lifetime, data_root, browser, cb, response_json](bool saved)
+	if (uam::DeferChatSaveResult(m_app, chat_id, [this, lifetime, data_root, browser, cb, response_json, settle_send_id](bool saved)
 	{
 		if (lifetime.expired()) return;
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		if (saved && m_app.data_root == data_root) cb->Success(response_json);
+		const bool committed = saved && m_app.data_root == data_root;
+		settle_send_id(committed);
+		if (committed) cb->Success(response_json);
 		else cb->Failure(500, "Prompt was not sent because chat history could not be saved.");
 	})) return;
+	settle_send_id(true);
 	cb->Success(response_json);
 }
 

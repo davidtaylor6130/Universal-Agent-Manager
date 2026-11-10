@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "cef/uam_bridge_request.h"
+#include "cef/send_idempotency_window.h"
 
 UAM_TEST(SendAdmissionOriginUsesEnvelopeAndRemovesPayloadSpoof)
 {
@@ -50,4 +51,28 @@ UAM_TEST(SendAdmissionOriginLeavesOtherActionsAndExistingPayloadValidationUnchan
 	const auto invalid_payload = uam::cef::ParseBridgeRequest(R"({"action":"sendAcpPrompt","requestId":"envelope-1","payload":[]})");
 	UAM_ASSERT(!invalid_payload.ok);
 	UAM_ASSERT_EQ(invalid_payload.status, 400);
+}
+
+UAM_TEST(SendIdempotencyWindowTracksEachSubmissionPerChat)
+{
+	using Claim = uam::cef::SendIdempotencyWindow::Claim;
+	uam::cef::SendIdempotencyWindow window;
+	UAM_ASSERT(window.Begin("chat-1", "id-1") == Claim::New);
+	UAM_ASSERT(window.Begin("chat-1", "id-1") == Claim::InProgress);
+	UAM_ASSERT(window.Begin("chat-2", "id-1") == Claim::New);
+	window.Settle("chat-1", "id-1", true);
+	UAM_ASSERT(window.Begin("chat-1", "id-1") == Claim::Admitted);
+	window.Settle("chat-2", "id-1", false);
+	UAM_ASSERT(window.Begin("chat-2", "id-1") == Claim::New);
+}
+
+UAM_TEST(SendIdempotencyWindowEvictsOldestBeyondCapacity)
+{
+	using Claim = uam::cef::SendIdempotencyWindow::Claim;
+	uam::cef::SendIdempotencyWindow window;
+	UAM_ASSERT(window.Begin("chat-1", "oldest") == Claim::New);
+	window.Settle("chat-1", "oldest", true);
+	for (int index = 0; index < 256; ++index)
+		UAM_ASSERT(window.Begin("chat-1", "id-" + std::to_string(index)) == Claim::New);
+	UAM_ASSERT(window.Begin("chat-1", "oldest") == Claim::New);
 }

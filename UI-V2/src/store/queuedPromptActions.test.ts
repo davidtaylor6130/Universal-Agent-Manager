@@ -22,6 +22,41 @@ beforeEach(() => {
 })
 
 describe('queued prompt identity', () => {
+  const sentIdempotencyId = () => ((bridge.send.mock.lastCall as unknown as [{ payload: { sendIdempotencyId: string } }])[0]).payload.sendIdempotencyId
+
+  it('keeps one idempotency id across resends of an unanswered message and starts a new one once it lands', async () => {
+    bridge.cef = true
+    useAppStore.setState({ sessions: [{ id: 'chat' } as never] })
+    bridge.send.mockResolvedValue({ ok: false, error: 'Connection lost. Check the chat before retrying; the action may have reached UAM.' })
+    await useAppStore.getState().sendAcpPrompt('chat', 'Same words')
+    const first = sentIdempotencyId()
+    expect(first).toBeTruthy()
+    await useAppStore.getState().sendAcpPrompt('chat', 'Same words')
+    expect(sentIdempotencyId()).toBe(first)
+    bridge.send.mockResolvedValue({ ok: true, data: { duplicateSend: true } })
+    await expect(useAppStore.getState().sendAcpPrompt('chat', 'Same words')).resolves.toBe(true)
+    expect(sentIdempotencyId()).toBe(first)
+    await useAppStore.getState().sendAcpPrompt('chat', 'Same words')
+    expect(sentIdempotencyId()).not.toBe(first)
+  })
+
+  it('does not reuse an idempotency id for changed text or an expired retry window', async () => {
+    bridge.cef = true
+    useAppStore.setState({ sessions: [{ id: 'chat' } as never] })
+    bridge.send.mockResolvedValue({ ok: false, error: 'Backend busy' })
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+    try {
+      await useAppStore.getState().sendAcpPrompt('chat', 'First words')
+      const first = sentIdempotencyId()
+      await useAppStore.getState().sendAcpPrompt('chat', 'Edited words')
+      const edited = sentIdempotencyId()
+      expect(edited).not.toBe(first)
+      now.mockReturnValue(1_000_000 + 120_000)
+      await useAppStore.getState().sendAcpPrompt('chat', 'Edited words')
+      expect(sentIdempotencyId()).not.toBe(edited)
+    } finally { now.mockRestore() }
+  })
+
   it.each(['error', 'offline'] as const)('lets an explicit bound-chat send and Retry reach native SSH recovery with cached %s status', async (runnerStatus) => {
     bridge.cef = true
     bridge.send.mockResolvedValue({ ok: false })
