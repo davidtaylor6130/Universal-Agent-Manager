@@ -20,7 +20,7 @@ namespace uam::usage
 		using Database = std::unique_ptr<sqlite3, decltype(&sqlite3_close)>;
 		using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
 
-		Database Open(const std::filesystem::path& path, std::string& error)
+		Database Open(const std::filesystem::path& path, std::string& error, bool create = true)
 		{
 			Database database(nullptr, sqlite3_close);
 			if (path.empty()) { error = "Usage storage has no data root."; return database; }
@@ -37,7 +37,7 @@ namespace uam::usage
 			const std::u8string utf8 = native.u8string();
 			const std::string filename(reinterpret_cast<const char*>(utf8.data()), utf8.size());
 			sqlite3* raw = nullptr;
-			const int status = sqlite3_open_v2(filename.c_str(), &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX, nullptr);
+			const int status = sqlite3_open_v2(filename.c_str(), &raw, SQLITE_OPEN_READWRITE | (create ? SQLITE_OPEN_CREATE : 0) | SQLITE_OPEN_NOMUTEX, nullptr);
 			database.reset(raw);
 			if (status != SQLITE_OK) { error = "Could not open usage storage."; database.reset(); return database; }
 			sqlite3_busy_timeout(database.get(), 50);
@@ -260,7 +260,7 @@ namespace uam::usage
 				const bool scratch = (!files.empty() && name.starts_with(files) && std::filesystem::is_regular_file(status)) || (!folders.empty() && name.starts_with(folders) && std::filesystem::is_directory(status));
 				if (status_error || !scratch) continue;
 				const std::filesystem::file_time_type modified = std::filesystem::last_write_time(it->path(), status_error);
-				if (!status_error && std::filesystem::file_time_type::clock::now() - modified >= max_age) std::filesystem::remove_all(it->path(), status_error);
+				if (!status_error && (max_age.count() == 0 || std::filesystem::file_time_type::clock::now() - modified >= max_age)) std::filesystem::remove_all(it->path(), status_error);
 			}
 		}
 	}
@@ -269,13 +269,12 @@ namespace uam::usage
 	{
 		if (data_root.empty() || paths::IsLinkOrReparsePointNoThrow(data_root / "usage")) return;
 		SweepScratch(data_root / "usage", std::string("receipts.jsonl") + io::kTempWritePathSuffix, "", no_other_owner ? std::chrono::hours(0) : std::chrono::hours(24));
-		SweepScratch(data_root / "usage", "", "combined-", std::chrono::hours(24));
+		SweepScratch(data_root / "usage", "", "combined-", no_other_owner ? std::chrono::hours(0) : std::chrono::hours(24));
 	}
 
-	void RemoveAbandonedRemoteViews(const std::filesystem::path& data_root, bool no_other_owner)
+	void RemoveAbandonedRemoteViews(const std::filesystem::path& data_root)
 	{
 		if (data_root.empty() || paths::IsLinkOrReparsePointNoThrow(data_root / "usage")) return;
-		if (no_other_owner) SweepScratch(data_root / "usage", "", "combined-", std::chrono::hours(0));
 		const std::filesystem::path remote = data_root / "usage" / "remote";
 		if (paths::IsLinkOrReparsePointNoThrow(remote)) return;
 		std::error_code error;
@@ -304,7 +303,7 @@ namespace uam::usage
 #endif
 	}
 
-	Store::Store(std::filesystem::path data_root) : m_path(data_root.empty() ? std::filesystem::path{} : data_root / "usage" / "history-index-v1.sqlite") {}
+	Store::Store(std::filesystem::path data_root, bool existing) : m_path(data_root.empty() ? std::filesystem::path{} : data_root / "usage" / "history-index-v1.sqlite"), m_existing(existing) {}
 
 	bool Store::Import(const std::vector<SourceRecord>& records, std::string& error, const std::function<bool()>& cancelled) const
 	{
@@ -314,7 +313,7 @@ namespace uam::usage
 			if (!entry.record || !Valid(*entry.record) || (entry.record->dedupe_key.empty() && (entry.source_id.empty() || entry.source_id.size() > 8192)))
 			{ error = "Usage accounting record is invalid."; return false; }
 		if (cancelled && cancelled()) { error = "Usage collection was cancelled."; return false; }
-		Database database = Open(m_path, error);
+		Database database = Open(m_path, error, !m_existing);
 		if (!database) return false;
 		sqlite3_progress_handler(database.get(), 1000, Stop, const_cast<std::function<bool()>*>(&cancelled));
 		if (sqlite3_exec(database.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK) { error = "Usage storage is busy."; return false; }
@@ -518,7 +517,7 @@ namespace uam::usage
 	{
 		error.clear();
 		if (!visitor || generated_ms <= 0 || generated_ms > kMaxExactTokenCount) { error = "Usage collection time is invalid."; return false; }
-		Database database = Open(m_path, error);
+		Database database = Open(m_path, error, !m_existing);
 		if (!database) return false;
 		sqlite3_progress_handler(database.get(), 1000, Stop, const_cast<std::function<bool()>*>(&cancelled));
 		sqlite3_stmt* raw = nullptr;
@@ -580,7 +579,7 @@ namespace uam::usage
 		}, error, cancelled) || !aliases.Finish(cancelled))
 		{ if (error.empty()) error = "Could not resolve accounting aliases."; return std::nullopt; }
 		std::size_t duplicates = aliases.Duplicates();
-		Database database = Open(m_path, error);
+		Database database = Open(m_path, error, !m_existing);
 		if (!database) return std::nullopt;
 		sqlite3_stmt* stats_raw = nullptr;
 		if (sqlite3_prepare_v2(database.get(), "SELECT duplicates FROM imported_stats", -1, &stats_raw, nullptr) == SQLITE_OK)
@@ -608,7 +607,7 @@ namespace uam::usage
 	{
 		error.clear();
 		if (records.size() > 2048 || scope.empty() || scope.size() > 512) { error = "Usage accounting batch is invalid."; return false; }
-		Database database = Open(m_path, error);
+		Database database = Open(m_path, error, !m_existing);
 		if (!database) return false;
 		sqlite3_progress_handler(database.get(), 1000, Stop, const_cast<std::function<bool()>*>(&cancelled));
 		if (sqlite3_exec(database.get(), "BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS imported_facts(scope TEXT,identity TEXT,created INTEGER,data TEXT,PRIMARY KEY(scope,identity)) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS imported_facts_time ON imported_facts(created); CREATE TABLE IF NOT EXISTS imported_stats(duplicates INTEGER); INSERT INTO imported_stats SELECT 0 WHERE NOT EXISTS(SELECT 1 FROM imported_stats)", nullptr, nullptr, nullptr) != SQLITE_OK)
@@ -657,7 +656,7 @@ namespace uam::usage
 		error.clear();
 		if (generated_ms <= 0 || generated_ms > kMaxExactTokenCount) { error = "Usage collection time is invalid."; return std::nullopt; }
 		if (cancelled && cancelled()) { error = "Usage collection was cancelled."; return std::nullopt; }
-		Database database = Open(m_path, error);
+		Database database = Open(m_path, error, !m_existing);
 		if (!database) return std::nullopt;
 		sqlite3_progress_handler(database.get(), 1000, Stop, const_cast<std::function<bool()>*>(&cancelled));
 		const std::int64_t retention_start = std::max<std::int64_t>(0, generated_ms / 86400000 * 86400000 - 89LL * 86400000);

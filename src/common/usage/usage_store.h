@@ -34,10 +34,10 @@ namespace uam::usage
 		bool Visit(const std::function<bool(const AccountingRecord&)>& visitor, std::string& error, const std::function<bool()>& cancelled = {}) const;
 	};
 	std::shared_ptr<const ReceiptSnapshot> ReadReceiptSnapshot(const std::filesystem::path& path, std::string& error, const std::function<bool()>& cancelled = {});
-	/// <summary>Removes receipt snapshots and combined-machine stores a previous run left behind. Once a day old always; a receipt snapshot of any age when no other collector can own it.</summary>
+	/// <summary>Removes receipt snapshots and combined-machine stores a previous run left behind: a day old always, of any age when no other collector can own them.</summary>
 	void RemoveAbandonedScratch(const std::filesystem::path& data_root, bool no_other_owner = false);
-	/// <summary>Removes pinned remote views and partial downloads a previous run left behind; call before this run pins or fetches any, because a pin inherits its source's age. Combined-machine stores of any age go too when no other collector can own them.</summary>
-	void RemoveAbandonedRemoteViews(const std::filesystem::path& data_root, bool no_other_owner = false);
+	/// <summary>Removes pinned remote views and partial downloads a previous run left behind; call before this run pins or fetches any, because a pin inherits its source's age.</summary>
+	void RemoveAbandonedRemoteViews(const std::filesystem::path& data_root);
 	/// <summary>Rate-limited [performance] note for ledger work; a negative build_ms records a rebuild skipped as unchanged. Never logs usage figures.</summary>
 	void LogLedgerWork(std::string_view origin, std::int64_t build_ms);
 
@@ -52,7 +52,8 @@ namespace uam::usage
 	class Store
 	{
 	public:
-		explicit Store(std::filesystem::path data_root);
+		/// <summary>An existing store is only opened, never created, so a deleted scratch store fails instead of reading empty.</summary>
+		explicit Store(std::filesystem::path data_root, bool existing = false);
 		bool Import(const std::vector<SourceRecord>& records, std::string& error, const std::function<bool()>& cancelled = {}) const;
 		std::optional<Ledger> Read(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled = {}) const;
 		std::optional<std::vector<AccountingRecord>> ReadRecords(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled = {}) const;
@@ -73,5 +74,6 @@ namespace uam::usage
 	private:
 		std::optional<std::vector<AccountingRecord>> ReadRecordsImpl(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled, bool lifetime) const;
 		std::filesystem::path m_path;
+		bool m_existing = false;
 	};
 }

@@ -228,7 +228,15 @@ UAM_TEST(UsageCollectorParksCollectionWhenUnreadAndResumesOnTheNextExport)
 {
 	// A helper with no usage reader used to rescan all history and rewrite its receipts every pass forever.
 	TempDir temp("uam-usage-idle-park");
-	uam::usage::Collector collector(temp.root, std::vector<uam::usage::HistorySource>{}, uam::usage::RateFetcher{}, true,
+	const fs::path provider = temp.root / "provider", data = temp.root / "data";
+	fs::create_directories(provider);
+	const auto line = [](const std::string& id)
+	{
+		return nlohmann::json({{"type", "assistant"}, {"timestamp", uam::time::detail::FormatTimestamp(uam::time::detail::UtcTimeSnapshot(std::time(nullptr) - 2), uam::time::kIsoUtcTimestampFormat)}, {"sessionId", "session"}, {"requestId", id},
+		    {"message", {{"id", id}, {"model", "claude-sonnet"}, {"usage", {{"input_tokens", 12}, {"output_tokens", 3}}}}}}).dump() + "\n";
+	};
+	UAM_ASSERT(uam::io::WriteTextFile(provider / "session.jsonl", line("first")));
+	uam::usage::Collector collector(data, {{uam::provider_ids::kClaudeCli, {provider}}}, uam::usage::RateFetcher{}, true,
 	                                std::chrono::milliseconds(200), std::chrono::milliseconds(20));
 	const auto wait_for_new_receipts = [&](const std::shared_ptr<const uam::usage::ReceiptSnapshot>& previous)
 	{
@@ -240,14 +248,16 @@ UAM_TEST(UsageCollectorParksCollectionWhenUnreadAndResumesOnTheNextExport)
 	(void)collector.ExportReceipts();
 	std::this_thread::sleep_for(std::chrono::seconds(2));
 	const std::shared_ptr<const uam::usage::ReceiptSnapshot> parked = collector.Receipts();
+	// Parked means no passes at all: a new transcript line is not even imported.
+	const std::uint32_t index = uam::usage::Store(data).ChangeCounter();
+	UAM_ASSERT(index != 0);
+	UAM_ASSERT(uam::io::WriteTextFile(provider / "session.jsonl", line("first") + line("second")));
 	std::this_thread::sleep_for(std::chrono::seconds(1));
+	UAM_ASSERT_EQ(uam::usage::Store(data).ChangeCounter(), index);
 	UAM_ASSERT(collector.Receipts() == parked);
-	// A resumed pass republishes only for new facts; unchanged history keeps its snapshot.
-	uam::usage::Record record; record.provider_id = "codex-cli"; record.model_id = "model"; record.session_id = "session"; record.dedupe_key = "resume"; record.timestamp_ms = uam::time::SystemEpochMillisecondsNow() - 1000; record.tokens.input = 1;
-	std::string error;
-	UAM_ASSERT(uam::usage::Store(temp.root).Import({{&record, "fixture", 0}}, error));
 	(void)collector.ExportReceipts();
 	UAM_ASSERT(wait_for_new_receipts(parked));
+	UAM_ASSERT(uam::usage::Store(data).ChangeCounter() != index);
 }
 
 namespace
@@ -299,7 +309,7 @@ UAM_TEST(UsageCollectorKeepsTheLastLedgerDuringABurstInsideTheMinimumInterval)
 	uam::usage::Store store(temp.root); std::string error;
 	uam::usage::Record first_fact = CollectorEvent("burst-0");
 	UAM_ASSERT(store.Import({{&first_fact, "fixture", 0}}, error));
-	uam::usage::Collector collector(temp.root, std::vector<uam::usage::HistorySource>{}, uam::usage::RateFetcher{}, true, {}, std::chrono::milliseconds(20), std::chrono::hours(1));
+	uam::usage::Collector collector(temp.root, std::vector<uam::usage::HistorySource>{}, uam::usage::RateFetcher{}, true, {}, std::chrono::milliseconds(20), uam::usage::PublishIntervals{std::chrono::hours(1), std::chrono::hours(1)});
 	UAM_ASSERT(WaitUntil([&] { return collector.Receipts() != nullptr; }));
 	const std::shared_ptr<const uam::usage::ReceiptSnapshot> published = collector.Receipts();
 	const std::int64_t as_of = WaitForAccounting(collector).value("asOfMs", std::int64_t{0});
@@ -312,25 +322,84 @@ UAM_TEST(UsageCollectorKeepsTheLastLedgerDuringABurstInsideTheMinimumInterval)
 		std::this_thread::sleep_for(std::chrono::milliseconds(20));
 	}
 	UAM_ASSERT(collector.Receipts() == published);
-	UAM_ASSERT_EQ(collector.Query(0)["asOfMs"].get<std::int64_t>(), as_of);
-	UAM_ASSERT_EQ(collector.Query(0)["totals"]["totalTokens"].get<std::int64_t>(), 1LL);
+	// The held ledger keeps its as-of and totals and says it is not complete.
+	const nlohmann::json held = collector.Query(0);
+	UAM_ASSERT_EQ(held["asOfMs"].get<std::int64_t>(), as_of);
+	UAM_ASSERT_EQ(held["totals"]["totalTokens"].get<std::int64_t>(), 1LL);
+	UAM_ASSERT(!held.value("complete", true)); UAM_ASSERT(held.value("collecting", false));
 }
 
 UAM_TEST(UsageCollectorRemovesFreshScratchOnlyWhenNoOtherCollectorOwnsIt)
 {
 	TempDir temp("uam-usage-scratch-owner");
 	const fs::path usage = temp.root / "usage";
-	fs::create_directories(usage);
+	fs::create_directories(usage / "combined-9-9");
 	UAM_ASSERT(uam::io::WriteTextFile(usage / "receipts.jsonl.tmp.1", "x"));
-	uam::usage::Collector first(temp.root, std::vector<uam::usage::HistorySource>{}, {}, true);
-	UAM_ASSERT(first.OwnsScratch());
-	UAM_ASSERT(WaitUntil([&] { return first.Receipts() != nullptr; }));
-	UAM_ASSERT(!fs::exists(usage / "receipts.jsonl.tmp.1"));
+	// A future modification time must not shield abandoned scratch from an any-age sweep.
+	fs::last_write_time(usage / "receipts.jsonl.tmp.1", fs::file_time_type::clock::now() + std::chrono::hours(2));
+	std::optional<uam::usage::Collector> first;
+	first.emplace(temp.root, std::vector<uam::usage::HistorySource>{}, uam::usage::RateFetcher{}, true);
+	UAM_ASSERT(WaitUntil([&] { return first->Receipts() != nullptr; }));
+	UAM_ASSERT(!fs::exists(usage / "receipts.jsonl.tmp.1")); UAM_ASSERT(!fs::exists(usage / "combined-9-9"));
 	UAM_ASSERT(uam::io::WriteTextFile(usage / "receipts.jsonl.tmp.2", "x"));
-	uam::usage::Collector second(temp.root, std::vector<uam::usage::HistorySource>{}, {}, true);
-	UAM_ASSERT(!second.OwnsScratch());
+	uam::usage::Collector second(temp.root, std::vector<uam::usage::HistorySource>{}, uam::usage::RateFetcher{}, true);
 	UAM_ASSERT(WaitUntil([&] { return second.Receipts() != nullptr; }));
 	UAM_ASSERT(fs::exists(usage / "receipts.jsonl.tmp.2"));
+	// After the first owner exits, a new collector still must not sweep the live second collector's files.
+	first.reset();
+	const fs::path live = second.Receipts()->path;
+	uam::usage::Collector third(temp.root, std::vector<uam::usage::HistorySource>{}, uam::usage::RateFetcher{}, true);
+	UAM_ASSERT(WaitUntil([&] { return third.Receipts() != nullptr; }));
+	UAM_ASSERT(fs::exists(live)); UAM_ASSERT(fs::exists(usage / "receipts.jsonl.tmp.2"));
+}
+
+UAM_TEST(UsageCollectorRepublishesADeletedReceiptSnapshotWithoutNewFacts)
+{
+	TempDir temp("uam-usage-deleted-receipts");
+	uam::usage::Collector collector(temp.root, std::vector<uam::usage::HistorySource>{}, uam::usage::RateFetcher{}, true, {}, std::chrono::milliseconds(20));
+	UAM_ASSERT(WaitUntil([&] { return collector.Receipts() != nullptr; }));
+	const std::shared_ptr<const uam::usage::ReceiptSnapshot> lost = collector.Receipts();
+	UAM_ASSERT(fs::remove(lost->path));
+	UAM_ASSERT(WaitUntil([&] { return collector.Receipts() != lost; }));
+	UAM_ASSERT(fs::exists(collector.Receipts()->path));
+	UAM_ASSERT(!collector.ExportReceipts().contains("error"));
+}
+
+UAM_TEST(UsageCollectorBacksOffAFailedPublication)
+{
+	TempDir temp("uam-usage-publish-backoff");
+	uam::usage::Store store(temp.root); std::string error;
+	uam::usage::Record fact = CollectorEvent("valid");
+	UAM_ASSERT(store.Import({{&fact, "fixture", 0}}, error));
+	const auto execute = [&](const char* sql)
+	{
+		sqlite3* raw = nullptr;
+		UAM_ASSERT_EQ(sqlite3_open(store.Path().string().c_str(), &raw), SQLITE_OK);
+		UAM_ASSERT_EQ(sqlite3_exec(raw, sql, nullptr, nullptr, nullptr), SQLITE_OK);
+		sqlite3_close(raw);
+	};
+	execute("INSERT INTO facts VALUES('[\"native\",\"codex-cli\",\"corrupt\"]',1,'not json')");
+	uam::usage::Collector collector(temp.root, std::vector<uam::usage::HistorySource>{}, uam::usage::RateFetcher{}, true, {}, std::chrono::milliseconds(20));
+	UAM_ASSERT(WaitUntil([&] { return !collector.Query(0).value("collectionError", "").empty(); }));
+	execute("DELETE FROM facts WHERE identity LIKE '%corrupt%'");
+	// Without backoff the next 20 ms pass would publish; the failure waits 30 seconds first.
+	std::this_thread::sleep_for(std::chrono::seconds(1));
+	const nlohmann::json held = collector.Query(0);
+	UAM_ASSERT(held.value("pending", false)); UAM_ASSERT(!held.value("collectionError", "").empty());
+}
+
+UAM_TEST(UsageCollectorRereadsUnchangedFactsOnlyAfterTheClockRefresh)
+{
+	TempDir temp("uam-usage-clock-refresh");
+	uam::usage::Collector collector(temp.root, std::vector<uam::usage::HistorySource>{}, uam::usage::RateFetcher{}, true, {}, std::chrono::milliseconds(20),
+	                                uam::usage::PublishIntervals{{}, {}, std::chrono::milliseconds(600)});
+	const std::int64_t first = WaitForAccounting(collector).value("asOfMs", std::int64_t{0});
+	const std::shared_ptr<const uam::usage::ReceiptSnapshot> receipts = collector.Receipts();
+	UAM_ASSERT(first != 0);
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	UAM_ASSERT(WaitUntil([&] { return collector.Query(0).value("asOfMs", std::int64_t{0}) != first; }));
+	UAM_ASSERT(std::chrono::steady_clock::now() - started >= std::chrono::milliseconds(300));
+	UAM_ASSERT(collector.Receipts() == receipts);
 }
 
 UAM_TEST(UsageCollectorStartRemovesScratchLeftByAnEarlierRun)

@@ -447,8 +447,12 @@ UAM_TEST(UsageMultiHostHoldsTheLastLedgerDuringAChangeBurstInsideTheMinimumInter
 	{
 		const int seen = calls.load();
 		host.label = "burst-" + std::to_string(index); history.SetHosts({host});
-		const nlohmann::json settled = WaitUsage(history, "*", [&](const nlohmann::json& value) { return value.contains("totals") && calls.load() > seen; });
+		const nlohmann::json settled = WaitUsage(history, "*", [&](const nlohmann::json& value) { return value.contains("totals") && calls.load() > seen && !value.value("complete", true); });
+		// The held ledger is shown as incomplete and still collecting, never complete over changed facts.
 		UAM_ASSERT_EQ(settled["totals"]["totalTokens"].get<std::int64_t>(), tokens);
+		UAM_ASSERT(!settled.value("complete", true)); UAM_ASSERT(settled.value("collecting", false));
+		const nlohmann::json peer = history.Query("peer", 7);
+		UAM_ASSERT(!peer.value("complete", true)); UAM_ASSERT_EQ(peer["coverage"][0]["status"].get<std::string>(), std::string("loading"));
 	}
 	UAM_ASSERT_EQ(history.LedgerBuildCount(), builds);
 	UAM_ASSERT_EQ(history.ImportedRecordCount(), imports);
@@ -466,8 +470,84 @@ UAM_TEST(UsageMultiHostStopsFetchingAndRebuildingUntilSomeoneReads)
 	const int idle = calls.load();
 	std::this_thread::sleep_for(std::chrono::milliseconds(2500));
 	UAM_ASSERT_EQ(calls.load(), idle);
+	// The first read after idling reports collecting, so the page polls again soon.
+	UAM_ASSERT(history.Query("*", 7).value("collecting", false));
 	for (int attempt = 0; attempt < 500 && calls.load() == idle; ++attempt) { (void)history.Query("*", 7); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
 	UAM_ASSERT(calls.load() > idle);
+}
+
+namespace
+{
+	fs::path PeerSnapshotPath(const fs::path& root, const ExecutionHost& peer)
+	{
+		const std::string scope = "host-" + peer.id + "-" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(nlohmann::json::array({peer.ssh_alias, peer.platform, peer.runner_directory}).dump()));
+		return root / "usage" / "remote" / scope / "snapshot-v3.jsonl";
+	}
+}
+
+UAM_TEST(UsageMultiHostIsolatesAFailingMachineLedgerFromHealthyMachines)
+{
+	TempDir temp("uam-usage-multi-isolation");
+	uam::usage::Store store(temp.root / "fixture"); std::string error;
+	uam::usage::Record record; record.provider_id = "codex-cli"; record.model_id = "model"; record.session_id = "session"; record.dedupe_key = "receipt"; record.timestamp_ms = UsageNow() - 3LL * 86400000; record.tokens.input = 15;
+	UAM_ASSERT(store.Import({{&record, "fixture", 0}}, error));
+	nlohmann::json metadata = uam::usage::EmptyHistoryMetadata(); metadata["complete"] = true;
+	const std::shared_ptr<const uam::usage::ReceiptSnapshot> snapshot = store.WriteReceiptSnapshot(UsageNow(), metadata, error); UAM_ASSERT(snapshot);
+	const std::string bytes = ReadFile(snapshot->path);
+	const std::string fact = bytes.substr(bytes.find('\n') + 1);
+	uam::usage::MultiHostHistory history(temp.root, EmptyLocal(temp.root), {UsageHost("good"), UsageHost("bad")},
+	    [&](const ExecutionHost& peer, std::stop_token, std::string&) -> std::optional<nlohmann::json>
+	    {
+		    const fs::path path = PeerSnapshotPath(temp.root, peer); fs::create_directories(path.parent_path());
+		    // The bad machine repeats an identity, which fails its ledger build every time.
+		    UAM_ASSERT(uam::io::AtomicWriteFile(path, peer.id == "bad" ? bytes + fact : bytes));
+		    return nlohmann::json{{"receiptSnapshotPath", uam::paths::Utf8PathString(path)}};
+	    });
+	const nlohmann::json good = WaitUsage(history, "good", [](const nlohmann::json& value) { return value.contains("totals") && !value.value("collecting", true); });
+	UAM_ASSERT_EQ(good["totals"]["totalTokens"].get<int>(), 15);
+	const nlohmann::json bad = WaitUsage(history, "bad", [](const nlohmann::json& value) { return !value.value("collectionError", "").empty(); });
+	UAM_ASSERT(bad["collectionError"].get<std::string>().find("duplicate") != std::string::npos);
+	for (int index = 0; index < 5; ++index)
+	{
+		UAM_ASSERT_EQ(history.Query("good", 7)["totals"]["totalTokens"].get<int>(), 15);
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	}
+}
+
+UAM_TEST(UsageMultiHostRebuildsADeletedCombinedStoreInsteadOfReadingItEmpty)
+{
+	TempDir temp("uam-usage-multi-deleted-store");
+	ExecutionHost host = UsageHost("peer");
+	const nlohmann::json document = UsageSnapshot("codex-cli", "receipt");
+	uam::usage::MultiHostHistory history(temp.root, EmptyLocal(temp.root), {host},
+	    [document](const ExecutionHost&, std::stop_token, std::string&) -> std::optional<nlohmann::json> { return document; });
+	UAM_ASSERT_EQ(WaitUsage(history, "*", [](const nlohmann::json& value) { return value.contains("totals") && value.value("complete", false); })["totals"]["totalTokens"].get<int>(), 15);
+	const std::uint64_t builds = history.LedgerBuildCount();
+	for (const fs::directory_entry& entry : fs::directory_iterator(temp.root / "usage"))
+		if (entry.path().filename().string().starts_with("combined-")) fs::remove_all(entry.path());
+	host.label = "Deleted stores"; history.SetHosts({host});
+	const nlohmann::json rebuilt = WaitUsage(history, "*", [&](const nlohmann::json& value) { return value.contains("totals") && history.LedgerBuildCount() > builds && value.value("complete", false); });
+	UAM_ASSERT_EQ(rebuilt["totals"]["totalTokens"].get<int>(), 15);
+	UAM_ASSERT_EQ(history.Query("peer", 7)["totals"]["totalTokens"].get<int>(), 15);
+}
+
+UAM_TEST(UsageMultiHostRereadsUnchangedInputsOnlyAfterTheClockRefresh)
+{
+	for (const bool refresh : {false, true})
+	{
+		TempDir temp(refresh ? "uam-usage-multi-clock-due" : "uam-usage-multi-clock-held");
+		ExecutionHost host = UsageHost("peer");
+		const nlohmann::json document = UsageSnapshot("codex-cli", "receipt");
+		uam::usage::MultiHostHistory history(temp.root, EmptyLocal(temp.root), {host},
+		    [document](const ExecutionHost&, std::stop_token, std::string&) -> std::optional<nlohmann::json> { return document; },
+		    {}, std::chrono::minutes(2), refresh ? std::chrono::milliseconds(0) : std::chrono::hours(1));
+		UAM_ASSERT(WaitUsage(history, "*", [](const nlohmann::json& value) { return value.contains("totals") && value.value("complete", false); }).contains("totals"));
+		const std::uint64_t builds = history.LedgerBuildCount();
+		host.label = "Clock tick"; history.SetHosts({host});
+		const nlohmann::json after = WaitUsage(history, "*", [](const nlohmann::json& value) { return value.contains("coverage") && value["coverage"].size() == 2 && value["coverage"][1]["label"] == "Clock tick" && value.contains("totals"); });
+		UAM_ASSERT_EQ(after["totals"]["totalTokens"].get<int>(), 15);
+		UAM_ASSERT(refresh ? history.LedgerBuildCount() > builds : history.LedgerBuildCount() == builds);
+	}
 }
 
 UAM_TEST(MultiHostHistoryStartRemovesRemoteViewsLeftByAnEarlierRun)

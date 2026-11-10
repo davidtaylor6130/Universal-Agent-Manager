@@ -24,7 +24,6 @@ namespace uam::usage
 		{
 			return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 		}
-		constexpr std::int64_t kLedgerClockRefreshMs = 5 * 60 * 1000;
 		std::string Scope(const ExecutionHost& host)
 		{
 			return "host-" + host.id + "-" + hashing::Hex64Padded(hashing::Fnv1a64(nlohmann::json::array({host.ssh_alias, host.platform, host.runner_directory}).dump()));
@@ -126,12 +125,16 @@ namespace uam::usage
 			std::vector<std::string> keys;
 			std::vector<std::string> sources;
 			std::vector<std::shared_ptr<const ReceiptSnapshot>> receipts;
+			std::vector<bool> complete;
+			std::int64_t facts_built_ms = 0;
+			std::int64_t inputs_as_of = 0;
 			std::shared_ptr<const Ledger> ledger;
 			~LedgerCache() { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
 		};
 
-		std::shared_ptr<const Ledger> MakeLedger(const std::vector<const Data*>& inputs, const std::filesystem::path& data_root, std::unique_ptr<LedgerCache>& cached, std::atomic<std::uint64_t>& imported_records, std::atomic<std::uint64_t>& ledger_builds, std::chrono::milliseconds min_interval, std::string& error, const std::function<bool()>& cancelled)
+		std::shared_ptr<const Ledger> MakeLedger(const std::vector<const Data*>& inputs, const std::filesystem::path& data_root, std::unique_ptr<LedgerCache>& cached, std::atomic<std::uint64_t>& imported_records, std::atomic<std::uint64_t>& ledger_builds, std::chrono::milliseconds min_interval, std::chrono::milliseconds clock_refresh, std::int64_t& held_as_of, std::string& error, const std::function<bool()>& cancelled)
 		{
+			held_as_of = -1;
 			if (cancelled && cancelled()) return {};
 			std::vector<std::string> keys;
 			bool lifetime = true;
@@ -161,12 +164,19 @@ namespace uam::usage
 				}
 			}
 			const std::int64_t now = Now();
-			const std::int64_t age = cached && cached->ledger ? now - cached->ledger->GeneratedMs() : -1;
-			// Unchanged inputs only need rolling windows advanced; changed inputs wait out the minimum interval on the last good ledger.
-			if (same_inputs && age >= 0 && age < kLedgerClockRefreshMs) { LogLedgerWork("multi-host", -1); return cached->ledger; }
-			// A source joining or leaving must show at once: coverage already reports it.
-			const bool same_sources = cached && std::ranges::equal(inputs, cached->sources, {}, [](const Data* data) { return data->source_scope; });
-			if (!same_inputs && same_sources && age >= 0 && age < min_interval.count()) return cached->ledger;
+			// A deleted scratch store is rebuilt; reading it would silently create an empty one.
+			const bool present = cached && cached->ledger && paths::PathExistsNoThrow(Store(cached->path).Path());
+			if (!present) same_inputs = false;
+			const std::int64_t age = present ? now - cached->ledger->GeneratedMs() : -1;
+			// Unchanged inputs only need rolling windows advanced.
+			if (same_inputs && age >= 0 && age < clock_refresh.count()) { LogLedgerWork("multi-host", -1); return cached->ledger; }
+			// Changed facts from the same sources wait out the minimum interval on the last good ledger, timed from its last fact rebuild.
+			// A source joining or leaving, or one becoming complete, shows at once: coverage already reports it.
+			bool hold = present && !same_inputs && std::ranges::equal(inputs, cached->sources, {}, [](const Data* data) { return data->source_scope; });
+			for (std::size_t index = 0; hold && index < inputs.size(); ++index)
+				if (inputs[index]->metadata.value("complete", false) && !cached->complete[index]) hold = false;
+			const std::int64_t since_facts = present ? now - cached->facts_built_ms : -1;
+			if (hold && since_facts >= 0 && since_facts < min_interval.count()) { held_as_of = cached->inputs_as_of; return cached->ledger; }
 			const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
 			std::unique_ptr<LedgerCache> replacement;
 			if (!same_inputs)
@@ -175,7 +185,13 @@ namespace uam::usage
 				replacement = std::make_unique<LedgerCache>();
 				replacement->path = data_root / "usage" / ("combined-" + std::to_string(now) + "-" + std::to_string(++next));
 				replacement->keys = std::move(keys);
-				for (const Data* data : inputs) replacement->sources.push_back(data->source_scope);
+				replacement->facts_built_ms = now;
+				replacement->inputs_as_of = inputs.empty() ? 0 : inputs.front()->as_of;
+				for (const Data* data : inputs)
+				{
+					replacement->sources.push_back(data->source_scope); replacement->complete.push_back(data->metadata.value("complete", false));
+					replacement->inputs_as_of = std::min(replacement->inputs_as_of, data->as_of);
+				}
 				if (paths::IsLinkOrReparsePointNoThrow(data_root / "usage") || paths::IsLinkOrReparsePointNoThrow(replacement->path)) { error = "Usage scratch storage is invalid."; return {}; }
 				Store store(replacement->path);
 				for (std::size_t index = 0; index < inputs.size(); ++index)
@@ -207,7 +223,7 @@ namespace uam::usage
 			}
 			LedgerCache& selected = replacement ? *replacement : *cached;
 			// Clock ticks reread immutable accounting so rolling boundaries and future witnesses advance.
-			std::optional<Ledger> ledger = Store(selected.path).ReadLifetimeLedger(now, error, cancelled);
+			std::optional<Ledger> ledger = Store(selected.path, !replacement).ReadLifetimeLedger(now, error, cancelled);
 			if (ledger && !lifetime)
 			{
 				// Legacy peers provide rolling coverage only; never advertise complete lifetime from them.
@@ -234,10 +250,10 @@ namespace uam::usage
 	}
 
 	MultiHostHistory::MultiHostHistory(std::filesystem::path data_root, std::vector<ExecutionHost> hosts)
-	    : MultiHostHistory(data_root, std::make_shared<Collector>(data_root, true), std::move(hosts), DefaultFetcher(data_root), std::chrono::minutes(5)) {}
+	    : MultiHostHistory(data_root, std::make_shared<Collector>(data_root, true), std::move(hosts), DefaultFetcher(data_root), std::chrono::seconds(90)) {}
 
-	MultiHostHistory::MultiHostHistory(std::filesystem::path data_root, std::shared_ptr<Collector> local, std::vector<ExecutionHost> hosts, RemoteAccountingFetcher fetch, std::chrono::milliseconds ledger_min_interval, std::chrono::milliseconds demand_window)
-	    : m_dataRoot(std::move(data_root)), m_local(std::move(local)), m_fetch(std::move(fetch)), m_ledgerMinInterval(ledger_min_interval), m_demandWindow(demand_window), m_lastDemandMs(SteadyNow())
+	MultiHostHistory::MultiHostHistory(std::filesystem::path data_root, std::shared_ptr<Collector> local, std::vector<ExecutionHost> hosts, RemoteAccountingFetcher fetch, std::chrono::milliseconds ledger_min_interval, std::chrono::milliseconds demand_window, std::chrono::milliseconds clock_refresh)
+	    : m_dataRoot(std::move(data_root)), m_local(std::move(local)), m_fetch(std::move(fetch)), m_ledgerMinInterval(ledger_min_interval), m_demandWindow(demand_window), m_clockRefresh(clock_refresh), m_lastDemandMs(SteadyNow())
 	{
 		SetHosts(std::move(hosts));
 		m_worker = std::jthread([this](std::stop_token stop) { Run(stop); });
@@ -271,16 +287,21 @@ namespace uam::usage
 	{
 		if (days != 0 && days != 1 && days != 7 && days != 30 && days != 90) return {{"error", "Choose a valid usage period."}};
 		if (host_id == "local") return m_local->Query(days, prices);
-		m_lastDemandMs.store(SteadyNow(), std::memory_order_release);
+		const std::int64_t now = SteadyNow();
+		// A first read after idling refreshes peers and views; report it so the page polls for the result.
+		const bool was_idle = now - m_lastDemandMs.exchange(now, std::memory_order_acq_rel) >= m_demandWindow.count();
+		if (was_idle) { m_idleWake.store(true); { std::lock_guard<std::mutex> lock(m_waitMutex); } m_wake.notify_all(); }
 		m_local->NoteDemand();
 		View view;
 		{
 			std::lock_guard<std::mutex> lock(m_mutex);
 			if (host_id != kAllMachinesHostId && !std::ranges::any_of(m_hosts, [host_id](const ExecutionHost& host) { return host.id == host_id; })) return {{"error", "Usage machine is no longer configured."}};
 			const std::map<std::string, View>::const_iterator found = m_views.find(std::string(host_id));
-			if (found == m_views.end()) return {{"pending", true}, {"collectionError", ""}};
+			if (found == m_views.end()) return {{"pending", true}, {"collecting", true}, {"collectionError", ""}};
 			view = found->second;
 		}
+		// Local facts newer than the published receipts are not in any machine view yet.
+		if (was_idle || (host_id == kAllMachinesHostId && m_local->ReceiptsBehind())) { view.metadata["collecting"] = true; view.metadata["complete"] = false; }
 		if (!view.ledger) return {{"pending", true}, {"collecting", view.metadata.value("collecting", false)},
 		    {"collectionError", view.metadata.value("collectionError", "Usage is unavailable for this machine.")}, {"coverage", std::move(view.coverage)}};
 		nlohmann::json result = m_local->Render(*view.ledger, std::move(view.metadata), days, prices);
@@ -310,11 +331,15 @@ namespace uam::usage
 		std::int64_t published_interval = 0;
 		std::string local_error;
 		bool local_collecting = true;
-		std::chrono::steady_clock::time_point ledger_retry_at{};
-		int ledger_failures = 0;
+		// Each ledger backs off on its own failures, so one bad machine never holds the others back.
+		struct Retry { std::chrono::steady_clock::time_point at{}; int failures = 0; std::string error; };
+		std::map<std::string, Retry> retries;
 		try
 		{
-			RemoveAbandonedRemoteViews(m_dataRoot, m_local->OwnsScratch());
+			RemoveAbandonedRemoteViews(m_dataRoot);
+			// The collector's startup sweep may remove combined stores; create none before it finishes.
+			const std::shared_future<void> swept = m_local->ScratchReady();
+			while (swept.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready && !stop.stop_requested()) {}
 			while (!stop.stop_requested())
 			{
 				std::vector<ExecutionHost> hosts;
@@ -324,6 +349,12 @@ namespace uam::usage
 				std::stop_callback cancel(stop, [scope_stop]() { scope_stop->request_stop(); });
 				// No one is reading machine views: stop fetching peers and rebuilding until someone does.
 				const bool demanded = SteadyNow() - m_lastDemandMs.load(std::memory_order_acquire) < m_demandWindow.count();
+				if (m_idleWake.exchange(false))
+				{
+					changed = true;
+					for (std::pair<const std::string, Peer>& peer : peers)
+						if (peer.second.due != std::chrono::steady_clock::time_point::max()) { peer.second.due = {}; peer.second.loading = true; }
+				}
 				const std::shared_ptr<const ReceiptSnapshot> bytes = m_local->Receipts();
 				const std::pair<bool, std::string> local_status = m_local->CollectionStatus();
 				if (local_status.first != local_collecting || local_status.second != local_error)
@@ -355,7 +386,7 @@ namespace uam::usage
 					unavailable_views.emplace(std::string(kAllMachinesHostId), std::move(unavailable));
 					{ std::lock_guard<std::mutex> lock(m_mutex); if (generation == m_generation) m_views = std::move(unavailable_views); }
 					std::unique_lock<std::mutex> wait_lock(m_waitMutex);
-					m_wake.wait_for(wait_lock, stop, std::chrono::seconds(1), [&]() { return generation != m_generation; });
+					m_wake.wait_for(wait_lock, stop, std::chrono::seconds(1), [&]() { return generation != m_generation || m_idleWake.load(); });
 					continue;
 				}
 				for (const ExecutionHost& host : hosts)
@@ -391,9 +422,24 @@ namespace uam::usage
 					}
 				}
 				// Rebuild only while read, after publication, configuration changes or the next 30-second window tick; failures back off.
-				if (demanded && (generation != published_generation || ((changed || Now() / 30000 != published_interval) && std::chrono::steady_clock::now() >= ledger_retry_at)))
+				if (demanded && (generation != published_generation || changed || Now() / 30000 != published_interval))
 				{
-					bool build_failed = false;
+					if (generation != published_generation) retries.clear();
+					const std::function<bool()> cancelled = [&]() { return stop.stop_requested() || scope_stop->stop_requested(); };
+					const auto build = [&](const std::string& key, const std::vector<const Data*>& inputs, std::unique_ptr<LedgerCache>& cache, std::int64_t& held_as_of, std::string& error) -> std::shared_ptr<const Ledger>
+					{
+						held_as_of = -1;
+						Retry& retry = retries[key];
+						if (std::chrono::steady_clock::now() < retry.at) { error = retry.error; return {}; }
+						std::shared_ptr<const Ledger> ledger = MakeLedger(inputs, m_dataRoot, cache, m_importedRecords, m_ledgerBuilds, m_ledgerMinInterval, m_clockRefresh, held_as_of, error, cancelled);
+						if (ledger) retry = {};
+						else if (!cancelled())
+						{
+							retry.error = error.empty() ? "Could not combine usage accounting." : error;
+							retry.at = std::chrono::steady_clock::now() + std::min<std::chrono::steady_clock::duration>(std::chrono::seconds(30LL << std::min(retry.failures++, 5)), std::chrono::minutes(15));
+						}
+						return ledger;
+					};
 					std::map<std::string, View> views;
 					bool valid_totals = true;
 					const std::function<void(nlohmann::json&, const nlohmann::json&)> add_count = [&](nlohmann::json& target, const nlohmann::json& source)
@@ -429,24 +475,35 @@ namespace uam::usage
 						if (peer.data) peer.data->source_scope = peer.scope;
 						const Data* data = peer.data ? &*peer.data : nullptr;
 						nlohmann::json row = Coverage(host, data, peer.error, peer.cached, peer.loading);
-						coverage.push_back(row);
 						View view;
 						view.metadata = data ? data->metadata : EmptyHistoryMetadata(host.id); view.metadata["version"] = 3; view.metadata["executionHostId"] = host.id;
 						view.metadata["complete"] = view.metadata.value("complete", false) && !peer.cached && peer.error.empty() && !peer.loading;
-						view.metadata["collecting"] = peer.loading; view.metadata["collectionError"] = strings::SafeLine(peer.error, 1024); view.coverage = nlohmann::json::array({row});
-						if (data) { std::string ledger_error; view.ledger = MakeLedger({data}, m_dataRoot, peer_ledgers[host.id], m_importedRecords, m_ledgerBuilds, m_ledgerMinInterval, ledger_error, [&]() { return stop.stop_requested() || scope_stop->stop_requested(); }); if (!view.ledger) { view.metadata["collectionError"] = ledger_error; build_failed = true; } append(*data); }
+						view.metadata["collecting"] = peer.loading; view.metadata["collectionError"] = strings::SafeLine(peer.error, 1024);
+						if (data)
+						{
+							std::string ledger_error; std::int64_t held_as_of = -1;
+							view.ledger = build(host.id, {data}, peer_ledgers[host.id], held_as_of, ledger_error);
+							if (!view.ledger) { view.metadata["collectionError"] = strings::SafeLine(ledger_error, 1024); view.metadata["complete"] = false; row["error"] = view.metadata["collectionError"]; }
+							if (held_as_of >= 0)
+							{
+								// The ledger still shows older facts: say so, with the as-of those facts had.
+								view.metadata["complete"] = false; view.metadata["collecting"] = true; metadata["complete"] = false;
+								row["status"] = "loading"; row["asOfMs"] = held_as_of;
+							}
+							append(*data);
+						}
 						else metadata["complete"] = false;
+						coverage.push_back(row); view.coverage = nlohmann::json::array({row});
 						if (peer.cached || !peer.error.empty()) metadata["complete"] = false;
 						metadata["collecting"] = metadata["collecting"].get<bool>() || peer.loading;
 						views.emplace(host.id, std::move(view));
 					}
 					View total;
 					std::string ledger_error;
-					if (valid_totals && !combined.empty()) total.ledger = MakeLedger(combined, m_dataRoot, combined_ledger, m_importedRecords, m_ledgerBuilds, m_ledgerMinInterval, ledger_error, [&]() { return stop.stop_requested() || scope_stop->stop_requested(); });
-					if (!total.ledger && !combined.empty()) { metadata["collectionError"] = ledger_error.empty() ? "Could not combine usage accounting." : ledger_error; build_failed = true; }
-					if (build_failed && !stop.stop_requested() && !scope_stop->stop_requested())
-						ledger_retry_at = std::chrono::steady_clock::now() + std::min<std::chrono::steady_clock::duration>(std::chrono::seconds(30LL << std::min(ledger_failures++, 5)), std::chrono::minutes(15));
-					else { ledger_failures = 0; ledger_retry_at = {}; }
+					std::int64_t held_as_of = -1;
+					if (valid_totals && !combined.empty()) total.ledger = build(std::string(kAllMachinesHostId), combined, combined_ledger, held_as_of, ledger_error);
+					if (!total.ledger && !combined.empty()) metadata["collectionError"] = ledger_error.empty() ? "Could not combine usage accounting." : ledger_error;
+					if (held_as_of >= 0) { metadata["complete"] = false; metadata["collecting"] = true; }
 
 					total.metadata = std::move(metadata); total.coverage = std::move(coverage); views.emplace(std::string(kAllMachinesHostId), std::move(total));
 					{ std::lock_guard<std::mutex> lock(m_mutex); if (generation == m_generation && !stop.stop_requested()) m_views = std::move(views); }
@@ -501,7 +558,7 @@ namespace uam::usage
 					continue;
 				}
 				std::unique_lock<std::mutex> wait_lock(m_waitMutex);
-				m_wake.wait_for(wait_lock, stop, std::chrono::seconds(1), [&]() { return generation != m_generation; });
+				m_wake.wait_for(wait_lock, stop, std::chrono::seconds(1), [&]() { return generation != m_generation || m_idleWake.load(); });
 			}
 		}
 		catch (const std::exception&)
