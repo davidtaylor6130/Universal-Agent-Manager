@@ -598,7 +598,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 
 	if (changed)
 	{
-		SaveChatQuietly(app, chat);
+		SaveChatSoon(app, chat);
 		MarkAcpChatUnseenIfBackground(app, chat);
 	}
 }
@@ -652,7 +652,7 @@ void HandleClaudeUserMessage(AppState& app, AcpSessionState& session, ChatSessio
 
 	if (changed)
 	{
-		SaveChatQuietly(app, chat);
+		SaveChatSoon(app, chat);
 	}
 }
 

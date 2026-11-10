@@ -521,6 +521,8 @@ bool HasActiveChatSaveWorker(const AppState& app, std::string_view chat_id);
 /// tool status): it keeps a snapshot already being written, which is published as an older state while the chat
 /// stays unsaved, and it debounces no longer than the maximum wait from the first unsaved change.
 void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5, bool append_only = false);
+/// <summary>Saves a mid-turn display update in the background when no caller needs its durable receipt.</summary>
+void SaveChatSoon(AppState& app, const ChatSession& chat);
 /// <summary>Owner-thread due time for a scheduled save; call after NoteChatSaveScheduled.</summary>
 double ArmChatSave(AppState& app, const std::string& chat_id, double delay_seconds, bool append_only);
 bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id);

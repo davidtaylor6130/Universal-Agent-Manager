@@ -4872,6 +4872,24 @@ void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_secon
 	app.pending_chat_save_at_by_chat_id[chat.id] = ArmChatSave(app, chat.id, delay_seconds, append_only);
 }
 
+void SaveChatSoon(AppState& app, const ChatSession& chat)
+{
+	// A tool status or plan row gates nothing, so it must not hold the UI thread for a whole-transcript
+	// write. Every state the synchronous save settles, stamps or refuses keeps the synchronous path.
+	const ChatSession* live = ChatDomainService().FindChatById(app, chat.id);
+	const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+	const bool local = live != nullptr && (live->execution_host_id.empty() || live->execution_host_id == uam::execution_hosts::kLocalHostId);
+	if (!local || session == nullptr || !session->processing || session->lifecycle_state == kAcpLifecycleError ||
+	    session->managed_parent_continuation || session->queued_rollback_save_pending || !live->messages_loaded || live->imported_read_only ||
+	    AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, *live) ||
+	    std::ranges::any_of(app.model_discovery_chats, [&chat](const ChatSession& discovery) { return discovery.id == chat.id; }))
+	{
+		(void)SaveChatQuietly(app, chat);
+		return;
+	}
+	ScheduleChatSave(app, *live, 0.0, true);
+}
+
 bool BindPendingProviderHandoff(AcpSessionState& session, ChatSession& chat)
 {
 	if (!session.provider_handoff_identity_pending || session.goal_internal_session || session.session_id.empty()) return false;

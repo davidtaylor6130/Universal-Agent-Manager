@@ -230,3 +230,36 @@ UAM_TEST(StreamingSnapshotIsRevokedByOrdinaryChange)
 	UAM_ASSERT_EQ(saved->messages.front().content, std::string("edited"));
 	UAM_ASSERT_EQ(saved->messages.back().content, fixture.Chat().messages.back().content);
 }
+
+UAM_TEST(ToolCallUpdateDoesNotWriteTranscriptOnCallingThread)
+{
+	SaveStallFixture fixture;
+	Clock::time_point start = Clock::now();
+	for (int update = 0; update < 20; ++update)
+	{
+		fixture.Chat().messages.back().content += " tool status";
+		uam::acp_detail::SaveChatSoon(fixture.app, fixture.Chat());
+	}
+	const double calling_thread = MsSince(start);
+	std::fprintf(stderr, "[measure] 20 tool-call updates on a 5000-message (30 MB) chat held the calling thread %.2f ms\n", calling_thread);
+	// Twenty whole-transcript synchronous saves took seconds; scheduling them is independent of transcript size.
+	UAM_ASSERT(calling_thread <= 100.0);
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains("stall-chat"));
+	double longest_poll = 0.0;
+	const Clock::time_point deadline = Clock::now() + std::chrono::seconds(120);
+	while (!fixture.app.pending_chat_save_at_by_chat_id.empty() && Clock::now() < deadline)
+	{
+		start = Clock::now(); uam::FlushPendingChatSaves(fixture.app); longest_poll = std::max(longest_poll, MsSince(start));
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	std::fprintf(stderr, "[measure] background save of that chat: longest single poll %.1f ms\n", longest_poll);
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
+	UAM_ASSERT_EQ(fixture.SavedTail(), fixture.Chat().messages.back().content);
+
+	// Outside an active turn the durable receipt still precedes the return.
+	fixture.session->processing = false;
+	fixture.Chat().messages.back().content += " settled";
+	uam::acp_detail::SaveChatSoon(fixture.app, fixture.Chat());
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
+	UAM_ASSERT_EQ(fixture.SavedTail(), fixture.Chat().messages.back().content);
+}
