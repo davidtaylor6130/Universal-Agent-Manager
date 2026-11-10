@@ -4,6 +4,11 @@
 
 using namespace uam_test;
 
+namespace uam
+{
+	bool PendingChatSavePreparationForTests(const AppState&, const std::string&, bool&);
+}
+
 namespace
 {
 	using Clock = std::chrono::steady_clock;
@@ -108,7 +113,7 @@ UAM_TEST(ChatSaveStallMeasurements)
 		if (Clock::now() >= next_chunk)
 		{
 			fixture.Chat().messages.back().content += std::string(200, 'S'); streamed += 200;
-			uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 0.5);
+			uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 0.5, true);
 			next_chunk += std::chrono::milliseconds(20);
 		}
 		start = Clock::now();
@@ -163,4 +168,65 @@ UAM_TEST(AtomicWriteRemovesOnlyAbandonedTempsOfItsDestination)
 	UAM_ASSERT(!fs::exists(foreign) && fs::exists(live));
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(target), std::string("first"));
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(uam::io::MakeBackupPath(target)), std::string("seed"));
+}
+
+UAM_TEST(LaterScheduleCannotPostponeDueChatSave)
+{
+	SaveStallFixture fixture(4, 64);
+	uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 0.0);
+	const double due = fixture.app.pending_chat_save_at_by_chat_id.at("stall-chat");
+	uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 60.0);
+	uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 0.5, true);
+	UAM_ASSERT_EQ(fixture.app.pending_chat_save_at_by_chat_id.at("stall-chat"), due);
+	fixture.Drain();
+}
+
+UAM_TEST(StreamingTextReachesDiskWithinMaximumWait)
+{
+	SaveStallFixture fixture(200, 6 * 1024);
+	std::size_t streamed = 0, streamed_by_1500ms = 0;
+	const Clock::time_point stream_start = Clock::now();
+	Clock::time_point next_chunk = stream_start;
+	while (Clock::now() - stream_start < std::chrono::seconds(5))
+	{
+		if (Clock::now() >= next_chunk)
+		{
+			fixture.Chat().messages.back().content += std::string(100, 'S'); streamed += 100;
+			if (Clock::now() - stream_start <= std::chrono::milliseconds(1500)) streamed_by_1500ms = streamed;
+			uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 0.5, true);
+			next_chunk += std::chrono::milliseconds(10);
+		}
+		uam::FlushPendingChatSaves(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	// The stream never paused for the 0.5 s debounce, yet text older than the 2 s maximum wait is durable.
+	const std::string tail = fixture.SavedTail();
+	const std::size_t on_disk = static_cast<std::size_t>(std::ranges::count(tail, 'S'));
+	UAM_ASSERT(streamed_by_1500ms > 0 && on_disk >= streamed_by_1500ms);
+	// It is an older snapshot, so the chat is still owed a save: never clean with unsaved text.
+	UAM_ASSERT(on_disk < streamed && fixture.app.pending_chat_save_at_by_chat_id.contains("stall-chat"));
+	fixture.Drain();
+	UAM_ASSERT_EQ(fixture.SavedTail(), fixture.Chat().messages.back().content);
+}
+
+UAM_TEST(StreamingSnapshotIsRevokedByOrdinaryChange)
+{
+	SaveStallFixture fixture(2000, 6 * 1024);
+	fixture.Chat().messages.back().content += "S";
+	uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 0.0, true);
+	bool ready = false;
+	const Clock::time_point deadline = Clock::now() + std::chrono::seconds(60);
+	while (!uam::PendingChatSavePreparationForTests(fixture.app, "stall-chat", ready) && Clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(fixture.app); std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(uam::PendingChatSavePreparationForTests(fixture.app, "stall-chat", ready));
+	// An edit to an earlier row is not append-only: the captured snapshot must not be published as current.
+	fixture.Chat().messages.front().content = "edited";
+	uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 0.0);
+	fixture.Drain();
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, "stall-chat", true, nullptr, false);
+	UAM_ASSERT(saved && saved->messages.size() == fixture.Chat().messages.size());
+	UAM_ASSERT_EQ(saved->messages.front().content, std::string("edited"));
+	UAM_ASSERT_EQ(saved->messages.back().content, fixture.Chat().messages.back().content);
 }

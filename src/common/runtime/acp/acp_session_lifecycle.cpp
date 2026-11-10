@@ -4864,14 +4864,12 @@ bool ClearSavedAcpResumeId(AppState& app, AcpSessionState& session, ChatSession&
 	return false;
 }
 
-void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds)
+void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds, bool append_only)
 {
 	NoteChatSaveScheduled(app, chat);
 	// Streaming may retain a scoped admission; queue, owner changes and force barriers revoke it.
-	InvalidatePendingChatSave(app, chat.id, true);
-	const double now = GetAppTimeSeconds();
-	const double due_at = now + delay_seconds;
-	app.pending_chat_save_at_by_chat_id[chat.id] = due_at;
+	InvalidatePendingChatSave(app, chat.id, true, append_only);
+	app.pending_chat_save_at_by_chat_id[chat.id] = ArmChatSave(app, chat.id, delay_seconds, append_only);
 }
 
 bool BindPendingProviderHandoff(AcpSessionState& session, ChatSession& chat)

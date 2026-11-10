@@ -8965,17 +8965,23 @@ UAM_TEST(AcpForcedChatSaveFlushPersistsBeforeTheDebounceDeadline)
 	UAM_ASSERT_EQ(reloaded.front().messages.back().content, std::string("Newest streamed text"));
 }
 
-UAM_TEST(AcpDeferredChatSaveUsesTrailingDebounce)
+UAM_TEST(AcpDeferredChatSaveKeepsEarliestDueTimeAndBoundsStreamDebounce)
 {
 	uam::AppState app;
 	ChatSession chat;
 	chat.id = "chat-save-debounce";
 
+	// A later request cannot postpone a save that is already owed sooner.
 	uam::acp_detail::ScheduleChatSave(app, chat, 1.0);
 	const double first_due_at = app.pending_chat_save_at_by_chat_id.at(chat.id);
 	uam::acp_detail::ScheduleChatSave(app, chat, 10.0);
+	UAM_ASSERT_EQ(app.pending_chat_save_at_by_chat_id.at(chat.id), first_due_at);
 
-	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.at(chat.id) > first_due_at + 8.0);
+	// Stream chunks still debounce, but only up to the maximum wait from the first unsaved change.
+	uam::acp_detail::ScheduleChatSave(app, chat, 1.5, true);
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.at(chat.id) > first_due_at);
+	uam::acp_detail::ScheduleChatSave(app, chat, 10.0, true);
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.at(chat.id) < first_due_at + 1.5);
 }
 
 UAM_TEST(AcpToolCallsPersistOnAssistantMessage)

@@ -503,7 +503,7 @@ DurableAdmissionState BeginOwnedChatPublicationAdmission(AppState& app, const Ch
     std::shared_ptr<const OwnedChatPublicationCancellation>* publication_cancellation = nullptr);
 void FinishPendingQueuedAdmissionSave(AppState& app, const std::string& chat_id);
 /// <summary>Revokes a background publication before a newer synchronous command can replace its storage.</summary>
-void InvalidatePendingChatSave(AppState& app, std::string_view chat_id, bool preserve_admission = false);
+void InvalidatePendingChatSave(AppState& app, std::string_view chat_id, bool preserve_admission = false, bool preserve_publication = false);
 void AbandonPendingLocalSteers(AcpSessionState& session);
 bool AgentInputPreparationReady(const AcpSessionState& session);
 // True while completed preparation admits its own input, before its marker is cleared.
@@ -516,7 +516,13 @@ bool ClearSavedAcpResumeId(AppState& app, AcpSessionState& session, ChatSession&
 void NoteChatSaveScheduled(AppState& app, const ChatSession& chat);
 // Read-only: ready but unconsumed save futures still own their publication/receipt boundary.
 bool HasActiveChatSaveWorker(const AppState& app, std::string_view chat_id);
-void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5);
+/// <summary>Arms the background save. The earliest due time wins, so a later request cannot postpone one already due.</summary>
+/// `append_only` marks a mid-turn change that only grows the transcript's last row or adds rows (stream text,
+/// tool status): it keeps a snapshot already being written, which is published as an older state while the chat
+/// stays unsaved, and it debounces no longer than the maximum wait from the first unsaved change.
+void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5, bool append_only = false);
+/// <summary>Owner-thread due time for a scheduled save; call after NoteChatSaveScheduled.</summary>
+double ArmChatSave(AppState& app, const std::string& chat_id, double delay_seconds, bool append_only);
 bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id);
 /// <summary>Binds provider-switch context written before a stream-JSON route reported its native identity.</summary>
 bool BindPendingProviderHandoff(AcpSessionState& session, ChatSession& chat);

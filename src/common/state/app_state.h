@@ -1492,6 +1492,9 @@ namespace uam
 		std::shared_ptr<TerminalNativeMediaCoordinator> terminal_native_media;
 
 		std::unordered_map<std::string, double> pending_chat_save_at_by_chat_id;
+		// When each chat's last background save finished and what it cost; paces whole-transcript rewrites of a stream.
+		struct ChatSavePace { double finished_at = 0.0; double cost_seconds = 0.0; };
+		std::unordered_map<std::string, ChatSavePace> chat_save_pace_by_chat_id;
 		std::unordered_map<std::string, std::shared_ptr<PendingChatSaveTask>> pending_chat_save_tasks;
 		std::unordered_map<std::string, std::shared_ptr<PendingAcpCompletedPromptRecoveries>> pending_acp_completed_prompt_recoveries;
 		// A failed durable barrier can retain a scoped retry after removing its active task.

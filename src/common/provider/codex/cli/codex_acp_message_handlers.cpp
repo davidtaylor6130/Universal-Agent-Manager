@@ -1158,7 +1158,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		{
 			uam::PushStreamToken(browser, chat.id, session.current_assistant_message_index, appended);
 		}
-		ScheduleChatSave(app, chat, 0.5);
+		ScheduleChatSave(app, chat, 0.5, true);
 		return;
 	}
 	if (method == uam::acp_methods::kItemReasoningTextDelta)
@@ -1166,7 +1166,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		const std::string delta = JsonDiagnosticStringValue(params, "delta");
 		if (AppendCodexReasoningThought(chat, session, JsonDiagnosticStringValue(params, "itemId"), "Reasoning", delta, JsonIntValueOr(params, "contentIndex", -1), true))
 		{
-			ScheduleChatSave(app, chat, 0.5);
+			ScheduleChatSave(app, chat, 0.5, true);
 		}
 		return;
 	}
@@ -1175,7 +1175,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		const std::string delta = JsonDiagnosticStringValue(params, "delta");
 		if (AppendCodexReasoningThought(chat, session, JsonDiagnosticStringValue(params, "itemId"), "Summary", delta, JsonIntValueOr(params, "summaryIndex", -1), true))
 		{
-			ScheduleChatSave(app, chat, 0.5);
+			ScheduleChatSave(app, chat, 0.5, true);
 		}
 		return;
 	}
@@ -1291,7 +1291,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			tool_call.content += JsonDiagnosticStringValue(params, "delta");
 			AppendToolTurnEventIfNeeded(session, item_id);
 			(void)SyncAcpToolCallsToAssistantMessage(chat, session, false);
-			ScheduleChatSave(app, chat, 0.5);
+			ScheduleChatSave(app, chat, 0.5, true);
 		}
 		return;
 	}

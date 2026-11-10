@@ -529,7 +529,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 			{
 				uam::PushStreamToken(browser, chat.id, session.current_assistant_message_index, appended);
 			}
-			ScheduleChatSave(app, chat, 0.5);
+			ScheduleChatSave(app, chat, 0.5, true);
 		}
 		return;
 	}
