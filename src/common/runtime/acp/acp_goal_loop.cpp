@@ -263,7 +263,8 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 	// A metered turn's captured revision owns its usage until retirement. Resetting
 	// the budget during that turn would discard charges from the old revision.
 	const bool current_turn = session && (session->processing || AcpSessionIsWaitingForInput(*session) || session->prompt_request_id != 0 || AcpSessionHasPendingCancel(*session) || !session->queued_prompt.empty());
-	if (restart && runtime.AcpAccountsGoalUsage() && (current_turn || AcpStopInProgress(app, chat_id)))
+	// A stop settled at its exit deadline frees the chat, but a fresh metered budget still waits for the observed exit.
+	if (restart && runtime.AcpAccountsGoalUsage() && (current_turn || AcpStopInProgress(app, chat_id) || AcpStopExitUnobserved(app, chat_id)))
 	{
 		if (error_out)
 			*error_out = "Pause the current turn and wait for it to stop before restarting the goal budget.";
@@ -963,8 +964,8 @@ bool PollTurnCheckpointTasks(AppState& app, CefRefPtr<CefBrowser> browser)
 		const auto retry_metadata = [&](const char* status)
 		{
 			const double now = GetAppTimeSeconds();
-			if (task.metadata_retry_until_s <= 0.0) task.metadata_retry_until_s = now + kCheckpointMetadataRetrySeconds;
-			if (now >= task.metadata_retry_until_s) return false;
+			if (!task.metadata_retry_until_s) task.metadata_retry_until_s = now + kCheckpointMetadataRetrySeconds;
+			if (now >= *task.metadata_retry_until_s) return false;
 			app.status_line = status;
 			app.worktree_operation_chat_ids.insert(task.chat_id);
 			app.turn_checkpoint_tasks.push_back(std::move(task));

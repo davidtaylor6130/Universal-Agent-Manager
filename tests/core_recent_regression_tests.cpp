@@ -25,6 +25,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
+#include "common/runtime/acp/acp_statuses.h"
 #include "common/utils/diagnostic_log.h"
 #include "common/utils/time_utils.h"
 #include "common/utils/uuid.h"
@@ -533,15 +534,210 @@ UAM_TEST(CheckpointMetadataRetryReleasesTheChatWorktreeGateAfterItsDeadline)
 	UAM_ASSERT_EQ(app.turn_checkpoint_tasks.size(), std::size_t{1});
 	UAM_ASSERT(app.worktree_operation_chat_ids.contains(chat.id));
 	UAM_ASSERT(raw->turn_checkpoint_commit_pending);
-	UAM_ASSERT(app.turn_checkpoint_tasks.front().metadata_retry_until_s > 0.0);
+	UAM_ASSERT(app.turn_checkpoint_tasks.front().metadata_retry_until_s.has_value());
 	// Once its deadline has passed, the retry gives up: the gate and the turn are released, the transcript is intact.
-	app.turn_checkpoint_tasks.front().metadata_retry_until_s = 1e-9;
+	app.turn_checkpoint_tasks.front().metadata_retry_until_s = uam::GetAppTimeSeconds() - 1.0;
 	UAM_ASSERT(uam::acp_detail::PollTurnCheckpointTasks(app, nullptr));
 	UAM_ASSERT(app.turn_checkpoint_tasks.empty());
 	UAM_ASSERT(!app.worktree_operation_chat_ids.contains(chat.id));
 	UAM_ASSERT(!raw->turn_checkpoint_commit_pending);
 	UAM_ASSERT(app.chats.front().messages[1].checkpoint_sha.empty());
 	UAM_ASSERT_EQ(app.chats.front().messages[1].content, std::string("Changed."));
+}
+
+namespace
+{
+	std::vector<std::string> StopMatrixStubbornProcess()
+	{
+#if defined(_WIN32)
+		return {"cmd.exe", "/d", "/s", "/c", "ping -n 31 127.0.0.1 > NUL"};
+#else
+		return {"/bin/sh", "-c", "trap '' TERM; sleep 30"};
+#endif
+	}
+}
+
+UAM_TEST(AcpLocalStopReachesIdleFromEveryStateWithoutLosingTranscript)
+{
+	for (const std::string state : {"hung", "ignoring-cancel", "approval-pending", "tool-running", "queue", "held-queue", "goal-active", "save-failing", "held-queue-save-failing", "pending-save"})
+	{
+		for (const uam::AcpStopPurpose purpose : {uam::AcpStopPurpose::Timeout, uam::AcpStopPurpose::Interrupt})
+		{
+			TempDir temp("uam-stop-matrix");
+			uam::AppState app;
+			app.data_root = temp.root / "data";
+			ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+			chat.messages.push_back({.role = MessageRole::User, .content = "Authored request."});
+			Message assistant;
+			assistant.role = MessageRole::Assistant;
+			assistant.content = "Partial answer before stop.";
+			if (state == "tool-running")
+			{
+				ToolCall tool;
+				tool.id = "tool-1"; tool.name = "run_command"; tool.status = uam::acp_statuses::kInProgress;
+				assistant.tool_calls.push_back(tool);
+			}
+			chat.messages.push_back(assistant);
+			app.chats.push_back(chat);
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+			auto owned = std::make_unique<uam::AcpSessionState>();
+			owned->chat_id = chat.id;
+			owned->provider_id = chat.provider_id;
+			owned->running = owned->processing = true;
+			owned->lifecycle_state = "processing";
+			owned->prompt_request_id = 7;
+			owned->turn_serial = 1;
+			owned->turn_user_message_index = 0;
+			owned->current_assistant_message_index = owned->turn_assistant_message_index = 1;
+			if (state == "ignoring-cancel")
+			{
+				owned->cancel_requested = true;
+				owned->cancel_requested_time_s = uam::GetAppTimeSeconds();
+			}
+			if (state == "approval-pending")
+			{
+				owned->waiting_for_permission = true;
+				owned->pending_permission.request_id_json = "42";
+			}
+			const bool queued_state = state == "queue" || state.starts_with("held-queue");
+			if (queued_state)
+			{
+				uam::AcpQueuedUserPromptState queued;
+				queued.id = "queued-1";
+				queued.text = "Queued follow-up.";
+				owned->queued_user_prompts.push_back(queued);
+				app.chats.front().acp_queued_prompts.push_back(queued);
+				owned->queue_held = app.chats.front().acp_queue_held = state.starts_with("held-queue");
+				UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+			}
+			std::string goal_id;
+			if (state == "goal-active")
+			{
+				UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Finish the work.", 0, &goal_id));
+				UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
+			}
+			std::string error;
+			UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*owned, temp.root, StopMatrixStubbornProcess(), &error));
+			uam::AcpSessionState& session = *owned;
+			app.acp_sessions.push_back(std::move(owned));
+			if (state.ends_with("save-failing"))
+			{
+				app.data_root = temp.root / "blocked";
+				UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocks every save"));
+			}
+			if (state == "pending-save") app.pending_chat_save_at_by_chat_id[chat.id] = uam::GetAppTimeSeconds() + 3600.0;
+
+			(void)uam::StopAcpSession(app, chat.id, purpose);
+			const auto idle = [&]() { return !uam::AcpStopInProgress(app, chat.id) && !session.running && !session.local_stop_pending && !session.processing; };
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+			while (!idle() && std::chrono::steady_clock::now() < deadline)
+			{
+				(void)uam::PollCompletedAcpProcessStops(app, nullptr);
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+			UAM_ASSERT(idle());
+			UAM_ASSERT(!session.cancel_requested);
+
+			const ChatSession& current = app.chats.front();
+			UAM_ASSERT(current.messages.size() >= std::size_t{2});
+			UAM_ASSERT_EQ(current.messages[0].content, std::string("Authored request."));
+			UAM_ASSERT_EQ(current.messages[1].content, std::string("Partial answer before stop."));
+			if (state == "tool-running") UAM_ASSERT_EQ(current.messages[1].tool_calls.size(), std::size_t{1});
+			if (queued_state)
+			{
+				const bool as_row = std::ranges::any_of(current.messages, [](const Message& row) { return row.role == MessageRole::User && row.content == "Queued follow-up."; });
+				const bool as_queue = std::ranges::any_of(session.queued_user_prompts, [](const uam::AcpQueuedUserPromptState& prompt) { return prompt.text == "Queued follow-up."; }) ||
+				    std::ranges::any_of(current.acp_queued_prompts, [](const uam::AcpQueuedUserPromptState& prompt) { return prompt.text == "Queued follow-up."; });
+				UAM_ASSERT(as_row || as_queue);
+			}
+			if (state == "goal-active") UAM_ASSERT(uam::GoalService::FindGoalById(app, chat.id, goal_id) != nullptr);
+			if (state == "held-queue-save-failing") continue; // Held input is unchanged in memory; nothing new needed saving.
+			if (state == "save-failing")
+			{
+				// The unsaved history is still owned by the retrying save; the chat is not held "stopping" behind it.
+				UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(chat.id) || app.pending_chat_save_tasks.contains(chat.id));
+				continue;
+			}
+			if (state == "pending-save") continue;
+			const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			UAM_ASSERT(saved.has_value() && saved->messages.size() == current.messages.size());
+			UAM_ASSERT_EQ(saved->messages[1].content, std::string("Partial answer before stop."));
+		}
+	}
+}
+
+UAM_TEST(AcpLocalStopEscalatesAndSettlesAtItsExitDeadline)
+{
+	for (const bool past_deadline : {false, true})
+	{
+		TempDir temp("uam-stop-exit-deadline");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+		chat.messages.push_back({.role = MessageRole::Assistant, .content = "Answer before the stop."});
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+		auto owned = std::make_unique<uam::AcpSessionState>();
+		owned->chat_id = chat.id;
+		owned->provider_id = chat.provider_id;
+		owned->local_stop_pending = true;
+		owned->stop_purpose = uam::AcpStopPurpose::Timeout;
+		owned->turn_serial = 1;
+		uam::AcpSessionState& session = *owned;
+		app.acp_sessions.push_back(std::move(owned));
+		// A stop whose own worker finished without seeing the process exit: the state that used to wait forever.
+		uam::AsyncAcpProcessStopTask task;
+		task.chat_id = chat.id;
+		task.purpose = uam::AcpStopPurpose::Timeout;
+		task.turn_serial = 1;
+		task.result = std::make_shared<uam::platform::ObservedProcessStopResult>();
+		task.owned_process = std::make_shared<uam::platform::StdioProcessPlatformFields>();
+		task.finished = std::make_shared<std::atomic<bool>>(true);
+		std::string error;
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		UAM_ASSERT(service.StartStdioProcess(*task.owned_process, temp.root, StopMatrixStubbornProcess(), &error));
+		app.acp_process_stop_tasks.push_back(std::move(task));
+		(void)uam::PollCompletedAcpProcessStops(app, nullptr);
+		UAM_ASSERT(uam::AcpStopInProgress(app, chat.id) && session.local_stop_pending);
+		UAM_ASSERT(app.acp_process_stop_tasks.front().exit_wait_started_s.has_value());
+		UAM_ASSERT_EQ(app.acp_process_stop_tasks.front().exit_escalations, 0);
+		if (!past_deadline)
+		{
+			// After the first escalation step the owned tree is forced again, and its exit settles the stop.
+			app.acp_process_stop_tasks.front().exit_wait_started_s = uam::GetAppTimeSeconds() - 2.5;
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+			while (session.local_stop_pending && std::chrono::steady_clock::now() < deadline)
+			{
+				(void)uam::PollCompletedAcpProcessStops(app, nullptr);
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+			UAM_ASSERT(!session.local_stop_pending && !uam::AcpStopInProgress(app, chat.id));
+			UAM_ASSERT(app.acp_process_stop_tasks.empty());
+			UAM_ASSERT(!uam::AcpStopExitUnobserved(app, chat.id));
+			UAM_ASSERT_EQ(session.stop_outcome, uam::platform::ProcessStopOutcome::Forced);
+		}
+		else
+		{
+			// At the deadline the chat is settled without the observation; the task only keeps reaping.
+			app.acp_process_stop_tasks.front().exit_wait_started_s = uam::GetAppTimeSeconds() - 60.0;
+			(void)uam::PollCompletedAcpProcessStops(app, nullptr);
+			UAM_ASSERT(!session.local_stop_pending && !uam::AcpStopInProgress(app, chat.id));
+			UAM_ASSERT_EQ(session.stop_outcome, uam::platform::ProcessStopOutcome::Failed);
+			UAM_ASSERT_EQ(app.acp_process_stop_tasks.size(), std::size_t{1});
+			UAM_ASSERT(app.acp_process_stop_tasks.front().exit_abandoned);
+			UAM_ASSERT(uam::AcpStopExitUnobserved(app, chat.id));
+			service.TerminateStdioProcess(*app.acp_process_stop_tasks.front().owned_process, true);
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+			while (!app.acp_process_stop_tasks.empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				(void)uam::PollCompletedAcpProcessStops(app, nullptr);
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+			UAM_ASSERT(app.acp_process_stop_tasks.empty());
+			UAM_ASSERT(!uam::AcpStopExitUnobserved(app, chat.id));
+		}
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Answer before the stop."));
+	}
 }
 
 UAM_TEST(AcpOwnedStopGuardWaitsForActualExitAndRetainsTimeoutPurposeOnRetry)

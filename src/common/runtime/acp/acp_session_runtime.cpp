@@ -6526,13 +6526,19 @@ For desktop observation and input, use only the provider's built-in controller; 
 	{
 		const AcpSessionState* session = FindAcpSessionForChat(app, std::string(chat_id));
 		return std::ranges::any_of(app.acp_process_stop_tasks, [chat_id](const AsyncAcpProcessStopTask& task)
-		       { return task.chat_id == chat_id && task.finished != nullptr && (!task.finished->load() || ((task.purpose == AcpStopPurpose::Timeout || task.observe_exit) && task.result != nullptr && !task.result->exit_confirmed)); }) ||
+		       { return task.chat_id == chat_id && task.finished != nullptr && (!task.finished->load() || ((task.purpose == AcpStopPurpose::Timeout || task.observe_exit) && task.result != nullptr && !task.result->exit_confirmed && !task.exit_abandoned)); }) ||
 		       (session != nullptr &&
 		        (session->local_stop_pending || session->remote_stop_pending || session->remote_stop_unconfirmed)) ||
 		       std::ranges::any_of(
 		    app.pending_acp_remote_stops,
 		    [&](const auto& pending) { return pending != nullptr && pending->chat_id == chat_id; }) ||
 		       acp_detail::AbandonedAcpProcessCreationPending(app, chat_id);
+	}
+
+	bool AcpStopExitUnobserved(const AppState& app, std::string_view chat_id)
+	{
+		return std::ranges::any_of(app.acp_process_stop_tasks, [chat_id](const AsyncAcpProcessStopTask& task)
+		{ return task.chat_id == chat_id && task.exit_abandoned && task.result != nullptr && !task.result->exit_confirmed; });
 	}
 
 	/// <summary>Transfers an idle Codex writer between chat aliases only after its process has exited.</summary>
@@ -6547,7 +6553,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		for (const AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
 		{
 			if (task.native_writer_key == writer_key && task.finished != nullptr &&
-			    (!task.finished->load() || ((task.purpose == AcpStopPurpose::Timeout || task.observe_exit) && task.result != nullptr && !task.result->exit_confirmed)))
+			    (!task.finished->load() || ((task.purpose == AcpStopPurpose::Timeout || task.observe_exit) && task.result != nullptr && !task.result->exit_confirmed && !task.exit_abandoned)))
 			{
 				if (error_out != nullptr) *error_out = "The previous Codex writer is still stopping. Retry when it has exited.";
 				return false;
@@ -6595,6 +6601,36 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		return true;
+	}
+
+	// An observed local stop first runs its worker's own bounded attempt (close input, terminate, kill). If the exit
+	// is still unseen, the poll forces the owned tree again at each step below and, at the deadline, settles the chat
+	// without the observation: Stop always reaches idle, and the task only keeps reaping the process.
+	constexpr double kLocalStopEscalationSeconds = 2.0;
+	constexpr double kLocalStopExitDeadlineSeconds = 8.0;
+
+	/// <summary>Forces a finished but unconfirmed stop again on its own worker. No effect while a worker runs or once exit is confirmed.</summary>
+	static void ForceUnconfirmedAcpProcessStop(AsyncAcpProcessStopTask& task)
+	{
+		if (task.finished == nullptr || !task.finished->load() || task.result == nullptr || task.result->exit_confirmed || task.owned_process == nullptr) return;
+		task.worker.reset();
+		const auto owned = task.owned_process;
+		const auto result = task.result;
+		const auto finished = task.finished;
+		const auto service_owner = task.stop_service;
+		finished->store(false);
+		task.worker = std::make_unique<std::jthread>([owned, result, finished, service_owner](std::stop_token)
+		{
+			IPlatformProcessService& service = service_owner ? *service_owner : PlatformServicesFactory::Instance().process_service;
+			const auto retry = platform::StopStdioProcessObserved(service, *owned, std::chrono::milliseconds(0));
+			result->outcome = retry.outcome;
+			result->exit_code = retry.exit_code;
+			result->exit_confirmed = retry.exit_confirmed;
+			result->standard_output += retry.standard_output;
+			result->standard_error += retry.standard_error;
+			if (result->exit_confirmed) service.CloseStdioProcessHandles(*owned);
+			finished->store(true);
+		});
 	}
 
 	bool EnsureAcpStopProgress(AppState& app, std::string_view chat_id)
@@ -6934,8 +6970,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (!preserve_held_queue)
 		{
 			ChatSession* owner = ChatDomainService().FindChatById(app, chat_id);
+			// The wait is cancelled in memory either way; an unsaved tombstone is retried, never a reason to refuse Stop.
 			if (owner != nullptr && app.claude_quota_dispatch_id != owner->claude_quota_continuation.id &&
-			    !acp_detail::CancelClaudeQuotaWait(app, *owner)) return false;
+			    !acp_detail::CancelClaudeQuotaWait(app, *owner)) acp_detail::ScheduleChatSave(app, *owner, 0.0);
 		}
 		ChatDomainService().CancelBranchPreparations(app, chat_id);
 		if (AcpSessionState* owner = FindAcpSessionForChat(app, chat_id))
@@ -6964,27 +7001,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (session->local_stop_pending)
 		{
 			for (AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
-			{
-				if (task.chat_id != chat_id || task.finished == nullptr || !task.finished->load() || task.result == nullptr || task.result->exit_confirmed || task.owned_process == nullptr) continue;
-				task.worker.reset();
-				const auto owned = task.owned_process;
-				const auto result = task.result;
-				const auto finished = task.finished;
-				const auto service_owner = task.stop_service;
-				finished->store(false);
-				task.worker = std::make_unique<std::jthread>([owned, result, finished, service_owner](std::stop_token)
-				{
-					IPlatformProcessService& service = service_owner ? *service_owner : PlatformServicesFactory::Instance().process_service;
-					const auto retry = platform::StopStdioProcessObserved(service, *owned, std::chrono::milliseconds(0));
-					result->outcome = retry.outcome;
-					result->exit_code = retry.exit_code;
-					result->exit_confirmed = retry.exit_confirmed;
-					result->standard_output += retry.standard_output;
-					result->standard_error += retry.standard_error;
-					if (result->exit_confirmed) service.CloseStdioProcessHandles(*owned);
-					finished->store(true);
-				});
-			}
+				if (task.chat_id == chat_id) ForceUnconfirmedAcpProcessStop(task);
 			return false;
 		}
 		if (!session->remote_stop_pending && !session->remote_stop_unconfirmed) { session->stop_purpose = purpose; session->stop_outcome = platform::ProcessStopOutcome::Unknown; }
@@ -7028,12 +7045,19 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		std::string held_discard_error;
+		bool held_queue_kept = false;
 		if (!preserve_held_queue && !DiscardHeldQueue(app, *session, chat, true, &held_discard_error))
 		{
-			app.status_line = held_discard_error;
-			return false;
+			if (chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId)
+			{
+				app.status_line = held_discard_error;
+				return false;
+			}
+			// A local stop is not refused because held prompts could not be recorded as interrupted rows: the failed
+			// attempt restored them, and they stay held, unchanged, while the process stops.
+			preserve_held_queue = held_queue_kept = true;
 		}
-		if (preserve_held_queue && session->queue_held) session->restart_after_remote_stop_cleanup = true;
+		if (preserve_held_queue && session->queue_held && !held_queue_kept) session->restart_after_remote_stop_cleanup = true;
 		const bool recoverable_remote_turn = chat != nullptr &&
 		    chat->remote_turn_reconnect_pending && uam::AcpSessionHasActiveTurn(*session);
 		const bool remote = session->running && chat != nullptr &&
@@ -7485,17 +7509,41 @@ For desktop observation and input, use only the provider's built-in controller; 
 			IPlatformProcessService& service = task.stop_service ? *task.stop_service : PlatformServicesFactory::Instance().process_service;
 			if ((task.purpose == AcpStopPurpose::Timeout || task.observe_exit) && task.result != nullptr && !task.result->exit_confirmed && task.owned_process != nullptr)
 			{
-				if (!service.PollStdioProcessExited(*task.owned_process, &task.result->exit_code)) return false;
-				task.result->exit_confirmed = true;
-				if (!platform::DrainObservedProcessStopOutput(service, *task.owned_process, *task.result))
+				if (service.PollStdioProcessExited(*task.owned_process, &task.result->exit_code))
+				{
+					task.result->exit_confirmed = true;
+					if (!platform::DrainObservedProcessStopOutput(service, *task.owned_process, *task.result))
+						task.result->outcome = platform::ProcessStopOutcome::Failed;
+					service.CloseStdioProcessHandles(*task.owned_process);
+					// This stop was settled at its deadline; its late exit must not settle a newer stop of the same chat.
+					if (task.exit_abandoned) return true;
+				}
+				else if (task.exit_abandoned) return false; // Already settled; only the reap remains.
+				else
+				{
+					const double now = GetAppTimeSeconds();
+					if (!task.exit_wait_started_s) task.exit_wait_started_s = now;
+					const double waited = now - *task.exit_wait_started_s;
+					if (waited < kLocalStopExitDeadlineSeconds)
+					{
+						if (task.exit_escalations < 2 && waited >= kLocalStopEscalationSeconds * (task.exit_escalations + 1))
+						{
+							++task.exit_escalations;
+							ForceUnconfirmedAcpProcessStop(task);
+						}
+						return false;
+					}
+					task.exit_abandoned = true;
 					task.result->outcome = platform::ProcessStopOutcome::Failed;
-				service.CloseStdioProcessHandles(*task.owned_process);
+				}
 			}
+			// An abandoned wait keeps its task so the process is still reaped and its handles closed later.
+			const bool settled = !task.exit_abandoned || task.result == nullptr || task.result->exit_confirmed;
 			if (task.managed_initial_owner && !AgentRunScheduler::InitialStopCompletionOwned(app, task.managed_initial_owner))
-				return true; // Original process is reaped; do not touch any replacement namespace.
+				return settled; // Original process is reaped; do not touch any replacement namespace.
 			AcpSessionState* stopped = FindAcpSessionForChat(app, task.chat_id);
 			if (!AcpStopProjectionStillOwned(app, stopped, FindAcpRuntimeChatById(app, task.chat_id), task.projection_owner))
-				return true; // Process settlement is complete; a successor cannot inherit its projection.
+				return settled; // Process settlement is complete; a successor cannot inherit its projection.
 			if ((task.purpose == AcpStopPurpose::Timeout || task.observe_exit) && stopped != nullptr && stopped->local_stop_pending && stopped->turn_serial == task.turn_serial)
 			{
 				changed = true;
@@ -7512,19 +7560,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 					(void)acp_detail::ProcessBufferedAcpStdoutAfterStop(app, *stopped, *chat, browser, 256);
 					if (stopped->stdout_buffer.find('\n') != std::string::npos) return false;
 				}
-				if (task.observe_exit && task.result != nullptr && task.result->exit_confirmed)
+				if (task.observe_exit && task.result != nullptr && (task.result->exit_confirmed || task.exit_abandoned))
 					(void)acp_detail::SettleClaudeBackgroundTasks(*stopped, chat, uam::acp_statuses::kCancelled);
+				// Stop ownership is settled here even while the final history save is still pending: that save keeps
+				// retrying on its own, and holding the chat "stopping" behind it blocked every later action.
 				(void)FinalizeStoppedAcpSession(app, *stopped, chat, task.preserve_queued_prompts || stopped->queue_held);
-				if (chat != nullptr && app.pending_chat_save_at_by_chat_id.contains(task.chat_id))
-				{
-					stopped->local_stop_pending = true;
-					return false;
-				}
 				if (task.preserve_queued_prompts && !stopped->queue_held && !stopped->queued_user_prompts.empty() && stopped->queued_user_prompts.front().priority_steer)
 					ready_steers.emplace_back(task.chat_id, stopped->queued_user_prompts.front().id);
 				changed = true;
 			}
-			return true;
+			return settled;
 		});
 		// Dispatch only explicit steering authority, after task erasure and confirmed retirement.
 		for (const auto& [chat_id, prompt_id] : ready_steers)

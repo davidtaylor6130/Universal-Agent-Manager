@@ -1101,6 +1101,11 @@ namespace uam
 		std::string native_writer_key;
 		bool observe_exit = false;
 		bool preserve_queued_prompts = false;
+		// Exit deadline for an observed stop whose process has not been seen to exit: app time the wait began,
+		// forced stops repeated since, and whether the wait was given up so the chat is no longer held "stopping".
+		std::optional<double> exit_wait_started_s;
+		int exit_escalations = 0;
+		bool exit_abandoned = false;
 		// Optional owned platform dependency; retained through asynchronous stop and exit polling.
 		std::shared_ptr<IPlatformProcessService> stop_service;
 		std::shared_ptr<std::atomic<bool>> finished;
@@ -1211,8 +1216,8 @@ namespace uam
 		bool completed_review_turn = false;
 		bool cancelled = false;
 		std::string goal_id;
-		// App time after which a finished commit stops retrying to record itself on its message (0 = not retrying).
-		double metadata_retry_until_s = 0.0;
+		// App time after which a finished commit stops retrying to record itself on its message; unset until it first fails.
+		std::optional<double> metadata_retry_until_s;
 		std::shared_ptr<AsyncTurnCheckpointState> state;
 		std::unique_ptr<std::jthread> worker;
 	};

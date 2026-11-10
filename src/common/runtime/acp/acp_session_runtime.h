@@ -131,6 +131,8 @@ bool ResolveAcpUserInput(AppState& app,
                          const std::map<std::string, std::vector<std::string>>& answers,
                          std::string* error_out = nullptr);
 
+/// <summary>True while a local stop was settled at its exit deadline but its process has still not been seen to exit.</summary>
+bool AcpStopExitUnobserved(const AppState& app, std::string_view chat_id);
 bool PollCompletedAcpProcessStops(AppState& app, CefRefPtr<CefBrowser> browser);
 bool PollAllAcpSessions(AppState& app, CefRefPtr<CefBrowser> browser = nullptr);
 bool AcpStopInProgress(const AppState& app, std::string_view chat_id);
