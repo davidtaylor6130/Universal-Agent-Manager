@@ -1175,6 +1175,41 @@ UAM_TEST(WorktreeLaunchRecordedIntentWithoutWorktreeRetriesFresh)
 	}
 }
 
+UAM_TEST(WorktreeLaunchOlderSshHelperStartsInWorkspaceFolder)
+{
+	TempDir temp("uam-old-helper-launch");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ExecutionHost host;
+	host.id = "old-helper";
+	host.transport = "ssh";
+	host.ssh_alias = "old-helper";
+	host.runner_status = "ready";
+	host.runner_protocol_version = 2;
+	app.settings.execution_hosts.push_back(host);
+	for (const bool explicit_create : {false, true})
+	{
+		ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = "/srv/project";
+		UAM_ASSERT_EQ(chat.workspace_isolation_kind, uam::paths::kPendingGitWorktreeIsolationKind);
+		app.chats = {chat};
+		app.status_line.clear();
+		const uam::WorktreeLaunchPreparationResult result = uam::PrepareWorktreeForLaunch(app, app.chats.front(), explicit_create);
+		UAM_ASSERT(app.worktree_launch_preparations.empty());
+		if (explicit_create)
+		{
+			// An explicit request for isolation is never silently downgraded.
+			UAM_ASSERT_EQ(result.state, uam::WorktreeLaunchPreparationState::Failed);
+			UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, uam::paths::kPendingGitWorktreeIsolationKind);
+			continue;
+		}
+		UAM_ASSERT_EQ(result.state, uam::WorktreeLaunchPreparationState::Ready);
+		UAM_ASSERT(app.chats.front().workspace_isolation_kind.empty());
+		UAM_ASSERT(app.status_line.find("too old for isolated worktrees") != std::string::npos);
+	}
+}
+
 UAM_TEST(WorktreeLaunchLegacyEarlyUnbornReceiptRecoversPrivateBaseline)
 {
 	LaunchFixture fixture;

@@ -1793,6 +1793,43 @@ namespace uam
 		catch (const std::exception&) { return false; }
 	}
 
+	bool GitWorktreeService::WorkspaceIntentLeftNoArtifacts(const std::filesystem::path& root, const std::string& receipt_text, const ChatSession& metadata, std::stop_token stop) const
+	{
+		try
+		{
+			const nlohmann::json record = nlohmann::json::parse(receipt_text);
+			if (record.at("chatId") != metadata.id || record.at("createdAt") != metadata.created_at) return false;
+			const std::filesystem::path source = paths::PathFromUtf8(record.at("source").get<std::string>());
+			const std::filesystem::path repository = paths::PathFromUtf8(record.at("repository").get<std::string>());
+			const std::filesystem::path worktree = paths::PathFromUtf8(record.at("worktree").get<std::string>());
+			const std::string branch = record.at("branch").get<std::string>();
+			const std::string base = record.at("baseSha").get<std::string>();
+			const auto absent = [](const std::filesystem::path& path)
+			{
+				std::error_code error;
+				const auto status = std::filesystem::symlink_status(path, error);
+				return error == std::errc::no_such_file_or_directory || (!error && status.type() == std::filesystem::file_type::not_found);
+			};
+			if (worktree.empty() || !paths::IsSameOrInsideRoot(root, worktree) || !absent(worktree)) return false;
+			if (record.at("managedRepository").get<bool>())
+			{
+				AppState snapshot;
+				snapshot.data_root = root;
+				// ponytail: a leftover managed repository is never removed here, so a crash mid-snapshot stays refused; resume or remove it once the owner decides.
+				return repository == ManagedRepositoryRoot(snapshot, source, metadata.id) && absent(repository);
+			}
+			if (repository != source) return false;
+			// Without a recorded branch, creation never reached `git worktree add`.
+			if (branch.empty()) return true;
+			// A branch left by a failed `git worktree add` holds no work while it still names the recorded base.
+			const ProcessExecutionResult reference = RunCommand(BuildGitCommandInDirectory(repository, "rev-parse --verify --quiet --end-of-options " + shell::EscapeArg("refs/heads/" + branch)), kDefaultGitCommandTimeoutMs, stop);
+			if (stop.stop_requested() || reference.timed_out || reference.canceled || reference.output_truncated) return false;
+			const std::string head = strings::Trim(reference.output);
+			return reference.exit_code == 1 ? head.empty() : CommandSucceeded(reference) && !base.empty() && head == base;
+		}
+		catch (const std::exception&) { return false; }
+	}
+
 	bool GitWorktreeService::ValidatePreparedWorkspace(const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop) const
 	{
 		try

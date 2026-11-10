@@ -246,6 +246,18 @@ namespace uam
 			return saved == expected;
 		}
 
+		bool ArchiveFailedReceipt(const std::filesystem::path& root, const std::filesystem::path& receipt, std::string& error)
+		{
+			const std::filesystem::path archived = paths::PathFromUtf8(paths::Utf8PathString(receipt) + ".failed");
+			if (!paths::IsSameOrInsideRoot(root, receipt) || paths::IsLinkOrReparsePointNoThrow(receipt) ||
+			    paths::IsLinkOrReparsePointNoThrow(receipt.parent_path()) || paths::PathExistsNoThrow(archived))
+			{ error = "The failed SSH worktree receipt could not be safely archived."; return false; }
+			std::error_code ec;
+			std::filesystem::rename(receipt, archived, ec);
+			if (ec) { error = "Could not archive the failed SSH worktree receipt. Its files were preserved."; return false; }
+			return true;
+		}
+
 		bool RecoverOwnedWorkspace(const std::filesystem::path& root, const std::vector<ChatSession>& live_chats,
 		    ChatSession& metadata, const nlohmann::json& policy, std::filesystem::path& receipt, bool& found, std::shared_ptr<const platform::PublishedFileChangeWitness>& resumed_intent, std::string& error, std::stop_token stop)
 		{
@@ -279,14 +291,32 @@ namespace uam
 					const auto held_bytes = witness ? witness->ReadBounded(64 * 1024, stop) : std::nullopt;
 					if (!held_bytes || *held_bytes != receipt_text) return false;
 					const nlohmann::json record = nlohmann::json::parse(receipt_text);
-					if (record.at("chatId") != metadata.id || record.at("createdAt") != metadata.created_at ||
-					    !SnapshotLaunchPoliciesMatch(record.at("launchPolicy"), policy) ||
-					    !paths::IsSameOrInsideRoot(paths::PathFromUtf8(record.at("source").get<std::string>()), paths::PathFromUtf8(metadata.workspace_directory))) return false;
+					if (record.at("chatId") != metadata.id || record.at("createdAt") != metadata.created_at) return false;
+					const ChatSession requested = metadata;
+					// This chat's own intent that left no worktree, managed repository or branch work protects nothing, so it is
+					// archived and preparation starts again instead of refusing every retry. Anything that exists stays refused.
+					const auto discard = [&]()
+					{
+						std::string ignored;
+						if (stop.stop_requested() || !witness->Current() || !GitWorktreeService().WorkspaceIntentLeftNoArtifacts(root, receipt_text, requested, stop) ||
+						    !ArchiveFailedReceipt(root, entry.path(), ignored)) return false;
+						metadata = requested;
+						found = false;
+						error.clear();
+						return true;
+					};
+					if (!SnapshotLaunchPoliciesMatch(record.at("launchPolicy"), policy) ||
+					    !paths::IsSameOrInsideRoot(paths::PathFromUtf8(record.at("source").get<std::string>()), paths::PathFromUtf8(metadata.workspace_directory)))
+					{
+						if (discard()) return true;
+						error = "This chat's interrupted worktree was prepared for different Git settings or another workspace folder. Restore the earlier base branch, pull and snapshot settings, or turn off automatic worktrees, then retry. The workspace was preserved.";
+						return false;
+					}
 					const std::string branch = record.at("branch").get<std::string>();
 					const std::string base = record.at("baseSha").get<std::string>();
 					if (branch.empty() && base.empty())
 					{
-						if (!GitWorktreeService().ValidateUncreatedWorkspaceIntent(root, entry.path(), metadata, error, stop)) return false;
+						if (!GitWorktreeService().ValidateUncreatedWorkspaceIntent(root, entry.path(), metadata, error, stop)) return discard();
 						ChatSession planned = metadata;
 						planned.workspace_isolation_kind = paths::kGitWorktreeIsolationKind;
 						planned.workspace_worktree_directory = record.at("worktree").get<std::string>();
@@ -306,7 +336,7 @@ namespace uam
 					metadata.workspace_branch_name = record.at("branch").get<std::string>();
 					metadata.workspace_base_ref = record.at("baseSha").get<std::string>();
 					if (metadata.workspace_branch_name.empty() || metadata.workspace_base_ref.empty() ||
-					    !GitWorktreeService().ValidatePreparedWorkspace(root, entry.path(), metadata, error, stop)) return false;
+					    !GitWorktreeService().ValidatePreparedWorkspace(root, entry.path(), metadata, error, stop)) return discard();
 					const auto references = [&](const ChatSession& other) { return ReferencesPreparedWorkspace(other, metadata); };
 					const std::vector<ChatSession> persisted = ChatRepository::LoadLocalChatSummariesReadOnly(root);
 					if (std::any_of(live_chats.begin(), live_chats.end(), references) ||
@@ -317,18 +347,6 @@ namespace uam
 				return true;
 			}
 			catch (const std::exception&) { return false; }
-		}
-
-		bool ArchiveFailedRemoteReceipt(const std::filesystem::path& root, const std::filesystem::path& receipt, std::string& error)
-		{
-			const std::filesystem::path archived = paths::PathFromUtf8(paths::Utf8PathString(receipt) + ".failed");
-			if (!paths::IsSameOrInsideRoot(root, receipt) || paths::IsLinkOrReparsePointNoThrow(receipt) ||
-			    paths::IsLinkOrReparsePointNoThrow(receipt.parent_path()) || paths::PathExistsNoThrow(archived))
-			{ error = "The failed SSH worktree receipt could not be safely archived."; return false; }
-			std::error_code ec;
-			std::filesystem::rename(receipt, archived, ec);
-			if (ec) { error = "Could not archive the failed SSH worktree receipt. Its files were preserved."; return false; }
-			return true;
 		}
 
 		bool RemoteRecordIntent(const std::filesystem::path& root, const std::filesystem::path& receipt,
@@ -347,7 +365,7 @@ namespace uam
 			if (!io::WriteTextFile(receipt, record.dump()))
 			{ error = "Could not save SSH worktree ownership before creation."; return false; }
 			// The durable failed state permits process cleanup even if archival must be retried.
-			if (intent.operation_state == "failed") (void)ArchiveFailedRemoteReceipt(root, receipt, error);
+			if (intent.operation_state == "failed") (void)ArchiveFailedReceipt(root, receipt, error);
 			return true;
 		}
 
@@ -378,7 +396,7 @@ namespace uam
 					{ result.message = "The saved SSH worktree belongs to a different chat, host or creation policy."; return result; }
 					if (saved.value("operationState", "pending") == "failed")
 					{
-						if (!ArchiveFailedRemoteReceipt(task->data_root, entry.path(), result.message)) return result;
+						if (!ArchiveFailedReceipt(task->data_root, entry.path(), result.message)) return result;
 						continue;
 					}
 					if (found || saved.at("stableHost") != RemoteWorktreeStableHostIdentity(host) || saved.at("requestedSource") != metadata.workspace_directory)
@@ -401,7 +419,7 @@ namespace uam
 						if (definite_failure)
 						{
 							std::string receipt_error;
-							(void)ArchiveFailedRemoteReceipt(task->data_root, entry.path(), receipt_error);
+							(void)ArchiveFailedReceipt(task->data_root, entry.path(), receipt_error);
 							if (!receipt_error.empty()) result.message += " " + receipt_error;
 						}
 						return result;
@@ -728,6 +746,14 @@ namespace uam
 		if (app.worktree_operation_chat_ids.contains(chat.id)) return {WorktreeLaunchPreparationState::Failed, "Wait for the chat's workspace operation to finish.", {}};
 		if (app.data_root.empty()) return {WorktreeLaunchPreparationState::Failed, "Chat storage is unavailable.", {}};
 		const ExecutionHost* remote_host = remote_workspace ? execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id) : nullptr;
+		if (remote_host && remote_host->runner_protocol_version > 0 && remote_host->runner_protocol_version < 3 && execution_hosts::CanConnectRunner(*remote_host) &&
+		    !explicit_create && chat.workspace_isolation_kind == paths::kPendingGitWorktreeIsolationKind && !chat.git_base_branch_override && !chat.svn_update_pending)
+		{
+			// Automatic isolation is optional: an older helper still runs the chat, in its workspace folder.
+			chat.workspace_isolation_kind.clear();
+			app.status_line = "This SSH host's helper is too old for isolated worktrees, so this chat works in the workspace folder. Update the helper to isolate new chats.";
+			return {};
+		}
 		if (remote_workspace && (!remote_host || remote_host->runner_protocol_version < 3 || !remote::CanAttemptRunnerConnection(*remote_host)))
 			return {WorktreeLaunchPreparationState::Failed, "SSH worktrees require an available protocol-3 helper.", {}};
 		if (remote_workspace && chat.svn_update_pending)

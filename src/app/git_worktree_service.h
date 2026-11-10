@@ -138,6 +138,8 @@ namespace uam
 		bool ValidateRemotePreparedWorkspace(const ExecutionHost& host, const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop = {}, bool* definite_failure_out = nullptr) const;
 		/// Validates only an owned journal whose planned artifacts have not been created; never accepts it as a ready workspace.
 		bool ValidateUncreatedWorkspaceIntent(const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop = {}) const;
+		/// Read-only. True when this chat's recorded intent left no worktree, no managed repository and no branch beyond its base, so discarding the journal loses nothing.
+		bool WorkspaceIntentLeftNoArtifacts(const std::filesystem::path& root, const std::string& receipt_text, const ChatSession& metadata, std::stop_token stop = {}) const;
 		bool ValidatePreparedWorkspace(const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop = {}) const;
 		GitWorktreeOperationResult CreateBranchForChat(const AppState& app, const ChatSession& source, ChatSession& branch, const std::string& checkpoint_sha) const;
 		bool RemoveUnusedBranchWorktree(const AppState& app, const ChatSession& branch, std::string* error_out = nullptr) const;
