@@ -244,7 +244,7 @@ namespace uam
 		std::shared_ptr<std::atomic<bool>> stop_finished;
 		bool orphan_stop_transferred = false, parent_result_uncertain = false, parent_retry_prepared = false;
 		int parent_confirmations = 0;
-		InitialClock::time_point orphaned_at{};
+		InitialClock::time_point orphaned_at{}, orphan_logged_at{};
 		std::function<bool(ChatPublicationFile, io::AtomicWriteStage)> parent_stage_hook_for_tests;
 		bool parent_stage_hook_used = false;
 	};
@@ -285,7 +285,12 @@ namespace uam
 		constexpr int64_t kMaxRoutingWaitMs = kMaxRunElapsedMs;
 		constexpr int64_t kResultDeliveryRetryMs = 2000;
 		constexpr int kMaxParentConfirmations = 10;
-		constexpr auto kOrphanStopLimit = std::chrono::seconds(30);
+		constexpr auto kOrphanStopLogInterval = std::chrono::seconds(30);
+		// Routing may report a host snapshot that is only briefly inconsistent, for example right after startup.
+		constexpr int64_t kRoutingInvalidGraceMs = 5000;
+		constexpr int64_t kStartupStopLimitMs = 2LL * 60LL * 1000LL;
+		// Steady time of the scheduler poll in progress, so work it calls shares its clock.
+		int64_t g_poll_steady_ms = 0;
 
 		int64_t SteadyMillisecondsNow()
 		{
@@ -425,10 +430,15 @@ namespace uam
 			{
 				return false;
 			}
-			// The saved parent was just found behind memory; do not load and compare it again on every tick.
-			const auto retry = app.agent_result_retry_steady_ms.find(run.id);
-			if (retry != app.agent_result_retry_steady_ms.end() && now_steady_ms < retry->second) return false;
+			if (now_steady_ms == 0) now_steady_ms = g_poll_steady_ms != 0 ? g_poll_steady_ms : SteadyMillisecondsNow();
 			ChatSession* root = ChatDomainService().FindChatById(app, run.root_chat_id);
+			// The saved parent was just found out of step with memory. Until either side changes, do not load and
+			// compare the whole chat again on every tick; three file stats tell when the parent's save has landed.
+			if (const auto retry = app.agent_result_retry_steady_ms.find(run.id); retry != app.agent_result_retry_steady_ms.end() && root != nullptr &&
+			    now_steady_ms < retry->second.retry_at_steady_ms && root->messages.size() == retry->second.message_count &&
+			    root->updated_at == retry->second.updated_at &&
+			    ChatRepository::ChatStorageRevision(app.data_root, root->id).value_or(std::string{}) == retry->second.storage_revision)
+				return false;
 			if (root == nullptr || !root->agent_run_id.empty())
 			{
 				run.root_result_delivery_attempts = 3;
@@ -442,7 +452,7 @@ namespace uam
 				diagnostics::Write("agent result: could not load parent chat " + root->id + ": " + warning);
 				// An unreadable parent is a failed attempt, so this ends after three spaced tries.
 				++run.root_result_delivery_attempts;
-				app.agent_result_retry_steady_ms[run.id] = now_steady_ms + kResultDeliveryRetryMs;
+				app.agent_result_retry_steady_ms[run.id] = {now_steady_ms + kResultDeliveryRetryMs, ChatRepository::ChatStorageRevision(app.data_root, root->id).value_or(std::string{}), root->messages.size(), root->updated_at};
 				(void)AgentRunLedger::Save(app.data_root, run);
 				return true;
 			}
@@ -453,7 +463,7 @@ namespace uam
 			if (!revision || !saved || !InitialStoredChatMatches(app.data_root, *saved, *root) ||
 			    ChatRepository::ChatStorageRevision(app.data_root, root->id) != revision)
 			{
-				app.agent_result_retry_steady_ms[run.id] = now_steady_ms + kResultDeliveryRetryMs;
+				app.agent_result_retry_steady_ms[run.id] = {now_steady_ms + kResultDeliveryRetryMs, revision.value_or(std::string{}), root->messages.size(), root->updated_at};
 				return false;
 			}
 			app.agent_result_retry_steady_ms.erase(run.id);
@@ -528,6 +538,20 @@ namespace uam
 		{
 			const auto found = app.execution_routing_waits.find(chat_id);
 			return found == app.execution_routing_waits.end() || found->second.empty() ? fallback : found->second;
+		}
+
+		enum class RoutingHold { Keep, Invalid, Timeout };
+		/// One queued run that routing did not admit on this poll. Both limits count continuous refusal only: the
+		/// poll prunes every run it did not see here, so time spent queued behind other runs is not routing wait.
+		RoutingHold ObserveRoutingHold(AppState& app, const std::string& id, bool invalid, int64_t now_steady_ms, bool* began = nullptr)
+		{
+			app.agent_routing_held_this_poll.insert(id);
+			const auto wait = app.agent_routing_wait_since_steady_ms.try_emplace(id, now_steady_ms);
+			if (began != nullptr) *began = wait.second;
+			if (!invalid) app.agent_routing_invalid_since_steady_ms.erase(id);
+			else if (now_steady_ms - app.agent_routing_invalid_since_steady_ms.try_emplace(id, now_steady_ms).first->second >= kRoutingInvalidGraceMs)
+				return RoutingHold::Invalid;
+			return now_steady_ms - wait.first->second >= kMaxRoutingWaitMs ? RoutingHold::Timeout : RoutingHold::Keep;
 		}
 
 		bool ProviderCircuitOpen(AppState& app, std::string_view provider_id, int64_t now_epoch_ms)
@@ -2664,7 +2688,7 @@ namespace uam
 					owner.parent_confirmations = 0;
 					owner.phase = ManagedInitialRuntimeOwner::Phase::Result;
 					owner.transition.reset();
-					app.status_line = "A managed agent result could not be confirmed in this chat's saved history. The chat is usable again; the result stays in the agent's own conversation.";
+					app.status_line = "A managed agent result could not be confirmed in this chat's saved history. You can send again; UAM will retry adding the result.";
 					diagnostics::Write("[agent-runs] result publication for " + owner.expected.id + " stayed unconfirmed after " + std::to_string(kMaxParentConfirmations) + " checks; released the parent chat.");
 					return true;
 				}
@@ -2689,36 +2713,87 @@ namespace uam
 				session->managed_initial_owner.reset();
 			app.managed_initial_runtime_owners.erase(id);
 		}
-		bool InitialOrphanSettled(const AppState& app, ManagedInitialRuntimeOwner& owner)
+		void RetireOrphanedInitialRun(AppState& app, const std::string& id, const std::shared_ptr<ManagedInitialRuntimeOwner>& owner, bool original_transcript)
 		{
-			const auto now = InitialClock::now();
-			if (owner.orphaned_at == InitialClock::time_point{}) owner.orphaned_at = now;
-			const auto* session = FindAcpSessionForChat(app, owner.transcript_id);
-			const bool own_session = session && session == owner.session && session->managed_initial_owner.get() == &owner;
-			if (owner.orphan_stop_transferred ? owner.stop_finished && owner.stop_finished->load(std::memory_order_acquire) : !own_session || InitialStopped(app, owner))
-				return true;
-			// ponytail: fixed 30 s wait for the Stop; a process still unconfirmed then is logged, not held forever.
-			return now - owner.orphaned_at >= kOrphanStopLimit;
-		}
-		void RetireOrphanedInitialRun(AppState& app, const std::string& id, const std::shared_ptr<ManagedInitialRuntimeOwner>& owner)
-		{
-			// Memory only: the saved record no longer belongs to this owner, so it is not rewritten here.
-			// The next startup marks a record left unfinished on disk interrupted.
 			AgentRun* run = app.data_root == owner->root ? FindRun(app, id) : nullptr;
-			if (run && run->managed_continuation && !IsTerminal(run->status) && run->root_chat_id == owner->root_id && run->transcript_chat_id == owner->transcript_id)
+			if (run && run->managed_continuation && !run->managed_continuation->turns.empty() && !IsTerminal(run->status) && run->root_chat_id == owner->root_id && run->transcript_chat_id == owner->transcript_id)
 			{
-				run->status = "failed";
-				run->diagnostic_code = "initial_ownership_changed";
-				run->diagnostic = strings::NonEmptyOrFallback(owner->diagnostic, "Managed initial ownership changed.");
-				run->finished_at = run->updated_at = time::TimestampNow();
-				run->finished_at_epoch_ms = time::SystemEpochMillisecondsNow();
+				AgentRun failed = *run;
+				++failed.managed_continuation->state_revision;
+				failed.status = "failed";
+				failed.diagnostic_code = "initial_ownership_changed";
+				failed.diagnostic = strings::NonEmptyOrFallback(owner->diagnostic, "Managed initial ownership changed.");
+				failed.finished_at = failed.updated_at = time::TimestampNow();
+				failed.finished_at_epoch_ms = time::SystemEpochMillisecondsNow();
+				auto& turn = failed.managed_continuation->turns.back();
+				turn.status = ManagedRunTurnStatus::Failed;
+				turn.finished_at_epoch_ms = failed.finished_at_epoch_ms;
+				turn.diagnostic_code = failed.diagnostic_code;
+				// Save the same outcome the session reports, so the next start does not close this run a second way.
+				std::string error;
+				const auto prepared = AgentRunLedger::PrepareSave(app.data_root, *run, failed, &error);
+				const auto published = prepared ? AgentRunLedger::PublishPreparedSave(prepared, [] { return true; }) : AgentRunPublishResult{AgentRunPublishState::Rejected, error};
+				if (published.state != AgentRunPublishState::Committed)
+					diagnostics::Write("[agent-runs] managed run " + id + " ended in this session only; its saved record could not be updated (" + published.error + ") and is closed at the next start.");
+				*run = std::move(failed);
 				if (auto* root = ChatDomainService().FindChatById(app, owner->root_id)) ++root->managed_subagent_revision;
 			}
+			diagnostics::Write("[agent-runs] managed run " + id + " lost its owner and was ended after its process was confirmed stopped.");
+			ReleaseInitialOwner(app, id, owner, original_transcript);
+		}
+		/// A managed-initial owner whose root or transcript ownership is gone for good. Stops what it launched and
+		/// ends the run only once that stop is confirmed; until then the run keeps its execution slot.
+		bool PollInitialOrphan(AppState& app, const std::string& id, const std::shared_ptr<ManagedInitialRuntimeOwner>& owner)
+		{
+			const auto now = InitialClock::now();
+			if (owner->orphaned_at == InitialClock::time_point{})
+			{
+				owner->orphaned_at = owner->orphan_logged_at = now;
+				// Its children have no reader left. CancelTree stops each subtree deepest-first and retries through the poll.
+				std::vector<std::string> children;
+				for (const AgentRun& child : app.agent_runs)
+					if (child.parent_run_id == id && !IsTerminal(child.status)) children.push_back(child.id);
+				for (const std::string& child : children) (void)AgentRunScheduler::CancelTree(app, child);
+			}
+			auto* session = FindAcpSessionForChat(app, owner->transcript_id);
+			const bool own_session = session && session == owner->session && session->managed_initial_owner == owner;
 			const auto* transcript = ChatDomainService().FindChatById(app, owner->transcript_id);
 			const bool original_transcript = transcript && transcript->metadata_incarnation == owner->transcript_incarnation && transcript->agent_run_id == id;
-			const bool stopped = InitialStopped(app, *owner);
-			diagnostics::Write("[agent-runs] managed run " + id + " lost its owner and was ended" + (stopped ? "." : "; its provider process was not confirmed stopped."));
-			ReleaseInitialOwner(app, id, owner, original_transcript && stopped);
+			if (own_session && !owner->orphan_stop_transferred)
+			{
+				if (original_transcript)
+				{
+					// The ordinary Stop also cancels a launch still in flight and a remote helper.
+					if (!InitialStopped(app, *owner)) (void)StopAcpSession(app, owner->transcript_id);
+				}
+				else if (session->running && !session->last_process_id.empty() && (owner->process.empty() || owner->process == session->last_process_id) && acp_detail::AcpProcessHandleLabel(*session) == session->last_process_id)
+				{
+					// The actual original process is owned even though its chat namespace was replaced.
+					// Empty chat ID prevents all replacement lookup/history finalization.
+					owner->process = session->last_process_id;
+					QueueAcpProcessStop(app, *session, {}, AcpStopPurpose::Interrupt, true);
+					AgentRunScheduler::InitialProcessStopQueued(*session, app.acp_process_stop_tasks.back());
+					owner->orphan_stop_transferred = true;
+					session->running = false;
+					session->reconnect_pending = false;
+				}
+			}
+			if (owner->transition || (owner->retired && !owner->retired->load(std::memory_order_acquire))) return false;
+			// A replacement session under the same chat ID is not ours; the original session object is already gone.
+			const bool quiet = owner->orphan_stop_transferred || (session && !own_session) || InitialStopped(app, *owner);
+			const bool exit_confirmed = owner->stop_finished && owner->stop_finished->load(std::memory_order_acquire) && owner->stop_result && owner->stop_result->exit_confirmed;
+			const bool exit_known = exit_confirmed || (!owner->orphan_stop_transferred && !owner->stop_finished);
+			if (!quiet || !exit_known)
+			{
+				if (now - owner->orphan_logged_at >= kOrphanStopLogInterval)
+				{
+					owner->orphan_logged_at = now;
+					diagnostics::Write("[agent-runs] managed run " + id + " lost its owner; its provider process is not confirmed stopped, so it keeps its execution slot.");
+				}
+				return false;
+			}
+			RetireOrphanedInitialRun(app, id, owner, original_transcript);
+			return true;
 		}
 		bool PollInitialRuntimes(AppState& app, int64_t now_epoch_ms, int64_t now_steady_ms)
 		{
@@ -2737,26 +2812,8 @@ namespace uam
 					ForbidInitialInput(*owner);
 					if (owner->transition && owner->transition->finished.load(std::memory_order_acquire))
 						owner->transition.reset();
-					const auto* session = FindAcpSessionForChat(app, owner->transcript_id);
-					if (session && session == owner->session && session->managed_initial_owner == owner && session->running && !owner->process.empty() && session->last_process_id == owner->process && acp_detail::AcpProcessHandleLabel(*session) == owner->process && !owner->orphan_stop_transferred)
-					{
-						// The actual original process is owned even though its chat namespace was replaced.
-						// Empty chat ID prevents all replacement lookup/history finalization.
-						auto* original = FindAcpSessionForChat(app, owner->transcript_id);
-						QueueAcpProcessStop(app, *original, {}, AcpStopPurpose::Interrupt, true);
-						auto& stop = app.acp_process_stop_tasks.back();
-						AgentRunScheduler::InitialProcessStopQueued(*original, stop);
-						owner->orphan_stop_transferred = true;
-						original->running = false;
-						original->reconnect_pending = false;
-					}
-					// Never publish or Stop through a replacement transcript/data root. Lost ownership does not come back,
-					// so once nothing of ours can still be running the run ends here instead of holding its slot.
-					if (!owner->transition && (!owner->retired || owner->retired->load(std::memory_order_acquire)) && InitialOrphanSettled(app, *owner))
-					{
-						RetireOrphanedInitialRun(app, id, owner);
-						changed = true;
-					}
+					// Never publish or Stop through a replacement transcript/data root. Lost ownership does not come back.
+					changed = PollInitialOrphan(app, id, owner) || changed;
 					continue;
 				}
 				if (!InitialRuntimeOwned(app, *owner) && !IsTerminal(owner->expected.status))
@@ -2871,14 +2928,12 @@ namespace uam
 					auto* routed = ChatDomainService().FindChatById(app, owner->transcript_id);
 					const ChatSession before_routing = *routed;
 					const auto routing = AdmitExecutionRouting(app, *routed);
-					if (routing.status == ExecutionRoutingStatus::Invalid)
+					if (routing.status == ExecutionRoutingStatus::Waiting || routing.status == ExecutionRoutingStatus::Invalid)
 					{
-						RequestInitialStop(*owner, "failed", "routing_invalid", RoutingWaitReason(app, owner->transcript_id, "No execution host can run this agent."));
-						continue;
-					}
-					if (routing.status == ExecutionRoutingStatus::Waiting)
-					{
-						if (now_steady_ms >= app.agent_run_deadline_steady_ms.try_emplace(id, now_steady_ms + kMaxRoutingWaitMs).first->second)
+						const RoutingHold hold = ObserveRoutingHold(app, id, routing.status == ExecutionRoutingStatus::Invalid, now_steady_ms);
+						if (hold == RoutingHold::Invalid)
+							RequestInitialStop(*owner, "failed", "routing_invalid", RoutingWaitReason(app, owner->transcript_id, "No execution host can run this agent."));
+						else if (hold == RoutingHold::Timeout)
 							RequestInitialStop(*owner, "failed", "routing_wait_timeout", RoutingWaitReason(app, owner->transcript_id, "No execution host became available in time."));
 						continue;
 					}
@@ -3630,13 +3685,13 @@ namespace uam
 			{
 				if (!note.empty()) diagnostics::Write("[agent-runs] saved result of " + run.id + " was not delivered: " + note);
 				queue.pop_front();
-				app.managed_result_recovery_failures = 0;
+				app.managed_result_recovery_failures.erase(run.id);
 				return false;
 			};
 			const auto later = [&](bool failure)
 			{
 				app.managed_result_recovery_retry_steady_ms = now_steady_ms + kResultDeliveryRetryMs;
-				if (failure && ++app.managed_result_recovery_failures >= 3) return finish("the parent chat could not be updated; the next start retries.");
+				if (failure && ++app.managed_result_recovery_failures[run.id] >= 3) return finish("the parent chat could not be updated; the next start retries.");
 				std::ranges::rotate(queue, queue.begin() + 1); // A busy parent does not hold up the others.
 				return false;
 			};
@@ -3680,8 +3735,73 @@ namespace uam
 		}
 	} // namespace
 
+	namespace
+	{
+		/// Retires each startup stop once its helper is confirmed gone, or after a bounded wait.
+		bool PollStartupStops(AppState& app)
+		{
+			bool changed = false;
+			for (auto it = app.agent_startup_stop_deadline_steady_ms.begin(); it != app.agent_startup_stop_deadline_steady_ms.end();)
+			{
+				const std::string chat_id = it->first;
+				const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+				AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+				const bool busy = AcpStopInProgress(app, chat_id);
+				const bool stopped = !chat || (!chat->remote_process_exists && !chat->remote_stop_cleanup_pending && !busy && (!session || !session->running));
+				if (!stopped && (busy || SteadyMillisecondsNow() < it->second))
+				{
+					++it;
+					continue;
+				}
+				diagnostics::Write(std::string("[agent-runs] startup stop for child chat ") + chat_id + (stopped ? ": remote process confirmed stopped." : ": not confirmed within two minutes; the remote process was not observed further."));
+				if (session && !stopped)
+				{
+					// Only the local bridge to the helper is closed here; the saved cleanup marker stays for a later Stop.
+					auto& process = PlatformServicesFactory::Instance().process_service;
+					process.StopStdioProcess(*session, true);
+					process.CloseStdioProcessHandles(*session);
+				}
+				if (chat) EraseRuntimeChat(app, chat_id);
+				it = app.agent_startup_stop_deadline_steady_ms.erase(it);
+				changed = true;
+			}
+			return changed;
+		}
+	} // namespace
+
+	std::size_t AgentRunScheduler::RequestStartupStops(AppState& app, const std::vector<std::string>& interrupted_run_ids)
+	{
+		std::size_t requested = 0;
+		for (const std::string& id : interrupted_run_ids)
+		{
+			const AgentRun* run = FindRun(app, id);
+			// A version-2 record has no runtime owner after a restart, so the ordinary Stop path cannot be asked for it.
+			if (!run || run->managed_continuation || run->status != "interrupted" || ChatDomainService().FindChatById(app, run->transcript_chat_id)) continue;
+			auto chat = ChatRepository::LoadLocalChat(app.data_root, run->transcript_chat_id, false, nullptr, false);
+			// A local child has no saved identity that proves a surviving process is the same one, so none is killed.
+			if (!chat || chat->agent_run_id != id || chat->imported_read_only || chat->execution_host_id.empty() || chat->execution_host_id == execution_hosts::kLocalHostId ||
+			    execution_hosts::Find(app.settings.execution_hosts, chat->execution_host_id) == nullptr ||
+			    !chat->remote_process_exists || chat->remote_process_control_token.empty()) continue;
+			// The same durable marker an ordinary unconfirmed remote Stop leaves: attach to the helper only to stop it.
+			chat->remote_stop_cleanup_pending = true;
+			const std::string chat_id = chat->id;
+			app.chats.push_back(std::move(*chat));
+			if (!acp_detail::SaveChatQuietly(app, app.chats.back()))
+			{
+				app.chats.pop_back();
+				continue;
+			}
+			app.agent_startup_stop_deadline_steady_ms[chat_id] = SteadyMillisecondsNow() + kStartupStopLimitMs;
+			diagnostics::Write("[agent-runs] run " + id + " was left running on a remote host; requesting Stop for its helper process.");
+			++requested;
+		}
+		return requested;
+	}
+
 	static bool PollAt(AppState& app, int64_t now_epoch_ms, int64_t now_steady_ms)
 	{
+		g_poll_steady_ms = now_steady_ms;
+		app.agent_routing_held_this_poll.clear();
 		PruneFollowupWitnesses(app);
 		bool changed = PollFollowupCreations(app);
 		changed = PollInitialCreations(app) || changed;
@@ -3698,6 +3818,12 @@ namespace uam
 			if (!run.managed_continuation && DeliverRootResult(app, run, now_steady_ms))
 				changed = true;
 		}
+		if (!app.agent_result_retry_steady_ms.empty())
+			std::erase_if(app.agent_result_retry_steady_ms, [&](const auto& entry)
+			{
+				const AgentRun* run = FindRun(app, entry.first);
+				return run == nullptr || run->root_result_delivered || run->root_result_delivery_attempts >= 3 || ChatDomainService().FindChatById(app, run->root_chat_id) == nullptr;
+			});
 		for (AgentRun& run : app.agent_runs)
 		{
 			if (run.managed_continuation || run.status != "running" || app.pending_agent_run_cancellation_ids.contains(run.id))
@@ -3826,11 +3952,11 @@ namespace uam
 			const ExecutionRoutingDecision routing = AdmitExecutionRouting(app, *transcript);
 			if (routing.status == ExecutionRoutingStatus::Waiting || routing.status == ExecutionRoutingStatus::Invalid)
 			{
-				const bool invalid = routing.status == ExecutionRoutingStatus::Invalid;
-				// The deadline map is free while queued; a successful start below overwrites it with the run's own limit.
-				const auto wait = app.agent_run_deadline_steady_ms.try_emplace(id, now_steady_ms + kMaxRoutingWaitMs);
-				if (invalid || now_steady_ms >= wait.first->second)
+				bool began = false;
+				const RoutingHold hold = ObserveRoutingHold(app, id, routing.status == ExecutionRoutingStatus::Invalid, now_steady_ms, &began);
+				if (hold != RoutingHold::Keep)
 				{
+					const bool invalid = hold == RoutingHold::Invalid;
 					FinishRun(app, *run, "failed", invalid ? "routing_invalid" : "routing_wait_timeout",
 					          RoutingWaitReason(app, run->transcript_chat_id, invalid ? "No execution host can run this agent." : "No execution host became available in time."));
 					if (run->status == "queued") app.queued_agent_run_ids.push_back(id); // The terminal save failed; retry next tick.
@@ -3838,7 +3964,7 @@ namespace uam
 					continue;
 				}
 				app.queued_agent_run_ids.push_back(id);
-				changed = wait.second || changed; // Only the start of a wait is a state change.
+				changed = began || changed; // Only the start of a wait is a state change.
 				continue;
 			}
 			run->status = "running";
@@ -3875,6 +4001,11 @@ namespace uam
 			++running;
 			changed = true;
 		}
+		// A run that routing did not refuse on this poll is no longer waiting for routing.
+		std::erase_if(app.agent_routing_wait_since_steady_ms, [&](const auto& entry) { return !app.agent_routing_held_this_poll.contains(entry.first); });
+		std::erase_if(app.agent_routing_invalid_since_steady_ms, [&](const auto& entry) { return !app.agent_routing_held_this_poll.contains(entry.first); });
+		changed = PollStartupStops(app) || changed;
+		g_poll_steady_ms = 0;
 		return ManagedParentContinuationService::Poll(app) || changed;
 	}
 

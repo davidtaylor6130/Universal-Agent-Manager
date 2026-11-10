@@ -812,6 +812,9 @@ bool Application::InitializeState()
 	}
 #endif
 	(void)uam::AgentRunLedger::PruneExpired(m_app.data_root, agent_runs, &agent_runs.errors);
+	std::vector<std::string> startup_interrupted_run_ids;
+	for (const AgentRun& run : agent_runs.runs)
+		if (run.status == "queued" || run.status == "running") startup_interrupted_run_ids.push_back(run.id);
 	(void)uam::AgentRunLedger::MarkNonterminalInterrupted(
 	    m_app.data_root, &agent_runs.runs, "manager_restarted", &agent_runs.errors);
 	// Version-2 records stay out of runtime admission. What a previous process left unfinished is closed, and a recent
@@ -906,6 +909,8 @@ bool Application::InitializeState()
 #endif
 
 	ChatHistorySyncService().LoadSidebarChats(m_app);
+	// Before the remote restore below: a child a previous process left running on a remote host is attached only to be stopped.
+	(void)uam::AgentRunScheduler::RequestStartupStops(m_app, startup_interrupted_run_ids);
 	for (const ChatSession& chat : std::vector<ChatSession>(m_app.chats))
 		if (!chat.temporary_parent_chat_id.empty())
 			(void)uam::RequestTemporarySideChatCleanup(m_app, chat.id);

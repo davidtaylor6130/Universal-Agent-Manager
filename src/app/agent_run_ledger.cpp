@@ -1204,8 +1204,9 @@ namespace uam
 		for (bool changed = true; changed && !expired.empty();)
 		{
 			changed = false;
-			for (const AgentRun& run : loaded.runs)
-				if (!run.parent_run_id.empty() && !expired.contains(run.id) && expired.erase(run.parent_run_id) > 0) changed = true;
+			for (const std::vector<AgentRun>* records : {&loaded.runs, &loaded.inert_managed})
+				for (const AgentRun& run : *records)
+					if (!run.parent_run_id.empty() && !expired.contains(run.id) && expired.erase(run.parent_run_id) > 0) changed = true;
 		}
 		if (expired.empty()) return 0;
 		std::unordered_set<std::string> removed;
@@ -1235,8 +1236,7 @@ namespace uam
 		if (diagnostic_code.empty() || diagnostic_code.size() > 80) return owed;
 		const auto recent = std::filesystem::file_time_type::clock::now() - kOwedResultWindow;
 		const int64_t now_epoch_ms = uam::time::SystemEpochMillisecondsNow();
-		const std::string now = uam::time::detail::FormatTimestamp(
-		    uam::time::detail::LocalTimeSnapshot(static_cast<std::time_t>(now_epoch_ms / 1000)), uam::time::kLocalDisplayTimestampFormat);
+		const std::string now = uam::time::TimestampNow();
 		for (AgentRun& run : records)
 		{
 			if (!run.managed_continuation || run.managed_continuation->turns.empty()) continue;
