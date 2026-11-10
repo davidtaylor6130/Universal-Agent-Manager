@@ -427,7 +427,7 @@ UAM_TEST(SettingsNativeExplicitRescanPreservesSettledRemoteCandidatesWithoutRemo
 	app.settings.execution_hosts.push_back(host);
 	app.folders.push_back({"remote", "Remote", "/synthetic/remote", false, host.id});
 	unsigned remote_calls = 0;
-	uam::StartupNativeImportService service(FixtureScanner({StartupHistory(temp.root / "workspace", "local-native")}), [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, std::stop_token)
+	uam::StartupNativeImportService service(FixtureScanner({StartupHistory(temp.root / "workspace", "local-native")}), [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
 	{
 		++remote_calls;
 		ChatHistorySyncService::LocalHistoryDiscovery result;
@@ -763,7 +763,7 @@ UAM_TEST(StartupImportLeavesOldSessionsForExplicitDiscovery)
 		return chat;
 	};
 	const std::vector<ChatSession> local = {history("recent", now), history("old", old_time), history("untimed", ""), history("garbled", "not-a-time")};
-	const auto remote = [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, std::stop_token)
+	const auto remote = [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
 	{
 		ChatHistorySyncService::LocalHistoryDiscovery result;
 		for (const auto& [id, updated_at] : {std::pair<std::string, std::string>{"remote-old", old_time}, {"remote-recent", now}})
@@ -817,7 +817,7 @@ UAM_TEST(StartupImportDiscoveryFiltersStagedRemoteSessionsAgain)
 	app.settings.execution_hosts.push_back(host);
 	app.folders.push_back({"remote", "Remote", "/synthetic/remote", false, host.id});
 	app.settings.native_import_startup_max_age_days = 30;
-	const auto remote = [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, std::stop_token)
+	const auto remote = [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
 	{
 		ChatHistorySyncService::LocalHistoryDiscovery result;
 		for (const auto& [id, updated_at] : {std::pair<std::string, std::string>{"remote-old", "2020-01-01T00:00:00.000Z"}, {"remote-recent", uam::time::IsoUtcTimestampNow()}})
@@ -889,7 +889,7 @@ UAM_TEST(StartupImportLeavesProviderDefaultTitledSessionsForDiscovery)
 	    history(workspace, "no-milliseconds", "opencode-cli", "New session - 2026-10-01T12:30:45Z"),
 	    history(workspace, "ends-in-z", "opencode-cli", "New session - fix bug Z"),
 	};
-	const auto remote = [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, std::stop_token)
+	const auto remote = [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
 	{
 		ChatHistorySyncService::LocalHistoryDiscovery result;
 		for (const auto& [id, title] : {std::pair<std::string, std::string>{"remote-generated", generated}, {"remote-named", "Deploy notes"}})
@@ -1469,6 +1469,108 @@ namespace
 		chat.messages.push_back(Message{MessageRole::User, "Verified fixture transcript"});
 		return chat;
 	}
+}
+
+UAM_TEST(StartupRemoteScanReconnectsOnceThenDefersAnUnreachableHostAndKeepsOtherHosts)
+{
+	TempDir temp("uam-startup-remote-dead-host");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	app.settings.execution_hosts.push_back(StartupRemoteHost("dead"));
+	app.settings.execution_hosts.push_back(StartupRemoteHost("healthy"));
+	app.folders.push_back({"dead-a", "Dead A", "C:\\work\\a", false, "dead"});
+	app.folders.push_back({"dead-b", "Dead B", "C:\\work\\b", false, "dead"});
+	app.folders.push_back({"live", "Live", "C:\\work\\live", false, "healthy"});
+	std::atomic<int> dead_calls{0};
+	std::atomic<int> healthy_calls{0};
+	std::atomic<bool> dead_reachable{false};
+	uam::StartupNativeImportService service(
+	    [](const uam::StartupNativeImportScanRequest&, std::stop_token) { return ChatHistorySyncService::LocalHistoryDiscovery{}; },
+	    [&](const uam::StartupNativeImportRemoteScope& scope, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
+	    {
+		    ChatHistorySyncService::LocalHistoryDiscovery result;
+		    if (scope.host.id == "dead" && !dead_reachable)
+		    {
+			    ++dead_calls;
+			    result.remote_host_unreachable = true;
+			    result.result.Fail("The remote runner bridge closed.");
+			    return result;
+		    }
+		    if (scope.host.id == "healthy") ++healthy_calls;
+		    result.chats.push_back(StartupRemoteHistory(scope.host.id, scope.folder.id, scope.folder.directory, "ses_" + scope.folder.id));
+		    return result;
+	    },
+	    uam::StartupNativeImportRemoteRetry{std::chrono::milliseconds(10), std::chrono::milliseconds(200), std::chrono::milliseconds(200)});
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	// The first folder gets one reconnect; the host's other folder is not tried again in the same pass.
+	UAM_ASSERT_EQ(dead_calls.load(), 2);
+	UAM_ASSERT_EQ(healthy_calls.load(), 1);
+	const uam::StartupNativeImportSnapshot snapshot = service.Snapshot();
+	UAM_ASSERT_EQ(snapshot.phase, std::string("ready"));
+	UAM_ASSERT_EQ(snapshot.total_count, std::size_t{1});
+	const auto notices = std::ranges::count_if(snapshot.errors, [](const std::string& error)
+	{
+		return error.find("Remote history on dead could not be reached (The remote runner bridge closed.)") != std::string::npos &&
+		    error.find("retry automatically") != std::string::npos && error.find("Dead A, Dead B") != std::string::npos;
+	});
+	UAM_ASSERT_EQ(notices, std::ptrdiff_t{1});
+	// The deferred workspaces are retried automatically once the host answers, without a new startup scan.
+	dead_reachable = true;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (service.Snapshot().total_count < 3)
+	{
+		UAM_ASSERT(std::chrono::steady_clock::now() < deadline);
+		service.Poll(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT_EQ(healthy_calls.load(), 1);
+	UAM_ASSERT_EQ(dead_calls.load(), 2);
+}
+
+UAM_TEST(StartupRemoteScanReportsAnUnavailableHostOncePerHost)
+{
+	TempDir temp("uam-startup-remote-unavailable");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	ExecutionHost offline = StartupRemoteHost("offline");
+	offline.runner_status = "offline";
+	app.settings.execution_hosts.push_back(offline);
+	for (int folder = 0; folder < 3; ++folder) app.folders.push_back({"offline-" + std::to_string(folder), "Offline " + std::to_string(folder), "C:\\work\\" + std::to_string(folder), false, "offline"});
+	uam::StartupNativeImportService service(
+	    [](const uam::StartupNativeImportScanRequest&, std::stop_token) { return ChatHistorySyncService::LocalHistoryDiscovery{}; },
+	    [](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token) { return ChatHistorySyncService::LocalHistoryDiscovery{}; });
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	const auto errors = service.Snapshot().errors;
+	UAM_ASSERT_EQ(std::ranges::count_if(errors, [](const std::string& error) { return error.find("workspace host was unavailable") != std::string::npos; }), std::ptrdiff_t{1});
+}
+
+UAM_TEST(StartupRemoteScanDoesNotLetAStalledHostDelayAnother)
+{
+	TempDir temp("uam-startup-remote-parallel");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	app.settings.execution_hosts.push_back(StartupRemoteHost("stalled"));
+	app.settings.execution_hosts.push_back(StartupRemoteHost("fast"));
+	app.folders.push_back({"stalled", "Stalled", "C:\\work\\stalled", false, "stalled"});
+	app.folders.push_back({"fast", "Fast", "C:\\work\\fast", false, "fast"});
+	std::promise<void> fast_done;
+	std::future<void> fast_finished = fast_done.get_future();
+	std::atomic<bool> fast_ran_during_stall{false};
+	uam::StartupNativeImportService service(
+	    [](const uam::StartupNativeImportScanRequest&, std::stop_token) { return ChatHistorySyncService::LocalHistoryDiscovery{}; },
+	    [&](const uam::StartupNativeImportRemoteScope& scope, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
+	    {
+		    ChatHistorySyncService::LocalHistoryDiscovery result;
+		    if (scope.host.id == "fast") fast_done.set_value();
+		    // Hang guard: a serial scan reaches the fast host only after this wait expires.
+		    else fast_ran_during_stall = fast_finished.wait_for(std::chrono::seconds(3)) == std::future_status::ready;
+		    return result;
+	    });
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	UAM_ASSERT(fast_ran_during_stall.load());
 }
 
 UAM_TEST(StartupNativeRemoteCandidatesUseCapturedReadyHostAndWindowsWorkspaceOwnership)

@@ -45,6 +45,30 @@ std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::
 	return command;
 }
 
+std::vector<std::string> RemoteHistoryArgv(std::string_view version, std::vector<std::string> command,
+	const std::string& operation, const std::string& id)
+{
+	command = HistoryArgv(version, std::move(command), operation, id);
+	if (operation == "list")
+	{
+		const auto count = std::find(command.begin(), command.end(), "--max-count");
+		if (count != command.end()) command.erase(count, count + 2);
+		command.insert(command.end(), {"--max-count", "200"});
+	}
+	return command;
+}
+
+void NormalizeHistoryList(Json& list)
+{
+	for (auto& entry : list)
+	{
+		if (entry.contains("location")) entry["directory"] = entry.at("location").at("directory");
+		// Internal refusal data from this checked dispatcher, not upstream
+		// metadata support or evidence authorizing a future native resume.
+		entry["opencode_v2_session_id"] = entry.at("id");
+	}
+}
+
 std::vector<std::string> FileBackedStdoutArgv(std::vector<std::string> command)
 {
 	// The private file is unlinked once open, so no transcript survives a killed or timed-out export.

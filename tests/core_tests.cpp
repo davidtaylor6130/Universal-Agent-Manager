@@ -32,6 +32,7 @@
 #include <cstdio>
 #include <fstream>
 #include <future>
+#include <set>
 #include <type_traits>
 
 #if defined(_WIN32)
@@ -1542,6 +1543,8 @@ int main(int argc, char** argv)
 		std::string chunked_output;
 		if (private_chunked && !uam::base64::Decode(fixture_result.value("stdoutBase64", ""), chunked_output)) return 2;
 		std::size_t chunked_offset = 0;
+		// Remote OpenCode history probes the CLI version first; that probe gets a version, not the canned export.
+		std::set<std::string> version_probes;
 		uam::remote::RunnerState state;
 		nlohmann::json request;
 		while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
@@ -1560,10 +1563,19 @@ int main(int argc, char** argv)
 			    ? uam::remote::HandleRunnerRequest(request, "test", &state)
 			    : nlohmann::json{{"id", request["id"]}, {"ok", true},
 			                     {"result", fixture_result}};
+			if (request.value("type", "") == "process.start" && request.contains("argv") && request["argv"].is_array() &&
+			    std::ranges::find(request["argv"], nlohmann::json("--version")) != request["argv"].end())
+				version_probes.insert(request.value("sessionId", ""));
 			if (private_chunked && request.value("type", "") != "hello")
 			{
 				response["result"] = nlohmann::json::object();
-				if (request.value("type", "") == "process.poll")
+				if (request.value("type", "") == "process.poll" && version_probes.contains(request.value("sessionId", "")))
+				{
+					const std::string version = "1.19.4\n";
+					response["result"] = {{"running", false}, {"exitCode", 0}, {"stdoutBase64", uam::base64::Encode(version)}, {"stderrBase64", ""},
+					    {"stdoutCursor", version.size()}, {"stderrCursor", std::uint64_t{0}}};
+				}
+				else if (request.value("type", "") == "process.poll")
 				{
 					const std::string_view chunk = std::string_view(chunked_output).substr(chunked_offset, 65536);
 					chunked_offset += chunk.size();
