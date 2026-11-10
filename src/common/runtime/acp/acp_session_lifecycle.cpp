@@ -2173,24 +2173,52 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			return false;
 		}
 		// Only the running process a packet was staged for releases it, and transport happens after that release.
-		// Its process is gone, so the packet was never written and no receipt can still deliver it: return it to
-		// the user as unsent instead of holding every relaunch behind a wait that cannot end.
+		// Its process is gone, so the packet was never written and no receipt can still deliver it. Holding every
+		// relaunch behind that receipt would wait forever.
 		const bool same_turn = packet->turn_serial == session.turn_serial && packet->prompt == session.queued_prompt;
-		RestorePendingPromptDelivery(session, chat);
-		ScheduleChatSave(app, chat, 0.0);
-		if (same_turn)
+		const bool budget_spent = session.reconnect_attempts > 0 && session.reconnect_first_failure_turn_serial == session.turn_serial &&
+		    GetAppTimeSeconds() - session.reconnect_first_failure_time_s >= kUntransportedPromptReconnectBudgetSeconds;
+		if (same_turn && !budget_spent)
 		{
+			// Back to how it was before staging (queued for its turn, rows pending): the relaunched process stages it
+			// again under a new delivery id. The old marker is withdrawn with the packet, so the old id is never written.
+			RestorePendingPromptDelivery(session, chat);
+			session.pending_remote_delivery_input_ids.clear();
+			AppendAcpDiagnostic(session, "persistence", "staged_prompt_requeued", "", "", false, 0,
+			    "The remote connection closed before this prompt was written; it will be staged again.");
+			ScheduleChatSave(app, chat, 0.0);
+		}
+		else if (same_turn)
+		{
+			// The connection has been closing for the whole budget: return the prompt to the user as unsent.
+			const std::string prompt = session.queued_prompt;
+			const bool authored_rows = !packet->user_messages.empty();
 			session.reconnect_pending = false;
 			session.reconnect_not_before_time_s = 0.0;
-			session.last_error = "The remote connection closed before this prompt was sent. Send it again.";
-			session.queue_held = chat.acp_queue_held = true;
 			session.goal_resume_suppressed = true;
-			AppendAcpDiagnostic(session, "persistence", "staged_prompt_returned_unsent", "", "", false, 0, session.last_error);
-			CompletePromptTurn(session, kAcpLifecycleError);
+			AppendAcpDiagnostic(session, "persistence", "staged_prompt_returned_unsent", "", "", false, 0,
+			    "The remote connection closed before this prompt was sent. Send it again.");
+			// Restores the packet, marks its rows unsent and interrupted, and ends the turn, as a process exit does.
+			FailAcpTurnOrSession(session, &chat, "The remote connection closed before this prompt was sent. Send it again.");
+			// The unsent rows are now the prompt's only copy: a prepared head left beside them could be resumed as a second send.
+			if (authored_rows && chat.acp_dispatched_queued_prompt_count == 1 && !chat.acp_queued_prompts.empty() &&
+			    chat.acp_queued_prompts.front().prepared_for_delivery && chat.acp_queued_prompts.front().text == prompt)
+			{
+				chat.acp_queued_prompts.erase(chat.acp_queued_prompts.begin());
+				chat.acp_dispatched_queued_prompt_count = 0;
+			}
+			// Input queued behind it stays held for Resume or Remove.
+			session.queue_held = chat.acp_queue_held = !session.queued_user_prompts.empty() || !chat.acp_queued_prompts.empty();
+			ScheduleChatSave(app, chat, 0.0);
 			if (error_out != nullptr) *error_out = session.last_error;
 			return false;
 		}
-		// A packet from an earlier turn has nothing waiting on it; this launch continues.
+		else
+		{
+			// A packet from an earlier turn has nothing waiting on it; this launch continues.
+			RestorePendingPromptDelivery(session, chat);
+			ScheduleChatSave(app, chat, 0.0);
+		}
 	}
 
 	if (session.local_stop_pending)

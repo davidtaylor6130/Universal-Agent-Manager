@@ -522,6 +522,9 @@ bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session
 bool BindPendingProviderHandoff(AcpSessionState& session, ChatSession& chat);
 void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, std::string_view session_id, std::string_view previous_session_id = {});
 void RestorePendingPromptDelivery(AcpSessionState& session, ChatSession& chat);
+/// A remote prompt that never reached the connection keeps reconnecting this long before it returns as unsent,
+/// so a short network loss still recovers by itself.
+inline constexpr double kUntransportedPromptReconnectBudgetSeconds = 60.0;
 void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state);
 bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSession& chat,
                              const std::string& prompt, bool review_turn,

@@ -724,18 +724,24 @@ namespace uam
 		                               ChatSession& chat, double now_seconds,
 		                               const std::string& error)
 		{
-			++session.reconnect_attempts;
+			if (++session.reconnect_attempts == 1 || session.reconnect_first_failure_turn_serial != session.turn_serial)
+			{
+				session.reconnect_first_failure_time_s = now_seconds;
+				session.reconnect_first_failure_turn_serial = session.turn_serial;
+			}
 			const std::string message = uam::strings::NonEmptyOrFallback(
 			    error, "Structured runtime reconnect failed.");
-			// A prompt that never reached the connection has no remote turn to protect, so its relaunch is
-			// bounded like any other launch. A staged or possibly written prompt keeps the unbounded recovery.
-			const bool untransported_prompt = session.processing && session.prompt_request_id == 0 &&
+			// A prompt that never reached the connection has no remote turn to protect, so its recovery ends: after
+			// the elapsed budget, not a few fast attempts. A staged or possibly written prompt, and a turn whose
+			// stop is still owed (runtime flag or saved marker), keep the unbounded recovery.
+			const bool untransported_prompt = session.recovering_remote_turn && session.processing && session.prompt_request_id == 0 &&
 			    !session.queued_prompt.empty() && !session.pending_prompt_delivery && chat.remote_prompt_delivery_id.empty() &&
-			    !session.recovering_remote_process && !session.remote_stop_unconfirmed;
-			const bool recovering_helper_process = !untransported_prompt &&
-			    (session.recovering_remote_turn || session.recovering_remote_process);
+			    !session.recovering_remote_process && !session.remote_stop_unconfirmed && !chat.remote_stop_cleanup_pending;
+			const bool recovering_helper_process = untransported_prompt
+			    ? now_seconds - session.reconnect_first_failure_time_s < kUntransportedPromptReconnectBudgetSeconds
+			    : session.recovering_remote_turn || session.recovering_remote_process;
 			if (recovering_helper_process ||
-			    session.reconnect_attempts < kAcpReconnectMaxAttempts)
+			    (!untransported_prompt && session.reconnect_attempts < kAcpReconnectMaxAttempts))
 			{
 				session.reconnect_pending = true;
 				const double delay_seconds = recovering_helper_process
@@ -749,6 +755,11 @@ namespace uam
 			session.reconnect_pending = false;
 			session.reconnect_not_before_time_s = 0.0;
 			chat.remote_turn_reconnect_pending = false;
+			// A never-sent prompt returns as the same interrupted unsent rows as one returned while staged.
+			if (untransported_prompt)
+				for (int index = session.turn_first_user_message_index >= 0 ? session.turn_first_user_message_index : session.turn_user_message_index;
+				     index >= 0 && index <= session.turn_user_message_index && index < static_cast<int>(chat.messages.size()); ++index)
+					if (chat.messages[static_cast<std::size_t>(index)].role == MessageRole::User) chat.messages[static_cast<std::size_t>(index)].acp_prompt_not_sent = true;
 			(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
 			(void)PersistQueuedAcpUserPromptsAsInterrupted(session, chat);
 			FailAcpTurnOrSession(session, &chat, message);
@@ -832,7 +843,7 @@ namespace uam
 			}
 			// Background discovery reattaches only to stop a helper process it could not confirm stopped. Every attach
 			// counts, so a cleanup that never confirms ends instead of relaunching for as long as the app runs.
-			if (session.ephemeral_model_discovery && session.reconnect_attempts >= kAcpReconnectMaxAttempts)
+			if (session.ephemeral_model_discovery && session.discovery_cleanup_attaches >= kAcpReconnectMaxAttempts)
 			{
 				// Releasing the unconfirmed stop lets the completed-discovery sweep retire this session and its chat.
 				session.reconnect_pending = false;
@@ -840,6 +851,9 @@ namespace uam
 				session.recovering_remote_process = false;
 				return true;
 			}
+			if (session.ephemeral_model_discovery && session.discovery_cleanup_attaches > 0 &&
+			    now_seconds < session.discovery_cleanup_last_attach_time_s + RemoteTurnReconnectDelaySeconds(session.discovery_cleanup_attaches + 1))
+				return false;
 			// A helper update on this host owns its runner until it commits or rolls back; recovery reattach would
 			// otherwise race the install (#771); it retries once the host is ready again.
 			// The wait does not use a reconnect attempt; Settings shows the host as installing.
@@ -902,6 +916,7 @@ namespace uam
 			}
 
 			std::string error;
+			const bool turn_was_processing = session.processing;
 			// Attaching only to stop the old helper launches nothing, so the new provider's launch gates do not apply.
 			const bool attach_only_to_stop = session.remote_stop_unconfirmed && chat.remote_stop_cleanup_pending;
 			if (!attach_only_to_stop && (!PrepareCliTerminalForAcpLaunch(app, chat.id, &error) ||
@@ -922,7 +937,11 @@ namespace uam
 				session.reconnect_pending = false;
 				session.reconnect_not_before_time_s = 0.0;
 				AppendAcpDiagnostic(session, "reconnect", "started", "", "", false, 0, "Structured runtime reconnected.");
-				if (session.ephemeral_model_discovery) ++session.reconnect_attempts;
+				if (session.ephemeral_model_discovery)
+				{
+					++session.discovery_cleanup_attaches;
+					session.discovery_cleanup_last_attach_time_s = now_seconds;
+				}
 				if (session.remote_stop_unconfirmed && chat.remote_stop_cleanup_pending)
 					(void)StopAcpSession(app, chat.id, AcpStopPurpose::Interrupt, true);
 				return true;
@@ -934,6 +953,28 @@ namespace uam
 				return true;
 			}
 			session.pending_referenced_queue_launch_fingerprint.clear();
+			if (session.ephemeral_model_discovery)
+			{
+				// A cleanup reattach that cannot start counts like one that started.
+				++session.discovery_cleanup_attaches;
+				session.discovery_cleanup_last_attach_time_s = now_seconds;
+			}
+			// The launch itself ended the turn, for example by returning a staged prompt as unsent. Finish as the
+			// exit handler does for the same outcome: block the goal and flag the chat, and schedule nothing.
+			if (turn_was_processing && !session.processing && !session.reconnect_pending)
+			{
+				const std::string owner_chat_id = uam::strings::NonEmptyOrFallback(chat.goal_owner_chat_id, chat.id);
+				if (Goal* active_goal = GoalService::FindActiveGoal(app, owner_chat_id); active_goal != nullptr &&
+				    (chat.goal_iteration_goal_id.empty() || active_goal->id == chat.goal_iteration_goal_id))
+				{
+					GoalService::RecordBlocker(app, owner_chat_id, active_goal->id, session.last_error, kDecisionSourceFallback, "remote_connection");
+					(void)GoalService::UpdateGoalStatus(app, owner_chat_id, active_goal->id, GoalStatus::Blocked);
+					AppendGoalLoopDiagnostic(session, "goal_blocked_process_exit", active_goal->id, session.last_error);
+					if (ChatSession* owner = ChatDomainService().FindChatById(app, owner_chat_id); owner != nullptr) acp_detail::SaveChatQuietly(app, *owner);
+				}
+				MarkAcpChatUnseenIfBackground(app, chat);
+				return true;
+			}
 			// Workspace failure already held the input and explicitly settled reconnect.
 			// Do not re-arm a retry that the held queue can never consume.
 			if (session.queue_held && !session.reconnect_pending) return true;
@@ -4845,6 +4886,25 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (error_out != nullptr) *error_out = "A workspace is required for provider model discovery.";
 			return false;
 		}
+		// A CLI version already checked on this computer and known incompatible cannot list models until that check
+		// changes. Answer from the recorded check: a session started here is refused by the launch gate every time
+		// a model menu asks again.
+		{
+			const std::string host_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(execution_host_id), std::string(uam::execution_hosts::kLocalHostId));
+			const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, host_id);
+			const auto version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider->id, host_id));
+			if (host != nullptr && version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked &&
+			    version->second.check_error.empty() && uam::execution_hosts::SameConnection(version->second.execution_host, *host))
+			{
+				const std::string incompatible = ProviderRuntimeRegistry::Resolve(*provider).StructuredCliVersionError(
+				    *provider, version->second.installed_version, host_id != uam::execution_hosts::kLocalHostId);
+				if (!incompatible.empty())
+				{
+					if (error_out != nullptr) *error_out = incompatible;
+					return false;
+				}
+			}
+		}
 		if (normalized_provider_id == uam::provider_ids::kAntigravityCli)
 		{
 			const std::string host_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(execution_host_id), "local");
@@ -8260,8 +8320,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 						session.reconnect_pending = false;
 						session.reconnect_not_before_time_s = 0.0;
 					}
-					else if (recovering_remote_process || (undelivered_prompt && remote_turn_recovery))
+					else if (remote_turn_recovery && app.execution_routing_waits.contains(chat.id))
 					{
+						// The relaunch above is waiting for routing, which reconnect does not count as a failed attempt.
+						ScheduleAcpReconnect(session, GetAppTimeSeconds());
+					}
+					else if (recovering_remote_process || remote_turn_recovery)
+					{
+						// Counted so a proxy that keeps exiting backs off. Only a never-sent prompt is ever given up.
 						RecordAcpReconnectFailure(app, session, chat, GetAppTimeSeconds(),
 						                          session.last_error);
 					}
@@ -8335,15 +8401,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (discovery != app.model_discovery_chats.end() && discovery->execution_host_id != execution_hosts::kLocalHostId &&
 			    execution_hosts::Find(app.settings.execution_hosts, discovery->execution_host_id) != nullptr &&
 			    discovery->remote_process_exists && !discovery->remote_process_control_token.empty() &&
-			    session->reconnect_attempts < kAcpReconnectMaxAttempts)
+			    session->discovery_cleanup_attaches < kAcpReconnectMaxAttempts)
 			{
 				// A proxy exit cannot discard authority over its surviving discovery process.
 				PreserveFailedRemoteStop(app, *session, false);
 				changed = true;
 				continue;
 			}
-			if (session->reconnect_attempts >= kAcpReconnectMaxAttempts)
-				diagnostics::Write("Background model discovery cleanup ended after bounded reattach attempts: " + session->provider_id);
+			// The helper stops and forgets a discovery process once its 60 s lease is no longer renewed by a proxy.
+			if (session->discovery_cleanup_attaches >= kAcpReconnectMaxAttempts)
+				diagnostics::Write("Background model discovery cleanup ended after bounded reattach attempts; the helper's lease retires the process: " + session->provider_id);
 			completed_ephemeral_ids.insert(session->chat_id);
 		}
 		if (!completed_ephemeral_ids.empty())
