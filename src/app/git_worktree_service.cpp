@@ -1797,7 +1797,9 @@ namespace uam
 	namespace
 	{
 		// Journals written before this moment belong to an earlier process, whose `git worktree add` may still be running.
-		std::atomic<std::filesystem::file_time_type::rep> g_workspace_intent_epoch{std::filesystem::file_time_type::clock::now().time_since_epoch().count()};
+		// Whole seconds in a 64-bit value: the clock's own representation can be 128 bits wide, which is not portably atomic.
+		long long FileTimeSeconds(std::filesystem::file_time_type time) { return static_cast<long long>(std::chrono::duration_cast<std::chrono::seconds>(time.time_since_epoch()).count()); }
+		std::atomic<long long> g_workspace_intent_epoch{FileTimeSeconds(std::filesystem::file_time_type::clock::now())};
 		constexpr std::chrono::seconds kWorkspaceIntentQuietPeriod{60};
 
 		struct LinkedWorktree
@@ -1870,7 +1872,7 @@ namespace uam
 
 	std::filesystem::file_time_type SetWorkspaceIntentProcessEpochForTests(std::filesystem::file_time_type epoch)
 	{
-		return std::filesystem::file_time_type(std::filesystem::file_time_type::duration(g_workspace_intent_epoch.exchange(epoch.time_since_epoch().count())));
+		return std::filesystem::file_time_type(std::chrono::duration_cast<std::filesystem::file_time_type::duration>(std::chrono::seconds(g_workspace_intent_epoch.exchange(FileTimeSeconds(epoch)))));
 	}
 
 	bool GitWorktreeService::WorkspaceCreationUnfinished(const std::filesystem::path& worktree, std::stop_token stop) const
@@ -1923,7 +1925,7 @@ namespace uam
 			std::error_code time_error;
 			const std::filesystem::file_time_type written = std::filesystem::last_write_time(receipt, time_error);
 			if (time_error) return FailedWorkspaceIntent::Preserved;
-			if (written.time_since_epoch().count() < g_workspace_intent_epoch.load())
+			if (FileTimeSeconds(written) < g_workspace_intent_epoch.load())
 			{
 				// ponytail: activity is judged from the journal and the first 5000 entries; a silent longer stall is treated as dead. Track the Git process itself if that ever misfires.
 				std::filesystem::file_time_type newest = written;
