@@ -1255,3 +1255,78 @@ UAM_TEST(StatePushStampsAreNotPinnedByOtherReadersAndTheirCostIsVisible)
 	UAM_ASSERT(!uam::StateReconciliationDue());
 	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(1000), 1000);
 }
+
+UAM_TEST(StatePushRebuildsModelCataloguesOnlyWhenTheirInputsChange)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	StatePatchObserver observer;
+	TempDir temp("uam-catalogue-generation");
+	uam::AppState app;
+	BuildIdleInstallFixture(app, temp.root, 60);
+	clock.Advance(std::chrono::seconds(3));
+	uam::PushStateUpdate(nullptr, app);
+	clock.Advance(std::chrono::milliseconds(120));
+	// The first push after the baselines were replaced compares the slice once more.
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+
+	// Unchanged inputs: the slice (every provider and folder's model list) is not built at all.
+	std::size_t builds = uam::StateSerializer::CatalogSliceBuildCountForTests();
+	for (int repeat = 0; repeat < 3; ++repeat)
+	{
+		clock.Advance(std::chrono::milliseconds(120));
+		UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	}
+	UAM_ASSERT_EQ(uam::StateSerializer::CatalogSliceBuildCountForTests(), builds);
+
+	const auto pushed_catalogs = [&]
+	{
+		clock.Advance(std::chrono::milliseconds(120));
+		g_observed_state_patch.clear();
+		UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+		const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+		UAM_ASSERT(patch.contains("providerModelCatalogs"));
+		return patch["providerModelCatalogs"];
+	};
+
+	// Every write to the service takes its write lock, which advances the generation: the next push publishes it.
+	const std::uint64_t generation = app.provider_model_catalog->Generation();
+	nlohmann::json models = nlohmann::json::array({{{"id", "fixture/only-model"}, {"name", "Only model"}}});
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("claude-cli", models, app.folders[0].directory));
+	UAM_ASSERT(app.provider_model_catalog->Generation() != generation);
+	nlohmann::json catalogs = pushed_catalogs();
+	UAM_ASSERT(std::ranges::any_of(catalogs, [](const nlohmann::json& catalog)
+	{ return catalog["providerId"] == "claude-cli" && catalog["availableModels"].size() == 1 && catalog["availableModels"][0]["id"] == "fixture/only-model"; }));
+
+	app.provider_model_catalog->RememberRefreshFailure("codex-cli", "Fixture refresh failed", app.folders[1].directory);
+	catalogs = pushed_catalogs();
+	UAM_ASSERT(std::ranges::any_of(catalogs, [](const nlohmann::json& catalog) { return catalog["modelRefreshError"] == "Fixture refresh failed"; }));
+
+	// Inputs outside the service are compared directly: a folder moved to another directory rebuilds the slice.
+	const fs::path moved = temp.root / "moved-folder";
+	fs::create_directories(moved);
+	builds = uam::StateSerializer::CatalogSliceBuildCountForTests();
+	app.folders[2].directory = moved.generic_string();
+	clock.Advance(std::chrono::milliseconds(120));
+	(void)uam::PushStateUpdateIfChanged(nullptr, app);
+	UAM_ASSERT_EQ(uam::StateSerializer::CatalogSliceBuildCountForTests(), builds + 1);
+
+	// And a checked CLI version, which decides the launch options shown for each model.
+	builds = uam::StateSerializer::CatalogSliceBuildCountForTests();
+	uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("claude-cli", "local")];
+	version.checked = true;
+	version.supported = true;
+	version.installed_version = "9.9.9";
+	clock.Advance(std::chrono::milliseconds(120));
+	(void)uam::PushStateUpdateIfChanged(nullptr, app);
+	UAM_ASSERT_EQ(uam::StateSerializer::CatalogSliceBuildCountForTests(), builds + 1);
+
+	// Settled again: no further builds until the three-second reconciliation push, which builds and compares it.
+	builds = uam::StateSerializer::CatalogSliceBuildCountForTests();
+	clock.Advance(std::chrono::milliseconds(120));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::CatalogSliceBuildCountForTests(), builds);
+	clock.Advance(std::chrono::seconds(3));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(uam::StateSerializer::CatalogSliceBuildCountForTests(), builds + 1);
+}

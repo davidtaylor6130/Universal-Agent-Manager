@@ -173,7 +173,19 @@ namespace uam
 		struct StablePassState
 		{
 			CatalogSnapshotCache cache;
+			// Everything a catalogue snapshot reads other than workspace paths resolved on disk; computed once per pass.
+			std::optional<std::string> catalog_inputs;
 		};
+
+		// Catalogue values a push reuses while the inputs above are unchanged: the digest of the providerModelCatalogs
+		// slice it last compared with the pushed baseline, and each scope's compact fingerprint.
+		struct CatalogMemo
+		{
+			std::string inputs;
+			std::optional<std::uint64_t> slice_digest;
+			std::unordered_map<std::string, nlohmann::json> fingerprints;
+		};
+		thread_local CatalogMemo g_catalog_memo;
 
 		thread_local StablePassState* g_stable_pass = nullptr;
 		thread_local std::size_t g_hashed_transcript_messages = 0;
@@ -278,23 +290,101 @@ namespace uam
 		std::uint64_t JsonDigest(const nlohmann::json& value);
 
 		/// Fingerprint each inactive scope once per scan; changed patches hydrate its full catalog.
+		/// <summary>
+		/// Every input of a catalogue snapshot or of the providerModelCatalogs slice, apart from workspace paths
+		/// resolved on disk: the service's state (its generation), the provider profiles, the folders, the execution
+		/// hosts and the checked CLI versions that decide launch-option metadata. Equal text means equal inputs.
+		/// </summary>
+		std::string CatalogInputs(const AppState& app)
+		{
+			std::string inputs = std::to_string(app.provider_model_catalog->InstanceId()) + ':' + std::to_string(app.provider_model_catalog->Generation());
+			const auto add = [&inputs](std::string_view text)
+			{
+				inputs += '\n';
+				inputs += std::to_string(text.size());
+				inputs += ':';
+				inputs += text;
+			};
+			for (const ProviderProfile& provider : app.provider_profiles)
+			{
+				add(provider.id);
+				inputs += provider.supports_structured ? 's' : '-';
+			}
+			inputs += "\nfolders";
+			for (const ChatFolder& folder : app.folders)
+			{
+				add(folder.directory);
+				add(folder.execution_host_id);
+			}
+			inputs += "\nhosts";
+			for (const ExecutionHost& host : app.settings.execution_hosts)
+			{
+				add(host.id);
+				add(host.platform);
+			}
+			// Unordered map: sort so the text does not depend on bucket order.
+			std::vector<std::string> versions;
+			for (const auto& [key, version] : app.runtime_cli_versions_by_provider_id)
+			{
+				std::string entry = key + '\n' + (version.checked ? 'c' : '-') + (version.supported ? 's' : '-') + version.installed_version + '\n';
+				for (const ExecutionHost& host : app.settings.execution_hosts) entry += execution_hosts::SameConnection(version.execution_host, host) ? '1' : '0';
+				versions.push_back(std::move(entry));
+			}
+			std::sort(versions.begin(), versions.end());
+			inputs += "\nversions";
+			for (const std::string& entry : versions) add(entry);
+			return inputs;
+		}
+
+		/// <summary>
+		/// The memo for this pass's catalogue inputs, or nullptr when stamped caches are not in use (outside a push).
+		/// A memo left from other inputs is emptied, so whatever it returns belongs to the current inputs.
+		/// </summary>
+		CatalogMemo* CurrentCatalogMemo(const AppState& app)
+		{
+			if (g_stable_pass == nullptr || g_stamped_cache_mode == StateSerializer::StampedCacheMode::Exact || app.provider_model_catalog == nullptr) return nullptr;
+			if (!g_stable_pass->catalog_inputs) g_stable_pass->catalog_inputs = CatalogInputs(app);
+			if (g_catalog_memo.inputs != *g_stable_pass->catalog_inputs)
+			{
+				g_catalog_memo = CatalogMemo{};
+				g_catalog_memo.inputs = *g_stable_pass->catalog_inputs;
+			}
+			return &g_catalog_memo;
+		}
+
 		const nlohmann::json& CatalogFingerprintForChat(const AppState& app, const ChatSession& chat,
 		                                               CatalogSnapshotCache& cache)
 		{
 			const std::string workspace = WorkspaceSnapshotForChat(app, chat, cache).generic_string();
 			const std::string key = CatalogSnapshotKey(chat.provider_id, workspace, chat.execution_host_id);
 			if (const std::unordered_map<std::string, nlohmann::json>::const_iterator found = cache.fingerprints.find(key); found != cache.fingerprints.end()) return found->second;
+			CatalogMemo* memo = CurrentCatalogMemo(app);
+			const auto remembered = memo != nullptr ? memo->fingerprints.find(key) : std::unordered_map<std::string, nlohmann::json>::iterator{};
+			if (memo != nullptr && remembered != memo->fingerprints.end() && g_stamped_cache_mode == StateSerializer::StampedCacheMode::Trust)
+			{
+				++g_trusted_cache_reads;
+				return cache.fingerprints.emplace(key, remembered->second).first->second;
+			}
 			const nlohmann::json snapshot = CatalogSnapshotForChat(app, chat, cache);
 			// The token never leaves this process (patches hydrate the full catalog), so it is hashed without dumping the catalog to text.
-			return cache.fingerprints.emplace(key, nlohmann::json{
+			nlohmann::json fingerprint{
 			    {"catalogDigest", std::to_string(JsonDigest(snapshot))},
 			    {"modelsLoading", snapshot.value("modelsLoading", false)},
 			    {"modelRefreshError", snapshot.value("modelRefreshError", "")},
-			}).first->second;
+			};
+			if (memo != nullptr)
+			{
+				if (remembered != memo->fingerprints.end() && remembered->second != fingerprint) ReportCacheDivergence("model catalogue", key);
+				memo->fingerprints[key] = fingerprint;
+			}
+			return cache.fingerprints.emplace(key, std::move(fingerprint)).first->second;
 		}
+
+		thread_local std::size_t g_catalog_slice_builds = 0;
 
 		nlohmann::json SerializeProviderModelCatalogs(const AppState& app, CatalogSnapshotCache& cache)
 		{
+			++g_catalog_slice_builds;
 			nlohmann::json catalogs = nlohmann::json::array();
 			if (app.provider_model_catalog == nullptr) return catalogs;
 			std::unordered_set<std::string> seen;
@@ -2267,6 +2357,16 @@ namespace uam
 		return g_trusted_cache_reads;
 	}
 
+	std::size_t StateSerializer::CatalogSliceBuildCountForTests()
+	{
+		return g_catalog_slice_builds;
+	}
+
+	void StateSerializer::ForgetCatalogMemo()
+	{
+		g_catalog_memo = CatalogMemo{};
+	}
+
 	std::size_t StateSerializer::CacheDivergenceCount()
 	{
 		return g_cache_divergences;
@@ -2467,7 +2567,20 @@ namespace uam
 		j["selectedChatId"] = uam::nlohmann_json::StringOrNull(selected_chat_id);
 
 		j["providers"] = SerializeProvidersForFrontend(app.provider_profiles);
-		j["providerModelCatalogs"] = SerializeProviderModelCatalogs(app, catalog_cache);
+		// A push whose catalogue inputs are unchanged omits the slice: it equals the one last compared with the pushed baseline.
+		if (CatalogMemo* memo = CurrentCatalogMemo(app); memo != nullptr && memo->slice_digest && g_stamped_cache_mode == StampedCacheMode::Trust)
+			++g_trusted_cache_reads;
+		else
+		{
+			nlohmann::json catalogs = SerializeProviderModelCatalogs(app, catalog_cache);
+			if (memo != nullptr)
+			{
+				const std::uint64_t digest = JsonDigest(catalogs);
+				if (memo->slice_digest && *memo->slice_digest != digest) ReportCacheDivergence("model catalogues", "the provider catalogue list");
+				memo->slice_digest = digest;
+			}
+			j["providerModelCatalogs"] = std::move(catalogs);
+		}
 		j["memoryActivity"] = SerializeMemoryActivity(app);
 		j["cliVersionManager"] = SerializeCliVersionManager(app);
 

@@ -135,6 +135,8 @@ namespace
 	{
 		if (!g_verify_state_caches_after_every_push) return;
 		const uam::StateSerializer::ScopedStampedCacheMode verification(uam::StateSerializer::StampedCacheMode::Verify);
+		const uam::StateSerializer::StablePass stable_pass;
+		(void)uam::StateSerializer::SerializeFingerprint(app, true, false);
 		(void)uam::StateSerializer::SerializeChatFingerprintDigests(app);
 	}
 
@@ -184,6 +186,8 @@ namespace
 		g_last_pushed_resource_collections_fingerprint = fingerprint_state.at("resourceCollections");
 		g_last_pushed_providers_fingerprint = fingerprint_state.at("providers");
 		g_last_pushed_provider_model_catalogs_fingerprint = fingerprint_state.at("providerModelCatalogs");
+		// The serializer may omit the slice only relative to a baseline it saw compared; this one came from elsewhere.
+		uam::StateSerializer::ForgetCatalogMemo();
 		g_last_pushed_startup_native_imports_fingerprint = fingerprint_state.at("startupNativeImports");
 		g_last_pushed_settings_fingerprint = SerializeSettingsForPatch(app);
 		g_last_pushed_memory_fingerprint = fingerprint_state.at("memoryActivity");
@@ -425,7 +429,9 @@ namespace
 
 		AddChangedJsonField(data, "providers", fingerprint_state.at("providers"), g_last_pushed_providers_fingerprint);
 
-		AddChangedJsonField(data, "providerModelCatalogs", fingerprint_state.at("providerModelCatalogs"), g_last_pushed_provider_model_catalogs_fingerprint);
+		// Absent when the serializer vouches that the catalogue inputs are unchanged since the slice was last compared here.
+		if (const nlohmann::json::const_iterator catalogs = fingerprint_state.find("providerModelCatalogs"); catalogs != fingerprint_state.end())
+			AddChangedJsonField(data, "providerModelCatalogs", *catalogs, g_last_pushed_provider_model_catalogs_fingerprint);
 		AddChangedJsonField(data, "startupNativeImports", fingerprint_state.at("startupNativeImports"), g_last_pushed_startup_native_imports_fingerprint);
 
 		const nlohmann::json settings = SerializeSettingsForPatch(app);

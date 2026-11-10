@@ -71,6 +71,12 @@ class StateSerializer
 	/// <summary>Values reused by revision stamp on this thread so far without recomputing them.</summary>
 	static std::size_t TrustedCacheReadCount();
 
+	/// <summary>Times the providerModelCatalogs slice was built on this thread so far.</summary>
+	static std::size_t CatalogSliceBuildCountForTests();
+
+	/// <summary>Drops the catalogue values pushes reuse; call when the pushed baselines are replaced, so the next push compares the slice again.</summary>
+	static void ForgetCatalogMemo();
+
 	/// <summary>Reused values verifying passes found different from their source so far, on any thread.</summary>
 	static std::size_t CacheDivergenceCount();
 
@@ -86,6 +92,8 @@ class StateSerializer
 	/// Serialise the application state, optionally omitting loaded chat messages.
 	static nlohmann::json Serialize(const AppState& app, bool summary_only = false);
 
+	/// Inside a Trust push whose catalogue inputs are unchanged the "providerModelCatalogs" slice is omitted too:
+	/// it equals the slice the previous push compared with its baseline.
 	/// Serialise state summaries; compact catalogs are internal comparison tokens and need patch hydration.
 	/// Without include_chats the "chats" slice is omitted; poll-time diffs compare SerializeChatFingerprintDigests instead.
 	static nlohmann::json SerializeFingerprint(const AppState& app, bool compact_catalogs = false, bool include_chats = true);
