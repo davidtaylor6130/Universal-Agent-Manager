@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <unordered_map>
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/app_time.h"
@@ -146,7 +147,7 @@ namespace uam
 		{
 			const std::string host_id = folder.execution_host_id.empty() ? "local" : folder.execution_host_id;
 			const ExecutionHost* host = execution_hosts::Find(hosts, host_id);
-			result.push_back({folder.id, host_id, folder.directory, host ? ExecutionRoutingConnectionIdentity(*host) + ":" + host->runner_status : "", {}});
+			result.push_back({folder.id, host_id, folder.directory, host ? ExecutionRoutingConnectionIdentity(*host) : "", {}});
 		}
 		return result;
 	}
@@ -164,42 +165,67 @@ namespace uam
 	std::vector<RepositoryRouteWorkspace> ReadRepositoryRouteInventory(std::vector<RepositoryRouteWorkspace> workspaces,
 	    const std::vector<ExecutionHost>& hosts, std::stop_token stop)
 	{
-		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
 		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
-		for (RepositoryRouteWorkspace& workspace : workspaces)
+		std::unordered_map<std::string, std::vector<RepositoryRouteWorkspace*>> by_host;
+		for (RepositoryRouteWorkspace& workspace : workspaces) by_host[workspace.host_id].push_back(&workspace);
+		// Each host has its own 15 second budget and one connection, so a slow host costs the others nothing.
+		// ponytail: one thread per host and workspaces read in turn; read a host's workspaces concurrently if one host ever has more than 15 seconds of them.
+		const auto read_host = [&](const std::vector<RepositoryRouteWorkspace*>& owned)
 		{
-			workspace.repository.reset();
-			if (stop.stop_requested() || std::chrono::steady_clock::now() >= deadline) break;
-			const ExecutionHost* host = execution_hosts::Find(hosts, workspace.host_id);
-			if (!host || workspace.directory.empty()) continue;
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+			const ExecutionHost* host = execution_hosts::Find(hosts, owned.front()->host_id);
 			std::unique_ptr<remote::RunnerClient> runner;
-			if (workspace.host_id != "local")
+			bool connect_attempted = false;
+			for (RepositoryRouteWorkspace* workspace : owned)
 			{
-				if (host->transport != "ssh" || host->runner_status != "ready" || host->runner_protocol_version != remote::kRunnerProtocolVersion ||
-				    !execution_hosts::IsAbsoluteRemotePath(host->platform, workspace.directory)) continue;
-				runner = std::make_unique<remote::RunnerClient>(process, *host);
-			}
-			else if (!paths::PathFromUtf8(workspace.directory).is_absolute()) continue;
-			workspace.repository = ReadRepositoryRouteIdentity([&](const std::vector<std::string>& argv, std::string& output)
-			{
-				const long long remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
-				if (remaining <= 0 || stop.stop_requested()) return false;
-				const int timeout = static_cast<int>(std::min(remaining, 2000LL));
-				ProcessExecutionResult result;
-				if (runner) result = runner->ExecuteCommand(process.GenerateUuid(), paths::PathFromUtf8(workspace.directory), argv, timeout, stop);
-				else
+				// A read that could not finish says nothing about the checkout, so the identity passed in stands.
+				const std::optional<RepositoryRouteIdentity> previous = std::move(workspace->repository);
+				workspace->repository.reset();
+				if (!host || workspace->directory.empty()) continue;
+				bool inconclusive = false;
+				if (workspace->host_id != "local")
 				{
-					std::vector<std::string> local_argv = argv;
-					if (argv.front() == "git") local_argv.insert(local_argv.begin() + 2, {"-C", workspace.directory});
-					else local_argv.back() = workspace.directory;
-					std::string command;
-					for (const std::string& argument : local_argv) command += shell::EscapeArg(argument) + " ";
-					result = process.ExecuteCommand(command, timeout, stop);
+					if (host->transport != "ssh" || host->runner_protocol_version != remote::kRunnerProtocolVersion ||
+					    !remote::CanAttemptRunnerConnection(*host) || !execution_hosts::IsAbsoluteRemotePath(host->platform, workspace->directory)) continue;
+					if (!connect_attempted)
+					{
+						// Connecting is paid once, against the host's budget, never against a command's two seconds.
+						connect_attempted = true;
+						runner = std::make_unique<remote::RunnerClient>(process, *host);
+						if (!runner->Connect(nullptr, stop)) runner.reset();
+					}
+					if (!runner) inconclusive = true;
 				}
-				if (!result.ok || result.exit_code != 0 || result.output_truncated || result.canceled || result.timed_out || result.output.size() > 4096) return false;
-				output = result.output;
-				return true;
-			});
+				else if (!paths::PathFromUtf8(workspace->directory).is_absolute()) continue;
+				if (!inconclusive)
+					workspace->repository = ReadRepositoryRouteIdentity([&](const std::vector<std::string>& argv, std::string& output)
+					{
+						const long long remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+						if (remaining <= 0 || stop.stop_requested()) { inconclusive = true; return false; }
+						const int timeout = static_cast<int>(std::min(remaining, 2000LL));
+						ProcessExecutionResult result;
+						if (runner) result = runner->ExecuteCommand(process.GenerateUuid(), paths::PathFromUtf8(workspace->directory), argv, timeout, stop);
+						else
+						{
+							std::vector<std::string> local_argv = argv;
+							if (argv.front() == "git") local_argv.insert(local_argv.begin() + 2, {"-C", workspace->directory});
+							else local_argv.back() = workspace->directory;
+							std::string command;
+							for (const std::string& argument : local_argv) command += shell::EscapeArg(argument) + " ";
+							result = process.ExecuteCommand(command, timeout, stop);
+						}
+						if (result.timed_out || result.canceled || (runner && !runner->IsConnected())) inconclusive = true;
+						if (!result.ok || result.exit_code != 0 || result.output_truncated || result.canceled || result.timed_out || result.output.size() > 4096) return false;
+						output = result.output;
+						return true;
+					});
+				if (inconclusive) workspace->repository = previous;
+			}
+		};
+		{
+			std::vector<std::jthread> readers;
+			for (const std::pair<const std::string, std::vector<RepositoryRouteWorkspace*>>& group : by_host)
+				readers.emplace_back([&read_host, &group] { try { read_host(group.second); } catch (...) {} });
 		}
 		return workspaces;
 	}
@@ -228,6 +254,11 @@ namespace uam
 		const std::shared_ptr<RepositoryRouteTask> task = std::make_shared<RepositoryRouteTask>();
 		task->data_root = app.data_root;
 		task->captured = current;
+		// Seed the last identity read for each unchanged workspace; a read that times out keeps it.
+		if (app.repository_route_data_root == app.data_root)
+			for (RepositoryRouteWorkspace& workspace : task->captured)
+				for (const RepositoryRouteWorkspace& known : app.repository_route_workspaces)
+					if (RepositoryRouteSnapshotMatches({workspace}, {known})) workspace.repository = known.repository;
 		task->started_at_s = now;
 		app.repository_route_refresh = task;
 		app.repository_route_tasks.push_back(task);

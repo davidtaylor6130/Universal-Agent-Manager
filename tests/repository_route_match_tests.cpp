@@ -202,3 +202,53 @@ UAM_TEST(RepositoryRoutesLaunchGuardFailsClosedAndAllowsExactManualOverride)
 	UAM_ASSERT_EQ(uam::PrepareRepositoryRouteLaunch(app, chat, error), uam::RepositoryRouteLaunchState::Ready);
 	UAM_ASSERT_EQ(app.repository_route_tasks.size(), std::size_t(1));
 }
+
+UAM_TEST(RepositoryRoutesKeepTheLastIdentityWhenAReadCannotFinish)
+{
+	TempDir fixture("uam-repository-routing-timeout");
+	const uam::RepositoryRouteIdentity known{"git", "github.com/Owner/Repo", "src"};
+	const std::vector<uam::RepositoryRouteWorkspace> seeded{{"local-fixture", "local", fixture.root.string(), "local-identity", known}};
+	// A stopped or timed-out read is not evidence that the checkout changed.
+	std::stop_source stopped;
+	stopped.request_stop();
+	const std::vector<uam::RepositoryRouteWorkspace> unfinished = uam::ReadRepositoryRouteInventory(seeded, {uam::execution_hosts::LocalHost()}, stopped.get_token());
+	UAM_ASSERT_EQ(unfinished.size(), std::size_t(1));
+	UAM_ASSERT(unfinished.front().repository == std::optional<uam::RepositoryRouteIdentity>(known));
+	// A read that finishes replaces it.
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(fixture.root.string())));
+	UAM_ASSERT(RunTestCommand("git -C " + ShellQuoteForTest(fixture.root.string()) + " config remote.origin.url https://github.com/Owner/Other.git"));
+	const std::vector<uam::RepositoryRouteWorkspace> finished = uam::ReadRepositoryRouteInventory(seeded, {uam::execution_hosts::LocalHost()});
+	UAM_ASSERT(finished.front().repository.has_value());
+	UAM_ASSERT_EQ(finished.front().repository->identity, std::string("github.com/Owner/Other"));
+}
+
+UAM_TEST(RepositoryRoutesRefreshSeedsKnownIdentitiesAndIgnoresHostHealth)
+{
+	uam::AppState app;
+	app.data_root = fs::temp_directory_path() / "uam-synthetic-route-seed";
+	app.settings.execution_hosts.push_back(uam::execution_hosts::LocalHost());
+	ExecutionHost remote;
+	remote.id = "fixture-host";
+	remote.transport = "ssh";
+	remote.ssh_alias = "never-contact-this-fixture";
+	remote.platform = "linux";
+	remote.runner_status = "uninstalled";
+	app.settings.execution_hosts.push_back(remote);
+	ChatFolder destination;
+	destination.id = "destination";
+	destination.directory = "/fixture/destination";
+	destination.execution_host_id = remote.id;
+	app.folders = {destination};
+	const uam::RepositoryRouteIdentity known{"git", "github.com/Owner/Repo", ""};
+	app.repository_route_workspaces = uam::CaptureRepositoryRouteWorkspaces(app.folders, app.settings.execution_hosts);
+	app.repository_route_workspaces.front().repository = known;
+	app.repository_route_data_root = app.data_root;
+	app.repository_route_observed_at_s = uam::GetAppTimeSeconds() - 31.0;
+	// A failed health check changes neither the machine nor its checkouts, so the snapshot still matches.
+	app.settings.execution_hosts.back().runner_status = "error";
+	UAM_ASSERT(uam::RepositoryRouteSnapshotMatches(app.repository_route_workspaces, uam::CaptureRepositoryRouteWorkspaces(app.folders, app.settings.execution_hosts)));
+	app.settings.execution_hosts.back().runner_status = "uninstalled";
+	UAM_ASSERT(!uam::RefreshRepositoryRoutes(app));
+	UAM_ASSERT(app.repository_route_refresh != nullptr);
+	UAM_ASSERT(app.repository_route_refresh->captured.front().repository == std::optional<uam::RepositoryRouteIdentity>(known));
+}
