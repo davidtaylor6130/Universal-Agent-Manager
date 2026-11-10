@@ -143,7 +143,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
     rowRefs.current.get(highlight)?.focus()
   }, [highlight, scrollTop, models])
 
-  const requestCatalog = async (id: string) => {
+  const requestCatalog = async (id: string, automatic = false) => {
     if (id === 'favorites') return
     const scopedCatalog = matchingModelCatalog(catalogs, id, executionHostId, workspaceDirectory, hostPlatform)
     const catalogKey = modelCatalogKey(id, executionHostId, workspaceDirectory, hostPlatform)
@@ -157,7 +157,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
     setPendingScopes(new Set(pendingCatalogs.current))
     setRequestErrors(previous => ({ ...previous, [scopeKey]: '' }))
     try {
-      const started = id === providerId ? await onRefreshActive!() : await discover('', id, workspaceDirectory, executionHostId)
+      const started = id === providerId ? await onRefreshActive!() : automatic ? await discover('', id, workspaceDirectory, executionHostId, true) : await discover('', id, workspaceDirectory, executionHostId)
       if (!started && ownsActiveUi()) setRequestErrors(previous => ({ ...previous, [scopeKey]: 'Could not refresh models. Try again.' }))
     } catch {
       if (ownsActiveUi()) setRequestErrors(previous => ({ ...previous, [scopeKey]: 'Could not refresh models. Try again.' }))
@@ -176,7 +176,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
     const cachedChoices = Boolean(scopedCatalog?.availableModels.length || scopedCatalog?.configOptions?.some((option) => (option.category === 'model' || option.id === 'model') && option.options.length))
     const scopeKey = modelCatalogKey(id, executionHostId, workspaceDirectory, hostPlatform)
     if (id !== 'favorites' && id !== providerId && !cachedChoices && !scopedCatalog?.modelsLoading && !requestedCatalogs.current.has(scopeKey)) {
-      void requestCatalog(id)
+      void requestCatalog(id, true)
     }
   }
   const choose = (option: PickerModel | undefined) => { if (option && !disabled(option)) onSelect(option.providerId, option.id) }

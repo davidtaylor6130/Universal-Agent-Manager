@@ -540,6 +540,7 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 		session.recovering_remote_process = false;
 		ReactivateConfirmedRemoteGoal(app, chat);
 		session.reconnect_attempts = 0;
+		session.reconnect_first_failure_turn_serial = -1; // Reattached: a later failure starts a new budget.
 		return true;
 	}
 
