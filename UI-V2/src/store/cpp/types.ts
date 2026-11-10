@@ -1137,7 +1137,7 @@ export type ParsedPushMessage =
 
 export type ParsedPushResult =
   | { ok: true; message: ParsedPushMessage }
-  | { ok: false; status: Exclude<PushChannelStatus, 'connected' | 'no-push-yet'>; error: string }
+  | { ok: false; status: Exclude<PushChannelStatus, 'connected' | 'no-push-yet'>; error: string; mayHaveCarriedState?: true }
 
 export interface CentralProviderConfiguration {
   mcpOverrides?: Array<{ providerId: string; executionHostId: string; serverId: string; enabled: boolean; kind?: 'preference' }>

@@ -417,7 +417,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setCommitPanelWidthPx: (width: number) => void
 
   // CEF bootstrap
-  loadFromCef: (state: CppAppState) => void
+  loadFromCef: (state: CppAppState, allowSameRevision?: boolean) => void
 }
 
 export type ZustandSet = StoreApi<AppState>['setState']

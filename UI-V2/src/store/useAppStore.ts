@@ -651,6 +651,9 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
 
 const BOOTSTRAP_STATE_BACKOFF_MS = [100, 300, 900]
 const BOOTSTRAP_STATE_MAX_PULLS = 8
+// Delays before each state resync. The last step is the slowest rate a persistent fault can cause.
+const STATE_RESYNC_BACKOFF_MS = [100, 300, 900, 5000, 30000]
+const STATE_RESYNC_DEADLINE_MS = 15000
 
 export const useAppStore = create<AppState>((set, get) => {
   const flushPendingCliTranscriptChunks = () => {
@@ -931,6 +934,170 @@ export const useAppStore = create<AppState>((set, get) => {
   // Register window.uamPush SYNCHRONOUSLY at module load time (before React mounts)
   // so that C++'s OnLoadEnd push is never missed.  Using getState() avoids stale closures.
   if (isCefContext() && typeof window !== 'undefined') {
+    // Full state only hydrates the selected transcript. Keep buffered
+    // background deltas unless this update contains that chat's messages.
+    const applyFullState = (data: CppAppState, allowSameRevision = false) => {
+      for (const chatId of pendingStreamTokensByChatId.keys()) {
+        const chat = data.chats.find((candidate) => candidate.id === chatId)
+        if (!chat || Array.isArray(chat.messages)) {
+          pendingStreamTokensByChatId.delete(chatId)
+        }
+      }
+      get().loadFromCef(data, allowSameRevision)
+    }
+
+    // Compare the visible chat before and after a state change and reload its transcript when the change requires it.
+    const reloadActiveTranscriptIfChanged = (current: AppState, activeTranscriptPatched: boolean) => {
+      const activeChatId = current.activeSessionId
+      const activeBindingBefore = activeChatId ? current.acpBindingBySessionId[activeChatId] : undefined
+      const activeBindingAfter = activeChatId ? get().acpBindingBySessionId[activeChatId] : undefined
+      const completedActiveTurn = Boolean(activeBindingBefore?.processing && !activeBindingAfter?.processing)
+      const advancedContinuousTurn = Boolean(
+        activeBindingBefore?.processing &&
+        activeBindingAfter?.processing &&
+        (activeBindingAfter.turnSerial ?? 0) > (activeBindingBefore.turnSerial ?? 0)
+      )
+      const appendedTurnMessages = Boolean(
+        activeBindingBefore?.processing && activeBindingAfter?.processing &&
+        (get().sessions.find((session) => session.id === activeChatId)?.messageCount ?? 0) >
+          (current.sessions.find((session) => session.id === activeChatId)?.messageCount ?? 0)
+      )
+      const activeSessionBefore = current.sessions.find((session) => session.id === activeChatId)
+      const activeSessionAfter = get().sessions.find((session) => session.id === activeChatId)
+      // External history imports publish summaries. Refresh an already loaded idle
+      // transcript when its count or content digest changes, just as turn completion does.
+      const refreshedIdleHistory = Boolean(
+        activeChatId && current.messages[activeChatId] !== undefined &&
+        activeSessionBefore && activeSessionAfter &&
+        !activeBindingBefore?.processing && !activeBindingAfter?.processing &&
+        !current.cliBindingBySessionId[activeChatId]?.processing &&
+        !get().cliBindingBySessionId[activeChatId]?.processing &&
+        !current.messages[activeChatId].some((message) => message.isStreaming) &&
+        !activeTranscriptPatched &&
+        ((activeSessionBefore.messageCount ?? 0) !== (activeSessionAfter.messageCount ?? 0) ||
+          (activeSessionBefore.messagesDigest ?? '') !== (activeSessionAfter.messagesDigest ?? ''))
+      )
+      const newlyHeldOutboxMismatch = Boolean(activeChatId && activeBindingAfter?.queueHeld &&
+        activeBindingAfter.queuedPrompts?.length &&
+        (!activeBindingBefore?.queueHeld || !queuedPromptsEquivalent(activeBindingBefore.queuedPrompts, activeBindingAfter.queuedPrompts)) &&
+        Number.isSafeInteger(activeSessionAfter?.messageCount) && activeSessionAfter?.messagesDigest &&
+        (get().historyStartIndexBySessionId[activeChatId] ?? 0) + (get().messages[activeChatId]?.length ?? 0) > activeSessionAfter!.messageCount!)
+      if (
+        activeChatId &&
+        activeChatId === get().activeSessionId &&
+        (completedActiveTurn || advancedContinuousTurn || appendedTurnMessages || refreshedIdleHistory || newlyHeldOutboxMismatch)
+      ) {
+        get().loadSessionMessages(activeChatId, true)
+      }
+    }
+
+    // Native never resends a diff it has already built, so a lost, rejected or failed patch is
+    // repaired by pulling one full state. Full states and patches share native's revision counter
+    // (each published diff is exactly last + 1), so a snapshot at revision R contains every patch
+    // up to R. Patches arriving during the pull are held and replayed in arrival order: those at
+    // or below R are made moot by the snapshot, newer ones apply on top, and a hole among them is
+    // simply the next gap. Holding them means only a full stateUpdate can move the store past the
+    // snapshot, and then that newer full state has already closed the gap.
+    let stateResyncTimer: ReturnType<typeof setTimeout> | null = null
+    let stateResyncDeadline: ReturnType<typeof setTimeout> | null = null
+    let stateResyncInFlight = false
+    let stateResyncGeneration = 0
+    let stateResyncAttempt = 0
+    // A gap is known and no snapshot has closed it yet.
+    let stateResyncOutstanding = false
+    // A patch was rejected during the pull, so the snapshot may predate the lost change.
+    let stateResyncAgain = false
+    // ponytail: unbounded array, but the pull deadline bounds it to a few seconds of patches.
+    let heldPatchesDuringResync: CppStatePatch[] = []
+
+    const requestStateResync = () => {
+      // Bootstrap owns the first pull, and companion pages poll full state through CompanionShell.
+      if (!bootstrapHydrated || isCompanionContext() || window.uamPush !== ownedUamPush) return
+      stateResyncOutstanding = true
+      if (stateResyncInFlight) {
+        stateResyncAgain = true
+        return
+      }
+      if (stateResyncTimer !== null) return
+      const delay = STATE_RESYNC_BACKOFF_MS[Math.min(stateResyncAttempt, STATE_RESYNC_BACKOFF_MS.length - 1)]
+      stateResyncAttempt += 1
+      stateResyncTimer = setTimeout(pullStateResync, delay)
+    }
+
+    const settleStateResync = (generation: number, snapshot: CppAppState | null) => {
+      if (generation !== stateResyncGeneration || !stateResyncInFlight) return
+      if (stateResyncDeadline !== null) clearTimeout(stateResyncDeadline)
+      stateResyncDeadline = null
+      stateResyncInFlight = false
+      const heldPatches = heldPatchesDuringResync
+      heldPatchesDuringResync = []
+      let settled = false
+      if (snapshot) {
+        try {
+          const before = get()
+          // Equal revision is applied: the snapshot is complete and holds what the gap lost.
+          // Older means a full stateUpdate moved past this pull and already closed the gap.
+          if (cppStateRevision(snapshot) >= before.lastAppliedStateRevision) {
+            applyFullState(snapshot, true)
+            reloadActiveTranscriptIfChanged(before, false)
+          }
+          settled = true
+        } catch (error) {
+          console.error('[uamPush] State resync could not be applied:', error)
+        }
+      }
+      if (settled) stateResyncOutstanding = false
+      for (const patch of heldPatches) {
+        try {
+          applyLivePatch(patch)
+        } catch (error) {
+          console.error('[uamPush] Held patch failed:', error)
+          requestStateResync()
+        }
+      }
+      if (settled ? stateResyncAgain : stateResyncAttempt < STATE_RESYNC_BACKOFF_MS.length) requestStateResync()
+    }
+
+    const pullStateResync = () => {
+      stateResyncTimer = null
+      if (window.uamPush !== ownedUamPush) return
+      stateResyncInFlight = true
+      stateResyncAgain = false
+      const generation = ++stateResyncGeneration
+      // A reply that never arrives must not hold live patches indefinitely; a late one is ignored.
+      stateResyncDeadline = setTimeout(() => settleStateResync(generation, null), STATE_RESYNC_DEADLINE_MS)
+      sendToCEF<CppAppState>({ action: 'getInitialState', payload: { summaryOnly: true } })
+        .then((resp) => settleStateResync(generation, resp.ok ? sanitizeCppAppState(resp.data) : null))
+        .catch(() => settleStateResync(generation, null))
+    }
+
+    const applyLivePatch = (patch: CppStatePatch) => {
+      const revision = cppPatchRevision(patch)
+      const lastRevision = get().lastAppliedStateRevision
+      if (!isNewerStateRevision(revision, lastRevision)) return
+      // The patch is still applied: its fields are current, the resync only restores what it lost.
+      if (revision !== lastRevision + 1 || stateResyncOutstanding) requestStateResync()
+      else stateResyncAttempt = 0
+      // A patch that replaces a chat's messages carries the streamed text
+      // authoritatively; buffered deltas for those chats must not be
+      // re-applied on top.
+      if (patch && typeof patch === 'object' && patch.messagesByChatId && typeof patch.messagesByChatId === 'object') {
+        for (const chatId of Object.keys(patch.messagesByChatId)) {
+          pendingStreamTokensByChatId.delete(chatId)
+        }
+      }
+      discardPendingPushesForChats(patch.removedChatIds ?? [])
+      const current = get()
+      const next = applyStatePatch(patch, current)
+      if (next) {
+        set(current.reconcileMemorySettingsProjection(next, patch.settings))
+        if (next.theme) {
+          persistTheme(next.theme, get().customThemes)
+        }
+        reloadActiveTranscriptIfChanged(current, Boolean(current.activeSessionId && patch.messagesByChatId?.[current.activeSessionId]))
+      }
+    }
+
     const handlePush = (payload: unknown) => {
       const parsed = parseUamPushPayload(payload)
       if (!parsed.ok) {
@@ -940,6 +1107,7 @@ export const useAppStore = create<AppState>((set, get) => {
           lastPushAtMs: state.lastPushAtMs,
         }))
         console.error('[uamPush] Rejected payload:', parsed.error, payload)
+        if (parsed.mayHaveCarriedState) requestStateResync()
         return
       }
 
@@ -965,78 +1133,11 @@ export const useAppStore = create<AppState>((set, get) => {
       switch (msg.type) {
         case 'stateUpdate':
           if (!isNewerStateRevision(cppStateRevision(msg.data), store.lastAppliedStateRevision)) break
-          // Full state only hydrates the selected transcript. Keep buffered
-          // background deltas unless this update contains that chat's messages.
-          for (const chatId of pendingStreamTokensByChatId.keys()) {
-            const chat = msg.data.chats.find((candidate) => candidate.id === chatId)
-            if (!chat || Array.isArray(chat.messages)) {
-              pendingStreamTokensByChatId.delete(chatId)
-            }
-          }
-          store.loadFromCef(msg.data)
+          applyFullState(msg.data)
           break
         case 'statePatch':
-          {
-            if (!isNewerStateRevision(cppPatchRevision(msg.data), store.lastAppliedStateRevision)) break
-            // A patch that replaces a chat's messages carries the streamed text
-            // authoritatively; buffered deltas for those chats must not be
-            // re-applied on top.
-            if (msg.data && typeof msg.data === 'object' && msg.data.messagesByChatId && typeof msg.data.messagesByChatId === 'object') {
-              for (const chatId of Object.keys(msg.data.messagesByChatId)) {
-                pendingStreamTokensByChatId.delete(chatId)
-              }
-            }
-            discardPendingPushesForChats(msg.data.removedChatIds ?? [])
-            const current = get()
-            const activeChatId = current.activeSessionId
-            const activeBindingBefore = activeChatId ? current.acpBindingBySessionId[activeChatId] : undefined
-            const next = applyStatePatch(msg.data, current)
-            if (next) {
-              set(current.reconcileMemorySettingsProjection(next, msg.data.settings))
-              if (next.theme) {
-                persistTheme(next.theme, get().customThemes)
-              }
-              const activeBindingAfter = activeChatId ? get().acpBindingBySessionId[activeChatId] : undefined
-              const completedActiveTurn = Boolean(activeBindingBefore?.processing && !activeBindingAfter?.processing)
-              const advancedContinuousTurn = Boolean(
-                activeBindingBefore?.processing &&
-                activeBindingAfter?.processing &&
-                (activeBindingAfter.turnSerial ?? 0) > (activeBindingBefore.turnSerial ?? 0)
-              )
-              const appendedTurnMessages = Boolean(
-                activeBindingBefore?.processing && activeBindingAfter?.processing &&
-                (get().sessions.find((session) => session.id === activeChatId)?.messageCount ?? 0) >
-                  (current.sessions.find((session) => session.id === activeChatId)?.messageCount ?? 0)
-              )
-              const activeSessionBefore = current.sessions.find((session) => session.id === activeChatId)
-              const activeSessionAfter = get().sessions.find((session) => session.id === activeChatId)
-              // External history imports publish summaries. Refresh an already loaded idle
-              // transcript when its count or content digest changes, just as turn completion does.
-              const refreshedIdleHistory = Boolean(
-                activeChatId && current.messages[activeChatId] !== undefined &&
-                activeSessionBefore && activeSessionAfter &&
-                !activeBindingBefore?.processing && !activeBindingAfter?.processing &&
-                !current.cliBindingBySessionId[activeChatId]?.processing &&
-                !get().cliBindingBySessionId[activeChatId]?.processing &&
-                !current.messages[activeChatId].some((message) => message.isStreaming) &&
-                !msg.data.messagesByChatId?.[activeChatId] &&
-                ((activeSessionBefore.messageCount ?? 0) !== (activeSessionAfter.messageCount ?? 0) ||
-                  (activeSessionBefore.messagesDigest ?? '') !== (activeSessionAfter.messagesDigest ?? ''))
-              )
-              const newlyHeldOutboxMismatch = Boolean(activeChatId && activeBindingAfter?.queueHeld &&
-                activeBindingAfter.queuedPrompts?.length &&
-                (!activeBindingBefore?.queueHeld || !queuedPromptsEquivalent(activeBindingBefore.queuedPrompts, activeBindingAfter.queuedPrompts)) &&
-                Number.isSafeInteger(activeSessionAfter?.messageCount) && activeSessionAfter?.messagesDigest &&
-                (get().historyStartIndexBySessionId[activeChatId] ?? 0) + (get().messages[activeChatId]?.length ?? 0) > activeSessionAfter!.messageCount!)
-              if (
-                activeChatId &&
-                activeChatId === get().activeSessionId &&
-                (completedActiveTurn || advancedContinuousTurn || appendedTurnMessages || refreshedIdleHistory || newlyHeldOutboxMismatch)
-              ) {
-                get().loadSessionMessages(activeChatId, true)
-              }
-            }
-          }
+          if (stateResyncInFlight) heldPatchesDuringResync.push(msg.data)
+          else applyLivePatch(msg.data)
           break
         case 'cliOutput':
           {
@@ -1149,6 +1250,7 @@ export const useAppStore = create<AppState>((set, get) => {
       } catch (error) {
         set({ pushChannelStatus: 'invalid-message', pushChannelError: `Push handling failed: ${error instanceof Error ? error.message : String(error)}` })
         console.error('[uamPush] Handler failed:', error)
+        requestStateResync()
       }
     }
   }
@@ -1180,12 +1282,12 @@ export const useAppStore = create<AppState>((set, get) => {
 
     // ---- CEF bootstrap ----
 
-    loadFromCef: (cppState) => {
+    loadFromCef: (cppState, allowSameRevision = false) => {
       const sanitized = sanitizeCppAppState(cppState)
       if (!sanitized) return
       const current = get()
       const nextRevision = cppStateRevision(sanitized)
-      if (!isNewerStateRevision(nextRevision, current.lastAppliedStateRevision)) return
+      if (!isNewerStateRevision(nextRevision, current.lastAppliedStateRevision) && !(allowSameRevision && nextRevision === current.lastAppliedStateRevision)) return
       const deserialized = deserializeState(sanitized, {
         sessions: current.sessions,
         folders: current.folders,
