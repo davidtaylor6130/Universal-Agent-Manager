@@ -886,7 +886,7 @@ UAM_TEST(HelperInstallRefusalKeepsRunningBackgroundScan)
 	std::future<std::stop_token> scan_stop = entered->get_future();
 	app.startup_native_import_service = std::make_shared<uam::StartupNativeImportService>(
 	    [](const uam::StartupNativeImportScanRequest&, std::stop_token) { return ChatHistorySyncService::LocalHistoryDiscovery{}; },
-	    [entered](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, std::stop_token stop)
+	    [entered](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token stop)
 	    {
 		    entered->set_value(stop);
 		    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);

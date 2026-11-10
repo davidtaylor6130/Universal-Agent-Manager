@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <optional>
 #include <map>
+#include <memory>
 #include <future>
 #include "common/chat/chat_repository.h"
 #include "common/chat/chat_folder_store.h"
@@ -22,6 +23,8 @@ namespace uam
 {
 	class PreparedNativeMediaChatSave;
 }
+
+namespace uam::remote { class RunnerClient; }
 
 class ChatHistorySyncService
 {
@@ -52,13 +55,22 @@ class ChatHistorySyncService
 		std::int64_t created_epoch_seconds = 0;
 		std::int64_t updated_epoch_seconds = 0;
 	};
+	/// <summary>One scan pass on one host: a shared runner client, its probed OpenCode version and any connect failure.</summary>
+	struct RemoteHistoryScanContext
+	{
+		explicit RemoteHistoryScanContext(const ExecutionHost& host);
+		std::shared_ptr<uam::remote::RunnerClient> client;
+		std::optional<std::string> open_code_version;
+		bool connect_failed = false;
+	};
+
 	struct RemoteOpenCodeDiscovery
 	{
 		std::vector<RemoteOpenCodeSession> sessions;
 		std::string error;
 	};
 	RemoteOpenCodeDiscovery DiscoverRemoteOpenCodeSessions(const ChatFolder& folder, const ExecutionHost& host,
-	    const ProviderProfile& profile, std::stop_token stop_token = {}) const;
+	    const ProviderProfile& profile, std::stop_token stop_token = {}, RemoteHistoryScanContext* scan = nullptr) const;
 	static RemoteOpenCodeDiscovery ParseRemoteOpenCodeSessionList(std::string_view output, bool open_code_v2);
 	struct RemoteCodexDiscovery
 	{
@@ -155,6 +167,7 @@ class ChatHistorySyncService
 	struct LocalHistoryDiscovery
 	{
 		std::vector<ChatSession> chats;
+		bool remote_host_unreachable = false;
 		std::map<std::string, uam::opencode_import::Spool> open_code_exports;
 		std::vector<std::pair<ChatSession, std::filesystem::path>> codex_rollouts;
 		ImportResult result;
@@ -172,7 +185,7 @@ class ChatHistorySyncService
 		bool Pending() const { return !chats.empty() || !codex_rollouts.empty() || preparation.valid() || publication_sync.valid(); }
 		void CancelPending();
 	};
-	LocalHistoryDiscovery DiscoverRemoteProviderChatsForFolder(const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile* open_code_profile, std::stop_token stop_token = {}) const;
+	LocalHistoryDiscovery DiscoverRemoteProviderChatsForFolder(const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile* open_code_profile, std::stop_token stop_token = {}, RemoteHistoryScanContext* scan = nullptr) const;
 	/// Read provider transcripts without accessing live app state or writing local history.
 	LocalHistoryDiscovery DiscoverProviderChatsForFolder(const ChatFolder& folder, const ProviderProfile* open_code_profile = nullptr, std::stop_token stop_token = {}, std::size_t open_code_scan_offset = 0, bool open_code_only = false, std::optional<std::size_t> open_code_remaining = {}, const std::string& open_code_list_fingerprint = {}, const std::string& provider_filter = {}, const std::string& native_session_filter = {}, const std::filesystem::path& native_history_root = {}) const;
 	/// <summary>Resolves existing workspace ownership without creating folders.</summary>
@@ -189,12 +202,12 @@ class ChatHistorySyncService
 	    uam::AppState& app, const std::string& folder_id,
 	    const std::vector<RemoteOpenCodeSession>& sessions) const;
 	RemoteOpenCodeTranscript LoadRemoteOpenCodeTranscript(
-	    const ExecutionHost& host, const ChatSession& chat, const ProviderProfile& profile, std::stop_token stop_token = {}) const;
+	    const ExecutionHost& host, const ChatSession& chat, const ProviderProfile& profile, std::stop_token stop_token = {}, RemoteHistoryScanContext* scan = nullptr) const;
 	/// Runs a bounded native export; callers must keep this off the GUI thread.
 	RemoteOpenCodeTranscript LoadLocalOpenCodeTranscript(const ChatSession& chat, const ProviderProfile& profile, std::stop_token stop_token = {}) const;
 	static RemoteOpenCodeTranscript ParseRemoteOpenCodeTranscript(std::string_view output);
 	RemoteCodexDiscovery DiscoverRemoteCodexSessions(
-	    const ExecutionHost& host, const ChatFolder& folder, std::stop_token stop_token = {}) const;
+	    const ExecutionHost& host, const ChatFolder& folder, std::stop_token stop_token = {}, RemoteHistoryScanContext* scan = nullptr) const;
 	ImportResult ImportRemoteCodexChatsForFolder(
 	    uam::AppState& app, const std::string& folder_id,
 	    const std::vector<RemoteCodexSession>& sessions) const;
@@ -206,7 +219,7 @@ class ChatHistorySyncService
 	std::optional<ChatSession> ParseRemoteNativeHistorySnapshot(const ExecutionHost& host, const ChatSession& chat, const nlohmann::json& snapshot, std::string* error = nullptr, std::stop_token stop_token = {}) const;
 	std::optional<ChatSession> LoadLocalCodexChildChat(const ChatSession& chat, std::string* error = nullptr) const;
 	RemoteCodexTranscript LoadRemoteCodexTranscript(
-	    const ExecutionHost& host, const ChatSession& chat, std::stop_token stop_token = {}) const;
+	    const ExecutionHost& host, const ChatSession& chat, std::stop_token stop_token = {}, RemoteHistoryScanContext* scan = nullptr) const;
 	static bool AppendRemoteCodexSessions(
 	    const nlohmann::json& result, std::vector<RemoteCodexSession>& sessions,
 	    std::string* error = nullptr);

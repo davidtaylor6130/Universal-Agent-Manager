@@ -1909,27 +1909,53 @@ namespace
 		return chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
 	}
 
+	/// <summary>A scan shares one client per host and remembers its first connect failure; a single read keeps a private client.</summary>
+	class RemoteHistoryClient
+	{
+	  public:
+		RemoteHistoryClient(const ExecutionHost& host, ChatHistorySyncService::RemoteHistoryScanContext* scan) : m_scan(scan)
+		{
+			if (m_scan == nullptr) m_owned.emplace(PlatformServicesFactory::Instance().process_service, host);
+		}
+		uam::remote::RunnerClient& Get() { return m_scan != nullptr ? *m_scan->client : *m_owned; }
+		bool Connect(std::string* error, std::stop_token stop_token)
+		{
+			const bool connected = Get().Connect(error, stop_token);
+			if (!connected && m_scan != nullptr && !stop_token.stop_requested()) m_scan->connect_failed = true;
+			return connected;
+		}
+
+	  private:
+		ChatHistorySyncService::RemoteHistoryScanContext* m_scan;
+		std::optional<uam::remote::RunnerClient> m_owned;
+	};
+
 	/// <summary>Probes the CLI on the host through the caller's client, because 2.x has no --pure or top-level export; empty on failure.</summary>
-	std::vector<std::string> RemoteOpenCodeHistoryArgv(uam::remote::RunnerClient& client,
+	std::vector<std::string> RemoteOpenCodeHistoryArgv(uam::remote::RunnerClient& client, ChatHistorySyncService::RemoteHistoryScanContext* scan,
 	    const fs::path& directory, const ProviderProfile& profile, const std::string& operation, const std::string& id, bool& open_code_v2, std::string& error, std::stop_token stop_token)
 	{
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		std::vector<std::string> command = uam::provider_runtime_internal::SplitInteractiveCommandOrDefault(profile, "opencode");
-		std::vector<std::string> probe = command;
-		probe.push_back("--version");
-		const ProcessExecutionResult probed = client.ExecuteCommand("history-version-" + PlatformServicesFactory::Instance().process_service.GenerateUuid(), directory, probe, 10000, stop_token);
-		const std::optional<std::string> version = probed.ok ? uam::cli_versions::ExtractSemverVersion(probed.output) : std::nullopt;
+		std::optional<std::string> version = scan != nullptr ? scan->open_code_version : std::nullopt;
 		if (!version)
 		{
-			if (!stop_token.stop_requested())
-				error = "Remote OpenCode version check failed: " + uam::strings::NonEmptyOrFallback(probed.error, probed.ok ? std::string("no usable CLI version.") : "exit " + std::to_string(probed.exit_code) + ".");
-			return {};
+			std::vector<std::string> probe = command;
+			probe.push_back("--version");
+			const ProcessExecutionResult probed = client.ExecuteCommand("history-version-" + PlatformServicesFactory::Instance().process_service.GenerateUuid(), directory, probe, 10000, stop_token);
+			if (probed.ok) version = uam::cli_versions::ExtractSemverVersion(probed.output);
+			if (!version)
+			{
+				if (!stop_token.stop_requested())
+					error = "Remote OpenCode version check failed: " + uam::strings::NonEmptyOrFallback(probed.error, probed.ok ? std::string("no usable CLI version.") : "exit " + std::to_string(probed.exit_code) + ".");
+				return {};
+			}
+			if (scan != nullptr) scan->open_code_version = version;
 		}
 		open_code_v2 = uam::opencode_v2::IsCheckedHistoryV2(*version);
 		try { return uam::opencode_v2::RemoteHistoryArgv(*version, std::move(command), operation, id); }
 		catch (const std::exception& refusal) { error = refusal.what(); return {}; }
 #else
-		(void)client; (void)directory; (void)profile; (void)operation; (void)id; (void)open_code_v2; (void)stop_token;
+		(void)client; (void)scan; (void)directory; (void)profile; (void)operation; (void)id; (void)open_code_v2; (void)stop_token;
 		error = "This provider is not included in this build.";
 		return {};
 #endif
@@ -1937,7 +1963,7 @@ namespace
 
 	/// <summary>Session-list metadata cannot establish conversation content for either remote provider.</summary>
 	bool LoadRemoteImportHistory(const ExecutionHost& host, const ProviderProfile& profile,
-	    ChatSession& chat, std::string& error, std::stop_token stop = {})
+	    ChatSession& chat, std::string& error, std::stop_token stop = {}, ChatHistorySyncService::RemoteHistoryScanContext* scan = nullptr)
 	{
 		error.clear();
 		if (stop.stop_requested()) { error = "Remote history import was canceled."; return false; }
@@ -1946,14 +1972,14 @@ namespace
 		bool verified_empty = false;
 		if (chat.provider_id == uam::provider_ids::kOpenCodeCli)
 		{
-			auto history = ChatHistorySyncService().LoadRemoteOpenCodeTranscript(host, chat, profile, stop);
+			auto history = ChatHistorySyncService().LoadRemoteOpenCodeTranscript(host, chat, profile, stop, scan);
 			if (!history.success) { error = uam::strings::NonEmptyOrFallback(std::move(history.error), "Remote OpenCode history could not be verified. Retry the import."); return false; }
 			verified_empty = history.verified_empty;
 			messages = std::move(history.messages);
 		}
 		else if (chat.provider_id == uam::provider_ids::kCodexCli)
 		{
-			auto history = ChatHistorySyncService().LoadRemoteCodexTranscript(host, chat, stop);
+			auto history = ChatHistorySyncService().LoadRemoteCodexTranscript(host, chat, stop, scan);
 			if (!history.success) { error = uam::strings::NonEmptyOrFallback(std::move(history.error), "Remote Codex history could not be verified. Retry the import."); return false; }
 			verified_empty = !uam::HasImportedConversationContent(history.messages);
 			messages = std::move(history.messages);
@@ -4172,12 +4198,23 @@ const ChatFolder* ChatHistorySyncService::PlanImportWorkspace(uam::AppState& pla
 	return ChatDomainService().FindFolderById(plan, ResolvePersistedImportFolderIdForSource(plan, source, false));
 }
 
+ChatHistorySyncService::RemoteHistoryScanContext::RemoteHistoryScanContext(const ExecutionHost& host)
+    : client(std::make_shared<uam::remote::RunnerClient>(PlatformServicesFactory::Instance().process_service, host))
+{
+}
+
 ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverRemoteProviderChatsForFolder(
-    const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile* open_code_profile, std::stop_token stop_token) const
+    const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile* open_code_profile, std::stop_token stop_token, RemoteHistoryScanContext* scan) const
 {
 	LocalHistoryDiscovery discovery;
 	if (host.transport != "ssh" || host.runner_status != "ready" || folder.execution_host_id != host.id ||
 	    !uam::execution_hosts::IsAbsoluteRemotePath(host.platform, folder.directory) || stop_token.stop_requested()) return discovery;
+	std::optional<RemoteHistoryScanContext> owned_scan;
+	RemoteHistoryScanContext& host_scan = scan != nullptr ? *scan : owned_scan.emplace(host);
+	const auto report_discovery_error = [&](const std::string& error)
+	{
+		if (!error.empty()) discovery.result.Fail(host_scan.connect_failed ? "Remote history on " + host.id + " was not scanned: " + error : error);
+	};
 	const auto append = [&](const std::string& id, const std::string& title, const std::string& directory,
 	    const std::string& provider, const std::string& created, const std::string& updated)
 	{
@@ -4199,8 +4236,8 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverRe
 	};
 	if (open_code_profile != nullptr && ProviderRuntime::IsRuntimeEnabled(*open_code_profile))
 	{
-		const RemoteOpenCodeDiscovery remote = DiscoverRemoteOpenCodeSessions(folder, host, *open_code_profile, stop_token);
-		if (!remote.error.empty()) discovery.result.Fail(remote.error);
+		const RemoteOpenCodeDiscovery remote = DiscoverRemoteOpenCodeSessions(folder, host, *open_code_profile, stop_token, &host_scan);
+		report_discovery_error(remote.error);
 		for (const RemoteOpenCodeSession& session : remote.sessions)
 		{
 			if (!uam::execution_hosts::IsPortableId(session.id)) continue;
@@ -4212,10 +4249,10 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverRe
 			if (session.open_code_v2 && discovery.chats.size() > before) discovery.chats.back().opencode_v2_session_id = session.id;
 		}
 	}
-	if (!stop_token.stop_requested() && ProviderRuntime::IsRuntimeEnabled(uam::provider_ids::kCodexCli))
+	if (!stop_token.stop_requested() && !host_scan.connect_failed && ProviderRuntime::IsRuntimeEnabled(uam::provider_ids::kCodexCli))
 	{
-		const RemoteCodexDiscovery remote = DiscoverRemoteCodexSessions(host, folder, stop_token);
-		if (!remote.error.empty()) discovery.result.Fail(remote.error);
+		const RemoteCodexDiscovery remote = DiscoverRemoteCodexSessions(host, folder, stop_token, &host_scan);
+		report_discovery_error(remote.error);
 		for (const RemoteCodexSession& session : remote.sessions)
 		{
 			const std::string id = uam::codex::ValidThreadIdOrEmpty(session.id);
@@ -4227,9 +4264,9 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverRe
 	std::vector<ChatSession> verified;
 	for (ChatSession& chat : discovery.chats)
 	{
-		if (stop_token.stop_requested()) break;
+		if (stop_token.stop_requested() || host_scan.connect_failed) break;
 		std::string error;
-		if (LoadRemoteImportHistory(host, profile, chat, error, stop_token))
+		if (LoadRemoteImportHistory(host, profile, chat, error, stop_token, &host_scan))
 		{
 			UnloadPersistedTranscript(chat);
 			verified.push_back(std::move(chat));
@@ -4238,6 +4275,7 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverRe
 		else if (!error.empty()) discovery.result.Fail(chat.provider_id + " session " + chat.native_session_id + " on " + host.id + ": " + error);
 	}
 	discovery.chats = std::move(verified);
+	discovery.remote_host_unreachable = host_scan.connect_failed;
 	return discovery;
 }
 
@@ -4800,17 +4838,16 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportProviderChats
 }
 
 ChatHistorySyncService::RemoteOpenCodeDiscovery ChatHistorySyncService::DiscoverRemoteOpenCodeSessions(
-	    const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile& profile, std::stop_token stop_token) const
+	    const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile& profile, std::stop_token stop_token, RemoteHistoryScanContext* scan) const
 	{
 		RemoteOpenCodeDiscovery result;
-		uam::remote::RunnerClient client(
-		    PlatformServicesFactory::Instance().process_service,
-		    host);
+		RemoteHistoryClient history_client(host, scan);
+		uam::remote::RunnerClient& client = history_client.Get();
 		if (stop_token.stop_requested()) return result;
-		if (!client.Connect(&result.error)) return result;
+		if (!history_client.Connect(&result.error, stop_token)) return result;
 		const fs::path directory = uam::paths::PathFromUtf8(folder.directory);
 		bool open_code_v2 = false;
-		const std::vector<std::string> argv = RemoteOpenCodeHistoryArgv(client, directory, profile, "list", {}, open_code_v2, result.error, stop_token);
+		const std::vector<std::string> argv = RemoteOpenCodeHistoryArgv(client, scan, directory, profile, "list", {}, open_code_v2, result.error, stop_token);
 		if (argv.empty())
 		{
 			if (stop_token.stop_requested()) result.error = "Remote OpenCode discovery cancelled.";
@@ -5377,7 +5414,7 @@ ChatHistorySyncService::RemoteOpenCodeTranscript ChatHistorySyncService::LoadLoc
 
 ChatHistorySyncService::RemoteOpenCodeTranscript
 ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
-    const ExecutionHost& host, const ChatSession& chat, const ProviderProfile& profile, std::stop_token stop_token) const
+    const ExecutionHost& host, const ChatSession& chat, const ProviderProfile& profile, std::stop_token stop_token, RemoteHistoryScanContext* scan) const
 {
 	RemoteOpenCodeTranscript result;
 	if (stop_token.stop_requested())
@@ -5392,20 +5429,19 @@ ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
 		result.error = "The remote OpenCode session is not ready to load.";
 		return result;
 	}
-	uam::remote::RunnerClient client(
-	    PlatformServicesFactory::Instance().process_service,
-	    host);
+	RemoteHistoryClient history_client(host, scan);
+	uam::remote::RunnerClient& client = history_client.Get();
 	const auto canceled = [&]()
 	{
 		result.error = "Remote OpenCode transcript loading was canceled.";
 		return result;
 	};
-	if (!client.Connect(&result.error)) return result;
+	if (!history_client.Connect(&result.error, stop_token)) return stop_token.stop_requested() ? canceled() : result;
 	if (stop_token.stop_requested()) return canceled();
 	const std::string process_id = "history-export-" +
 	    PlatformServicesFactory::Instance().process_service.GenerateUuid();
 	bool open_code_v2 = false;
-	std::vector<std::string> argv = RemoteOpenCodeHistoryArgv(client, uam::paths::PathFromUtf8(chat.workspace_directory), profile, "export", chat.native_session_id, open_code_v2, result.error, stop_token);
+	std::vector<std::string> argv = RemoteOpenCodeHistoryArgv(client, scan, uam::paths::PathFromUtf8(chat.workspace_directory), profile, "export", chat.native_session_id, open_code_v2, result.error, stop_token);
 	if (argv.empty()) return stop_token.stop_requested() ? canceled() : result;
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	if (host.platform != "windows" && host.platform != "Windows") argv = uam::opencode_v2::FileBackedStdoutArgv(std::move(argv));
@@ -5548,7 +5584,7 @@ bool ChatHistorySyncService::AppendRemoteCodexSessions(
 
 ChatHistorySyncService::RemoteCodexDiscovery
 ChatHistorySyncService::DiscoverRemoteCodexSessions(
-    const ExecutionHost& host, const ChatFolder& folder, std::stop_token stop_token) const
+    const ExecutionHost& host, const ChatFolder& folder, std::stop_token stop_token, RemoteHistoryScanContext* scan) const
 {
 	RemoteCodexDiscovery discovery;
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
@@ -5558,10 +5594,9 @@ ChatHistorySyncService::DiscoverRemoteCodexSessions(
 		discovery.error = "The remote Codex workspace is not ready to scan.";
 		return discovery;
 	}
-	uam::remote::RunnerClient client(
-	    PlatformServicesFactory::Instance().process_service,
-	    host);
-	if (!client.Connect(&discovery.error)) return discovery;
+	RemoteHistoryClient history_client(host, scan);
+	uam::remote::RunnerClient& client = history_client.Get();
+	if (!history_client.Connect(&discovery.error, stop_token)) return discovery;
 	for (const bool archived : {false, true})
 	{
 		const std::size_t remaining = kRemoteCodexMaxSessions - discovery.sessions.size();
@@ -5580,6 +5615,7 @@ ChatHistorySyncService::DiscoverRemoteCodexSessions(
 	(void)host;
 	(void)folder;
 	(void)stop_token;
+	(void)scan;
 	discovery.error = "This provider is not included in this build.";
 #endif
 	return discovery;
@@ -5897,7 +5933,7 @@ catch (const nlohmann::json::exception&)
 
 ChatHistorySyncService::RemoteCodexTranscript
 ChatHistorySyncService::LoadRemoteCodexTranscript(
-    const ExecutionHost& host, const ChatSession& chat, std::stop_token stop_token) const
+    const ExecutionHost& host, const ChatSession& chat, std::stop_token stop_token, RemoteHistoryScanContext* scan) const
 {
 	RemoteCodexTranscript transcript;
 	if (stop_token.stop_requested())
@@ -5913,10 +5949,9 @@ ChatHistorySyncService::LoadRemoteCodexTranscript(
 		transcript.error = "The remote Codex session is not ready to load.";
 		return transcript;
 	}
-	uam::remote::RunnerClient client(
-	    PlatformServicesFactory::Instance().process_service,
-	    host);
-	if (!client.Connect(&transcript.error)) return transcript;
+	RemoteHistoryClient history_client(host, scan);
+	uam::remote::RunnerClient& client = history_client.Get();
+	if (!history_client.Connect(&transcript.error, stop_token)) return transcript;
 	nlohmann::json read_result;
 	if (!RunRemoteCodexRpc(client, uam::paths::PathFromUtf8(chat.workspace_directory),
 	                       "thread/read", {{"threadId", valid_id}, {"includeTurns", true}},

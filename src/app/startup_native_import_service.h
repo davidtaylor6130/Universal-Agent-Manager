@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <set>
 #include <mutex>
 #include <future>
 #include <optional>
@@ -75,7 +76,7 @@ namespace uam
 	{
 	  public:
 		using Scanner = std::function<ChatHistorySyncService::LocalHistoryDiscovery(const StartupNativeImportScanRequest&, std::stop_token)>;
-		using RemoteScanner = std::function<ChatHistorySyncService::LocalHistoryDiscovery(const StartupNativeImportRemoteScope&, const ProviderProfile*, std::stop_token)>;
+		using RemoteScanner = std::function<ChatHistorySyncService::LocalHistoryDiscovery(const StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)>;
 		explicit StartupNativeImportService(Scanner scanner = {}, RemoteScanner remote_scanner = {});
 		~StartupNativeImportService();
 		void Initialize(const AppState& app);
@@ -112,6 +113,7 @@ namespace uam
 		bool Revalidate(AppState& app, std::string* error_out);
 		void StartScan(const AppState& app, bool include_remote);
 		void AddError(const std::string& error);
+		void AddHostUnavailableError(const std::string& host_id, const std::string& fallback_name);
 		void FinishImport(AppState& app);
 		std::vector<StartupNativeImportRemoteScope> PendingRemoteScopes(const AppState& app);
 		bool StartPendingRemoteScans(const AppState& app);
@@ -121,6 +123,7 @@ namespace uam
 		StartupNativeImportScanRequest m_scan_request;
 		std::map<std::string, ExecutionHost> m_remote_hosts;
 		std::map<std::string, ChatFolder> m_remote_folders;
+		std::set<std::string> m_unavailable_hosts_reported;
 		bool m_initialized = false;
 		bool m_include_unregistered_local = false;
 		std::stop_source m_stop;
