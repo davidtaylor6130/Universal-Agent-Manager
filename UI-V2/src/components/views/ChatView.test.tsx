@@ -3972,6 +3972,39 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('restarts a tool call limit stop by raising the tool call limit, not the turn timeout', async () => {
+    const setMemorySettings = vi.fn(async () => true)
+    const retryFailedMessage = vi.fn(async () => ({ ok: true }))
+    const user = { ...useAppStore.getState().messages['chat-1'][0] }
+    useAppStore.setState((state) => ({
+      setMemorySettings,
+      retryFailedMessage,
+      activeTurnInactivityTimeoutSeconds: 1800,
+      toolCallTimeoutSeconds: 7200,
+      messages: { ...state.messages, 'chat-1': [user] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'error', processing: false, running: true,
+          lastError: 'Gemini ACP turn stopped because a tool call exceeded its 120-minute limit without a result.', timeoutStop: { label: 'Tool call limit', seconds: 7200, kind: 'tool' },
+          pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent).toContain('A tool call exceeded its 2 h limit with no result')
+      const restart = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Restart with +15 min')!
+      await act(async () => { restart.click() })
+      expect(setMemorySettings).toHaveBeenCalledWith({ toolCallTimeoutSeconds: 8100 })
+      expect(retryFailedMessage).toHaveBeenCalledWith('chat-1', 0)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it.each(['restart', 'output', 'refused'] as const)('presents a timeout stop as a notice and restarts it after saving the raised limit (%s)', async (branch) => {
     const order: string[] = []
     const setMemorySettings = vi.fn(async () => { order.push('save'); return true })

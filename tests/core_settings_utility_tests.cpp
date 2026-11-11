@@ -2986,17 +2986,23 @@ UAM_TEST(SettingsStorePersistsAndClampsActiveTurnInactivityTimeout)
 	const fs::path settings_file = temp.root / "settings.ini";
 	AppSettings settings;
 	settings.active_turn_inactivity_timeout_seconds = 7200;
+	settings.tool_call_timeout_seconds = 10800;
 	settings.acp_setup_inactivity_timeout_seconds = 1200;
 	UAM_ASSERT(SettingsStore::Save(settings_file, settings));
+	UAM_ASSERT(uam::strings::Contains(uam::io::ReadTextFile(settings_file), "tool_call_timeout_seconds=10800"));
 	UAM_ASSERT(uam::strings::Contains(uam::io::ReadTextFile(settings_file), "active_turn_inactivity_timeout_seconds=7200"));
 	UAM_ASSERT(uam::strings::Contains(uam::io::ReadTextFile(settings_file), "acp_setup_inactivity_timeout_seconds=1200"));
 
 	AppSettings loaded;
 	SettingsStore::Load(settings_file, loaded);
 	UAM_ASSERT_EQ(loaded.active_turn_inactivity_timeout_seconds, 7200);
+	UAM_ASSERT_EQ(loaded.tool_call_timeout_seconds, 10800);
 	UAM_ASSERT_EQ(loaded.acp_setup_inactivity_timeout_seconds, 1200);
-	UAM_ASSERT(uam::io::WriteTextFile(settings_file, "active_turn_inactivity_timeout_seconds=999999\nacp_setup_inactivity_timeout_seconds=999999\n"));
+	// A settings file written before the tool call limit existed keeps the two-hour default.
+	UAM_ASSERT_EQ(AppSettings{}.tool_call_timeout_seconds, 7200);
+	UAM_ASSERT(uam::io::WriteTextFile(settings_file, "active_turn_inactivity_timeout_seconds=999999\ntool_call_timeout_seconds=5\nacp_setup_inactivity_timeout_seconds=999999\n"));
 	SettingsStore::Load(settings_file, loaded);
+	UAM_ASSERT_EQ(loaded.tool_call_timeout_seconds, uam::settings::kMinActiveTurnInactivityTimeoutSeconds);
 	UAM_ASSERT_EQ(loaded.active_turn_inactivity_timeout_seconds, uam::settings::kMaxActiveTurnInactivityTimeoutSeconds);
 	UAM_ASSERT_EQ(loaded.acp_setup_inactivity_timeout_seconds, uam::settings::kMaxAcpSetupInactivityTimeoutSeconds);
 }

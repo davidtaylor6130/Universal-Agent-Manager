@@ -85,6 +85,18 @@ import './settings-shell.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 
+/** The 15-minute stepper shared by the provider turn timeout and the tool call limit. */
+function TimeoutStepper({ name, value, onChange }: { name: string; value: number; onChange: (seconds: number) => void }) {
+  const lower = name.toLowerCase()
+  return (
+    <div className="flex w-fit items-center overflow-hidden rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+      <IconButton icon={<Minus size={14} />} label={`Decrease ${lower} by 15 minutes`} size="sm" disabled={value <= TIMEOUT_RESTART_STEP_SECONDS} onClick={() => onChange(Math.max(TIMEOUT_RESTART_STEP_SECONDS, value - TIMEOUT_RESTART_STEP_SECONDS))} />
+      <output aria-label={name} className="min-w-20 px-3 text-center tabular-nums" style={{ color: 'var(--text)' }}>{formatTimeoutDuration(value)}</output>
+      <IconButton icon={<Plus size={14} />} label={`Increase ${lower} by 15 minutes`} size="sm" disabled={value >= MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS} onClick={() => onChange(Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, value + TIMEOUT_RESTART_STEP_SECONDS))} />
+    </div>
+  )
+}
+
 const MEMORY_SETTINGS_FIELD_LABELS: Record<string, string> = {
   memoryEnabledDefault: 'Default memory enabled',
   memoryLevelDefault: 'Default memory policy',
@@ -93,6 +105,7 @@ const MEMORY_SETTINGS_FIELD_LABELS: Record<string, string> = {
   goalMaxLoopIterations: 'Goal loop limit',
   acpSetupInactivityTimeoutSeconds: 'Provider setup timeout',
   activeTurnInactivityTimeoutSeconds: 'Provider turn timeout',
+  toolCallTimeoutSeconds: 'Tool call limit',
   streamLoopRepeatLimit: 'Repeated output limit',
   acpTurnOutputLimitMiB: 'Provider output limit',
   memoryWorkerBindings: 'Memory worker selections',
@@ -761,6 +774,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const goalTokenBudget = useAppStore((s) => s.goalTokenBudget)
   const acpSetupInactivityTimeoutSeconds = useAppStore((s) => s.acpSetupInactivityTimeoutSeconds)
   const activeTurnInactivityTimeoutSeconds = useAppStore((s) => s.activeTurnInactivityTimeoutSeconds)
+  const toolCallTimeoutSeconds = useAppStore((s) => s.toolCallTimeoutSeconds)
   const streamLoopRepeatLimit = useAppStore((s) => s.streamLoopRepeatLimit)
   const acpTurnOutputLimitMiB = useAppStore((s) => s.acpTurnOutputLimitMiB)
   const appVersion = useAppStore((s) => s.appVersion)
@@ -2830,13 +2844,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           <SettingRow
             title="Provider turn timeout"
             description="Stops a turn after this long with no output of any kind (text, thinking or tool activity)."
-            control={
-              <div className="flex w-fit items-center overflow-hidden rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                <IconButton icon={<Minus size={14} />} label="Decrease provider turn timeout by 15 minutes" size="sm" disabled={activeTurnInactivityTimeoutSeconds <= TIMEOUT_RESTART_STEP_SECONDS} onClick={() => void setMemorySettings({ activeTurnInactivityTimeoutSeconds: Math.max(TIMEOUT_RESTART_STEP_SECONDS, activeTurnInactivityTimeoutSeconds - TIMEOUT_RESTART_STEP_SECONDS) })} />
-                <output aria-label="Provider turn timeout" className="min-w-20 px-3 text-center tabular-nums" style={{ color: 'var(--text)' }}>{formatTimeoutDuration(activeTurnInactivityTimeoutSeconds)}</output>
-                <IconButton icon={<Plus size={14} />} label="Increase provider turn timeout by 15 minutes" size="sm" disabled={activeTurnInactivityTimeoutSeconds >= MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS} onClick={() => void setMemorySettings({ activeTurnInactivityTimeoutSeconds: Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, activeTurnInactivityTimeoutSeconds + TIMEOUT_RESTART_STEP_SECONDS) })} />
-              </div>
-            }
+            control={<TimeoutStepper name="Provider turn timeout" value={activeTurnInactivityTimeoutSeconds} onChange={(seconds) => void setMemorySettings({ activeTurnInactivityTimeoutSeconds: seconds })} />}
+          />
+          <SettingRow
+            title="Tool call limit"
+            description="Stops a silent tool call that sets no timeout of its own."
+            control={<TimeoutStepper name="Tool call limit" value={toolCallTimeoutSeconds} onChange={(seconds) => void setMemorySettings({ toolCallTimeoutSeconds: seconds })} />}
           />
           <SettingRow
             title="Repeated output limit"

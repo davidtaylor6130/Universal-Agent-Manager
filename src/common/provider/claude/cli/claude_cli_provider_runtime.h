@@ -42,6 +42,8 @@ class ClaudeCliProviderRuntime final : public IProviderRuntime
 	ProviderAcpSettingChangeAction AcpModeChangeAction(const uam::AcpSessionState&) const override { return ProviderAcpSettingChangeAction::RestartSession; }
 	ProviderAcpSettingChangeAction AcpModelChangeAction() const override { return ProviderAcpSettingChangeAction::RestartSession; }
 	bool OnAcpCanSendPromptWithoutSessionId() const override { return true; }
+	/// The Bash tool's optional `timeout` input is in milliseconds.
+	double AcpToolDeclaredTimeoutSeconds(std::string_view tool_kind, const nlohmann::json& tool_input) const override { return ShellToolMillisecondsAsSeconds(tool_kind, tool_input, "timeout"); }
 };
 
 const IProviderRuntime& GetClaudeCliProviderRuntime();

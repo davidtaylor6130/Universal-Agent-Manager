@@ -49,6 +49,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kProviderExtraFlagsKey = "provider_extra_flags";
 	constexpr std::string_view kCliIdleTimeoutSecondsKey = "cli_idle_timeout_seconds";
 	constexpr std::string_view kActiveTurnInactivityTimeoutSecondsKey = "active_turn_inactivity_timeout_seconds";
+	constexpr std::string_view kToolCallTimeoutSecondsKey = "tool_call_timeout_seconds";
 	constexpr std::string_view kStreamLoopRepeatLimitKey = "stream_loop_repeat_limit";
 	constexpr std::string_view kAcpSetupInactivityTimeoutSecondsKey = "acp_setup_inactivity_timeout_seconds";
 	constexpr std::string_view kUiThemeKey = "ui_theme";
@@ -678,6 +679,7 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteEncodedSetting(lines, kProviderExtraFlagsKey, normalized.provider_extra_flags);
 		WriteSettingValue(lines, kCliIdleTimeoutSecondsKey, normalized.cli_idle_timeout_seconds);
 		WriteSettingValue(lines, kActiveTurnInactivityTimeoutSecondsKey, normalized.active_turn_inactivity_timeout_seconds);
+		WriteSettingValue(lines, kToolCallTimeoutSecondsKey, normalized.tool_call_timeout_seconds);
 		WriteSettingValue(lines, kStreamLoopRepeatLimitKey, normalized.stream_loop_repeat_limit);
 		WriteSettingValue(lines, kAcpSetupInactivityTimeoutSecondsKey, normalized.acp_setup_inactivity_timeout_seconds);
 		WriteEncodedSetting(lines, kUiThemeKey, normalized.ui_theme);
@@ -802,7 +804,8 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		    normalized.permission_reviewer_provider_id,
 		    normalized.permission_reviewer_model_id,
 		    normalized.active_turn_inactivity_timeout_seconds,
-		    normalized.stream_loop_repeat_limit};
+		    normalized.stream_loop_repeat_limit,
+		    normalized.tool_call_timeout_seconds};
 		memory_receipt->canonical_values_ready = true;
 		const auto observe_stage = [&](uam::io::AtomicWriteStage stage)
 		{
@@ -953,6 +956,10 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		else if (key == kStreamLoopRepeatLimitKey)
 		{
 			settings.stream_loop_repeat_limit = uam::parse::IntOr(value, settings.stream_loop_repeat_limit);
+		}
+		else if (key == kToolCallTimeoutSecondsKey)
+		{
+			settings.tool_call_timeout_seconds = uam::parse::IntOr(value, settings.tool_call_timeout_seconds);
 		}
 		else if (key == kActiveTurnInactivityTimeoutSecondsKey)
 		{

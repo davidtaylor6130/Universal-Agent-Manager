@@ -52,11 +52,27 @@ it('explains a provider limit UAM does not own without a value or Restart', () =
   }
 })
 
+it('names the tool call when the tool call limit stopped the turn', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  try {
+    act(() => root.render(<TimeoutStopNotice timeoutStop={{ label: 'Tool call limit', seconds: 7200, kind: 'tool' }} onRestart={vi.fn()} onDismiss={() => {}} />))
+    expect(host.textContent).toContain('A tool call exceeded its 2 h limit with no result, so this turn was stopped.')
+    expect(host.textContent).toContain('Settings, Goal Loops, Tool call limit.')
+    expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent === 'Restart with +15 min')).toBe(true)
+  } finally {
+    act(() => root.unmount())
+    host.remove()
+  }
+})
+
 it('formats timeout values and reads the native timeout stop', () => {
   expect(formatTimeoutDuration(900)).toBe('15 min')
   expect(formatTimeoutDuration(3600)).toBe('1 h')
   expect(formatTimeoutDuration(4500)).toBe('1 h 15 min')
   expect(sanitizeCppAcpSession({ timeoutStop: { label: 'Provider turn timeout', seconds: 2700 } })?.timeoutStop).toEqual({ label: 'Provider turn timeout', seconds: 2700 })
+  expect(sanitizeCppAcpSession({ timeoutStop: { label: 'Tool call limit', seconds: 7200, kind: 'tool', channel: '', count: 0, example: '' } })?.timeoutStop).toEqual({ label: 'Tool call limit', seconds: 7200, kind: 'tool' })
   expect(sanitizeCppAcpSession({ timeoutStop: null })?.timeoutStop).toBeUndefined()
 })
 
@@ -72,4 +88,5 @@ it('puts the previous timeout back when the restart is refused', async () => {
   saved.length = 0
   expect((await restartWithRaisedTimeout({ ...base, retryable: false, retry: async () => ({ ok: true }) }))?.message).toContain('Timeout raised to 30 min.')
   expect(saved).toEqual([1800])
+  expect((await restartWithRaisedTimeout({ ...base, retryable: false, limitName: 'Tool call limit', retry: async () => ({ ok: true }) }))?.message).toContain('Tool call limit raised to 30 min.')
 })

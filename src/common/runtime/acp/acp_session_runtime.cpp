@@ -1114,9 +1114,16 @@ namespace uam
 			                                ? std::min(app.settings.active_turn_inactivity_timeout_seconds,
 			                                           app.settings.acp_setup_inactivity_timeout_seconds)
 			                                : app.settings.active_turn_inactivity_timeout_seconds;
+			const double tool_call_limit_seconds = static_cast<double>(app.settings.tool_call_timeout_seconds);
 			const AcpTurnInactivityRecoveryAction action = AcpTurnInactivityRecovery(
 			    session, now_seconds, static_cast<double>(timeout_seconds),
-			    kAcpCancelTimeoutSeconds);
+			    kAcpCancelTimeoutSeconds, tool_call_limit_seconds);
+			// The stop is the tool-call limit's only when that limit outlasted the ordinary quiet period.
+			const bool tool_call_limit = action == AcpTurnInactivityRecoveryAction::Cancel && [&]
+			{
+				const AcpOpenToolCallDeadline open = AcpOpenToolCallDeadlineFor(session, static_cast<double>(timeout_seconds), tool_call_limit_seconds);
+				return open.undeclared && open.time_s > std::max(session.turn_started_time_s, session.last_runtime_activity_time_s) + static_cast<double>(timeout_seconds);
+			}();
 			// The shared stream watch (#636) reports repeated output; a loop stops through the same cancel path.
 			const int loop_limit = app.settings.stream_loop_repeat_limit;
 			const bool loop = action == AcpTurnInactivityRecoveryAction::None && !maintenance_operation && loop_limit > 0 &&
@@ -1148,6 +1155,10 @@ namespace uam
 			const std::string message = loop
 			    ? std::string(RuntimeDisplayName(session)) + " turn stopped after the same " + repeated + " repeated " + std::to_string(repeats) +
 			          " times. The delivered prompt was not replayed."
+			    : tool_call_limit
+			    ? std::string(RuntimeDisplayName(session)) + " turn stopped because a tool call exceeded its " +
+			          (app.settings.tool_call_timeout_seconds % 60 == 0 ? std::to_string(app.settings.tool_call_timeout_seconds / 60) + "-minute" : std::to_string(app.settings.tool_call_timeout_seconds) + "-second") +
+			          " limit without a result. The delivered prompt was not replayed."
 			    : std::string(RuntimeDisplayName(session)) +
 			          (codex_turn_start_pending ? " turn start" : " turn") + " timed out after " +
 			          std::to_string(timeout_seconds) +
@@ -1161,9 +1172,10 @@ namespace uam
 			session.inactivity_timeout_pending = cancel_sent && session.running;
 			session.last_error = message;
 			if (loop) MarkAcpLoopStop(session, repeated, static_cast<int>(repeats), example);
+			else if (tool_call_limit && !maintenance_operation) MarkAcpToolCallLimitStop(session, app.settings.tool_call_timeout_seconds);
 			else if (!codex_turn_start_pending && !maintenance_operation) MarkAcpTimeoutStop(session, "Provider turn timeout", timeout_seconds);
 			session.lifecycle_state = kAcpLifecycleError;
-			AppendAcpDiagnostic(session, "turn", loop ? "stream_loop_cancel" : "inactivity_cancel", "", "", false, 0, message, cancel_error);
+			AppendAcpDiagnostic(session, "turn", loop ? "stream_loop_cancel" : tool_call_limit ? "tool_call_limit_cancel" : "inactivity_cancel", "", "", false, 0, message, cancel_error);
 			if (!maintenance_operation) BlockActiveGoalForInactivityTimeout(app, session, chat, message);
 			MarkAcpChatUnseenIfBackground(app, chat);
 			if (!session.inactivity_timeout_pending)

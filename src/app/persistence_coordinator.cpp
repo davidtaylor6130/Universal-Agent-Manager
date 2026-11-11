@@ -122,6 +122,7 @@ bool PersistenceCoordinator::ResolveMemorySettingsUncertainty(uam::AppState& app
 		app.settings.acp_turn_output_limit_mib = primary.acp_turn_output_limit_mib;
 		app.settings.active_turn_inactivity_timeout_seconds = primary.active_turn_inactivity_timeout_seconds;
 		app.settings.stream_loop_repeat_limit = primary.stream_loop_repeat_limit;
+		app.settings.tool_call_timeout_seconds = primary.tool_call_timeout_seconds;
 		app.settings.memory_worker_bindings.swap(primary.memory_worker_bindings);
 		app.settings.permission_reviewer_provider_id.swap(primary.permission_reviewer_provider_id);
 		app.settings.permission_reviewer_model_id.swap(primary.permission_reviewer_model_id);

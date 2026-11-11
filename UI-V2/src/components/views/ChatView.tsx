@@ -2244,14 +2244,17 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const lastUser = lastUserMessageIndex(chatMessages)
     const queued = (acp?.queuedPrompts?.length ?? 0) > 0
     const retryable = lastUser >= 0 && canRetryMessageInPlace(chatMessages, lastUser) && !queued
-    const previous = useAppStore.getState().activeTurnInactivityTimeoutSeconds
+    // A tool-call limit stop raises that limit; any other owned timeout raises the turn timeout.
+    const toolLimit = timeoutStop?.kind === 'tool'
+    const previous = useAppStore.getState()[toolLimit ? 'toolCallTimeoutSeconds' : 'activeTurnInactivityTimeoutSeconds']
     return restartWithRaisedTimeout({
       previous,
       raised: Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, previous + TIMEOUT_RESTART_STEP_SECONDS),
       queued,
       retryable,
-      saveTimeout: (seconds) => setMemorySettings({ activeTurnInactivityTimeoutSeconds: seconds }),
+      saveTimeout: (seconds) => setMemorySettings(toolLimit ? { toolCallTimeoutSeconds: seconds } : { activeTurnInactivityTimeoutSeconds: seconds }),
       retry: () => retryFailedMessage(session.id, lastUser + historyStartIndex),
+      limitName: toolLimit ? 'Tool call limit' : 'Timeout',
     })
   }
   const retryUnsent = async (index: number) => {

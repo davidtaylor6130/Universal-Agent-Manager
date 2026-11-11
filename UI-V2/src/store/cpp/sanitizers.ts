@@ -95,6 +95,8 @@ export const DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 600
 export const MIN_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 60
 export const MAX_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 3600
 export const DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS = 1800
+/** Limit for one open tool call that declares no timeout of its own; shares the turn timeout's range. */
+export const DEFAULT_TOOL_CALL_TIMEOUT_SECONDS = 7200
 export const MIN_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS = 60
 export const MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS = 86400
 /** Stream loop stop (#636): repeats of the same output in one turn; 0 turns it off. Mirrors stream_watch.h. */
@@ -128,6 +130,10 @@ export function normalizeStreamLoopRepeatLimit(value: unknown): number {
 
 export function normalizeActiveTurnInactivityTimeoutSeconds(value: unknown): number {
   return Math.floor(clampedFiniteNumberOr(value, DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, MIN_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS))
+}
+
+export function normalizeToolCallTimeoutSeconds(value: unknown): number {
+  return Math.floor(clampedFiniteNumberOr(value, DEFAULT_TOOL_CALL_TIMEOUT_SECONDS, MIN_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS))
 }
 
 export function normalizeMemoryLevel(value: unknown, legacyEnabled = true, allowDefault = true): MemoryLevel {
@@ -962,7 +968,7 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
                 count: nonNegativeInteger(value.timeoutStop.count) ?? 0,
                 example: isString(value.timeoutStop.example) ? value.timeoutStop.example : '',
               }
-            : {}),
+            : value.timeoutStop.kind === 'tool' ? { kind: 'tool' as const } : {}),
         }
       : undefined,
     lastExitCode: typeof value.lastExitCode === 'number' && Number.isFinite(value.lastExitCode) ? value.lastExitCode : null,
@@ -1796,6 +1802,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       goalTokenBudget: 0,
       acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
       activeTurnInactivityTimeoutSeconds: DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS,
+      toolCallTimeoutSeconds: DEFAULT_TOOL_CALL_TIMEOUT_SECONDS,
       streamLoopRepeatLimit: DEFAULT_STREAM_LOOP_REPEAT_LIMIT,
       computePools: [],
       acpTurnOutputLimitMiB: DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
@@ -1963,6 +1970,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     goalTokenBudget: Math.max(0, Math.floor(typeof value.goalTokenBudget === 'number' && Number.isFinite(value.goalTokenBudget) ? value.goalTokenBudget : 0)),
     acpSetupInactivityTimeoutSeconds: normalizeAcpSetupInactivityTimeoutSeconds(value.acpSetupInactivityTimeoutSeconds),
     activeTurnInactivityTimeoutSeconds: normalizeActiveTurnInactivityTimeoutSeconds(value.activeTurnInactivityTimeoutSeconds),
+    toolCallTimeoutSeconds: normalizeToolCallTimeoutSeconds(value.toolCallTimeoutSeconds),
     streamLoopRepeatLimit: normalizeStreamLoopRepeatLimit(value.streamLoopRepeatLimit),
     computePools: sanitizeComputePools(value.computePools),
     acpTurnOutputLimitMiB: normalizeAcpTurnOutputLimitMiB(value.acpTurnOutputLimitMiB),

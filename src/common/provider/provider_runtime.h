@@ -327,11 +327,26 @@ class IProviderRuntime
 		(void)tool;
 		(void)native_item;
 	}
+	/// <summary>Seconds a tool call's own input declares as its timeout; 0 when it declares none or the stream does not expose one.</summary>
+	virtual double AcpToolDeclaredTimeoutSeconds(std::string_view tool_kind, const nlohmann::json& tool_input) const
+	{
+		(void)tool_kind;
+		(void)tool_input;
+		return 0.0;
+	}
 	/// <summary>Decodes provider extensions after common ACP tool metadata is applied.</summary>
 	virtual void ApplyAcpToolMetadata(uam::AcpToolCallState& tool, const nlohmann::json& update) const
 	{
 		(void)tool;
 		(void)update;
+	}
+
+	/// <summary>A shell tool's positive millisecond input field, as seconds; 0 otherwise. Another tool's field of the same name has its own meaning and unit.</summary>
+	static double ShellToolMillisecondsAsSeconds(std::string_view tool_kind, const nlohmann::json& tool_input, const char* field)
+	{
+		if (tool_kind != "execute") return 0.0;
+		const auto found = tool_input.is_object() ? tool_input.find(field) : tool_input.end();
+		return found != tool_input.end() && found->is_number() && found->get<double>() > 0.0 ? found->get<double>() / 1000.0 : 0.0;
 	}
 
 	// == ACP Session Strategy ==
