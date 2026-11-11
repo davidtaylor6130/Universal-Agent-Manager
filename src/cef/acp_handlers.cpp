@@ -8,6 +8,7 @@
 #include "cef/state_serializer.h"
 #include "common/chat/attachment_payload.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/staged_attachment_discard.h"
 #include "common/chat/message_attachment_json.h"
 #include "common/config/execution_host_config.h"
 #include "common/config/provider_availability.h"
@@ -1495,6 +1496,53 @@ void UamQueryHandler::HandleCancelChatAttachmentStaging(CefRefPtr<CefBrowser> br
 	}
 	uam::attachment_payload::ExchangeCanceled(attachment_id, true);
 	cb->Success("{}");
+}
+
+// The composer calls this when the user removes a chip whose copy already finished. Only a copy this chat staged
+// and nothing has sent, queued or recorded is deleted; a sent attachment keeps its file.
+void UamQueryHandler::HandleDiscardStagedChatAttachment(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	(void)browser;
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string path = payload.value("path", "");
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
+	{
+		return;
+	}
+	if (m_dispatchingCompanion || !uam::staged_attachment_discard::IsStagedCopyPath(path, chat_id))
+	{
+		cb->Failure(400, "Only an attachment copy staged for this chat can be discarded.");
+		return;
+	}
+	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
+	const ExecutionHost* execution_host = uam::execution_hosts::Find(m_app.settings.execution_hosts, chat->execution_host_id);
+	if (uam::staged_attachment_discard::IsReferenced(m_app, path) || workspace_root.empty() || execution_host == nullptr)
+	{
+		cb->Success(R"({"removed":false})");
+		return;
+	}
+	const std::string portable = uam::staged_attachment_discard::Portable(path);
+	const bool remote = execution_host->id != uam::execution_hosts::kLocalHostId;
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner("attachment:" + chat_id), m_asyncLifetime, cb,
+	    [remote, host = *execution_host, workspace_root, portable]()
+	    {
+		    bool removed = false;
+		    if (remote)
+		    {
+			    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, host);
+			    removed = uam::remote::CanAttemptRunnerConnection(host) && client.Connect(nullptr) &&
+			              client.RemoveFile("discard-" + uam::time::SystemEpochMicrosecondsTokenNow(),
+			                  uam::paths::PathFromUtf8(uam::execution_hosts::JoinRemotePath(host.platform, uam::paths::Utf8PathString(workspace_root), portable)));
+		    }
+		    else
+		    {
+			    const std::filesystem::path target = workspace_root / uam::paths::PathFromUtf8(portable);
+			    removed = uam::paths::IsRegularFileNoThrow(target) && uam::paths::RemoveFileNoThrow(target);
+		    }
+		    uam::diagnostics::Write(std::string("[stageChatAttachments] Unsent attachment copy discarded: remote=") + (remote ? "1" : "0") + " removed=" + (removed ? "1" : "0"));
+		    return uam::query_handler_async::AsyncSuccess({{"removed", removed}});
+	    }, {}, TID_FILE_USER_VISIBLE);
 }
 
 void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

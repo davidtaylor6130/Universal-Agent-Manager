@@ -4244,6 +4244,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                       removedAttachmentIdsRef.current.add(attachment.id)
                       // A copy still running stops between chunks and removes what it wrote.
                       if (attachment.status === 'staging' && isCefContext()) void sendToCEF({ action: 'cancelChatAttachmentStaging', payload: { attachmentId: attachment.id } }).catch(() => undefined)
+                      // A finished copy that was never sent is deleted with its chip; the native side keeps anything a message or queue holds.
+                      if (attachment.status === 'ready' && attachment.type !== 'directory' && attachment.path && !submitInFlightRef.current && isCefContext() && !isCompanionContext()) void sendToCEF({ action: 'discardStagedChatAttachment', payload: { chatId: session.id, path: attachment.path } }, false).catch(() => undefined)
                       setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id))
                     }}
                     removeLabel={`Remove ${attachment.name} attachment`}

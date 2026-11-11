@@ -26,6 +26,7 @@
 #include "common/runtime/structured_framing.h"
 #include "common/chat/acp_prompt_recovery.h"
 #include "common/chat/attachment_payload.h"
+#include "common/chat/staged_attachment_discard.h"
 #include "remote/runner_service_posix.h"
 #include "injected_acp_input.h"
 
@@ -2345,6 +2346,48 @@ UAM_TEST(RemoteAttachmentUploadDeliversALargeBinaryFileCompleteOrFailsVisibly)
 		UAM_ASSERT(client.UploadFile("attachment-older-helper", "/remote/clip.MOV", "video-bytes", &error));
 	}
 #endif
+}
+
+UAM_TEST(RemovingAnUnsentAttachmentDiscardsOnlyACopyNothingReferences)
+{
+	using namespace uam::staged_attachment_discard;
+	const std::string copy = ".UAM/attachments/chat-1/1-0-clip.MOV";
+	// Only a file directly inside this chat's staging folder qualifies: never a directory reference or another chat's copy.
+	UAM_ASSERT(IsStagedCopyPath(copy, "chat-1"));
+	UAM_ASSERT(IsStagedCopyPath(".UAM\\attachments\\chat-1\\1-0-clip.MOV", "chat-1"));
+	for (const char* refused : {"/Users/me/Documents", "C:\\Users\\me\\Documents", ".UAM/attachments/chat-2/1-0-clip.MOV", ".UAM/attachments/chat-1/", ".UAM/attachments/chat-1/..",
+	                            ".UAM/attachments/chat-1/sub/file", ".UAM/attachments/chat-1/../../secret", "x/.UAM/attachments/chat-1/file", ""})
+		UAM_ASSERT(!IsStagedCopyPath(refused, "chat-1"));
+	UAM_ASSERT(!IsStagedCopyPath(copy, ""));
+
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "chat-1";
+	app.chats.push_back(chat);
+	UAM_ASSERT(!IsReferenced(app, copy));
+	MessageAttachment attachment;
+	attachment.path = ".UAM\\attachments\\chat-1\\1-0-clip.MOV";
+	// A sent message, a recorded link, a queued prompt and a branch each keep the copy.
+	Message sent;
+	sent.attachments = {attachment};
+	app.chats[0].messages.push_back(sent);
+	UAM_ASSERT(IsReferenced(app, copy));
+	app.chats[0].messages.clear();
+	UAM_ASSERT(!IsReferenced(app, copy));
+	app.chats[0].linked_files = {copy};
+	UAM_ASSERT(IsReferenced(app, copy));
+	app.chats[0].linked_files.clear();
+	uam::AcpQueuedUserPromptState queued;
+	queued.attachments = {attachment};
+	app.chats[0].acp_queued_prompts.push_back(queued);
+	UAM_ASSERT(IsReferenced(app, copy));
+	app.chats[0].acp_queued_prompts.clear();
+	ChatSession branch;
+	branch.id = "chat-branch";
+	branch.linked_files = {copy};
+	app.chats.push_back(branch);
+	UAM_ASSERT(IsReferenced(app, copy));
+	UAM_ASSERT(!IsReferenced(app, ".UAM/attachments/chat-1/2-0-other.MOV"));
 }
 
 UAM_TEST(LargeAttachmentStreamsFromDiskCompleteWithProgressOrFailsVisibly)
