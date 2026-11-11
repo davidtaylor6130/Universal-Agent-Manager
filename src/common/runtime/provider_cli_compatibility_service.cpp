@@ -143,7 +143,7 @@ namespace
 			return std::move(result);
 		};
 		uam::remote::DirectoryListing home;
-		if (!client.ListDirectories({}, home, &result.error)) return finish();
+		if (!client.ListDirectories({}, home, &result.error, stop_token)) return finish();
 		if (!uam::execution_hosts::IsAbsoluteRemotePath(host.platform, home.directory))
 		{
 			result.error = "The SSH helper returned an invalid home directory.";

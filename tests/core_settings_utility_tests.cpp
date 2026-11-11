@@ -771,6 +771,45 @@ UAM_TEST(CefInteractiveBridgeAndClipboardStayBounded)
 
 }
 
+UAM_TEST(SubprocessAndNetworkBridgeWorkersLeaveTheSharedFileLanes)
+{
+	// CEF runs each shared file lane one task at a time: an SSH listing or Git read there made saved-history reads in other chats time out.
+	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
+	const std::string bridge = ReadFile(source_root / "src/cef/uam_query_handler_async.h");
+	UAM_ASSERT(bridge.find("runner ? runner->PostTask(task) : CefPostTask(fallback, task)") != std::string::npos);
+	UAM_ASSERT(ReadFile(source_root / "src/cef/uam_query_handler.cpp").find("m_slowQueries[std::hash<std::string>{}(key) % m_slowQueries.size()]") != std::string::npos);
+	const std::vector<std::pair<const char*, std::vector<const char*>>> workers = {
+	    {"src/cef/chat_handlers.cpp", {"HandleMoveChatWorkspace("}},
+	    {"src/cef/chat_branch_handlers.cpp", {"HandleListChatBranches(", "HandleSwitchChatBranch(", "ContinueSwitchChatBranch("}},
+	    {"src/cef/workspace_handlers.cpp", {"HandleOpenWorkspaceTerminal("}},
+	    {"src/cef/remote_host_handlers.cpp", {"HandleListRemoteDirectories(", "HandleCheckRemoteHostInstruction("}},
+	    {"src/cef/vcs_handlers.cpp", {"HandleGetChatWorktreeStatus(", "HandleGetVcsCommitStatus(", "HandleGetVcsFileDiff(", "HandleCommitVcsChanges(", "HandleGenerateVcsCommitMessage(", "HandleCaptureChatReferenceContext(", "HandleGetWorkspaceVcsContext(", "HandleGetWorkspaceFilePreview(",
+	        "HandlePortChatWorktreeChanges(", "HandlePreviewChatTurnRollback(", "HandleRollbackChatTurn(", "HandleCaptureChatRepositoryBaseline("}}};
+	// A remote chat is keyed by its host, so one unreachable host cannot occupy every worker thread.
+	UAM_ASSERT(ReadFile(source_root / "src/cef/uam_query_handler.cpp").find("return SlowQueryRunner(remote ? chat.execution_host_id : chat.id);") != std::string::npos);
+	// The install fences its host before it counts running work, and keeps the fence for the whole request.
+	const std::string install = ReadFile(source_root / "src/cef/remote_host_handlers.cpp");
+	const std::size_t fence = install.find("remote_vcs_operation_leases_by_host_id[host.id].Fence()");
+	UAM_ASSERT(fence != std::string::npos && fence < install.find("HostHasActiveRuntimeWork(m_app, host.id, true, &block_reason, &block_chat_id)"));
+	// Quit stops remote waits before anything it joins or drains can wait on one.
+	const std::string application = ReadFile(source_root / "src/app/application.cpp");
+	const std::size_t shutdown = application.find("void Application::Shutdown()");
+	const std::size_t first_statement = application.find_first_not_of(" \t\r\n", application.find('{', shutdown) + 1);
+	UAM_ASSERT(application.find("uam::remote::BeginRunnerShutdown();", shutdown) < application.find(';', first_statement) + 1);
+	for (const auto& [file, handlers] : workers)
+	{
+		const std::string source = ReadFile(source_root / file);
+		for (const char* handler : handlers)
+		{
+			const std::size_t begin = source.find(std::string("void UamQueryHandler::") + handler);
+			UAM_ASSERT(begin != std::string::npos);
+			const std::string body = source.substr(begin, source.find("\nvoid UamQueryHandler::", begin + 1) - begin);
+			UAM_ASSERT(body.find("RunAsyncCefQuery(SlowQueryRunner(") != std::string::npos);
+			UAM_ASSERT(body.find("RunAsyncCefQuery(m_asyncLifetime") == std::string::npos);
+		}
+	}
+}
+
 UAM_TEST(VcsStatusSubprocessReadsYieldToChatHistory)
 {
 	// History pages are user-blocking; live opening of a huge chat waited ~300 ms behind equal-priority Git status reads.
@@ -2158,10 +2197,15 @@ UAM_TEST(RemoteHelperUpdateBlocksEveryRemoteCleanupState)
 		UAM_ASSERT(begin != std::string::npos);
 		const std::size_t end = vcs_source.find("void UamQueryHandler::", begin + 1);
 		const std::string handler_body = vcs_source.substr(begin, end - begin);
-		const std::size_t acquire = handler_body.find("BeginRemoteVcsOperationLease(m_app, chat->execution_host_id)");
-		UAM_ASSERT(acquire != std::string::npos);
-		UAM_ASSERT(acquire < handler_body.find("RunAsyncCefQuery"));
-		UAM_ASSERT(handler_body.find("remote_vcs_lease]() mutable") != std::string::npos);
+		const std::size_t queued = handler_body.find("QueueRemoteVcsWork(m_app, chat->execution_host_id)");
+		const std::size_t posted = handler_body.find("RunAsyncCefQuery");
+		const std::size_t held = handler_body.find("if (!remote_vcs.Hold(remote_vcs_lease))");
+		UAM_ASSERT(queued != std::string::npos && queued < posted && held != std::string::npos);
+		// Reads block helper setup only while they run; a queued commit blocks it from the moment it is queued.
+		UAM_ASSERT((held < posted) == (std::string_view(method) == "HandleCommitVcsChanges"));
+		UAM_ASSERT(handler_body.find("ScopedRunnerQueuedWork queued(remote_vcs.queued_at)") > posted);
+		// Work that would start during helper setup is refused, never run without the hold.
+		UAM_ASSERT(handler_body.find("kRemoteHelperSetupRunning", held) < handler_body.find('\n', held));
 	}
 }
 

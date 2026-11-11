@@ -10,6 +10,7 @@
 #include "include/cef_request_context.h"
 #include "app/execution_routing_integration.h"
 #include "application.h"
+#include "remote/runner_client.h"
 #include <thread>
 #include <cstdlib>
 #include "common/utils/diagnostic_log.h"
@@ -126,6 +127,10 @@ namespace
 
 	void ResetRuntimeCliVersionState(uam::AppState& app)
 	{
+		// Ask every worker to stop before joining the first, so the joins overlap instead of queueing.
+		if (app.runtime_cli_version_check_task.worker != nullptr) app.runtime_cli_version_check_task.worker->request_stop();
+		for (auto& [key, task] : app.runtime_cli_install_tasks)
+			if (task.worker != nullptr) task.worker->request_stop();
 		uam::ResetAsyncCommandTask(app.runtime_cli_version_check_task);
 		for (auto& [key, task] : app.runtime_cli_install_tasks) uam::ResetAsyncCommandTask(task);
 		app.runtime_cli_install_tasks.clear();
@@ -1048,6 +1053,8 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 void Application::Shutdown()
 {
+	// Quit must not wait on a remote host: no remote connection starts from here, and the waits already under way end together
+	uam::remote::BeginRunnerShutdown();
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	if (m_app.opencode_native_activity)
 		m_app.opencode_native_activity->Stop();

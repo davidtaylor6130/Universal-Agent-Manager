@@ -2,6 +2,7 @@
 
 #include "include/cef_task.h"
 
+#include <array>
 #include <set>
 #include <atomic>
 #include <map>
@@ -79,6 +80,11 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	CefRefPtr<CefThread> m_titleQueries;
 	CefRefPtr<CefThread> m_snoozeQueries;
 	CefRefPtr<CefThread> m_instructionQueries;
+	// Subprocess and network workers run here, off CEF's shared file lanes. One key always maps to one thread, so a chat's or host's work stays in order.
+	std::array<CefRefPtr<CefThread>, 4> m_slowQueries;
+	CefRefPtr<CefTaskRunner> SlowQueryRunner(const std::string& key);
+	/// A remote chat is keyed by its host, so an unreachable host holds one thread however many of its chats ask.
+	CefRefPtr<CefTaskRunner> SlowQueryRunner(const ChatSession& chat);
 	std::set<std::string> m_snoozeRequests;
 	std::size_t m_pendingFilePreviews = 0;
 	std::size_t m_pendingCentralInstructionFiles = 0;

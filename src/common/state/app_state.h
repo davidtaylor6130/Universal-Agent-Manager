@@ -1120,6 +1120,44 @@ namespace uam
 	};
 
 	/// <summary>
+	/// Remote Git work on one host. Copies share the counts, so a queued worker reports from its own thread.
+	/// Helper setup fences the host first and then counts what runs: a worker that starts after the fence is
+	/// refused, so none can launch the helper that is being replaced.
+	/// </summary>
+	class RemoteVcsActivity
+	{
+	  public:
+		/// Empty while the host is fenced; otherwise held for as long as the work runs.
+		std::shared_ptr<void> Hold() const
+		{
+			m_state->running.fetch_add(1);
+			if (m_state->fences.load() == 0) return Token(&State::running);
+			m_state->running.fetch_sub(1);
+			return {};
+		}
+		/// Held from the moment work is queued until it has run or been dropped.
+		std::shared_ptr<void> Queue() const { m_state->queued.fetch_add(1); return Token(&State::queued); }
+		std::shared_ptr<void> Fence() const { m_state->fences.fetch_add(1); return Token(&State::fences); }
+		/// No work is running; queued work does not count.
+		bool expired() const { return m_state->running.load() == 0; }
+		/// Nothing is running or waiting to run.
+		bool idle() const { return expired() && m_state->queued.load() == 0; }
+
+	  private:
+		struct State
+		{
+			std::atomic<int> running{0};
+			std::atomic<int> queued{0};
+			std::atomic<int> fences{0};
+		};
+		std::shared_ptr<void> Token(std::atomic<int> State::* count) const
+		{
+			return std::shared_ptr<void>(m_state.get(), [state = m_state, count](void*) { ((*state).*count).fetch_sub(1); });
+		}
+		std::shared_ptr<State> m_state = std::make_shared<State>();
+	};
+
+	/// <summary>
 	/// Background command execution container for provider CLI version checks.
 	/// </summary>
 	struct AsyncCommandTask
@@ -1591,7 +1629,7 @@ namespace uam
 		};
 		std::unordered_map<std::string, std::shared_ptr<GitPortRequest>> git_port_requests;
 		std::unordered_map<std::string, std::shared_ptr<WorktreeLaunchPreparationTask>> worktree_launch_preparations;
-		std::unordered_map<std::string, std::weak_ptr<void>> remote_vcs_operation_leases_by_host_id;
+		std::unordered_map<std::string, RemoteVcsActivity> remote_vcs_operation_leases_by_host_id;
 
 		std::unique_ptr<ProviderModelCatalogService> provider_model_catalog;
 		std::shared_ptr<OpenCodeNativeActivityService> opencode_native_activity;

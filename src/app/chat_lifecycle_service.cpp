@@ -2151,8 +2151,8 @@ bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>
 	for (const ChatSession& chat : deleted.chats)
 	{
 		const std::string host_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat.execution_host_id), "local");
-		const std::unordered_map<std::string, std::weak_ptr<void>>::const_iterator lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
-		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.expired())
+		const auto lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
+		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.idle())
 		{
 			app.status_line = "Wait for the workspace operation to finish.";
 			return false;
@@ -2251,8 +2251,8 @@ bool uam::PrepareChatDeletion(AppState& app, const std::vector<std::string>& cha
 			return false;
 		}
 		const std::string host_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat->execution_host_id), "local");
-		const std::unordered_map<std::string, std::weak_ptr<void>>::const_iterator lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
-		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.expired())
+		const auto lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
+		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.idle())
 		{
 			app.status_line = "Wait for the workspace operation to finish.";
 			return false;
