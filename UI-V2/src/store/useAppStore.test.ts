@@ -8163,10 +8163,12 @@ describe('useAppStore Gemini CLI slice', () => {
     await useAppStore.getState().resumeGoal('chat-1', 'goal-1', true)
     await useAppStore.getState().stopAcpSession('chat-1', 'timeout')
     await useAppStore.getState().stopAcpSession('chat-1')
+    expect(await useAppStore.getState().treatRemoteStopAsStopped('chat-1')).toBe(true)
     expect(requests.map(({ action, payload }) => ({ action, payload }))).toEqual([
       { action: 'resumeGoal', payload: { chatId: 'chat-1', goalId: 'goal-1', restart: true } },
       { action: 'stopAcpSession', payload: { chatId: 'chat-1', purpose: 'timeout' } },
       { action: 'stopAcpSession', payload: { chatId: 'chat-1' } },
+      { action: 'treatRemoteStopAsStopped', payload: { chatId: 'chat-1' } },
     ])
   })
 

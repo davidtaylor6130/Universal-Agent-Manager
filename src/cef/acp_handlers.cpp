@@ -1560,6 +1560,16 @@ void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser, const 
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleTreatRemoteStopAsStopped(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	// Desktop only: the phone has no confirmation for an override that can leave a process running on the host.
+	std::string error;
+	const bool settled = uam::TreatUnconfirmedRemoteStopAsStopped(m_app, payload.value("chatId", ""), &error);
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	if (settled) cb->Success("{}");
+	else cb->Failure(409, error);
+}
+
 void UamQueryHandler::HandleWriteClipboardText(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string text = payload.value("text", "");

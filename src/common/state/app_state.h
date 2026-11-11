@@ -845,6 +845,9 @@ namespace uam
 		bool managed_cancellation_pending = false;
 		bool remote_stop_pending = false;
 		bool remote_stop_unconfirmed = false;
+		// Runtime-only: when this remote stop first went unconfirmed (empty while none is), and whether it has stayed so long enough to offer the user Treat as stopped.
+		std::optional<double> remote_stop_unconfirmed_since_time_s;
+		bool remote_stop_force_offered = false;
 		bool restart_marker_save_pending = false;
 		bool restart_after_remote_stop_cleanup = false;
 		int last_settled_turn_serial = 0;

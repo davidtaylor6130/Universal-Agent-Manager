@@ -21,6 +21,7 @@
 #include "common/runtime/structured_framing.h"
 #include "remote/runner_proxy.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
+#include "cef/state_serializer.h"
 
 using namespace uam_test;
 
@@ -12895,6 +12896,323 @@ UAM_TEST(UnreachableRemoteStopStaysUnconfirmedBacksOffAndStillAllowsRemove)
 	UAM_ASSERT(app.chats.front().messages.front().acp_prompt_discarded);
 	// Removing the row claims nothing about the stop.
 	UAM_ASSERT(app.chats.front().remote_stop_cleanup_pending && raw_session->remote_stop_unconfirmed);
+}
+
+namespace
+{
+	/// A remote chat whose stop the host never answered: the saved markers of that state and the session still retrying it.
+	/// The host is not configured, so nothing here can launch; a send that gets past the stop gates fails at the host lookup.
+	uam::AcpSessionState* AddUnconfirmedRemoteStop(uam::AppState& app, const std::string& chat_id)
+	{
+		ChatSession chat;
+		chat.id = chat_id;
+		chat.provider_id = "gemini-cli";
+		chat.execution_host_id = "ssh-test";
+		chat.messages_loaded = true;
+		Message asked{MessageRole::User, "Run the long job."};
+		asked.created_at = "2026-11-11T10:00:00Z";
+		Message reply{MessageRole::Assistant, "Working on it"};
+		reply.created_at = "2026-11-11T10:00:01Z";
+		ToolCall tool;
+		tool.id = "tool-1";
+		tool.name = "shell";
+		tool.status = uam::acp_statuses::kInProgress;
+		reply.tool_calls.push_back(tool);
+		chat.messages = {asked, reply};
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = "old-authority";
+		chat.remote_stop_cleanup_pending = true;
+		chat.remote_turn_reconnect_pending = true;
+		chat.remote_active_turn_id = "turn-1";
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.back()));
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat_id;
+		session->provider_id = chat.provider_id;
+		session->processing = true;
+		session->recovering_remote_turn = true;
+		session->remote_stop_unconfirmed = true;
+		session->reconnect_pending = true;
+		session->reconnect_not_before_time_s = uam::GetAppTimeSeconds() + 3600.0; // No reattach runs during the test.
+		session->turn_assistant_message_index = 1;
+		session->remote_output_delivery_token = "old-authority";
+		session->last_error = "Remote stop could not be confirmed; reconnecting to preserve the active turn.";
+		app.acp_sessions.push_back(std::move(session));
+		return app.acp_sessions.back().get();
+	}
+
+	/// Makes the stop look unconfirmed for longer than the offer delay, then lets the poll notice.
+	void AgeUnconfirmedRemoteStop(uam::AppState& app, uam::AcpSessionState& session)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		session.remote_stop_unconfirmed_since_time_s = uam::GetAppTimeSeconds() - uam::acp_detail::kRemoteStopForceOfferDelaySeconds - 1.0;
+		(void)uam::PollAllAcpSessions(app);
+	}
+
+	bool RemoteTurnRecordsCleared(const ChatSession& chat)
+	{
+		return !chat.remote_process_exists && chat.remote_process_control_token.empty() && !chat.remote_stop_cleanup_pending &&
+		    !chat.remote_turn_reconnect_pending && !chat.remote_restart_pending && chat.remote_active_turn_id.empty() &&
+		    chat.remote_prompt_delivery_id.empty() && chat.remote_pending_requests.empty();
+	}
+}
+
+UAM_TEST(TreatAsStoppedIsOfferedOnlyAfterTheDelayAndNeverForAConfirmedStop)
+{
+	TempDir temp("uam-acp-treat-as-stopped-offer");
+	uam::AppState app;
+	app.data_root = temp.root;
+	const std::string chat_id = "chat-treat-as-stopped-offer";
+	uam::AcpSessionState* session = AddUnconfirmedRemoteStop(app, chat_id);
+	const auto offered_to_ui = [&app]
+	{
+		return uam::StateSerializer::Serialize(app).at("chats").at(0).at("acpSession").contains("remoteStopForceAvailable");
+	};
+	// A stop that only just went unconfirmed is not offered, and the override is refused however it is asked for.
+	(void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT(session->remote_stop_unconfirmed_since_time_s && !session->remote_stop_force_offered && !offered_to_ui());
+	std::string error;
+	UAM_ASSERT(!uam::TreatUnconfirmedRemoteStopAsStopped(app, chat_id, &error));
+	UAM_ASSERT(uam::strings::Contains(error, "long enough"));
+	UAM_ASSERT(session->remote_stop_unconfirmed && app.chats.front().remote_stop_cleanup_pending && app.chats.front().remote_process_exists);
+	UAM_ASSERT_EQ(app.chats.front().remote_process_control_token, std::string("old-authority"));
+	// A retry in flight keeps the clock instead of restarting the wait.
+	const std::optional<double> since = session->remote_stop_unconfirmed_since_time_s;
+	session->remote_stop_unconfirmed = false;
+	session->remote_stop_pending = true;
+	(void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT(session->remote_stop_unconfirmed_since_time_s == since);
+	session->remote_stop_pending = false;
+	session->remote_stop_unconfirmed = true;
+	// After the delay it is offered, and the poll reports the change so the UI hears of it.
+	session->remote_stop_unconfirmed_since_time_s = uam::GetAppTimeSeconds() - uam::acp_detail::kRemoteStopForceOfferDelaySeconds - 1.0;
+	UAM_ASSERT(uam::PollAllAcpSessions(app));
+	UAM_ASSERT(session->remote_stop_force_offered && offered_to_ui());
+	// A stop the host then confirms withdraws the offer, and the override is refused again.
+	session->remote_stop_unconfirmed = false;
+	(void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT(!session->remote_stop_force_offered && !session->remote_stop_unconfirmed_since_time_s && !offered_to_ui());
+	UAM_ASSERT(!uam::TreatUnconfirmedRemoteStopAsStopped(app, chat_id, &error));
+	// A local chat never has one.
+	app.chats.front().execution_host_id = "local";
+	session->remote_stop_force_offered = true;
+	UAM_ASSERT(!uam::TreatUnconfirmedRemoteStopAsStopped(app, chat_id, &error));
+}
+
+UAM_TEST(TreatAsStoppedClearsTheRemoteTurnAndAllowsANewSend)
+{
+	TempDir temp("uam-acp-treat-as-stopped-clears");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const std::string chat_id = "chat-treat-as-stopped-clears";
+	uam::AcpSessionState* session = AddUnconfirmedRemoteStop(app, chat_id);
+	uam::acp_detail::AppendAcpDiagnostic(*session, "remote_stop", "unconfirmed", "", "", false, 0, "Remote stop could not be confirmed.", "outcome=helper_unreachable");
+	AgeUnconfirmedRemoteStop(app, *session);
+	UAM_ASSERT(session->remote_stop_force_offered && uam::AcpStopInProgress(app, chat_id));
+	std::string error;
+	UAM_ASSERT(uam::TreatUnconfirmedRemoteStopAsStopped(app, chat_id, &error));
+	UAM_ASSERT_EQ(error, std::string());
+	const ChatSession& chat = app.chats.front();
+	// The saved process, stop and turn records are gone, in memory and on disk, and the old authority with them.
+	UAM_ASSERT(RemoteTurnRecordsCleared(chat));
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, chat_id);
+	UAM_ASSERT(persisted.has_value() && RemoteTurnRecordsCleared(*persisted));
+	UAM_ASSERT(session->remote_output_delivery_token.empty());
+	// The transcript is kept; the interrupted reply and its running tool are marked as such.
+	UAM_ASSERT_EQ(chat.messages.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(chat.messages[1].content, std::string("Working on it"));
+	UAM_ASSERT(chat.messages[1].interrupted);
+	UAM_ASSERT_EQ(chat.messages[1].tool_calls.front().status, std::string(uam::acp_statuses::kCancelled));
+	UAM_ASSERT(persisted->messages.size() == 2 && persisted->messages[1].interrupted);
+	// Nothing retries: no stop, no reattach, no error left on the chat.
+	UAM_ASSERT(!session->remote_stop_unconfirmed && !session->remote_stop_pending && !session->reconnect_pending);
+	UAM_ASSERT(!session->processing && !session->recovering_remote_turn && !session->recovering_remote_process && !session->remote_stop_force_offered);
+	UAM_ASSERT_EQ(session->last_error, std::string());
+	UAM_ASSERT_EQ(session->lifecycle_state, std::string(uam::acp_detail::kAcpLifecycleStopped));
+	UAM_ASSERT(!uam::AcpStopInProgress(app, chat_id) && app.pending_acp_remote_stops.empty());
+	for (int poll = 0; poll < 20; ++poll) (void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT(!session->reconnect_pending && !session->remote_stop_unconfirmed && RemoteTurnRecordsCleared(chat));
+	// One log line says the user forced it and carries only the fixed word of the last recorded reason.
+	UAM_ASSERT_EQ(session->diagnostics.back().event, std::string("remote_stop"));
+	UAM_ASSERT_EQ(session->diagnostics.back().reason, std::string("forced_by_user"));
+	UAM_ASSERT_EQ(session->diagnostics.back().detail, std::string("last_outcome=helper_unreachable"));
+	// A new send gets past every stop gate: it is refused only because this test's host is not configured.
+	error.clear();
+	UAM_ASSERT(!uam::SendAcpPrompt(app, chat_id, "Carry on.", {}, {}, false, &error));
+	UAM_ASSERT(uam::strings::Contains(error, "execution host no longer exists"));
+	// Forcing twice is refused: there is no unconfirmed stop left.
+	UAM_ASSERT(!uam::TreatUnconfirmedRemoteStopAsStopped(app, chat_id, &error));
+}
+
+UAM_TEST(TreatAsStoppedIgnoresLateHelperOutputAndExit)
+{
+	TempDir temp("uam-acp-treat-as-stopped-late");
+	uam::AppState app;
+	app.data_root = temp.root;
+	const std::string chat_id = "chat-treat-as-stopped-late";
+	uam::AcpSessionState* session = AddUnconfirmedRemoteStop(app, chat_id);
+	AgeUnconfirmedRemoteStop(app, *session);
+	UAM_ASSERT(session->remote_stop_force_offered);
+	// A reattach and a stop retry are both in flight. Each bridge has already written a reply and the exit a
+	// confirmed stop would be read from; nothing has read them when the user forces the chat.
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", "echo {\"late\":\"reply\"} & echo The remote process does not exist. 1>&2 & exit /b 70"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "printf '{\"late\":\"reply\"}\\n'; printf 'The remote process does not exist.\\n' >&2; exit 70"};
+#endif
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcess(*session, temp.root, argv, &error));
+	session->running = true;
+	auto pending = std::make_unique<uam::PendingAcpRemoteStop>();
+	pending->chat_id = chat_id;
+	pending->deadline_time_s = uam::GetAppTimeSeconds() + 30.0;
+	pending->recoverable_turn = true;
+	UAM_ASSERT(service.StartStdioProcess(*pending, temp.root, argv, &error));
+	app.pending_acp_remote_stops.push_back(std::move(pending));
+	session->remote_stop_pending = true;
+	std::this_thread::sleep_for(std::chrono::milliseconds(300));
+	UAM_ASSERT(uam::TreatUnconfirmedRemoteStopAsStopped(app, chat_id, &error));
+	UAM_ASSERT(app.pending_acp_remote_stops.empty() && !session->running);
+	const std::size_t diagnostics = session->diagnostics.size();
+	for (int poll = 0; poll < 300 && (poll < 30 || !app.acp_process_stop_tasks.empty()); ++poll)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(app.acp_process_stop_tasks.empty());
+	const ChatSession& chat = app.chats.front();
+	// Neither the late reply nor the late exit reached the chat or restarted anything.
+	UAM_ASSERT_EQ(chat.messages.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(chat.messages[1].content, std::string("Working on it"));
+	UAM_ASSERT(RemoteTurnRecordsCleared(chat) && chat.remote_recovery_state.empty());
+	UAM_ASSERT(session->stdout_buffer.empty() && !uam::strings::Contains(session->recent_stderr, "does not exist"));
+	UAM_ASSERT(!session->running && !session->processing && !session->reconnect_pending && !session->remote_stop_pending && !session->remote_stop_unconfirmed);
+	UAM_ASSERT_EQ(session->last_error, std::string());
+	UAM_ASSERT_EQ(session->lifecycle_state, std::string(uam::acp_detail::kAcpLifecycleStopped));
+	UAM_ASSERT_EQ(session->diagnostics.size(), diagnostics);
+}
+
+UAM_TEST(TreatAsStoppedSurvivesARestart)
+{
+	TempDir temp("uam-acp-treat-as-stopped-restart");
+	uam::AppState app;
+	app.data_root = temp.root;
+	const std::string chat_id = "chat-treat-as-stopped-restart";
+	uam::AcpSessionState* session = AddUnconfirmedRemoteStop(app, chat_id);
+	// Without the override, a restart finds the saved stop and takes it up again.
+	{
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat_id);
+		UAM_ASSERT(saved.has_value() && saved->remote_stop_cleanup_pending);
+		uam::AppState restarted;
+		restarted.data_root = temp.root;
+		restarted.chats.push_back(*saved);
+		(void)uam::RestoreRemoteAcpSessionsAfterRestart(restarted);
+		const uam::AcpSessionState* resumed = uam::FindAcpSessionForChat(restarted, chat_id);
+		UAM_ASSERT(resumed != nullptr && resumed->remote_stop_unconfirmed && resumed->reconnect_pending);
+	}
+	AgeUnconfirmedRemoteStop(app, *session);
+	std::string error;
+	UAM_ASSERT(uam::TreatUnconfirmedRemoteStopAsStopped(app, chat_id, &error));
+	// After it, a restart has nothing to reattach, stop or retry for that turn.
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat_id);
+	UAM_ASSERT(saved.has_value() && RemoteTurnRecordsCleared(*saved));
+	uam::AppState restarted;
+	restarted.data_root = temp.root;
+	restarted.chats.push_back(*saved);
+	UAM_ASSERT_EQ(uam::RestoreRemoteAcpSessionsAfterRestart(restarted), std::size_t{0});
+	UAM_ASSERT(restarted.acp_sessions.empty());
+	for (int poll = 0; poll < 10; ++poll) (void)uam::PollAllAcpSessions(restarted);
+	UAM_ASSERT(restarted.acp_sessions.empty() && restarted.pending_acp_remote_stops.empty());
+	UAM_ASSERT(RemoteTurnRecordsCleared(restarted.chats.front()));
+}
+
+UAM_TEST(TreatAsStoppedSettlesASessionRestoredAfterRestart)
+{
+	TempDir temp("uam-acp-treat-as-stopped-restored");
+	const std::string chat_id = "chat-treat-as-stopped-restored";
+	{
+		uam::AppState before;
+		before.data_root = temp.root;
+		(void)AddUnconfirmedRemoteStop(before, chat_id);
+	}
+	// The restart knows the turn only from the saved markers: no turn indexes and no live tool list.
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat_id);
+	UAM_ASSERT(saved.has_value());
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.chats.push_back(*saved);
+	(void)uam::RestoreRemoteAcpSessionsAfterRestart(app);
+	uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat_id);
+	UAM_ASSERT(session != nullptr && session->remote_stop_unconfirmed && session->turn_assistant_message_index < 0);
+	session->reconnect_not_before_time_s = uam::GetAppTimeSeconds() + 3600.0;
+	AgeUnconfirmedRemoteStop(app, *session);
+	std::string error;
+	UAM_ASSERT(uam::TreatUnconfirmedRemoteStopAsStopped(app, chat_id, &error));
+	const std::optional<ChatSession> settled = ChatRepository::LoadLocalChat(temp.root, chat_id);
+	UAM_ASSERT(settled.has_value() && RemoteTurnRecordsCleared(*settled));
+	UAM_ASSERT_EQ(settled->messages.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(settled->messages[1].interrupted);
+	UAM_ASSERT_EQ(settled->messages[1].tool_calls.front().status, std::string(uam::acp_statuses::kCancelled));
+	UAM_ASSERT(!session->remote_stop_unconfirmed && !session->reconnect_pending && !uam::AcpStopInProgress(app, chat_id));
+}
+
+UAM_TEST(TreatAsStoppedPausesTheChatsActiveGoal)
+{
+	TempDir temp("uam-acp-treat-as-stopped-goal");
+	uam::AppState app;
+	app.data_root = temp.root;
+	const std::string chat_id = "chat-treat-as-stopped-goal";
+	uam::AcpSessionState* session = AddUnconfirmedRemoteStop(app, chat_id);
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat_id, "Finish the import.", 0, &goal_id));
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat_id, goal_id));
+	const Goal* active = uam::GoalService::FindActiveGoal(app, chat_id);
+	UAM_ASSERT(active != nullptr && active->id == goal_id);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	AgeUnconfirmedRemoteStop(app, *session);
+	// The unconfirmed stop alone leaves the goal active: nothing automatic gives up on it.
+	UAM_ASSERT(uam::GoalService::FindActiveGoal(app, chat_id) != nullptr);
+	std::string error;
+	UAM_ASSERT(uam::TreatUnconfirmedRemoteStopAsStopped(app, chat_id, &error));
+	// The goal cannot start another turn on that host by itself; it waits for the user to resume it.
+	UAM_ASSERT(uam::GoalService::FindActiveGoal(app, chat_id) == nullptr);
+	const Goal* paused = uam::GoalService::FindGoalById(app, chat_id, goal_id);
+	UAM_ASSERT(paused != nullptr && paused->status == GoalStatus::Paused);
+	UAM_ASSERT(app.chats.front().active_goal_id.empty() && !session->processing && !session->reconnect_pending);
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, chat_id);
+	UAM_ASSERT(persisted.has_value() && persisted->active_goal_id.empty() && RemoteTurnRecordsCleared(*persisted));
+	UAM_ASSERT(persisted->goals.size() == 1 && persisted->goals.front().status == GoalStatus::Paused);
+	for (int poll = 0; poll < 20; ++poll) (void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT(uam::GoalService::FindActiveGoal(app, chat_id) == nullptr && !session->processing && !session->reconnect_pending);
+}
+
+UAM_TEST(TreatAsStoppedLeavesAFinishedReplyAloneWhenOnlyAnIdleStopWasUnconfirmed)
+{
+	TempDir temp("uam-acp-treat-as-stopped-idle");
+	uam::AppState app;
+	app.data_root = temp.root;
+	const std::string chat_id = "chat-treat-as-stopped-idle";
+	uam::AcpSessionState* session = AddUnconfirmedRemoteStop(app, chat_id);
+	// No turn was in flight: the reply had finished and only the idle process's stop went unanswered.
+	ChatSession& chat = app.chats.front();
+	chat.remote_turn_reconnect_pending = false;
+	chat.remote_active_turn_id.clear();
+	chat.messages[1].tool_calls.clear();
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	session->processing = false;
+	session->recovering_remote_turn = false;
+	session->reconnect_pending = false;
+	session->turn_assistant_message_index = -1;
+	// A stale reason from an unexpected writer is not copied into the log.
+	uam::acp_detail::AppendAcpDiagnostic(*session, "remote_stop", "unconfirmed", "", "", false, 0, "Remote stop could not be confirmed.", "outcome=Host build-box said no");
+	AgeUnconfirmedRemoteStop(app, *session);
+	std::string error;
+	UAM_ASSERT(uam::TreatUnconfirmedRemoteStopAsStopped(app, chat_id, &error));
+	UAM_ASSERT(RemoteTurnRecordsCleared(chat) && !session->remote_stop_unconfirmed);
+	UAM_ASSERT(!chat.messages[1].interrupted && chat.messages[1].stop_reason.empty());
+	UAM_ASSERT_EQ(session->diagnostics.back().detail, std::string("last_outcome=not_recorded"));
 }
 
 UAM_TEST(AcpRestartWaitsForCleanupMarkerPersistence)
