@@ -18,7 +18,7 @@ Waiting on a remote host must never hold up the app. The first contact with a ho
 
 Cancelling or stopping the work that is waiting interrupts the wait at once, including a first contact and a remote command that is still starting. A command that did not finish still asks the host to stop its worker, for no more than five seconds, and the helper reclaims an abandoned worker itself. If the command's start was never confirmed and the host could not be reached to stop it, the error says the command may still be running there; a start the helper refused reports only that refusal. A command that finished keeps its result even when the cancel or deadline arrives during its last acknowledgement.
 
-While a remote turn waits for a question answer or a permission decision, UAM keeps the controlling machine awake for as long as the wait lasts, because sleep drops SSH and can lose the turn. A local wait stops holding the machine awake after 120 seconds without runtime activity, since the local process survives sleep.
+While a remote turn waits for a question answer or a permission decision, UAM prevents idle sleep on the controlling machine (macOS and Windows) while the session is connected, because sleep drops SSH and can lose the turn. This does not stop lid-close or manual sleep, and the hold is not yet kept while the session is reconnecting. A local wait stops holding the machine awake after 120 seconds without runtime activity, since the local process survives sleep.
 
 Closing UAM must not wait on remote hosts. From the moment it starts closing, no new remote connection is started, and every remote wait already under way ends at the same instant two seconds later, however many there are; a connection that is already open is served until then.
 
