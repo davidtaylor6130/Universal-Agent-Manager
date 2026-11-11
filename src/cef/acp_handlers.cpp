@@ -956,7 +956,7 @@ void UamQueryHandler::HandleResumeQueuedAcpPrompts(CefRefPtr<CefBrowser> browser
 	if (!payload.contains("chatId") || !payload["chatId"].is_string() || payload["chatId"].get<std::string>().empty() ||
 	    !payload.contains("expected") || !payload["expected"].is_array() || payload["expected"].empty() || payload["expected"].size() > 32)
 	{
-		cb->Failure(400, "Invalid restored queue action.");
+		cb->Failure(400, "Invalid held queue action.");
 		return;
 	}
 	std::vector<std::pair<std::string, int>> expected;
@@ -974,7 +974,7 @@ void UamQueryHandler::HandleResumeQueuedAcpPrompts(CefRefPtr<CefBrowser> browser
 	std::string error;
 	if (!uam::ResumeQueuedAcpPrompts(m_app, payload["chatId"].get<std::string>(), expected, &error))
 	{
-		cb->Failure(409, FailureDetailOrFallback(error, "Failed to resume restored queue."));
+		cb->Failure(409, FailureDetailOrFallback(error, "Failed to resume the held queue."));
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
@@ -1421,7 +1421,10 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const n
 	const std::string chat_id = payload.value("chatId", "");
 
 	std::string error;
-	if (!uam::CancelAcpTurn(m_app, chat_id, &error))
+	// A desktop Cancel turn keeps queued input and holds it, so nothing sends until the user resumes or removes it.
+	// The phone has no Resume control yet, so a companion cancel keeps the earlier discard (pending the owner's decision).
+	const bool hold_queue = !m_dispatchingCompanion;
+	if (!uam::CancelAcpTurn(m_app, chat_id, &error, true, hold_queue, hold_queue))
 	{
 		cb->Failure(500, FailureDetailOrFallback(error, "Failed to cancel ACP turn."));
 		return;

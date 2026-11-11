@@ -230,7 +230,7 @@ namespace uam::companion
 		const auto session = chat.find("acpSession");
 		if (session == chat.end() || !session->is_object() || !session->contains("queuedPrompts") || !(*session)["queuedPrompts"].is_array())
 			return {409, "Queued prompt is no longer visible. Refresh the queue."};
-		if (operation == "steer" && session->value("queueHeld", false)) return {409, "Resume the restored queue before steering."};
+		if (operation == "steer" && session->value("queueHeld", false)) return {409, "Resume the held queue before steering."};
 		const auto& queue = (*session)["queuedPrompts"];
 		const auto current_identity = [&](const nlohmann::json& identity)
 		{
