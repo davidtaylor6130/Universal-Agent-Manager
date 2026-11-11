@@ -6401,6 +6401,7 @@ namespace
 			runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
 			socket = temp.root / "runner.sock";
 			input_log = temp.root / "provider-input.jsonl";
+			const fs::path helper_started = temp.root / "helper-started";
 			version = std::string(uam::constants::kAppVersion).substr(1);
 			std::string error;
 			UAM_ASSERT(service.StartStdioProcess(runner_service.process, temp.root,
@@ -6461,14 +6462,27 @@ namespace
 			app.acp_sessions.push_back(std::move(owned));
 			const std::string inherited_path = uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
 			const std::string spec = uam::remote::BuildProcessProxySpec("acp-" + app.chats.front().id,
-			    temp.root, {"/bin/sh", "-c", helper_preamble + "while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$UAM_TEST_INPUT_LOG\"; done"},
-			    {{"UAM_TEST_INPUT_LOG", input_log.string()}}, false, token);
+			    temp.root, {"/bin/sh", "-c", ": > \"$UAM_TEST_HELPER_STARTED\"; " + helper_preamble + "while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$UAM_TEST_INPUT_LOG\"; done"},
+			    {{"UAM_TEST_INPUT_LOG", input_log.string()}, {"UAM_TEST_HELPER_STARTED", helper_started.string()}}, false, token);
 			UAM_ASSERT(service.StartStdioProcess(*session, temp.root,
 			    {runner.string(), "proxy", "--alias", host.ssh_alias, "--platform", "linux", "--version", version}, &error,
 			    {{uam::remote::kRemoteProcessSpecEnvironment, spec}, {"PATH", temp.root.string() + ":" + inherited_path},
 			     {"UAM_TEST_RUNNER", runner.string()}, {"UAM_TEST_SOCKET", socket.string()}}));
 			session->running = true;
 			session->session_ready = true;
+			// The proxy has to start a bridge and send its start request before the helper owns the process, which takes
+			// seconds on a busy machine. A test that detaches and discards the proxy sooner would kill it before the process
+			// existed. Its later stop could then never settle, because this fixture's fake ssh cannot answer the process-table check (#875).
+			const std::chrono::steady_clock::time_point started_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+			while (!fs::exists(helper_started) && std::chrono::steady_clock::now() < started_deadline)
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			if (!fs::exists(helper_started))
+			{
+				std::array<char, 8192> bytes{};
+				const std::ptrdiff_t error_bytes = service.ReadStdioProcessStderr(*session, bytes.data(), bytes.size(), &error);
+				std::cerr << "[private-runner-setup] helper process not started; proxy stderr=" << (error_bytes > 0 ? std::string(bytes.data(), static_cast<std::size_t>(error_bytes)) : "") << '\n';
+			}
+			UAM_ASSERT(fs::exists(helper_started));
 		}
 		~RemoteAdmissionFixture()
 		{
