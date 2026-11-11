@@ -8,13 +8,15 @@ namespace uam::cef
 	/// The refusal for a bridge action blocked by a pending per-chat worktree operation or the app-wide workspace
 	/// deletion; empty when the action may run. Reads, selection and runtime stops stay available throughout.
 	/// </summary>
-	inline std::string_view PendingOperationRefusal(std::string_view action, bool chat_has_worktree_operation, bool any_worktree_operation, bool workspace_deletion_pending)
+	inline std::string_view PendingOperationRefusal(std::string_view action, bool chat_has_worktree_operation, bool any_worktree_operation, bool workspace_deletion_pending, bool chat_deleted_at_restart = false)
 	{
 		const bool is_runtime_stop = action == "cancelAcpTurn" || action == "stopAcpSession" || action == "cancelChatTitle";
 		const bool is_cached_history_read = action == "getChatMessages" || action == "getToolCallContent" || action == "getAttachmentImagePreview";
 		// Selecting a chat changes no chat data, so neither gate refuses the click.
 		const bool is_selection = action == "selectSession";
 		if (workspace_deletion_pending && is_cached_history_read && chat_has_worktree_operation) return "Chat deletion is in progress.";
+		// A rejected deletion's chats stay fenced until the restart that deletes them: nothing will "finish" before then.
+		if (chat_deleted_at_restart && !is_runtime_stop && !is_cached_history_read && !is_selection) return "This chat will be deleted when UAM restarts.";
 		if ((!is_runtime_stop && !is_cached_history_read && !is_selection && chat_has_worktree_operation) ||
 		    (any_worktree_operation && (action == "deleteFolder" || action == "deleteFolders" || action == "rescanFolderChats")))
 			return "Wait for the chat worktree operation to finish.";

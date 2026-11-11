@@ -1428,7 +1428,8 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 		cb->Failure(409, "Cannot change provider while a runtime turn or input request is active.");
 		return;
 	case uam::ChatProviderSwitchResult::RuntimeStopping:
-		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The previous runtime is stopping; retry shortly."));
+		cb->Failure(409, uam::AcpStopExitUnobserved(m_app, chat_id) ? std::string(uam::kAcpProcessExitUnobservedMessage)
+		    : FailureDetailOrFallback(m_app.status_line, "The previous runtime is stopping; retry shortly."));
 		return;
 	case uam::ChatProviderSwitchResult::SaveFailed:
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat provider."));

@@ -80,7 +80,7 @@ namespace
 		{
 			if (!chat->side_cleanup_stop_finished->load()) return true;
 			for (const uam::AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
-				if (task.finished == chat->side_cleanup_stop_finished && task.observe_exit && !task.result->exit_confirmed) return true;
+				if (task.finished == chat->side_cleanup_stop_finished && task.observe_exit && (!task.finished->load() || !task.result->exit_confirmed)) return true;
 		}
 		if (chat != nullptr &&
 		    (chat->remote_turn_reconnect_pending || chat->remote_stop_cleanup_pending ||
@@ -1260,7 +1260,7 @@ bool uam::PollTemporarySideChatCleanup(AppState& app)
 		{
 			if (!chat->side_cleanup_stop_finished->load()) continue;
 			std::vector<AsyncAcpProcessStopTask>::iterator pending_stop = std::ranges::find_if(app.acp_process_stop_tasks, [&](const AsyncAcpProcessStopTask& task) { return task.finished == chat->side_cleanup_stop_finished; });
-			if (pending_stop != app.acp_process_stop_tasks.end() && pending_stop->observe_exit && !pending_stop->result->exit_confirmed)
+			if (pending_stop != app.acp_process_stop_tasks.end() && pending_stop->observe_exit && pending_stop->finished->load() && !pending_stop->result->exit_confirmed)
 			{
 				const std::shared_ptr<platform::StdioProcessPlatformFields> owned = pending_stop->owned_process;
 				const std::shared_ptr<platform::ObservedProcessStopResult> result = pending_stop->result;

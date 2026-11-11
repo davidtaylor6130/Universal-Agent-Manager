@@ -256,7 +256,11 @@ void UamQueryHandler::StartPreparedDeletion(CefRefPtr<CefBrowser> browser,
 		if (!current || m_workspaceDeletionTask.lock() != current) return;
 		// A rejected commit keeps its recovery record, which completes the deletion at restart: its chats stay fenced
 		// until then and no other deletion can start. The app-wide lock itself is released on every path.
-		if (current->commit_rejected) m_deletionAwaitsRestart = true;
+		if (current->commit_rejected)
+		{
+			m_deletionAwaitsRestart = true;
+			m_chatsDeletedAtRestart.insert(current->deleted_ids.begin(), current->deleted_ids.end());
+		}
 		else if (m_app.data_root == data_root)
 			for (const std::string& id : current->deleted_ids) m_app.worktree_operation_chat_ids.erase(id);
 		m_workspaceDeletionTask.reset();

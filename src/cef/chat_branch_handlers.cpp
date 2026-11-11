@@ -314,7 +314,7 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 		    [this, browser, payload, cb, waiting](bool expired)
 		    {
 			if (expired || !BranchRequestCurrent(m_app, *waiting))
-			{ cb->Failure(409, expired ? "The idle runtime is still stopping. Retry after it exits." : "The chat changed while its idle runtime was stopping. Open the branch picker again."); return true; }
+			{ cb->Failure(409, expired ? uam::AcpStopRefusalMessage(m_app, waiting->chat.id, "The idle runtime is still stopping. Retry after it exits.") : "The chat changed while its idle runtime was stopping. Open the branch picker again."); return true; }
 			if (!BranchRuntimeSettled(m_app, waiting->chat.id)) return false;
 			ContinueSwitchChatBranch(browser, payload, cb);
 			return true;
@@ -323,7 +323,7 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 		return;
 	}
 	if (!BranchRuntimeSettled(m_app, chat->id) || m_workspaceDeletionPending)
-	{ cb->Failure(409, "Stop the chat runtime and wait for history to save before switching branches."); return; }
+	{ cb->Failure(409, uam::AcpStopRefusalMessage(m_app, chat->id, "Stop the chat runtime and wait for history to save before switching branches.")); return; }
 	const std::string branch = payload["branch"].get<std::string>();
 	const bool create = payload.value("create", false);
 	const bool svn = payload.value("vcsType", std::string{}) == "svn";
