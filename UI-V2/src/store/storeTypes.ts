@@ -391,7 +391,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   resumeQueuedAcpPrompts: (sessionId: string, expected: { id: string; revision: number }[]) => Promise<boolean>
   editQueuedAcpPrompt: (sessionId: string, promptId: string, expectedRevision: number, text: string, retainedAttachmentIds?: string[]) => Promise<boolean>
   reorderQueuedAcpPrompts: (sessionId: string, expected: { id: string; revision: number }[], orderedIds: string[]) => Promise<boolean>
-  discoverProviderModels: (sessionId: string, providerId?: string, workspaceDirectory?: string, executionHostId?: string) => Promise<boolean>
+  /** automatic: asked by the UI itself rather than by Refresh or Retry; the backend skips it while its cached models are current. */
+  discoverProviderModels: (sessionId: string, providerId?: string, workspaceDirectory?: string, executionHostId?: string, automatic?: boolean) => Promise<boolean>
   setAcpConfigOption: (sessionId: string, configId: string, value: string) => Promise<boolean>
   cancelAcpTurn: (sessionId: string) => Promise<boolean>
   resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean>

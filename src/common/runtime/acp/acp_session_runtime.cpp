@@ -383,9 +383,11 @@ namespace uam
 		bool RemoteProxyExitConfirmsMissingProcess(const std::string& stderr_tail)
 		{
 			const std::string_view line = RemoteProxyExitLine(stderr_tail);
+			// The last line also covers a reachable host with no helper left to own the process.
 			return line == "The remote process does not exist." ||
 			       line == "The remote process is no longer available." ||
-			       line == "The remote process has exited.";
+			       line == "The remote process has exited." ||
+			       line == uam::remote::kRemoteHelperNotRunningLine;
 		}
 
 		bool RemoteStopExitConfirmed(bool exited, int exit_code, const std::string& stderr_tail)
@@ -720,17 +722,37 @@ namespace uam
 			}
 		}
 
+		/// The one place a failed reconnect or failed stop retry is counted, so anything recorded with the count stays with it.
+		void CountAcpReconnectFailure(AcpSessionState& session)
+		{
+			++session.reconnect_attempts;
+		}
+
 		void RecordAcpReconnectFailure(AppState& app, AcpSessionState& session,
 		                               ChatSession& chat, double now_seconds,
 		                               const std::string& error)
 		{
-			++session.reconnect_attempts;
+			CountAcpReconnectFailure(session);
+			// Stamped once per turn and withdrawn when a launch or reattach succeeds; never inferred from the attempt
+			// count, which other code also raises and resets.
+			if (session.reconnect_first_failure_turn_serial != session.turn_serial)
+			{
+				session.reconnect_first_failure_time_s = now_seconds;
+				session.reconnect_first_failure_turn_serial = session.turn_serial;
+			}
 			const std::string message = uam::strings::NonEmptyOrFallback(
 			    error, "Structured runtime reconnect failed.");
-			const bool recovering_helper_process =
-			    session.recovering_remote_turn || session.recovering_remote_process;
+			// A prompt that never reached the connection has no remote turn to protect, so its recovery ends: after
+			// the elapsed budget, not a few fast attempts. A staged or possibly written prompt, and a turn whose
+			// stop is still owed (runtime flag or saved marker), keep the unbounded recovery.
+			const bool untransported_prompt = session.recovering_remote_turn && session.processing && session.prompt_request_id == 0 &&
+			    !session.queued_prompt.empty() && !session.pending_prompt_delivery && chat.remote_prompt_delivery_id.empty() &&
+			    !session.recovering_remote_process && !session.remote_stop_unconfirmed && !chat.remote_stop_cleanup_pending;
+			const bool recovering_helper_process = untransported_prompt
+			    ? now_seconds - session.reconnect_first_failure_time_s < kUntransportedPromptReconnectBudgetSeconds
+			    : session.recovering_remote_turn || session.recovering_remote_process;
 			if (recovering_helper_process ||
-			    session.reconnect_attempts < kAcpReconnectMaxAttempts)
+			    (!untransported_prompt && session.reconnect_attempts < kAcpReconnectMaxAttempts))
 			{
 				session.reconnect_pending = true;
 				const double delay_seconds = recovering_helper_process
@@ -745,8 +767,13 @@ namespace uam
 			session.reconnect_not_before_time_s = 0.0;
 			chat.remote_turn_reconnect_pending = false;
 			(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
-			(void)PersistQueuedAcpUserPromptsAsInterrupted(session, chat);
-			FailAcpTurnOrSession(session, &chat, message);
+			// A never-sent prompt returns exactly as one returned while staged, with input queued behind it held.
+			if (untransported_prompt) ReturnUnwrittenRemotePromptAsUnsent(app, session, chat, message);
+			else
+			{
+				(void)PersistQueuedAcpUserPromptsAsInterrupted(session, chat);
+				FailAcpTurnOrSession(session, &chat, message);
+			}
 			AppendAcpDiagnostic(session, "reconnect", "exhausted", "", "", false, 0, message);
 			BlockActiveGoalForSetupFailure(app, session, chat, message);
 			MarkAcpChatUnseenIfBackground(app, chat);
@@ -825,6 +852,21 @@ namespace uam
 			{
 				return false;
 			}
+			// Background discovery reattaches only to stop a helper process it could not confirm stopped. Every attach
+			// counts, so a cleanup that never confirms ends instead of relaunching for as long as the app runs.
+			if (session.ephemeral_model_discovery && session.discovery_cleanup_attaches >= kAcpReconnectMaxAttempts)
+			{
+				// Releasing the unconfirmed stop lets the completed-discovery sweep retire this session and its chat.
+				// Logged here, where the stop is given up: a cleanup whose last attach confirmed the stop never gets here.
+				diagnostics::Write("Background model discovery cleanup gave up unconfirmed after bounded reattach attempts; the helper's lease retires the process: " + session.provider_id);
+				session.reconnect_pending = false;
+				session.remote_stop_unconfirmed = false;
+				session.recovering_remote_process = false;
+				return true;
+			}
+			if (session.ephemeral_model_discovery && session.discovery_cleanup_attaches > 0 &&
+			    now_seconds < session.discovery_cleanup_last_attach_time_s + RemoteTurnReconnectDelaySeconds(session.discovery_cleanup_attaches + 1))
+				return false;
 			// A helper update on this host owns its runner until it commits or rolls back; recovery reattach would
 			// otherwise race the install (#771); it retries once the host is ready again.
 			// The wait does not use a reconnect attempt; Settings shows the host as installing.
@@ -887,6 +929,7 @@ namespace uam
 			}
 
 			std::string error;
+			const bool turn_was_processing = session.processing;
 			// Attaching only to stop the old helper launches nothing, so the new provider's launch gates do not apply.
 			const bool attach_only_to_stop = session.remote_stop_unconfirmed && chat.remote_stop_cleanup_pending;
 			if (!attach_only_to_stop && (!PrepareCliTerminalForAcpLaunch(app, chat.id, &error) ||
@@ -907,6 +950,11 @@ namespace uam
 				session.reconnect_pending = false;
 				session.reconnect_not_before_time_s = 0.0;
 				AppendAcpDiagnostic(session, "reconnect", "started", "", "", false, 0, "Structured runtime reconnected.");
+				if (session.ephemeral_model_discovery)
+				{
+					++session.discovery_cleanup_attaches;
+					session.discovery_cleanup_last_attach_time_s = now_seconds;
+				}
 				if (session.remote_stop_unconfirmed && chat.remote_stop_cleanup_pending)
 					(void)StopAcpSession(app, chat.id, AcpStopPurpose::Interrupt, true);
 				return true;
@@ -918,6 +966,28 @@ namespace uam
 				return true;
 			}
 			session.pending_referenced_queue_launch_fingerprint.clear();
+			if (session.ephemeral_model_discovery)
+			{
+				// A cleanup reattach that cannot start counts like one that started.
+				++session.discovery_cleanup_attaches;
+				session.discovery_cleanup_last_attach_time_s = now_seconds;
+			}
+			// The launch itself ended the turn, for example by returning a staged prompt as unsent. Finish as the
+			// exit handler does for the same outcome: block the goal and flag the chat, and schedule nothing.
+			if (turn_was_processing && !session.processing && !session.reconnect_pending)
+			{
+				const std::string owner_chat_id = uam::strings::NonEmptyOrFallback(chat.goal_owner_chat_id, chat.id);
+				if (Goal* active_goal = GoalService::FindActiveGoal(app, owner_chat_id); active_goal != nullptr &&
+				    (chat.goal_iteration_goal_id.empty() || active_goal->id == chat.goal_iteration_goal_id))
+				{
+					GoalService::RecordBlocker(app, owner_chat_id, active_goal->id, session.last_error, kDecisionSourceFallback, "remote_connection");
+					(void)GoalService::UpdateGoalStatus(app, owner_chat_id, active_goal->id, GoalStatus::Blocked);
+					AppendGoalLoopDiagnostic(session, "goal_blocked_process_exit", active_goal->id, session.last_error);
+					if (ChatSession* owner = ChatDomainService().FindChatById(app, owner_chat_id); owner != nullptr) acp_detail::SaveChatQuietly(app, *owner);
+				}
+				MarkAcpChatUnseenIfBackground(app, chat);
+				return true;
+			}
 			// Workspace failure already held the input and explicitly settled reconnect.
 			// Do not re-arm a retry that the held queue can never consume.
 			if (session.queue_held && !session.reconnect_pending) return true;
@@ -4332,6 +4402,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			Message& row = chat->messages[static_cast<std::size_t>(item->existing_user_message_index)];
 			if (row.content != item->text || row.attachments != item->attachments)
 				row.input_write_completed = false;
+				row.input_delivery_tracked = false;
 			row.content = item->text;
 			row.attachments = item->attachments;
 			if (captured)
@@ -4835,6 +4906,25 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (error_out != nullptr) *error_out = "A workspace is required for provider model discovery.";
 			return false;
 		}
+		// A CLI version already checked on this computer and known incompatible cannot list models until that check
+		// changes. Answer from the recorded check: a session started here is refused by the launch gate every time
+		// a model menu asks again.
+		{
+			const std::string host_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(execution_host_id), std::string(uam::execution_hosts::kLocalHostId));
+			const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, host_id);
+			const auto version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider->id, host_id));
+			if (host != nullptr && version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked &&
+			    version->second.check_error.empty() && uam::execution_hosts::SameConnection(version->second.execution_host, *host))
+			{
+				const std::string incompatible = ProviderRuntimeRegistry::Resolve(*provider).StructuredCliVersionError(
+				    *provider, version->second.installed_version, host_id != uam::execution_hosts::kLocalHostId);
+				if (!incompatible.empty())
+				{
+					if (error_out != nullptr) *error_out = incompatible;
+					return false;
+				}
+			}
+		}
 		if (normalized_provider_id == uam::provider_ids::kAntigravityCli)
 		{
 			const std::string host_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(execution_host_id), "local");
@@ -5136,6 +5226,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			return false;
 		}
+		session.reconnect_first_failure_turn_serial = -1; // The provider answered session setup: a later failure starts a new budget.
 		if (session.processing)
 		{
 			return SendQueuedPromptIfReady(app, session, chat);
@@ -5280,6 +5371,21 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return indices;
 	}
 
+	bool ChatHasActionableUnsentRecovery(const ChatSession& chat)
+	{
+		if (chat.acp_unsent_prompt_recoveries.empty() || !chat.messages_loaded) return !chat.acp_unsent_prompt_recoveries.empty();
+		return std::ranges::any_of(chat.acp_unsent_prompt_recoveries, [&chat](const AcpUnsentPromptRecovery& value)
+		{
+			if (value.user_message_index < 0 || static_cast<std::size_t>(value.user_message_index) >= chat.messages.size()) return false;
+			const std::size_t index = static_cast<std::size_t>(value.user_message_index);
+			const Message& row = chat.messages[index];
+			if (row.role != MessageRole::User || !row.AcpPromptAwaitsDecision() || (!row.provider.empty() && row.provider != chat.provider_id)) return false;
+			for (std::size_t after = index + 1; after < chat.messages.size() && chat.messages[after].role != MessageRole::User; ++after)
+				if (!IsEmptyAcpRetryAssistantPlaceholder(chat.messages[after])) return false;
+			return true;
+		});
+	}
+
 	bool ChatHasUncertainRemoteInput(const ChatSession& chat)
 	{
 		return chat.remote_turn_reconnect_pending || !chat.remote_active_turn_id.empty() ||
@@ -5334,6 +5440,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		chat.remote_active_turn_id.clear();
 		chat.remote_prompt_delivery_session_id.clear();
 		chat.remote_prompt_delivery_id.clear();
+		chat.remote_prompt_delivery_input_ids.clear();
 		chat.remote_prompt_delivery_payload.clear();
 		chat.remote_pending_requests.clear();
 		chat.remote_interaction_responses.clear();
@@ -5416,12 +5523,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		};
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
-		if (chat && ChatIsRetiringRemoteHelper(*chat))
-			return reject("UAM is stopping the previous process on this host. Remove this message once the host is reachable and that has finished.");
+		// Only a stop that is running refuses: one the host never confirmed may never finish, and removing a row sends nothing to it.
+		if (chat && ChatIsRetiringRemoteHelper(*chat) && AcpStopInFlight(app, chat_id))
+			return reject("UAM is stopping the previous process on this host. Remove this message once that has finished.");
 		if (!chat || !chat->messages_loaded || chat->imported_read_only || chat->acp_queue_storage_error ||
 		    chat->side_cleanup_requested || message_index < 0 || static_cast<std::size_t>(message_index) >= chat->messages.size() ||
 		    expected_messages_digest.size() != 16 || app.pending_chat_save_at_by_chat_id.contains(chat_id) ||
-		    app.pending_chat_save_tasks.contains(chat_id) || app.worktree_operation_chat_ids.contains(chat_id) || AcpStopInProgress(app, chat_id))
+		    app.pending_chat_save_tasks.contains(chat_id) || app.worktree_operation_chat_ids.contains(chat_id) || AcpStopInFlight(app, chat_id))
 			return reject("The unsent prompt changed or is being saved. Refresh before removing it.");
 		std::uint64_t hash = hashing::kFnv1a64OffsetBasis;
 		for (const Message& row : chat->messages) chat_pages::AppendMessageDigest(hash, row);
@@ -5538,6 +5646,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (updated.content != original.content || updated.attachments != original.attachments ||
 		    updated.markdown_store_files != original.markdown_store_files || updated.markdown_store_prompt_blocks != original.markdown_store_prompt_blocks)
 			updated.input_write_completed = false;
+			updated.input_delivery_tracked = false;
 		// Rebind only the authored-row witness. Every original policy and admission
 		// field remains byte-for-byte intact; absent legacy policy remains absent.
 		if (captured)
@@ -6537,13 +6646,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 #endif
 	}
 
-	bool AcpStopInProgress(const AppState& app, std::string_view chat_id)
+	bool AcpStopInFlight(const AppState& app, std::string_view chat_id)
 	{
 		const AcpSessionState* session = FindAcpSessionForChat(app, std::string(chat_id));
 		return std::ranges::any_of(app.acp_process_stop_tasks, [chat_id](const AsyncAcpProcessStopTask& task)
 		       { return task.chat_id == chat_id && task.finished != nullptr && (!task.finished->load() || ((task.purpose == AcpStopPurpose::Timeout || task.observe_exit) && task.result != nullptr && !task.result->exit_confirmed)); }) ||
-		       (session != nullptr &&
-		        (session->local_stop_pending || session->remote_stop_pending || session->remote_stop_unconfirmed)) ||
+		       (session != nullptr && (session->local_stop_pending || session->remote_stop_pending)) ||
 		       std::ranges::any_of(
 		    app.pending_acp_remote_stops,
 		    [&](const auto& pending) { return pending != nullptr && pending->chat_id == chat_id; }) ||
@@ -6554,6 +6662,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 	{
 		return std::ranges::any_of(app.acp_process_stop_tasks, [chat_id](const AsyncAcpProcessStopTask& task)
 		{ return task.chat_id == chat_id && task.exit_abandoned && task.result != nullptr && !task.result->exit_confirmed; });
+	}
+
+	bool AcpStopInProgress(const AppState& app, std::string_view chat_id)
+	{
+		const AcpSessionState* session = FindAcpSessionForChat(app, std::string(chat_id));
+		return AcpStopInFlight(app, chat_id) || (session != nullptr && session->remote_stop_unconfirmed);
 	}
 
 	/// <summary>Transfers an idle Codex writer between chat aliases only after its process has exited.</summary>
@@ -6748,6 +6862,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		ChatSession* chat = FindAcpRuntimeChatById(app, session.chat_id);
 		session.remote_stop_pending = false;
 		session.remote_stop_unconfirmed = true;
+		// A stop retry reattaches before it fails here, so the reattach alone never counted and the retry repeated every half second.
+		CountAcpReconnectFailure(session);
 		session.restart_after_remote_stop_cleanup =
 		    session.restart_after_remote_stop_cleanup || restart_after_cleanup;
 		const bool deferred_goal_restart = restart_after_cleanup &&
@@ -6935,6 +7051,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			chat->remote_interaction_responses.clear();
 			chat->remote_prompt_delivery_session_id.clear();
 			chat->remote_prompt_delivery_id.clear();
+			chat->remote_prompt_delivery_input_ids.clear();
 			chat->remote_prompt_delivery_payload.clear();
 			chat->remote_pending_requests.clear();
 			if (!acp_detail::SaveChatQuietly(app, *chat, save_purpose))
@@ -6952,6 +7069,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 	{
 		session.remote_stop_pending = false;
 		session.remote_stop_unconfirmed = false;
+		// Failed stop retries counted for their backoff. Whatever follows a confirmed stop, by any route, starts a fresh budget.
+		session.reconnect_attempts = 0;
 		if (session.last_error.starts_with("Remote stop could not be confirmed")) session.last_error.clear();
 		if (restart_after_stop && session.queue_held && chat != nullptr)
 			return FinalizeStoppedAcpSession(app, session, chat, true);
@@ -8134,8 +8253,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 					session.recovering_remote_process = true;
 				const bool recovering_remote_process = session.recovering_remote_process;
 				const bool remote_turn_missing = remote_turn_recovery && remote_process_missing;
+				// The helper's answer that the process is gone settles a stop however it was recorded: runtime flag or saved marker.
 				const bool remote_stop_cleanup_missing =
-				    session.remote_stop_unconfirmed && remote_process_missing;
+				    (session.remote_stop_unconfirmed || chat.remote_stop_cleanup_pending) && remote_process_missing;
 				const bool undelivered_prompt = session.processing && session.prompt_request_id == 0 && !session.queued_prompt.empty();
 				const std::string pending_prompt = session.queued_prompt;
 				const int turn_user_message_index = session.turn_user_message_index;
@@ -8165,6 +8285,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					chat.remote_turn_reconnect_pending = false;
 					chat.remote_prompt_delivery_session_id.clear();
 					chat.remote_prompt_delivery_id.clear();
+					chat.remote_prompt_delivery_input_ids.clear();
 					chat.remote_prompt_delivery_payload.clear();
 					chat.remote_pending_requests.clear();
 					chat.remote_interaction_responses.clear();
@@ -8252,6 +8373,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					chat.remote_turn_reconnect_pending = false;
 					chat.remote_prompt_delivery_session_id.clear();
 					chat.remote_prompt_delivery_id.clear();
+					chat.remote_prompt_delivery_input_ids.clear();
 					chat.remote_prompt_delivery_payload.clear();
 					chat.remote_pending_requests.clear();
 					chat.remote_interaction_responses.clear();
@@ -8324,13 +8446,20 @@ For desktop observation and input, use only the provider's built-in controller; 
 				}
 				else
 				{
-					if (remote_source_exit || remote_startup_rejected)
+					// The relaunch attempt above may itself have returned the undelivered prompt as unsent.
+					if (remote_source_exit || remote_startup_rejected || (undelivered_prompt && remote_turn_recovery && !session.processing))
 					{
 						session.reconnect_pending = false;
 						session.reconnect_not_before_time_s = 0.0;
 					}
-					else if (recovering_remote_process)
+					else if (remote_turn_recovery && app.execution_routing_waits.contains(chat.id))
 					{
+						// The relaunch above is waiting for routing, which reconnect does not count as a failed attempt.
+						ScheduleAcpReconnect(session, GetAppTimeSeconds());
+					}
+					else if (recovering_remote_process || remote_turn_recovery)
+					{
+						// Counted so a proxy that keeps exiting backs off. Only a never-sent prompt is ever given up.
 						RecordAcpReconnectFailure(app, session, chat, GetAppTimeSeconds(),
 						                          session.last_error);
 					}
@@ -8403,7 +8532,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    [&session](const ChatSession& chat) { return chat.id == session->chat_id; });
 			if (discovery != app.model_discovery_chats.end() && discovery->execution_host_id != execution_hosts::kLocalHostId &&
 			    execution_hosts::Find(app.settings.execution_hosts, discovery->execution_host_id) != nullptr &&
-			    discovery->remote_process_exists && !discovery->remote_process_control_token.empty())
+			    discovery->remote_process_exists && !discovery->remote_process_control_token.empty() &&
+			    session->discovery_cleanup_attaches < kAcpReconnectMaxAttempts)
 			{
 				// A proxy exit cannot discard authority over its surviving discovery process.
 				PreserveFailedRemoteStop(app, *session, false);
@@ -8721,6 +8851,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 	double AcpReconnectDelaySecondsForTests(int attempt)
 	{
 		return AcpReconnectDelaySeconds(attempt);
+	}
+
+	double RemoteTurnReconnectDelaySecondsForTests(int attempt)
+	{
+		return RemoteTurnReconnectDelaySeconds(attempt);
 	}
 
 	void ScheduleAcpReconnectForTests(AcpSessionState& session, double now_seconds)

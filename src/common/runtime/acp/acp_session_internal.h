@@ -180,6 +180,11 @@ void ApplySubAgentMetadata(AcpToolCallState& tool_call, const nlohmann::json& up
 
 // Message sync helpers
 Message& EnsureAssistantMessage(ChatSession& chat, AcpSessionState& session);
+/// A provider's proven completion of this turn's own prompt shows it received that turn's authored input: marks the
+/// turn's sent rows as written. Call it only beside that provider's completion proof (the matching request ID, the
+/// fresh native scope); output alone, a cancelled turn or an owed helper receipt confirm nothing.
+/// Display evidence only; it never authorizes or suppresses a delivery, retry or replay. Returns whether a row changed.
+bool ConfirmTurnInputReceived(const AcpSessionState& session, ChatSession& chat);
 bool AppendThoughtChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk);
 std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk, const std::string& identity = {});
 ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call);
@@ -522,6 +527,12 @@ bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session
 bool BindPendingProviderHandoff(AcpSessionState& session, ChatSession& chat);
 void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, std::string_view session_id, std::string_view previous_session_id = {});
 void RestorePendingPromptDelivery(AcpSessionState& session, ChatSession& chat);
+/// A remote prompt that never reached the connection keeps reconnecting this long before it returns as unsent,
+/// so a short network loss still recovers by itself.
+inline constexpr double kUntransportedPromptReconnectBudgetSeconds = 60.0;
+/// Gives up a remote prompt that was never written to its connection, staged or not: its rows become interrupted
+/// unsent rows, no prepared copy of it stays in the queue, input queued behind it is held, and the turn ends.
+void ReturnUnwrittenRemotePromptAsUnsent(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& message);
 void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state);
 bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSession& chat,
                              const std::string& prompt, bool review_turn,

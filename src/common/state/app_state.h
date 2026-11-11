@@ -879,6 +879,14 @@ namespace uam
 		bool reconnect_pending = false;
 		int reconnect_attempts = 0;
 		double reconnect_not_before_time_s = 0.0;
+		// First reconnect failure of the turn named beside it: a never-sent remote prompt is given up by elapsed
+		// time, not by a few fast attempts, and attempts left over from an earlier turn do not shorten that time.
+		double reconnect_first_failure_time_s = 0.0;
+		int reconnect_first_failure_turn_serial = -1;
+		// Background discovery reattaches made only to stop a helper process, and when the last one started. Kept apart
+		// from reconnect_attempts, which stop retries and exits also count, so the number of launches is exact.
+		int discovery_cleanup_attaches = 0;
+		double discovery_cleanup_last_attach_time_s = 0.0;
 		// Counts watchdog re-queues of a stalled goal loop; the goal is marked
 		// blocked after 3 so a failing provider cannot be retried forever.
 		// Cleared when a turn completes or a new user prompt is sent.
@@ -1247,6 +1255,13 @@ namespace uam
 		task.running = false;
 	}
 
+	/// <summary>Worker retry pause for one execution host and provider pair.</summary>
+	struct MemoryWorkerBackoff
+	{
+		double retry_not_before = 0.0;
+		int failure_count = 0;
+	};
+
 	struct QueuedMemoryExtractionTask
 	{
 		std::string chat_id;
@@ -1490,8 +1505,7 @@ namespace uam
 		std::unordered_map<std::string, double> memory_idle_started_at_by_chat_id;
 		std::unordered_map<std::string, double> memory_retry_not_before_by_chat_id;
 		std::unordered_map<std::string, int> memory_failure_count_by_chat_id;
-		double memory_global_retry_not_before = 0.0;
-		int memory_global_failure_count = 0;
+		std::unordered_map<std::string, MemoryWorkerBackoff> memory_worker_backoff_by_key;
 		std::unordered_map<std::string, CliProviderVersionState> runtime_cli_versions_by_provider_id;
 		std::unordered_map<std::string, ComputerUseRuntimeState> computer_use_by_chat_id;
 		std::unordered_set<std::string> computer_use_revocation_pending_chat_ids;

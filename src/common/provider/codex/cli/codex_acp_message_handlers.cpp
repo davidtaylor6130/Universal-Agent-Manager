@@ -1133,6 +1133,10 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			if (turn.contains("id") && turn["id"].is_string())
 				ManagedParentContinuationService::ObserveNormalCompletion(app, session, chat, turn["id"].get<std::string>());
 			RecordCompletedAcpPromptRecoveries(app, session, chat);
+			// codex_turn_id follows every turn/started, including a native goal's own turn. Only the turn that this
+			// prompt's turn/start reply named, in this UAM turn, is the prompt's completion.
+			if (!session.codex_origin_rpc_turn_id.empty() && JsonDiagnosticStringValue(turn, "id") == session.codex_origin_rpc_turn_id &&
+			    session.codex_origin_rpc_turn_serial == session.turn_serial) (void)ConfirmTurnInputReceived(session, chat);
 		}
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser, !completed_cancelled_turn);
 		StartPendingCodexNativeGoalTurn(app, session, chat);

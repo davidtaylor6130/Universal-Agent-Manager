@@ -300,6 +300,9 @@ UAM_TEST(AcpDeliveryMarkerHoldsOneRequestUntilItsOwnedSaveReceipt)
 	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
 	UAM_ASSERT_EQ(session.prompt_request_id, request_id);
 	UAM_ASSERT_EQ(session.next_request_id, allocated_next_id);
+	// A dispatched row is stamped as tracked; the history row this build never dispatched is not.
+	UAM_ASSERT(std::as_const(app.chats.front()).messages.back().input_delivery_tracked);
+	UAM_ASSERT(!std::as_const(app.chats.front()).messages.front().input_delivery_tracked);
 	const int delivered = session.prompt_request_id;
 	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
 	UAM_ASSERT_EQ(session.prompt_request_id, delivered);

@@ -54,7 +54,7 @@ UAM_TEST(MemoryWorkerCompletionRetainsWorkspaceOwnershipAcrossMovesAndWorktreeCh
 			app.chats.front().workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
 			app.chats.front().workspace_worktree_directory = new_workspace.string();
 		}
-		app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 3600.0;
+		MemoryService::SetWorkerBackoffForTests(app, app.chats.front(), uam::GetAppTimeSeconds() + 3600.0);
 		app.memory_extraction_tasks.front().state->completed.store(true);
 		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
 		UAM_ASSERT(app.memory_extraction_tasks.empty());
@@ -64,6 +64,57 @@ UAM_TEST(MemoryWorkerCompletionRetainsWorkspaceOwnershipAcrossMovesAndWorktreeCh
 		UAM_ASSERT_EQ(fs::exists(MemoryService::LocalMemoryRoot(old_workspace)), change == "unchanged" && has_entry);
 		UAM_ASSERT(!fs::exists(MemoryService::LocalMemoryRoot(new_workspace)));
 	}
+}
+
+UAM_TEST(MemoryWorkerFailureBacksOffOnlyThatHostAndProvider)
+{
+	TempDir temp("uam-memory-host-backoff");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.memory_idle_delay_seconds = 0;
+	app.provider_profiles = {ProviderProfileStore::DefaultCodexProfile()};
+	ExecutionHost dead;
+	dead.id = "dead"; dead.ssh_alias = "dead"; dead.transport = "ssh"; dead.platform = "linux"; dead.runner_status = "ready";
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost(), dead};
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace);
+	const auto chat_on = [&](const std::string& id, const std::string& host)
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.provider_id = "codex-cli";
+		chat.execution_host_id = host;
+		chat.workspace_directory = workspace.string();
+		chat.memory_enabled = true;
+		chat.memory_level = "balanced";
+		chat.messages_loaded = true;
+		chat.messages.push_back({MessageRole::User, "Please remember that this project always uses Allman braces for every file.", "now"});
+		app.chats.push_back(chat);
+	};
+	chat_on("remote-failed", "dead");
+	chat_on("remote-other", "dead");
+	chat_on("local", "local");
+	uam::AsyncMemoryExtractionTask task;
+	task.data_root = app.data_root;
+	task.chat_id = "remote-failed";
+	task.owner_provider_id = "codex-cli";
+	task.memory_level = "balanced";
+	task.remote_host = dead;
+	task.remote_workspace = workspace.string();
+	task.message_count = 1;
+	task.state = std::make_shared<AsyncProcessTaskState>();
+	task.state->provider_id = "codex-cli";
+	task.state->result.error = "The remote runner bridge closed.";
+	task.state->completed.store(true);
+	task.extraction_state = std::make_shared<uam::AsyncMemoryExtractionState>();
+	app.memory_extraction_tasks.push_back(std::move(task));
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	// The first tick records the failure and starts idle timers; the second queues chats whose idle delay (0 s) has passed.
+	(void)MemoryService::ProcessDueMemoryWork(app);
+	const auto queued = [&](const std::string& id) { return std::ranges::any_of(app.memory_extraction_queue, [&](const uam::QueuedMemoryExtractionTask& item) { return item.chat_id == id; }); };
+	UAM_ASSERT(queued("local"));
+	UAM_ASSERT(!queued("remote-other"));
+	UAM_ASSERT(!queued("remote-failed"));
 }
 
 UAM_TEST(ColdMemoryPreparationCannotMarkANewWorkspaceProcessedFromAnOldLowSignalSnapshot)

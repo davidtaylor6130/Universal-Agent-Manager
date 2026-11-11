@@ -16,7 +16,11 @@
 #include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <set>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -41,9 +45,130 @@ namespace uam
 			result.messages_loaded = false;
 			return result;
 		}
+
+		/// <summary>Scans one host's folders in order on one shared client. A connect failure gets one bounded reconnect;
+		/// if that fails too, the host's remaining folders stay pending for a later automatic retry and are named once.</summary>
+		ChatHistorySyncService::LocalHistoryDiscovery ScanRemoteHost(const std::vector<const StartupNativeImportRemoteScope*>& scopes,
+		    const StartupNativeImportService::RemoteScanner& remote, const ProviderProfile* profile, const StartupNativeImportRemoteRetry& retry, std::stop_token stop)
+		try
+		{
+			ChatHistorySyncService::LocalHistoryDiscovery discovery;
+			const ExecutionHost& host = scopes.front()->host;
+			const std::shared_ptr<StartupNativeImportRemoteScanGate>& gate = scopes.front()->gate;
+			ChatHistorySyncService::RemoteHistoryScanContext host_scan(host);
+			bool unreachable = false;
+			bool reconnected = false;
+			bool reached = false;
+			std::string reason;
+			std::vector<std::string> waiting;
+			std::set<std::string> reported;
+			for (const StartupNativeImportRemoteScope* entry : scopes)
+			{
+				const StartupNativeImportRemoteScope& scope = *entry;
+				if (stop.stop_requested()) break;
+				std::stop_token cancelled;
+				{
+					std::lock_guard lock(scope.gate->mutex);
+					if (scope.gate->pauses != 0 || scope.admission_generation != scope.gate->generation || scope.complete->load()) continue;
+					if (unreachable)
+					{
+						waiting.push_back(scope.folder.title);
+						continue;
+					}
+					++scope.gate->active;
+					cancelled = scope.gate->cancel.get_token();
+				}
+				struct Completion
+				{
+					const StartupNativeImportRemoteScope& scope;
+					bool pending = false;
+					~Completion()
+					{
+						std::lock_guard lock(scope.gate->mutex);
+						// A host pause or an unreachable host leaves the scope pending so a later admission rescans it from the start.
+						if (!pending) scope.complete->store(true);
+						--scope.gate->active;
+					}
+				};
+				Completion completion{scope};
+				std::stop_source scope_stop;
+				const std::stop_callback forward_stop(stop, [&scope_stop]() { scope_stop.request_stop(); });
+				const std::stop_callback forward_pause(cancelled, [&scope_stop]() { scope_stop.request_stop(); });
+				ChatHistorySyncService::LocalHistoryDiscovery result = remote(scope, profile, host_scan, scope_stop.get_token());
+				if (result.remote_host_unreachable && !reconnected && !scope_stop.stop_requested())
+				{
+					// One bounded reconnect for a host that is just waking or still joining its VPN.
+					reconnected = true;
+					std::mutex delay_mutex;
+					std::condition_variable_any delay;
+					std::unique_lock delay_lock(delay_mutex);
+					(void)delay.wait_for(delay_lock, scope_stop.get_token(), retry.reconnect_delay, [] { return false; });
+					if (!scope_stop.stop_requested())
+					{
+						result.CancelPending();
+						host_scan.connect_failed = false;
+						host_scan.connect_error.clear();
+						result = remote(scope, profile, host_scan, scope_stop.get_token());
+					}
+				}
+				if (cancelled.stop_requested())
+				{
+					completion.pending = true;
+					diagnostics::Write("Startup native history: remote scan on host " + strings::SafeLine(scope.host.id, 128, true) + " cancelled for a helper install; it will rescan after the install.");
+					result.CancelPending();
+					continue;
+				}
+				if (result.remote_host_unreachable)
+				{
+					unreachable = completion.pending = true;
+					reason = !host_scan.connect_error.empty() ? host_scan.connect_error
+					    : !result.result.errors.empty() ? result.result.errors.back() : std::string("the connection failed");
+					waiting.push_back(scope.folder.title);
+					result.CancelPending();
+					continue;
+				}
+				reached = true;
+				// One host reports a repeated refusal (for example an unverified OpenCode version) once, not once per folder.
+				ChatHistorySyncService::ImportResult merged = std::move(result.result);
+				std::erase_if(merged.errors, [&reported](const std::string& error) { return !reported.insert(error).second; });
+				discovery.result.Merge(merged);
+				for (ChatSession& chat : result.chats) discovery.chats.push_back(std::move(chat));
+			}
+			bool report = false;
+			{
+				std::lock_guard lock(gate->mutex);
+				if (unreachable)
+				{
+					gate->retry_delay = gate->retry_delay.count() == 0 ? retry.first_retry : std::min(gate->retry_delay * 2, retry.max_retry);
+					gate->retry_at = std::chrono::steady_clock::now() + gate->retry_delay;
+					report = !std::exchange(gate->unreachable_reported, true);
+				}
+				else if (reached)
+				{
+					gate->retry_delay = std::chrono::milliseconds{0};
+					gate->unreachable_reported = false;
+				}
+			}
+			if (report)
+			{
+				std::string titles;
+				for (const std::string& title : waiting) titles += (titles.empty() ? "" : ", ") + title;
+				discovery.result.Fail("Remote history on " + host.id + " could not be reached (" + strings::SafeLine(reason, 240, true) +
+				    "). UAM will retry automatically for these workspaces: " + titles + ".");
+			}
+			return discovery;
+		}
+		catch (const std::exception& error)
+		{
+			// A jthread body must not throw; the failure stays on this host's report.
+			ChatHistorySyncService::LocalHistoryDiscovery failed;
+			failed.result.Fail(std::string("Remote history discovery failed: ") + error.what());
+			return failed;
+		}
 	}
 
-	StartupNativeImportService::StartupNativeImportService(Scanner scanner, RemoteScanner remote_scanner) : m_scanner(std::move(scanner))
+	StartupNativeImportService::StartupNativeImportService(Scanner scanner, RemoteScanner remote_scanner, StartupNativeImportRemoteRetry retry)
+	    : m_scanner(std::move(scanner))
 	{
 		m_scoped_scanner = !m_scanner || static_cast<bool>(remote_scanner);
 		if (!m_scoped_scanner) return;
@@ -52,47 +177,39 @@ namespace uam
 			return ChatHistorySyncService().DiscoverProviderChatsForFolder({}, request.open_code_profile ? &*request.open_code_profile : nullptr,
 			    stop, request.open_code_offset, request.open_code_only, request.open_code_remaining, request.open_code_list_fingerprint);
 		});
-		if (!remote_scanner) remote_scanner = [](const StartupNativeImportRemoteScope& scope, const ProviderProfile* profile, std::stop_token stop)
+		if (!remote_scanner) remote_scanner = [](const StartupNativeImportRemoteScope& scope, const ProviderProfile* profile, ChatHistorySyncService::RemoteHistoryScanContext& host_scan, std::stop_token stop)
 		{
-			return ChatHistorySyncService().DiscoverRemoteProviderChatsForFolder(scope.folder, scope.host, profile, stop);
+			return ChatHistorySyncService().DiscoverRemoteProviderChatsForFolder(scope.folder, scope.host, profile, stop, &host_scan);
 		};
-		m_scanner = [local, remote = std::move(remote_scanner)](const StartupNativeImportScanRequest& request, std::stop_token stop)
+		m_scanner = [local, remote = std::move(remote_scanner), retry](const StartupNativeImportScanRequest& request, std::stop_token stop)
 		{
 			ChatHistorySyncService::LocalHistoryDiscovery discovery = request.remote_only ? ChatHistorySyncService::LocalHistoryDiscovery{} : local(request, stop);
+			std::vector<std::vector<const StartupNativeImportRemoteScope*>> hosts;
 			for (const StartupNativeImportRemoteScope& scope : request.remote_scopes)
 			{
-				if (stop.stop_requested()) break;
-				std::stop_token cancelled;
+				const auto host = std::ranges::find_if(hosts, [&](const auto& scopes) { return scopes.front()->host.id == scope.host.id; });
+				if (host != hosts.end()) host->push_back(&scope);
+				else hosts.push_back({&scope});
+			}
+			const ProviderProfile* profile = request.open_code_profile ? &*request.open_code_profile : nullptr;
+			std::vector<ChatHistorySyncService::LocalHistoryDiscovery> results(hosts.size());
+			std::atomic<std::size_t> next{0};
+			const auto drain = [&]()
+			{
+				for (std::size_t index = next++; index < hosts.size(); index = next++) results[index] = ScanRemoteHost(hosts[index], remote, profile, retry, stop);
+			};
+			{
+				std::vector<std::jthread> workers;
+				// ponytail: fixed at four hosts at once; a slot count from settings waits until someone runs more dead hosts than that.
+				for (std::size_t worker = 1; worker < std::min<std::size_t>(hosts.size(), 4); ++worker)
 				{
-					std::lock_guard lock(scope.gate->mutex);
-					if (scope.gate->pauses != 0 || scope.admission_generation != scope.gate->generation || scope.complete->load()) continue;
-					++scope.gate->active;
-					cancelled = scope.gate->cancel.get_token();
+					try { workers.emplace_back([&drain]() { uam::platform::LowerCurrentThreadToBackgroundPriority(); drain(); }); }
+					catch (const std::system_error&) { break; } // This thread still drains every host.
 				}
-				struct Completion
-				{
-					const StartupNativeImportRemoteScope& scope;
-					bool paused = false;
-					~Completion()
-					{
-						std::lock_guard lock(scope.gate->mutex);
-						// A host pause leaves the scope pending so a later admission rescans it from the start.
-						if (!paused) scope.complete->store(true);
-						--scope.gate->active;
-					}
-				};
-				Completion completion{scope};
-				std::stop_source scope_stop;
-				const std::stop_callback forward_stop(stop, [&scope_stop]() { scope_stop.request_stop(); });
-				const std::stop_callback forward_pause(cancelled, [&scope_stop]() { scope_stop.request_stop(); });
-				ChatHistorySyncService::LocalHistoryDiscovery result = remote(scope, request.open_code_profile ? &*request.open_code_profile : nullptr, scope_stop.get_token());
-				completion.paused = cancelled.stop_requested();
-				if (completion.paused)
-				{
-					diagnostics::Write("Startup native history: remote scan on host " + strings::SafeLine(scope.host.id, 128, true) + " cancelled for a helper install; it will rescan after the install.");
-					result.CancelPending();
-					continue;
-				}
+				drain();
+			}
+			for (ChatHistorySyncService::LocalHistoryDiscovery& result : results)
+			{
 				discovery.result.Merge(result.result);
 				for (ChatSession& chat : result.chats) discovery.chats.push_back(std::move(chat));
 			}
@@ -137,6 +254,7 @@ namespace uam
 	void StartupNativeImportService::StartScan(const AppState& app, bool include_remote)
 	{
 		m_initialized = true;
+		if (include_remote) m_unavailable_hosts_reported.clear();
 		m_include_unregistered_local = !include_remote;
 		m_generation = time::SteadyEpochNanosecondsTokenNow();
 		m_phase = "scanning";
@@ -148,10 +266,14 @@ namespace uam
 		{
 			if (!include_remote || paths::IsControllerLocalWorkspace(folder)) continue;
 			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, folder.execution_host_id);
-			if (host == nullptr || host->transport != "ssh" || host->runner_status != "ready" ||
-			    !execution_hosts::IsAbsoluteRemotePath(host->platform, folder.directory))
+			if (host == nullptr || host->transport != "ssh" || host->runner_status != "ready")
 			{
-				AddError("Remote history was not scanned because its workspace host was unavailable: " + folder.title);
+				AddHostUnavailableError(folder.execution_host_id, folder.title);
+				continue;
+			}
+			if (!execution_hosts::IsAbsoluteRemotePath(host->platform, folder.directory))
+			{
+				AddError("Remote history was not scanned because its workspace path is not valid on its host: " + folder.title);
 				continue;
 			}
 			m_remote_hosts[host->id] = *host;
@@ -185,6 +307,12 @@ namespace uam
 		diagnostics::Write("Startup native history: " + message);
 		if (m_errors.size() < 20) m_errors.push_back(message);
 		else ++m_omitted_error_count;
+	}
+
+	void StartupNativeImportService::AddHostUnavailableError(const std::string& host_id, const std::string& fallback_name)
+	{
+		if (m_unavailable_hosts_reported.insert(host_id).second)
+			AddError("Remote history was not scanned because its workspace host was unavailable: " + strings::NonEmptyOrFallback(host_id, fallback_name));
 	}
 
 	bool StartupNativeImportService::BackgroundScanPendingOnHost(const std::string& host_id) const
@@ -243,11 +371,11 @@ namespace uam
 				continue;
 			}
 			std::lock_guard lock(scope.gate->mutex);
-			if (scope.gate->pauses != 0 || host->runner_status == "installing") continue;
+			if (scope.gate->pauses != 0 || host->runner_status == "installing" || scope.gate->retry_at > std::chrono::steady_clock::now()) continue;
 			if (host->runner_status != "ready")
 			{
 				scope.complete->store(true);
-				AddError("Remote history was not scanned because its workspace host was unavailable: " + scope.folder.title);
+				AddHostUnavailableError(scope.host.id, scope.folder.title);
 				continue;
 			}
 			scope.host = *host;
@@ -282,6 +410,29 @@ namespace uam
 		return true;
 	}
 
+	bool StartupNativeImportService::RemoteScansOutstanding() const
+	{
+		const auto now = std::chrono::steady_clock::now();
+		return std::ranges::any_of(m_remote_scopes, [now](const StartupNativeImportRemoteScope& scope)
+		{
+			if (scope.complete->load()) return false;
+			std::lock_guard lock(scope.gate->mutex);
+			return scope.gate->retry_at <= now;
+		});
+	}
+
+	bool StartupNativeImportService::RemoteRetryDue() const
+	{
+		// Only scopes that waited for an unreachable host; a fresh scan's pending scopes are already running.
+		const auto now = std::chrono::steady_clock::now();
+		return std::ranges::any_of(m_remote_scopes, [now](const StartupNativeImportRemoteScope& scope)
+		{
+			if (scope.complete->load()) return false;
+			std::lock_guard lock(scope.gate->mutex);
+			return scope.gate->retry_delay.count() != 0 && scope.gate->retry_at <= now;
+		});
+	}
+
 	bool StartupNativeImportService::SelectedImportPendingOnHost(const std::string& host_id) const
 	{
 		return m_phase == "importing" && std::ranges::any_of(m_selected,
@@ -290,12 +441,15 @@ namespace uam
 
 	bool StartupNativeImportService::Poll(AppState& app)
 	{
-		if (m_phase == "scanning")
+		const bool settled = m_phase == "ready" || m_phase == "complete";
+		// An unreachable host's workspaces are retried in the background while the review stays open.
+		if (settled && m_scoped_scanner && !m_scan.valid() && !m_stop.stop_requested() && RemoteRetryDue()) (void)StartPendingRemoteScans(app);
+		if (m_phase == "scanning" || (settled && m_scan.valid()))
 		{
 			if (!m_scan.valid())
 			{
 				if (m_scoped_scanner && StartPendingRemoteScans(app)) return true;
-				if (m_scoped_scanner && std::ranges::any_of(m_remote_scopes, [](const StartupNativeImportRemoteScope& scope) { return !scope.complete->load(); })) return false;
+				if (m_scoped_scanner && RemoteScansOutstanding()) return false;
 				m_phase = m_candidates.empty() ? "complete" : "ready";
 				return true;
 			}
@@ -318,8 +472,7 @@ namespace uam
 			{
 				AddError("OpenCode session list changed during discovery; retry the scan.");
 				discovery.CancelPending();
-				m_phase = m_scoped_scanner && std::ranges::any_of(m_remote_scopes, [](const StartupNativeImportRemoteScope& scope) { return !scope.complete->load(); })
-				    ? "scanning" : m_candidates.empty() ? "complete" : "ready";
+				m_phase = m_phase == "scanning" && m_scoped_scanner && RemoteScansOutstanding() ? "scanning" : m_candidates.empty() ? "complete" : "ready";
 				return true;
 			}
 			const std::size_t remaining = m_scan_request.open_code_remaining.value_or(discovery.open_code_session_count);
@@ -421,7 +574,7 @@ namespace uam
 			}
 			if (remaining > 0 && discovery.open_code_scanned_count == 0 && !discovery.open_code_list_fingerprint.empty())
 				AddError("OpenCode history scan made no progress; retry the scan.");
-			if (m_scoped_scanner && std::ranges::any_of(m_remote_scopes, [](const StartupNativeImportRemoteScope& scope) { return !scope.complete->load(); }))
+			if (m_scoped_scanner && RemoteScansOutstanding())
 			{
 				(void)StartPendingRemoteScans(app);
 				return true;

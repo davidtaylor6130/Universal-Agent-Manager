@@ -982,7 +982,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }, [refreshUamAgents, session.id, workspaceDirectory])
   useEffect(() => {
     if (isCompanionContext() && !session.importedReadOnly) {
-      void discoverProviderModels(session.id)
+      void discoverProviderModels(session.id, '', '', '', true)
     }
   }, [discoverProviderModels, session.id, session.modelId, session.uamAgentId, session.importedReadOnly])
 
@@ -3248,7 +3248,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 if (index === redundantStreamingMessageIndex || unsentProjection.hiddenIndices.has(index)) return null
                 const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
                 const shouldSkipAssistantMessage = renderTimelineAfterUser && turnAssistantMessageMatches && index === turnAssistantMessageIndex
-                const { followingResponse, hasDeliveredResponse, hasStoppedResponse } = responseFlags(messages, index)
+                const { followingResponse, hasDeliveredResponse, hasStoppedResponse, receivedByProvider } = responseFlags(messages, index)
                 const messageProviderId = message.providerId?.trim() || followingResponse?.providerId?.trim() || currentProviderId
                 const messageProviderName = providerShortName(
                   providers.find((candidate) => candidate.id === messageProviderId),
@@ -3356,6 +3356,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                         message={message}
                         hasDeliveredResponse={hasDeliveredResponse}
                         hasStoppedResponse={hasStoppedResponse}
+                        // A response still streaming is output, not a completion: it hides nothing yet.
+                        receivedByProvider={receivedByProvider && !(acp?.processing && index + 1 === turnAssistantMessageIndex)}
                         pendingDirectAdmission={unsentProjection.pendingIndices.has(index) || nativeDirectReceipt?.sending === true}
                         delivery={unsentByLoadedIndex.has(index) ? (unsentByLoadedIndex.get(index)!.retryable ? UNSENT_DELIVERY : HELD_DELIVERY)
                           : nativeDirectReceipt ? (nativeDirectReceipt.sending ? SENDING_DELIVERY : RECEIPT_DELIVERY)
@@ -4312,7 +4314,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               modelMenuRef={modelMenuRef}
 			  onToggleModel={() => {
 				if (!modelOpen && isOpenCodeProvider(currentProvider, currentProviderId) && !providerAcp?.modelsLoading && !providerAcp?.availableModels.length) {
-				  void discoverProviderModels('', currentProviderId, workspaceDirectory, session.executionHostId || 'local')
+				  void discoverProviderModels('', currentProviderId, workspaceDirectory, session.executionHostId || 'local', true)
 				}
                 setModelOpen((value) => !value)
                 setWorkspaceMenuOpen(false)

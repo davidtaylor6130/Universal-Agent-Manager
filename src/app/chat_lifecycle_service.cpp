@@ -1618,7 +1618,7 @@ bool uam::QueueHoldHasNoInput(const AppState& app, const ChatSession& chat)
 	const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
 	// A storage-problem hold may own journal input that never loaded, so its empty queue proves nothing.
 	// Delivery clears a row's not-sent marker first, so an uncertain remote turn can leave no row to see.
-	return !ChatHasUncertainRemoteInput(chat) && !chat.acp_queue_storage_error && !chat.managed_followup_input_unavailable && chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0 && chat.acp_unsent_prompt_recoveries.empty() &&
+	return !ChatHasUncertainRemoteInput(chat) && !chat.acp_queue_storage_error && !chat.managed_followup_input_unavailable && chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0 && !ChatHasActionableUnsentRecovery(chat) &&
 	    (session == nullptr || session->queued_user_prompts.empty()) &&
 	    // A removed row keeps its not-sent marker for history but no longer holds input.
 	    std::ranges::none_of(chat.messages, &Message::AcpPromptAwaitsDecision);
@@ -1706,7 +1706,7 @@ const char* uam::NativeResetRefusalReason(const AppState& app, const ChatSession
 	if (chat.acp_queue_storage_error || chat.managed_followup_input_unavailable) return kQueueStorageRefusal;
 	if (!chat.acp_queued_prompts.empty() || chat.acp_dispatched_queued_prompt_count != 0 || (session != nullptr && !session->queued_user_prompts.empty()))
 		return ScanProviderSwitchQueue(app, chat).clearable ? kHeldQueueRefusal : "This chat has held input with no control. Change the chat's provider and accept the warning, then try again.";
-	if (ChatHasUnsentAcpPrompt(app, chat) || !chat.acp_unsent_prompt_recoveries.empty()) return kUnsentRefusal;
+	if (ChatHasUnsentAcpPrompt(app, chat) || ChatHasActionableUnsentRecovery(chat)) return kUnsentRefusal;
 	// The old turn may already have run this row; a handoff would send it again.
 	if (ChatHasUncertainRemoteInput(chat) && std::ranges::any_of(chat.messages, &Message::AcpPromptAwaitsDecision))
 		return "UAM cannot confirm whether this chat's latest message reached the provider. Wait for that turn to settle, or change the chat's provider and accept the warning, then try again.";

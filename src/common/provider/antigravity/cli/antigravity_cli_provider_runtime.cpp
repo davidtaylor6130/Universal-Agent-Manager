@@ -736,6 +736,7 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 			}
 			session.antigravity_completed_turns = turn;
 			RecordCompletedAcpPromptRecoveries(app, session, chat);
+			(void)ConfirmTurnInputReceived(session, chat);
 			CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser);
 		}
 		if (browser) uam::PushStreamDone(browser, chat.id);

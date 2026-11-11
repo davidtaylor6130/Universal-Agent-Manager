@@ -3,12 +3,44 @@
 #include "common/runtime/acp/acp_statuses.h"
 #include "common/utils/string_utils.h"
 
+#include <algorithm>
 #include <cstddef>
+#include <utility>
 #include <string>
 #include <vector>
 
 namespace uam::acp_detail
 {
+
+bool ConfirmTurnInputReceived(const AcpSessionState& session, ChatSession& chat)
+{
+	// Called only where a provider has proved it completed this turn's own prompt. Even then nothing is confirmed
+	// while a helper receipt is still owed (the receipt is the only proof for that delivery), for a cancelled turn,
+	// or for a prompt that has not left the queue. A stale marker is acceptable; a falsely confirmed loss is not.
+	if (!session.processing || session.cancel_requested || uam::AcpSessionHasPendingCancel(session) || !session.queued_prompt.empty() ||
+	    !chat.remote_prompt_delivery_id.empty()) return false;
+	// A goal turn carries no authored row of its own, and without a recorded first row the turn's rows are not known.
+	// A restored internal turn saves no anchor, and the restore then falls back to the last user row: its completion
+	// must not confirm that unrelated row.
+	if (session.goal_internal_session || !session.goal_turn_kind.empty() || session.turn_first_user_message_index < 0) return false;
+	bool changed = false;
+	const int last = session.turn_user_message_index;
+	// Read through const access: touching the list any other way restamps it even when no row changes.
+	const auto& rows = std::as_const(chat).messages;
+	for (int index = session.turn_first_user_message_index;
+	     index <= last && index < static_cast<int>(rows.size()); ++index)
+	{
+		const Message& row = rows[static_cast<std::size_t>(index)];
+		// A row held back as unsent or removed was not part of what the provider answered.
+		if (row.role != MessageRole::User || row.input_write_completed || row.acp_prompt_not_sent || row.acp_prompt_discarded ||
+		    !row.native_input_id || !input_provenance::ValidNativeInputId(*row.native_input_id)) continue;
+		// Same rule as the helper receipt: an ID shared by two rows identifies neither.
+		if (std::ranges::count_if(rows, [&row](const Message& other) { return other.role == MessageRole::User && other.native_input_id == row.native_input_id; }) != 1) continue;
+		chat.messages[static_cast<std::size_t>(index)].input_write_completed = true;
+		changed = true;
+	}
+	return changed;
+}
 
 Message& EnsureAssistantMessage(ChatSession& chat, AcpSessionState& session)
 {

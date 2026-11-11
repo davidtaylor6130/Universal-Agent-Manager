@@ -53,6 +53,11 @@ std::vector<std::string> ServeArgv(std::vector<std::string> command);
 bool IsCheckedHistoryV2(std::string_view version);
 std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::string> command,
     const std::string& operation, const std::string& id);
+/// <summary>HistoryArgv for a host's own CLI over the runner; the list keeps the 200-session bound of the remote reader.</summary>
+std::vector<std::string> RemoteHistoryArgv(std::string_view version, std::vector<std::string> command,
+    const std::string& operation, const std::string& id);
+/// <summary>Maps V2 list entries to the fields the history importer reads; throws on a malformed entry.</summary>
+void NormalizeHistoryList(Json& list);
 /// <summary>POSIX only: OpenCode 1.x export can exit 0 before a piped stdout drains (1.19.4 stops at 128/192 KiB),
 /// so its stdout goes to a private regular file that cat then streams completely.</summary>
 std::vector<std::string> FileBackedStdoutArgv(std::vector<std::string> command);

@@ -516,6 +516,7 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
     nativeInputId: sanitizeNativeInputId(value.nativeInputId),
     originRequestId: sanitizeOriginRequestId(value.originRequestId),
     inputWriteCompleted: role === 'user' && sanitizeNativeInputId(value.nativeInputId) && value.inputWriteCompleted === true ? true : undefined,
+    inputDeliveryTracked: role === 'user' && value.inputDeliveryTracked === true ? true : undefined,
     content: value.content,
     modelId: isString(value.modelId) ? value.modelId : undefined,
     providerId: isString(value.providerId) ? value.providerId : undefined,

@@ -15,7 +15,7 @@ namespace uam::usage
 	{
 	public:
 		MultiHostHistory(std::filesystem::path data_root, std::vector<ExecutionHost> hosts);
-		MultiHostHistory(std::filesystem::path data_root, std::shared_ptr<Collector> local, std::vector<ExecutionHost> hosts, RemoteAccountingFetcher fetch);
+		MultiHostHistory(std::filesystem::path data_root, std::shared_ptr<Collector> local, std::vector<ExecutionHost> hosts, RemoteAccountingFetcher fetch, std::chrono::milliseconds ledger_min_interval = {}, std::chrono::milliseconds demand_window = std::chrono::minutes(2), std::chrono::milliseconds clock_refresh = std::chrono::minutes(5));
 		~MultiHostHistory();
 		void SetHosts(std::vector<ExecutionHost> hosts);
 		nlohmann::json Query(std::string_view host_id, int days, const std::map<ModelKey, ModelPrices>& prices = {}) const;
@@ -35,6 +35,11 @@ namespace uam::usage
 		const std::filesystem::path m_dataRoot;
 		const std::shared_ptr<Collector> m_local;
 		const RemoteAccountingFetcher m_fetch;
+		const std::chrono::milliseconds m_ledgerMinInterval;
+		const std::chrono::milliseconds m_demandWindow;
+		const std::chrono::milliseconds m_clockRefresh;
+		mutable std::atomic<std::int64_t> m_lastDemandMs;
+		mutable std::atomic<bool> m_idleWake{false};
 		std::atomic<std::uint64_t> m_importedRecords{0};
 		std::atomic<std::uint64_t> m_ledgerBuilds{0};
 		mutable std::mutex m_mutex;
@@ -42,8 +47,8 @@ namespace uam::usage
 		std::map<std::string, View> m_views;
 		std::shared_ptr<std::stop_source> m_scopeStop = std::make_shared<std::stop_source>();
 		std::atomic<std::uint64_t> m_generation{1};
-		std::mutex m_waitMutex;
-		std::condition_variable_any m_wake;
+		mutable std::mutex m_waitMutex;
+		mutable std::condition_variable_any m_wake;
 		std::jthread m_worker;
 	};
 }

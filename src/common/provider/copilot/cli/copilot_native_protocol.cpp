@@ -2229,7 +2229,13 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 			(void)FinalizeActiveAcpToolCallsAsCancelled(chat, session);
 			if (Message* message = CurrentAssistantMessage(chat, session)) message->interrupted = true;
 		}
-		if (!cancelled) RecordCompletedAcpPromptRecoveries(app, session, chat);
+		if (!cancelled)
+		{
+			RecordCompletedAcpPromptRecoveries(app, session, chat);
+			// Only an acknowledged send proves this prompt: an idle after observed output alone can belong to a
+			// background agent, and the send can still be rejected afterwards.
+			if (Flag(session.copilot_native_state, "sendAccepted")) (void)ConfirmTurnInputReceived(session, chat);
+		}
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser, !cancelled);
 		(void)FlushAutoRoutingRefresh(session, chat);
 		if (browser) uam::PushStreamDone(browser, chat.id);
