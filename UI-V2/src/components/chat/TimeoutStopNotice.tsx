@@ -20,6 +20,28 @@ export function formatTimeoutDuration(seconds: number) {
 }
 
 /**
+ * Raises the turn timeout, then restarts the turn in place. A refused restart puts the previous timeout back,
+ * so Restart never leaves a changed setting behind a turn that did not run.
+ */
+export async function restartWithRaisedTimeout({ previous, raised, queued, retryable, saveTimeout, retry }: {
+  previous: number
+  raised: number
+  queued: boolean
+  retryable: boolean
+  saveTimeout: (seconds: number) => Promise<boolean>
+  retry: () => Promise<{ ok: boolean; error?: string }>
+}): Promise<TimeoutRestartOutcome | undefined> {
+  if (!await saveTimeout(raised)) return { tone: 'error', message: 'Could not save the new timeout. Nothing was restarted.' }
+  const raisedText = `Timeout raised to ${formatTimeoutDuration(raised)}.`
+  if (queued) return { tone: 'info', message: `${raisedText} Queued messages are sent first, so this turn was not restarted; send a follow-up afterwards to continue it.` }
+  if (!retryable) return { tone: 'info', message: `${raisedText} This turn already produced output, so send a follow-up to continue it.` }
+  const result = await retry()
+  if (result.ok) return undefined
+  const refused = `The turn did not restart: ${result.error || 'retry was refused.'}`
+  return { tone: 'error', message: await saveTimeout(previous) ? refused : `${raisedText} ${refused}` }
+}
+
+/**
  * A timeout stop explained in plain words, replacing the raw provider error banner. Restart is offered
  * only for a limit UAM owns (a known value); another provider limit is explained without it. A stream-watch
  * loop stop (#636) uses the same notice with the repeated content and a plain restart instead of +15 min.

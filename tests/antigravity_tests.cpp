@@ -861,6 +861,51 @@ UAM_TEST(AntigravityLocalGoalRestartRequiresObservedProcessExit)
 	UAM_ASSERT_EQ(fixture.CurrentGoal().loop_count, 2);
 }
 
+UAM_TEST(AntigravityMeteredStopSettlesAtItsDeadlineButHoldsEveryNewProcessUntilExit)
+{
+	AntigravityUamGoalFixture fixture;
+	fixture.Prepare(); fixture.Step(1, {{"input_tokens",12},{"output_tokens",3}});
+	uam::FlushPendingChatSaves(fixture.app);
+	fixture.Session().running = true;
+	fixture.Session().queued_prompt.clear();
+	auto service = std::make_shared<UnconfirmedGoalStopService>();
+	// A metered turn: its stop waits for the observed exit of a process that never reports one.
+	UAM_ASSERT(!uam::StopAcpSession(fixture.app, fixture.Chat().id, uam::AcpStopPurpose::Interrupt, true, service));
+	UAM_ASSERT_EQ(fixture.app.acp_process_stop_tasks.size(), std::size_t{1});
+	UAM_ASSERT(fixture.app.acp_process_stop_tasks.front().observe_exit && fixture.Session().local_stop_pending);
+	fixture.app.acp_process_stop_tasks.front().worker->join();
+	(void)uam::PollCompletedAcpProcessStops(fixture.app, nullptr);
+	UAM_ASSERT(fixture.Session().local_stop_pending);
+	fixture.app.acp_process_stop_tasks.front().exit_wait_started_s = uam::GetAppTimeSeconds() - 60.0;
+	(void)uam::PollCompletedAcpProcessStops(fixture.app, nullptr);
+	// Settled for the user at the deadline, with the metered progress kept.
+	UAM_ASSERT(!fixture.Session().local_stop_pending && !fixture.Session().running);
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{15});
+	// The process was never seen to exit, so no new process, no fresh budget and no second writer.
+	UAM_ASSERT(uam::AcpStopExitUnobserved(fixture.app, fixture.Chat().id) && uam::AcpStopInProgress(fixture.app, fixture.Chat().id));
+	std::string error;
+	UAM_ASSERT(!uam::acp_detail::ResumeGoal(fixture.app, fixture.Chat().id, fixture.CurrentGoal().id, &error, true));
+	error.clear();
+	UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(fixture.app, fixture.Session(), fixture.Chat(), &error));
+	UAM_ASSERT_EQ(error, std::string(uam::kAcpProcessExitUnobservedMessage));
+	// The background keeps ending it without anyone asking.
+	const int forced = service->terminations.load();
+	fixture.app.acp_process_stop_tasks.front().exit_next_force_s = 0.0;
+	(void)uam::PollCompletedAcpProcessStops(fixture.app, nullptr);
+	if (fixture.app.acp_process_stop_tasks.front().worker) fixture.app.acp_process_stop_tasks.front().worker->join();
+	UAM_ASSERT(service->terminations.load() > forced);
+	service->exited.store(true);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!fixture.app.acp_process_stop_tasks.empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::PollCompletedAcpProcessStops(fixture.app, nullptr);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(fixture.app.acp_process_stop_tasks.empty());
+	UAM_ASSERT(!uam::AcpStopExitUnobserved(fixture.app, fixture.Chat().id) && !uam::AcpStopInProgress(fixture.app, fixture.Chat().id));
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{15});
+}
+
 UAM_TEST(AntigravityUamGoalReviewerUsageAndCompletionRemainUamOwned)
 {
 	AntigravityUamGoalFixture fixture;

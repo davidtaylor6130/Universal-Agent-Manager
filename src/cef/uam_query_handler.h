@@ -170,6 +170,15 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	};
 	std::unordered_map<std::string, UnconfirmedNativeMediaHistory> m_unconfirmedNativeMediaHistory;
 	bool m_workspaceDeletionPending = false;
+	// A deletion's commit was rejected: its recovery record completes it at restart, its chats stay fenced until
+	// then, and no other deletion can start. Nothing else in the app is held.
+	bool m_deletionAwaitsRestart = false;
+	// Chats whose last-opened value could not be written to a stale summary: an ordinary background save is queued
+	// for each once the history read started by the same selection has finished with the file.
+	std::unordered_set<std::string> m_recencySaveAfterRead;
+	std::unordered_map<std::string, int> m_savedHistoryReadsInFlight;
+	void DeferRecencySave(const std::string& chat_id);
+	void ScheduleDeferredRecencySave(const std::string& chat_id, bool force = false);
 	std::weak_ptr<uam::WorkspaceDeletionTask> m_workspaceDeletionTask;
 	std::string m_trustedUiIndexUrl;
 	using ActionHandler = void (UamQueryHandler::*)(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback>);
@@ -258,6 +267,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	std::function<std::optional<ChatSession>(const ExecutionHost&, const ChatSession&, std::string*, std::stop_token)> m_remoteNativeHistoryReaderForTests;
 	std::function<bool(uam::io::AtomicWriteStage)> m_nativeMediaPublicationStageGateForTests;
 	std::function<bool(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion)> m_queuedPromptHistoryDispatcherForTests;
+	std::function<bool(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion)> m_savedHistoryDispatcherForTests;
 	bool DispatchNativeMediaRefresh(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion, CefThreadId = TID_FILE_BACKGROUND);
 	// A remote refresh read holds its thread through a slow SSH call, so each gets its own instead of the serial file lane.
 	bool DispatchRemoteRefreshRead(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion);

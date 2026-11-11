@@ -913,6 +913,9 @@ namespace
 	}
 }
 
+// ponytail: fixed window; a failing disk rarely recovers faster, and the turn's rollback point is all that is lost.
+constexpr double kCheckpointMetadataRetrySeconds = 10.0;
+
 bool PollTurnCheckpointTasks(AppState& app, CefRefPtr<CefBrowser> browser)
 {
 	std::vector<AsyncTurnCheckpointTask> completed;
@@ -955,14 +958,25 @@ bool PollTurnCheckpointTasks(AppState& app, CefRefPtr<CefBrowser> browser)
 
 		app.worktree_operation_chat_ids.erase(task.chat_id);
 		if (chat == nullptr) continue;
-		if (!ChatRepository::HydrateChatMessages(app.data_root, *chat))
+		// The commit already exists. Recording it on its message is retried for a bounded time only, so a chat
+		// that cannot be read or saved does not hold its worktree gate (and its next turn) forever.
+		const auto retry_metadata = [&](const char* status)
 		{
-			app.status_line = "Checkpoint metadata is waiting for chat history to load.";
+			const double now = GetAppTimeSeconds();
+			if (!task.metadata_retry_until_s) task.metadata_retry_until_s = now + kCheckpointMetadataRetrySeconds;
+			if (now >= *task.metadata_retry_until_s) return false;
+			app.status_line = status;
 			app.worktree_operation_chat_ids.insert(task.chat_id);
 			app.turn_checkpoint_tasks.push_back(std::move(task));
-			continue;
+			return true;
+		};
+		const bool hydrated = ChatRepository::HydrateChatMessages(app.data_root, *chat);
+		if (!hydrated)
+		{
+			if (retry_metadata("Checkpoint metadata is waiting for chat history to load.")) continue;
+			app.status_line = "Automatic turn checkpoint failed.";
 		}
-		const bool same_message = task.assistant_message_index >= 0 &&
+		const bool same_message = hydrated && task.assistant_message_index >= 0 &&
 		                          task.assistant_message_index < static_cast<int>(chat->messages.size()) &&
 		                          chat->messages[task.assistant_message_index].created_at == task.expected_message_created_at;
 		if (task.state->ok && task.state->changed && same_message)
@@ -976,10 +990,8 @@ bool PollTurnCheckpointTasks(AppState& app, CefRefPtr<CefBrowser> browser)
 			{
 				message.checkpoint_sha = previous_sha;
 				message.checkpoint_parent_sha = previous_parent;
-				app.status_line = "Checkpoint metadata could not be saved. Waiting to retry.";
-				app.worktree_operation_chat_ids.insert(task.chat_id);
-				app.turn_checkpoint_tasks.push_back(std::move(task));
-				continue;
+				if (retry_metadata("Checkpoint metadata could not be saved. Waiting to retry.")) continue;
+				app.status_line = "Automatic turn checkpoint failed.";
 			}
 		}
 		else if (!task.state->ok)

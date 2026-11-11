@@ -2090,6 +2090,13 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		}
 		return creation->process_started(app, session, chat, created, creation->error, error_out);
 	}
+	// A stop settled at its exit deadline leaves a process that may still be alive: never prepare or start a second
+	// one beside it. Checked before any launch preparation, which is itself asynchronous.
+	if (AcpStopExitUnobserved(app, chat.id))
+	{
+		if (error_out != nullptr) *error_out = kAcpProcessExitUnobservedMessage;
+		return false;
+	}
 	if (session.cold_retry_binding || (cold_binding && (cold_binding->app != &app || cold_binding->runtime != &session ||
 	    cold_binding->sequence->State() != cold_retry::Sequence::Phase::Prepared || !cold_binding->OwnerCurrent())))
 	{

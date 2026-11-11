@@ -1203,7 +1203,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	// A retiring helper belongs to the previous provider, and this chat's new provider has no process to wait for.
 	if (!uam::ChatIsRetiringRemoteHelper(*chat) && !uam::EnsureAcpStopProgress(m_app, chat->id))
 	{
-		cb->Failure(409, "The runtime is stopping; retry shortly.");
+		cb->Failure(409, uam::AcpStopRefusalMessage(m_app, chat->id, "The runtime is stopping; retry shortly."));
 		return;
 	}
 	if (launch_model_restart && !StopLaunchOptionTerminal(m_app, chat->id))
@@ -1372,7 +1372,7 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	}
 	if (!uam::ChatIsRetiringRemoteHelper(*chat) && !uam::EnsureAcpStopProgress(m_app, chat->id))
 	{
-		cb->Failure(409, "The runtime is stopping; retry shortly.");
+		cb->Failure(409, uam::AcpStopRefusalMessage(m_app, chat->id, "The runtime is stopping; retry shortly."));
 		return;
 	}
 	if (launch_only_options && !StopLaunchOptionTerminal(m_app, chat->id))
@@ -2074,7 +2074,7 @@ void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> brow
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
 	if (!uam::EnsureAcpStopProgress(m_app, chat_id))
 	{
-		cb->Failure(409, "The runtime is stopping; retry shortly.");
+		cb->Failure(409, uam::AcpStopRefusalMessage(m_app, chat_id, "The runtime is stopping; retry shortly."));
 		return;
 	}
 	if (enabled && !uses_uam_backend && session != nullptr && uam::AcpSessionHasActiveTurn(*session))
@@ -2134,7 +2134,7 @@ void UamQueryHandler::HandleSetChatComputerUseBackend(CefRefPtr<CefBrowser> brow
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
 	if (!uam::EnsureAcpStopProgress(m_app, chat_id))
 	{
-		cb->Failure(409, "The runtime is stopping; retry shortly.");
+		cb->Failure(409, uam::AcpStopRefusalMessage(m_app, chat_id, "The runtime is stopping; retry shortly."));
 		return;
 	}
 	if (session != nullptr && uam::AcpSessionHasActiveTurn(*session))

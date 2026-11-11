@@ -97,6 +97,12 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 	{
 		error_out->clear();
 	}
+	// Not a stop that confirms shortly: say why, rather than the silent retry an empty error means.
+	if (AcpStopExitUnobserved(app, chat.id))
+	{
+		if (error_out != nullptr) *error_out = kAcpProcessExitUnobservedMessage;
+		return false;
+	}
 
 	if (AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, chat))
 	{

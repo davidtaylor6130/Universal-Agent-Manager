@@ -1,6 +1,7 @@
 #include "common/config/build_features.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_bridge_request.h"
+#include "cef/pending_operation_gate.h"
 #include "cef/uam_cef_security.h"
 #include "common/companion/protocol.h"
 #include "cef/uam_window_chrome.h"
@@ -242,26 +243,15 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		}
 		cb = new WorkspaceMutationCallback(cb, std::move(lease));
 	}
-	const bool is_runtime_stop = action == "cancelAcpTurn" || action == "stopAcpSession" || action == "cancelChatTitle";
-	const bool is_cached_history_read = action == "getChatMessages" || action == "getToolCallContent" || action == "getAttachmentImagePreview";
-	if (m_workspaceDeletionPending && is_cached_history_read && !chat_id.empty() &&
-	    m_app.worktree_operation_chat_ids.contains(chat_id))
+	if (const std::string_view refusal = uam::cef::UnfinishedDeletionRefusal(action, m_deletionAwaitsRestart); !refusal.empty())
 	{
-		cb->Failure(409, "Chat deletion is in progress.");
+		cb->Failure(409, std::string(refusal));
 		return true;
 	}
-	if ((!is_runtime_stop && !is_cached_history_read && !chat_id.empty() && m_app.worktree_operation_chat_ids.contains(chat_id)) ||
-	    (!m_app.worktree_operation_chat_ids.empty() && (action == "deleteFolder" || action == "deleteFolders" || action == "rescanFolderChats")))
+	if (const std::string_view refusal = uam::cef::PendingOperationRefusal(action, !chat_id.empty() && m_app.worktree_operation_chat_ids.contains(chat_id),
+	        !m_app.worktree_operation_chat_ids.empty(), m_workspaceDeletionPending); !refusal.empty())
 	{
-		cb->Failure(409, "Wait for the chat worktree operation to finish.");
-		return true;
-	}
-
-	// Read-only queries and unrelated runtime cancellation stay available during disk work.
-	if (m_workspaceDeletionPending && !action.starts_with("get") && !action.starts_with("list") &&
-	    action != "selectSession" && !is_runtime_stop)
-	{
-		cb->Failure(409, "Wait for workspace deletion to finish.");
+		cb->Failure(409, std::string(refusal));
 		return true;
 	}
 

@@ -1593,6 +1593,7 @@ namespace uam
 	{
 		if (chat.acp_queue_held || !chat.acp_queued_prompts.empty())
 		{ error = "Finish or resolve queued input before switching branches."; return false; }
+		if (AcpStopExitUnobserved(app, chat.id)) { error = kAcpProcessExitUnobservedMessage; return false; }
 		if (AcpStopInProgress(app, chat.id) || IsWorktreeLaunchPreparationPending(app, chat.id) || app.git_port_requests.contains(chat.id) ||
 		    app.pending_chat_save_at_by_chat_id.contains(chat.id) || app.pending_chat_save_tasks.contains(chat.id))
 		{ error = "Wait for the chat runtime and history save to finish."; return false; }

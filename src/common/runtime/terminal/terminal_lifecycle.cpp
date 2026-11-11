@@ -124,12 +124,14 @@ bool RequestCliTerminalSteer(CliTerminalState& terminal, std::string_view prompt
 	terminal.pending_steer_prompt = std::string(prompt);
 	terminal.pending_steer_started_time_s = GetAppTimeSeconds();
 	terminal.pending_steer_restart_attempted = false;
+	terminal.pending_steer_failed = false;
 	terminal.last_error.clear();
 	if (CliTerminalLifecycleIsIdleLive(terminal)) return TryDeliverPendingCliTerminalSteer(terminal);
 	constexpr char interrupt = '\x03';
 	if (!WriteToCliTerminal(terminal, &interrupt, 1))
 	{
 		terminal.last_error = "Failed to interrupt terminal fallback; steering prompt retained for retry.";
+		terminal.pending_steer_failed = true;
 		if (error_out != nullptr) *error_out = terminal.last_error;
 		return false;
 	}
@@ -143,11 +145,13 @@ bool TryDeliverPendingCliTerminalSteer(CliTerminalState& terminal)
 	if (input.empty() || !WriteToCliTerminal(terminal, input.data(), input.size()))
 	{
 		terminal.last_error = "Failed to deliver terminal steering prompt; prompt retained for retry.";
+		terminal.pending_steer_failed = true;
 		return false;
 	}
 	terminal.pending_steer_prompt.clear();
 	terminal.pending_steer_started_time_s = 0.0;
 	terminal.pending_steer_restart_attempted = false;
+	terminal.pending_steer_failed = false;
 	terminal.last_error.clear();
 	MarkCliTerminalTurnBusy(terminal);
 	return true;
@@ -453,6 +457,17 @@ CliTerminalState* FindCliTerminalForChat(AppState& app, std::string_view chat_id
 	return FindCliTerminalForRoutingKey(app, chat_id, "");
 }
 
+bool CliTerminalBlocksAcpHandoff(const CliTerminalState& terminal)
+{
+	if (terminal.lifecycle_state == CliTerminalLifecycleState::ShuttingDown) return false;
+	// A steer blocks only while it is still being delivered or recovered (bounded by its restart and failure
+	// timeouts). One already reported as failed is retained for retry, not running work: it used to refuse
+	// structured chat for as long as the terminal stayed open.
+	const bool steer_in_flight = !terminal.pending_steer_prompt.empty() && !terminal.pending_steer_failed;
+	return terminal.lifecycle_state == CliTerminalLifecycleState::Busy || terminal.turn_state == CliTerminalTurnState::Busy ||
+	    terminal.generation_in_progress || steer_in_flight;
+}
+
 bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std::string* error_out)
 {
 	if (error_out != nullptr)
@@ -484,14 +499,12 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 		return true;
 	}
 
-	const bool shutting_down = terminal->lifecycle_state == CliTerminalLifecycleState::ShuttingDown;
 	if (terminal->lifecycle_state == CliTerminalLifecycleState::Unknown)
 	{
 		if (error_out != nullptr) *error_out = "Terminal activity is unavailable. Exit the native CLI before starting structured chat.";
 		return false;
 	}
-	const bool has_blocking_work = !shutting_down && (terminal->lifecycle_state == CliTerminalLifecycleState::Busy || terminal->turn_state == CliTerminalTurnState::Busy || terminal->generation_in_progress || !terminal->pending_steer_prompt.empty());
-	if (has_blocking_work)
+	if (CliTerminalBlocksAcpHandoff(*terminal))
 	{
 		if (error_out != nullptr)
 		{
@@ -509,7 +522,10 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 	}
 	StopCliTerminal(*terminal, false, CliTerminalStopMode::FastExit);
 	terminal->should_launch = false;
-	terminal->last_error.clear();
+	// A retained failed steer keeps its error and its spent restart, so polling neither restarts this terminal
+	// under the structured chat nor reports the same failure again.
+	if (terminal->pending_steer_prompt.empty()) terminal->last_error.clear();
+	else terminal->pending_steer_restart_attempted = true;
 	return true;
 }
 
