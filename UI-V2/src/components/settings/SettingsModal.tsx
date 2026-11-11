@@ -940,6 +940,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
   // A failed new host loses its row (before or after the response), so focus returns to the alias that is still filled in.
   const settleFailedInstallFocus = () => {
+    // SSH host setup exists only in SSH builds, so no-SSH bundles drop this fallback entirely.
+    if (!__UAM_FEATURE_SSH__) return
     const hostId = failedInstallHostId.current
     if (!hostId) return
     const host = useAppStore.getState().executionHosts.find((entry) => entry.id === hostId)
