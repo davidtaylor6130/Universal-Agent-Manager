@@ -101,6 +101,13 @@ namespace uam::remote
 			return true;
 		}
 
+		/// Provider processes started by the service must not inherit its sockets: a child holding the
+		/// listener keeps a dead service's socket looking alive, so every later start waits on it forever.
+		bool SetCloseOnExec(int descriptor)
+		{
+			return fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0;
+		}
+
 		bool SetNoSigPipe(int descriptor)
 		{
 #if defined(__APPLE__)
@@ -233,8 +240,10 @@ namespace uam::remote
 				return false;
 			}
 			Socket probe(socket(AF_UNIX, SOCK_STREAM, 0));
-			if (probe.Get() >= 0 && connect(probe.Get(), reinterpret_cast<const sockaddr*>(&address),
-			                                sizeof(address)) == 0)
+			// Non-blocking: a listener nobody accepts on (a full backlog) must fail this start, not hang it.
+			if (probe.Get() >= 0 && fcntl(probe.Get(), F_SETFL, O_NONBLOCK) == 0 &&
+			    (connect(probe.Get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0 ||
+			     errno == EAGAIN || errno == EINPROGRESS))
 			{
 				error = "A runner service is already listening on this socket.";
 				return false;
@@ -320,7 +329,7 @@ namespace uam::remote
 			return 2;
 		}
 		Socket listener(socket(AF_UNIX, SOCK_STREAM, 0));
-		if (listener.Get() < 0 || !SetNoSigPipe(listener.Get()))
+		if (listener.Get() < 0 || !SetCloseOnExec(listener.Get()) || !SetNoSigPipe(listener.Get()))
 		{
 			std::cerr << "Runner service socket could not be created.\n";
 			return 2;
@@ -364,6 +373,7 @@ namespace uam::remote
 				(void)close(descriptor);
 				break;
 			}
+			(void)SetCloseOnExec(descriptor);
 			std::erase_if(clients, [](const ClientThread& client)
 			{
 				return client.done->load(std::memory_order_acquire);

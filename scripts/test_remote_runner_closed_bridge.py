@@ -19,6 +19,22 @@ def listening(path):
         return False
 
 
+def check_sockets_close_on_exec(pid):
+    """Provider processes must not inherit the listener: one that outlives the service keeps its socket looking alive."""
+    sockets = 0
+    for fd in pathlib.Path(f"/proc/{pid}/fd").iterdir():
+        try:
+            if not str(fd.readlink()).startswith("socket:"):
+                continue
+            flags = next(line for line in (pathlib.Path(f"/proc/{pid}/fdinfo") / fd.name).read_text().splitlines()
+                         if line.startswith("flags:"))
+        except OSError:
+            continue
+        sockets += 1
+        assert int(flags.split()[1], 8) & 0o2000000, f"Runner service socket fd {fd.name} is inherited by child processes."
+    assert sockets > 0, "Runner service has no open sockets to check."
+
+
 def verify(runner):
     runner = runner.resolve()
     body = json.dumps({"id": "closed-bridge", "type": "hello"}).encode()
@@ -45,6 +61,7 @@ def verify(runner):
                         break
             time.sleep(0.5)
             assert service.poll() is None, f"Runner service died after closed bridges (exit {service.returncode})."
+            check_sockets_close_on_exec(service.pid)
             assert subprocess.run([str(runner), "stop", "--socket", path], timeout=15).returncode == 0
             service.wait(timeout=15)
         finally:
