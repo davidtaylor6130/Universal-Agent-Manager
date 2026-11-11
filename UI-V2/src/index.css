@@ -2578,12 +2578,21 @@ button:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):focus-visi
   transform: scaleX(var(--progress, 0));
   transition: transform var(--dur-base) var(--ease-out-soft);
 }
+/* The band spans the track and moves by background-position, so it crosses the whole row. A fixed mask fades it out
+   before the track edges: a band moved by transform would be cut hard at the edge while still at full strength. */
 .uam-progress-fill[data-indeterminate]::before {
-  width: 40%;
   transform: none;
   transition: none;
-  background: linear-gradient(90deg, transparent, var(--accent-dim), transparent);
-  animation: uam-progress-sweep 1.4s ease-in-out infinite;
+  /* Eased bell, not a linear triangle: the linear ramp reads as a vertical edge where the band crosses the row. */
+  background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--accent-dim) 12%, transparent) 20%, color-mix(in srgb, var(--accent-dim) 55%, transparent) 36%, var(--accent-dim) 50%, color-mix(in srgb, var(--accent-dim) 55%, transparent) 64%, color-mix(in srgb, var(--accent-dim) 12%, transparent) 80%, transparent 100%) 0 0 / 40% 100% no-repeat;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  animation: uam-progress-band 1.4s ease-in-out infinite;
+}
+@keyframes uam-progress-band {
+  /* The band is 40% of the track, so -66.67% and 166.67% park it fully outside the left and right edges. */
+  from { background-position: -66.67% 0; }
+  to { background-position: 166.67% 0; }
 }
 @keyframes uam-progress-sweep {
   from { transform: translateX(-100%); }
@@ -2610,9 +2619,11 @@ button:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):focus-visi
 .uam-meter:not([role])::before { content: none; }
 .uam-meter[data-indeterminate] { overflow: hidden; }
 .uam-meter[data-indeterminate]::before {
-  content: ''; width: 40%; transform: none; transition: none;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text-3) 45%, transparent), transparent);
-  animation: uam-progress-sweep 1.4s ease-in-out infinite;
+  content: ''; transform: none; transition: none;
+  background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--text-3) 12%, transparent) 20%, color-mix(in srgb, var(--text-3) 25%, transparent) 36%, color-mix(in srgb, var(--text-3) 45%, transparent) 50%, color-mix(in srgb, var(--text-3) 25%, transparent) 64%, color-mix(in srgb, var(--text-3) 12%, transparent) 80%, transparent 100%) 0 0 / 40% 100% no-repeat;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  animation: uam-progress-band 1.4s ease-in-out infinite;
 }
 .uam-meter--lg { height: 10px; }
 .uam-meter__marker {
