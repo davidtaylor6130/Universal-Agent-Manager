@@ -3420,11 +3420,12 @@ UAM_TEST(RemoteHelperCheckScriptRunsAgainstAProcessTableAndFailsClosed)
 	expect(add("/usr/bin/node", "node", plain + marker + "-other" + '\0', "/"), token);
 	expect(add("/usr/bin/node", "node", plain, resolved_workspace + "-sibling"), token);
 	expect(add("/usr/bin/node", "node", plain + marker + '\0', resolved_workspace, "Z (zombie)"), token);
-	// A process that cannot be judged gives no answer: one that hides its details and is not the SSH server's, or one
+	// A process that cannot be judged gives no answer: one that hides its details and is not a known exception, or one
 	// whose environment or folder cannot be read.
 	expect(add("", "ssh-agent", "", ""), "", 3);
 	// systemd's per-user PAM holder hides its details on every systemd login; it must not leave a lost process unconfirmable forever.
 	expect(add("", "(sd-pam)", "", ""), token);
+	expect(add("", "(sd-pam)x", "", ""), "", 3);
 	{
 		const fs::path hidden = add("/usr/bin/node", "node", plain, "/");
 		fs::permissions(hidden / "environ", fs::perms::none);
