@@ -2889,6 +2889,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session.turn_assistant_message_index = -1;
 			session.delivered_prompt_recoveries.clear();
 			session.turn_serial += 1;
+			chat.last_stop_reason.clear(); // A new turn must not inherit the previous turn's stop reason.
 			if (saved_retry)
 			{
 				if (session.saved_image_retry != saved_retry || !SavedImageRetrySourceMatches(app, session, chat, *saved_retry) || session.turn_first_user_message_index != saved_retry->row_index || session.turn_user_message_index != saved_retry->row_index)
