@@ -158,6 +158,7 @@ UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_inde
 UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_index_url, bool start_background_readers)
     : m_app(app), m_trustedUiIndexUrl(std::move(trusted_ui_index_url))
 {
+	uam::attachment_payload::ShuttingDown().store(false); // A handler exists again: copies may run (tests and reloads build more than one).
 	if (start_background_readers)
 	{
 		m_usageHistory = std::make_shared<uam::usage::MultiHostHistory>(m_app.data_root, m_app.settings.execution_hosts);

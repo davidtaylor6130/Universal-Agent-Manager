@@ -2388,6 +2388,17 @@ UAM_TEST(RemovingAnUnsentAttachmentDiscardsOnlyACopyNothingReferences)
 	app.chats.push_back(branch);
 	UAM_ASSERT(IsReferenced(app, copy));
 	UAM_ASSERT(!IsReferenced(app, ".UAM/attachments/chat-1/2-0-other.MOV"));
+
+	// Only a copy staged in this run that no send has named may be discarded, and only once.
+	const std::string staged = ".UAM/attachments/chat-1/3-0-new.MOV";
+	UAM_ASSERT(!ExchangeUnsent(staged, Unsent::TakeForDiscard)); // Never staged here, e.g. a draft restored after a restart.
+	UAM_ASSERT(ExchangeUnsent(".UAM\\attachments\\chat-1\\3-0-new.MOV", Unsent::Stage));
+	UAM_ASSERT(ExchangeUnsent(staged, Unsent::TakeForDiscard));
+	UAM_ASSERT(!ExchangeUnsent(staged, Unsent::TakeForDiscard));
+	// A send that names the copy, even one still preparing or later refused, keeps it for good.
+	UAM_ASSERT(ExchangeUnsent(staged, Unsent::Stage));
+	UAM_ASSERT(ExchangeUnsent(staged, Unsent::Submit));
+	UAM_ASSERT(!ExchangeUnsent(staged, Unsent::TakeForDiscard));
 }
 
 UAM_TEST(LargeAttachmentStreamsFromDiskCompleteWithProgressOrFailsVisibly)

@@ -4,6 +4,8 @@
 #include "common/state/app_state.h"
 
 #include <algorithm>
+#include <mutex>
+#include <set>
 #include <string>
 #include <string_view>
 
@@ -23,6 +25,19 @@ namespace uam::staged_attachment_discard
 		return !chat_id.empty() && portable.size() > root.size() && portable.starts_with(root) &&
 		       portable.find('/', root.size()) == std::string::npos && portable.find('\0') == std::string::npos &&
 		       portable.substr(root.size()) != ".." && portable.substr(root.size()) != ".";
+	}
+
+	/// Copies staged in this run that no send has named yet. Only these may be discarded with their chip: a path
+	/// leaves the set the moment any send request names it (even one later refused or still preparing), and after a
+	/// restart the set is empty, so a doubtful copy is always kept rather than deleted.
+	enum class Unsent { Stage, Submit, TakeForDiscard };
+	inline bool ExchangeUnsent(const std::string& path, const Unsent change)
+	{
+		static std::mutex mutex;
+		static std::set<std::string> unsent;
+		const std::scoped_lock lock(mutex);
+		if (change == Unsent::Stage) return unsent.insert(Portable(path)).second;
+		return unsent.erase(Portable(path)) > 0;
 	}
 
 	/// True when any chat has sent, queued or recorded the copy, so removing an unsent chip must leave it on disk.

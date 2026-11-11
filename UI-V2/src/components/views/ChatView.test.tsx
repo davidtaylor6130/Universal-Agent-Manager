@@ -3941,7 +3941,7 @@ describe('ChatView', () => {
       const oversized = new File(['video'], 'huge.MOV', { type: 'video/quicktime' })
       Object.defineProperty(oversized, 'size', { value: 25 * 1024 * 1024 + 1 })
       await attach(oversized)
-      expect(reportedText()).toContain('huge.MOV is larger than the 25 MB limit for dropped or pasted data.')
+      expect(reportedText()).toContain('huge.MOV is larger than the 25 MB limit.')
       expect(stageChatAttachments).not.toHaveBeenCalled()
       // The failed chips and the draft stay; nothing can be sent until they are removed.
       expect(host.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep my text')

@@ -29,8 +29,6 @@ namespace uam::attachment_payload
 	inline constexpr std::uintmax_t kMaxStreamedBytes = 4ull * 1024ull * 1024ull * 1024ull;
 	using Progress = std::function<void(std::uintmax_t copied, std::uintmax_t total)>;
 
-	/// Attachment ids whose chip the user removed while its copy was still running. A copy checks this between
-	/// chunks, stops, and removes what it wrote. Ids are unique per attachment, so entries are small and never reused.
 	/// Set once when the app is shutting down: every running copy then stops between chunks and removes its
 	/// partial file, so quitting does not wait for a multi-gigabyte copy to finish.
 	inline std::atomic<bool>& ShuttingDown()
@@ -39,6 +37,8 @@ namespace uam::attachment_payload
 		return shutting_down;
 	}
 
+	/// Attachment ids whose chip the user removed while its copy was still running. A copy checks this between
+	/// chunks, stops, and removes what it wrote. Ids are unique per attachment, so entries are small and never reused.
 	inline bool ExchangeCanceled(const std::string& attachment_id, const bool cancel)
 	{
 		static std::mutex mutex;

@@ -458,6 +458,7 @@ namespace
 				std::ranges::replace(attachment.path, '/', '\\');
 			attachment.size_bytes = attachment_size;
 			attachment.copied = true;
+			uam::staged_attachment_discard::ExchangeUnsent(attachment.path, uam::staged_attachment_discard::Unsent::Stage);
 			// A streamed file is never held in memory, so it gets no stored preview.
 			if (!streamed) attachment.preview_key = uam::attachment_preview::Store(data_root, bytes);
 			result.attachments.push_back(AttachmentToJson(attachment));
@@ -488,6 +489,15 @@ void UamQueryHandler::HandleCompactAcpSession(CefRefPtr<CefBrowser> browser, con
 
 void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	// Before any check or wait: a copy a send has named is never discarded with a chip, even while that send is
+	// still preparing or is later refused.
+	if (const nlohmann::json* named = uam::nlohmann_json::FindArrayField(payload, attachment_frontend_fields::kAttachmentsField); named != nullptr)
+	{
+		for (const nlohmann::json& item : *named)
+		{
+			if (item.is_object()) uam::staged_attachment_discard::ExchangeUnsent(uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kPathField}), uam::staged_attachment_discard::Unsent::Submit);
+		}
+	}
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string text = payload.value("text", "");
 	const int missing_chat_status = chat_id.empty() || text.empty() ? 400 : 404;
@@ -1411,6 +1421,7 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 			if (!streamed) attachment.preview_key = uam::attachment_preview::Store(data_root, bytes);
 			attachment.size_bytes = streamed ? streamed_size : bytes.size();
 			attachment.copied = true;
+			uam::staged_attachment_discard::ExchangeUnsent(attachment.path, uam::staged_attachment_discard::Unsent::Stage);
 			staged.push_back(AttachmentToJson(attachment));
 		}
 
@@ -1517,7 +1528,9 @@ void UamQueryHandler::HandleDiscardStagedChatAttachment(CefRefPtr<CefBrowser> br
 	}
 	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
 	const ExecutionHost* execution_host = uam::execution_hosts::Find(m_app.settings.execution_hosts, chat->execution_host_id);
-	if (uam::staged_attachment_discard::IsReferenced(m_app, path) || workspace_root.empty() || execution_host == nullptr)
+	// Taken out of the unsent set here, on the UI thread, so a send that arrives later cannot race the delete below.
+	if (uam::staged_attachment_discard::IsReferenced(m_app, path) || workspace_root.empty() || execution_host == nullptr ||
+	    !uam::staged_attachment_discard::ExchangeUnsent(path, uam::staged_attachment_discard::Unsent::TakeForDiscard))
 	{
 		cb->Success(R"({"removed":false})");
 		return;
