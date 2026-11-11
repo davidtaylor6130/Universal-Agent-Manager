@@ -473,6 +473,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"stageChatAttachments", &UamQueryHandler::HandleStageChatAttachments},
 		{"pickChatAttachmentFiles", &UamQueryHandler::HandlePickChatAttachmentFiles},
 		{"takeDroppedAttachmentPaths", &UamQueryHandler::HandleTakeDroppedAttachmentPaths},
+		{"cancelChatAttachmentStaging", &UamQueryHandler::HandleCancelChatAttachmentStaging},
 		{"sendAcpPrompt", &UamQueryHandler::HandleSendAcpPrompt},
 		{"compactAcpSession", &UamQueryHandler::HandleCompactAcpSession},
 		{"resumeQueuedAcpPrompts", &UamQueryHandler::HandleResumeQueuedAcpPrompts},

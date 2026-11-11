@@ -14,6 +14,8 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <mutex>
+#include <set>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -26,11 +28,21 @@ namespace uam::attachment_payload
 	inline constexpr std::uintmax_t kMaxStreamedBytes = 4ull * 1024ull * 1024ull * 1024ull;
 	using Progress = std::function<void(std::uintmax_t copied, std::uintmax_t total)>;
 
+	/// Attachment ids whose chip the user removed while its copy was still running. A copy checks this between
+	/// chunks, stops, and removes what it wrote. Ids are unique per attachment, so entries are small and never reused.
+	inline bool ExchangeCanceled(const std::string& attachment_id, const bool cancel)
+	{
+		static std::mutex mutex;
+		static std::set<std::string> canceled;
+		const std::scoped_lock lock(mutex);
+		if (cancel) return canceled.insert(attachment_id).second;
+		return canceled.contains(attachment_id);
+	}
+
 	/// True when the item is a controller file too large for the in-memory route, which must be copied from disk instead.
 	/// A file over the streamed limit is refused here with its reason.
 	inline bool IsStreamedSource(const nlohmann::json& item, const std::string& source_path_text, std::filesystem::path& source, std::uintmax_t& size, int& status, std::string& error)
 	{
-		status = 0;
 		if (source_path_text.empty() || uam::nlohmann_json::FindStringField(item, message_attachment_json::frontend::kDataBase64Field) != nullptr)
 			return false;
 		source = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
@@ -49,7 +61,7 @@ namespace uam::attachment_payload
 
 	/// Copies a controller file into the workspace in bounded chunks. Checks free space first, confirms the
 	/// written size, and removes a partial copy on any failure.
-	inline bool CopyStreamed(const std::filesystem::path& source, const std::filesystem::path& target, const std::uintmax_t size, const Progress& progress, std::string& error)
+	inline bool CopyStreamed(const std::filesystem::path& source, const std::filesystem::path& target, const std::uintmax_t size, const Progress& progress, std::string& error, const std::function<bool()>& canceled = {})
 	{
 		const auto fail = [&](std::string message, const std::string_view reason, const std::uintmax_t copied)
 		{
@@ -78,6 +90,11 @@ namespace uam::attachment_payload
 			if (!output)
 				return fail("The attachment could not be written. Check the free space in the workspace and try again.", "write_failed", copied);
 			copied += static_cast<std::uintmax_t>(count);
+			// A source that is still growing must not run past the size the free-space check allowed for.
+			if (copied > size)
+				return fail("The attachment changed while it was being copied, so the copy was removed. Attach it again.", "source_grew", copied);
+			if (canceled && canceled())
+				return fail("The attachment copy was canceled.", "canceled", copied);
 			if (progress) progress(copied, size);
 		}
 		output.close();

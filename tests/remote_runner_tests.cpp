@@ -2408,6 +2408,16 @@ UAM_TEST(LargeAttachmentStreamsFromDiskCompleteWithProgressOrFailsVisibly)
 	UAM_ASSERT(!uam::attachment_payload::CopyStreamed(source, short_target, size + 1, {}, error));
 	UAM_ASSERT(error.find("incompletely") != std::string::npos);
 	UAM_ASSERT(!fs::exists(short_target));
+	// A source larger than the size it was admitted with stops early instead of filling the disk.
+	UAM_ASSERT(!uam::attachment_payload::CopyStreamed(source, short_target, 3 * 1024 * 1024, {}, error));
+	UAM_ASSERT(error.find("changed while") != std::string::npos);
+	UAM_ASSERT(!fs::exists(short_target));
+	// Removing the chip cancels a running copy and leaves nothing behind.
+	UAM_ASSERT(!uam::attachment_payload::ExchangeCanceled("att-removed", false));
+	UAM_ASSERT(uam::attachment_payload::ExchangeCanceled("att-removed", true));
+	UAM_ASSERT(!uam::attachment_payload::CopyStreamed(source, short_target, size, {}, error, [] { return uam::attachment_payload::ExchangeCanceled("att-removed", false); }));
+	UAM_ASSERT(error.find("canceled") != std::string::npos);
+	UAM_ASSERT(!fs::exists(short_target));
 
 	{
 		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, {uam::paths::Utf8PathString(runner), "bridge-direct"});
@@ -2418,6 +2428,12 @@ UAM_TEST(LargeAttachmentStreamsFromDiskCompleteWithProgressOrFailsVisibly)
 		UAM_ASSERT_EQ(fs::file_size(target), size);
 		UAM_ASSERT(same_bytes(target));
 		UAM_ASSERT(progress.size() > 100 && std::ranges::is_sorted(progress) && progress.back() == size);
+		// A cancel between chunks stops the upload, and the helper drops its partial file.
+		std::stop_source cancel;
+		const fs::path canceled_target = temp.root / "host" / "canceled.MOV";
+		UAM_ASSERT(!client.UploadFileFromPath("attachment-canceled", canceled_target, source, [&cancel](const std::uintmax_t sent, std::uintmax_t) { if (sent > 1024 * 1024) cancel.request_stop(); }, &error, cancel.get_token()));
+		UAM_ASSERT(!fs::exists(canceled_target));
+		UAM_ASSERT(!fs::exists(temp.root / "host" / ".uam-upload-attachment-canceled.tmp"));
 		// A refused upload names its cause and publishes nothing.
 		error.clear();
 		UAM_ASSERT(!client.UploadFileFromPath("attachment-missing", temp.root / "host" / "missing.MOV", temp.root / "absent.MOV", {}, &error));

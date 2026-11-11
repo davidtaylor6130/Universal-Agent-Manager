@@ -1144,12 +1144,11 @@ namespace uam::remote
 		if (file.bad() || hashed != size) return fail("The file changed or could not be read while preparing the upload.");
 		file.clear();
 		file.seekg(0);
+		// Also after a cancel, so the helper drops the partial temporary file; bounded by the request deadline.
 		const auto abort = [&]
 		{
-			if (stop_token.stop_requested()) return;
 			nlohmann::json ignored;
-			if (!m_connected) (void)Connect(nullptr, stop_token);
-			if (m_connected) (void)Request({{"type", "file.abort"}, {"uploadId", upload_id}}, ignored, nullptr, interrupt);
+			if (m_connected) (void)Request({{"type", "file.abort"}, {"uploadId", upload_id}}, ignored, nullptr);
 		};
 		nlohmann::json response;
 		if (!Request({{"type", "file.begin"}, {"uploadId", upload_id}, {"path", uam::paths::Utf8PathString(remote_path)},

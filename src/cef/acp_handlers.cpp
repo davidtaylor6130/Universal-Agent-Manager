@@ -382,7 +382,7 @@ namespace
 				if (!uam::execution_hosts::IsAbsoluteRemotePath(host.platform, path))
 				{ result.status = 400; result.error = "Choose an absolute directory on this SSH host."; break; }
 				uam::remote::DirectoryListing listing;
-				if (!client.ListDirectories(uam::paths::PathFromUtf8(path), listing, &result.error)) break;
+				if (!client.ListDirectories(uam::paths::PathFromUtf8(path), listing, &result.error)) { result.status = 500; break; }
 				MessageAttachment attachment;
 				attachment.id = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kIdField});
 				if (attachment.id.empty()) attachment.id = AttachmentId();
@@ -426,10 +426,23 @@ namespace
 			std::string error;
 			const std::string upload_id = "attachment-" + std::to_string(index) + "-" + uam::time::SystemEpochMicrosecondsTokenNow();
 			const std::uintmax_t attachment_size = streamed ? streamed_size : bytes.size();
+			// Removing the chip cancels the copy between chunks; the helper then drops its partial file.
+			std::stop_source cancel;
 			const bool uploaded = streamed
 			    ? client.UploadFileFromPath(upload_id, target, streamed_source,
-			          [&progress, &attachment](const std::uintmax_t sent, const std::uintmax_t total) { if (progress) progress(attachment.id, sent, total); }, &error)
+			          [&progress, &attachment, &cancel](const std::uintmax_t sent, const std::uintmax_t total)
+			          {
+				          if (uam::attachment_payload::ExchangeCanceled(attachment.id, false)) cancel.request_stop();
+				          if (progress) progress(attachment.id, sent, total);
+			          }, &error, cancel.get_token())
 			    : client.UploadFile(upload_id, target, bytes, &error);
+			if (uploaded && uam::attachment_payload::ExchangeCanceled(attachment.id, false))
+			{
+				(void)client.RemoveFile("canceled-" + std::to_string(index), target);
+				result.status = 409;
+				result.error = "The attachment copy was canceled.";
+				break;
+			}
 			if (!uploaded)
 			{
 				// Helper error text can carry host paths; the log keeps the size and outcome only.
@@ -1255,6 +1268,9 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 			response = uam::query_handler_async::AsyncFailure(409, "Chat workspace or execution host changed while attachments were staging.");
 		}
 	};
+	// A copy can run for minutes, so it gets a slow-query thread rather than the shared file lane that VCS status,
+	// memory and saved-history reads use. A missing runner falls back to that lane.
+	const CefRefPtr<CefTaskRunner> staging_runner = SlowQueryRunner("attachment:" + chat_id);
 	// Progress for files copied from disk in chunks, at most five updates a second per request plus the last one.
 	const AttachmentProgress progress = [browser, chat_id, last = std::make_shared<std::chrono::steady_clock::time_point>()](const std::string& attachment_id, const std::uintmax_t copied, const std::uintmax_t total)
 	{
@@ -1273,7 +1289,7 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 			return;
 		}
 		auto result = std::make_shared<RemoteAttachmentResult>();
-		uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime,
+		uam::query_handler_async::RunAsyncCefQuery(staging_runner, m_asyncLifetime,
 		    cb,
 		    [items = *items, host = *execution_host, chat_id,
 		     workspace = uam::paths::Utf8PathString(workspace_root), data_root = m_app.data_root, result, progress]()
@@ -1287,7 +1303,7 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 		return;
 	}
 
-	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	uam::query_handler_async::RunAsyncCefQuery(staging_runner, m_asyncLifetime, cb,
 	    [items = *items, workspace_root, chat_id, data_root = m_app.data_root, progress]()
 	    {
 		std::error_code ec;
@@ -1378,7 +1394,8 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 			if (streamed)
 			{
 				if (!uam::attachment_payload::CopyStreamed(streamed_source, target, streamed_size,
-				        [&progress, &attachment](const std::uintmax_t copied, const std::uintmax_t total) { if (progress) progress(attachment.id, copied, total); }, load_error))
+				        [&progress, &attachment](const std::uintmax_t copied, const std::uintmax_t total) { if (progress) progress(attachment.id, copied, total); }, load_error,
+				        [&attachment] { return uam::attachment_payload::ExchangeCanceled(attachment.id, false); }))
 				{
 					return fail(500, load_error);
 				}
@@ -1422,7 +1439,7 @@ namespace
 	class AttachmentFileDialogCallback final : public CefRunFileDialogCallback
 	{
 	  public:
-		explicit AttachmentFileDialogCallback(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback) : m_callback(std::move(callback)) {}
+		AttachmentFileDialogCallback(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback) : m_lifetime(std::move(lifetime)), m_callback(std::move(callback)) {}
 		void OnFileDialogDismissed(const std::vector<CefString>& file_paths) override
 		{
 			std::vector<std::string> paths;
@@ -1430,10 +1447,12 @@ namespace
 			{
 				paths.push_back(path.ToString());
 			}
-			m_callback->Success(nlohmann::json{{"files", AttachmentFileEntries(paths)}}.dump());
+			// Sizes are read off the UI thread: a picked file can sit on a slow or dead network share.
+			uam::query_handler_async::RunAsyncCefQuery(m_lifetime, m_callback, [paths]() { return uam::query_handler_async::AsyncSuccess({{"files", AttachmentFileEntries(paths)}}); });
 		}
 
 	  private:
+		std::weak_ptr<void> m_lifetime;
 		CefRefPtr<CefMessageRouterBrowserSide::Callback> m_callback;
 		IMPLEMENT_REFCOUNTING(AttachmentFileDialogCallback);
 	};
@@ -1449,7 +1468,7 @@ void UamQueryHandler::HandlePickChatAttachmentFiles(CefRefPtr<CefBrowser> browse
 		cb->Failure(403, "Files can be picked only from the desktop app.");
 		return;
 	}
-	browser->GetHost()->RunFileDialog(FILE_DIALOG_OPEN_MULTIPLE, "Attach files", CefString(), {}, new AttachmentFileDialogCallback(cb));
+	browser->GetHost()->RunFileDialog(FILE_DIALOG_OPEN_MULTIPLE, "Attach files", CefString(), {}, new AttachmentFileDialogCallback(m_asyncLifetime, cb));
 }
 
 void UamQueryHandler::HandleTakeDroppedAttachmentPaths(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -1461,7 +1480,21 @@ void UamQueryHandler::HandleTakeDroppedAttachmentPaths(CefRefPtr<CefBrowser> bro
 		cb->Failure(403, "Dropped files are available only in the desktop app.");
 		return;
 	}
-	cb->Success(nlohmann::json{{"files", AttachmentFileEntries(uam::cef::ExchangeDroppedAttachmentPaths())}}.dump());
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [paths = uam::cef::ExchangeDroppedAttachmentPaths()]() { return uam::query_handler_async::AsyncSuccess({{"files", AttachmentFileEntries(paths)}}); });
+}
+
+// The composer calls this when a chip is removed while its file is still being copied.
+void UamQueryHandler::HandleCancelChatAttachmentStaging(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	(void)browser;
+	const std::string attachment_id = payload.value("attachmentId", "");
+	if (attachment_id.empty() || attachment_id.size() > 1024)
+	{
+		cb->Failure(400, "An attachment id is required.");
+		return;
+	}
+	uam::attachment_payload::ExchangeCanceled(attachment_id, true);
+	cb->Success("{}");
 }
 
 void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

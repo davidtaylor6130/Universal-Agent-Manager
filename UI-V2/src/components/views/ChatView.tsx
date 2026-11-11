@@ -1073,6 +1073,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const showScrollToBottomRef = useRef(false)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const attachmentDialogOpenRef = useRef(false)
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
   const workspaceMenuRef = useRef<HTMLDivElement>(null)
@@ -1586,6 +1587,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       )
     } catch (err) {
       if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
+      // Every chip of this request was removed while copying: the copy was canceled on purpose, so nothing to report.
+      if (pending.every((attachment) => removedAttachmentIdsRef.current.has(attachment.id))) return
       const message = err instanceof Error ? err.message : 'Failed to stage attachments.'
       setAttachmentError(message)
       const failedIds = new Set(pending.map((attachment) => attachment.id))
@@ -1673,10 +1676,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
 
   const pickAttachmentFiles = () => {
     if (!isCefContext() || isCompanionContext()) { fileInputRef.current?.click(); return }
+    if (attachmentDialogOpenRef.current) return
+    attachmentDialogOpenRef.current = true
     void sendToCEF({ action: 'pickChatAttachmentFiles', payload: {} }).then((response) => {
+      attachmentDialogOpenRef.current = false
       if (!response.ok) { fileInputRef.current?.click(); return }
       void stageFiles([], nativeFileEntries(response.data))
-    }, () => fileInputRef.current?.click())
+    }, () => { attachmentDialogOpenRef.current = false; fileInputRef.current?.click() })
   }
 
   const onComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -4236,6 +4242,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                     error={attachment.status === 'failed'}
                     onRemove={() => {
                       removedAttachmentIdsRef.current.add(attachment.id)
+                      // A copy still running stops between chunks and removes what it wrote.
+                      if (attachment.status === 'staging' && isCefContext()) void sendToCEF({ action: 'cancelChatAttachmentStaging', payload: { attachmentId: attachment.id } }).catch(() => undefined)
                       setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id))
                     }}
                     removeLabel={`Remove ${attachment.name} attachment`}
