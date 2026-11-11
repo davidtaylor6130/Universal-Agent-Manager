@@ -2585,9 +2585,11 @@ void UamQueryHandler::HandleRenameSession(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	if (!ChatHistorySyncService().RenameChat(m_app, *chat, title))
+	// The status line names the chat file's path, which never belongs in a user notice.
+	std::string refusal;
+	if (!ChatHistorySyncService().RenameChat(m_app, *chat, title, &refusal))
 	{
-		cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Failed to rename chat: " + chat_id));
+		cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(refusal, "The chat could not be saved. Try again."));
 		return;
 	}
 
@@ -2688,7 +2690,7 @@ void UamQueryHandler::HandleMoveChatWorkspace(CefRefPtr<CefBrowser> browser, con
 	const ExecutionHost observed_host = *host;
 	const std::string original_workspace = chat->workspace_directory;
 	const std::string destination = folder->directory;
-	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(observed_host.id), m_asyncLifetime, cb,
 	    [observed_host, destination]()
 	    {
 		    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,

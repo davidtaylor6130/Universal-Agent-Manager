@@ -1053,6 +1053,14 @@ uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessio
 	return AsyncSuccess(nlohmann::json{{"chatId", target_chat_id}});
 }
 
+/// A user notice never forwards transport or status-line text: live model refusals keep only their fixed wording.
+static std::string LiveModelRefusal(const std::string& error)
+{
+	if (error.starts_with("Cannot change structured runtime model while ")) return error;
+	if (error == "ACP session is not ready.") return "The provider is still starting. Try again when it is ready.";
+	return "The running provider did not accept the model change. Try again.";
+}
+
 void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = uam::nlohmann_json::TrimmedStringValueOr(payload, "chatId", "");
@@ -1087,11 +1095,12 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		const std::string previous_updated_at = chat->updated_at;
 		chat->reviewer_model_id = model_id;
 		chat->updated_at = uam::time::TimestampNow();
-		if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat reviewer model updated.", "Chat reviewer model changed in UI, but failed to save."))
+		std::string refusal;
+		if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat reviewer model updated.", "Chat reviewer model changed in UI, but failed to save.", &refusal))
 		{
 			chat->reviewer_model_id = previous_model_id;
 			chat->updated_at = previous_updated_at;
-			cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat reviewer model."));
+			cb->Failure(500, refusal);
 			return;
 		}
 		uam::PushStateUpdateIfChanged(browser, m_app);
@@ -1183,7 +1192,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 			std::string acp_error;
 			if (!uam::SetAcpSessionModel(m_app, chat->id, model_id, &acp_error))
 			{
-				cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP model."));
+				cb->Failure(409, LiveModelRefusal(acp_error));
 				return;
 			}
 		}
@@ -1199,13 +1208,13 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	}
 	if (launch_model_restart && !StopLaunchOptionTerminal(m_app, chat->id))
 	{
-		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The native terminal is stopping; retry shortly."));
+		cb->Failure(409, "The native terminal is stopping; retry shortly.");
 		return;
 	}
 	if (!defer_live_update && session != nullptr && session->running && (model_id.empty() || copilot_effort_changed || launch_model_restart) && !uam::StopAcpSession(m_app, chat->id))
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The runtime is stopping; retry shortly."));
+		cb->Failure(409, "The runtime is stopping; retry shortly.");
 		return;
 	}
 
@@ -1220,14 +1229,15 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	chat->service_tier_explicit = service_tier_explicit;
 	chat->updated_at = uam::time::TimestampNow();
 
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model updated.", "Chat model changed in UI, but failed to save."))
+	std::string save_refusal;
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model updated.", "Chat model changed in UI, but failed to save.", &save_refusal))
 	{
 		chat->model_id = previous_model_id;
 		chat->reasoning_effort = previous_reasoning_effort;
 		chat->service_tier = previous_service_tier;
 		chat->service_tier_explicit = previous_service_tier_explicit;
 		chat->updated_at = previous_updated_at;
-		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat model."));
+		cb->Failure(500, save_refusal);
 		return;
 	}
 
@@ -1243,7 +1253,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 			chat->service_tier_explicit = previous_service_tier_explicit;
 			chat->updated_at = previous_updated_at;
 			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model reverted.", "Chat model changed in UI, but failed to revert.");
-			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP model."));
+			cb->Failure(409, LiveModelRefusal(acp_error));
 			return;
 		}
 	}
@@ -1367,14 +1377,14 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	}
 	if (launch_only_options && !StopLaunchOptionTerminal(m_app, chat->id))
 	{
-		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The native terminal is stopping; retry shortly."));
+		cb->Failure(409, "The native terminal is stopping; retry shortly.");
 		return;
 	}
 	const bool needs_effort_restart = is_copilot || is_claude || is_antigravity || launch_only_options;
 	if (needs_effort_restart && session != nullptr && session->running && !uam::StopAcpSession(m_app, chat->id))
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The runtime is stopping; retry shortly."));
+		cb->Failure(409, "The runtime is stopping; retry shortly.");
 		return;
 	}
 
@@ -1387,13 +1397,14 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	chat->service_tier_explicit = service_tier_explicit;
 	chat->updated_at = uam::time::TimestampNow();
 
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model options updated.", "Chat model options changed in UI, but failed to save."))
+	std::string save_refusal;
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model options updated.", "Chat model options changed in UI, but failed to save.", &save_refusal))
 	{
 		chat->reasoning_effort = previous_reasoning_effort;
 		chat->service_tier = previous_service_tier;
 		chat->service_tier_explicit = previous_service_tier_explicit;
 		chat->updated_at = previous_updated_at;
-		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist Codex chat options."));
+		cb->Failure(500, save_refusal);
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
@@ -1538,11 +1549,12 @@ void UamQueryHandler::HandleSetChatUamAgent(CefRefPtr<CefBrowser> browser, const
 	const std::string previous_updated_at = chat->updated_at;
 	chat->uam_agent_id = agent_id;
 	chat->updated_at = uam::time::TimestampNow();
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "UAM agent updated.", "UAM agent changed in UI, but failed to save."))
+	std::string save_refusal;
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "UAM agent updated.", "UAM agent changed in UI, but failed to save.", &save_refusal))
 	{
 		chat->uam_agent_id = previous_agent_id;
 		chat->updated_at = previous_updated_at;
-		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist the UAM agent."));
+		cb->Failure(500, save_refusal);
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
@@ -2394,11 +2406,12 @@ void UamQueryHandler::HandleSetChatSmallModelMode(CefRefPtr<CefBrowser> browser,
 	const std::string previous_updated_at = chat->updated_at;
 	chat->small_model_mode = *enabled;
 	chat->updated_at = uam::time::TimestampNow();
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Small-model workflow updated.", "Small-model workflow changed in UI, but failed to save."))
+	std::string save_refusal;
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Small-model workflow updated.", "Small-model workflow changed in UI, but failed to save.", &save_refusal))
 	{
 		chat->small_model_mode = previous;
 		chat->updated_at = previous_updated_at;
-		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist small-model workflow."));
+		cb->Failure(500, save_refusal);
 		return;
 	}
 

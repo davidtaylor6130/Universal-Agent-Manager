@@ -120,6 +120,27 @@ const initialProviders: Provider[] = [
 
 let sessionCounter = 10
 
+function codexOptionsTitle(options: { reasoningEffort?: string; serviceTier?: string }) {
+  if (options.reasoningEffort !== undefined && options.serviceTier !== undefined) return 'Reasoning and speed were not changed'
+  return options.reasoningEffort !== undefined ? 'Reasoning was not changed' : 'Speed was not changed'
+}
+
+/**
+ * A refused chat control: one message names the control, then the backend's reason, or a generic next step when it
+ * sent none. The toast shows only the message (its detail is never displayed), so the reason belongs in it.
+ * A caller that already names the change takes the raw reason for its own notice.
+ */
+function reportRefusal(title: string, reason: string | undefined, onFailure?: (reason: string) => void) {
+  // The bridge's own failures carry raw exception text; that stays in the console, never in a notice.
+  const shown = reason && !reason.startsWith('Bridge request failed:') && !reason.startsWith('Invalid bridge payload:') ? reason : ''
+  if (onFailure) onFailure(shown)
+  else reportAppFailure(`${title}. ${shown || 'Try again.'}`, '')
+}
+
+type AcceptedModel = Pick<Session, 'modelId' | 'reasoningEffort' | 'serviceTier' | 'serviceTierExplicit' | 'updatedAt'>
+/** Per chat, the model state the backend last accepted while model changes are in flight; a refusal rolls back to it. */
+const acceptedModelByChatId = new Map<string, AcceptedModel>()
+
 function makeId(prefix: string, counter: number) {
   return `${prefix}-${counter}`
 }
@@ -1640,6 +1661,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               } : s)),
             }))
             pendingRequestIdsByKey.delete(requestKey)
+            reportRefusal('The chat was not renamed', resp.error)
           }
         )
         return
@@ -1820,7 +1842,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    setSessionModel: async (id: string, modelId: string): Promise<boolean> => {
+    setSessionModel: async (id: string, modelId: string, onFailure?: (reason: string) => void): Promise<boolean> => {
       const requestedModelId = modelId.trim()
       if (!isAllowedAcpModelId(requestedModelId)) {
         return false
@@ -1869,6 +1891,15 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const requestKey = `setSessionModel:${id}`
         const requestId = createRequestId('setSessionModel')
         rememberPendingRequest(requestKey, requestId)
+        if (!acceptedModelByChatId.has(id)) {
+          acceptedModelByChatId.set(id, {
+            modelId: previousSession.modelId,
+            reasoningEffort: previousSession.reasoningEffort,
+            serviceTier: previousSession.serviceTier,
+            serviceTierExplicit: previousSession.serviceTierExplicit,
+            updatedAt: previousSession.updatedAt,
+          })
+        }
         pendingModelByChatId.set(id, {
           requestId,
           modelId: requestedModelId,
@@ -1898,23 +1929,36 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               pendingModelByChatId.delete(id)
             }
             clearPendingRequest(requestKey, response.requestId)
+            acceptedModelByChatId.delete(id)
+          } else if (acceptedModelByChatId.has(id)) {
+            // A superseded change the backend accepted is the state a later refusal returns to.
+            acceptedModelByChatId.set(id, {
+              modelId: typeof response.data?.modelId === 'string' ? response.data.modelId : requestedModelId,
+              reasoningEffort: typeof response.data?.reasoningEffort === 'string' ? response.data.reasoningEffort : requestedReasoningEffort,
+              serviceTier: typeof response.data?.serviceTier === 'string' ? response.data.serviceTier : requestedServiceTier,
+              serviceTierExplicit: typeof response.data?.serviceTierExplicit === 'boolean' ? response.data.serviceTierExplicit : requestedServiceTierExplicit,
+              updatedAt: optimisticUpdatedAt,
+            })
           }
           return true
         }
 
         if (isLatestPendingRequest(requestKey, response.requestId)) {
+          const accepted = acceptedModelByChatId.get(id) ?? previousSession
+          acceptedModelByChatId.delete(id)
           set((state) => ({
             sessions: state.sessions.map((s) => s.id === id ? {
               ...s,
-              modelId: previousSession.modelId,
-              reasoningEffort: previousSession.reasoningEffort,
-              serviceTier: previousSession.serviceTier,
-              serviceTierExplicit: previousSession.serviceTierExplicit,
-              updatedAt: s.updatedAt === optimisticUpdatedAt ? previousSession.updatedAt : s.updatedAt,
+              modelId: accepted.modelId,
+              reasoningEffort: accepted.reasoningEffort,
+              serviceTier: accepted.serviceTier,
+              serviceTierExplicit: accepted.serviceTierExplicit,
+              updatedAt: s.updatedAt === optimisticUpdatedAt ? accepted.updatedAt : s.updatedAt,
             } : s),
           }))
           pendingRequestIdsByKey.delete(requestKey)
           if (pendingModelByChatId.get(id)?.requestId === response.requestId) pendingModelByChatId.delete(id)
+          reportRefusal('The model was not changed', response.error, onFailure)
         }
 
         return false
@@ -1942,18 +1986,22 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       })
       if (!isLatestPendingRequest(requestKey, response.requestId)) return response.ok
       clearPendingRequest(requestKey, response.requestId)
+      if (!response.ok) reportRefusal('The reviewer model was not changed', response.error)
       if (!response.ok || typeof response.data?.reviewerModelId !== 'string') return false
       set((state) => ({ sessions: state.sessions.map((session) => session.id === id ? { ...session, reviewerModelId: response.data!.reviewerModelId } : session) }))
       return true
     },
 
-    setSessionCodexOptions: async (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }): Promise<boolean> => {
+    setSessionCodexOptions: async (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }, onFailure?: (reason: string) => void): Promise<boolean> => {
       const previousSession = get().sessions.find((s) => s.id === id)
 	  if (!previousSession) {
         return false
       }
 	  const acp = get().acpBindingBySessionId[id]
-	  if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') return false
+	  if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') {
+	    reportRefusal(codexOptionsTitle(options), 'Reasoning and speed can change once the current turn finishes.', onFailure)
+	    return false
+	  }
 	  const providerId = previousSession.providerId ?? DEFAULT_PROVIDER_ID
 	  const codexProvider = providerId === CODEX_CLI_PROVIDER_ID
 	  const copilotProvider = providerId === COPILOT_CLI_PROVIDER_ID
@@ -2007,7 +2055,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           return true
         }
 
-        if (isLatestPendingRequest(requestKey, response.requestId)) pendingRequestIdsByKey.delete(requestKey)
+        if (isLatestPendingRequest(requestKey, response.requestId)) {
+          pendingRequestIdsByKey.delete(requestKey)
+          reportRefusal(codexOptionsTitle(options), response.error, onFailure)
+        }
         return false
       }
 
@@ -2111,7 +2162,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 		clearPendingRequest(requestKey, response.requestId)
 		return true
 	  }
-	  if (isLatestPendingRequest(requestKey, response.requestId)) pendingRequestIdsByKey.delete(requestKey)
+	  if (isLatestPendingRequest(requestKey, response.requestId)) {
+		pendingRequestIdsByKey.delete(requestKey)
+		reportRefusal('The UAM agent was not changed', response.error)
+	  }
 	  return false
     },
 
@@ -2322,10 +2376,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return Boolean(previousSession)
       }
 
+      const optimisticUpdatedAt = new Date()
       const applyMode = () => {
         set((state) => ({
           sessions: state.sessions.map((s) =>
-            s.id === id ? { ...s, smallModelMode: enabled, updatedAt: new Date() } : s
+            s.id === id ? { ...s, smallModelMode: enabled, updatedAt: optimisticUpdatedAt } : s
           ),
         }))
       }
@@ -2345,10 +2400,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           return true
         }
         if (isLatestPendingRequest(requestKey, response.requestId)) {
+          // Only this control's field rolls back; newer state from pushes or other controls stays.
           set((state) => ({
-            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+            sessions: state.sessions.map((s) => (s.id === id ? {
+              ...s,
+              smallModelMode: previousSession.smallModelMode,
+              updatedAt: s.updatedAt === optimisticUpdatedAt ? previousSession.updatedAt : s.updatedAt,
+            } : s)),
           }))
           pendingRequestIdsByKey.delete(requestKey)
+          reportRefusal('Small-model mode was not changed', response.error)
         }
         return false
       }
@@ -3258,6 +3319,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           action: 'cancelAcpTurn',
           payload: { chatId: sessionId },
         })
+        if (!response.ok) reportRefusal('The turn was not cancelled', response.error)
         return response.ok
       }
 
@@ -3428,6 +3490,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           action: 'stopAcpSession',
           payload: purpose === 'timeout' ? { chatId: sessionId, purpose } : { chatId: sessionId },
         })
+        if (!response.ok) reportRefusal('The runtime was not stopped', response.error)
         return response.ok
       }
 

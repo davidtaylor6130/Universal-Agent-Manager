@@ -258,7 +258,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setSessionPinned: (id: string, pinned: boolean, options?: { quiet?: boolean }) => Promise<boolean>
   /** `onFailure` receives the native refusal reason, such as held queued input, when the bridge rejects the change. `allowUncertainDelivery` is the user's choice after the may-run-twice warning. */
   setSessionProvider: (id: string, providerId: string, onFailure?: (reason: string) => void, allowUncertainDelivery?: boolean) => Promise<boolean>
-  setSessionModel: (id: string, modelId: string) => Promise<boolean>
+  /** Without `onFailure`, a refusal is reported through the shared app failure notice. */
+  setSessionModel: (id: string, modelId: string, onFailure?: (reason: string) => void) => Promise<boolean>
   setSessionReviewerModel: (id: string, modelId: string) => Promise<boolean>
   setSessionApprovalMode: (id: string, modeId: string) => Promise<boolean>
   setSessionUamAgent: (id: string, agentId: string) => Promise<boolean>
@@ -278,7 +279,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   reconcileMemorySettingsProjection: (projection: Partial<AppState>, suppliedNativeSettings?: Partial<CppSettings>) => Partial<AppState>
   setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'goalTokenBudget' | 'acpSetupInactivityTimeoutSeconds' | 'activeTurnInactivityTimeoutSeconds' | 'streamLoopRepeatLimit' | 'acpTurnOutputLimitMiB' | 'memoryWorkerBindings' | 'permissionReviewerProviderId' | 'permissionReviewerModelId'>>) => Promise<boolean>
   setUpdateSettings: (settings: Partial<Pick<AppState, 'automaticProviderUpdates' | 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
-  setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }) => Promise<boolean>
+  /** Without `onFailure`, a refusal is reported through the shared app failure notice. */
+  setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }, onFailure?: (reason: string) => void) => Promise<boolean>
   setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }, scopeExecutionHostId?: string) => Promise<boolean>
   setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication' | 'windowsPowerShell'>>) => Promise<boolean>
   setCentralProviderConfiguration: (configuration: CentralProviderConfiguration) => Promise<{ ok: boolean; error?: string }>

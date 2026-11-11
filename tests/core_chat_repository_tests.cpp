@@ -1047,9 +1047,36 @@ UAM_TEST(QueueJournalBoundsAndBaseRevisionMismatchNeverAcknowledgeLostInput)
 	UAM_ASSERT(uam::io::WriteTextFile(primary, changed));
 	const std::optional<ChatSession> held = ChatRepository::LoadLocalChat(temp.root, chat.id);
 	UAM_ASSERT(held.has_value());
-	UAM_ASSERT(held->acp_queue_storage_error);
+	// The journal extends this primary's own queue revision and only the file witness changed (a restore,
+	// a sync tool, a touched file). The input is neither lost nor a permanent block: it stays held for the
+	// user, and the chat can be saved and sent to again.
+	UAM_ASSERT(!held->acp_queue_storage_error);
 	UAM_ASSERT(held->acp_queue_held);
 	UAM_ASSERT_EQ(held->acp_queued_prompts.front().text, chat.acp_queued_prompts.front().text);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, *held));
+	const std::optional<ChatSession> rebound = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(rebound && !rebound->acp_queue_storage_error && rebound->acp_queue_held);
+	UAM_ASSERT_EQ(rebound->acp_queued_prompts.front().text, chat.acp_queued_prompts.front().text);
+}
+
+UAM_TEST(QueueJournalForAnotherQueueRevisionStaysHeldWithStorageError)
+{
+	TempDir temp("uam-queue-journal-other-revision");
+	ChatSession chat = QueueJournalFixture(temp.root);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path primary = AppPaths::UamChatFilePath(temp.root, chat.id);
+	const std::string older_primary = ReadFile(primary);
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.acp_queued_prompts.front().text = "Edited";
+	++chat.acp_queued_prompts.front().revision;
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	// An older primary (a backup fallback or restore) carries a queue revision this journal was not written
+	// against. Which queue is newer is not provable, so nothing is repaired automatically.
+	UAM_ASSERT(uam::io::WriteTextFile(primary, older_primary));
+	const std::optional<ChatSession> held = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(held && held->acp_queue_storage_error && held->acp_queue_held);
+	UAM_ASSERT_EQ(held->acp_queued_prompts.front().text, std::string("Edited"));
 	UAM_ASSERT(!ChatRepository::SaveChat(temp.root, *held));
 }
 

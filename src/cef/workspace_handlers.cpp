@@ -120,7 +120,7 @@ void UamQueryHandler::HandleOpenWorkspaceTerminal(CefRefPtr<CefBrowser> browser,
 		}
 		const ExecutionHost observed = *host;
 		const std::string chat_id = chat->id;
-		uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+		uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(observed.id), m_asyncLifetime, cb,
 		    [observed]()
 		    {
 			    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,

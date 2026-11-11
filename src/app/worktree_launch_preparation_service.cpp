@@ -540,9 +540,7 @@ namespace uam
 			if (task->worker.valid()) return {WorktreeLaunchPreparationState::Pending, {}, task->cancellation};
 			if (task->remote_host)
 			{
-				std::weak_ptr<void>& activity = app.remote_vcs_operation_leases_by_host_id[chat.execution_host_id];
-				task->remote_host_lease = activity.lock();
-				if (!task->remote_host_lease) { task->remote_host_lease = std::make_shared<int>(0); activity = task->remote_host_lease; }
+				task->remote_host_lease = app.remote_vcs_operation_leases_by_host_id[chat.execution_host_id].Hold();
 			}
 			const std::shared_ptr<WorkspaceLeaseGate::Lease> lease = app.worktree_retention_gate.TryAcquireMutation();
 			if (!lease) return {WorktreeLaunchPreparationState::Pending, {}, {}};
@@ -841,9 +839,7 @@ namespace uam
 		if (remote_host)
 		{
 			task->remote_host = *remote_host;
-			std::weak_ptr<void>& activity = app.remote_vcs_operation_leases_by_host_id[chat.execution_host_id];
-			task->remote_host_lease = activity.lock();
-			if (!task->remote_host_lease) { task->remote_host_lease = std::make_shared<int>(0); activity = task->remote_host_lease; }
+			task->remote_host_lease = app.remote_vcs_operation_leases_by_host_id[chat.execution_host_id].Hold();
 		}
 		task->lease = lease;
 		task->receipt_file = task->data_root / ".worktree-launch" / (hashing::Hex64(hashing::Fnv1a64(chat.id)) + "-" + time::SteadyEpochNanosecondsTokenNow() + ".json");
