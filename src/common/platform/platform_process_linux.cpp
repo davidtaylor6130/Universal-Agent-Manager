@@ -174,6 +174,7 @@ namespace uam::platform_linux_impl
 				if (child == 0)
 				{
 					(void)setpgid(0, 0);
+					(void)std::signal(SIGPIPE, SIG_DFL); // The runner service ignores SIGPIPE; an ignored signal would survive exec.
 					if ((!working_directory.empty() && chdir(working_directory.c_str()) != 0) ||
 					    dup2(input[0], STDIN_FILENO) < 0 ||
 					    dup2(output[1], STDOUT_FILENO) < 0 ||

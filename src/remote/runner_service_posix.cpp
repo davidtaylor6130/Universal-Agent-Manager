@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cerrno>
+#include <csignal>
 #include <chrono>
 #include <atomic>
 #include <cstring>
@@ -298,6 +299,10 @@ namespace uam::remote
 	int RunRunnerService(const std::filesystem::path& socket_path,
 	                     std::string_view runner_version)
 	{
+#if !defined(__APPLE__)
+		// Linux has no SO_NOSIGPIPE: a reply to a bridge that already closed raised SIGPIPE, silently killing the helper and every process it owned.
+		(void)std::signal(SIGPIPE, SIG_IGN);
+#endif
 		std::string error;
 		sockaddr_un address{};
 		if (!SocketAddress(socket_path, address, error))
