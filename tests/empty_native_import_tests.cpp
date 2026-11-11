@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "app/startup_native_import_service.h"
+#include "common/runtime/cli_version_parser.h"
 
 using namespace uam_test;
 
@@ -22,7 +23,9 @@ std::optional<int> RunEmptyNativeImportFixture(int argc, char** argv)
 			cursor = 0;
 			const auto arguments = request.at("argv").get<std::vector<std::string>>();
 			rpc_process = std::ranges::find(arguments, "app-server") != arguments.end();
-			if (!rpc_process) output = (std::ranges::find(arguments, "export") != arguments.end() ? data.at("openCodeExport") : data.at("openCodeList")).dump();
+			if (data.contains("startLog")) { std::ofstream log(data.at("startLog").get<std::string>(), std::ios::app); log << nlohmann::json(arguments).dump() << '\n'; }
+			if (std::ranges::find(arguments, "--version") != arguments.end()) output = data.value("openCodeVersion", std::string("1.19.4")) + "\n";
+			else if (!rpc_process) output = (std::ranges::find(arguments, "export") != arguments.end() ? data.at("openCodeExport") : data.at("openCodeList")).dump();
 		}
 		if (type == "process.write")
 		{
@@ -107,7 +110,8 @@ namespace
 		RemoteEmptyImportFixture()
 		{
 			ExecutionHost host;
-			host.id = "private-runner"; host.ssh_alias = host.id; host.platform = "linux"; host.transport = "ssh";
+			// A per-fixture alias keeps the per-run OpenCode version cache from carrying one test's version into the next.
+			host.id = "private-runner"; host.ssh_alias = "private-runner-" + temp.root.filename().string(); host.platform = "linux"; host.transport = "ssh";
 			host.runner_status = "ready"; host.runner_version = "test"; host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
 			app.settings.execution_hosts.push_back(host);
 			app.folders.front().execution_host_id = host.id;
@@ -195,6 +199,51 @@ UAM_TEST(RemoteDiscoveryVerifiesEmptyHistoriesBeforeRecommendation)
 #endif
 }
 
+UAM_TEST(RemoteOpenCodeDiscoveryUsesTheHostsProbedVersion)
+{
+#if !defined(_WIN32) && UAM_ENABLE_RUNTIME_OPENCODE_CLI && UAM_ENABLE_RUNTIME_CODEX_CLI
+	RemoteEmptyImportFixture fixture;
+	const fs::path log = fixture.temp.root / "starts.jsonl";
+	fixture.data["startLog"] = log.string();
+	fixture.data["openCodeVersion"] = "2.1.4";
+	const std::string directory = fixture.app.folders.front().directory;
+	fixture.data["openCodeList"] = nlohmann::json::array({{{"id", "ses_v2"}, {"location", {{"directory", directory}}}}});
+	fixture.data["openCodeExport"] = {{"info", {{"id", "ses_v2"}, {"location", {{"directory", directory}}}}}, {"messages", nlohmann::json::array({{{"id", "msg_user"}, {"type", "user"}, {"text", "Private question"}}})}};
+	fixture.Write();
+	const auto profile = ProviderProfileStore::DefaultOpenCodeProfile();
+	const auto found = ChatHistorySyncService().DiscoverRemoteProviderChatsForFolder(fixture.app.folders.front(), fixture.app.settings.execution_hosts.front(), &profile);
+	UAM_ASSERT(found.result.success);
+	const auto chat = std::ranges::find(found.chats, std::string("ses_v2"), &ChatSession::native_session_id);
+	UAM_ASSERT(chat != found.chats.end());
+	UAM_ASSERT_EQ(chat->title, std::string("Session ses_v2"));
+	UAM_ASSERT(chat->opencode_v2_session_id == std::optional<std::string>{"ses_v2"});
+	const std::string starts = uam::io::ReadTextFile(log);
+	UAM_ASSERT(starts.find("--pure") == std::string::npos);
+	UAM_ASSERT(starts.find("\"--standalone\"") != std::string::npos);
+	UAM_ASSERT(starts.find("\"--version\"") != std::string::npos);
+	// The probed version is reused by a later read of the same host folder.
+	const auto again = ChatHistorySyncService().DiscoverRemoteProviderChatsForFolder(fixture.app.folders.front(), fixture.app.settings.execution_hosts.front(), &profile);
+	UAM_ASSERT(again.result.success);
+	const std::string repeated = uam::io::ReadTextFile(log);
+	std::size_t probes = 0;
+	for (std::size_t at = repeated.find("\"--version\""); at != std::string::npos; at = repeated.find("\"--version\"", at + 1)) ++probes;
+	UAM_ASSERT_EQ(probes, std::size_t{1});
+#endif
+}
+
+UAM_TEST(CliReportedVersionReadsOnlyTheCliOwnLastLine)
+{
+	using uam::cli_versions::ExtractCliReportedVersion;
+	UAM_ASSERT(ExtractCliReportedVersion("bun 1.1.38\n2.1.4\n") == std::optional<std::string>{"2.1.4"});
+	UAM_ASSERT(ExtractCliReportedVersion("node 20.11.0\r\nopencode v1.19.4 (Homebrew)\r\n\r\n  \n") == std::optional<std::string>{"1.19.4"});
+	UAM_ASSERT(ExtractCliReportedVersion("\x1b[1;32m2.1.4\x1b[0m\r\n") == std::optional<std::string>{"2.1.4"});
+	UAM_ASSERT(!ExtractCliReportedVersion("opencode 2.1.4 (bun 1.1.38)\n"));
+	UAM_ASSERT(!ExtractCliReportedVersion("2.1.4\nerror: unexpected failure\n"));
+	UAM_ASSERT(!ExtractCliReportedVersion("garbage 1.2\n"));
+	UAM_ASSERT(!ExtractCliReportedVersion("\n \r\n"));
+	UAM_ASSERT(!ExtractCliReportedVersion(""));
+}
+
 UAM_TEST(RemoteCodexImportLoadsHistoryAndSkipsEmptyWithoutTombstone)
 {
 #if !defined(_WIN32) && UAM_ENABLE_RUNTIME_CODEX_CLI
@@ -228,6 +277,24 @@ UAM_TEST(OpenCodeKnownEmptyMessagesDoNotMakeConversationEligible)
 	}
 	const auto unknown = ChatHistorySyncService::ParseRemoteOpenCodeTranscript(R"({"info":{"id":"ses_empty","directory":"/private"},"messages":[{"info":{"role":"future-role"},"parts":[]}]})");
 	UAM_ASSERT(!unknown.verified_empty);
+}
+
+UAM_TEST(RemoteOpenCodeSessionListAcceptsUntitledAndV2Entries)
+{
+	const std::string v1 = R"([{"id":"ses_v1","directory":"/srv/w","created":1,"updated":2},{"id":"ses_named","title":"Named","directory":"/srv/w","created":3,"updated":4}])";
+	const auto untitled = ChatHistorySyncService::ParseRemoteOpenCodeSessionList(v1, false);
+	UAM_ASSERT(untitled.error.empty());
+	UAM_ASSERT_EQ(untitled.sessions.size(), std::size_t{2});
+	UAM_ASSERT(untitled.sessions.front().title.empty());
+	UAM_ASSERT(!untitled.sessions.front().open_code_v2);
+	const auto v2 = ChatHistorySyncService::ParseRemoteOpenCodeSessionList(R"([{"id":"ses_v2","location":{"directory":"/srv/w"}}])", true);
+	UAM_ASSERT(v2.error.empty());
+	UAM_ASSERT_EQ(v2.sessions.size(), std::size_t{1});
+	UAM_ASSERT_EQ(v2.sessions.front().directory, std::string("/srv/w"));
+	UAM_ASSERT(v2.sessions.front().open_code_v2);
+	UAM_ASSERT_EQ(v2.sessions.front().created_epoch_ms, std::int64_t{0});
+	UAM_ASSERT(!ChatHistorySyncService::ParseRemoteOpenCodeSessionList(R"([{"title":"No id"}])", false).error.empty());
+	UAM_ASSERT(!ChatHistorySyncService::ParseRemoteOpenCodeSessionList(R"([{"id":"ses_v2","location":{}}])", true).error.empty());
 }
 
 UAM_TEST(LocalOpenCodeDiscoverySkipsEmptyMarkersAndAllowsLaterContent)

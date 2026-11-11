@@ -2041,7 +2041,7 @@ UAM_TEST(GitWorktreeDefaultLaunchPersistsRetriesAndLeavesExistingWorkspacesAlone
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));
 	} while (std::chrono::steady_clock::now() < deadline);
 	UAM_ASSERT(failed_session != nullptr && failed_session->queue_held);
-	UAM_ASSERT_EQ(failed_session->last_error, std::string("Source workspace is not an available directory."));
+	UAM_ASSERT_EQ(failed_session->last_error, std::string("Source workspace is not an available directory. Restore the folder, then retry."));
 	UAM_ASSERT(!failed_session->running && !failed_session->processing && !failed_session->reconnect_pending);
 	UAM_ASSERT(app.chats.front().messages.empty());
 	UAM_ASSERT_EQ(failed_session->queued_user_prompts.size(), std::size_t{1});

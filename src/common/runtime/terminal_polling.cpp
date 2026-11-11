@@ -746,12 +746,14 @@ bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app, bool
 					else
 					{
 						terminal->last_error = "Terminal steering restart failed; prompt retained for retry.";
+						terminal->pending_steer_failed = true;
 					}
 					changed = true;
 				}
 				else if (recovery == CliTerminalSteerRecoveryAction::ReportTimeout)
 				{
 					terminal->last_error = "Terminal steering timed out after restart; prompt retained for retry.";
+					terminal->pending_steer_failed = true;
 					uam::LogCliDiagnosticEvent(app, "poll_all_cli_terminals", "steer_timeout", terminal.get());
 					changed = true;
 				}

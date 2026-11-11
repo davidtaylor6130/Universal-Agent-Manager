@@ -2095,6 +2095,13 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		}
 		return creation->process_started(app, session, chat, created, creation->error, error_out);
 	}
+	// A stop settled at its exit deadline leaves a process that may still be alive: never prepare or start a second
+	// one beside it. Checked before any launch preparation, which is itself asynchronous.
+	if (AcpStopExitUnobserved(app, chat.id))
+	{
+		if (error_out != nullptr) *error_out = kAcpProcessExitUnobservedMessage;
+		return false;
+	}
 	if (session.cold_retry_binding || (cold_binding && (cold_binding->app != &app || cold_binding->runtime != &session ||
 	    cold_binding->sequence->State() != cold_retry::Sequence::Phase::Prepared || !cold_binding->OwnerCurrent())))
 	{
@@ -2173,13 +2180,47 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	if (session.pending_prompt_delivery && session.pending_prompt_delivery->remote_host)
 	{
 		const std::shared_ptr<PendingAcpPromptDelivery> packet = session.pending_prompt_delivery;
-		if (!OwnsPromptAdmission(app, session, chat, *packet) || packet->admission == DurableAdmissionState::Failed)
+		if (session.running)
 		{
+			if (!OwnsPromptAdmission(app, session, chat, *packet) || packet->admission == DurableAdmissionState::Failed)
+			{
+				RestorePendingPromptDelivery(session, chat);
+				ScheduleChatSave(app, chat, 0.0);
+			}
+			if (error_out != nullptr) *error_out = "Remote prompt is waiting for its owned durable receipt.";
+			return false;
+		}
+		// Only the running process a packet was staged for releases it, and transport happens after that release.
+		// Its process is gone, so the packet was never written and no receipt can still deliver it. Holding every
+		// relaunch behind that receipt would wait forever.
+		const bool same_turn = packet->turn_serial == session.turn_serial && packet->prompt == session.queued_prompt;
+		const bool budget_spent = session.reconnect_first_failure_turn_serial == session.turn_serial &&
+		    GetAppTimeSeconds() - session.reconnect_first_failure_time_s >= kUntransportedPromptReconnectBudgetSeconds;
+		if (same_turn && !budget_spent)
+		{
+			// Back to how it was before staging (queued for its turn, rows pending): the relaunched process stages it
+			// again under a new delivery id. The old marker is withdrawn with the packet, so the old id is never written.
+			RestorePendingPromptDelivery(session, chat);
+			session.pending_remote_delivery_input_ids.clear();
+			AppendAcpDiagnostic(session, "persistence", "staged_prompt_requeued", "", "", false, 0,
+			    "The remote connection closed before this prompt was written; it will be staged again.");
+			ScheduleChatSave(app, chat, 0.0);
+		}
+		else if (same_turn)
+		{
+			// The connection has been closing for the whole budget: return the prompt to the user as unsent.
+			AppendAcpDiagnostic(session, "persistence", "staged_prompt_returned_unsent", "", "", false, 0,
+			    "The remote connection closed before this prompt was sent. Send it again.");
+			ReturnUnwrittenRemotePromptAsUnsent(app, session, chat, "The remote connection closed before this prompt was sent. Send it again.");
+			if (error_out != nullptr) *error_out = session.last_error;
+			return false;
+		}
+		else
+		{
+			// A packet from an earlier turn has nothing waiting on it; this launch continues.
 			RestorePendingPromptDelivery(session, chat);
 			ScheduleChatSave(app, chat, 0.0);
 		}
-		if (error_out != nullptr) *error_out = "Remote prompt is waiting for its owned durable receipt.";
-		return false;
 	}
 
 	if (session.local_stop_pending)
@@ -2234,7 +2275,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	{
 		bool stopping = !chat.side_cleanup_stop_finished->load();
 		for (const AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
-			if (task.finished == chat.side_cleanup_stop_finished && task.observe_exit && !task.result->exit_confirmed) stopping = true;
+			if (task.finished == chat.side_cleanup_stop_finished && task.observe_exit && (!task.finished->load() || !task.result->exit_confirmed)) stopping = true;
 		if (stopping)
 		{
 			if (error_out != nullptr) *error_out = "The previous side-chat process is still stopping.";
@@ -3608,6 +3649,7 @@ void RestorePendingPromptDelivery(AcpSessionState& session, ChatSession& chat)
 		chat.remote_prompt_delivery_session_id.clear();
 		chat.remote_prompt_delivery_id.clear();
 		chat.remote_prompt_delivery_payload.clear();
+		chat.remote_prompt_delivery_input_ids.clear();
 		if (packet->remote_prepared_head && std::ranges::none_of(chat.acp_queued_prompts, [&packet](const AcpQueuedUserPromptState& prompt)
 		    { return prompt.id == packet->remote_prepared_head->id && prompt.text == packet->remote_prepared_head->text; }))
 		{
@@ -3777,6 +3819,8 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 		chat.remote_turn_user_message_index = session.turn_user_message_index;
 		chat.remote_active_turn_id = ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpTurnIdentity(session);
 		chat.remote_turn_reconnect_pending = true;
+		// "Recovery blocked" asks for a review of the lost turn; sending the next one is that review.
+		chat.remote_recovery_state.clear();
 		chat.remote_restart_pending = false;
 		session.restart_after_remote_stop_cleanup = false;
 		if (session.remote_runner_protocol_version >= 3)
@@ -3792,6 +3836,8 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 			for (const std::size_t index : unsent_messages)
 				if (index < chat.messages.size() && chat.messages[index].native_input_id)
 					session.pending_remote_delivery_input_ids.push_back(*chat.messages[index].native_input_id);
+			// Saved with the marker: the receipt may arrive after a reconnect or restart has dropped the runtime's copy.
+			chat.remote_prompt_delivery_input_ids = session.pending_remote_delivery_input_ids;
 		}
 		if (session.cold_retry_binding || CanDeferRemotePromptAdmission(app, session, chat) || CanStageRemoteGoalPromptAdmission(app, session, chat))
 		{
@@ -3815,6 +3861,7 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 			chat.remote_prompt_delivery_session_id.clear();
 			chat.remote_prompt_delivery_id.clear();
 			chat.remote_prompt_delivery_payload.clear();
+			chat.remote_prompt_delivery_input_ids.clear();
 			session.pending_remote_delivery_input_ids.clear();
 			session.pending_request_methods.erase(id);
 			session.prompt_request_id = 0;
@@ -4632,6 +4679,9 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		{
 			unsent_messages.push_back(static_cast<std::size_t>(index));
 			user_message.acp_prompt_not_sent = false;
+			// Every row this build dispatches is stamped: from here on only a write fact, a receipt or the provider's
+			// own completion can clear its marker, never the looser rule kept for older history.
+			user_message.input_delivery_tracked = true;
 		}
 	}
 	if (session.defer_prompt_save && chat.execution_host_id == execution_hosts::kLocalHostId)
@@ -4851,10 +4901,11 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat, AcpChatSavePurpose 
 		if (active)
 			active->queued_rollback_save_pending = false;
 		app.pending_chat_save_at_by_chat_id.erase(chat.id);
+		NoteChatSaveSucceeded(app, chat.id);
 	}
 	else if (persisted != nullptr)
 	{
-		ScheduleChatSave(app, *persisted, 1.0);
+		ScheduleChatSave(app, *persisted, NoteChatSaveFailed(app, chat.id));
 	}
 	ResolvePendingChatSaveResults(app, chat.id, saved);
 	return saved;
@@ -4875,14 +4926,30 @@ bool ClearSavedAcpResumeId(AppState& app, AcpSessionState& session, ChatSession&
 	return false;
 }
 
-void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds)
+void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds, bool append_only)
 {
 	NoteChatSaveScheduled(app, chat);
 	// Streaming may retain a scoped admission; queue, owner changes and force barriers revoke it.
-	InvalidatePendingChatSave(app, chat.id, true);
-	const double now = GetAppTimeSeconds();
-	const double due_at = now + delay_seconds;
-	app.pending_chat_save_at_by_chat_id[chat.id] = due_at;
+	InvalidatePendingChatSave(app, chat.id, true, append_only);
+	app.pending_chat_save_at_by_chat_id[chat.id] = ArmChatSave(app, chat.id, delay_seconds, append_only);
+}
+
+void SaveChatSoon(AppState& app, const ChatSession& chat)
+{
+	// A tool status or plan row gates nothing, so it must not hold the UI thread for a whole-transcript
+	// write. Every state the synchronous save settles, stamps or refuses keeps the synchronous path.
+	const ChatSession* live = ChatDomainService().FindChatById(app, chat.id);
+	const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+	const bool local = live != nullptr && (live->execution_host_id.empty() || live->execution_host_id == uam::execution_hosts::kLocalHostId);
+	if (!local || session == nullptr || !session->processing || session->lifecycle_state == kAcpLifecycleError ||
+	    session->managed_parent_continuation || session->queued_rollback_save_pending || !live->messages_loaded || live->imported_read_only ||
+	    AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, *live) ||
+	    std::ranges::any_of(app.model_discovery_chats, [&chat](const ChatSession& discovery) { return discovery.id == chat.id; }))
+	{
+		(void)SaveChatQuietly(app, chat);
+		return;
+	}
+	ScheduleChatSave(app, *live, 0.0, true);
 }
 
 bool BindPendingProviderHandoff(AcpSessionState& session, ChatSession& chat)
@@ -5231,6 +5298,40 @@ void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
 	}
 
 	session.lifecycle_state = kAcpLifecycleError;
+}
+
+void ReturnUnwrittenRemotePromptAsUnsent(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& message)
+{
+	const std::string prompt = session.queued_prompt;
+	session.reconnect_pending = false;
+	session.reconnect_not_before_time_s = 0.0;
+	session.goal_resume_suppressed = true;
+	// A staged packet withdraws its marker and marks its rows; a prompt that was never staged has only its turn's rows.
+	RestorePendingPromptDelivery(session, chat);
+	chat.remote_turn_reconnect_pending = false;
+	bool authored_rows = false;
+	for (int index = session.turn_first_user_message_index >= 0 ? session.turn_first_user_message_index : session.turn_user_message_index;
+	     index >= 0 && index <= session.turn_user_message_index && index < static_cast<int>(chat.messages.size()); ++index)
+	{
+		Message& row = chat.messages[static_cast<std::size_t>(index)];
+		if (row.role != MessageRole::User || row.acp_prompt_discarded) continue; // A removed row stays removed.
+		row.acp_prompt_not_sent = row.interrupted = true;
+		authored_rows = true;
+	}
+	// Ends the turn, as a process exit does.
+	FailAcpTurnOrSession(session, &chat, message);
+	// FailAcpTurnOrSession has already retired the prepared head when nothing else was owed, rows or not, so a prompt
+	// with no row of its own (a goal turn) keeps no copy; its goal is blocked with the error instead. This covers a
+	// head it left because consumed request records remain: beside unsent rows it could be resumed as a second send.
+	if (authored_rows && chat.acp_dispatched_queued_prompt_count == 1 && !chat.acp_queued_prompts.empty() &&
+	    chat.acp_queued_prompts.front().prepared_for_delivery && chat.acp_queued_prompts.front().text == prompt)
+	{
+		chat.acp_queued_prompts.erase(chat.acp_queued_prompts.begin());
+		chat.acp_dispatched_queued_prompt_count = 0;
+	}
+	// Input queued behind it was not asked to be dropped: it stays held for Resume or Remove.
+	session.queue_held = chat.acp_queue_held = !session.queued_user_prompts.empty() || !chat.acp_queued_prompts.empty();
+	ScheduleChatSave(app, chat, 0.0);
 }
 
 void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat, bool ordinary_save_queued)

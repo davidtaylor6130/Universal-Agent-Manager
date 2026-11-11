@@ -11,6 +11,7 @@
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
 #include "app/provider_model_catalog_service.h"
+#include "app/provider_mcp_settings_service.h"
 #include "common/config/execution_host_config.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
@@ -79,7 +80,8 @@ namespace uam
 			std::string id, root_id, parent_id, transcript_id, provider_id, model_id, definition_hash, created_at;
 			std::string agent_id, execution_capability, resumed_from_id, result_delivery_id, workspace_access, definition_snapshot;
 			std::shared_ptr<const std::uint8_t> transcript_incarnation;
-			std::string host_id; // Execution host is birth scope; native identity/model/worktree publication is late-bound.
+			// The child's own recorded host, which need not be the caller's. Empty while automatic routing has not yet assigned one.
+			std::string host_id;
 		};
 		enum class Phase { Waiting, AuditPending, ResponsePending, Published, Retired };
 		Phase phase = Phase::Waiting;
@@ -91,7 +93,7 @@ namespace uam
 		std::string session_id, native_session_id, process_id, process_host_id, remote_delivery_token, native_turn_id;
 		int turn_serial = 0;
 		ExecutionHost host;
-		std::string root_workspace, root_worktree, workspace, worktree;
+		std::string root_workspace, root_worktree, workspace, worktree, root_host_id;
 		std::string root_provider_id, root_model_id, root_native_id, chat_provider_id, chat_model_id, origin_agent_run_id;
 		std::vector<RunIdentity> ancestry;
 		Clock::time_point semantic_deadline, publication_deadline, retry_at;
@@ -103,6 +105,7 @@ namespace uam
 		std::future<UamWaitResponsePublication> response_future;
 		UamWaitResponsePublication response_result;
 		bool response_observed = false;
+		bool scope_lost = false; // The caller is still current but the child changed: the sealed reply is an explicit error.
 	};
 
 	namespace
@@ -117,6 +120,9 @@ namespace uam
 		constexpr std::size_t kMaxSeenRequests = 256;
 		constexpr std::size_t kMaxAuditRecords = 64;
 		constexpr std::size_t kMaxProcessedPerTick = 16;
+		// How long a listed but unreadable request is re-polled before rejection (Windows delete-pending or a
+		// briefly locked file). Wall clock, because the poll delay ranges 16 ms to 1 s; well inside the proxy's 10 s.
+		constexpr auto kUnreadableRequestGrace = std::chrono::seconds(2);
 		constexpr std::size_t kMaxActiveWaits = 16;
 		constexpr std::size_t kMaxChatCreatesPerTurn = 2;
 		constexpr std::size_t kMaxChatCreatesPerCaller = 8;
@@ -402,6 +408,13 @@ namespace uam
 			           uam::approval_modes::kPlanApprovalMode &&
 			       uam::command_safety::ParseTier(chat.command_safety_tier) ==
 			           uam::command_safety::Tier::Yolo;
+		}
+
+		bool OutstandingRequest(const UamControlCapability& capability, std::string_view request_id)
+		{
+			return (capability.pending_agent_wait && capability.pending_agent_wait->request_id == request_id) ||
+			       (capability.pending_approval && capability.pending_approval->request_id == request_id) ||
+			       capability.render_check_request_id == request_id;
 		}
 
 		UamControlCapability* FindCapability(AppState& app, std::string_view id)
@@ -1315,13 +1328,14 @@ namespace uam
 			if (!proof || !proof->original_birth || proof->data_root != app.data_root ||
 			    proof->run != ManagedTerminalRetirementWitness::RunIdentity::Capture(run) ||
 			    chat->agent_run_id != run.id || chat->provider_id != run.provider_id || chat->provider_id != proof->provider_id ||
-			    chat->execution_host_id != host_id || chat->execution_host_id != proof->host_id ||
+			    (!host_id.empty() && chat->execution_host_id != host_id) || chat->execution_host_id != proof->host_id ||
 			    chat->workspace_directory != proof->workspace || chat->workspace_worktree_directory != proof->worktree ||
 			    chat->native_session_id != proof->native_session_id || chat->created_at != proof->created_at) return {};
 			return {&*chat, proof->original_birth};
 		}
 
-		bool WaitCurrent(const AppState& app, const UamControlCapability& capability, const UamAgentWait& wait)
+		/// `caller_only` checks the waiting turn and its reply route without the child run, to answer a lost child explicitly.
+		bool WaitCurrent(const AppState& app, const UamControlCapability& capability, const UamAgentWait& wait, bool caller_only = false)
 		{
 			if (!wait.publish_lease->load(std::memory_order_acquire) || app.data_root.native() != wait.data_root.native() ||
 			    UamAgentWait::Clock::now() >= wait.publication_deadline || capability.id != wait.capability_id ||
@@ -1342,7 +1356,7 @@ namespace uam
 			    chat->provider_id != wait.chat_provider_id || chat->model_id != wait.chat_model_id || capability.agent_run_id != wait.origin_agent_run_id ||
 			    root->metadata_incarnation != wait.root_incarnation || chat->metadata_incarnation != wait.chat_incarnation ||
 			    root->workspace_directory != wait.root_workspace || root->workspace_worktree_directory != wait.root_worktree ||
-			    root->execution_host_id != wait.host.id || chat->execution_host_id != wait.host.id ||
+			    root->execution_host_id != wait.root_host_id || chat->execution_host_id != wait.host.id ||
 			    chat->workspace_directory != wait.workspace || chat->workspace_worktree_directory != wait.worktree ||
 			    chat->native_session_id != wait.native_session_id || session != wait.original_session || !session ||
 			    session->permission_review_incarnation != wait.launch_incarnation || !session->running || !session->processing ||
@@ -1359,6 +1373,7 @@ namespace uam
 			})) return false;
 			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, wait.host.id);
 			if (!host || !execution_hosts::SameConnection(*host, wait.host)) return false;
+			if (caller_only || wait.scope_lost) return true;
 			const AgentRun* selected = FindRun(app, wait.run_id);
 			if (!selected || !IsWaitOwnedDescendant(app, capability, *selected)) return false;
 			for (const auto& identity : wait.ancestry)
@@ -1373,7 +1388,7 @@ namespace uam
 				    run->resumed_from_run_id != identity.resumed_from_id || run->result_delivery_id != identity.result_delivery_id ||
 				    run->effective_workspace_access != identity.workspace_access || run->definition_snapshot != identity.definition_snapshot ||
 				    view.birth != identity.transcript_incarnation || transcript->agent_run_id != identity.id ||
-				    transcript->execution_host_id != identity.host_id || transcript->provider_id != identity.provider_id) return false;
+				    (!identity.host_id.empty() && transcript->execution_host_id != identity.host_id) || transcript->provider_id != identity.provider_id) return false;
 			}
 			return true;
 		}
@@ -1449,6 +1464,7 @@ namespace uam
 			wait->turn_serial = session->turn_serial; wait->host = *host;
 			wait->workspace = chat->workspace_directory; wait->worktree = chat->workspace_worktree_directory;
 			wait->root_workspace = root->workspace_directory; wait->root_worktree = root->workspace_worktree_directory;
+			wait->root_host_id = root->execution_host_id; // A nested caller may itself run away from its root.
 			wait->root_provider_id = root->provider_id; wait->root_model_id = root->model_id; wait->root_native_id = root->native_session_id;
 			wait->chat_provider_id = chat->provider_id; wait->chat_model_id = chat->model_id; wait->origin_agent_run_id = capability.agent_run_id;
 			const auto now = UamAgentWait::Clock::now();
@@ -1461,14 +1477,17 @@ namespace uam
 					return {.error = "Agent ancestry is invalid or outside its bounded depth."};
 				if (ancestor->root_chat_id != root->id || (!ancestor->parent_run_id.empty() && !FindRun(app, ancestor->parent_run_id)))
 					return {.error = "The owned descendant ancestry is incomplete or foreign."};
-				const auto view = WaitTranscript(app, *ancestor, root->id, host->id);
+				// A child runs on its own recorded host: automatic routing may place it away from the waiting parent.
+				const auto view = WaitTranscript(app, *ancestor, root->id, {});
 				const ChatSession* transcript = view.chat;
-				if (!transcript || transcript->execution_host_id != host->id) return {.error = "The owned child transcript or execution host is unavailable."};
+				if (!transcript) return {.error = "The owned child transcript is unavailable."};
+				const bool host_unassigned = ancestor->status == "queued" && transcript->routing_mode == "automatic" &&
+				    transcript->routing_assigned_connection_identity.empty();
 				wait->ancestry.push_back({ancestor->id, ancestor->root_chat_id, ancestor->parent_run_id, ancestor->transcript_chat_id,
 				    ancestor->provider_id, ancestor->model_id, ancestor->definition_hash, ancestor->created_at,
 				    ancestor->agent_id, ancestor->execution_capability, ancestor->resumed_from_run_id, ancestor->result_delivery_id,
 				    ancestor->effective_workspace_access, ancestor->definition_snapshot,
-				    view.birth, transcript->execution_host_id});
+				    view.birth, host_unassigned ? std::string{} : transcript->execution_host_id});
 			}
 			if (!WaitCurrent(app, capability, *wait)) return {.error = "The original turn or descendant scope is no longer current."};
 			capability.pending_agent_wait = wait;
@@ -1489,7 +1508,22 @@ namespace uam
 			{
 				const auto wait = capability.pending_agent_wait;
 				if (!wait) continue;
-				if (!WaitCurrent(app, capability, *wait)) { RetireAgentWait(app, capability); continue; }
+				if (!WaitCurrent(app, capability, *wait))
+				{
+					// Only a read whose own turn is still current can be answered; the caller must not be left to time out.
+					if (wait->phase != UamAgentWait::Phase::Waiting || !WaitCurrent(app, capability, *wait, true))
+					{ RetireAgentWait(app, capability); continue; }
+					if (actions == kMaxWaitActionsPerTick) continue;
+					wait->scope_lost = true;
+					wait->sealed_response = nlohmann::json{{"ok", false}, {"error", "The waited child run changed or is no longer available. Inspect it with agent_status before delegating the work again."}}.dump();
+					wait->audit = {AuditText(wait->request_id), "agent_wait", "rejected", "The owned descendant changed during the wait.",
+					    AuditText(capability.provider_id), AuditText(capability.agent_id), AuditText(capability.agent_run_id), time::TimestampNow()};
+					ChatSession* root = ChatDomainService().FindChatById(app, capability.chat_id);
+					root->uam_control_audit.push_back(wait->audit);
+					if (root->uam_control_audit.size() > kMaxAuditRecords) root->uam_control_audit.erase(root->uam_control_audit.begin());
+					wait->phase = UamAgentWait::Phase::AuditPending;
+					++actions;
+				}
 				if (actions == kMaxWaitActionsPerTick) continue;
 				if (wait->phase == UamAgentWait::Phase::Waiting)
 				{
@@ -1737,6 +1771,7 @@ namespace uam
 			{
 				if (app.html_view_render_checker)
 				{
+					if (UamControlCapability* owner = FindCapability(app, capability_snapshot.id)) owner->render_check_request_id = request_id;
 					app.html_view_render_checker->Start(capability_snapshot.id, arguments.at("html").get<std::string>(),
 					    [directory = capability_snapshot.directory, request_id, tool_result = std::move(result.result)](html_view::RenderCheckResult check) mutable
 					    {
@@ -1890,14 +1925,18 @@ namespace uam
 				{
 					if (*size == 0 || *size > kMaxResponseBytes || uam::paths::IsLinkOrReparsePointNoThrow(response_path)) return std::nullopt;
 					std::string text;
-					if (!uam::io::TryReadTextFile(response_path, text) || text.size() != *size) return std::nullopt;
-					uam::paths::RemoveFileNoThrow(response_path);
-					const nlohmann::json response = nlohmann::json::parse(text, nullptr, false);
-					if (!response.is_object() || !response.contains("ok") || !response["ok"].is_boolean()) return std::nullopt;
-					if (response["ok"].get<bool>() ? !response.contains("result") :
-					    (response.contains("error") && !response["error"].is_string())) return std::nullopt;
-					if (aborted()) return std::nullopt;
-					return response;
+					// Replies are published atomically; a reply that cannot be opened yet (Windows: another
+					// handle without read sharing) is polled again within this call's budget, not failed.
+					if (uam::io::TryReadTextFile(response_path, text) && text.size() == *size)
+					{
+						uam::paths::RemoveFileNoThrow(response_path);
+						const nlohmann::json response = nlohmann::json::parse(text, nullptr, false);
+						if (!response.is_object() || !response.contains("ok") || !response["ok"].is_boolean()) return std::nullopt;
+						if (response["ok"].get<bool>() ? !response.contains("result") :
+						    (response.contains("error") && !response["error"].is_string())) return std::nullopt;
+						if (aborted()) return std::nullopt;
+						return response;
+					}
 				}
 				if (!uam::paths::IsDirectoryNoThrow(capability)) return std::nullopt;
 				const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
@@ -2473,10 +2512,11 @@ namespace uam
 	    const std::function<bool(io::AtomicWriteStage)>& response_write_hook)
 	{
 		bool changed = false;
-		std::size_t processed = 0;
 		const int64_t now = uam::time::SystemEpochMillisecondsNow();
-		for (std::size_t capability_index = 0;
-		     capability_index < app.uam_control_capabilities.size() && processed < kMaxProcessedPerTick;)
+		const auto steady_now = std::chrono::steady_clock::now();
+		// ponytail: per-capability budget, so one agent's bad files never delay another's requests; total work
+		// per tick is capabilities x kMaxProcessedPerTick, bounded by live provider sessions.
+		for (std::size_t capability_index = 0; capability_index < app.uam_control_capabilities.size();)
 		{
 			UamControlCapability& capability = app.uam_control_capabilities[capability_index];
 			if (!HasAuthority(app, capability, now))
@@ -2533,29 +2573,60 @@ namespace uam
 				continue;
 			}
 			std::ranges::sort(files);
+			std::erase_if(capability.unreadable_request_since, [&](const auto& entry)
+			{ return std::ranges::none_of(files, [&](const auto& file) { return uam::paths::Utf8PathString(file.stem()) == entry.first; }); });
 			const std::string capability_id = capability.id;
 			const std::filesystem::path capability_directory = capability.directory;
+			std::size_t processed = 0;
 			for (const auto& file : files)
 			{
 				if (processed == kMaxProcessedPerTick) break;
-				++processed;
 				const std::string request_id = uam::paths::Utf8PathString(file.stem());
+				const bool safe_id = SafeRequestId(request_id);
+				UamControlCapability* owner = FindCapability(app, capability_id);
+				// An answered or still-waiting ID owns its reply. A leftover file for it (removal failed, still
+				// listed while Windows deletes it, or emptied) is dropped; never write an error over that reply.
+				// Outstanding IDs (a live wait, approval or render check) are protected even after the bounded seen cache evicts them.
+				if (safe_id && owner != nullptr && (owner->seen_request_ids.contains(request_id) || OutstandingRequest(*owner, request_id)))
+				{
+					(void)uam::paths::RemoveFileNoThrow(file);
+					owner->unreadable_request_since.erase(request_id);
+					continue;
+				}
+				const bool link = uam::paths::IsLinkOrReparsePointNoThrow(file);
 				nlohmann::json response{{"ok", false}, {"error", "Malformed or oversized control request."}};
 				const auto size = uam::paths::FileSizeNoThrow(file);
-				if (SafeRequestId(request_id) && size.has_value() && *size > 0 && *size <= html_view::kMaxRequestBytes &&
-				    file.extension() == ".json" && !uam::paths::IsLinkOrReparsePointNoThrow(file))
+				bool unreadable = !size.has_value();
+				if (safe_id && size.has_value() && *size > 0 && *size <= html_view::kMaxRequestBytes &&
+				    file.extension() == ".json" && !link)
 				{
 					std::string text;
-					if (uam::io::TryReadTextFile(file, text) && text.size() == *size &&
-					    uam::paths::FileSizeNoThrow(file) == size &&
-					    !uam::paths::IsLinkOrReparsePointNoThrow(file))
+					// The open handle, not the earlier path checks, must be a regular non-link file: a swapped-in
+					// FIFO cannot block this poll and a growing file cannot exceed the request limit.
+					if (provider_mcp_settings::ReadConfigFile(file, text, html_view::kMaxRequestBytes))
 					{
 						const nlohmann::json request = nlohmann::json::parse(text, nullptr, false);
 						if (request.is_object() && request.contains("requestId") &&
 						    request["requestId"].is_string() && request["requestId"] == request_id)
 							response = HandleRequest(app, capability_id, request, now);
 					}
+					else unreadable = true;
 				}
+				// Writers publish atomically, so an unreadable listed regular file is being retired (a timed-out
+				// heartbeat) or briefly locked, not malformed: skip it without spending the budget, then reject.
+				// Links and unsafe IDs are rejected and removed at once.
+				if (unreadable && safe_id && !link && owner != nullptr)
+				{
+					if (!uam::paths::PathExistsNoThrow(file))
+					{
+						owner->unreadable_request_since.erase(request_id);
+						continue;
+					}
+					const auto since = owner->unreadable_request_since.try_emplace(request_id, steady_now).first->second;
+					if (steady_now - since < kUnreadableRequestGrace) continue;
+					owner->unreadable_request_since.erase(request_id);
+				}
+				++processed;
 				(void)uam::paths::RemoveFileNoThrow(file);
 				if (!response.value("pendingApproval", false) && !response.value("pendingAgentWait", false) &&
 				    !response.value("pendingChatCreate", false) && !response.value("pendingRenderCheck", false))

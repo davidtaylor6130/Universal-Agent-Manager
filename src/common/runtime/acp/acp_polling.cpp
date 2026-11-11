@@ -540,6 +540,7 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 		session.recovering_remote_process = false;
 		ReactivateConfirmedRemoteGoal(app, chat);
 		session.reconnect_attempts = 0;
+		session.reconnect_first_failure_turn_serial = -1; // Reattached: a later failure starts a new budget.
 		return true;
 	}
 
@@ -651,15 +652,19 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		const std::string old_session_id = chat.remote_prompt_delivery_session_id;
 		const std::string old_delivery_id = chat.remote_prompt_delivery_id;
 		const std::string old_payload = chat.remote_prompt_delivery_payload;
+		// The IDs saved with this marker stand in when a reconnect or restart dropped the runtime's copy.
+		const std::vector<std::string> input_ids = session.pending_remote_delivery_input_ids.empty()
+		    ? chat.remote_prompt_delivery_input_ids : session.pending_remote_delivery_input_ids;
 		chat.remote_prompt_delivery_session_id.clear();
 		chat.remote_prompt_delivery_id.clear();
 		chat.remote_prompt_delivery_payload.clear();
+		chat.remote_prompt_delivery_input_ids.clear();
 		if (SaveChatQuietly(app, chat))
 		{
 			session.pending_remote_input_receipt_id.clear();
 			// The helper wrote this exact delivery to the provider: that is the remote input-write fact (#628).
 			// Only rows with one unique matching native input ID settle; unknown or duplicate IDs stay unconfirmed.
-			for (const std::string& input_id : session.pending_remote_delivery_input_ids)
+			for (const std::string& input_id : input_ids)
 			{
 				Message* exact = nullptr;
 				int matches = 0;
@@ -679,6 +684,7 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 			chat.remote_prompt_delivery_session_id = old_session_id;
 			chat.remote_prompt_delivery_id = old_delivery_id;
 			chat.remote_prompt_delivery_payload = old_payload;
+			chat.remote_prompt_delivery_input_ids = input_ids;
 			app.status_line = "Remote prompt receipt is waiting for a successful local save.";
 			return true;
 		}

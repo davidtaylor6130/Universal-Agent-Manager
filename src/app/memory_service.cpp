@@ -1152,21 +1152,30 @@ namespace
 		return delay;
 	}
 
-	bool GlobalMemoryRetryDue(const uam::AppState& app, double now)
+	// One failing host or CLI must not pause extraction for chats that use another.
+	std::string MemoryBackoffKey(const uam::AppState& app, const ChatSession& chat)
 	{
-		return app.memory_global_retry_not_before <= now;
+		const ProviderResolutionService::WorkerProviderSelection worker = ProviderResolutionService().WorkerProviderSelectionForChat(app, chat);
+		const std::string host = uam::paths::IsControllerLocalWorkspace(chat) ? std::string(uam::execution_hosts::kLocalHostId) : chat.execution_host_id;
+		return host + '\n' + (worker.provider != nullptr ? worker.provider->id : chat.provider_id);
 	}
 
-	void RecordGlobalMemoryFailure(uam::AppState& app)
+	bool MemoryBackoffDue(const uam::AppState& app, const ChatSession& chat, double now)
 	{
-		const int failure_count = ++app.memory_global_failure_count;
-		app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + GlobalRetryDelayForFailureCount(failure_count);
+		if (app.memory_worker_backoff_by_key.empty()) return true;
+		const auto found = app.memory_worker_backoff_by_key.find(MemoryBackoffKey(app, chat));
+		return found == app.memory_worker_backoff_by_key.end() || found->second.retry_not_before <= now;
 	}
 
-	void ResetGlobalMemoryFailure(uam::AppState& app)
+	void RecordMemoryBackoff(uam::AppState& app, const ChatSession& chat)
 	{
-		app.memory_global_failure_count = 0;
-		app.memory_global_retry_not_before = 0.0;
+		uam::MemoryWorkerBackoff& backoff = app.memory_worker_backoff_by_key[MemoryBackoffKey(app, chat)];
+		backoff.retry_not_before = uam::GetAppTimeSeconds() + GlobalRetryDelayForFailureCount(++backoff.failure_count);
+	}
+
+	void ResetMemoryBackoff(uam::AppState& app, const ChatSession& chat)
+	{
+		if (!app.memory_worker_backoff_by_key.empty()) app.memory_worker_backoff_by_key.erase(MemoryBackoffKey(app, chat));
 	}
 
 	// Failure reasons can carry raw worker, provider or SSH runner stderr. The UI keeps the
@@ -1276,7 +1285,7 @@ namespace
 			RecordMemoryFailure(app, task.chat_id, failure_status);
 			if (!task.state->result.canceled)
 			{
-				RecordGlobalMemoryFailure(app);
+				RecordMemoryBackoff(app, chat);
 			}
 			return false;
 		}
@@ -1300,6 +1309,7 @@ namespace
 			app.memory_activity.last_created_count = task.extraction_state->remote_entry_count;
 			app.memory_last_status = task.extraction_state->remote_entry_count > 0 ? "Project memory updated." : "Memory worker found no durable memories.";
 			RecordMemorySuccess(app, task.chat_id);
+			ResetMemoryBackoff(app, chat);
 			return true;
 		}
 		bool tool_activity = false;
@@ -1310,7 +1320,7 @@ namespace
 			    task.workspace_root, task.extraction_state->prepared_output, &error, true))
 			{
 				RecordMemorySuccess(app, chat.id);
-				ResetGlobalMemoryFailure(app);
+				ResetMemoryBackoff(app, chat);
 				return true;
 			}
 			if (error.empty()) error = task.extraction_state->output_error;
@@ -1324,14 +1334,14 @@ namespace
 		if (text && MemoryService::ApplyWorkerOutput(app, chat, task.workspace_root, *text, task.message_count, &error, true))
 		{
 			RecordMemorySuccess(app, task.chat_id);
-			ResetGlobalMemoryFailure(app);
+			ResetMemoryBackoff(app, chat);
 			return true;
 		}
 
 		const std::string failure_reason = uam::strings::NonEmptyOrFallback(error, kMemoryWorkerOutputDiscardedStatus);
 		RecordMemoryWorkerResult(app, task, failure_reason);
 		RecordMemoryFailure(app, task.chat_id, failure_reason);
-		RecordGlobalMemoryFailure(app);
+		RecordMemoryBackoff(app, chat);
 		return false;
 	}
 
@@ -1930,6 +1940,11 @@ bool MemoryService::BuildRecallResources(const fs::path& data_root, const AppSet
 	return true;
 }
 
+void MemoryService::SetWorkerBackoffForTests(uam::AppState& app, const ChatSession& chat, double retry_not_before)
+{
+	app.memory_worker_backoff_by_key[MemoryBackoffKey(app, chat)].retry_not_before = retry_not_before;
+}
+
 void MemoryService::SetWorkerFaultForTests(void (*fault)(std::string_view stage))
 {
 	g_worker_fault_for_tests.store(fault, std::memory_order_release);
@@ -2269,6 +2284,7 @@ bool MemoryService::QueueManualScan(uam::AppState& app, const std::vector<std::s
 		}
 
 		app.memory_retry_not_before_by_chat_id.erase(chat.id);
+		ResetMemoryBackoff(app, chat);
 		const auto queued = std::ranges::find_if(app.memory_extraction_queue, [&chat](const uam::QueuedMemoryExtractionTask& task)
 		                                              { return task.chat_id == chat.id; });
 		if (queued != app.memory_extraction_queue.end())
@@ -2296,8 +2312,6 @@ bool MemoryService::QueueManualScan(uam::AppState& app, const std::vector<std::s
 		SetError(error_out, "No eligible chats were available to scan.");
 		return false;
 	}
-
-	ResetGlobalMemoryFailure(app);
 
 	app.memory_last_status = "Queued memory scan for " + std::to_string(queued_count) + " chat(s).";
 	RefreshMemoryActivity(app);
@@ -2441,10 +2455,6 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 
 	while (RunningMemoryTaskCount(app) < kMaxConcurrentMemoryWorkers && !app.memory_extraction_queue.empty())
 	{
-		if (!GlobalMemoryRetryDue(app, uam::GetAppTimeSeconds()))
-		{
-			break;
-		}
 		const std::size_t attempts = app.memory_extraction_queue.size();
 		bool started = false;
 		for (std::size_t i = 0; i < attempts && RunningMemoryTaskCount(app) < kMaxConcurrentMemoryWorkers && !app.memory_extraction_queue.empty(); ++i)
@@ -2468,7 +2478,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 				continue;
 			}
 
-			if (QueuedMemoryWorkTemporarilyBlocked(app, chat))
+			if (QueuedMemoryWorkTemporarilyBlocked(app, chat) || !MemoryBackoffDue(app, chat, uam::GetAppTimeSeconds()))
 			{
 				RequeueMemoryWork(app, std::move(queued));
 				continue;
@@ -2531,7 +2541,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			else
 			{
 				RecordMemoryFailure(app, chat.id, app.memory_last_status);
-				RecordGlobalMemoryFailure(app);
+				RecordMemoryBackoff(app, chat);
 				if (queued.manual)
 				{
 					RequeueMemoryWork(app, std::move(queued));
@@ -2548,23 +2558,6 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 		}
 	}
 
-	if (!GlobalMemoryRetryDue(app, uam::GetAppTimeSeconds()))
-	{
-		if (changed)
-		{
-			if (memory_entries_may_have_changed)
-			{
-				RefreshMemoryActivityAsync(app);
-			}
-			else
-			{
-				app.memory_activity.running_count = RunningMemoryTaskCount(app);
-				app.memory_activity.last_status = uam::strings::NonEmptyOrFallback(app.memory_last_status, app.memory_activity.last_status);
-			}
-		}
-		return changed;
-	}
-
 	const double now = uam::GetAppTimeSeconds();
 	for (ChatSession& chat : app.chats)
 	{
@@ -2573,6 +2566,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			app.memory_idle_started_at_by_chat_id.erase(chat.id);
 			continue;
 		}
+		if (!MemoryBackoffDue(app, chat, now)) continue;
 
 		// Recheck current text when the accepted idle window expires, not on every UI tick.
 		const std::unordered_map<std::string, double>::const_iterator idle = app.memory_idle_started_at_by_chat_id.find(chat.id);

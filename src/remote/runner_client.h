@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -62,6 +63,26 @@ namespace uam::remote
 	bool ValidateRemoteWorkspaceDirectory(IPlatformProcessService& service, const ExecutionHost& host,
 	    const std::filesystem::path& directory, std::string* error_out = nullptr);
 
+	/// Quit must not wait on a remote host: from this call no new connection starts, and every wait already
+	/// under way in the process ends at one shared instant, wait_budget from now, however many are waiting.
+	void BeginRunnerShutdown(std::chrono::milliseconds wait_budget = std::chrono::seconds(2));
+	void ResetRunnerShutdownForTesting();
+
+	/// Work queued before its host's latest connection failure fails with that error at once, on this
+	/// thread, instead of repeating the same wait for every queued request; a later successful connection
+	/// clears the failure.
+	class ScopedRunnerQueuedWork
+	{
+	  public:
+		explicit ScopedRunnerQueuedWork(std::chrono::steady_clock::time_point queued_at);
+		~ScopedRunnerQueuedWork();
+		ScopedRunnerQueuedWork(const ScopedRunnerQueuedWork&) = delete;
+		ScopedRunnerQueuedWork& operator=(const ScopedRunnerQueuedWork&) = delete;
+
+	  private:
+		std::chrono::steady_clock::time_point m_previous;
+	};
+
 	class RunnerClient
 	{
 	  public:
@@ -82,6 +103,13 @@ namespace uam::remote
 		/// interrupt is polled while the handshake waits, like PollProcess interrupts.
 		bool Connect(std::string* error_out = nullptr, std::stop_token stop_token = {}, const std::function<bool()>& interrupt = {});
 		bool IsConnected() const { return m_connected; }
+		/// The handshake covers the SSH connection, the remote shell and helper start; a request covers one reply.
+		void SetDeadlines(std::chrono::milliseconds handshake, std::chrono::milliseconds request, std::chrono::milliseconds cleanup = std::chrono::seconds(5))
+		{
+			m_handshakeDeadline = handshake;
+			m_requestDeadline = request;
+			m_cleanupLimit = cleanup;
+		}
 		/// <summary>Asks the helper where this bundle should install; a helper that cannot choose keeps the workspace folder.</summary>
 		bool ProviderConfigurationLocation(const std::filesystem::path& source, const std::filesystem::path& workspace, std::filesystem::path& target, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		/// <summary>Asks the helper where handoff context can live; a helper that cannot choose keeps the requested folder.</summary>
@@ -174,7 +202,7 @@ namespace uam::remote
 		    nlohmann::json& snapshot, std::string* error_out = nullptr, std::stop_token stop_token = {}, const std::string& agent_id = {});
 		bool ListDirectories(const std::filesystem::path& remote_path,
 		                     DirectoryListing& result,
-		                     std::string* error_out = nullptr);
+		                     std::string* error_out = nullptr, std::stop_token stop_token = {});
 		/// Read-only native path snapshot without links; recheck before mutation, and allow only a missing final leaf.
 		bool InspectPath(const std::string& absolute_path, bool allow_missing_leaf,
 		                 PathInspection& result, std::string* error_out = nullptr,
@@ -188,7 +216,10 @@ namespace uam::remote
 		             bool* interrupted_out = nullptr);
 		bool ReadResponse(nlohmann::json& response, std::string* error_out,
 		                  const std::function<bool()>& interrupt,
-		                  bool* interrupted_out);
+		                  bool* interrupted_out, std::chrono::steady_clock::time_point deadline_at, std::chrono::milliseconds deadline);
+		/// Keeps the bridge's stderr pipe from filling and retains a bounded tail for failure messages.
+		void DrainBridgeDiagnostics();
+		std::string WithBridgeDiagnostics(std::string error);
 		bool AddProcessControlToken(nlohmann::json& request,
 		                            const std::string& session_id,
 		                            std::string* error_out);
@@ -197,6 +228,15 @@ namespace uam::remote
 		std::vector<std::string> m_bridgeArgv;
 		uam::platform::StdioProcessPlatformFields m_bridge;
 		std::string m_received;
+		std::string m_bridgeDiagnostics;
+		/// Polled by every wait while ExecuteCommand owns the client, so its inner requests need no parameter each.
+		std::function<bool()> m_commandInterrupt;
+		std::chrono::milliseconds m_handshakeDeadline = std::chrono::seconds(45);
+		std::chrono::milliseconds m_requestDeadline = std::chrono::seconds(15);
+		std::chrono::milliseconds m_cleanupLimit = std::chrono::seconds(5);
+		std::chrono::steady_clock::time_point m_handshakeEndsAt;
+		bool m_bridgeClosed = false;
+		bool m_everConnected = false;
 		std::string m_expectedVersion;
 		int m_expectedProtocolVersion = kRunnerProtocolVersion;
 		std::uint64_t m_nextRequestId = 1;

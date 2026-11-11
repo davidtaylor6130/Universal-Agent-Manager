@@ -1121,6 +1121,7 @@ namespace uam
 			message_json["createdAt"] = message.created_at;
 			if (message.native_input_id && uam::input_provenance::ValidNativeInputId(*message.native_input_id)) message_json["nativeInputId"] = *message.native_input_id;
 			if (message.role == MessageRole::User && message.input_write_completed && message.native_input_id && uam::input_provenance::ValidNativeInputId(*message.native_input_id)) message_json["inputWriteCompleted"] = true;
+			if (message.role == MessageRole::User && message.input_delivery_tracked) message_json["inputDeliveryTracked"] = true;
 			if (message.origin_request_id && uam::input_provenance::ValidOriginRequestId(*message.origin_request_id)) message_json["originRequestId"] = *message.origin_request_id;
 			if (message.managed_origin_run_id && uam::uuid::IsCanonicalUuid(*message.managed_origin_run_id)) message_json["managedOriginRunId"] = *message.managed_origin_run_id;
 			if (!message.model_id.empty()) message_json["modelId"] = message.model_id;

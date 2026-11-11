@@ -7,8 +7,30 @@
 #include "common/chat/chat_repository.h"
 #include "cef/cef_push.h"
 
+#ifdef _WIN32
+#include <share.h>
+#else
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 namespace
 {
+	/// A published reply exists only after its atomic rename, but on Windows another handle (a scanner)
+	/// can briefly refuse the open; read again instead of parsing an empty string.
+	nlohmann::json ReadPublishedReply(const fs::path& path)
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		std::string text;
+		while (!uam::io::TryReadTextFile(path, text) || text.empty())
+		{
+			if (std::chrono::steady_clock::now() >= deadline) throw std::runtime_error("Published control reply could not be read: " + path.string());
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		return nlohmann::json::parse(text);
+	}
+
 	nlohmann::json InspectCurrentGoal(uam::AppState& app)
 	{
 		UAM_ASSERT(uam::UamControlService::Initialize(app));
@@ -407,9 +429,19 @@ UAM_TEST(UamControlAgentWaitCyclicAncestryRetiresWithoutOwnerHang)
 	const auto started = std::chrono::steady_clock::now();
 	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
 	UAM_ASSERT(std::chrono::steady_clock::now() - started < std::chrono::milliseconds(500));
+	// The broken graph is answered once with an explicit error and no child data; it is never walked or left to time out.
+	const auto response_path = fixture.capability_directory / "responses" / "pending-cycle-wait.json";
+	const auto reply_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	while ((!fs::exists(response_path) || fixture.app.uam_control_capabilities.front().pending_agent_wait) && std::chrono::steady_clock::now() < reply_deadline)
+	{
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(fs::exists(response_path));
+	const auto refused = nlohmann::json::parse(uam::io::ReadTextFile(response_path));
+	UAM_ASSERT(!refused.value("ok", true) && !refused.contains("result"));
 	UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_agent_wait);
-	UAM_ASSERT_EQ(fixture.app.chats.front().uam_control_audit.size(), audit_count);
-	UAM_ASSERT(!fs::exists(fixture.capability_directory / "responses" / "pending-cycle-wait.json"));
+	UAM_ASSERT_EQ(fixture.app.chats.front().uam_control_audit.size(), audit_count + 1);
 	UAM_ASSERT_EQ(fixture.Run(child_id).status, std::string("queued"));
 	UAM_ASSERT_EQ(fixture.Run(ancestor_id).status, std::string("running"));
 	const auto retry_started = std::chrono::steady_clock::now();
@@ -462,7 +494,7 @@ UAM_TEST(UamControlAgentWaitPostReplaceFailureNeverRepublishesConsumedReply)
 	UAM_ASSERT_EQ(gate->replacements.load(std::memory_order_acquire), 1);
 	UAM_ASSERT(fixture.app.uam_control_capabilities.front().pending_agent_wait);
 	UAM_ASSERT(fs::exists(response_path));
-	const auto first = nlohmann::json::parse(uam::io::ReadTextFile(response_path));
+	const auto first = ReadPublishedReply(response_path);
 	UAM_ASSERT(first.value("ok", false));
 	UAM_ASSERT_EQ(first["result"]["runId"], nlohmann::json(child_id));
 	UAM_ASSERT_EQ(first["result"]["status"], nlohmann::json("completed"));
@@ -550,7 +582,7 @@ UAM_TEST(UamControlAgentWaitReturnsResultAfterRealSchedulerRetiresChildRuntime)
 		std::this_thread::sleep_for(std::chrono::milliseconds(5));
 	}
 	UAM_ASSERT(fs::exists(response_path));
-	const auto response = nlohmann::json::parse(uam::io::ReadTextFile(response_path));
+	const auto response = ReadPublishedReply(response_path);
 	UAM_ASSERT(response.value("ok", false));
 	UAM_ASSERT_EQ(response["result"]["runId"], nlohmann::json(child_id));
 	UAM_ASSERT_EQ(response["result"]["status"], nlohmann::json("completed"));
@@ -608,7 +640,7 @@ UAM_TEST(UamControlAgentWaitReadsAlreadyCompletedOwnedRetirement)
 		std::this_thread::sleep_for(std::chrono::milliseconds(5));
 	}
 	UAM_ASSERT(fs::exists(response_path));
-	const auto response = nlohmann::json::parse(uam::io::ReadTextFile(response_path));
+	const auto response = ReadPublishedReply(response_path);
 	UAM_ASSERT(response.value("ok", false));
 	UAM_ASSERT_EQ(response["result"]["runId"], nlohmann::json(child_id));
 	UAM_ASSERT_EQ(response["result"]["status"], nlohmann::json("completed"));
@@ -618,6 +650,101 @@ UAM_TEST(UamControlAgentWaitReadsAlreadyCompletedOwnedRetirement)
 	UAM_ASSERT(saved.has_value());
 	UAM_ASSERT_EQ(std::ranges::count_if(saved->uam_control_audit, [](const auto& record)
 	    { return record.method == "agent_wait" && record.request_id == "late-terminal-wait"; }), 1);
+}
+
+namespace
+{
+	nlohmann::json AwaitWaitResponse(ControlAgentWaitFixture& fixture, const std::string& request_id)
+	{
+		const auto path = fixture.capability_directory / "responses" / (request_id + ".json");
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+		while (!fs::exists(path) && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT(fs::exists(path));
+		// The owner observes its finished publication on a later tick.
+		while (fixture.app.uam_control_capabilities.front().pending_agent_wait && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		return nlohmann::json::parse(uam::io::ReadTextFile(path));
+	}
+	ChatSession& WaitChildTranscript(ControlAgentWaitFixture& fixture, const std::string& child_id)
+	{
+		ChatSession* transcript = ChatDomainService().FindChatById(fixture.app, fixture.Run(child_id).transcript_chat_id);
+		UAM_ASSERT(transcript);
+		return *transcript;
+	}
+	void AddRoutedHost(ControlAgentWaitFixture& fixture)
+	{
+		auto routed = uam::execution_hosts::LocalHost();
+		routed.id = "routed-host";
+		fixture.app.settings.execution_hosts.push_back(std::move(routed));
+	}
+}
+
+UAM_TEST(UamControlAgentWaitReadsChildOnAnotherExecutionHost)
+{
+	ControlAgentWaitFixture fixture;
+	AddRoutedHost(fixture);
+	const std::string child_id = fixture.Delegate("plan");
+	// Automatic routing starts a child on its source folder's host, which need not be the parent's.
+	ChatSession& transcript = WaitChildTranscript(fixture, child_id);
+	transcript.execution_host_id = "routed-host";
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, transcript));
+	const auto admitted = fixture.Call("wait-other-host", "agent_wait", {{"runId", child_id}});
+	UAM_ASSERT(admitted.value("pendingAgentWait", false));
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(fixture.app.uam_control_capabilities.front().pending_agent_wait);
+	RetireWaitFixtureChildThroughScheduler(fixture, child_id);
+	const auto response = AwaitWaitResponse(fixture, "wait-other-host");
+	UAM_ASSERT(response.value("ok", false));
+	UAM_ASSERT_EQ(response["result"]["runId"], nlohmann::json(child_id));
+	UAM_ASSERT_EQ(response["result"]["status"], nlohmann::json("completed"));
+	UAM_ASSERT_EQ(response["result"]["timedOut"], nlohmann::json(false));
+}
+
+UAM_TEST(UamControlAgentWaitFollowsQueuedChildToItsRoutedHost)
+{
+	ControlAgentWaitFixture fixture;
+	AddRoutedHost(fixture);
+	const std::string child_id = fixture.Delegate("plan");
+	// Queued and not yet assigned: automatic routing still decides where this child runs.
+	WaitChildTranscript(fixture, child_id).routing_mode = "automatic";
+	UAM_ASSERT(fixture.Call("wait-routed-later", "agent_wait", {{"runId", child_id}}).value("pendingAgentWait", false));
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(fixture.app.uam_control_capabilities.front().pending_agent_wait);
+	ChatSession& transcript = WaitChildTranscript(fixture, child_id);
+	transcript.execution_host_id = "routed-host";
+	transcript.routing_assigned_connection_identity = "fixture-routed-connection";
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, transcript));
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	// The read follows the child; it is not dropped so that the parent delegates the work again.
+	UAM_ASSERT(fixture.app.uam_control_capabilities.front().pending_agent_wait);
+	RetireWaitFixtureChildThroughScheduler(fixture, child_id);
+	const auto response = AwaitWaitResponse(fixture, "wait-routed-later");
+	UAM_ASSERT(response.value("ok", false));
+	UAM_ASSERT_EQ(response["result"]["status"], nlohmann::json("completed"));
+}
+
+UAM_TEST(UamControlAgentWaitAnswersLostChildScopeWithExplicitError)
+{
+	ControlAgentWaitFixture fixture;
+	const std::string child_id = fixture.Delegate("plan");
+	UAM_ASSERT(fixture.Call("wait-lost-scope", "agent_wait", {{"runId", child_id}}).value("pendingAgentWait", false));
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(fixture.app.uam_control_capabilities.front().pending_agent_wait);
+	// The child's transcript is replaced under the pending read; the caller's own turn is unchanged.
+	WaitChildTranscript(fixture, child_id).metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+	const auto response = AwaitWaitResponse(fixture, "wait-lost-scope");
+	UAM_ASSERT(!response.value("ok", true));
+	UAM_ASSERT(response.value("error", "").find("agent_status") != std::string::npos);
+	UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_agent_wait);
+	UAM_ASSERT_EQ(fixture.Run(child_id).status, std::string("queued")); // The child itself is untouched.
+	UAM_ASSERT(fixture.app.acp_sessions.front()->running && fixture.app.acp_sessions.front()->processing);
 }
 
 UAM_TEST(UamControlAgentWaitRejectsUnprovenOrReplacedTerminalRetirement)
@@ -665,10 +792,12 @@ UAM_TEST(UamControlAgentWaitRejectsUnprovenOrReplacedTerminalRetirement)
 			UAM_ASSERT(!hidden.front().managed_terminal_retirement_witness); // Catalogue cannot mint retirement.
 		}
 		if (mode == 12) fixture.Run(child_id).root_chat_id = "foreign-root";
-		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		// The original read is answered once with an explicit error and no child data, never left to time out.
+		const auto refused = AwaitWaitResponse(fixture, "guarded-terminal-wait");
+		UAM_ASSERT(!refused.value("ok", true) && !refused.contains("result"));
 		UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_agent_wait);
-		UAM_ASSERT(!fs::exists(fixture.capability_directory / "responses" / "guarded-terminal-wait.json"));
-		UAM_ASSERT_EQ(fixture.app.chats.front().uam_control_audit.size(), audits_before);
+		UAM_ASSERT_EQ(fixture.app.chats.front().uam_control_audit.size(), audits_before + 1);
+		UAM_ASSERT_EQ(fixture.app.chats.front().uam_control_audit.back().result, std::string("rejected"));
 		UAM_ASSERT(fixture.app.acp_sessions.front()->running && fixture.app.acp_sessions.front()->processing);
 		// A fresh wait cannot adopt unproven hidden metadata either. A genuinely replaced
 		// live row is governed by a new capture, so mode0 tests only the original read.
@@ -714,7 +843,7 @@ UAM_TEST(UamControlAgentWaitRetirementSurvivesUnrelatedSidebarMerge)
 			std::this_thread::sleep_for(std::chrono::milliseconds(5));
 		}
 		UAM_ASSERT(fs::exists(response_path));
-		const auto response = nlohmann::json::parse(uam::io::ReadTextFile(response_path));
+		const auto response = ReadPublishedReply(response_path);
 		UAM_ASSERT(response.value("ok", false));
 		UAM_ASSERT_EQ(response["result"]["runId"], nlohmann::json(child_id));
 		UAM_ASSERT_EQ(response["result"]["status"], nlohmann::json("completed"));
@@ -772,10 +901,10 @@ UAM_TEST(UamControlAgentWaitSidebarMergeRejectsChangedOrUnprovenRetirement)
 		UAM_ASSERT(std::ranges::none_of(fixture.app.hidden_agent_chat_ownership.chats, [](const auto& chat)
 		    { return bool(chat.managed_terminal_retirement_witness); }));
 		const auto audit_count = ChatDomainService().FindChatById(fixture.app, fixture.root_id)->uam_control_audit.size();
-		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		const auto refused = AwaitWaitResponse(fixture, "reject-changed-sidebar-binding");
+		UAM_ASSERT(!refused.value("ok", true) && !refused.contains("result"));
 		UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_agent_wait);
-		UAM_ASSERT(!fs::exists(fixture.capability_directory / "responses" / "reject-changed-sidebar-binding.json"));
-		UAM_ASSERT_EQ(ChatDomainService().FindChatById(fixture.app, fixture.root_id)->uam_control_audit.size(), audit_count);
+		UAM_ASSERT_EQ(ChatDomainService().FindChatById(fixture.app, fixture.root_id)->uam_control_audit.size(), audit_count + 1);
 	}
 }
 
@@ -994,6 +1123,117 @@ UAM_TEST(ManagedParentContinuationCoalescesReadyChildrenAndDoesNotReplayBatch)
 	const int allocated = parent.next_request_id;
 	for (unsigned index = 0; index < 20; ++index) (void)uam::ManagedParentContinuationService::Poll(fixture.app);
 	UAM_ASSERT_EQ(parent.next_request_id, allocated); // One pending input, not one new turn per terminal poll/child.
+}
+
+namespace
+{
+	/// A later human turn on the same live Codex thread, accepted through the real response dispatcher.
+	void BeginNextHumanOrigin(ControlAgentWaitFixture& fixture, int request, const std::string& turn)
+	{
+		auto& session = *fixture.app.acp_sessions.front();
+		auto* root = ChatDomainService().FindChatById(fixture.app, fixture.root_id); UAM_ASSERT(root);
+		session.processing = true; ++session.turn_serial; session.codex_turn_id = turn;
+		session.lifecycle_state = uam::acp_detail::kAcpLifecycleProcessing;
+		session.prompt_request_id = request; session.pending_request_methods[request] = "turn/start";
+		uam::acp_detail::HandleAcpResponse(fixture.app, session, *root,
+		    {{"jsonrpc", "2.0"}, {"id", request}, {"result", {{"turn", {{"id", turn}, {"status", "inProgress"}}}}}});
+		UAM_ASSERT_EQ(session.codex_origin_rpc_turn_id, turn);
+		UAM_ASSERT_EQ(session.codex_origin_rpc_turn_serial, session.turn_serial);
+	}
+	nlohmann::json DelegateAgain(ControlAgentWaitFixture& fixture, const std::string& request)
+	{
+		const auto delegated = fixture.Call(request, "agent_delegate",
+		    {{"agentId", "plan"}, {"task", "Inspect the fixture again for request " + request + "."}});
+		UAM_ASSERT(delegated.value("ok", false));
+		return delegated["result"];
+	}
+}
+
+UAM_TEST(ManagedParentContinuationRetainedRecordYieldsToNewOriginAfterRestart)
+{
+	for (const std::string stage : {"collecting", "admitted", "write-unconfirmed", "native-accepted", "settled", "held"})
+	{
+		ControlAgentWaitFixture fixture; const std::string first = OrdinaryContinuationChild(fixture); EndOrdinaryOrigin(fixture);
+		auto& session = *fixture.app.acp_sessions.front();
+		auto* root = ChatDomainService().FindChatById(fixture.app, fixture.root_id); UAM_ASSERT(root && root->managed_parent_result);
+		// A restart reloads the saved record and its receipts, never the runtime lease.
+		root->managed_parent_result->stage = stage;
+		const std::string old_origin = root->managed_parent_result->id;
+		const auto receipts = root->managed_parent_input_receipts;
+		session.managed_parent_continuation.reset();
+		BeginNextHumanOrigin(fixture, 92, "fixture-native-turn-after-restart");
+		const auto result = DelegateAgain(fixture, "after-restart-" + stage);
+		UAM_ASSERT_EQ(result["resultDelivery"], nlohmann::json("automatic-pending"));
+		const std::string second = result["runId"];
+		root = ChatDomainService().FindChatById(fixture.app, fixture.root_id); UAM_ASSERT(root && root->managed_parent_result);
+		// The new origin owns a fresh record for its own child only; the earlier result is never sent again.
+		UAM_ASSERT(root->managed_parent_result->id != old_origin);
+		UAM_ASSERT_EQ(root->managed_parent_result->stage, std::string("collecting"));
+		UAM_ASSERT_EQ(root->managed_parent_result->run_ids, std::vector<std::string>{second});
+		UAM_ASSERT(root->managed_parent_result->delivered_ids.empty() && root->managed_parent_result->batch_ids.empty());
+		UAM_ASSERT(root->managed_parent_result->payload.empty() && root->managed_parent_result->native_request_id.empty());
+		UAM_ASSERT_EQ(root->managed_parent_input_receipts, receipts); // Earlier proof is retained, not rewritten.
+		UAM_ASSERT(session.managed_parent_continuation && !session.managed_parent_continuation->revoked);
+		UAM_ASSERT_EQ(session.managed_parent_continuation->runs.size(), std::size_t{1});
+		UAM_ASSERT_EQ(session.managed_parent_continuation->runs.front().first, second);
+		UAM_ASSERT(first != second && !session.pending_prompt_delivery);
+	}
+}
+
+UAM_TEST(ManagedParentContinuationUnwrittenHeldSlotYieldsToNextHumanOrigin)
+{
+	ControlAgentWaitFixture fixture; const std::string first = OrdinaryContinuationChild(fixture); EndOrdinaryOrigin(fixture);
+	auto& session = *fixture.app.acp_sessions.front();
+	const auto first_lease = session.managed_parent_continuation;
+	UAM_ASSERT(first_lease);
+	// New human work starts before the automatic result was admitted or written.
+	BeginNextHumanOrigin(fixture, 92, "fixture-native-turn-2");
+	const auto result = DelegateAgain(fixture, "next-origin");
+	UAM_ASSERT_EQ(result["resultDelivery"], nlohmann::json("automatic-pending"));
+	const std::string second = result["runId"];
+	const auto* root = ChatDomainService().FindChatById(fixture.app, fixture.root_id); UAM_ASSERT(root && root->managed_parent_result);
+	UAM_ASSERT(first_lease->revoked && session.managed_parent_continuation != first_lease);
+	UAM_ASSERT_EQ(root->managed_parent_result->run_ids, std::vector<std::string>{second});
+	UAM_ASSERT(root->managed_parent_input_receipts.empty() && !session.pending_prompt_delivery);
+	UAM_ASSERT(first != second);
+}
+
+UAM_TEST(ManagedParentContinuationUnacknowledgedWriteStaysQuarantinedUntilItsProcessIsGone)
+{
+	ControlAgentWaitFixture fixture; (void)OrdinaryContinuationChild(fixture); EndOrdinaryOrigin(fixture);
+	auto& session = *fixture.app.acp_sessions.front();
+	UAM_ASSERT(uam::ManagedParentContinuationService::Poll(fixture.app));
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	while ((session.pending_prompt_delivery || session.managed_parent_continuation->admission_pending) && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::FlushPendingChatSaves(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	auto* root = ChatDomainService().FindChatById(fixture.app, fixture.root_id); UAM_ASSERT(root && root->managed_parent_result);
+	UAM_ASSERT(session.managed_parent_continuation->revoked);
+	UAM_ASSERT_EQ(root->managed_parent_result->stage, std::string("held"));
+	// Model the one case that must not be re-sent: the request reached the wire and was never acknowledged.
+	auto slot = std::ranges::find(root->managed_parent_input_receipts, root->managed_parent_result->id, &ManagedParentInputReceipt::origin_id);
+	UAM_ASSERT(slot != root->managed_parent_input_receipts.end() && slot->accepted_turn_id.empty());
+	if (slot->native_request_id.empty()) slot->native_request_id = "7";
+	const auto receipts = root->managed_parent_input_receipts;
+	const std::string old_origin = root->managed_parent_result->id;
+	BeginNextHumanOrigin(fixture, 92, "fixture-native-turn-2");
+	UAM_ASSERT_EQ(DelegateAgain(fixture, "same-process")["resultDelivery"], nlohmann::json("held"));
+	root = ChatDomainService().FindChatById(fixture.app, fixture.root_id); UAM_ASSERT(root && root->managed_parent_result);
+	UAM_ASSERT_EQ(root->managed_parent_result->id, old_origin);
+	const int allocated = session.next_request_id;
+	// After a restart that process is gone. The slot is usable again and the old request is still never repeated.
+	session.managed_parent_continuation.reset();
+	BeginNextHumanOrigin(fixture, 93, "fixture-native-turn-3");
+	const auto result = DelegateAgain(fixture, "after-restart");
+	UAM_ASSERT_EQ(result["resultDelivery"], nlohmann::json("automatic-pending"));
+	root = ChatDomainService().FindChatById(fixture.app, fixture.root_id); UAM_ASSERT(root && root->managed_parent_result);
+	UAM_ASSERT(root->managed_parent_result->id != old_origin);
+	UAM_ASSERT_EQ(root->managed_parent_result->run_ids, std::vector<std::string>{result["runId"].get<std::string>()});
+	UAM_ASSERT_EQ(root->managed_parent_input_receipts, receipts);
+	UAM_ASSERT_EQ(session.next_request_id, allocated);
+	UAM_ASSERT(!session.pending_prompt_delivery);
 }
 
 #endif
@@ -1313,4 +1553,247 @@ UAM_TEST(UamControlPublicGoalDiscoverySeparatesDelegationFromMutationApproval)
 		UAM_ASSERT_EQ(fixture.Run(id).effective_workspace_access, std::string(read ? "read" : "write"));
 		UAM_ASSERT(!fixture.Call(fixture.capability_id, "still-no-cancel", "agent_cancel", {{"runId", id}}).value("ok", true));
 	}
+}
+
+namespace
+{
+	/// Holds a request file unreadable the way a handled request Windows still lists while deleting it,
+	/// or a file another process briefly locks, looks to the manager.
+	struct UnreadableFile
+	{
+		fs::path path;
+#ifdef _WIN32
+		std::optional<std::ifstream> lock;
+		explicit UnreadableFile(fs::path file) : path(std::move(file)) { lock.emplace(path.c_str(), std::ios::in, _SH_DENYRW); UAM_ASSERT(lock->is_open()); }
+		void Release() { lock.reset(); }
+#else
+		explicit UnreadableFile(fs::path file) : path(std::move(file)) { fs::permissions(path, fs::perms::none, fs::perm_options::replace); }
+		void Release() { std::error_code removed; fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, removed); }
+#endif
+		~UnreadableFile() { Release(); }
+	};
+
+	bool ReadsThroughPermissions()
+	{
+#ifdef _WIN32
+		return false;
+#else
+		return ::geteuid() == 0; // Root reads through mode 000.
+#endif
+	}
+
+	fs::path PublishRequest(const fs::path& capability, const std::string& id, const std::string& method = "goal_get",
+	    const nlohmann::json& arguments = nlohmann::json::object())
+	{
+		const fs::path path = capability / "requests" / (id + ".json");
+		UAM_ASSERT(uam::io::WriteTextFile(path, nlohmann::json{{"requestId", id}, {"method", method}, {"arguments", arguments}}.dump()));
+		return path;
+	}
+
+	fs::path CapabilityDirectory(const uam::AppState& app, const std::string& capability_id)
+	{
+		const auto found = std::ranges::find(app.uam_control_capabilities, capability_id, &uam::UamControlCapability::id);
+		UAM_ASSERT(found != app.uam_control_capabilities.end());
+		return found->directory;
+	}
+}
+
+UAM_TEST(UamControlListedButUnreadableRequestRetriesInsteadOfAnsweringMalformed)
+{
+	if (ReadsThroughPermissions()) return;
+	ControlAgentWaitFixture fixture;
+	const fs::path responses = fixture.capability_directory / "responses";
+	const fs::path ready_reply = responses / "unreadable-then-ready.json";
+	{
+		UnreadableFile held(PublishRequest(fixture.capability_directory, "unreadable-then-ready"));
+		for (int poll = 0; poll < 5; ++poll)
+		{
+			(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+			UAM_ASSERT(!fs::exists(ready_reply)); // No error reply that could replace a delivered one.
+			UAM_ASSERT(fs::exists(held.path));
+		}
+		held.Release();
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	}
+	UAM_ASSERT(ReadPublishedReply(ready_reply).value("ok", false));
+	// A file that never becomes readable is rejected after the wall-clock grace, whatever the poll rate.
+	UnreadableFile stuck(PublishRequest(fixture.capability_directory, "never-readable"));
+	const fs::path stuck_reply = responses / "never-readable.json";
+	const auto started = std::chrono::steady_clock::now();
+	while (!fs::exists(stuck_reply) && std::chrono::steady_clock::now() - started < std::chrono::seconds(6))
+	{
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	const auto elapsed = std::chrono::steady_clock::now() - started;
+	UAM_ASSERT(elapsed >= std::chrono::seconds(2));
+	UAM_ASSERT(elapsed < std::chrono::seconds(6));
+	UAM_ASSERT_EQ(ReadPublishedReply(stuck_reply), (nlohmann::json{{"ok", false}, {"error", "Malformed or oversized control request."}}));
+}
+
+UAM_TEST(UamControlLeftoverRequestNeverOverwritesAnsweredOrWaitingReply)
+{
+	if (ReadsThroughPermissions()) return;
+	ControlAgentWaitFixture fixture;
+	const fs::path capability = fixture.capability_directory;
+	const fs::path reply = capability / "responses" / "answered.json";
+	PublishRequest(capability, "answered");
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	const nlohmann::json delivered = ReadPublishedReply(reply);
+	UAM_ASSERT(delivered.value("ok", false));
+	const auto settle = [&] { for (int poll = 0; poll < 5; ++poll) (void)uam::UamControlService::ProcessPendingRequests(fixture.app); };
+	// (a) Removal failed but the file stays readable: a replay must not answer over the delivered reply.
+	const fs::path replay = PublishRequest(capability, "answered");
+	settle();
+	UAM_ASSERT_EQ(ReadPublishedReply(reply), delivered);
+	UAM_ASSERT(!fs::exists(replay));
+	// (b) The same leftover is unreadable (Windows delete-pending): still never answered, even past the grace.
+	{
+		UnreadableFile held(PublishRequest(capability, "answered"));
+		const auto started = std::chrono::steady_clock::now();
+		while (std::chrono::steady_clock::now() - started < std::chrono::milliseconds(2500))
+		{
+			(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		}
+		held.Release();
+	}
+	settle();
+	UAM_ASSERT_EQ(ReadPublishedReply(reply), delivered);
+	// (c) The leftover is empty.
+	const fs::path empty = capability / "requests" / "answered.json";
+	UAM_ASSERT(uam::io::WriteTextFile(empty, ""));
+	settle();
+	UAM_ASSERT_EQ(ReadPublishedReply(reply), delivered);
+	UAM_ASSERT(!fs::exists(empty));
+	// A pending agent_wait ID gets no error published under it while the wait is live.
+	const std::string child_id = fixture.Delegate("plan");
+	auto& child = fixture.Run(child_id);
+	child.status = "running";
+	UAM_ASSERT(uam::AgentRunLedger::Save(fixture.app.data_root, child));
+	UAM_ASSERT(fixture.Call("live-wait", "agent_wait", {{"runId", child_id}}).value("pendingAgentWait", false));
+	const fs::path wait_replay = PublishRequest(capability, "live-wait", "agent_wait", {{"runId", child_id}});
+	settle();
+	UAM_ASSERT(!fs::exists(wait_replay));
+	UAM_ASSERT(!fs::exists(capability / "responses" / "live-wait.json"));
+	UAM_ASSERT(fixture.app.uam_control_capabilities.front().pending_agent_wait);
+}
+
+UAM_TEST(UamControlBadRequestFilesNeverDelayAnotherCapability)
+{
+	if (ReadsThroughPermissions()) return;
+	ControlDelegationPermissionFixture fixture("default", "yolo");
+	ChatSession other = ChatDomainService().CreateNewChat("", "codex-cli", false);
+	other.workspace_directory = (fixture.temp.root / "workspace").string();
+	other.execution_host_id = "local";
+	other.uam_control_enabled = true;
+	other.approval_mode = "default";
+	other.command_safety_tier = "yolo";
+	other.uam_agent_id = "build";
+	fixture.app.chats.push_back(other);
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.app.chats.back()));
+	const std::string second = fixture.Attach(other.id, "write", "build", {});
+	UAM_ASSERT_EQ(fixture.app.uam_control_capabilities.front().id, fixture.capability_id); // Processed first.
+	const fs::path noisy = CapabilityDirectory(fixture.app, fixture.capability_id);
+	const fs::path quiet = CapabilityDirectory(fixture.app, second);
+	// Sixteen early-sorting dangling links and ten locked files, under the 32-file queue limit.
+	std::vector<fs::path> links;
+	for (int index = 0; index < 16; ++index)
+	{
+		const fs::path link = noisy / "requests" / ("0-link-" + std::to_string(index) + ".json");
+		std::error_code link_error;
+		fs::create_symlink(noisy / "missing-target.json", link, link_error);
+		if (!link_error) links.push_back(link); // Windows without symlink privilege tests the locked files only.
+	}
+	std::vector<std::unique_ptr<UnreadableFile>> locked;
+	for (int index = 0; index < 10; ++index)
+		locked.push_back(std::make_unique<UnreadableFile>(PublishRequest(noisy, "1-locked-" + std::to_string(index))));
+	PublishRequest(noisy, "9-noisy-valid");
+	PublishRequest(quiet, "9-quiet-valid");
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	// The other capability is answered on the first tick; links are rejected and removed at once.
+	UAM_ASSERT(fs::exists(quiet / "responses" / "9-quiet-valid.json"));
+	// Rejections spend only the noisy capability's own budget, and locked files spend none of it.
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(fs::exists(noisy / "responses" / "9-noisy-valid.json"));
+	for (const auto& link : links)
+	{
+		UAM_ASSERT(!fs::exists(fs::symlink_status(link)));
+		UAM_ASSERT_EQ(ReadPublishedReply(noisy / "responses" / link.filename()).at("ok"), nlohmann::json(false));
+	}
+	for (const auto& file : locked)
+	{
+		UAM_ASSERT(fs::exists(file->path));
+		UAM_ASSERT(!fs::exists(noisy / "responses" / file->path.filename()));
+	}
+}
+
+UAM_TEST(UamControlOutstandingWaitIdStaysProtectedAfterSeenCacheEviction)
+{
+	ControlAgentWaitFixture fixture;
+	const std::string child_id = fixture.Delegate("plan");
+	auto& child = fixture.Run(child_id);
+	child.status = "running";
+	UAM_ASSERT(uam::AgentRunLedger::Save(fixture.app.data_root, child));
+	UAM_ASSERT(fixture.Call("long-wait", "agent_wait", {{"runId", child_id}}).value("pendingAgentWait", false));
+	// 256 newer accepted IDs evict the wait's ID from the bounded seen cache; heartbeats skip the rate limit.
+	for (int index = 0; index < 300; ++index)
+		UAM_ASSERT(fixture.Call("newer-" + std::to_string(index), "_mcp_heartbeat", {{"connectionId", "manager-test-connection"}}).value("ok", false));
+	UAM_ASSERT(!fixture.app.uam_control_capabilities.front().seen_request_ids.contains("long-wait"));
+	const fs::path leftover = fixture.capability_directory / "requests" / "long-wait.json";
+	UAM_ASSERT(uam::io::WriteTextFile(leftover, ""));
+	for (int poll = 0; poll < 5; ++poll) (void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(!fs::exists(leftover));
+	UAM_ASSERT(!fs::exists(fixture.capability_directory / "responses" / "long-wait.json"));
+	UAM_ASSERT(fixture.app.uam_control_capabilities.front().pending_agent_wait);
+}
+
+UAM_TEST(UamControlRequestSwappedForFifoNeverBlocksThePoll)
+{
+#ifdef _WIN32
+	return; // No FIFOs on Windows; the reader there opens without following reparse points and checks the handle.
+#else
+	ControlAgentWaitFixture fixture;
+	const fs::path requests = fixture.capability_directory / "requests";
+	const fs::path target = requests / "swapped.json";
+	const fs::path regular = fixture.temp.root / "regular-stage";
+	const fs::path fifo = fixture.temp.root / "fifo-stage";
+	const std::string body = nlohmann::json{{"requestId", "swapped"}, {"method", "goal_get"}, {"arguments", nlohmann::json::object()}}.dump();
+	std::atomic<bool> stop{false};
+	// Swap a regular request and a FIFO under the same name as fast as possible, so the size and link checks
+	// see a regular file and the open meets the FIFO. A blocking open would hang the poll until a writer appears.
+	std::jthread swapper([&]
+	{
+		while (!stop)
+		{
+			std::error_code ignored;
+			{ std::ofstream(regular) << body; }
+			fs::rename(regular, target, ignored);
+			if (::mkfifo(fifo.c_str(), 0600) == 0) fs::rename(fifo, target, ignored);
+			fs::remove(fifo, ignored);
+		}
+	});
+	std::atomic<bool> polling_done{false};
+	std::atomic<bool> unblocked_by_watchdog{false};
+	std::jthread watchdog([&]
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+		while (!polling_done && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		while (!polling_done)
+		{
+			stop = true;
+			const int writer = ::open(target.c_str(), O_WRONLY | O_NONBLOCK); // Releases a reader blocked on the FIFO.
+			if (writer >= 0) { unblocked_by_watchdog = true; ::close(writer); }
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+	});
+	const auto started = std::chrono::steady_clock::now();
+	while (std::chrono::steady_clock::now() - started < std::chrono::seconds(3))
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	polling_done = true;
+	stop = true;
+	swapper.join();
+	watchdog.join();
+	UAM_ASSERT(!unblocked_by_watchdog);
+#endif
 }

@@ -529,7 +529,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 			{
 				uam::PushStreamToken(browser, chat.id, session.current_assistant_message_index, appended);
 			}
-			ScheduleChatSave(app, chat, 0.5);
+			ScheduleChatSave(app, chat, 0.5, true);
 		}
 		return;
 	}
@@ -598,7 +598,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 
 	if (changed)
 	{
-		SaveChatQuietly(app, chat);
+		SaveChatSoon(app, chat);
 		MarkAcpChatUnseenIfBackground(app, chat);
 	}
 }
@@ -652,7 +652,7 @@ void HandleClaudeUserMessage(AppState& app, AcpSessionState& session, ChatSessio
 
 	if (changed)
 	{
-		SaveChatQuietly(app, chat);
+		SaveChatSoon(app, chat);
 	}
 }
 
@@ -853,7 +853,10 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 	{
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 		if (completed_native_scope && completion_result_fresh && !cancelled && !is_error && !quota_wait && subtype == "success")
+		{
 			RecordCompletedAcpPromptRecoveries(app, session, chat);
+			(void)ConfirmTurnInputReceived(session, chat);
+		}
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser, !cancelled);
 	}
 

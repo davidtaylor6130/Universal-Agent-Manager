@@ -1304,7 +1304,7 @@ describe('ChatView', () => {
     })
     expect(setSessionProvider).toHaveBeenCalledOnce()
     expect(setSessionProvider).toHaveBeenCalledWith('chat-1', 'codex-cli', expect.any(Function), false)
-    expect(setSessionModel).toHaveBeenCalledWith('chat-1', '')
+    expect(setSessionModel).toHaveBeenCalledWith('chat-1', '', expect.any(Function))
     expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
 
     act(() => root.unmount())
@@ -4003,10 +4003,14 @@ describe('ChatView', () => {
         expect(retryFailedMessage).not.toHaveBeenCalled()
         expect(host.textContent).toContain('This turn already produced output')
       } else {
-        expect(order).toEqual(['save', 'retry'])
+        // A refused restart saves the previous limit back, so the setting is not left raised.
+        expect(order).toEqual(branch === 'refused' ? ['save', 'retry', 'save'] : ['save', 'retry'])
         expect(retryFailedMessage).toHaveBeenCalledWith('chat-1', 0)
       }
-      if (branch === 'refused') expect(host.querySelector('[role="alert"]')?.textContent).toContain('Wait for pending runtime work.')
+      if (branch === 'refused') {
+        expect(setMemorySettings).toHaveBeenLastCalledWith({ activeTurnInactivityTimeoutSeconds: 1800 })
+        expect(host.querySelector('[role="alert"]')?.textContent).toContain('Wait for pending runtime work.')
+      }
     } finally {
       act(() => root.unmount())
       host.remove()
@@ -6027,7 +6031,7 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       await Promise.resolve()
     })
-    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(3, 'chat-1', { reasoningEffort: 'xhigh' })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(3, 'chat-1', { reasoningEffort: 'xhigh' }, expect.any(Function))
     expect(appNotices.join('\n')).toContain('Reasoning changed to Extra High.')
 
     await act(async () => {
@@ -6035,8 +6039,22 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       await Promise.resolve()
     })
-    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex', serviceTierExplicit: true })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex', serviceTierExplicit: true }, expect.any(Function))
     expect(appNotices.join('\n')).toContain('Speed changed to Flex.')
+
+    // A refused slash change names the backend reason in its one notice; the store reports nothing else.
+    setSessionCodexOptions.mockImplementationOnce(((_id: string, _options: unknown, onFailure?: (reason: string) => void) => {
+      onFailure?.('Reasoning is locked by the provider.')
+      return Promise.resolve(false)
+    }) as never)
+    appNotices.length = 0
+    appFailures.length = 0
+    await act(async () => {
+      setDraft('/reasoning high')
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(appFailures.map(({ message, detail }) => ({ message, detail }))).toEqual([{ message: 'Failed to change reasoning to High. Reasoning is locked by the provider.', detail: '' }])
 
     act(() => root.unmount())
     host.remove()
@@ -10524,7 +10542,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    if (path === '/companion') expect(discover).toHaveBeenCalledWith('chat-1')
+    if (path === '/companion') expect(discover).toHaveBeenCalledWith('chat-1', '', '', '', true)
     else expect(discover).not.toHaveBeenCalled()
 
     const selector = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement
@@ -10585,7 +10603,7 @@ describe('ChatView', () => {
       expect(textarea.value).toBe(savedDraft.text)
       await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Select provider and model"]')!.click())
       expect(discover).toHaveBeenCalledTimes(1)
-      expect(discover).toHaveBeenCalledWith('', 'opencode-cli', workspaceDirectory, expectedHost)
+      expect(discover).toHaveBeenCalledWith('', 'opencode-cli', workspaceDirectory, expectedHost, true)
       expect(host.querySelector('.uam-composer-textarea')).toBe(textarea)
       expect(textarea.value).toBe(savedDraft.text)
       expect(readChatComposerDraft(session.id)).toEqual(savedDraft)
@@ -12081,17 +12099,18 @@ describe('ChatView', () => {
 
 
   it.each([
-    { label: 'identified unknown', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action' }, expected: 'unconfirmed' },
-    { label: 'positive write', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action', inputWriteCompleted: true }, expected: null },
-    { label: 'malformed boolean', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', inputWriteCompleted: 'true' }, expected: 'unconfirmed' },
-    { label: 'malformed input ID', fields: { nativeInputId: 'bad-id', inputWriteCompleted: true }, expected: null },
-    { label: 'legacy absent fields', fields: {}, expected: null },
-  ])('shares historical input presentation across main, managed and passive native routes: $label', async ({ fields, expected }) => {
+    // answered: the provider's output directly follows the input, which is proof it was received.
+    { label: 'identified unknown', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action' }, answered: false, expected: 'unconfirmed' },
+    { label: 'identified unknown but answered', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action' }, answered: true, expected: null },
+    { label: 'positive write', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action', inputWriteCompleted: true }, answered: true, expected: null },
+    { label: 'malformed boolean', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', inputWriteCompleted: 'true' }, answered: false, expected: 'unconfirmed' },
+    { label: 'malformed input ID', fields: { nativeInputId: 'bad-id', inputWriteCompleted: true }, answered: true, expected: null },
+    { label: 'legacy absent fields', fields: {}, answered: true, expected: null },
+  ])('shares historical input presentation across main, managed and passive native routes: $label', async ({ label, fields, answered, expected }) => {
     const previous = useAppStore.getState()
-    const rows = [
-      { role: 'user', content: 'Historical **input** remains readable', createdAt: '2026-10-16T16:00:00Z', ...fields },
-      { role: 'assistant', content: 'Recorded answer\n\n```ts\nconst kept = true\n```', createdAt: '2026-10-16T16:00:01Z' },
-    ] as unknown as Parameters<typeof reconcileCppMessages>[2]
+    const input = { role: 'user', content: 'Historical **input** remains readable', createdAt: '2026-10-16T16:00:00Z', providerId: 'codex-cli', ...fields }
+    const output = { role: 'assistant', content: 'Recorded answer\n\n```ts\nconst kept = true\n```', createdAt: '2026-10-16T16:00:01Z', providerId: 'codex-cli' }
+    const rows = (answered ? [input, output] : [output, input]) as unknown as Parameters<typeof reconcileCppMessages>[2]
     const child = { ...previous.sessions[0], id: 'input-child', name: 'Input child', providerId: 'codex-cli', importedReadOnly: true,
       subagentParentChatId: 'absent-parent', subagentParentCreatedAt: '2026-01-01T00:00:00.000Z' }
     const native = vi.fn(async () => ''); const load = vi.fn(async () => true)
@@ -12123,6 +12142,9 @@ describe('ChatView', () => {
       expect(same.delivery).toBe(expected)
       expect(same.body).toContain('Historical'); expect(same.answer).toContain('kept')
       expect(capture(managed)).toEqual(same); expect(capture(passive)).toEqual(same)
+      // Hiding the marker for an answered row is display only: without a write fact it still offers no actions.
+      if (label === 'identified unknown but answered') for (const host of [main, managed, passive])
+        expect(host.querySelector('article.conversation-turn--user')!.querySelector('[aria-label="Retry message"],[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()
       if (expected === 'unconfirmed') for (const host of [main, managed, passive]) {
         const user = host.querySelector('article.conversation-turn--user')!
         expect(user.querySelector('[aria-label="Retry message"],[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()

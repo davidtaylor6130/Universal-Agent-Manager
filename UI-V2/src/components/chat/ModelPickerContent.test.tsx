@@ -232,7 +232,7 @@ describe('scoped model catalogue reuse', () => {
     render('ssh-other', '/project'); browse()
     render('ssh-other', '/other-project'); browse()
     expect(useAppStore.getState().discoverProviderModels).toHaveBeenCalledTimes(3)
-    expect(useAppStore.getState().discoverProviderModels).toHaveBeenLastCalledWith('', 'claude-cli', '/other-project', 'ssh-other')
+    expect(useAppStore.getState().discoverProviderModels).toHaveBeenLastCalledWith('', 'claude-cli', '/other-project', 'ssh-other', true)
     act(() => root.unmount()); host.remove()
   })
 

@@ -889,6 +889,7 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage, index: numbe
     existing.nativeInputId === sanitizeNativeInputId(next.nativeInputId) &&
     existing.originRequestId === sanitizeOriginRequestId(next.originRequestId) &&
     existing.inputWriteCompleted === (next.role === 'user' && sanitizeNativeInputId(next.nativeInputId) && next.inputWriteCompleted === true ? true : undefined) &&
+    existing.inputDeliveryTracked === (next.role === 'user' && next.inputDeliveryTracked === true ? true : undefined) &&
     existing.role === next.role &&
     existing.content === next.content &&
     (existing.providerId ?? '') === (next.providerId ?? '') &&
@@ -928,6 +929,7 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
     nativeInputId: sanitizeNativeInputId(message.nativeInputId),
     originRequestId: sanitizeOriginRequestId(message.originRequestId),
     inputWriteCompleted: message.role === 'user' && sanitizeNativeInputId(message.nativeInputId) && message.inputWriteCompleted === true ? true : undefined,
+    inputDeliveryTracked: message.role === 'user' && message.inputDeliveryTracked === true ? true : undefined,
     role: message.role,
     content: message.content,
     providerId: message.providerId,

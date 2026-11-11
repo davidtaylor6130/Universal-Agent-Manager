@@ -41,7 +41,7 @@ import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, nor
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusScenes'
 import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
-import { formatTimeoutDuration, TIMEOUT_RESTART_STEP_SECONDS, TimeoutStopNotice, type TimeoutRestartOutcome } from '../chat/TimeoutStopNotice'
+import { restartWithRaisedTimeout, TIMEOUT_RESTART_STEP_SECONDS, TimeoutStopNotice, type TimeoutRestartOutcome } from '../chat/TimeoutStopNotice'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
 import { createQuestionMemory, type QuestionMemory, type QuestionSubmitState } from '../chat/QuestionInput'
@@ -1008,7 +1008,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }, [refreshUamAgents, session.id, workspaceDirectory])
   useEffect(() => {
     if (isCompanionContext() && !session.importedReadOnly) {
-      void discoverProviderModels(session.id)
+      void discoverProviderModels(session.id, '', '', '', true)
     }
   }, [discoverProviderModels, session.id, session.modelId, session.uamAgentId, session.importedReadOnly])
 
@@ -2238,13 +2238,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const lastUser = lastUserMessageIndex(chatMessages)
     const queued = (acp?.queuedPrompts?.length ?? 0) > 0
     const retryable = lastUser >= 0 && canRetryMessageInPlace(chatMessages, lastUser) && !queued
-    const timeout = Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, useAppStore.getState().activeTurnInactivityTimeoutSeconds + TIMEOUT_RESTART_STEP_SECONDS)
-    if (!await setMemorySettings({ activeTurnInactivityTimeoutSeconds: timeout })) return { tone: 'error', message: 'Could not save the new timeout. Nothing was restarted.' }
-    const raised = `Timeout raised to ${formatTimeoutDuration(timeout)}.`
-    if (queued) return { tone: 'info', message: `${raised} Queued messages are sent first, so this turn was not restarted; send a follow-up afterwards to continue it.` }
-    if (!retryable) return { tone: 'info', message: `${raised} This turn already produced output, so send a follow-up to continue it.` }
-    const result = await retryFailedMessage(session.id, lastUser + historyStartIndex)
-    return result.ok ? undefined : { tone: 'error', message: `${raised} The turn did not restart: ${result.error || 'retry was refused.'}` }
+    const previous = useAppStore.getState().activeTurnInactivityTimeoutSeconds
+    return restartWithRaisedTimeout({
+      previous,
+      raised: Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, previous + TIMEOUT_RESTART_STEP_SECONDS),
+      queued,
+      retryable,
+      saveTimeout: (seconds) => setMemorySettings({ activeTurnInactivityTimeoutSeconds: seconds }),
+      retry: () => retryFailedMessage(session.id, lastUser + historyStartIndex),
+    })
   }
   const retryUnsent = async (index: number) => {
     if (session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null) return false
@@ -2645,10 +2647,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       setSlashNotice(noticeFor(`Unsupported ${kind} "${rawValue}". Supported: ${options.map((option) => option.id || 'default').join(', ')}.`, 'error'))
       return
     }
+    // The slash notice names the change, so it carries the refusal reason instead of a second app-wide notice.
+    let refusal = ''
+    const onFailure = (reason: string) => { refusal = reason }
     const changed = kind === 'reasoning'
-      ? await setSessionCodexOptions(session.id, { reasoningEffort: requested.id })
-      : await setSessionCodexOptions(session.id, { serviceTier: requested.id === CODEX_SPEED_INHERIT_ID ? '' : requested.id, serviceTierExplicit: requested.id !== CODEX_SPEED_INHERIT_ID })
-    setSlashNotice(noticeFor(changed ? `${label} changed to ${requested.label}.` : `Failed to change ${kind} to ${requested.label}.`, changed ? 'success' : 'error'))
+      ? await setSessionCodexOptions(session.id, { reasoningEffort: requested.id }, onFailure)
+      : await setSessionCodexOptions(session.id, { serviceTier: requested.id === CODEX_SPEED_INHERIT_ID ? '' : requested.id, serviceTierExplicit: requested.id !== CODEX_SPEED_INHERIT_ID }, onFailure)
+    if (changed) {
+      setSlashNotice(noticeFor(`${label} changed to ${requested.label}.`, 'success'))
+      return
+    }
+    // The shared toast shows only its message, so the reason goes there rather than in a "Command" detail.
+    setSlashNotice(null)
+    reportAppFailure(`Failed to change ${kind} to ${requested.label}. ${refusal || 'Try again.'}`, '')
   }
   const runVariantCommand = async (configId: string, value: string, label: string) => {
     setSlashIndex(0)
@@ -3272,7 +3283,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 if (index === redundantStreamingMessageIndex || unsentProjection.hiddenIndices.has(index)) return null
                 const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
                 const shouldSkipAssistantMessage = renderTimelineAfterUser && turnAssistantMessageMatches && index === turnAssistantMessageIndex
-                const { followingResponse, hasDeliveredResponse, hasStoppedResponse } = responseFlags(messages, index)
+                const { followingResponse, hasDeliveredResponse, hasStoppedResponse, receivedByProvider } = responseFlags(messages, index)
                 const messageProviderId = message.providerId?.trim() || followingResponse?.providerId?.trim() || currentProviderId
                 const messageProviderName = providerShortName(
                   providers.find((candidate) => candidate.id === messageProviderId),
@@ -3380,6 +3391,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                         message={message}
                         hasDeliveredResponse={hasDeliveredResponse}
                         hasStoppedResponse={hasStoppedResponse}
+                        // A response still streaming is output, not a completion: it hides nothing yet.
+                        receivedByProvider={receivedByProvider && !(acp?.processing && index + 1 === turnAssistantMessageIndex)}
                         pendingDirectAdmission={unsentProjection.pendingIndices.has(index) || nativeDirectReceipt?.sending === true}
                         delivery={unsentByLoadedIndex.has(index) ? (unsentByLoadedIndex.get(index)!.retryable ? UNSENT_DELIVERY : HELD_DELIVERY)
                           : nativeDirectReceipt ? (nativeDirectReceipt.sending ? SENDING_DELIVERY : RECEIPT_DELIVERY)
@@ -3554,10 +3567,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
             if (!changed) return refusal.replace(' Accept this in the switch dialog in the desktop app.', '') || false
             // The provider has changed from here on, so a failure below must not read as a failed switch.
             if (currentSessionIdRef.current !== session.id) return true
-            const modelSet = providerHandoffModelId === null || await setSessionModel(session.id, providerHandoffModelId)
+            let modelRefusal = ''
+            const modelSet = providerHandoffModelId === null || await setSessionModel(session.id, providerHandoffModelId, (reason) => { modelRefusal = reason })
             setProviderHandoffTargetId('')
             setProviderHandoffModelId(null)
-            if (!modelSet) reportAppFailure('The model was not changed', `This chat is now on ${providerHandoffTargetName} with its default model. Choose the model again from the model picker.`)
+            // The shared toast shows only its message, so the reason and next step belong there.
+            if (!modelSet) reportAppFailure(`The model was not changed. ${modelRefusal ? `${modelRefusal} ` : ''}This chat is now on ${providerHandoffTargetName} with its default model. Choose the model again from the model picker.`, '')
             return true
           }}
         />
@@ -4341,7 +4356,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               modelMenuRef={modelMenuRef}
 			  onToggleModel={() => {
 				if (!modelOpen && isOpenCodeProvider(currentProvider, currentProviderId) && !providerAcp?.modelsLoading && !providerAcp?.availableModels.length) {
-				  void discoverProviderModels('', currentProviderId, workspaceDirectory, session.executionHostId || 'local')
+				  void discoverProviderModels('', currentProviderId, workspaceDirectory, session.executionHostId || 'local', true)
 				}
                 setModelOpen((value) => !value)
                 setWorkspaceMenuOpen(false)

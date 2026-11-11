@@ -26,6 +26,7 @@
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <chrono>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -202,6 +203,8 @@ namespace uam
 		std::string pending_steer_prompt;
 		double pending_steer_started_time_s = 0.0;
 		bool pending_steer_restart_attempted = false;
+		// The pending steer's delivery or recovery was reported as failed; it is only retained for retry.
+		bool pending_steer_failed = false;
 		std::string last_error;
 	};
 
@@ -519,6 +522,8 @@ namespace uam
 		std::unordered_set<std::string> seen_request_ids;
 		std::deque<std::string> seen_request_order; // Insertion order, so eviction drops the oldest ID.
 		std::unordered_set<std::string> owned_agent_run_ids;
+		// When each listed but not yet readable request file was first seen; bounded by kUnreadableRequestGrace.
+		std::unordered_map<std::string, std::chrono::steady_clock::time_point> unreadable_request_since;
 		// Current-connection cancellation tombstones; overflow refuses new waits until renewal.
 		std::unordered_set<std::string> cancelled_wait_ids;
 		bool wait_cancellation_overflow = false;
@@ -526,6 +531,7 @@ namespace uam
 		int chat_create_turn_serial = -1;
 		std::size_t chat_create_turn_count = 0;
 		std::optional<PendingApproval> pending_approval;
+		std::string render_check_request_id; // Latest render-checked request; its reply is written asynchronously.
 		std::shared_ptr<UamAgentWait> pending_agent_wait;
 		// Captured by real setup; wait admission cannot adopt a changed host/workspace selection.
 		std::optional<ExecutionHost> wait_host_at_launch;
@@ -877,6 +883,14 @@ namespace uam
 		bool reconnect_pending = false;
 		int reconnect_attempts = 0;
 		double reconnect_not_before_time_s = 0.0;
+		// First reconnect failure of the turn named beside it: a never-sent remote prompt is given up by elapsed
+		// time, not by a few fast attempts, and attempts left over from an earlier turn do not shorten that time.
+		double reconnect_first_failure_time_s = 0.0;
+		int reconnect_first_failure_turn_serial = -1;
+		// Background discovery reattaches made only to stop a helper process, and when the last one started. Kept apart
+		// from reconnect_attempts, which stop retries and exits also count, so the number of launches is exact.
+		int discovery_cleanup_attaches = 0;
+		double discovery_cleanup_last_attach_time_s = 0.0;
 		// Counts watchdog re-queues of a stalled goal loop; the goal is marked
 		// blocked after 3 so a failing provider cannot be retried forever.
 		// Cleared when a turn completes or a new user prompt is sent.
@@ -1101,10 +1115,56 @@ namespace uam
 		std::string native_writer_key;
 		bool observe_exit = false;
 		bool preserve_queued_prompts = false;
+		// Exit deadline for an observed stop whose process has not been seen to exit: app time the wait began,
+		// forced stops repeated since, and whether the wait was given up so the chat is no longer held "stopping".
+		std::optional<double> exit_wait_started_s;
+		int exit_escalations = 0;
+		bool exit_abandoned = false;
+		double exit_next_force_s = 0.0;
+		// The session projection of this stop was finalised (or retired); it is never finalised twice.
+		bool settled = false;
 		// Optional owned platform dependency; retained through asynchronous stop and exit polling.
 		std::shared_ptr<IPlatformProcessService> stop_service;
 		std::shared_ptr<std::atomic<bool>> finished;
 		std::unique_ptr<std::jthread> worker;
+	};
+
+	/// <summary>
+	/// Remote Git work on one host. Copies share the counts, so a queued worker reports from its own thread.
+	/// Helper setup fences the host first and then counts what runs: a worker that starts after the fence is
+	/// refused, so none can launch the helper that is being replaced.
+	/// </summary>
+	class RemoteVcsActivity
+	{
+	  public:
+		/// Empty while the host is fenced; otherwise held for as long as the work runs.
+		std::shared_ptr<void> Hold() const
+		{
+			m_state->running.fetch_add(1);
+			if (m_state->fences.load() == 0) return Token(&State::running);
+			m_state->running.fetch_sub(1);
+			return {};
+		}
+		/// Held from the moment work is queued until it has run or been dropped.
+		std::shared_ptr<void> Queue() const { m_state->queued.fetch_add(1); return Token(&State::queued); }
+		std::shared_ptr<void> Fence() const { m_state->fences.fetch_add(1); return Token(&State::fences); }
+		/// No work is running; queued work does not count.
+		bool expired() const { return m_state->running.load() == 0; }
+		/// Nothing is running or waiting to run.
+		bool idle() const { return expired() && m_state->queued.load() == 0; }
+
+	  private:
+		struct State
+		{
+			std::atomic<int> running{0};
+			std::atomic<int> queued{0};
+			std::atomic<int> fences{0};
+		};
+		std::shared_ptr<void> Token(std::atomic<int> State::* count) const
+		{
+			return std::shared_ptr<void>(m_state.get(), [state = m_state, count](void*) { ((*state).*count).fetch_sub(1); });
+		}
+		std::shared_ptr<State> m_state = std::make_shared<State>();
 	};
 
 	/// <summary>
@@ -1211,6 +1271,8 @@ namespace uam
 		bool completed_review_turn = false;
 		bool cancelled = false;
 		std::string goal_id;
+		// App time after which a finished commit stops retrying to record itself on its message; unset until it first fails.
+		std::optional<double> metadata_retry_until_s;
 		std::shared_ptr<AsyncTurnCheckpointState> state;
 		std::unique_ptr<std::jthread> worker;
 	};
@@ -1234,6 +1296,13 @@ namespace uam
 
 		task.running = false;
 	}
+
+	/// <summary>Worker retry pause for one execution host and provider pair.</summary>
+	struct MemoryWorkerBackoff
+	{
+		double retry_not_before = 0.0;
+		int failure_count = 0;
+	};
 
 	struct QueuedMemoryExtractionTask
 	{
@@ -1343,6 +1412,20 @@ namespace uam
 		std::string current_label;
 	};
 
+	/// Unreachable says nothing about the host's processes; only SessionMissing is the helper's own answer.
+	enum class RemoteHostProbeOutcome { Pending, Unreachable, Reachable, SessionMissing };
+	/// Contacts the helper; with a session ID, also asks whether that process still exists.
+	using RemoteHostProbe = std::function<RemoteHostProbeOutcome(const ExecutionHost&, const std::string& session_id, std::stop_token)>;
+	struct RemoteHostProbeTask
+	{
+		ExecutionHost host;
+		std::string session_id;
+		std::atomic<RemoteHostProbeOutcome> outcome{RemoteHostProbeOutcome::Pending};
+		double retry_at_s = 0.0;
+		double delay_s = 0.0;
+		std::unique_ptr<std::jthread> worker;
+	};
+
 	struct AppState
 	{
 		WorkspaceLeaseGate worktree_retention_gate;
@@ -1365,6 +1448,15 @@ namespace uam
 		std::unordered_set<std::string> execution_routing_reserved_chat_ids;
 		std::unordered_set<std::string> execution_routing_restored_unresolved_chat_ids;
 		double execution_routing_next_poll_s = 0.0;
+		/// One background helper contact per key, retried with a doubling delay. Results apply on the app thread.
+		std::unordered_map<std::string, std::shared_ptr<RemoteHostProbeTask>> remote_host_probes;
+		/// Test seam: replaces the SSH helper contact made by a recovery probe.
+		RemoteHostProbe remote_host_probe;
+		std::unordered_map<std::string, std::pair<double, double>> execution_routing_version_check_retry;
+		/// The running version check was started by routing, so a user-started check queues behind it instead of being refused.
+		bool runtime_cli_version_check_background = false;
+		/// When each entry of repository_route_workspaces was last read; a missing entry counts as the last refresh.
+		std::vector<double> repository_route_read_at_s;
 		fs::path data_root;
 		fs::path native_history_chats_dir;
 		AppSettings settings;
@@ -1412,6 +1504,8 @@ namespace uam
 		std::deque<std::shared_ptr<UamAgentWait>> uam_wait_retirements;
 		std::string uam_control_manager_id;
 		std::deque<std::string> queued_agent_run_ids;
+		/// Terminal v2 records whose result card a previous process never wrote; the scheduler delivers each once.
+		std::deque<AgentRun> managed_result_recoveries;
 		std::size_t managed_parent_continuation_cursor = 0;
 		/// <summary>Retains cancellation intent across failed ledger writes until polling can retry.</summary>
 		std::unordered_set<std::string> pending_agent_run_cancellation_ids;
@@ -1419,6 +1513,24 @@ namespace uam
 		std::shared_ptr<const std::uint8_t> managed_subagent_control_incarnation = std::make_shared<const std::uint8_t>(0);
 		std::unordered_map<std::string, std::shared_ptr<const ManagedSubagentCancellationReceipt>> managed_subagent_cancellation_receipts;
 		std::unordered_map<std::string, int64_t> agent_run_deadline_steady_ms;
+		/// A run's result card found its saved parent out of step with memory: when to compare again, and the
+		/// parent state seen then, so a save or reload of the parent retries at once.
+		struct AgentResultRetry
+		{
+			int64_t retry_at_steady_ms = 0;
+			std::string storage_revision;
+			std::size_t message_count = 0;
+			std::string updated_at;
+		};
+		std::unordered_map<std::string, AgentResultRetry> agent_result_retry_steady_ms;
+		int64_t managed_result_recovery_retry_steady_ms = 0;
+		std::unordered_map<std::string, int> managed_result_recovery_failures;
+		/// Queued runs that routing is refusing right now: since when in total, and since when as invalid.
+		std::unordered_map<std::string, int64_t> agent_routing_wait_since_steady_ms, agent_routing_invalid_since_steady_ms;
+		std::unordered_set<std::string> agent_routing_held_this_poll;
+		/// Child chats re-admitted at startup only to stop a remote helper process a previous UAM process left
+		/// running, keyed by chat ID with the steady time at which UAM stops waiting for the confirmation.
+		std::unordered_map<std::string, int64_t> agent_startup_stop_deadline_steady_ms;
 		std::unordered_map<std::string, std::deque<int64_t>> agent_provider_crash_times_epoch_ms;
 		std::unordered_map<std::string, int64_t> agent_provider_circuit_open_until_epoch_ms;
 		int selected_chat_index = -1;
@@ -1478,8 +1590,7 @@ namespace uam
 		std::unordered_map<std::string, double> memory_idle_started_at_by_chat_id;
 		std::unordered_map<std::string, double> memory_retry_not_before_by_chat_id;
 		std::unordered_map<std::string, int> memory_failure_count_by_chat_id;
-		double memory_global_retry_not_before = 0.0;
-		int memory_global_failure_count = 0;
+		std::unordered_map<std::string, MemoryWorkerBackoff> memory_worker_backoff_by_key;
 		std::unordered_map<std::string, CliProviderVersionState> runtime_cli_versions_by_provider_id;
 		std::unordered_map<std::string, ComputerUseRuntimeState> computer_use_by_chat_id;
 		std::unordered_set<std::string> computer_use_revocation_pending_chat_ids;
@@ -1492,6 +1603,16 @@ namespace uam
 		std::shared_ptr<TerminalNativeMediaCoordinator> terminal_native_media;
 
 		std::unordered_map<std::string, double> pending_chat_save_at_by_chat_id;
+		// When each chat's last background save finished and what it cost; paces whole-transcript rewrites of a stream.
+		struct ChatSavePace { double finished_at = 0.0; double cost_seconds = 0.0; };
+		std::unordered_map<std::string, ChatSavePace> chat_save_pace_by_chat_id;
+		// Consecutive failed transcript saves per chat: told to the user once, then retried with backoff.
+		struct ChatSaveFailure { int attempts = 0; double retry_at = 0.0; };
+		std::unordered_map<std::string, ChatSaveFailure> chat_save_failures_by_chat_id;
+		double chat_save_records_pruned_at = 0.0;
+		// Rows of the most recently saved transcripts, reused as the next save's unchanged prefix so each
+		// burst does not read and parse the whole file again. Only ever compared against live rows.
+		std::vector<std::pair<std::string, std::vector<std::shared_ptr<const Message>>>> saved_chat_rows;
 		std::unordered_map<std::string, std::shared_ptr<PendingChatSaveTask>> pending_chat_save_tasks;
 		std::unordered_map<std::string, std::shared_ptr<PendingAcpCompletedPromptRecoveries>> pending_acp_completed_prompt_recoveries;
 		// A failed durable barrier can retain a scoped retry after removing its active task.
@@ -1520,7 +1641,7 @@ namespace uam
 		};
 		std::unordered_map<std::string, std::shared_ptr<GitPortRequest>> git_port_requests;
 		std::unordered_map<std::string, std::shared_ptr<WorktreeLaunchPreparationTask>> worktree_launch_preparations;
-		std::unordered_map<std::string, std::weak_ptr<void>> remote_vcs_operation_leases_by_host_id;
+		std::unordered_map<std::string, RemoteVcsActivity> remote_vcs_operation_leases_by_host_id;
 
 		std::unique_ptr<ProviderModelCatalogService> provider_model_catalog;
 		std::shared_ptr<OpenCodeNativeActivityService> opencode_native_activity;

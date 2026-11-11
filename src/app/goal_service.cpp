@@ -297,7 +297,7 @@ bool GoalService::CancelGoalWork(AppState& app, const std::string& chat_id,
 			if (first_error.empty())
 				first_error = target_session != nullptr && target_session->remote_stop_unconfirmed
 				                  ? "Remote stop could not be confirmed."
-				                  : "The remote turn is stopping.";
+				                  : AcpStopRefusalMessage(app, target_chat_id, "The remote turn is stopping.");
 			return;
 		}
 		std::string error;

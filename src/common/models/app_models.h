@@ -406,6 +406,9 @@ struct Message
 	std::optional<std::string> native_input_id;
 	/// Exact original local stdio entry completed at the OS sink; not provider processing or input authority.
 	bool input_write_completed = false;
+	// This build dispatched the row, so its delivery is judged only by write facts, receipts and the provider's own
+	// completion. Rows without it are older history, where a directly following answer is the only evidence left.
+	bool input_delivery_tracked = false;
 	std::optional<std::string> origin_request_id;
 	bool operator==(const Message&) const = default;
 };
@@ -663,6 +666,10 @@ struct ChatSession
 	std::string routing_assigned_connection_identity;
 	std::string routing_assigned_provider_configuration_identity;
 	bool routing_reservation_pending = false;
+	/// Helper version of the host when the pending reservation was made. Empty in older data, which is never released automatically.
+	std::string routing_reservation_runner_version;
+	/// The assigned identities are in the current format. False for data saved before the format changed.
+	bool routing_identity_current_format = false;
 	std::vector<std::string> routing_inherited_default_fields;
 	std::string provider_id;
 	std::string native_session_id;
@@ -719,6 +726,10 @@ struct ChatSession
 	std::string remote_prompt_delivery_session_id;
 	std::string remote_prompt_delivery_id;
 	std::string remote_prompt_delivery_payload;
+	// Native input IDs of the rows this delivery carries. Saved with the marker so the helper's receipt confirms the
+	// right rows after a reconnect or an app restart, when the runtime's own copy is gone. Meaningful only beside
+	// the delivery ID it was written with.
+	std::vector<std::string> remote_prompt_delivery_input_ids;
 	std::vector<uam::AcpRemotePendingRequestState> remote_pending_requests;
 	int remote_next_request_id = 1;
 	std::string remote_active_turn_id;

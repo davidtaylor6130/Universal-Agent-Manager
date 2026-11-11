@@ -4,4 +4,6 @@ Changing views should preserve the selected UAM chat and use its bound native se
 
 Before stopping a structured runtime for CLI View, validate any saved conversation context that would be replayed. If its complete history is unavailable, hold the transfer with an explanation to load that history; retain the running session, saved context and input. Already bound context that will not be reinjected keeps its existing continuity rules.
 
+Starting structured chat while the native CLI is open is held only by work that can finish: a running terminal turn, which the provider turn timeout bounds, or a steering prompt still being delivered or recovered, which its own restart and failure timeouts bound. A steering prompt whose delivery or recovery was reported as failed stays retained for retry and does not hold the switch; it is not restarted or re-reported under the structured chat.
+
 [Session continuity](session-continuity.md).

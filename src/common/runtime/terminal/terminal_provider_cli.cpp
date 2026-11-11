@@ -97,6 +97,12 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 	{
 		error_out->clear();
 	}
+	// Not a stop that confirms shortly: say why, rather than the silent retry an empty error means.
+	if (AcpStopExitUnobserved(app, chat.id))
+	{
+		if (error_out != nullptr) *error_out = kAcpProcessExitUnobservedMessage;
+		return false;
+	}
 
 	if (AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, chat))
 	{
@@ -158,6 +164,7 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 	{
 		if (AcpStopInProgress(app, chat.id) && (session == nullptr || !session->remote_stop_unconfirmed))
 		{
+			if (error_out != nullptr && AcpStopExitUnobserved(app, chat.id)) *error_out = kAcpProcessExitUnobservedMessage;
 			return false;
 		}
 		if (error_out != nullptr)
@@ -168,7 +175,11 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 		}
 		return false;
 	}
-	if (AcpStopInProgress(app, chat.id)) return false;
+	if (AcpStopInProgress(app, chat.id))
+	{
+		if (error_out != nullptr && AcpStopExitUnobserved(app, chat.id)) *error_out = kAcpProcessExitUnobservedMessage;
+		return false;
+	}
 	return true;
 }
 

@@ -145,6 +145,7 @@ namespace
 	constexpr std::string_view kChatRemotePromptDeliverySessionIdField = "remote_prompt_delivery_session_id";
 	constexpr std::string_view kChatRemotePromptDeliveryIdField = "remote_prompt_delivery_id";
 	constexpr std::string_view kChatRemotePromptDeliveryPayloadField = "remote_prompt_delivery_payload";
+	constexpr std::string_view kChatRemotePromptDeliveryInputIdsField = "remote_prompt_delivery_input_ids";
 	constexpr std::string_view kChatAcpQueuedPromptsField = "acp_queued_prompts";
 	constexpr std::string_view kChatAcpQueueHeldField = "acp_queue_held";
 	constexpr std::string_view kChatAcpDispatchedQueuedPromptCountField = "acp_dispatched_queued_prompt_count";
@@ -1025,6 +1026,7 @@ namespace
 		uam::json::SetString(obj, kMessageCreatedAtField, msg.created_at);
 		if (msg.native_input_id && uam::input_provenance::ValidNativeInputId(*msg.native_input_id)) uam::json::SetString(obj, "native_input_id", *msg.native_input_id);
 		if (msg.role == MessageRole::User && msg.input_write_completed && msg.native_input_id && uam::input_provenance::ValidNativeInputId(*msg.native_input_id)) uam::json::SetBool(obj, "input_write_completed", true);
+		if (msg.role == MessageRole::User && msg.input_delivery_tracked) uam::json::SetBool(obj, "input_delivery_tracked", true);
 		if (msg.origin_request_id && uam::input_provenance::ValidOriginRequestId(*msg.origin_request_id)) uam::json::SetString(obj, "origin_request_id", *msg.origin_request_id);
 
 		SetNonEmptyString(obj, kMessageProviderField, msg.provider);
@@ -1179,6 +1181,7 @@ namespace
 		msg.model_id = JsonStringOrEmpty(obj.Find("model_id"));
 		msg.native_input_id = InputProvenanceFromJson(obj.Find("native_input_id"), true);
 		if (const auto* completed = obj.Find("input_write_completed"); completed && completed->type == JsonValue::Type::Bool && completed->bool_value && msg.role == MessageRole::User && msg.native_input_id) msg.input_write_completed = true;
+		if (const auto* tracked = obj.Find("input_delivery_tracked"); tracked && tracked->type == JsonValue::Type::Bool && tracked->bool_value && msg.role == MessageRole::User) msg.input_delivery_tracked = true;
 		msg.origin_request_id = InputProvenanceFromJson(obj.Find("origin_request_id"), false);
 		if (const auto* origin = obj.Find("managed_origin_run_id"); origin && origin->type == JsonValue::Type::String && uam::uuid::IsCanonicalUuid(origin->string_value)) msg.managed_origin_run_id = origin->string_value;
 		msg.tokens_input = NonNegativeIntFieldOrZero(obj.Find(kMessageTokensInputField));
@@ -1423,7 +1426,7 @@ namespace
 
 	bool MessageIdentityFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
 	{
-		return lhs.input_write_completed == rhs.input_write_completed && lhs.native_input_id == rhs.native_input_id && lhs.origin_request_id == rhs.origin_request_id && lhs.managed_origin_run_id == rhs.managed_origin_run_id && lhs.role == rhs.role && lhs.content == rhs.content && lhs.created_at == rhs.created_at && lhs.provider == rhs.provider && lhs.model_id == rhs.model_id && lhs.provider_event_ids == rhs.provider_event_ids;
+		return lhs.input_write_completed == rhs.input_write_completed && lhs.input_delivery_tracked == rhs.input_delivery_tracked && lhs.native_input_id == rhs.native_input_id && lhs.origin_request_id == rhs.origin_request_id && lhs.managed_origin_run_id == rhs.managed_origin_run_id && lhs.role == rhs.role && lhs.content == rhs.content && lhs.created_at == rhs.created_at && lhs.provider == rhs.provider && lhs.model_id == rhs.model_id && lhs.provider_event_ids == rhs.provider_event_ids;
 	}
 
 	bool MessageUsageFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
@@ -1639,6 +1642,8 @@ namespace
 		       lhs.routing_assigned_connection_identity == rhs.routing_assigned_connection_identity &&
 		       lhs.routing_assigned_provider_configuration_identity == rhs.routing_assigned_provider_configuration_identity &&
 		       lhs.routing_reservation_pending == rhs.routing_reservation_pending &&
+		       lhs.routing_reservation_runner_version == rhs.routing_reservation_runner_version &&
+		       lhs.routing_identity_current_format == rhs.routing_identity_current_format &&
 		       lhs.remote_process_control_token == rhs.remote_process_control_token &&
 		       lhs.remote_delivered_stdout_cursor == rhs.remote_delivered_stdout_cursor &&
 		       lhs.remote_delivered_stderr_cursor == rhs.remote_delivered_stderr_cursor &&
@@ -1650,6 +1655,7 @@ namespace
 		       lhs.remote_prompt_delivery_session_id == rhs.remote_prompt_delivery_session_id &&
 		       lhs.remote_prompt_delivery_id == rhs.remote_prompt_delivery_id &&
 		       lhs.remote_prompt_delivery_payload == rhs.remote_prompt_delivery_payload &&
+		       lhs.remote_prompt_delivery_input_ids == rhs.remote_prompt_delivery_input_ids &&
 		       lhs.remote_pending_requests == rhs.remote_pending_requests &&
 		       lhs.remote_next_request_id == rhs.remote_next_request_id &&
 		       lhs.remote_active_turn_id == rhs.remote_active_turn_id &&
@@ -1917,16 +1923,37 @@ namespace
 		// Preserve uncertainty for this owner, without importing a known foreign owner's marker.
 		if (managed_marker && (raw_owner.empty() || raw_owner == owner))
 			chat.managed_followup_input_unavailable = true;
-		const bool matches = journal && journal->owner == owner &&
-		    journal->base_queue_revision == chat.acp_queue_storage_revision &&
+		// The journal extends exactly the queue revision this primary carries. An ordinary UAM full save
+		// either consumes the journal (handled above) or is refused while it exists, so a primary whose size
+		// or time witness alone differs was restored, synced or touched outside UAM. The one UAM writer that
+		// skips the journal check, a stopped-launch own publication, can write a newer transcript under the
+		// same queue revision; the journal is then still the newer queue over that transcript. In both cases
+		// its input is kept, held, and each prompt is re-validated against the transcript when dispatched.
+		const bool extends_saved_queue = journal && journal->owner == owner &&
+		    journal->base_queue_revision == chat.acp_queue_storage_revision;
+		const bool matches = extends_saved_queue &&
 		    ChatRepository::ChatStorageRevision(data_root, chat.id) == journal->base_revision;
-		if (matches)
+		if (extends_saved_queue)
 		{
 			chat.acp_queued_prompts = journal->prompts;
-			chat.acp_queue_held = journal->held;
+			// A rebound journal never sends on its own: its input stays held and visible until the user
+			// resumes it. The next queue or full save records the current primary as its base.
+			chat.acp_queue_held = journal->held || (!matches && !journal->prompts.empty());
+			if (!matches)
+			{
+				// Every load repeats the rebind until a save records the new base; say so once per launch.
+				static std::mutex logged_mutex;
+				static std::unordered_set<std::string> logged;
+				const std::lock_guard<std::mutex> lock(logged_mutex);
+				if (logged.insert(chat.id).second)
+					uam::diagnostics::Write("Queued inputs kept held: journal rebound to a saved chat whose file witness changed " + chat.id);
+			}
 			chat.acp_dispatched_queued_prompt_count = journal->dispatched;
 			chat.acp_queue_storage_revision = journal->revision;
-			if (journal->memory_progress)
+			// Memory progress counts rows of the transcript the journal was written beside. A restored older
+			// primary can hold fewer, so a rebound journal keeps the primary's own progress: rows may be
+			// processed again, never skipped.
+			if (journal->memory_progress && matches)
 			{
 				chat.memory_last_processed_message_count = journal->memory_progress->first;
 				chat.memory_last_processed_at = journal->memory_progress->second;
@@ -2073,6 +2100,8 @@ namespace
 		chat.routing_assigned_provider_configuration_identity = JsonStringOrEmpty(root.Find("routing_assigned_provider_configuration_identity"));
 		if (chat.routing_mode != "automatic") chat.routing_mode = "explicit";
 		chat.routing_reservation_pending = JsonBoolOrDefault(root.Find("routing_reservation_pending"), false);
+		chat.routing_reservation_runner_version = JsonStringOrEmpty(root.Find("routing_reservation_runner_version"));
+		chat.routing_identity_current_format = JsonBoolOrDefault(root.Find("routing_identity_current_format"), false);
 		chat.remote_restart_pending = JsonBoolOrDefault(
 		    root.Find(kChatRemoteRestartPendingField), false);
 		if (root.Find(kChatRemoteProcessExistsField) == nullptr)
@@ -2140,6 +2169,11 @@ namespace
 			chat.remote_prompt_delivery_id.clear();
 			chat.remote_prompt_delivery_payload.clear();
 		}
+		// Row confirmation only: malformed or oversized lists are dropped, which leaves those rows unconfirmed.
+		chat.remote_prompt_delivery_input_ids = JsonStringArrayOrEmpty(root.Find(kChatRemotePromptDeliveryInputIdsField));
+		if (chat.remote_prompt_delivery_id.empty() || chat.remote_prompt_delivery_input_ids.size() > 64 ||
+		    !std::ranges::all_of(chat.remote_prompt_delivery_input_ids, [](const std::string& id) { return uam::input_provenance::ValidNativeInputId(id); }))
+			chat.remote_prompt_delivery_input_ids.clear();
 		chat.remote_active_turn_id = JsonStringOrEmpty(root.Find(kChatRemoteActiveTurnIdField));
 		if (chat.remote_active_turn_id.size() > 256) chat.remote_active_turn_id.clear();
 		const double turn_serial = JsonNumberOrDefault(root.Find(kChatRemoteTurnSerialField), 0);
@@ -2288,6 +2322,7 @@ namespace
 			chat.remote_prompt_delivery_session_id.clear();
 			chat.remote_prompt_delivery_id.clear();
 			chat.remote_prompt_delivery_payload.clear();
+			chat.remote_prompt_delivery_input_ids.clear();
 			chat.remote_pending_requests.clear();
 			chat.remote_next_request_id = 1;
 			chat.remote_active_turn_id.clear();
@@ -3929,16 +3964,20 @@ private:
 	std::function<bool(ChatPublicationFile, uam::io::AtomicWriteStage)> m_stopped_creation_hook;
 };
 
+bool ChatRepository::ChatContentRefusesSave(const ChatSession& chat)
+{
+	return (!chat.managed_followup_incarnation.empty() && !uam::uuid::IsCanonicalUuid(chat.managed_followup_incarnation)) ||
+	    !std::ranges::all_of(chat.acp_queued_prompts, ValidManagedPrompt) ||
+	    !uam::chat_ids::IsSafeStorageChatId(chat.id) || !ChatAttachmentsPersistable(chat);
+}
+
 bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged, PreparedChatSave* prepared, std::string* fingerprint, std::string* saved_revision, PreparedChatPublication* publication, SavedChatPrimaryWitness* primary_witness)
 try
 {
 	std::unique_lock<std::mutex> lock(ChatSaveMutex(), std::defer_lock);
 	if (prepared == nullptr && fingerprint == nullptr) lock.lock();
 
-	if ((fingerprint == nullptr && chat.managed_followup_input_unavailable) ||
-	    (!chat.managed_followup_incarnation.empty() && !uam::uuid::IsCanonicalUuid(chat.managed_followup_incarnation)) ||
-	    !std::ranges::all_of(chat.acp_queued_prompts, ValidManagedPrompt) ||
-	    !uam::chat_ids::IsSafeStorageChatId(chat.id) || !ChatAttachmentsPersistable(chat))
+	if ((fingerprint == nullptr && chat.managed_followup_input_unavailable) || ChatContentRefusesSave(chat))
 	{
 		return false;
 	}
@@ -4078,6 +4117,8 @@ try
 	uam::json::SetString(root, "routing_assigned_connection_identity", chat.routing_assigned_connection_identity);
 	uam::json::SetString(root, "routing_assigned_provider_configuration_identity", chat.routing_assigned_provider_configuration_identity);
 	uam::json::SetBool(root, "routing_reservation_pending", chat.routing_reservation_pending);
+	uam::json::SetString(root, "routing_reservation_runner_version", chat.routing_reservation_runner_version);
+	uam::json::SetBool(root, "routing_identity_current_format", chat.routing_identity_current_format);
 	uam::json::SetBool(root, kChatRemoteRestartPendingField,
 	                   chat.remote_restart_pending);
 	uam::json::SetString(root, kChatRemoteProcessControlTokenField,
@@ -4116,6 +4157,8 @@ try
 	                     chat.remote_prompt_delivery_id);
 	uam::json::SetString(root, kChatRemotePromptDeliveryPayloadField,
 	                     chat.remote_prompt_delivery_payload);
+	if (!chat.remote_prompt_delivery_id.empty() && !chat.remote_prompt_delivery_input_ids.empty())
+		uam::json::SetValue(root, kChatRemotePromptDeliveryInputIdsField, StringArrayToJson(chat.remote_prompt_delivery_input_ids));
 	uam::json::SetString(root, kChatRemotePromptDeliverySessionIdField,
 	                     chat.remote_prompt_delivery_session_id);
 	if (chat.remote_active_turn_id.size() > 256 || chat.remote_turn_serial < 0 ||
@@ -5525,6 +5568,8 @@ namespace
 		hydrated.routing_assigned_connection_identity = summary.routing_assigned_connection_identity;
 		hydrated.routing_assigned_provider_configuration_identity = summary.routing_assigned_provider_configuration_identity;
 		hydrated.routing_reservation_pending = summary.routing_reservation_pending;
+		hydrated.routing_reservation_runner_version = summary.routing_reservation_runner_version;
+		hydrated.routing_identity_current_format = summary.routing_identity_current_format;
 		hydrated.remote_delivered_stdout_cursor = summary.remote_delivered_stdout_cursor;
 		hydrated.remote_delivered_stderr_cursor = summary.remote_delivered_stderr_cursor;
 		hydrated.remote_source_exit_pending = summary.remote_source_exit_pending;
@@ -5534,6 +5579,7 @@ namespace
 		hydrated.remote_prompt_delivery_session_id = summary.remote_prompt_delivery_session_id;
 		hydrated.remote_prompt_delivery_id = summary.remote_prompt_delivery_id;
 		hydrated.remote_prompt_delivery_payload = summary.remote_prompt_delivery_payload;
+		hydrated.remote_prompt_delivery_input_ids = summary.remote_prompt_delivery_input_ids;
 		hydrated.remote_pending_requests = summary.remote_pending_requests;
 		hydrated.remote_next_request_id = summary.remote_next_request_id;
 		hydrated.remote_active_turn_id = summary.remote_active_turn_id;

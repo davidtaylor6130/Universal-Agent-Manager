@@ -498,7 +498,16 @@ namespace uam::remote
 		Socket service(socket(AF_UNIX, SOCK_STREAM, 0));
 		if (service.Get() < 0 || !SetNoSigPipe(service.Get()) ||
 		    connect(service.Get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0)
-			return 0;
+		{
+			// A service that holds its lock but cannot be reached may still own processes; only a free lock means it is gone.
+			const int lock = open((socket_path.string() + ".lock").c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+			if (lock < 0) return 0;
+			const bool held = flock(lock, LOCK_EX | LOCK_NB) != 0 && (errno == EWOULDBLOCK || errno == EAGAIN);
+			(void)close(lock);
+			if (!held) return 0;
+			std::cerr << "The runner service is running but does not answer. Check its sessions before replacing it.\n";
+			return 2;
+		}
 		if (!WriteSocketFrame(service.Get(),
 		                      {{"id", "stop"}, {"type", "service.shutdown"}}))
 			return 2;
