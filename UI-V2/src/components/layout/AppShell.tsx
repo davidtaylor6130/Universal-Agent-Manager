@@ -463,6 +463,11 @@ function shortNotificationTime(time: number, now: number): string {
   return `${Math.floor(hours / 24)}d`
 }
 
+/** Which computer an update is for; SSH helper updates exist only in SSH builds. */
+function updateHostId(update: UpdateMonitor['updates'][number]): string {
+  return update.executionHostId || (__UAM_FEATURE_SSH__ && update.remoteHostId) || 'local'
+}
+
 /** The computer an update belongs to, with the icon the sidebar and pickers use for it. */
 function NotificationHost({ hostId }: { hostId: string }) {
   const host = useAppStore((s) => s.executionHosts.find((candidate) => candidate.id === hostId))
@@ -552,9 +557,9 @@ function NotificationsPanel({
       id: updateNotificationId(updates),
       title: `${updates.length} update${updates.length === 1 ? '' : 's'} available`,
       detail: updateSummaryText(updates),
-      hostLines: updates.map((update) => ({ key: update.id, hostId: update.executionHostId || update.remoteHostId || 'local', text: `${update.shortName ?? update.name} ${update.latestVersion}` })),
+      hostLines: updates.map((update) => ({ key: update.id, hostId: updateHostId(update), text: `${update.shortName ?? update.name} ${update.latestVersion}` })),
       // Updates for one computer name it on the collapsed row too.
-      ...new Set(updates.map((update) => update.executionHostId || update.remoteHostId || 'local')).size === 1 ? { hostId: updates[0].executionHostId || updates[0].remoteHostId || 'local' } : {},
+      ...new Set(updates.map(updateHostId)).size === 1 ? { hostId: updateHostId(updates[0]) } : {},
       actions: [{ label: 'Review updates', variant: 'primary' as const, run: onReviewUpdates }],
     }] : []),
     ...providerUpdateResults.filter((result) => result.status === 'succeeded').map((result): Notification => ({
