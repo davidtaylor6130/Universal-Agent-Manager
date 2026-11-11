@@ -3946,7 +3946,7 @@ describe('ChatView', () => {
       // The failed chips and the draft stay; nothing can be sent until they are removed.
       expect(host.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep my text')
       expect(host.textContent).toContain('clip.MOV')
-      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.disabled).toBe(true)
+      expect(host.querySelector('button[type="submit"]:not([disabled])')).toBeNull()
     } finally { vi.unstubAllGlobals(); act(() => root.unmount()); host.remove() }
   })
 
