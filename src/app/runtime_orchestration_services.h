@@ -44,20 +44,20 @@ class ChatHistorySyncService
 		bool verified_empty = false;
 		std::string session_id;
 		std::string directory;
-		/// The export's own `parentID`; empty for a root session.
-		std::string parent_session_id;
 		std::vector<Message> messages;
 		std::string error;
+		/// The export's own `parentID`; empty for a root session. Last, so positional initialisers keep their meaning.
+		std::string parent_session_id;
 	};
 	struct RemoteCodexSession
 	{
 		std::string id;
 		std::string title;
 		std::string directory;
-		/// The spawning thread Codex reports for a subagent thread; empty for a root thread.
-		std::string parent_thread_id;
 		std::int64_t created_epoch_seconds = 0;
 		std::int64_t updated_epoch_seconds = 0;
+		/// The spawning thread Codex reports for a subagent thread; empty for a root thread. Last, so positional initialisers keep their meaning.
+		std::string parent_thread_id;
 	};
 	/// <summary>One scan pass on one host: a shared runner client and its first connect failure.</summary>
 	struct RemoteHistoryScanContext
