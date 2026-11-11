@@ -2048,6 +2048,12 @@ bool MemoryService::PublishPreparedWorkerOutput(uam::AppState& app, ChatSession&
 		SetError(error_out, "Wait for the saved request to be confirmed before publishing memory progress.");
 		return false;
 	}
+	// Refused before anything is written, so entries are not published without the progress that follows them.
+	if (ChatHasUnstartedProviderTurn(app, chat.id))
+	{
+		SetError(error_out, "Wait for the chat's provider to start before publishing memory progress.");
+		return false;
+	}
 	if (!uam::memory_levels::AllowsCreation(MemoryLevel(app, chat)) || !prepared || prepared->consumed || prepared->stop_token.stop_requested() || prepared->data_root != app.data_root || prepared->chat_id != chat.id ||
 	    prepared->folder_id != chat.folder_id || prepared->execution_host_id != chat.execution_host_id ||
 	    prepared->workspace_directory != chat.workspace_directory ||
@@ -2360,9 +2366,8 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			continue;
 		}
 
-		// Progress must follow the owned history save, rather than forcing its full rewrite here. A finished task
-		// also waits for a provider that is still starting, so its entries are never published without their progress.
-		if (task.data_root == app.data_root && (app.pending_chat_save_at_by_chat_id.contains(task.chat_id) || ChatHasUnstartedProviderTurn(app, task.chat_id)) &&
+		// Progress must follow the owned history save, rather than forcing its full rewrite here.
+		if (task.data_root == app.data_root && app.pending_chat_save_at_by_chat_id.contains(task.chat_id) &&
 		    !task.state->result.canceled && (task.state->result.ok ||
 		    (task.extraction_state && task.extraction_state->low_signal_skip)))
 		{

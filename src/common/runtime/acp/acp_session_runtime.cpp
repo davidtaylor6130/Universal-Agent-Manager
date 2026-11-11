@@ -7856,8 +7856,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (confirmed_stop && session != nullptr) ApplyConfirmedRemoteStopOutcome(app, *session, chat, pending.stderr_tail);
 			// The retry loop that follows logs no stderr of its own: record why this stop could not be confirmed.
 			if (!confirmed_stop && session != nullptr && session->remote_stop_pending)
-				AppendAcpDiagnostic(*session, "remote_stop", "unconfirmed", "", "", false, 0, "Remote stop could not be confirmed.",
-				    std::string("outcome=") + RemoteStopUnconfirmedOutcome(exited, exit_code, pending.stderr_tail));
+			{
+				// The retry repeats every minute: log a reason once, and again only when it changes.
+				const std::string outcome = std::string("outcome=") + RemoteStopUnconfirmedOutcome(exited, exit_code, pending.stderr_tail);
+				const auto last = std::ranges::find(session->diagnostics.rbegin(), session->diagnostics.rend(), std::string("remote_stop"), &AcpDiagnosticEntryState::event);
+				if (last == session->diagnostics.rend() || last->detail != outcome)
+					AppendAcpDiagnostic(*session, "remote_stop", "unconfirmed", "", "", false, 0, "Remote stop could not be confirmed.", outcome);
+			}
 			if (pending.restart_after_stop && session != nullptr && session->remote_stop_pending)
 			{
 				if (confirmed_stop)
