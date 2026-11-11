@@ -480,6 +480,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [branchingMessageIndex, setBranchingMessageIndex] = useState<number | null>(null)
   const [messageBranchError, setMessageBranchError] = useState('')
   const [rollbackConfirmation, setRollbackConfirmation] = useState<{ messageIndex: number; diff: string } | null>(null)
+  // Holds the chat the confirmation was opened for, so it never carries over to another chat.
+  const [forceStopConfirmFor, setForceStopConfirmFor] = useState('')
+  const [forceStopBusy, setForceStopBusy] = useState(false)
   const [renderedMessageCount, setRenderedMessageCount] = useState(() => restoredViewport?.renderedCount ?? (isCompanionContext() ? COMPANION_INITIAL_RENDERED_MESSAGES : INITIAL_RENDERED_MESSAGES))
   const [olderHistoryLoading, setOlderHistoryLoading] = useState(false)
   const [selectedRepositoryFile, setSelectedRepositoryFile] = useState<VcsChangedFile | null>(null)
@@ -972,6 +975,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const setMemorySettings = useAppStore((s) => s.setMemorySettings)
   const cancelAcpTurn = useAppStore((s) => s.cancelAcpTurn)
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
+  const treatRemoteStopAsStopped = useAppStore((s) => s.treatRemoteStopAsStopped)
   const resolveAcpPermission = useAppStore((s) => s.resolveAcpPermission)
   const resolveAcpUserInput = useAppStore((s) => s.resolveAcpUserInput)
   const setSessionProvider = useAppStore((s) => s.setSessionProvider)
@@ -2136,7 +2140,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const errorProvider = providers.find((candidate) => candidate.id === errorProviderId) ?? fallbackProviderForId(errorProviderId)
   const currentErrorSource = `Universal Agent Manager · ${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)}`
   const currentErrorTitle = `${currentErrorSource} error`
-  const currentAcpError = acp?.promptActionError?.message || acp?.lastError || ''
+  // Desktop only: the phone has no confirmation for an override that can leave a process running on the host.
+  const remoteStopForceAvailable = Boolean(acp?.remoteStopForceAvailable) && !isCompanionContext()
+  const currentAcpError = acp?.promptActionError?.message || acp?.lastError || (remoteStopForceAvailable ? 'Remote stop could not be confirmed.' : '')
   const currentAcpErrorKey = acp?.promptActionError ? `${session.id}:prompt:${acp.promptActionError.id}` : currentAcpError ? `${session.id}:${currentAcpError}` : ''
   const stoppedStatusLabel = acp && !acp.running && !currentAcpError && acp.lastStopReason &&
     !messages.some((message) => message.stopReason === acp.lastStopReason)
@@ -3904,17 +3910,37 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 This portable transcript is read-only and cannot start a provider. Create a new chat in a workspace to continue.
               </Notice>
             )}
-            {acp && currentAcpError && currentAcpErrorKey !== dismissedAcpErrorKey && !timeoutStop && (
+            {/* The notice is the only place Treat as stopped is offered, so it cannot be dismissed while it is. */}
+            {acp && currentAcpError && (currentAcpErrorKey !== dismissedAcpErrorKey || remoteStopForceAvailable) && !timeoutStop && (
               <Notice
+                key={remoteStopForceAvailable ? 'unconfirmed-stop' : 'error'}
                 tone="error"
                 title={currentErrorTitle}
+                dismissible={!remoteStopForceAvailable}
                 dismissLabel="Dismiss composer error"
                 onDismiss={() => setDismissedAcpErrorKey(currentAcpErrorKey)}
-                actions={<CopyTextButton text={buildAcpErrorCopyText({ ...acp, lastError: currentAcpError }, currentErrorTitle)} label="Copy error" title="Copy error details" />}
+                actions={<>
+                  {remoteStopForceAvailable && <Button type="button" size="sm" variant="secondary" onClick={() => setForceStopConfirmFor(session.id)}>Treat as stopped</Button>}
+                  <CopyTextButton text={buildAcpErrorCopyText({ ...acp, lastError: currentAcpError }, currentErrorTitle)} label="Copy error" title="Copy error details" />
+                </>}
               >
                 {currentErrorSource}: {currentAcpError}
               </Notice>
             )}
+            <ConfirmDialog
+              open={remoteStopForceAvailable && forceStopConfirmFor === session.id}
+              title="Treat this chat as stopped?"
+              confirmLabel="Treat as stopped"
+              tone="danger"
+              busy={forceStopBusy}
+              onCancel={() => setForceStopConfirmFor('')}
+              onConfirm={() => {
+                setForceStopBusy(true)
+                void treatRemoteStopAsStopped(session.id).finally(() => { setForceStopBusy(false); setForceStopConfirmFor('') })
+              }}
+            >
+              {recoveryHost?.label || 'The remote computer'} has not confirmed that this chat's process stopped, so it may still be running there{workspaceDirectory ? ` in ${workspaceDirectory}` : ''}. UAM will stop trying to reach it and will never reconnect to that turn. The transcript is kept, and your next message starts a new process.
+            </ConfirmDialog>
             {CLAUDE_ENABLED && <ConfirmDialog
               open={claudePlanPrompt !== null}
               title="Claude Plan mode"

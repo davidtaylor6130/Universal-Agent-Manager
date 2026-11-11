@@ -142,6 +142,7 @@ Current bridge actions, grouped by domain (the live dispatch table is `UamQueryH
 | `resolveAcpPermission` | Resolve a provider permission request |
 | `resolveAcpUserInput` | Answer provider-requested user input |
 | `stopAcpSession` | Stop a structured provider process |
+| `treatRemoteStopAsStopped` | `{chatId}`; the user's override of a remote stop that stayed unconfirmed past the offer delay. Desktop only |
 | `writeClipboardText` | Native clipboard write, limited to 1 MiB |
 | `setTheme` | Persist UI theme |
 | `setGoal` | Create/update a chat goal |

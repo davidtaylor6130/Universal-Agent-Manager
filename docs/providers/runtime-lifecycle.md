@@ -8,6 +8,8 @@ Shutdown must preserve a saved, undispatched remote queue when an idle runtime h
 
 The chat header runtime control gives each state its own icon as well as its colour and text: the shared dashed working ring while a turn runs (still under reduced motion or Motion Off), the stop icon while live, a timer inside the shrinking idle ring once the post-grace countdown starts (warning tone in the final minute) and the shared failure cross with Failed when the runtime reports an error; a failed runtime stays stoppable from the control. Its tooltip and a visually hidden accessible description name the state; the Terminal View and phone countdown use the same timer icon, a `timer` role and an accessible name that includes the remaining time and the grace-period explanation.
 
+Stopping a remote runtime is not settled on a deadline. It is finished only by the host's answer and is otherwise shown as unconfirmed and retried; see [stops the host has not confirmed](../remote-environments/ssh.md#stops-the-host-has-not-confirmed). After about two minutes unconfirmed, the chat's error notice offers the user **Treat as stopped**, which settles the chat without that answer after a warning that a process may still be running on the host. UAM never does this by itself.
+
 **Implementation: Partial.** The shared runtime has shutdown projection and stop-handoff guards; independent cold Retry process lifetime and cleanup remain incomplete. Verification, review and acceptance are recorded in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md).
 
 ## Stream watch

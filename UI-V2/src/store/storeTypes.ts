@@ -400,6 +400,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean>
   resolveAcpUserInput: (sessionId: string, requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
   stopAcpSession: (sessionId: string, purpose?: 'interrupt' | 'timeout') => Promise<boolean>
+  /** The user's override of a remote stop the host never confirmed; a process may still be running there. */
+  treatRemoteStopAsStopped: (sessionId: string) => Promise<boolean>
 
   // UI actions
   setTheme: (theme: StoredTheme) => void

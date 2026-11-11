@@ -3484,6 +3484,13 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
+    treatRemoteStopAsStopped: async (sessionId: string): Promise<boolean> => {
+      if (!isCefContext()) return false
+      const response = await sendToCEF({ action: 'treatRemoteStopAsStopped', payload: { chatId: sessionId } })
+      if (!response.ok) reportRefusal('Treat as stopped did not finish', response.error)
+      return response.ok
+    },
+
     stopAcpSession: async (sessionId: string, purpose: 'interrupt' | 'timeout' = 'interrupt'): Promise<boolean> => {
       if (isCefContext()) {
         const response = await sendToCEF({

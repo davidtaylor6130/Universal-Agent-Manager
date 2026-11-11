@@ -601,6 +601,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.recentStderr === next.recentStderr &&
     existing.lastExitCode === next.lastExitCode &&
     existing.lastStopReason === next.lastStopReason &&
+    existing.remoteStopForceAvailable === next.remoteStopForceAvailable &&
     existing.computePoolWait?.poolName === next.computePoolWait?.poolName && existing.computePoolWait?.inUse === next.computePoolWait?.inUse && existing.computePoolWait?.limit === next.computePoolWait?.limit &&
     existing.timeoutStop?.label === next.timeoutStop?.label && existing.timeoutStop?.seconds === next.timeoutStop?.seconds &&
     existing.timeoutStop?.kind === next.timeoutStop?.kind && existing.timeoutStop?.count === next.timeoutStop?.count && existing.timeoutStop?.example === next.timeoutStop?.example &&
@@ -743,6 +744,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     lastStopReason: acp?.lastStopReason,
     timeoutStop: acp?.timeoutStop ?? undefined,
     computePoolWait: acp?.computePoolWait ?? undefined,
+    remoteStopForceAvailable: acp?.remoteStopForceAvailable || undefined,
     diagnostics: Array.isArray(acp?.diagnostics) ? acp!.diagnostics : [],
     toolCalls: Array.isArray(acp?.toolCalls) ? acp!.toolCalls : [],
     planSummary: acp?.planSummary ?? '',

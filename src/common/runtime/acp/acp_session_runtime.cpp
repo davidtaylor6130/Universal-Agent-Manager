@@ -7156,6 +7156,110 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return cleanup_marker_saved;
 	}
 
+	bool TreatUnconfirmedRemoteStopAsStopped(AppState& app, const std::string& chat_id, std::string* error_out)
+	{
+		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		ChatSession* chat = FindAcpRuntimeChatById(app, chat_id);
+		if (session == nullptr || chat == nullptr || !session->remote_stop_force_offered ||
+		    chat->execution_host_id.empty() || chat->execution_host_id == uam::execution_hosts::kLocalHostId)
+		{
+			if (error_out != nullptr) *error_out = "This chat has no remote stop that has stayed unconfirmed long enough to be treated as stopped.";
+			return false;
+		}
+		// The reply and queued input are settled in the transcript, so an unreadable history refuses the override unchanged.
+		std::string hydration_warning;
+		if (!ChatRepository::HydrateChatMessages(app.data_root, *chat, &hydration_warning))
+		{
+			if (error_out != nullptr) *error_out = "This chat's history could not be read, so nothing was changed. Try again once it loads.";
+			return false;
+		}
+		// Only a fixed word is logged as the last recorded reason; the proxy's own text can carry host detail.
+		std::string last_outcome = "not_recorded";
+		for (auto entry = session->diagnostics.rbegin(); entry != session->diagnostics.rend(); ++entry)
+			if (entry->event == "remote_stop" && entry->detail.starts_with("outcome="))
+			{
+				const std::string word = entry->detail.substr(8);
+				if (!word.empty() && word.size() <= 32 && std::ranges::all_of(word, [](char c) { return (c >= 'a' && c <= 'z') || c == '_'; })) last_outcome = word;
+				break;
+			}
+		// As a stop does: nothing prepared for the old turn may send or continue after it.
+		ManagedParentContinuationService::Revoke(app, chat_id, "stop_requested");
+		RevokePendingEmptyHeldSend(app, chat_id);
+		session->pending_agent_input.reset();
+		session->pending_queued_history.reset();
+		session->pending_referenced_queue_launch_fingerprint.clear();
+		// The bridges of the abandoned stop and reattach are ended unread, so nothing the old helper sends later reaches this chat.
+		IPlatformProcessService& process_service = PlatformServicesFactory::Instance().process_service;
+		for (const std::unique_ptr<PendingAcpRemoteStop>& pending : app.pending_acp_remote_stops)
+		{
+			if (pending == nullptr || pending->chat_id != chat_id) continue;
+			if (!process_service.PollStdioProcessExited(*pending)) QueueAcpProcessStop(app, *pending, chat_id);
+			process_service.CloseStdioProcessHandles(*pending);
+		}
+		std::erase_if(app.pending_acp_remote_stops, [&](const auto& pending) { return pending != nullptr && pending->chat_id == chat_id; });
+		session->pending_local_launch.reset();
+		if (session->running)
+		{
+			QueueAcpProcessStop(app, *session, chat_id);
+			session->running = false;
+		}
+		// The stop that led here returned before it could pause the goal, so an active goal would start its next turn on
+		// the host the user just gave up on. It is paused; the user resumes it.
+		const std::string goal_owner_chat_id = uam::strings::NonEmptyOrFallback(chat->goal_owner_chat_id, chat_id);
+		if (const Goal* active_goal = GoalService::FindActiveGoal(app, goal_owner_chat_id); active_goal != nullptr)
+		{
+			const std::string goal_id = active_goal->id;
+			(void)GoalService::UpdateGoalStatus(app, goal_owner_chat_id, goal_id, GoalStatus::Paused);
+			if (ChatSession* owner = ChatDomainService().FindChatById(app, goal_owner_chat_id); owner != nullptr && owner != chat)
+				acp_detail::SaveChatQuietly(app, *owner);
+		}
+		// Queued input alone is not a turn: an idle chat's finished reply must not be marked interrupted.
+		const bool turn_uncertain = session->processing || AcpSessionIsWaitingForInput(*session) || session->prompt_request_id != 0 ||
+		    ChatHasUncertainRemoteInput(*chat) || chat->remote_restart_pending;
+		if (turn_uncertain)
+		{
+			// A session restored after a restart has no turn indexes: the interrupted reply is the assistant row after the last user row.
+			if (session->current_assistant_message_index < 0 && session->turn_assistant_message_index < 0)
+				for (int index = static_cast<int>(chat->messages.size()) - 1; index >= 0 && chat->messages[static_cast<std::size_t>(index)].role != MessageRole::User; --index)
+					if (chat->messages[static_cast<std::size_t>(index)].role == MessageRole::Assistant)
+					{
+						session->turn_assistant_message_index = index;
+						break;
+					}
+			// It has no live tool list either, so saved rows are settled directly.
+			for (Message& message : chat->messages)
+				for (ToolCall& tool : message.tool_calls)
+					if (uam::acp_statuses::IsActiveStatus(tool.status)) tool.status = uam::acp_statuses::kCancelled;
+		}
+		// Settle as a user interrupt, whatever error or purpose the retries left behind.
+		session->processing = session->processing || turn_uncertain;
+		session->stop_purpose = AcpStopPurpose::Interrupt;
+		session->lifecycle_state = kAcpLifecycleStopped;
+		session->last_error.clear();
+		// Revoke the old process authority: a new send gets a new token, and the helper refuses the old process to it.
+		session->remote_output_delivery_token.clear();
+		session->pending_remote_output_ack_line.clear();
+		session->pending_remote_source_exit_ack_line.clear();
+		session->remote_source_exit_reported = false;
+		chat->remote_active_turn_id.clear();
+		chat->remote_turn_user_message_index = -1;
+		chat->remote_source_exit_pending = false;
+		chat->remote_source_exit_code = -1;
+		app.remote_recovery_hydration_retry_not_before_by_chat_id.erase(chat_id);
+		// Background tasks of the old process cannot be reached again; left listed they would keep refusing a helper update.
+		(void)acp_detail::SettleClaudeBackgroundTasks(*session, chat, uam::acp_statuses::kCancelled);
+		// The clearing itself is the confirmed stop's: saved process, stop, restart and turn records go together.
+		const bool saved = FinalizeStoppedAcpSession(app, *session, chat, session->queue_held);
+		session->remote_stop_unconfirmed_since_time_s.reset();
+		session->remote_stop_force_offered = false;
+		AppendAcpDiagnostic(*session, "remote_stop", "forced_by_user", "", "", false, 0,
+		    "The user treated an unconfirmed remote stop as stopped; the host did not confirm it.", "last_outcome=" + last_outcome);
+		app.status_line = saved ? "The chat was treated as stopped." : "The chat was treated as stopped, but that could not be saved yet. UAM will retry.";
+		if (!saved && error_out != nullptr)
+			*error_out = "The chat was treated as stopped, but that could not be saved yet. UAM keeps retrying; if it quits first, the stop is retried at the next start.";
+		return saved;
+	}
+
 	bool StopAcpSession(AppState& app, const std::string& chat_id, AcpStopPurpose purpose, bool preserve_held_queue, std::shared_ptr<IPlatformProcessService> stop_service)
 	{
 		CancelChatRepositoryBaseline(app, chat_id);
@@ -7814,6 +7918,19 @@ For desktop observation and input, use only the provider's built-in controller; 
 		std::erase_if(app.claude_input_tasks, [](const ClaudeInputPreparationTask& task)
 		{ return task.state != nullptr && task.state->finished.load(std::memory_order_acquire); });
 		const double stop_now = GetAppTimeSeconds();
+		for (const auto& owned : app.acp_sessions)
+		{
+			if (owned == nullptr) continue;
+			// A retry in flight keeps the clock: only an answer from the host, or the user's override, ends the wait.
+			const bool waiting = owned->remote_stop_unconfirmed || (owned->remote_stop_pending && owned->remote_stop_unconfirmed_since_time_s);
+			if (!waiting) owned->remote_stop_unconfirmed_since_time_s.reset();
+			else if (!owned->remote_stop_unconfirmed_since_time_s) owned->remote_stop_unconfirmed_since_time_s = stop_now;
+			// Hidden model discovery has no chat to offer the override on.
+			const bool offered = waiting && !owned->ephemeral_model_discovery &&
+			    stop_now - *owned->remote_stop_unconfirmed_since_time_s >= acp_detail::kRemoteStopForceOfferDelaySeconds;
+			changed = changed || offered != owned->remote_stop_force_offered;
+			owned->remote_stop_force_offered = offered;
+		}
 		for (auto stop = app.pending_acp_remote_stops.begin();
 		     stop != app.pending_acp_remote_stops.end();)
 		{

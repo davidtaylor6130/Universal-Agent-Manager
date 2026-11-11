@@ -38,6 +38,8 @@ WorktreeLaunchPreparationState PrepareAcpWorkspaceForLaunch(AppState& app, AcpSe
 
 /// <summary>Bounds asynchronous remote Stop confirmation: a runner RPC permits 15 seconds, followed by retained-output drain and removal.</summary>
 inline constexpr double kRemoteStopConfirmationTimeoutSeconds = 30.0;
+// How long a remote stop must stay unconfirmed before the user is offered Treat as stopped.
+inline constexpr double kRemoteStopForceOfferDelaySeconds = 120.0;
 
 // Plain data: ACP failure detail bag (used by FormatAcpFailureMessage)
 struct AcpFailureDetails

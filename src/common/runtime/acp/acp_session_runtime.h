@@ -144,6 +144,13 @@ bool PollAllAcpSessions(AppState& app, CefRefPtr<CefBrowser> browser = nullptr);
 bool AcpStopInFlight(const AppState& app, std::string_view chat_id);
 bool AcpStopInProgress(const AppState& app, std::string_view chat_id);
 bool EnsureAcpStopProgress(AppState& app, std::string_view chat_id);
+/// <summary>
+/// The user's explicit override of a remote stop the host never confirmed: settles the chat as stopped without proof,
+/// so a process may still be running on the host. Refused until the stop has stayed unconfirmed long enough to be offered.
+/// A refusal changes nothing. When only saving the cleared records failed, the chat is already settled in memory,
+/// the save retries and this returns false with an error that says so.
+/// </summary>
+bool TreatUnconfirmedRemoteStopAsStopped(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
 /// <summary>What to tell the user when EnsureAcpStopProgress refuses: the unobserved-exit explanation when that is the reason, otherwise the caller's ordinary "stopping" text.</summary>
 inline const char* AcpStopRefusalMessage(const AppState& app, std::string_view chat_id, const char* fallback)
 {

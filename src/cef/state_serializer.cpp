@@ -1883,6 +1883,7 @@ namespace uam
 			if (uam::compute_pools::IsWaiting(*session, GetAppTimeSeconds()))
 				acp_json["computePoolWait"] = {{"poolName", session->compute_pool_wait_name}, {"inUse", session->compute_pool_wait_in_use}, {"limit", session->compute_pool_wait_limit}};
 			acp_json["lastError"] = session->last_error;
+			if (session->remote_stop_force_offered) acp_json["remoteStopForceAvailable"] = true;
 			acp_json["timeoutStop"] = !session->last_error.empty() && session->timeout_stop_error == session->last_error
 			    ? (session->timeout_stop_kind.empty()
 			           ? nlohmann::json{{"label", session->timeout_stop_label}, {"seconds", session->timeout_stop_seconds}}

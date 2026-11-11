@@ -947,6 +947,7 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     lastError: isString(value.lastError) ? value.lastError : undefined,
     recentStderr: isString(value.recentStderr) ? value.recentStderr : undefined,
     lastStopReason: isString(value.lastStopReason) ? value.lastStopReason : undefined,
+    remoteStopForceAvailable: value.remoteStopForceAvailable === true || undefined,
     computePoolWait: isRecord(value.computePoolWait) && isString(value.computePoolWait.poolName)
       ? { poolName: value.computePoolWait.poolName, inUse: nonNegativeInteger(value.computePoolWait.inUse) ?? 0, limit: nonNegativeInteger(value.computePoolWait.limit) ?? 0 }
       : undefined,

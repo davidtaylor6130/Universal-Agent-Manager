@@ -514,6 +514,8 @@ export interface CppAcpSession {
   lastStopReason?: string
   timeoutStop?: AcpTimeoutStop | null
   computePoolWait?: ComputePoolWait
+  /** A remote stop has stayed unconfirmed long enough for the user to be offered Treat as stopped. */
+  remoteStopForceAvailable?: boolean
   idleCountdownStartsAtMs?: number
   idleShutdownAtMs?: number
   idleShutdownTimeoutSeconds?: number
@@ -1058,6 +1060,8 @@ export interface AcpBinding {
   lastStopReason?: string
   timeoutStop?: AcpTimeoutStop
   computePoolWait?: ComputePoolWait
+  /** A remote stop has stayed unconfirmed long enough for the user to be offered Treat as stopped. */
+  remoteStopForceAvailable?: boolean
   idleCountdownStartsAtMs?: number
   idleShutdownAtMs?: number
   idleShutdownTimeoutSeconds?: number
