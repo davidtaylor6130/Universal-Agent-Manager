@@ -576,6 +576,12 @@ inline void MarkAcpLoopStop(AcpSessionState& session, std::string channel, int c
 	session.timeout_stop_count = count;
 	session.timeout_stop_example = std::move(example);
 }
+/// An open tool call outlasted the tool-call limit: the same notice, raising that limit instead of the turn timeout.
+inline void MarkAcpToolCallLimitStop(AcpSessionState& session, int seconds)
+{
+	MarkAcpTimeoutStop(session, "Tool call limit", seconds);
+	session.timeout_stop_kind = "tool";
+}
 void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
 	                      const std::string& message);
 void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat, bool ordinary_save_queued = false);

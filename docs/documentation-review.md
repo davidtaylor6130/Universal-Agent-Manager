@@ -245,6 +245,10 @@ Issue #516 adds the [automation API](automation-api.md). The agreed security mod
 
 A local OpenCode Plan child stayed running for 8m53s until cancelled: its local model server sent no response headers for 300 seconds, OpenCode retried natively and ACP reported no progress. The recorded "model does not support reasoning" entry came from OpenCode's separate title agent on its small model, and UAM sent no reasoning effort. UAM's managed-run deadline and turn inactivity limit are both 30 minutes. Decide whether managed children need a shorter no-output threshold or a visible provider-waiting state; no UAM change is made until decided.
 
+## CLI View busy limit and long commands
+
+**Open question.** Structured Chat now lets a quiet [open tool call](providers/runtime-lifecycle.md#open-tool-calls) outlast the provider turn timeout. The native CLI View has no tool events: its busy-time limit is still the provider turn timeout counted from when the terminal turn became busy, so a long command there can be interrupted. Whether CLI View should use the longer tool call limit as its ceiling, or stay as it is, needs David's decision; it is unchanged until then. OpenCode's native companion is likewise unchanged: a server that answers its observer late throughout a long tool call still stops the turn at the provider turn timeout. Two smaller points wait on live evidence: whether Copilot's tool arguments declare a timeout and in which unit, and whether a live OpenCode V1 ACP process sends the bash `timeout` in `rawInput`.
+
 ## Stream loop stop default
 
 The [stream watch](providers/runtime-lifecycle.md#stream-watch) ships with loop stops on at 20 repeats, a conservative interim value chosen so ordinary polling, re-reads after edits, untimed or empty calls and repeated short fragments do not trip it (#636). Whether the default should be 10, 50 or Off, and whether a provider's fast identical polling with identical output (under 5 seconds per call, under 60 seconds apart) should ever count, needs David's decision from real loop reports. Until then the user can change or disable it in Goal Loops settings.

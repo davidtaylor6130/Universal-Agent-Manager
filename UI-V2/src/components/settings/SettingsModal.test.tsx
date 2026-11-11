@@ -198,7 +198,7 @@ describe('SettingsModal memory settings', () => {
   it('shows exact unconfirmed settings fields as persistent warning drafts without a save or dismiss action', () => {
     useAppStore.setState({ memorySettingsUnconfirmedFields: [
       'memoryEnabledDefault', 'memoryLevelDefault', 'memoryIdleDelaySeconds', 'memoryRecallBudgetBytes',
-      'goalMaxLoopIterations', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB', 'activeTurnInactivityTimeoutSeconds', 'streamLoopRepeatLimit',
+      'goalMaxLoopIterations', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB', 'activeTurnInactivityTimeoutSeconds', 'toolCallTimeoutSeconds', 'streamLoopRepeatLimit',
       'memoryWorkerBindings', 'permissionReviewerProviderId', 'permissionReviewerModelId',
     ] })
     const { host, root } = renderModal()
@@ -210,7 +210,7 @@ describe('SettingsModal memory settings', () => {
       const fields = notice.querySelector<HTMLUListElement>('ul[aria-label="Unconfirmed settings fields"]')!
       expect(Array.from(fields.querySelectorAll('li'), (item) => item.textContent)).toEqual([
         'Default memory enabled', 'Default memory policy', 'Memory idle delay', 'Memory recall budget',
-        'Goal loop limit', 'Provider setup timeout', 'Provider output limit', 'Provider turn timeout', 'Repeated output limit', 'Memory worker selections',
+        'Goal loop limit', 'Provider setup timeout', 'Provider output limit', 'Provider turn timeout', 'Tool call limit', 'Repeated output limit', 'Memory worker selections',
         'Permission reviewer provider', 'Permission reviewer model',
       ])
       // Notice is a single bar now: the title is text, not a collapse header, so no buttons remain.
@@ -1706,6 +1706,10 @@ describe('SettingsModal memory settings', () => {
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ streamLoopRepeatLimit: 0 })
     act(() => (host.querySelector('button[aria-label="Increase provider turn timeout by 15 minutes"]') as HTMLButtonElement).click())
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ activeTurnInactivityTimeoutSeconds: 2700 })
+    // The tool call limit is its own row with the same 15-minute stepper and a two-hour default.
+    expect(host.querySelector('output[aria-label="Tool call limit"]')?.textContent).toBe('2 h')
+    act(() => (host.querySelector('button[aria-label="Decrease tool call limit by 15 minutes"]') as HTMLButtonElement).click())
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ toolCallTimeoutSeconds: 6300 })
 
     act(() => root.unmount())
     host.remove()

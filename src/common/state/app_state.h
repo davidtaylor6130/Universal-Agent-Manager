@@ -244,6 +244,7 @@ namespace uam
 		double stream_watch_started_s = 0.0; // Runtime-only: when the stream watch first saw this call active; -1 when first seen finished.
 		double stream_watch_finished_s = 0.0; // Runtime-only: when the stream watch first saw this call finished.
 		bool stream_watch_observed = false; // Runtime-only: its terminal result has been fed to the stream watch.
+		double declared_timeout_s = 0.0; // Runtime-only: the timeout this call declared for itself; 0 when it declared none.
 	};
 
 	struct AcpPlanEntryState

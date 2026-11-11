@@ -189,6 +189,20 @@ UAM_TEST(MemorySettingsHandlerPersistsProviderTurnTimeout)
 	UAM_ASSERT_EQ(fixture.Primary().active_turn_inactivity_timeout_seconds, 2700);
 }
 
+UAM_TEST(MemorySettingsHandlerPersistsToolCallLimit)
+{
+	MemorySettingsHandlerFixture fixture;
+	UAM_ASSERT_EQ(fixture.app.settings.tool_call_timeout_seconds, 7200);
+	auto payload = fixture.Fence();
+	payload["toolCallTimeoutSeconds"] = 10800;
+	payload["memoryRequestId"] = "tool-call-limit-commit";
+	const auto response = fixture.Dispatch("setMemorySettings", payload);
+	UAM_ASSERT_EQ(response->body.at("outcome"), nlohmann::json("committed"));
+	UAM_ASSERT_EQ(response->body.at("values").at("toolCallTimeoutSeconds"), nlohmann::json(10800));
+	UAM_ASSERT_EQ(fixture.app.settings.tool_call_timeout_seconds, 10800);
+	UAM_ASSERT_EQ(fixture.Primary().tool_call_timeout_seconds, 10800);
+}
+
 UAM_TEST(MemorySettingsHandlerPersistsStreamLoopRepeatLimit)
 {
 	MemorySettingsHandlerFixture fixture;

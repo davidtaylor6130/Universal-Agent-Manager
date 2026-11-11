@@ -7085,6 +7085,7 @@ describe('useAppStore Gemini CLI slice', () => {
       acpSetupInactivityTimeoutSeconds: state.acpSetupInactivityTimeoutSeconds,
       acpTurnOutputLimitMiB: state.acpTurnOutputLimitMiB,
       activeTurnInactivityTimeoutSeconds: state.activeTurnInactivityTimeoutSeconds,
+      toolCallTimeoutSeconds: state.toolCallTimeoutSeconds,
       streamLoopRepeatLimit: state.streamLoopRepeatLimit,
       memoryWorkerBindings: state.memoryWorkerBindings,
       permissionReviewerProviderId: state.permissionReviewerProviderId,
@@ -7177,7 +7178,7 @@ describe('useAppStore Gemini CLI slice', () => {
     const scope = '11111111-1111-4111-8111-111111111111'
     let canonical = { memoryEnabledDefault: true, memoryLevelDefault: 'strict', memoryIdleDelaySeconds: 60,
       memoryRecallBudgetBytes: 2048, goalMaxLoopIterations: 200, goalTokenBudget: 0, acpSetupInactivityTimeoutSeconds: 600,
-      acpTurnOutputLimitMiB: 1024, activeTurnInactivityTimeoutSeconds: 1800, streamLoopRepeatLimit: 20, memoryWorkerBindings: {}, permissionReviewerProviderId: '', permissionReviewerModelId: '' }
+      acpTurnOutputLimitMiB: 1024, activeTurnInactivityTimeoutSeconds: 1800, toolCallTimeoutSeconds: 7200, streamLoopRepeatLimit: 20, memoryWorkerBindings: {}, permissionReviewerProviderId: '', permissionReviewerModelId: '' }
     const sent: string[] = []
     let settingsRevision = 0
     let writes = 0
@@ -8651,7 +8652,7 @@ describe('observed memory fallback through real store ingestion, authored UNRUN'
     const scope = '11111111-1111-4111-8111-111111111111'
     const values = { memoryEnabledDefault: true, memoryLevelDefault: 'strict', memoryIdleDelaySeconds: 60,
       memoryRecallBudgetBytes: 2048, goalMaxLoopIterations: 200, goalTokenBudget: 0, acpSetupInactivityTimeoutSeconds: 600,
-      acpTurnOutputLimitMiB: 1024, activeTurnInactivityTimeoutSeconds: 1800, streamLoopRepeatLimit: 20, memoryWorkerBindings: {}, permissionReviewerProviderId: '', permissionReviewerModelId: '' }
+      acpTurnOutputLimitMiB: 1024, activeTurnInactivityTimeoutSeconds: 1800, toolCallTimeoutSeconds: 7200, streamLoopRepeatLimit: 20, memoryWorkerBindings: {}, permissionReviewerProviderId: '', permissionReviewerModelId: '' }
     const actions: string[] = []
     const gets: { done: boolean; fail: () => void }[] = []
     const saves: Promise<boolean>[] = []

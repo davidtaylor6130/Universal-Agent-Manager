@@ -2,8 +2,10 @@
 
 #include "common/state/app_state.h"
 #include "common/config/approval_modes.h"
+#include "common/config/settings_normalization.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
+#include "common/runtime/acp/acp_statuses.h"
 #include "common/security/command_safety.h"
 
 #include <algorithm>
@@ -47,7 +49,33 @@ inline bool AcpSessionIsWaitingForInput(const AcpSessionState& session)
 	return session.waiting_for_permission || session.waiting_for_user_input;
 }
 
-inline AcpTurnInactivityRecoveryAction AcpTurnInactivityRecovery(const AcpSessionState& session, double now_seconds, double timeout_seconds, double cancel_grace_seconds = 5.0)
+/// The latest time until which an open tool call keeps a quiet turn alive, and whether that call declared no timeout.
+struct AcpOpenToolCallDeadline
+{
+	double time_s = 0.0;
+	bool undeclared = false;
+};
+
+/// A tool call that declares its own timeout is not counted as inactive until that has passed, and the normal timer
+/// then counts from there; one that declares none gets the tool-call limit from its start. Several open calls use the
+/// latest deadline. Every deadline is finite, so a hung command still stops.
+inline AcpOpenToolCallDeadline AcpOpenToolCallDeadlineFor(const AcpSessionState& session, double timeout_seconds, double tool_call_limit_seconds)
+{
+	AcpOpenToolCallDeadline latest;
+	if (tool_call_limit_seconds <= 0.0) return latest;
+	for (const AcpToolCallState& tool : session.tool_calls)
+	{
+		if (tool.stream_watch_started_s <= 0.0 || !acp_statuses::IsActiveStatus(tool.status)) continue;
+		const bool undeclared = tool.declared_timeout_s <= 0.0;
+		const double time_s = tool.stream_watch_started_s +
+		    (undeclared ? tool_call_limit_seconds : std::min(tool.declared_timeout_s, static_cast<double>(settings::kMaxActiveTurnInactivityTimeoutSeconds)) + timeout_seconds);
+		if (time_s > latest.time_s) latest = {time_s, undeclared};
+	}
+	return latest;
+}
+
+/// tool_call_limit_seconds 0 ignores open tool calls.
+inline AcpTurnInactivityRecoveryAction AcpTurnInactivityRecovery(const AcpSessionState& session, double now_seconds, double timeout_seconds, double cancel_grace_seconds = 5.0, double tool_call_limit_seconds = 0.0)
 {
 	if (session.inactivity_timeout_pending)
 	{
@@ -58,7 +86,8 @@ inline AcpTurnInactivityRecoveryAction AcpTurnInactivityRecovery(const AcpSessio
 		return AcpTurnInactivityRecoveryAction::None;
 	}
 	const double latest_activity = std::max(session.turn_started_time_s, session.last_runtime_activity_time_s);
-	return latest_activity > 0.0 && now_seconds - latest_activity >= timeout_seconds ? AcpTurnInactivityRecoveryAction::Cancel : AcpTurnInactivityRecoveryAction::None;
+	if (latest_activity <= 0.0 || now_seconds - latest_activity < timeout_seconds) return AcpTurnInactivityRecoveryAction::None;
+	return now_seconds >= AcpOpenToolCallDeadlineFor(session, timeout_seconds, tool_call_limit_seconds).time_s ? AcpTurnInactivityRecoveryAction::Cancel : AcpTurnInactivityRecoveryAction::None;
 }
 
 inline bool AcpSessionHasActiveTurn(const AcpSessionState& session)

@@ -312,6 +312,8 @@ void RecordAcpPermissionDecision(AcpSessionState& session, const std::string& op
 		for (const AcpPermissionOptionState& option : session.pending_permission.options)
 			if (option.id == option_id) denied = denied || IsRejectPermissionOption(option.id, option.name, option.kind);
 		tool.approval_status = denied ? "denied" : "approved";
+		// The call starts running now: time spent waiting for the answer is not part of its run.
+		if (!denied && tool.stream_watch_started_s > 0.0) tool.stream_watch_started_s = GetAppTimeSeconds();
 		if (denied && uam::acp_statuses::IsActiveStatus(tool.status)) tool.status = uam::acp_statuses::kCancelled;
 	}
 }

@@ -160,6 +160,7 @@ namespace uam::settings
 	{
 		settings.cli_idle_timeout_seconds = std::clamp(settings.cli_idle_timeout_seconds, kMinCliIdleTimeoutSeconds, kMaxCliIdleTimeoutSeconds);
 		settings.active_turn_inactivity_timeout_seconds = std::clamp(settings.active_turn_inactivity_timeout_seconds, kMinActiveTurnInactivityTimeoutSeconds, kMaxActiveTurnInactivityTimeoutSeconds);
+		settings.tool_call_timeout_seconds = std::clamp(settings.tool_call_timeout_seconds, kMinActiveTurnInactivityTimeoutSeconds, kMaxActiveTurnInactivityTimeoutSeconds);
 		settings.stream_loop_repeat_limit = stream_watch::NormalizeLoopRepeatLimit(settings.stream_loop_repeat_limit);
 		settings.acp_setup_inactivity_timeout_seconds = settings.acp_setup_inactivity_timeout_seconds <= 0
 		                                                    ? kDefaultAcpSetupInactivityTimeoutSeconds

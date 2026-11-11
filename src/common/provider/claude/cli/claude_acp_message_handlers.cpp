@@ -454,6 +454,7 @@ namespace uam::acp_detail
 			tool.kind = uam::claude::ToolKind(tool_name);
 			tool.is_sub_agent = tool.kind == "sub-agent";
 			tool.args_json = input.dump();
+			tool.declared_timeout_s = ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpToolDeclaredTimeoutSeconds(tool.kind, input);
 			tool.status = uam::acp_statuses::kPending;
 			AppendToolTurnEventIfNeeded(session, tool_id);
 			if (tool_name == "AskUserQuestion")
@@ -589,6 +590,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 			if (const nlohmann::json* input = uam::nlohmann_json::FindField(item, "input"); input != nullptr)
 			{
 				tool_call.args_json = input->dump();
+				tool_call.declared_timeout_s = ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpToolDeclaredTimeoutSeconds(tool_call.kind, *input);
 			}
 			ApplySubAgentMetadata(tool_call, item, ProviderRuntimeRegistry::ResolveById(session.provider_id));
 			AppendToolTurnEventIfNeeded(session, tool_id);

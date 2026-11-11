@@ -3439,6 +3439,71 @@ UAM_TEST(AcpTurnInactivityRecoveryUsesTransportActivityAndCancelGrace)
 	UAM_ASSERT_EQ(uam::AcpTurnInactivityRecovery(session, 205.0, 60.0), uam::AcpTurnInactivityRecoveryAction::Stop);
 }
 
+UAM_TEST(AcpTurnInactivityWaitsForOpenToolCallDeadlines)
+{
+	using Action = uam::AcpTurnInactivityRecoveryAction;
+	uam::AcpSessionState session;
+	session.running = true;
+	session.processing = true;
+	session.turn_started_time_s = 10.0;
+	session.last_runtime_activity_time_s = 100.0;
+	// A 60-second turn timeout and a 600-second tool-call limit.
+	const auto recover = [&](double now) { return uam::AcpTurnInactivityRecovery(session, now, 60.0, 5.0, 600.0); };
+	const auto open = [&](const char* id, double started, double declared_timeout)
+	{
+		uam::AcpToolCallState tool;
+		tool.id = id;
+		tool.status = "in_progress";
+		tool.stream_watch_started_s = started;
+		tool.declared_timeout_s = declared_timeout;
+		session.tool_calls.push_back(tool);
+	};
+
+	// No declared timeout: the quiet call runs until the tool-call limit, counted from its start.
+	open("build", 100.0, 0.0);
+	UAM_ASSERT_EQ(recover(160.0), Action::None);
+	UAM_ASSERT_EQ(recover(699.0), Action::None);
+	UAM_ASSERT_EQ(recover(700.0), Action::Cancel);
+	UAM_ASSERT(uam::AcpOpenToolCallDeadlineFor(session, 60.0, 600.0).undeclared);
+	// Without a tool-call limit the open call is ignored, as before.
+	UAM_ASSERT_EQ(uam::AcpTurnInactivityRecovery(session, 160.0, 60.0), Action::Cancel);
+	// Permission and input waits keep their own behaviour.
+	session.waiting_for_permission = true;
+	UAM_ASSERT_EQ(recover(5000.0), Action::None);
+	session.waiting_for_permission = false;
+
+	// The result arrives: the normal timer counts again from that activity.
+	session.tool_calls[0].status = "completed";
+	session.last_runtime_activity_time_s = 300.0;
+	UAM_ASSERT_EQ(recover(359.0), Action::None);
+	UAM_ASSERT_EQ(recover(360.0), Action::Cancel);
+
+	// A declared timeout defers the normal timer until it has passed; the timer then counts from that point.
+	open("declared", 300.0, 120.0);
+	UAM_ASSERT_EQ(recover(419.0), Action::None);
+	UAM_ASSERT_EQ(recover(479.0), Action::None);
+	UAM_ASSERT_EQ(recover(480.0), Action::Cancel);
+	UAM_ASSERT(!uam::AcpOpenToolCallDeadlineFor(session, 60.0, 600.0).undeclared);
+
+	// Overlapping open calls: the latest deadline holds the turn.
+	open("slow", 310.0, 0.0);
+	UAM_ASSERT_EQ(recover(909.0), Action::None);
+	UAM_ASSERT_EQ(recover(910.0), Action::Cancel);
+	UAM_ASSERT(uam::AcpOpenToolCallDeadlineFor(session, 60.0, 600.0).undeclared);
+	// Provider activity later than every deadline still gets the whole normal timeout.
+	session.last_runtime_activity_time_s = 900.0;
+	UAM_ASSERT_EQ(recover(959.0), Action::None);
+	UAM_ASSERT_EQ(recover(960.0), Action::Cancel);
+
+	// A hung command always stops: an absurd declared timeout is bounded by the longest supported limit.
+	session.tool_calls[1].declared_timeout_s = 1e12;
+	UAM_ASSERT_EQ(uam::AcpOpenToolCallDeadlineFor(session, 60.0, 600.0).time_s, 300.0 + uam::settings::kMaxActiveTurnInactivityTimeoutSeconds + 60.0);
+	// A call first seen already finished, or never stamped, holds nothing.
+	session.tool_calls[1].stream_watch_started_s = -1.0;
+	session.tool_calls[2].stream_watch_started_s = 0.0;
+	UAM_ASSERT_EQ(uam::AcpOpenToolCallDeadlineFor(session, 60.0, 600.0).time_s, 0.0);
+}
+
 UAM_TEST(StreamWatchCountsNearConsecutiveToolAndTextRepeats)
 {
 	uam::stream_watch::StreamWatch watch;
@@ -3631,7 +3696,9 @@ UAM_TEST(AcpStreamStallStopsOnlyAfterSilenceAndReportsItsDuration)
 		UAM_ASSERT(fixture.session->last_runtime_activity_time_s >= before);
 		UAM_ASSERT(!uam::HandleAcpTurnInactivityTimeout(fixture.app, *fixture.session, fixture.Chat(), fixture.session->last_runtime_activity_time_s + 59.0));
 	}
+	// A finished tool call leaves the ordinary stall clock in charge.
 	UAM_ASSERT(fixture.Line(R"({"sessionUpdate":"tool_call","toolCallId":"build","title":"Run build","kind":"execute","status":"in_progress"})"));
+	UAM_ASSERT(fixture.Line(R"({"sessionUpdate":"tool_call_update","toolCallId":"build","status":"completed"})"));
 	UAM_ASSERT(!uam::HandleAcpTurnInactivityTimeout(fixture.app, *fixture.session, fixture.Chat(), fixture.session->last_runtime_activity_time_s + 59.0));
 	UAM_ASSERT(!fixture.session->cancel_requested);
 
@@ -3646,6 +3713,88 @@ UAM_TEST(AcpStreamStallStopsOnlyAfterSilenceAndReportsItsDuration)
 	const nlohmann::json stop = uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"]["timeoutStop"];
 	UAM_ASSERT(!stop.contains("kind"));
 	UAM_ASSERT_EQ(stop.value("seconds", 0), 60);
+}
+
+UAM_TEST(AcpOpenToolCallClockSurvivesReattachAndStartsAtApproval)
+{
+	uam::AcpSessionState session;
+	session.provider_id = "opencode-cli";
+	session.running = true;
+	session.processing = true;
+	session.turn_started_time_s = 1.0;
+	session.last_runtime_activity_time_s = 1.0;
+	Message restored{MessageRole::Assistant, ""};
+	ToolCall open;
+	open.id = "restored-build";
+	open.name = "bash";
+	open.kind = "execute";
+	open.status = "in_progress";
+	open.args_json = R"({"command":"make","timeout":300000})";
+	ToolCall other = open;
+	other.id = "restored-other";
+	other.kind = "other"; // Only a shell tool's `timeout` is a declared timeout in milliseconds.
+	ToolCall done = open;
+	done.id = "restored-done";
+	done.status = "completed";
+	restored.tool_calls = {open, other, done};
+	const double before = uam::GetAppTimeSeconds();
+	uam::acp_detail::RestoreTurnEventsFromMessageBlocks(session, restored);
+	UAM_ASSERT_EQ(session.tool_calls.size(), std::size_t{3});
+	// With no later tool event, the restored open calls still hold the turn from the reattach.
+	UAM_ASSERT(session.tool_calls[0].stream_watch_started_s >= before);
+	UAM_ASSERT_EQ(session.tool_calls[0].declared_timeout_s, 300.0);
+	UAM_ASSERT_EQ(session.tool_calls[1].declared_timeout_s, 0.0);
+	UAM_ASSERT(session.tool_calls[2].stream_watch_started_s < 0.0);
+	UAM_ASSERT_EQ(uam::AcpTurnInactivityRecovery(session, before + 500.0, 60.0, 5.0, 600.0), uam::AcpTurnInactivityRecoveryAction::None);
+	UAM_ASSERT_EQ(uam::AcpTurnInactivityRecovery(session, uam::GetAppTimeSeconds() + 601.0, 60.0, 5.0, 600.0), uam::AcpTurnInactivityRecoveryAction::Cancel);
+
+	// A call that waited for permission runs from the approval, not from the request.
+	session.tool_calls[0].stream_watch_started_s = 0.5;
+	session.pending_permission.tool_call_id = "restored-build";
+	uam::acp_detail::RecordAcpPermissionDecision(session, "allow", false);
+	UAM_ASSERT(session.tool_calls[0].stream_watch_started_s >= before);
+}
+
+UAM_TEST(AcpQuietToolCallHoldsTheTurnUntilItsOwnDeadline)
+{
+	StreamWatchTurnFixture fixture;
+	fixture.app.settings.tool_call_timeout_seconds = 600;
+	const auto quiet_for = [&](double seconds) { return uam::HandleAcpTurnInactivityTimeout(fixture.app, *fixture.session, fixture.Chat(), fixture.session->last_runtime_activity_time_s + seconds); };
+
+	// A long build inside one tool call sends nothing: the 60-second turn timeout must not stop it.
+	UAM_ASSERT(fixture.Line(R"({"sessionUpdate":"tool_call","toolCallId":"build","title":"Run build","kind":"execute","status":"in_progress"})"));
+	UAM_ASSERT(!quiet_for(61.0));
+	UAM_ASSERT(!quiet_for(590.0));
+	UAM_ASSERT(!fixture.session->cancel_requested);
+	// Its result arrives and the normal timer resumes.
+	UAM_ASSERT(fixture.Line(R"({"sessionUpdate":"tool_call_update","toolCallId":"build","status":"completed"})"));
+	UAM_ASSERT(!quiet_for(59.0));
+
+	// OpenCode's bash input declares a 300-second timeout, on a later update than the one that opened the call.
+	fixture.Chat().provider_id = "opencode-cli";
+	fixture.session->provider_id = "opencode-cli";
+	UAM_ASSERT(fixture.Line(R"({"sessionUpdate":"tool_call","toolCallId":"declared","title":"bash","kind":"execute","status":"pending"})"));
+	UAM_ASSERT(fixture.Line(R"({"sessionUpdate":"tool_call_update","toolCallId":"declared","status":"in_progress","rawInput":{"command":"make","timeout":300000}})"));
+	UAM_ASSERT_EQ(fixture.session->tool_calls.back().declared_timeout_s, 300.0);
+	UAM_ASSERT(!quiet_for(61.0));
+	UAM_ASSERT(!quiet_for(350.0));
+	// Past the declared timeout plus the normal quiet period it is an ordinary turn timeout, not the 600-second tool limit.
+	UAM_ASSERT(uam::AcpTurnInactivityRecovery(*fixture.session, fixture.session->last_runtime_activity_time_s + 365.0, 60.0, 5.0, 600.0) == uam::AcpTurnInactivityRecoveryAction::Cancel);
+	UAM_ASSERT(fixture.Line(R"({"sessionUpdate":"tool_call_update","toolCallId":"declared","status":"completed"})"));
+
+	// A hung call with no declared timeout stops at the tool-call limit, and the stop names the tool call.
+	UAM_ASSERT(fixture.Line(R"({"sessionUpdate":"tool_call","toolCallId":"hung","title":"Run tests","kind":"execute","status":"in_progress"})"));
+	UAM_ASSERT(!quiet_for(590.0));
+	UAM_ASSERT(quiet_for(601.0));
+	UAM_ASSERT(fixture.session->cancel_requested);
+	UAM_ASSERT_EQ(fixture.session->timeout_stop_kind, std::string("tool"));
+	UAM_ASSERT_EQ(fixture.session->timeout_stop_label, std::string("Tool call limit"));
+	UAM_ASSERT_EQ(fixture.session->timeout_stop_seconds, 600);
+	UAM_ASSERT(uam::strings::Contains(fixture.session->last_error, "a tool call exceeded its 10-minute limit"));
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
+	const nlohmann::json stop = uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"]["timeoutStop"];
+	UAM_ASSERT_EQ(stop.value("kind", ""), std::string("tool"));
+	UAM_ASSERT_EQ(stop.value("seconds", 0), 600);
 }
 
 UAM_TEST(AcpSendFailsClosedForExplicitMissingProvider)
