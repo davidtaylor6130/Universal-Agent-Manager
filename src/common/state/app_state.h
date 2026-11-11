@@ -26,6 +26,7 @@
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <chrono>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -519,6 +520,8 @@ namespace uam
 		std::unordered_set<std::string> seen_request_ids;
 		std::deque<std::string> seen_request_order; // Insertion order, so eviction drops the oldest ID.
 		std::unordered_set<std::string> owned_agent_run_ids;
+		// When each listed but not yet readable request file was first seen; bounded by kUnreadableRequestGrace.
+		std::unordered_map<std::string, std::chrono::steady_clock::time_point> unreadable_request_since;
 		// Current-connection cancellation tombstones; overflow refuses new waits until renewal.
 		std::unordered_set<std::string> cancelled_wait_ids;
 		bool wait_cancellation_overflow = false;
@@ -526,6 +529,7 @@ namespace uam
 		int chat_create_turn_serial = -1;
 		std::size_t chat_create_turn_count = 0;
 		std::optional<PendingApproval> pending_approval;
+		std::string render_check_request_id; // Latest render-checked request; its reply is written asynchronously.
 		std::shared_ptr<UamAgentWait> pending_agent_wait;
 		// Captured by real setup; wait admission cannot adopt a changed host/workspace selection.
 		std::optional<ExecutionHost> wait_host_at_launch;

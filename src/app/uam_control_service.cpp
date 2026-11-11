@@ -11,6 +11,7 @@
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
 #include "app/provider_model_catalog_service.h"
+#include "app/provider_mcp_settings_service.h"
 #include "common/config/execution_host_config.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
@@ -117,6 +118,9 @@ namespace uam
 		constexpr std::size_t kMaxSeenRequests = 256;
 		constexpr std::size_t kMaxAuditRecords = 64;
 		constexpr std::size_t kMaxProcessedPerTick = 16;
+		// How long a listed but unreadable request is re-polled before rejection (Windows delete-pending or a
+		// briefly locked file). Wall clock, because the poll delay ranges 16 ms to 1 s; well inside the proxy's 10 s.
+		constexpr auto kUnreadableRequestGrace = std::chrono::seconds(2);
 		constexpr std::size_t kMaxActiveWaits = 16;
 		constexpr std::size_t kMaxChatCreatesPerTurn = 2;
 		constexpr std::size_t kMaxChatCreatesPerCaller = 8;
@@ -402,6 +406,13 @@ namespace uam
 			           uam::approval_modes::kPlanApprovalMode &&
 			       uam::command_safety::ParseTier(chat.command_safety_tier) ==
 			           uam::command_safety::Tier::Yolo;
+		}
+
+		bool OutstandingRequest(const UamControlCapability& capability, std::string_view request_id)
+		{
+			return (capability.pending_agent_wait && capability.pending_agent_wait->request_id == request_id) ||
+			       (capability.pending_approval && capability.pending_approval->request_id == request_id) ||
+			       capability.render_check_request_id == request_id;
 		}
 
 		UamControlCapability* FindCapability(AppState& app, std::string_view id)
@@ -1737,6 +1748,7 @@ namespace uam
 			{
 				if (app.html_view_render_checker)
 				{
+					if (UamControlCapability* owner = FindCapability(app, capability_snapshot.id)) owner->render_check_request_id = request_id;
 					app.html_view_render_checker->Start(capability_snapshot.id, arguments.at("html").get<std::string>(),
 					    [directory = capability_snapshot.directory, request_id, tool_result = std::move(result.result)](html_view::RenderCheckResult check) mutable
 					    {
@@ -1890,14 +1902,18 @@ namespace uam
 				{
 					if (*size == 0 || *size > kMaxResponseBytes || uam::paths::IsLinkOrReparsePointNoThrow(response_path)) return std::nullopt;
 					std::string text;
-					if (!uam::io::TryReadTextFile(response_path, text) || text.size() != *size) return std::nullopt;
-					uam::paths::RemoveFileNoThrow(response_path);
-					const nlohmann::json response = nlohmann::json::parse(text, nullptr, false);
-					if (!response.is_object() || !response.contains("ok") || !response["ok"].is_boolean()) return std::nullopt;
-					if (response["ok"].get<bool>() ? !response.contains("result") :
-					    (response.contains("error") && !response["error"].is_string())) return std::nullopt;
-					if (aborted()) return std::nullopt;
-					return response;
+					// Replies are published atomically; a reply that cannot be opened yet (Windows: another
+					// handle without read sharing) is polled again within this call's budget, not failed.
+					if (uam::io::TryReadTextFile(response_path, text) && text.size() == *size)
+					{
+						uam::paths::RemoveFileNoThrow(response_path);
+						const nlohmann::json response = nlohmann::json::parse(text, nullptr, false);
+						if (!response.is_object() || !response.contains("ok") || !response["ok"].is_boolean()) return std::nullopt;
+						if (response["ok"].get<bool>() ? !response.contains("result") :
+						    (response.contains("error") && !response["error"].is_string())) return std::nullopt;
+						if (aborted()) return std::nullopt;
+						return response;
+					}
 				}
 				if (!uam::paths::IsDirectoryNoThrow(capability)) return std::nullopt;
 				const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
@@ -2473,10 +2489,11 @@ namespace uam
 	    const std::function<bool(io::AtomicWriteStage)>& response_write_hook)
 	{
 		bool changed = false;
-		std::size_t processed = 0;
 		const int64_t now = uam::time::SystemEpochMillisecondsNow();
-		for (std::size_t capability_index = 0;
-		     capability_index < app.uam_control_capabilities.size() && processed < kMaxProcessedPerTick;)
+		const auto steady_now = std::chrono::steady_clock::now();
+		// ponytail: per-capability budget, so one agent's bad files never delay another's requests; total work
+		// per tick is capabilities x kMaxProcessedPerTick, bounded by live provider sessions.
+		for (std::size_t capability_index = 0; capability_index < app.uam_control_capabilities.size();)
 		{
 			UamControlCapability& capability = app.uam_control_capabilities[capability_index];
 			if (!HasAuthority(app, capability, now))
@@ -2533,29 +2550,60 @@ namespace uam
 				continue;
 			}
 			std::ranges::sort(files);
+			std::erase_if(capability.unreadable_request_since, [&](const auto& entry)
+			{ return std::ranges::none_of(files, [&](const auto& file) { return uam::paths::Utf8PathString(file.stem()) == entry.first; }); });
 			const std::string capability_id = capability.id;
 			const std::filesystem::path capability_directory = capability.directory;
+			std::size_t processed = 0;
 			for (const auto& file : files)
 			{
 				if (processed == kMaxProcessedPerTick) break;
-				++processed;
 				const std::string request_id = uam::paths::Utf8PathString(file.stem());
+				const bool safe_id = SafeRequestId(request_id);
+				UamControlCapability* owner = FindCapability(app, capability_id);
+				// An answered or still-waiting ID owns its reply. A leftover file for it (removal failed, still
+				// listed while Windows deletes it, or emptied) is dropped; never write an error over that reply.
+				// Outstanding IDs (a live wait, approval or render check) are protected even after the bounded seen cache evicts them.
+				if (safe_id && owner != nullptr && (owner->seen_request_ids.contains(request_id) || OutstandingRequest(*owner, request_id)))
+				{
+					(void)uam::paths::RemoveFileNoThrow(file);
+					owner->unreadable_request_since.erase(request_id);
+					continue;
+				}
+				const bool link = uam::paths::IsLinkOrReparsePointNoThrow(file);
 				nlohmann::json response{{"ok", false}, {"error", "Malformed or oversized control request."}};
 				const auto size = uam::paths::FileSizeNoThrow(file);
-				if (SafeRequestId(request_id) && size.has_value() && *size > 0 && *size <= html_view::kMaxRequestBytes &&
-				    file.extension() == ".json" && !uam::paths::IsLinkOrReparsePointNoThrow(file))
+				bool unreadable = !size.has_value();
+				if (safe_id && size.has_value() && *size > 0 && *size <= html_view::kMaxRequestBytes &&
+				    file.extension() == ".json" && !link)
 				{
 					std::string text;
-					if (uam::io::TryReadTextFile(file, text) && text.size() == *size &&
-					    uam::paths::FileSizeNoThrow(file) == size &&
-					    !uam::paths::IsLinkOrReparsePointNoThrow(file))
+					// The open handle, not the earlier path checks, must be a regular non-link file: a swapped-in
+					// FIFO cannot block this poll and a growing file cannot exceed the request limit.
+					if (provider_mcp_settings::ReadConfigFile(file, text, html_view::kMaxRequestBytes))
 					{
 						const nlohmann::json request = nlohmann::json::parse(text, nullptr, false);
 						if (request.is_object() && request.contains("requestId") &&
 						    request["requestId"].is_string() && request["requestId"] == request_id)
 							response = HandleRequest(app, capability_id, request, now);
 					}
+					else unreadable = true;
 				}
+				// Writers publish atomically, so an unreadable listed regular file is being retired (a timed-out
+				// heartbeat) or briefly locked, not malformed: skip it without spending the budget, then reject.
+				// Links and unsafe IDs are rejected and removed at once.
+				if (unreadable && safe_id && !link && owner != nullptr)
+				{
+					if (!uam::paths::PathExistsNoThrow(file))
+					{
+						owner->unreadable_request_since.erase(request_id);
+						continue;
+					}
+					const auto since = owner->unreadable_request_since.try_emplace(request_id, steady_now).first->second;
+					if (steady_now - since < kUnreadableRequestGrace) continue;
+					owner->unreadable_request_since.erase(request_id);
+				}
+				++processed;
 				(void)uam::paths::RemoveFileNoThrow(file);
 				if (!response.value("pendingApproval", false) && !response.value("pendingAgentWait", false) &&
 				    !response.value("pendingChatCreate", false) && !response.value("pendingRenderCheck", false))
