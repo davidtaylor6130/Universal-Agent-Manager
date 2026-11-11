@@ -1711,6 +1711,16 @@ UAM_TEST(AttachmentStagingIgnoresBlockedBackgroundQueue)
 	const uam::attachment_preview::Image decoded = uam::attachment_preview::Decode(ReadFile(preview));
 	UAM_ASSERT_EQ(decoded.width, 2u);
 	UAM_ASSERT_EQ(decoded.height, 3u);
+	// A payload the composer could not read (no data for a file with a real size) is refused and writes nothing.
+	CefRefPtr<RecordingInstructionCallback> hollow = new RecordingInstructionCallback;
+	UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(handler, "stageChatAttachments",
+	    {{"chatId", chat.id}, {"items", nlohmann::json::array({
+	        {{"name", "clip.MOV"}, {"kind", "file"}, {"mimeType", "video/quicktime"}, {"size", 5}, {"dataBase64", ""}}})}}, hollow));
+	RunCreationLoopUntil([hollow]() { return hollow->successes + hollow->failures > 0; }, std::chrono::seconds(3));
+	UAM_ASSERT_EQ(hollow->successes, 0);
+	UAM_ASSERT_EQ(hollow->failures, 1);
+	const fs::path staged_root = fs::path(chat.workspace_directory) / ".UAM" / "attachments" / chat.id;
+	UAM_ASSERT_EQ(std::distance(fs::directory_iterator(staged_root), fs::directory_iterator()), std::ptrdiff_t(2));
 	UAM_ASSERT(browser.Close());
 }
 UAM_TEST(WindowChromeRejectsUntrustedFramesAndCompanionDispatch)

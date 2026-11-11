@@ -1088,6 +1088,21 @@ namespace uam::remote
 			abort();
 			return false;
 		}
+		// The helper checked size and digest before publishing; this confirms what the host's disk now holds.
+		// Helpers from before this field report nothing, and their commit check stands.
+		const nlohmann::json& committed = response["result"];
+		if (const auto published = committed.find("size"); published != committed.end() &&
+		    (!published->is_number_unsigned() || published->get<std::uintmax_t>() != bytes.size()))
+		{
+			nlohmann::json ignored;
+			(void)Request({{"type", "file.remove"}, {"uploadId", upload_id},
+			               {"path", uam::paths::Utf8PathString(remote_path)}}, ignored, nullptr);
+			if (error_out != nullptr)
+				*error_out = "The uploaded file is incomplete on the host (" +
+				    (published->is_number_unsigned() ? std::to_string(published->get<std::uintmax_t>()) : std::string("unknown")) +
+				    " of " + std::to_string(bytes.size()) + " bytes), so it was removed. Check the host's free space and try again.";
+			return false;
+		}
 		return true;
 	}
 

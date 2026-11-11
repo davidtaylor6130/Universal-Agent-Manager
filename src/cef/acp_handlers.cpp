@@ -5,6 +5,7 @@
 
 #include "cef/cef_push.h"
 #include "cef/state_serializer.h"
+#include "common/chat/attachment_payload.h"
 #include "common/chat/chat_repository.h"
 #include "common/chat/message_attachment_json.h"
 #include "common/config/execution_host_config.h"
@@ -38,6 +39,7 @@
 #include <filesystem>
 #include <map>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -65,7 +67,6 @@ namespace
 	namespace attachment_frontend_fields = uam::message_attachment_json::frontend;
 
 	constexpr std::size_t kMaxClipboardTextBytes = 1024 * 1024;
-	constexpr std::uintmax_t kMaxAttachmentBytes = 25ull * 1024ull * 1024ull;
 
 #if defined(_WIN32)
 	std::wstring WideFromUtf8(const std::string& value)
@@ -390,51 +391,7 @@ namespace
 			const std::string source_path_text = uam::nlohmann_json::TrimmedStringValue(
 			    item, {attachment_fields::kPathField});
 			std::string bytes;
-			if (const nlohmann::json* data = uam::nlohmann_json::FindStringField(
-			        item, attachment_frontend_fields::kDataBase64Field); data != nullptr)
-			{
-				if (!uam::base64::Decode(data->get_ref<const std::string&>(), bytes))
-				{
-					result.status = 400;
-					result.error = "Attachment data is not valid base64.";
-					break;
-				}
-			}
-			else if (!source_path_text.empty())
-			{
-				const std::filesystem::path source = PlatformServicesFactory::Instance()
-				    .path_service.ExpandLeadingTildePath(source_path_text);
-				const std::optional<std::uintmax_t> size = uam::paths::FileSizeNoThrow(source);
-				if (!size || !uam::paths::IsRegularFileNoThrow(source))
-				{
-					result.status = 400;
-					result.error = "File attachment does not exist: " + source_path_text;
-					break;
-				}
-				if (*size > kMaxAttachmentBytes)
-				{
-					result.status = 413;
-					result.error = "Attachment is larger than the 25 MB limit.";
-					break;
-				}
-				if (!uam::io::TryReadBinaryFile(source, bytes))
-				{
-					result.error = "Failed to read attachment: " + source_path_text;
-					break;
-				}
-			}
-			else
-			{
-				result.status = 400;
-				result.error = "File attachments require data or a filesystem path.";
-				break;
-			}
-			if (bytes.size() > kMaxAttachmentBytes)
-			{
-				result.status = 413;
-				result.error = "Attachment is larger than the 25 MB limit.";
-				break;
-			}
+			if (!uam::attachment_payload::Load(item, source_path_text, bytes, result.status, result.error)) break;
 
 			MessageAttachment attachment;
 			attachment.id = uam::nlohmann_json::TrimmedStringValue(
@@ -460,6 +417,9 @@ namespace
 			                       uam::time::SystemEpochMicrosecondsTokenNow(),
 			                       target, bytes, &error))
 			{
+				// Helper error text can carry host paths; the log keeps the size and outcome only.
+				uam::diagnostics::Write("[stageChatAttachments] Remote attachment upload failed: bytes=" + std::to_string(bytes.size()) + " detail=" + (error.empty() ? "none" : "helper_error"));
+				result.status = 500;
 				result.error = error.empty() ? "Remote attachment upload failed." : error;
 				break;
 			}
@@ -1368,41 +1328,11 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 			}
 
 			std::string bytes;
-			if (const nlohmann::json* data_base64 = uam::nlohmann_json::FindStringField(item, attachment_frontend_fields::kDataBase64Field); data_base64 != nullptr)
+			int load_status = 500;
+			std::string load_error;
+			if (!uam::attachment_payload::Load(item, source_path_text, bytes, load_status, load_error))
 			{
-				if (!uam::base64::Decode(data_base64->get_ref<const std::string&>(), bytes))
-				{
-					return uam::query_handler_async::AsyncFailure(400, "Attachment data is not valid base64.");
-				}
-				if (bytes.size() > kMaxAttachmentBytes)
-				{
-					return uam::query_handler_async::AsyncFailure(413, "Attachment is larger than the 25 MB limit.");
-				}
-			}
-			else if (!source_path_text.empty())
-			{
-				const std::filesystem::path source_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
-				if (!uam::paths::IsRegularFileNoThrow(source_path))
-				{
-					return uam::query_handler_async::AsyncFailure(400, "File attachment does not exist: " + source_path_text);
-				}
-				const std::optional<std::uintmax_t> source_size = uam::paths::FileSizeNoThrow(source_path);
-				if (!source_size || *source_size > kMaxAttachmentBytes)
-				{
-					return uam::query_handler_async::AsyncFailure(413, "Attachment is larger than the 25 MB limit.");
-				}
-				if (!uam::io::TryReadBinaryFile(source_path, bytes))
-				{
-					return uam::query_handler_async::AsyncFailure(500, "Failed to read attachment: " + source_path_text);
-				}
-				if (bytes.size() > kMaxAttachmentBytes)
-				{
-					return uam::query_handler_async::AsyncFailure(413, "Attachment is larger than the 25 MB limit.");
-				}
-			}
-			else
-			{
-				return uam::query_handler_async::AsyncFailure(400, "File attachments require data or a filesystem path.");
+				return uam::query_handler_async::AsyncFailure(load_status, load_error);
 			}
 
 			const std::string prefix = uam::time::SystemEpochMicrosecondsTokenNow() + "-" + std::to_string(index++);
