@@ -929,6 +929,26 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [remoteHostOptionsDirty, setRemoteHostOptionsDirty] = useState(false)
   const remoteHostBackRef = useRef<HTMLButtonElement>(null)
   const lastOpenRemoteHostId = useRef<string | null>(null)
+  const installFocusHostId = useRef<string | null>(null)
+  const failedInstallHostId = useRef<string | null>(null)
+  // After Connect and install, focus lands on the installing host's Open button (list) or its status (host page).
+  // A callback ref, because a new host's row mounts a commit after the state push that adds it.
+  const installFocusRef = (hostId: string) => (element: HTMLElement | null) => {
+    if (!element || installFocusHostId.current !== hostId) return
+    installFocusHostId.current = null
+    element.focus()
+  }
+  // A failed new host loses its row (before or after the response), so focus returns to the alias that is still filled in.
+  const settleFailedInstallFocus = () => {
+    const hostId = failedInstallHostId.current
+    if (!hostId) return
+    const host = useAppStore.getState().executionHosts.find((entry) => entry.id === hostId)
+    if (host && host.runnerStatus === 'installing') return
+    failedInstallHostId.current = null
+    const active = document.activeElement
+    // The removed row may still be leaving the DOM, so focus on its Open button counts as lost too.
+    if (!host && (!active || active === document.body || !active.isConnected || (active as HTMLElement).dataset?.hostOpen === hostId)) dialogRef.current?.querySelector<HTMLElement>('#remote-host-alias')?.focus()
+  }
   const [themeDraft, setThemeDraft] = useState<CustomTheme | null>(null)
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'theme' | 'editor'; id: string; name: string } | null>(null)
   const memoryMenuRef = useRef<HTMLDivElement>(null)
@@ -1065,19 +1085,24 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (!remotePreview || isRemoteHostBusy(remotePreview.host.id)) return
     const runnerDirectory = remoteCustomDirectory ? remoteDirectory.trim() : ''
     if (remoteCustomDirectory && runnerDirectoryError(remoteDirectory)) return
-    setRemoteHostBusy(remotePreview.host.id, true)
-    const response = await sendToCEF({ action: 'installRemoteHost', payload: { ...remotePreview.host, runnerDirectory } })
-    setRemoteHostBusy(remotePreview.host.id, false)
+    const { host } = remotePreview
+    // The dialog closes on confirm; the host row carries the progress and focus moves to it once it renders.
+    setRemotePreview(null)
+    installFocusHostId.current = host.id
+    setRemoteHostBusy(host.id, true)
+    const response = await sendToCEF({ action: 'installRemoteHost', payload: { ...host, runnerDirectory } })
+    setRemoteHostBusy(host.id, false)
     setRemoteMessage(null)
+    if (installFocusHostId.current === host.id) installFocusHostId.current = null
     if (!response.ok) {
-      setRemotePreview(null)
+      failedInstallHostId.current = host.id
+      settleFailedInstallFocus()
       // Only an SSH-stage failure (502) or a lost request without a code is a connection problem; refusals name their own fix.
       const connectionHint = response.code === undefined || response.code === 502 ? 'Check the SSH connection and try again.' : ''
       reportAppFailure(response.error || 'Remote helper setup failed.', connectionHint)
       return
     }
-    reportAppNotice(`${remotePreview.host.label} is ready.`, 'success')
-    setRemotePreview(null)
+    reportAppNotice(`${host.label} is ready.`, 'success')
     setRemoteAlias('')
     setRemoteLabel('')
   }
@@ -1152,7 +1177,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         return
       }
       if (remotePreview) {
-        if (!remoteBusy) setRemotePreview(null)
+        setRemotePreview(null)
         return
       }
       if (themeDraft) { requestThemeExit(() => setThemeDraft(null)); return }
@@ -1160,7 +1185,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [isMarkdownStoreOpen, mcpDraftDirty, openCliVersionMenu, openMemoryMenu, remotePreview, remoteBusy, selectedSection, themeDraft, themeDirty, themeSaving, themeExit, pendingDelete, editorSaving, editorExit, editorDirty, confirmDiscard, setSettingsOpen])
+  }, [isMarkdownStoreOpen, mcpDraftDirty, openCliVersionMenu, openMemoryMenu, remotePreview, selectedSection, themeDraft, themeDirty, themeSaving, themeExit, pendingDelete, editorSaving, editorExit, editorDirty, confirmDiscard, setSettingsOpen])
 
   useEffect(() => {
     const handler = (event: MouseEvent) => {
@@ -1810,6 +1835,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
     lastOpenRemoteHostId.current = openRemoteHost?.id ?? null
   }, [openRemoteHost?.id])
+  useEffect(settleFailedInstallFocus, [executionHosts])
   const storedScopeHostId = executionHosts.some((host) => isSshHost(host) && host.id === settingsScopeHostId) ? settingsScopeHostId : SETTINGS_ALL_ENVIRONMENTS
   const onProviderPage = selectedSection === 'provider-summary' || selectedSection.startsWith('provider:')
   const scopeBarVisible = hasSshHosts && (onProviderPage || selectedSection === 'defaults' || selectedSection === 'mcp-servers')
@@ -2569,9 +2595,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               status={remoteHostStatus(openRemoteHost)}
               control={<div className="flex items-center gap-1">{remoteHostActions(openRemoteHost)}</div>}
             />
-            <ProgressFill label={`Remote host task running on ${openRemoteHost.label}`} indeterminate active={isRemoteHostBusy(openRemoteHost.id)}>
-              <SettingRow title="Helper location" description={<span className="font-mono">home / {openRemoteHost.runnerDirectory || (openRemoteHost.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</span>} />
-            </ProgressFill>
+            <div ref={installFocusRef(openRemoteHost.id)} tabIndex={-1} role="group" aria-label={`${openRemoteHost.label} helper`}>
+              <ProgressFill label={`Remote host task running on ${openRemoteHost.label}`} indeterminate active={isRemoteHostBusy(openRemoteHost.id)}>
+                <SettingRow title="Helper location" description={<span className="font-mono">home / {openRemoteHost.runnerDirectory || (openRemoteHost.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</span>} />
+              </ProgressFill>
+            </div>
           </SettingsSection>
           <SettingsSection title="Host options">
             <RemoteHostOptionsForm
@@ -2639,7 +2667,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   control={(
                     <div className="flex items-center gap-1">
                       {remoteHostActions(host)}
-                      <IconButton data-host-open={host.id} icon={<ChevronRight size={14} />} label={`Open ${host.label}`} onClick={() => setOpenRemoteHostId(host.id)} />
+                      <IconButton ref={installFocusRef(host.id)} data-host-open={host.id} icon={<ChevronRight size={14} />} label={`Open ${host.label}`} onClick={() => setOpenRemoteHostId(host.id)} />
                     </div>
                   )}
                 />
@@ -3081,7 +3109,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       </ConfirmDialog>
       {SSH_ENABLED && <Presence open={Boolean(remotePreview)}>
         {/* ponytail: accepted exception (audit 3071). This dialog keeps its own panel: the SSH helper preview needs a wider body and a scrollable pre block that the shared ConfirmDialog surface does not provide. */}
-        {remotePreview && <Overlay open zIndex={70} onBackdropMouseDown={() => { if (!remoteBusy) setRemotePreview(null) }}>
+        {remotePreview && <Overlay open zIndex={70} onBackdropMouseDown={() => setRemotePreview(null)}>
           <div role="dialog" aria-modal="true" data-settings-owned-overlay aria-label="Remote helper setup" className="w-full max-w-lg rounded-xl" style={SETTINGS_DIALOG_STYLE}>
             <div className="px-5 pt-5">
               <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Install helper on {remotePreview.host.label}?</div>
@@ -3094,7 +3122,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   				<SegmentedControl
   				  aria-label="Install location"
   				  value={remoteCustomDirectory ? 'custom' : 'private'}
-  				  disabled={remoteBusy}
+  				  disabled={isRemoteHostBusy(remotePreview.host.id)}
   				  onChange={(value) => setRemoteCustomDirectory(value === 'custom')}
   				  options={[{ value: 'private', label: 'Recommended location' }, { value: 'custom', label: 'Custom folder' }]}
   				/>
@@ -3109,8 +3137,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   			  <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded p-2 text-[length:var(--fs-xs)]" style={{ background: 'var(--bg)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>{remotePreview.preview.split('\n').filter((line) => !line.startsWith('Install UAM runner')).join('\n')}</pre>
             </div>
             <div className="flex justify-end gap-2 px-5 pb-5">
-              <Button size="sm" disabled={remoteBusy} onClick={() => setRemotePreview(null)}>Cancel</Button>
-              <Button size="sm" variant="primary" aria-busy={remoteBusy || undefined} disabled={remoteBusy || Boolean(remoteDirectoryValidation)} onClick={() => void installRemoteHost()}>Connect and install</Button>
+              <Button size="sm" onClick={() => setRemotePreview(null)}>Cancel</Button>
+              <Button size="sm" variant="primary" aria-busy={isRemoteHostBusy(remotePreview.host.id) || undefined} disabled={isRemoteHostBusy(remotePreview.host.id) || Boolean(remoteDirectoryValidation)} onClick={() => void installRemoteHost()}>Connect and install</Button>
             </div>
           </div>
         </Overlay>}
