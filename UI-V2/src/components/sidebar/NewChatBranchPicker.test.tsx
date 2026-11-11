@@ -156,6 +156,24 @@ describe('NewChatBranchPicker', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
+  it('stops waiting on a silent refresh after 30 seconds, keeps the shown list and ignores the late reply', async () => {
+    vi.useFakeTimers()
+    try {
+      let reply!: (response: { ok: boolean; data?: typeof context }) => void
+      send.mockResolvedValueOnce({ ok: true, data: context }).mockImplementationOnce(() => new Promise((resolve) => { reply = resolve }))
+      await act(async () => render())
+      const refresh = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Refresh branches')!
+      act(() => refresh.click())
+      expect(host.querySelector('[aria-busy="true"]')).not.toBeNull()
+      await act(async () => { vi.advanceTimersByTime(30_000); await Promise.resolve() })
+      expect(host.querySelector('[aria-busy="true"]')).toBeNull()
+      expect(trigger().disabled).toBe(false)
+      await act(async () => reply({ ok: true, data: { ...context, localBranches: [] } }))
+      choose('feature/base')
+      expect(onChange).toHaveBeenLastCalledWith('feature/base')
+    } finally { vi.useRealTimers() }
+  })
+
   it('re-reads once silently after a busy reply and then offers the branches', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {

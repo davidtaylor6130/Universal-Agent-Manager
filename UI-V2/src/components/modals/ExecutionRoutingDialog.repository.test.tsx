@@ -35,6 +35,28 @@ describe('SSH routing repository matching', () => {
   })
   afterEach(() => { for (const { host, root } of mounted.splice(0)) { act(() => root.unmount()); host.remove() } vi.clearAllMocks() })
 
+  it('keeps folder mapping usable while matches are checked, bounds a silent check and retries it', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(sendToCEF).mockReturnValueOnce(new Promise(() => {}))
+      mount(<ExecutionRoutingDialog onClose={vi.fn()} />)
+      await flush()
+      expect(document.body.textContent).toContain('Checking repositories')
+      expect(document.body.textContent).toContain('/other · Checking repository…')
+      expect(buttonsNamed('Map folder…')[0].disabled).toBe(false)
+
+      await act(async () => { vi.advanceTimersByTime(30_000); await Promise.resolve() })
+      expect(document.body.textContent).toContain('Repository matching is unavailable right now')
+      expect(document.body.textContent).not.toContain('Checking repositories')
+
+      act(() => buttonsNamed('Retry')[0].click())
+      expect(document.activeElement?.textContent).toBe('Map folder…')
+      await flush()
+      expect(sendToCEF).toHaveBeenCalledTimes(2)
+      expect(document.body.textContent).toContain('Same repository')
+    } finally { vi.useRealTimers() }
+  })
+
   it('keeps today\'s manual mapping and never asks for matches when the capability is off', () => {
     useAppStore.setState((state) => ({ executionRouting: { ...state.executionRouting, repositoryMatching: undefined } }))
     mount(<ExecutionRoutingDialog onClose={vi.fn()} />)

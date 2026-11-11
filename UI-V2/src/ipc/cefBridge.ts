@@ -185,6 +185,25 @@ export async function sendToCEF<T = unknown>(
   return mock
 }
 
+/**
+ * Bounds the UI wait for a read that is safe to repeat. The native request is not cancelled; a reply
+ * arriving after the deadline is ignored. Never use it for actions whose lost acknowledgement would
+ * make a retry duplicate work (chat creation, scan start).
+ */
+export async function boundedRead<T = unknown>(reply: Promise<CEFResponse<T>>, timeoutError: string, timeoutMs = 30_000): Promise<CEFResponse<T>> {
+  let deadline: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      reply,
+      new Promise<CEFResponse<T>>((resolve) => { deadline = setTimeout(() => resolve({ ok: false, error: timeoutError }), timeoutMs) }),
+    ])
+  } catch {
+    return { ok: false, error: timeoutError }
+  } finally {
+    clearTimeout(deadline)
+  }
+}
+
 export async function sendWhenRemoteStopSettles<T = unknown>(request: CEFRequest): Promise<CEFResponse<T>> {
   const reportFailure = (failure: CEFResponse<T>) => {
     console.error(`[CEF] Error: ${failure.error ?? 'Request failed.'}`)

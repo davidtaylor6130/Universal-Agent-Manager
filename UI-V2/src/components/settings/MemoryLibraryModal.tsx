@@ -695,14 +695,16 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
     </div>
   )
 
+  const hasEntries = Boolean(selectedLocation && selectedLocation.entries.length > 0)
   const renderBody = (): ReactNode => {
     if (isAdding) return addForm
     if (viewingEntry) return detailView
-    if (memoryLibraryLoading) return <SettingsLoading label="Loading memory library" rows={4} />
-    if (!selectedLocation || selectedLocation.entries.length === 0) return memoryLibraryError ? null : emptyView
+    // A refresh keeps the shown list in place; the skeleton is only for a list not read yet.
+    if (memoryLibraryLoading && !hasEntries) return <SettingsLoading label="Loading memory library" rows={4} />
+    if (!hasEntries) return memoryLibraryError ? null : emptyView
     return listView
   }
-  const bodyKey = isAdding ? 'add' : viewingEntry ? `entry:${viewingEntry.id}` : memoryLibraryLoading ? 'loading' : !selectedLocation || selectedLocation.entries.length === 0 ? 'empty' : `list:${selectedLocation.key}`
+  const bodyKey = isAdding ? 'add' : viewingEntry ? `entry:${viewingEntry.id}` : !hasEntries ? (memoryLibraryLoading ? 'loading' : 'empty') : `list:${selectedLocation!.key}`
   const toolbarKey = isAdding ? 'add' : viewingEntry ? 'entry' : 'list'
 
   const toolbar = isAdding ? (
@@ -730,7 +732,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
         />
       </label>
       <Reveal as="span" open={!isAllMemory}><IconButton icon={<FolderOpen size={15} />} label="Open memory root" onClick={() => void openMemoryRoot()} /></Reveal>
-      <IconButton icon={<RefreshCw size={15} />} label="Refresh memory library" disabled={memoryLibraryLoading} onClick={() => void refreshMemoryLibrary()} />
+      <IconButton icon={<RefreshCw size={15} className={memoryLibraryLoading ? 'animate-spin motion-reduce:animate-none' : undefined} />} label="Refresh memory library" aria-busy={memoryLibraryLoading || undefined} disabled={memoryLibraryLoading} disabledReason="Refreshing memory library" onClick={() => void refreshMemoryLibrary()} />
       <div className="shrink-0 uam-more-menu">
         <MenuSelect
           label="More memory actions"
