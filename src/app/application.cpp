@@ -546,6 +546,7 @@ void Application::PollTick()
 #endif
 	}
 	ProviderCliCompatibilityService().Poll(m_app);
+	const bool remote_recovery_changed = uam::PollRemoteHostRecovery(m_app);
 	const bool remote_host_health_changed = m_app.remote_host_health_changed;
 	if (remote_host_health_changed && PersistenceCoordinator().SaveSettings(m_app))
 		m_app.remote_host_health_changed = false;
@@ -574,7 +575,7 @@ void Application::PollTick()
 	}
 	const std::chrono::steady_clock::time_point catalogs_finished = std::chrono::steady_clock::now();
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
-	const bool runtime_state_changed = routing_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || opencode_native_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
+	const bool runtime_state_changed = routing_changed || remote_recovery_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || opencode_native_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || chat_saves_changed || provider_compatibility_changed || model_catalog_changed || uam::DeferredStatePushDue() || uam::StateReconciliationDue();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
@@ -811,11 +812,21 @@ bool Application::InitializeState()
 	{
 		// Runs under an excluded provider's chats stay on disk unchanged, so set them aside before marking interrupted runs.
 		std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(m_app.data_root);
-		uam::excluded_provider_data::RemoveRunsOfHiddenChats(agent_runs.runs, uam::excluded_provider_data::TakeChats(chats));
+		const std::vector<ChatSession> hidden_chats = uam::excluded_provider_data::TakeChats(chats);
+		uam::excluded_provider_data::RemoveRunsOfHiddenChats(agent_runs.runs, hidden_chats);
+		uam::excluded_provider_data::RemoveRunsOfHiddenChats(agent_runs.inert_managed, hidden_chats);
 	}
 #endif
+	(void)uam::AgentRunLedger::PruneExpired(m_app.data_root, agent_runs, &agent_runs.errors);
+	std::vector<std::string> startup_interrupted_run_ids;
+	for (const AgentRun& run : agent_runs.runs)
+		if (run.status == "queued" || run.status == "running") startup_interrupted_run_ids.push_back(run.id);
 	(void)uam::AgentRunLedger::MarkNonterminalInterrupted(
 	    m_app.data_root, &agent_runs.runs, "manager_restarted", &agent_runs.errors);
+	// Version-2 records stay out of runtime admission. What a previous process left unfinished is closed, and a recent
+	// terminal run still owing its parent a result card is queued for one idempotent delivery by the scheduler.
+	for (AgentRun& owed : uam::AgentRunLedger::InterruptManagedRecords(m_app.data_root, std::move(agent_runs.inert_managed), "manager_restarted", &agent_runs.errors))
+		m_app.managed_result_recoveries.push_back(std::move(owed));
 	m_app.agent_runs = std::move(agent_runs.runs);
 	for (const std::string& error : agent_runs.errors)
 	{
@@ -904,11 +915,14 @@ bool Application::InitializeState()
 #endif
 
 	ChatHistorySyncService().LoadSidebarChats(m_app);
+	// Before the remote restore below: a child a previous process left running on a remote host is attached only to be stopped.
+	(void)uam::AgentRunScheduler::RequestStartupStops(m_app, startup_interrupted_run_ids);
 	for (const ChatSession& chat : std::vector<ChatSession>(m_app.chats))
 		if (!chat.temporary_parent_chat_id.empty())
 			(void)uam::RequestTemporarySideChatCleanup(m_app, chat.id);
 	uam::MigrateWorkspaceFolderOwnership(m_app);
 
+	if (uam::MigrateExecutionRoutingIdentities(m_app)) (void)PersistenceCoordinator().SaveSettings(m_app);
 	(void)uam::RestoreExecutionRoutingReservations(m_app);
 	if (const std::size_t reconnecting = uam::RestoreRemoteAcpSessionsAfterRestart(m_app);
 	    reconnecting > 0)

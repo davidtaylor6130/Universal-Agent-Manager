@@ -204,6 +204,26 @@ namespace
 	}
 }
 
+namespace
+{
+	/// The single slot yields to a NEW human origin once no automatic input of the old one can still be outstanding.
+	bool SlotYields(const AcpSessionState& session, const ChatSession& chat)
+	{
+		const auto& lease = session.managed_parent_continuation;
+		// No lease: the app or this session restarted, so the process that could have received an old write is gone.
+		if (!lease) return true;
+		if (!lease->revoked || lease->admission_pending || !lease->pending_retired_ack_turn.empty() ||
+		    session.turn_serial == lease->origin_serial || session.turn_serial == lease->expected_serial) return false;
+		if (chat.managed_parent_result->stage == "settled") return true;
+		// A request that reached the wire without its acknowledgement stays quarantined on this live process.
+		return std::ranges::none_of(chat.managed_parent_input_receipts, [&](const ManagedParentInputReceipt& receipt)
+		{
+			return (receipt.origin_id == lease->id || receipt.origin_id == chat.managed_parent_result->id) &&
+			    !receipt.native_request_id.empty() && receipt.accepted_turn_id.empty();
+		});
+	}
+}
+
 std::string ManagedParentContinuationService::StageDelegation(AppState& app, const UamControlCapability& cap, const AgentRun& run)
 {
 	ChatSession* chat = ChatDomainService().FindChatById(app, cap.chat_id);
@@ -215,11 +235,12 @@ std::string ManagedParentContinuationService::StageDelegation(AppState& app, con
 	    session->codex_origin_rpc_turn_serial != session->turn_serial || session->codex_origin_rpc_turn_id != session->codex_turn_id ||
 	    chat->execution_host_id != "local" || session->process_execution_host_id != "local" ||
 	    !ProviderRuntimeRegistry::ResolveById(session->provider_id).SupportsSameLiveParentResultContinuation()) return "cooperative-only";
-	if (session->managed_parent_continuation && session->managed_parent_continuation->revoked &&
-	    chat->managed_parent_result && chat->managed_parent_result->stage == "settled" &&
-	    session->turn_serial != session->managed_parent_continuation->origin_serial)
+	if (const auto stale = session->managed_parent_continuation; stale && !stale->revoked && !stale->internal_turn &&
+	    session->turn_serial != stale->origin_serial && !Current(app, *session, *chat, stale))
+		Revoke(app, chat->id, "owner_changed"); // A new human origin already replaced it; do not wait for the next poll.
+	if (chat->managed_parent_result && SlotYields(*session, *chat))
 	{
-		// Only fully acknowledged/settled DATA may yield the single bounded slot to a NEW human origin.
+		// The new origin gets a fresh record for its own children. Earlier receipts stay as proof and nothing is re-sent.
 		session->managed_parent_continuation.reset();
 		chat->managed_parent_result.reset();
 	}
@@ -237,7 +258,7 @@ std::string ManagedParentContinuationService::StageDelegation(AppState& app, con
 		session->managed_parent_continuation = std::move(staged);
 		return "automatic-pending";
 	}
-	// A retained record with no live lease can never re-create authority after restart.
+	// Still occupied only by a lease-less record that SlotYields refused; saved data never re-creates authority.
 	if (chat->managed_parent_result) return "held";
 	const std::string boundary = UserBoundary(*chat);
 	const std::string process = acp_detail::AcpProcessHandleLabel(*session);
