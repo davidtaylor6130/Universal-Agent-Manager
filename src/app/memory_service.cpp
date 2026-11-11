@@ -418,9 +418,21 @@ namespace
 		return MessageCount(chat) > chat.memory_last_processed_message_count;
 	}
 
+	/// A turn whose provider process has not started yet is not a running session, but its launch has captured the
+	/// chat's saved queue record, which carries memory progress. Writing progress then makes the launch give up and
+	/// returns the message as unsent, so memory waits for the process to start.
+	bool ChatHasUnstartedProviderTurn(const uam::AppState& app, const std::string& chat_id)
+	{
+		return std::ranges::any_of(app.acp_sessions, [&chat_id](const auto& session)
+		{
+			return session != nullptr && session->chat_id == chat_id && !session->running &&
+			       (session->processing || session->pending_local_launch);
+		});
+	}
+
 	bool SaveMemoryProgress(uam::AppState& app, ChatSession& chat, int processed_message_count)
 	{
-		if (uam::AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, chat))
+		if (uam::AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, chat) || ChatHasUnstartedProviderTurn(app, chat.id))
 			return false;
 		const int previous_count = chat.memory_last_processed_message_count;
 		const std::string previous_timestamp = chat.memory_last_processed_at;
@@ -1031,7 +1043,8 @@ namespace
 
 	bool ChatIsBusy(const uam::AppState& app, const std::string& chat_id)
 	{
-		return uam::AgentRunScheduler::HasPendingInitialMention(app, chat_id) || uam::ChatHasActiveAcpSession(app, chat_id) || uam::ChatHasBusyCliTerminal(app, chat_id);
+		return uam::AgentRunScheduler::HasPendingInitialMention(app, chat_id) || uam::ChatHasActiveAcpSession(app, chat_id) ||
+		       ChatHasUnstartedProviderTurn(app, chat_id) || uam::ChatHasBusyCliTerminal(app, chat_id);
 	}
 
 	bool ManualScanCandidateOrderLess(const MemoryService::ManualScanCandidate& lhs, const MemoryService::ManualScanCandidate& rhs)
@@ -2033,6 +2046,12 @@ bool MemoryService::PublishPreparedWorkerOutput(uam::AppState& app, ChatSession&
 	if (uam::AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, chat))
 	{
 		SetError(error_out, "Wait for the saved request to be confirmed before publishing memory progress.");
+		return false;
+	}
+	// Refused before anything is written, so entries are not published without the progress that follows them.
+	if (ChatHasUnstartedProviderTurn(app, chat.id))
+	{
+		SetError(error_out, "Wait for the chat's provider to start before publishing memory progress.");
 		return false;
 	}
 	if (!uam::memory_levels::AllowsCreation(MemoryLevel(app, chat)) || !prepared || prepared->consumed || prepared->stop_token.stop_requested() || prepared->data_root != app.data_root || prepared->chat_id != chat.id ||
