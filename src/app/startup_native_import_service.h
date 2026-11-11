@@ -13,6 +13,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace uam
@@ -124,6 +125,22 @@ namespace uam
 			bool new_workspace = false;
 			std::optional<ExecutionHost> host;
 		};
+		/// <summary>A sub-chat a scan found. It is never listed for review: it follows its parent's import decision.</summary>
+		struct Child
+		{
+			ChatSession chat;
+			std::filesystem::path rollout;
+			std::string key;
+			std::string parent_key;
+		};
+		/// <summary>Links a saved child that has no parent link to its saved parent, for a parent imported after its child.</summary>
+		void LinkOwnedChildren(AppState& app);
+		/// <summary>Children (and their children) of the given parent keys, each given its parent's workspace, at most 64 per parent.</summary>
+		std::vector<Child> CollectRiders(std::unordered_map<std::string, std::string>& folders) const;
+		void QueueRiders(std::vector<Child> riders);
+		/// <summary>After a scan the user started: imports the missing local sub-chats of chats already saved. Never runs for a startup scan.</summary>
+		bool StartSavedParentBackfill(AppState& app);
+		std::vector<Child> m_children;
 		bool Revalidate(AppState& app, std::string* error_out);
 		void StartScan(const AppState& app, bool include_remote);
 		void AddError(const std::string& error);

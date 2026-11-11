@@ -4883,13 +4883,33 @@ std::string ChatRepository::ChatMetadataFingerprint(const fs::path& data_root, c
 	return fingerprint;
 }
 
+namespace
+{
+	/// One identity rule for both links: `declared_parent` is the parent a provider's own child record names (native
+	/// import); without it the parent's loaded spawn tool calls must name the child (explicit open).
+	bool ApplyNativeChildLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id, std::string_view declared_parent);
+}
+
 bool ChatRepository::ApplyNativeChildDisplayLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id)
+{
+	return ApplyNativeChildLineage(source, child, native_child_id, {});
+}
+
+bool ChatRepository::ApplyImportedNativeChildLineage(const ChatSession& source, ChatSession& child)
+{
+	const std::string declared = uam::strings::Trim(child.native_parent_session_id);
+	return !declared.empty() && ApplyNativeChildLineage(source, child, child.imported_read_only ? child.id : child.native_session_id, declared);
+}
+
+namespace
+{
+bool ApplyNativeChildLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id, std::string_view declared_parent)
 {
 	// This is a display receipt of a validated open, not evidence that a native
 	// session can be resumed or controlled. Titles and tool arguments are not IDs.
 	const std::string native_id = uam::strings::Trim(native_child_id);
 	const std::string provider = uam::provider_ids::NormalizeCliProviderAliasOrSelf(source.provider_id);
-	if (source.imported_read_only || !source.messages_loaded || source.id.empty() || child.id.empty() || source.id == child.id ||
+	if (source.imported_read_only || (declared_parent.empty() && !source.messages_loaded) || source.id.empty() || child.id.empty() || source.id == child.id ||
 	    uam::strings::IsBlank(source.created_at) || uam::strings::IsBlank(source.native_session_id) || native_id.empty() ||
 	    provider != uam::provider_ids::NormalizeCliProviderAliasOrSelf(child.provider_id)) return false;
 	if (uam::strings::NonEmptyOrFallback(uam::strings::Trim(source.execution_host_id), "local") !=
@@ -4930,9 +4950,13 @@ bool ChatRepository::ApplyNativeChildDisplayLineage(const ChatSession& source, C
 	{
 		return codex ? uam::codex::ThreadIdKey(id) == uam::codex::ThreadIdKey(native_id) : id == native_id;
 	};
-	bool evidence = false;
+	// A child's own record naming this exact parent session is evidence by itself; a passive reference already carries it.
+	bool evidence = !declared_parent.empty() &&
+	    (codex ? uam::codex::ThreadIdKey(declared_parent) == uam::codex::ThreadIdKey(source.native_session_id) : declared_parent == uam::strings::Trim(source.native_session_id));
+	if (!declared_parent.empty() && !evidence) return false;
 	for (const Message& message : source.messages)
 	{
+		if (evidence) break;
 		if (message.role != MessageRole::Assistant) continue;
 		for (const ToolCall& tool : message.tool_calls)
 		{
@@ -4954,6 +4978,7 @@ bool ChatRepository::ApplyNativeChildDisplayLineage(const ChatSession& source, C
 	child.subagent_parent_chat_id = source.id;
 	child.subagent_parent_created_at = source.created_at;
 	return true;
+}
 }
 
 bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged)

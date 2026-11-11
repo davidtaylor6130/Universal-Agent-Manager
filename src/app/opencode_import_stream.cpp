@@ -55,6 +55,7 @@ namespace
 				return Fail("OpenCode exported a different session or workspace.");
 			return !m_stop.stop_requested() || Fail("OpenCode history loading was canceled.");
 		}
+		std::string ParentSessionId() const { return m_info.is_object() && m_info.contains("parentID") && m_info["parentID"].is_string() ? m_info["parentID"].get<std::string>() : std::string{}; }
 	  private:
 		bool Fail(std::string error) { if (m_error.empty()) m_error = std::move(error); return false; }
 		bool Scalar(nlohmann::json value)
@@ -178,7 +179,7 @@ namespace uam::opencode_import
 		return source;
 	}
 
-	bool Read(const std::filesystem::path& source, const ChatSession& identity, const std::function<bool(const Message&)>& emit, std::stop_token stop, std::string& error)
+	bool Read(const std::filesystem::path& source, const ChatSession& identity, const std::function<bool(const Message&)>& emit, std::stop_token stop, std::string& error, std::string* parent_session_id)
 	try
 	{
 		error.clear();
@@ -192,7 +193,9 @@ namespace uam::opencode_import
 		ExportReader reader(emit, stop, error);
 		if (!nlohmann::json::sax_parse(input, &reader)) return false;
 		if (input.bad()) { error = "OpenCode export could not be completely read."; return false; }
-		return reader.Complete(identity);
+		if (!reader.Complete(identity)) return false;
+		if (parent_session_id != nullptr) *parent_session_id = reader.ParentSessionId();
+		return true;
 	}
 	catch (const std::exception&)
 	{

@@ -1574,6 +1574,7 @@ if(UAM_BUILD_TESTS)
     tests/input_write_carrier_mutation_tests.cpp
     tests/gemini_history_journal_tests.cpp
     tests/native_child_lineage_tests.cpp
+    tests/native_subchat_import_tests.cpp
     tests/gemini_native_assets_tests.cpp
     tests/native_attachment_assets_tests.cpp
     tests/native_media_chat_save_tests.cpp

@@ -2,6 +2,7 @@
 #include "app/startup_native_import_service.h"
 
 #include "app/chat_domain_service.h"
+#include "common/chat/chat_repository.h"
 #include "common/chat/native_chat_identity.h"
 #include "common/chat/native_import_filter.h"
 #include "common/chat/chat_folder_store.h"
@@ -237,6 +238,7 @@ namespace uam
 		}
 		// Only replace settled staging metadata; saved chats, declines and native histories remain authoritative.
 		std::erase_if(m_candidates, [](const Candidate& candidate) { return paths::IsControllerLocalWorkspace(candidate.chat); });
+		std::erase_if(m_children, [](const Child& child) { return paths::IsControllerLocalWorkspace(child.chat); });
 		// Remote sessions startup left out join this review; the local scan below finds local ones without the startup rules.
 		for (Candidate& candidate : m_startup_deferred) m_candidates.push_back(std::move(candidate));
 		m_startup_deferred.clear();
@@ -451,6 +453,7 @@ namespace uam
 				if (m_scoped_scanner && StartPendingRemoteScans(app)) return true;
 				if (m_scoped_scanner && RemoteScansOutstanding()) return false;
 				m_phase = m_candidates.empty() ? "complete" : "ready";
+				(void)StartSavedParentBackfill(app);
 				return true;
 			}
 			if (m_scan.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
@@ -484,6 +487,19 @@ namespace uam
 				if (continue_scan && error == "OpenCode history scan stopped before all sessions were read; retry to continue.") continue;
 				AddError(error);
 			}
+			// Sub-chats leave the review list here: each waits for its parent's decision, and a fresh scan replaces an earlier sighting.
+			const auto take_child = [&](ChatSession& chat, std::filesystem::path* rollout)
+			{
+				if (chat.native_parent_session_id.empty()) return false;
+				Child child{std::move(chat), rollout != nullptr ? std::move(*rollout) : std::filesystem::path{}, {}, {}};
+				child.key = chat_identity::NativeChildIdentityKeyForHistoryImport(child.chat);
+				child.parent_key = chat_identity::NativeParentIdentityKeyForHistoryImport(child.chat);
+				std::erase_if(m_children, [&](const Child& known) { return known.key == child.key; });
+				m_children.push_back(std::move(child));
+				return true;
+			};
+			std::erase_if(discovery.chats, [&](ChatSession& chat) { return take_child(chat, nullptr); });
+			std::erase_if(discovery.codex_rollouts, [&](std::pair<ChatSession, std::filesystem::path>& record) { return take_child(record.first, &record.second); });
 			std::string filter_error;
 			if (!ChatHistorySyncService().FilterStartupImportCandidates(app, discovery, &filter_error, true))
 			{
@@ -492,6 +508,7 @@ namespace uam
 				m_phase = "complete";
 				return true;
 			}
+			LinkOwnedChildren(app);
 			// Identity keys canonicalize workspace paths (a file-system query each); derive each once per pass.
 			std::set<std::pair<std::string, std::string>> candidate_keys;
 			for (const std::vector<Candidate>* staged : {&m_candidates, &m_startup_deferred})
@@ -580,6 +597,7 @@ namespace uam
 				return true;
 			}
 			m_phase = m_candidates.empty() ? "complete" : "ready";
+			(void)StartSavedParentBackfill(app);
 			return true;
 		}
 		if (m_phase != "importing") return false;
@@ -789,6 +807,11 @@ namespace uam
 			return reject("Declined history could not be saved. No decisions were applied.");
 		const std::unordered_set<std::string> selected(selected_candidates.begin(), selected_candidates.end());
 		m_import.preparation_stop = std::stop_source{};
+		// Sub-chats follow their parent's decision. Collect them nearest level first, each in its parent's reviewed workspace.
+		std::unordered_map<std::string, std::string> rider_folders;
+		for (const Candidate& candidate : m_candidates)
+			if (selected.contains(candidate.summary.candidate_id)) rider_folders.emplace(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat), candidate.owner.id);
+		std::vector<Child> riders = CollectRiders(rider_folders);
 		for (Candidate& candidate : m_candidates)
 		{
 			if (!selected.contains(candidate.summary.candidate_id)) continue;
@@ -810,8 +833,97 @@ namespace uam
 		{
 			return requested.contains(candidate.summary.candidate_id);
 		});
+		QueueRiders(std::move(riders));
 		m_phase = !m_selected.empty() ? "importing" : m_candidates.empty() ? "complete" : "ready";
 		return true;
+	}
+
+	std::vector<StartupNativeImportService::Child> StartupNativeImportService::CollectRiders(std::unordered_map<std::string, std::string>& folders) const
+	{
+		// Nearest level first, each child in its parent's workspace. A rider stays known afterwards, so one already saved
+		// as an ordinary chat can still be linked once its parent is saved.
+		std::vector<Child> riders;
+		std::unordered_map<std::string, std::size_t> per_parent;
+		for (bool grew = !m_children.empty(); grew;)
+		{
+			grew = false;
+			for (const Child& child : m_children)
+			{
+				const auto parent = folders.find(child.parent_key);
+				// Journals are capped where they are discovered; this holds Codex rollouts to the same 64 per parent.
+				if (parent == folders.end() || folders.contains(child.key) || per_parent[child.parent_key] >= 64) continue;
+				++per_parent[child.parent_key];
+				riders.push_back(child);
+				riders.back().chat.folder_id = parent->second;
+				folders.emplace(child.key, parent->second);
+				grew = true;
+			}
+		}
+		return riders;
+	}
+
+	void StartupNativeImportService::QueueRiders(std::vector<Child> riders)
+	{
+		// The import takes histories from the back, so a parent placed after its children is admitted before them.
+		for (Child& rider : riders)
+		{
+			if (rider.rollout.empty()) m_import.chats.insert(m_import.chats.begin(), std::move(rider.chat));
+			else m_import.codex_rollouts.emplace(m_import.codex_rollouts.begin(), std::move(rider.chat), std::move(rider.rollout));
+		}
+	}
+
+	bool StartupNativeImportService::StartSavedParentBackfill(AppState& app)
+	{
+		// Only a scan the user started brings in sub-chats of chats already in UAM; startup never adds chats nobody asked for.
+		if (!m_include_unregistered_local || m_children.empty() || !m_selected.empty() || m_import.Pending()) return false;
+		chat_identity::NativeWorkspaceCache workspaces;
+		std::unordered_map<std::string, std::string> folders;
+		std::unordered_set<std::string> saved;
+		for (const ChatSession& chat : app.chats)
+		{
+			if (strings::IsBlank(chat.native_session_id)) { if (chat.imported_read_only) saved.insert(chat_identity::NativeChildIdentityKeyForHistoryImport(chat)); continue; }
+			const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat, workspaces);
+			saved.insert(key);
+			// The staged import files a history under the workspace that owns its directory; a parent the user moved elsewhere is left alone.
+			const ChatFolder* owner = chat.imported_read_only || !paths::IsControllerLocalWorkspace(chat) ? nullptr : ChatHistorySyncService().StartupImportWorkspaceOwner(app, chat);
+			if (owner != nullptr && owner->id == chat.folder_id) folders.emplace(key, owner->id);
+		}
+		std::vector<Child> riders = CollectRiders(folders);
+		std::erase_if(riders, [&](const Child& rider) { return saved.contains(rider.key) || !paths::IsControllerLocalWorkspace(rider.chat); });
+		if (riders.empty()) return false;
+		m_import.preparation_stop = std::stop_source{};
+		QueueRiders(std::move(riders));
+		m_phase = "importing";
+		return true;
+	}
+
+	void StartupNativeImportService::LinkOwnedChildren(AppState& app)
+	{
+		// Workspace deletion owns its chats until it finishes; the next scan links them.
+		if (m_children.empty() || !app.worktree_operation_chat_ids.empty()) return;
+		chat_identity::NativeWorkspaceCache workspaces;
+		std::unordered_map<std::string, ChatSession*> saved;
+		for (ChatSession& chat : app.chats)
+		{
+			if (!strings::IsBlank(chat.native_session_id)) saved.insert_or_assign(chat_identity::NativeIdentityKeyForHistoryImport(chat, workspaces), &chat);
+			else if (chat.imported_read_only) saved.insert_or_assign(chat_identity::NativeChildIdentityKeyForHistoryImport(chat), &chat);
+		}
+		for (const Child& found : m_children)
+		{
+			const auto child = saved.find(found.key);
+			const auto parent = saved.find(found.parent_key);
+			if (child == saved.end() || parent == saved.end() || !child->second->subagent_parent_chat_id.empty() || !child->second->subagent_parent_created_at.empty()) continue;
+			ChatSession& chat = *child->second;
+			chat.native_parent_session_id = found.chat.native_parent_session_id;
+			const std::string status = app.status_line;
+			if (ChatRepository::ApplyImportedNativeChildLineage(*parent->second, chat) && !ChatHistorySyncService().SaveChatWithStatus(app, chat, status, status))
+			{
+				// An unsaved link is not shown; the next scan tries again.
+				chat.subagent_parent_chat_id.clear();
+				chat.subagent_parent_created_at.clear();
+			}
+			app.status_line = status;
+		}
 	}
 
 	void StartupNativeImportService::FinishImport(AppState& app)
@@ -822,6 +934,7 @@ namespace uam
 		m_import.expected_hosts.clear();
 		for (Candidate& candidate : m_selected) m_candidates.push_back(std::move(candidate));
 		m_selected.clear();
+		LinkOwnedChildren(app);
 		std::string error;
 		if (!Revalidate(app, &error)) AddError(error);
 		m_phase = m_candidates.empty() ? "complete" : "ready";
@@ -836,6 +949,7 @@ namespace uam
 		}
 		m_import.CancelPending();
 		m_candidates.clear();
+		m_children.clear();
 		m_startup_deferred.clear();
 		m_selected.clear();
 		if (m_initialized) m_phase = "cancelled";

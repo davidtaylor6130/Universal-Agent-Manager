@@ -758,6 +758,9 @@ struct ChatSession
 	std::string subagent_parent_chat_id;
 	/// Exact creation timestamp of the originating UAM parent, preventing ID-reuse attachment.
 	std::string subagent_parent_created_at;
+	/// Discovery-only, never saved: the native parent session this provider's own child record names.
+	/// Native import turns it into the display link above; it grants nothing by itself.
+	std::string native_parent_session_id;
 	/// Display provenance for a top-level chat started through UAM chat_create; grants no lineage or authority.
 	std::string created_by_chat_id;
 	/// Hash of the creating request's arguments, so a model retry returns the same chat.
