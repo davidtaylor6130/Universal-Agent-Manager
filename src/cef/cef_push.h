@@ -77,6 +77,11 @@ namespace uam
 	void PushCliOutput(CefRefPtr<CefBrowser> browser, const std::string& frontend_chat_id, const std::string& source_chat_id, const std::string& terminal_id, double startup_time_s, const std::string& raw_bytes);
 
 	/// <summary>
+	/// Reports how much of a large attachment has been copied; safe to call from a worker thread.
+	/// </summary>
+	void PushAttachmentProgress(CefRefPtr<CefBrowser> browser, const std::string& chat_id, const std::string& attachment_id, std::uintmax_t copied_bytes, std::uintmax_t total_bytes);
+
+	/// <summary>
 	/// Delivers one native speech-recognition event to the prompt composer.
 	/// </summary>
 	void PushDictationEvent(CefRefPtr<CefBrowser> browser, const DictationEvent& event);

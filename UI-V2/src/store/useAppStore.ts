@@ -1312,6 +1312,9 @@ export const useAppStore = create<AppState>((set, get) => {
         case 'dictation':
           window.dispatchEvent(new CustomEvent('uam-dictation', { detail: msg }))
           break
+        case 'attachmentProgress':
+          window.dispatchEvent(new CustomEvent('uam-attachment-progress', { detail: msg }))
+          break
       }
     }
     // A failing handler must not throw into native code; report it and let the next push recover the status.

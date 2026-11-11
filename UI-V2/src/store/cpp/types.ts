@@ -1145,6 +1145,7 @@ export type ParsedPushMessage =
   | { type: 'streamToken'; chatId: string; token: string; messageIndex?: number }
   | { type: 'streamDone'; chatId: string }
   | DictationPushMessage
+  | { type: 'attachmentProgress'; chatId: string; attachmentId: string; copiedBytes: number; totalBytes: number }
 
 export type ParsedPushResult =
   | { ok: true; message: ParsedPushMessage }

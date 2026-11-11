@@ -31,6 +31,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <set>
 
@@ -2342,6 +2343,109 @@ UAM_TEST(RemoteAttachmentUploadDeliversALargeBinaryFileCompleteOrFailsVisibly)
 		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, {executable, "--uam-test-runner-result", R"({"path":"/remote/clip.MOV"})"});
 		UAM_ASSERT(client.Connect(&error));
 		UAM_ASSERT(client.UploadFile("attachment-older-helper", "/remote/clip.MOV", "video-bytes", &error));
+	}
+#endif
+}
+
+UAM_TEST(LargeAttachmentStreamsFromDiskCompleteWithProgressOrFailsVisibly)
+{
+	const fs::path runner = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().parent_path() /
+#if defined(_WIN32)
+	                        "uam-runner.exe";
+#else
+	                        "uam-runner";
+#endif
+	UAM_ASSERT(fs::exists(runner));
+	TempDir temp("uam-attachment-stream");
+	// Larger than the in-memory limit and not a whole number of transfer chunks.
+	const std::uintmax_t size = uam::attachment_payload::kMaxBytes + 5 * 1024 * 1024 + 123;
+	const fs::path source = temp.root / "clip.MOV";
+	{
+		std::ofstream out(source, std::ios::binary);
+		std::string block(1024 * 1024, '\0');
+		for (std::uintmax_t written = 0; written < size;)
+		{
+			for (std::size_t index = 0; index < block.size(); ++index) block[index] = static_cast<char>((written + index * 7 + index / 255) & 0xff);
+			const std::size_t count = static_cast<std::size_t>(std::min<std::uintmax_t>(block.size(), size - written));
+			out.write(block.data(), static_cast<std::streamsize>(count));
+			written += count;
+		}
+	}
+	UAM_ASSERT_EQ(fs::file_size(source), size);
+	const auto same_bytes = [&source](const fs::path& other)
+	{
+		std::ifstream a(source, std::ios::binary), b(other, std::ios::binary);
+		std::string left(1024 * 1024, '\0'), right(1024 * 1024, '\0');
+		while (a && b)
+		{
+			a.read(left.data(), static_cast<std::streamsize>(left.size()));
+			b.read(right.data(), static_cast<std::streamsize>(right.size()));
+			if (a.gcount() != b.gcount() || std::memcmp(left.data(), right.data(), static_cast<std::size_t>(a.gcount())) != 0) return false;
+		}
+		return a.eof() && b.eof();
+	};
+
+	// Only a path file over the in-memory limit takes the streamed route; inline data never does.
+	fs::path resolved;
+	std::uintmax_t resolved_size = 0;
+	int status = 0;
+	std::string error;
+	UAM_ASSERT(uam::attachment_payload::IsStreamedSource(nlohmann::json::object(), uam::paths::Utf8PathString(source), resolved, resolved_size, status, error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(resolved_size, size);
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "small.txt", "small"));
+	UAM_ASSERT(!uam::attachment_payload::IsStreamedSource(nlohmann::json::object(), uam::paths::Utf8PathString(temp.root / "small.txt"), resolved, resolved_size, status, error));
+	UAM_ASSERT(!uam::attachment_payload::IsStreamedSource({{"dataBase64", "eA=="}}, uam::paths::Utf8PathString(source), resolved, resolved_size, status, error));
+
+	// Local workspace copy: complete, with progress that ends at the total, and nothing left behind on failure.
+	std::vector<std::uintmax_t> local_progress;
+	const fs::path local_target = temp.root / "workspace" / "clip.MOV";
+	fs::create_directories(local_target.parent_path());
+	UAM_ASSERT(uam::attachment_payload::CopyStreamed(source, local_target, size, [&](const std::uintmax_t copied, const std::uintmax_t total) { UAM_ASSERT_EQ(total, size); local_progress.push_back(copied); }, error));
+	UAM_ASSERT(same_bytes(local_target));
+	UAM_ASSERT(local_progress.size() > 1 && std::ranges::is_sorted(local_progress) && local_progress.back() == size);
+	const fs::path short_target = temp.root / "workspace" / "short.MOV";
+	UAM_ASSERT(!uam::attachment_payload::CopyStreamed(source, short_target, size + 1, {}, error));
+	UAM_ASSERT(error.find("incompletely") != std::string::npos);
+	UAM_ASSERT(!fs::exists(short_target));
+
+	{
+		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, {uam::paths::Utf8PathString(runner), "bridge-direct"});
+		UAM_ASSERT(client.Connect(&error));
+		const fs::path target = temp.root / "host" / ".UAM" / "attachments" / "chat-1" / "0-clip.MOV";
+		std::vector<std::uintmax_t> progress;
+		UAM_ASSERT(client.UploadFileFromPath("attachment-stream", target, source, [&](const std::uintmax_t sent, const std::uintmax_t total) { UAM_ASSERT_EQ(total, size); progress.push_back(sent); }, &error));
+		UAM_ASSERT_EQ(fs::file_size(target), size);
+		UAM_ASSERT(same_bytes(target));
+		UAM_ASSERT(progress.size() > 100 && std::ranges::is_sorted(progress) && progress.back() == size);
+		// A refused upload names its cause and publishes nothing.
+		error.clear();
+		UAM_ASSERT(!client.UploadFileFromPath("attachment-missing", temp.root / "host" / "missing.MOV", temp.root / "absent.MOV", {}, &error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT(!fs::exists(temp.root / "host" / "missing.MOV"));
+		client.Disconnect();
+	}
+
+	// The helper states its limit, and refuses a declared size beyond it before any byte is written.
+	uam::remote::RunnerState state;
+	const nlohmann::json hello = uam::remote::HandleRunnerRequest({{"id", "1"}, {"type", "hello"}, {"protocolVersion", uam::remote::kRunnerProtocolVersion}, {"nonce", "n"}}, "test-version", &state);
+	UAM_ASSERT_EQ(hello["capabilities"].value("maxUploadBytes", std::uintmax_t{0}), uam::remote::kMaxUploadBytes);
+	UAM_ASSERT_EQ(uam::remote::kMaxUploadBytes, uam::attachment_payload::kMaxStreamedBytes);
+	const nlohmann::json oversized = uam::remote::HandleRunnerRequest({{"id", "2"}, {"type", "file.begin"}, {"uploadId", "upload-oversized"},
+	    {"path", (temp.root / "host" / "oversized.bin").string()}, {"size", uam::remote::kMaxUploadBytes + 1}, {"digest", "0000000000000000"}}, "test-version", &state);
+	UAM_ASSERT(!oversized.value("ok", true));
+	UAM_ASSERT(!fs::exists(temp.root / "host" / ".uam-upload-upload-oversized.tmp"));
+#if !defined(_WIN32)
+	// A helper from before large uploads is never sent a file over its 25 MB limit; the user is told to update it.
+	{
+		const std::string executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string();
+		const fs::path requests = temp.root / "requests.log";
+		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, {executable, "--uam-test-runner-result", R"({"legacyUploadLimit":true})", requests.string(), "--without-central-config"});
+		UAM_ASSERT(client.Connect(&error));
+		error.clear();
+		UAM_ASSERT(!client.UploadFileFromPath("attachment-legacy", "/remote/clip.MOV", source, {}, &error));
+		UAM_ASSERT(error.find("Update the helper") != std::string::npos);
+		UAM_ASSERT(uam_test::ReadFile(requests).find("file.begin") == std::string::npos);
 	}
 #endif
 }

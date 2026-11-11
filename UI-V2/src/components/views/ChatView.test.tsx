@@ -3950,6 +3950,43 @@ describe('ChatView', () => {
     } finally { vi.unstubAllGlobals(); act(() => root.unmount()); host.remove() }
   })
 
+  it('stages a large file by path without reading it, shows copy progress and refuses one over 4 GB', async () => {
+    let finish!: (staged: Array<{ id: string; name: string; type: string; size: number; path: string }>) => void
+    const stageChatAttachments = vi.fn((_chatId: string, _items: Array<{ id: string }>) => new Promise<Array<{ id: string; name: string; type: string; size: number; path: string }>>((resolve) => { finish = resolve }))
+    useAppStore.setState({ stageChatAttachments })
+    const readAsDataURL = vi.fn()
+    vi.stubGlobal('FileReader', class { readAsDataURL = readAsDataURL })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
+      const attach = async (name: string, size: number) => {
+        const file = new File(['video'], name, { type: 'video/quicktime' })
+        Object.defineProperty(file, 'size', { value: size })
+        Object.defineProperty(file, 'path', { value: `/Users/me/${name}` })
+        Object.defineProperty(input, 'files', { value: [file], configurable: true })
+        await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })); await Promise.resolve(); await Promise.resolve() })
+      }
+      await attach('clip.MOV', 2 * 1024 * 1024 * 1024)
+      expect(readAsDataURL).not.toHaveBeenCalled()
+      const item = stageChatAttachments.mock.calls[0][1][0]
+      expect(item).toMatchObject({ name: 'clip.MOV', path: '/Users/me/clip.MOV', size: 2 * 1024 * 1024 * 1024, dataBase64: undefined })
+      expect(host.textContent).toContain('copying')
+      act(() => { window.dispatchEvent(new CustomEvent('uam-attachment-progress', { detail: { type: 'attachmentProgress', chatId: 'chat-1', attachmentId: item.id, copiedBytes: 4, totalBytes: 10 } })) })
+      expect(host.textContent).toContain('copying 40%')
+      // Progress for another chat's copy is ignored.
+      act(() => { window.dispatchEvent(new CustomEvent('uam-attachment-progress', { detail: { type: 'attachmentProgress', chatId: 'other', attachmentId: item.id, copiedBytes: 9, totalBytes: 10 } })) })
+      expect(host.textContent).toContain('copying 40%')
+      await act(async () => { finish([{ id: item.id, name: 'clip.MOV', type: 'file', size: 2 * 1024 * 1024 * 1024, path: '.UAM/attachments/chat-1/clip.MOV' }]); await Promise.resolve() })
+      expect(host.textContent).not.toContain('copying')
+      await attach('huge.MOV', 4 * 1024 * 1024 * 1024 + 1)
+      expect(reportedText()).toContain('huge.MOV is larger than the 4 GB limit.')
+      expect(stageChatAttachments).toHaveBeenCalledTimes(1)
+    } finally { vi.unstubAllGlobals(); act(() => root.unmount()); host.remove() }
+  })
+
   it('keeps newer staging errors and the draft when an older attachment send fails', async () => {
     let settle!: (ok: boolean) => void
     useAppStore.setState({

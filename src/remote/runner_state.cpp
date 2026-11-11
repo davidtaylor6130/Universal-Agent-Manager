@@ -96,7 +96,6 @@ namespace uam::remote
 		inline constexpr std::size_t kMaxRememberedInputDeliveries = 64;
 		inline constexpr std::int64_t kMaxTransientLeaseMs = 60000;
 		inline constexpr std::size_t kMaxListedDirectories = 200;
-		inline constexpr std::uintmax_t kMaxUploadBytes = 25ull * 1024ull * 1024ull;
 		inline constexpr std::uintmax_t kSpoolReclaimThreshold = 1024ull * 1024ull;
 		// Copying happens under the process mutex, so a larger unacknowledged tail waits for the client to catch up (or for the 1 GiB path).
 		inline constexpr std::uintmax_t kSpoolReclaimMaxCopyBytes = 8ull * 1024ull * 1024ull;
@@ -1547,6 +1546,15 @@ namespace uam::remote
 					return ProcessError(request, "target_unavailable",
 					                    "The upload target already exists or cannot be created.");
 				}
+				// Refuse before the first byte rather than fill the disk and fail at the end. An unreadable figure does not block.
+				const std::filesystem::space_info space = std::filesystem::space(target.parent_path(), error);
+				if (!error && space.available != static_cast<std::uintmax_t>(-1) && space.available < size)
+				{
+					abandon_upload();
+					return ProcessError(request, "insufficient_space",
+					                    "The host does not have enough free space for this file.");
+				}
+				error.clear();
 				std::ofstream stream(upload->temporary, std::ios::binary | std::ios::trunc);
 				if (!stream)
 				{

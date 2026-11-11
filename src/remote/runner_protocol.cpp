@@ -183,6 +183,7 @@ namespace uam::remote
 			                          {"runnerStartup", state != nullptr && (PlatformName() == "linux" || PlatformName() == "windows")},
 			                          {"runnerStartupObservation", state != nullptr && (PlatformName() == "linux" || PlatformName() == "windows")},
 			                          {"fileCopy", state != nullptr},
+			                          {"maxUploadBytes", state != nullptr ? kMaxUploadBytes : std::uintmax_t{0}},
 			                          {"processInputAcknowledgement", state != nullptr},
 			                          {"processOutputAcknowledgement", state != nullptr},
 			                          {"channelOutputAcknowledgement", state != nullptr},

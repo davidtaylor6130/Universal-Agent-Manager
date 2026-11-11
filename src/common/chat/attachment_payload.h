@@ -12,13 +12,80 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
 
 namespace uam::attachment_payload
 {
+	/// Limit for payloads held in memory: inline base64 data, and path files small enough to load and preview.
 	inline constexpr std::uintmax_t kMaxBytes = 25ull * 1024ull * 1024ull;
+	/// Limit for files copied from a controller path in bounded chunks; equals the SSH helper's upload limit.
+	inline constexpr std::uintmax_t kMaxStreamedBytes = 4ull * 1024ull * 1024ull * 1024ull;
+	using Progress = std::function<void(std::uintmax_t copied, std::uintmax_t total)>;
+
+	/// True when the item is a controller file too large for the in-memory route, which must be copied from disk instead.
+	/// A file over the streamed limit is refused here with its reason.
+	inline bool IsStreamedSource(const nlohmann::json& item, const std::string& source_path_text, std::filesystem::path& source, std::uintmax_t& size, int& status, std::string& error)
+	{
+		status = 0;
+		if (source_path_text.empty() || uam::nlohmann_json::FindStringField(item, message_attachment_json::frontend::kDataBase64Field) != nullptr)
+			return false;
+		source = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
+		const std::optional<std::uintmax_t> found = uam::paths::FileSizeNoThrow(source);
+		if (!found || !uam::paths::IsRegularFileNoThrow(source) || *found <= kMaxBytes)
+			return false;
+		size = *found;
+		if (size > kMaxStreamedBytes)
+		{
+			uam::diagnostics::Write("[stageChatAttachments] Attachment refused before staging: reason=over_streamed_limit expected_bytes=" + std::to_string(size) + " read_bytes=0");
+			status = 413;
+			error = "Attachment is larger than the 4 GB limit.";
+		}
+		return true;
+	}
+
+	/// Copies a controller file into the workspace in bounded chunks. Checks free space first, confirms the
+	/// written size, and removes a partial copy on any failure.
+	inline bool CopyStreamed(const std::filesystem::path& source, const std::filesystem::path& target, const std::uintmax_t size, const Progress& progress, std::string& error)
+	{
+		const auto fail = [&](std::string message, const std::string_view reason, const std::uintmax_t copied)
+		{
+			std::error_code remove_error;
+			std::filesystem::remove(target, remove_error);
+			uam::diagnostics::Write("[stageChatAttachments] Attachment copy failed: reason=" + std::string(reason) + " expected_bytes=" + std::to_string(size) + " copied_bytes=" + std::to_string(copied));
+			error = std::move(message);
+			return false;
+		};
+		std::error_code space_error;
+		const std::filesystem::space_info space = std::filesystem::space(target.parent_path(), space_error);
+		if (!space_error && space.available != static_cast<std::uintmax_t>(-1) && space.available < size)
+			return fail("There is not enough free space in the workspace for this attachment.", "insufficient_space", 0);
+		std::ifstream input(source, std::ios::binary);
+		std::ofstream output(target, std::ios::binary | std::ios::trunc);
+		if (!input || !output)
+			return fail("The attachment could not be opened for copying.", "open_failed", 0);
+		std::string buffer(1024 * 1024, '\0'); // On the heap: worker threads have small stacks.
+		std::uintmax_t copied = 0;
+		while (input)
+		{
+			input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+			const std::streamsize count = input.gcount();
+			if (count <= 0) break;
+			output.write(buffer.data(), count);
+			if (!output)
+				return fail("The attachment could not be written. Check the free space in the workspace and try again.", "write_failed", copied);
+			copied += static_cast<std::uintmax_t>(count);
+			if (progress) progress(copied, size);
+		}
+		output.close();
+		std::error_code size_error;
+		if (input.bad() || !output || copied != size || std::filesystem::file_size(target, size_error) != size || size_error)
+			return fail("The attachment was copied incompletely, so the copy was removed. Attach it again.", "size_mismatch", copied);
+		return true;
+	}
 
 	/// Reads one file attachment's bytes from its inline base64 or controller path; shared by local and SSH staging.
 	/// A payload that is empty or shorter than its source is refused here, so neither route can stage a hollow file.

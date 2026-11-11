@@ -407,6 +407,8 @@ namespace uam::remote
 			g_connectFailures.erase(bridge_key);
 		}
 		m_directoryBrowsing = response["capabilities"].value("directoryBrowsing", false);
+		const auto max_upload = response["capabilities"].find("maxUploadBytes");
+		m_maxUploadBytes = max_upload != response["capabilities"].end() && max_upload->is_number_unsigned() ? max_upload->get<std::uintmax_t>() : kLegacyMaxUploadBytes;
 		m_safePathInspection = m_expectedProtocolVersion >= 3 && response["capabilities"].value("safePathInspection", false);
 		m_contextRead = response["capabilities"].value("contextRead", false);
 		m_providerHistoryRead = response["capabilities"].value("providerHistoryRead", false);
@@ -1100,6 +1102,90 @@ namespace uam::remote
 				    (published->is_number_unsigned() ? std::to_string(published->get<std::uintmax_t>()) : std::string("unknown")) +
 				    " of " + std::to_string(bytes.size()) + " bytes), so it was removed. Check the host's free space and try again.";
 			return false;
+		}
+		return true;
+	}
+
+	bool RunnerClient::UploadFileFromPath(const std::string& upload_id,
+	                                      const std::filesystem::path& remote_path,
+	                                      const std::filesystem::path& source,
+	                                      const std::function<void(std::uintmax_t, std::uintmax_t)>& progress,
+	                                      std::string* error_out, std::stop_token stop_token)
+	{
+		const auto fail = [error_out](std::string message)
+		{
+			if (error_out != nullptr) *error_out = std::move(message);
+			return false;
+		};
+		if (!Connect(error_out, stop_token)) return false;
+		std::error_code size_error;
+		const std::uintmax_t size = std::filesystem::file_size(source, size_error);
+		std::ifstream file(source, std::ios::binary);
+		if (size_error || !file) return fail("The file could not be opened for upload.");
+		if (size > m_maxUploadBytes)
+			return fail(m_maxUploadBytes < kMaxUploadBytes && size <= kMaxUploadBytes
+			    ? "This host's UAM helper accepts files up to 25 MB. Update the helper in Settings, then attach the file again."
+			    : "The file is larger than the host accepts.");
+		const auto interrupt = [stop_token] { return stop_token.stop_requested(); };
+		std::string chunk(256 * 1024, '\0');
+		const auto read_chunk = [&file, &chunk]
+		{
+			file.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+			return static_cast<std::size_t>(file.gcount());
+		};
+		std::uint64_t digest = uam::hashing::kFnv1a64OffsetBasis;
+		std::uintmax_t hashed = 0;
+		for (std::size_t count = read_chunk(); count > 0; count = read_chunk())
+		{
+			if (interrupt()) return fail("The upload was canceled.");
+			uam::hashing::UpdateFnv1a64(digest, reinterpret_cast<const unsigned char*>(chunk.data()), count);
+			hashed += count;
+		}
+		if (file.bad() || hashed != size) return fail("The file changed or could not be read while preparing the upload.");
+		file.clear();
+		file.seekg(0);
+		const auto abort = [&]
+		{
+			if (stop_token.stop_requested()) return;
+			nlohmann::json ignored;
+			if (!m_connected) (void)Connect(nullptr, stop_token);
+			if (m_connected) (void)Request({{"type", "file.abort"}, {"uploadId", upload_id}}, ignored, nullptr, interrupt);
+		};
+		nlohmann::json response;
+		if (!Request({{"type", "file.begin"}, {"uploadId", upload_id}, {"path", uam::paths::Utf8PathString(remote_path)},
+		              {"size", size}, {"digest", uam::hashing::Hex64Padded(digest)}}, response, error_out, interrupt))
+		{
+			abort();
+			return false;
+		}
+		std::uintmax_t sent = 0;
+		for (std::size_t count = read_chunk(); count > 0; count = read_chunk())
+		{
+			if (!Request({{"type", "file.write"}, {"uploadId", upload_id},
+			              {"dataBase64", uam::base64::Encode(std::string_view(chunk.data(), count))}}, response, error_out, interrupt))
+			{
+				abort();
+				return false;
+			}
+			sent += count;
+			if (progress) progress(sent, size);
+		}
+		if (file.bad() || sent != size)
+		{
+			abort();
+			return fail("The file changed or could not be read during the upload.");
+		}
+		if (!Request({{"type", "file.commit"}, {"uploadId", upload_id}}, response, error_out, interrupt))
+		{
+			abort();
+			return false;
+		}
+		const nlohmann::json& committed = response["result"];
+		if (const auto published = committed.find("size"); published != committed.end() &&
+		    (!published->is_number_unsigned() || published->get<std::uintmax_t>() != size))
+		{
+			(void)RemoveFile(upload_id, remote_path);
+			return fail("The uploaded file is incomplete on the host, so it was removed. Check the host's free space and try again.");
 		}
 		return true;
 	}

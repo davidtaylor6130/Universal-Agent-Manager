@@ -33,6 +33,7 @@ namespace
 	constexpr const char* kPushTypeStreamDone = "streamDone";
 	constexpr const char* kPushTypeCliOutput = "cliOutput";
 	constexpr const char* kPushTypeDictation = "dictation";
+	constexpr const char* kPushTypeAttachmentProgress = "attachmentProgress";
 	constexpr long long kStatePatchSlowSerializationMs = 50;
 	constexpr std::size_t kStatePatchLargeMessageBytes = 64 * 1024;
 	// Streaming chat summaries (selected or background) carry the live turn
@@ -735,6 +736,16 @@ namespace uam
 		msg["terminalId"] = terminal_id;
 		msg["startupTime"] = startup_time_s;
 		msg["data"] = uam::base64::Encode(raw_bytes);
+		PostPush(browser, DumpFrontendJson(msg));
+	}
+
+	void PushAttachmentProgress(CefRefPtr<CefBrowser> browser, const std::string& chat_id, const std::string& attachment_id, const std::uintmax_t copied_bytes, const std::uintmax_t total_bytes)
+	{
+		nlohmann::json msg = PushMessage(kPushTypeAttachmentProgress);
+		msg["chatId"] = chat_id;
+		msg["attachmentId"] = attachment_id;
+		msg["copiedBytes"] = copied_bytes;
+		msg["totalBytes"] = total_bytes;
 		PostPush(browser, DumpFrontendJson(msg));
 	}
 
