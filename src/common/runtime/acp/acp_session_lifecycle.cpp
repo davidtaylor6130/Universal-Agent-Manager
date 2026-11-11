@@ -114,6 +114,7 @@ namespace uam
 		int cold_serial = 0;
 		bool cold_bound = false, cold_armed = false, cold_attempted = false;
 		acp_detail::DurableAdmissionState cold_admission = acp_detail::DurableAdmissionState::Pending;
+		const char* cold_loss = nullptr; // First ownership check this launch failed, for its diagnostic.
 		std::string cold_prompt, cold_queue, cold_authority, cold_runtime_requests;
 		std::optional<std::string> cold_recovery;
 		std::unordered_map<int, std::string> cold_methods;
@@ -246,6 +247,33 @@ namespace
 		    CapturePromptDeliveryConfiguration(app, session, chat, include_quota_settlement)}).dump();
 	}
 	bool OwnsColdLaunch(const AppState&, const AcpSessionState&, const ChatSession&, const PendingLocalAcpLaunch&);
+
+	/** Names the launch settings that differ between two ownership captures. Field names only, never their values. */
+	std::string LaunchOwnershipChangedFields(const std::string& captured_ownership, const std::string& current_ownership)
+	{
+		static constexpr std::string_view fields[] = {
+		    "provider", "command", "runtime_flags", "resume_argument", "structured_support",
+		    "protocol", "execution_mode", "output_mode", "bootstrap", "bootstrap_path",
+		    "auto_worktree", "base_ref", "base_override", "svn_update", "branch", "chat",
+		    "birth", "chat_provider", "native_session", "host", "workspace", "source_workspace",
+		    "worktree", "isolation", "routing", "routing_connection", "model", "approval",
+		    "extra_flags", "goal", "goal_revision", "agent", "small_model", "reasoning", "tier",
+		    "safety", "turn_model", "active_agent", "agent_definition", "agent_instructions",
+		    "agent_capability", "agent_access", "last_process", "session", "process",
+		    "model_discovery", "internal_goal", "recovering_turn", "recovering_process",
+		    "settings", "delivery_configuration"};
+		const nlohmann::json captured = nlohmann::json::parse(captured_ownership, nullptr, false);
+		const nlohmann::json current = nlohmann::json::parse(current_ownership, nullptr, false);
+		std::string changed;
+		if (captured.is_array() && current.is_array() && captured.size() == std::size(fields) && current.size() == std::size(fields))
+			for (std::size_t index = 0; index < std::size(fields); ++index)
+				if (captured[index] != current[index])
+				{
+					if (!changed.empty()) changed += ',';
+					changed += fields[index];
+				}
+		return changed.empty() ? std::string("unknown") : changed;
+	}
 }
 
 bool ValidateCapturedAcpAgentPolicy(const AppState& app, const ChatSession& chat,
@@ -396,47 +424,51 @@ namespace
 		return LocalLaunchOwnership(app, session, chat, task.cold_quota.id.empty());
 	}
 
-	bool OwnsColdLaunch(const AppState& app, const AcpSessionState& session, const ChatSession& chat,
+	/** Names the first ownership check a staged cold launch fails, or nullptr while the launch is still owned.
+	    The names are fixed words: they carry no chat content, path or identifier. */
+	const char* ColdLaunchOwnershipLoss(const AppState& app, const AcpSessionState& session, const ChatSession& chat,
 	    const PendingLocalAcpLaunch& task)
 	{
 		const auto* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 		const auto workspace = app.worktree_launch_preparations.find(chat.id);
 		const auto branch = app.branch_preparations.find(chat.id);
 		if ((workspace != app.worktree_launch_preparations.end() && !(workspace->second->saved && *workspace->second->saved)) ||
-		    (branch != app.branch_preparations.end() && !branch->second.expired())) return false;
-		if (task.incarnation != chat.metadata_incarnation || task.root != app.data_root ||
-		    session.pending_local_launch.get() != &task || task.control_session != &session ||
-		    !host || !execution_hosts::SameConnection(task.host, *host) ||
-		    host->runner_protocol_version != task.host.runner_protocol_version ||
-		    session.running || session.stdin_writer != task.cold_writer || session.cancel_requested || AcpSessionHasPendingCancel(session) ||
+		    (branch != app.branch_preparations.end() && !branch->second.expired())) return "workspace_preparation";
+		if (task.incarnation != chat.metadata_incarnation || task.root != app.data_root) return "chat_storage";
+		if (session.pending_local_launch.get() != &task || task.control_session != &session) return "session";
+		if (!host || !execution_hosts::SameConnection(task.host, *host) ||
+		    host->runner_protocol_version != task.host.runner_protocol_version) return "host";
+		if (session.running || session.stdin_writer != task.cold_writer) return "transport";
+		if (session.cancel_requested || AcpSessionHasPendingCancel(session) ||
 		    session.local_stop_pending || session.remote_stop_pending || session.remote_stop_unconfirmed ||
-		    session.queue_held || session.managed_cancellation_pending || app.managed_initial_shutdown ||
-		    AcpStopInProgress(app, chat.id) || chat.side_cleanup_requested || chat.imported_read_only ||
-		    chat.acp_queue_held || chat.acp_queue_storage_error || chat.remote_stop_cleanup_pending ||
-		    chat.remote_restart_pending || chat.remote_source_exit_pending ||
-		    !session.transport_ownership_error.empty() ||
-		    (session.pending_agent_input && !AgentInputPreparationResuming(session)) || session.pending_queued_history ||
-		    session.pending_prompt_delivery || session.pending_local_session_receipt ||
-		    (!task.cold_recovery && AcpSessionHasPendingRuntimeRequest(session)) ||
-		    session.manual_compaction_pending || session.context_compaction_in_progress ||
-		    app.worktree_operation_chat_ids.contains(chat.id) ||
-		    !provider_availability::IsEnabled(app.settings, chat.provider_id, chat.execution_host_id) ||
-		    !AgentRunScheduler::InitialLaunchAllowed(app, session, chat, nullptr) ||
-		    task.ownership != ColdLaunchConfiguration(app, session, chat, task) ||
-		    task.cold_authority != ColdLaunchAuthority(chat)) return false;
+		    AcpStopInProgress(app, chat.id) || chat.remote_stop_cleanup_pending) return "stop";
+		if (session.queue_held || chat.acp_queue_held || chat.acp_queue_storage_error) return "queue_held";
+		if (session.managed_cancellation_pending || app.managed_initial_shutdown) return "managed_cancellation";
+		if (chat.side_cleanup_requested || chat.imported_read_only) return "chat_closing";
+		if (chat.remote_restart_pending || chat.remote_source_exit_pending) return "remote_restart";
+		if (!session.transport_ownership_error.empty()) return "transport_ownership";
+		if ((session.pending_agent_input && !AgentInputPreparationResuming(session)) || session.pending_queued_history ||
+		    session.pending_prompt_delivery || session.pending_local_session_receipt) return "pending_input";
+		if (!task.cold_recovery && AcpSessionHasPendingRuntimeRequest(session)) return "runtime_request";
+		if (session.manual_compaction_pending || session.context_compaction_in_progress) return "compaction";
+		if (app.worktree_operation_chat_ids.contains(chat.id)) return "worktree_operation";
+		if (!provider_availability::IsEnabled(app.settings, chat.provider_id, chat.execution_host_id)) return "provider_disabled";
+		if (!AgentRunScheduler::InitialLaunchAllowed(app, session, chat, nullptr)) return "managed_launch";
+		if (task.ownership != ColdLaunchConfiguration(app, session, chat, task)) return "configuration";
+		if (task.cold_authority != ColdLaunchAuthority(chat)) return "remote_authority";
 		if (task.cold_recovery && (ColdRecoveryMetadata(chat) != *task.cold_recovery ||
 		    !chat.remote_process_exists || chat.remote_process_control_token.empty() ||
 		    session.remote_output_delivery_token != chat.remote_process_control_token ||
 		    session.process_execution_host_id != chat.execution_host_id || session.provider_id != chat.provider_id ||
 		    (!session.goal_internal_session && !chat.native_session_id.empty() && session.session_id != chat.native_session_id) ||
 		    session.remote_runner_protocol_version <= 0 || (host->runner_protocol_version != 0 &&
-		    session.remote_runner_protocol_version != host->runner_protocol_version))) return false;
+		    session.remote_runner_protocol_version != host->runner_protocol_version))) return "recovery_state";
 		if (!task.cold_quota.id.empty())
 		{
 			auto expected = task.cold_quota;
 			if (task.cold_armed) expected.state = "continued";
 			if (chat.claude_quota_continuation != expected ||
-			    (task.cold_bound && session.claude_quota_delivery_id != expected.id)) return false;
+			    (task.cold_bound && session.claude_quota_delivery_id != expected.id)) return "quota";
 		}
 		if (!task.control_capability_id.empty())
 		{
@@ -450,15 +482,32 @@ namespace
 			    time::SystemEpochMillisecondsNow() >= capability->expires_at_epoch_ms ||
 			    capability->directory != task.root / "uam-control" / task.control_manager_id / capability->id ||
 			    !paths::IsDirectoryNoThrow(capability->directory) || paths::IsLinkOrReparsePointNoThrow(capability->directory) ||
-			    !UamControlService::EnabledForChat(app.settings, chat) || !UamControlService::EnabledForChat(app.settings, *root)) return false;
+			    !UamControlService::EnabledForChat(app.settings, chat) || !UamControlService::EnabledForChat(app.settings, *root)) return "control_capability";
 		}
-		return !task.cold_bound || ((!chat.small_model_mode || (task.cold_goal &&
-		    CaptureGoalPromptReceiptScope(app, session, chat) == task.cold_goal)) && session.turn_serial == task.cold_serial && session.processing == task.cold_processing &&
-		    session.queued_prompt == task.cold_prompt && session.prompt_request_id == task.cold_request &&
-		    session.pending_request_methods == task.cold_methods && ColdRuntimeRequests(session) == task.cold_runtime_requests &&
-		    session.queued_user_prompts == task.cold_raw && ChatRepository::QueueAdmissionFingerprint(chat) == task.cold_queue &&
-		    std::ranges::all_of(task.cold_rows, [&chat](const auto& row)
-		    { return row.first < chat.messages.size() && chat.messages[row.first] == row.second; }));
+		if (!task.cold_bound) return nullptr;
+		if (chat.small_model_mode && !(task.cold_goal && CaptureGoalPromptReceiptScope(app, session, chat) == task.cold_goal)) return "goal_scope";
+		if (session.turn_serial != task.cold_serial || session.processing != task.cold_processing ||
+		    session.queued_prompt != task.cold_prompt || session.prompt_request_id != task.cold_request ||
+		    session.pending_request_methods != task.cold_methods || ColdRuntimeRequests(session) != task.cold_runtime_requests) return "turn";
+		if (session.queued_user_prompts != task.cold_raw || ChatRepository::QueueAdmissionFingerprint(chat) != task.cold_queue) return "queue";
+		if (!std::ranges::all_of(task.cold_rows, [&chat](const auto& row)
+		    { return row.first < chat.messages.size() && chat.messages[row.first] == row.second; })) return "transcript";
+		return nullptr;
+	}
+
+	bool OwnsColdLaunch(const AppState& app, const AcpSessionState& session, const ChatSession& chat,
+	    const PendingLocalAcpLaunch& task)
+	{
+		return ColdLaunchOwnershipLoss(app, session, chat, task) == nullptr;
+	}
+
+	/** Checks ownership and keeps the first failed check for the launch's give-up diagnostic. */
+	bool CheckColdLaunchOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat,
+	    PendingLocalAcpLaunch& task)
+	{
+		const char* loss = ColdLaunchOwnershipLoss(app, session, chat, task);
+		if (loss && !task.cold_loss) task.cold_loss = loss;
+		return loss == nullptr;
 	}
 
 	bool PollColdLaunch(AppState& app, AcpSessionState& session, ChatSession& chat)
@@ -467,8 +516,14 @@ namespace
 		if (!task || !task->cold_start) return false;
 		if (!task->cold_bound && !session.processing && session.turn_serial == task->cold_serial)
 			BindPendingAcpColdLaunch(app, session, chat); // Explicit opening without authored input.
-		if (!OwnsColdLaunch(app, session, chat, *task) || task->cold_admission == DurableAdmissionState::Failed)
+		if (!CheckColdLaunchOwnership(app, session, chat, *task) || task->cold_admission == DurableAdmissionState::Failed)
 		{
+			// One bounded line naming the check, so a given-up launch can be traced to what changed under it.
+			const std::string lost = task->cold_loss ? task->cold_loss : "durable_save";
+			AppendAcpDiagnostic(session, "process_launch", "cold_ownership_lost", "", "", false, 0,
+			    "A staged provider launch was given up before it started.",
+			    "check=" + lost + (lost == "configuration"
+			        ? ",changed_fields=" + LaunchOwnershipChangedFields(task->ownership, ColdLaunchConfiguration(app, session, chat, *task)) : std::string{}));
 			session.pending_local_launch.reset();
 			session.reconnect_pending = false;
 			session.queue_held = true;
@@ -618,10 +673,14 @@ void BindPendingAcpColdLaunch(AppState& app, AcpSessionState& session, ChatSessi
 		expected.state = "continued";
 		expected.context = ClaudeQuotaContext(app, chat);
 		if (!task->cold_bound || chat.claude_quota_continuation != expected)
-		{ task->cold_admission = DurableAdmissionState::Failed; return; }
+		{
+			if (!task->cold_loss) task->cold_loss = "quota";
+			task->cold_admission = DurableAdmissionState::Failed;
+			return;
+		}
 		task->cold_quota = expected;
 	}
-	if (!OwnsColdLaunch(app, session, chat, *task)) { task->cold_admission = DurableAdmissionState::Failed; return; }
+	if (!CheckColdLaunchOwnership(app, session, chat, *task)) { task->cold_admission = DurableAdmissionState::Failed; return; }
 	if (!task->cold_bound)
 	{
 		task->cold_bound = true;
@@ -646,7 +705,7 @@ void BindPendingAcpColdLaunch(AppState& app, AcpSessionState& session, ChatSessi
 	{
 		const auto* current = ChatDomainService().FindChatById(app, id);
 		auto* native = FindAcpSessionForChat(app, id);
-		return current && native && native == task->control_session && !task->cold_attempted && OwnsColdLaunch(app, *native, *current, *task);
+		return current && native && native == task->control_session && !task->cold_attempted && CheckColdLaunchOwnership(app, *native, *current, *task);
 	};
 	const auto complete = [task](DurableAdmissionState state) { task->cold_admission = state; };
 	task->cold_admission = BeginDurableAdmission(app, chat, owned, complete, DurableAdmissionFailurePurpose::BindingOnly);
@@ -2824,29 +2883,8 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		{
 			session.pending_local_launch.reset();
 			session.last_error = "Local launch ownership changed before process creation.";
-			const nlohmann::json captured = nlohmann::json::parse(prepared->ownership, nullptr, false);
-			const nlohmann::json current = nlohmann::json::parse(LocalLaunchOwnership(app, session, chat), nullptr, false);
-			static constexpr std::string_view fields[] = {
-			    "provider", "command", "runtime_flags", "resume_argument", "structured_support",
-			    "protocol", "execution_mode", "output_mode", "bootstrap", "bootstrap_path",
-			    "auto_worktree", "base_ref", "base_override", "svn_update", "branch", "chat",
-			    "birth", "chat_provider", "native_session", "host", "workspace", "source_workspace",
-			    "worktree", "isolation", "routing", "routing_connection", "model", "approval",
-			    "extra_flags", "goal", "goal_revision", "agent", "small_model", "reasoning", "tier",
-			    "safety", "turn_model", "active_agent", "agent_definition", "agent_instructions",
-			    "agent_capability", "agent_access", "last_process", "session", "process",
-			    "model_discovery", "internal_goal", "recovering_turn", "recovering_process",
-			    "settings", "delivery_configuration"};
-			std::string changed;
-			if (captured.is_array() && current.is_array() && captured.size() == std::size(fields) && current.size() == std::size(fields))
-				for (std::size_t index = 0; index < std::size(fields); ++index)
-					if (captured[index] != current[index])
-					{
-						if (!changed.empty()) changed += ',';
-						changed += fields[index];
-					}
 			AppendAcpDiagnostic(session, "process_launch", "ownership_changed", "", "", false, 0,
-			    session.last_error, "changed_fields=" + (changed.empty() ? std::string("unknown") : changed));
+			    session.last_error, "changed_fields=" + LaunchOwnershipChangedFields(prepared->ownership, LocalLaunchOwnership(app, session, chat)));
 			if (error_out) *error_out = session.last_error;
 			return false;
 		}

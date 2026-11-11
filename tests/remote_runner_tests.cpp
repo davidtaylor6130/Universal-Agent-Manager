@@ -2,6 +2,7 @@
 #include "remote/remote_workspace_terminal.h"
 #include "remote/runner_startup.h"
 #include "app/chat_lifecycle_service.h"
+#include "app/memory_service.h"
 #include "app/provider_configuration_service.h"
 #include "app/execution_routing_integration.h"
 #include "test_harness.h"
@@ -7002,6 +7003,66 @@ UAM_TEST(AcpColdLaunchRevokesChangedAuthorityBeforeAndAfterFullReceipt)
 	}
 }
 
+
+// A send that has to start the provider first is not a running session yet. Memory took the chat for idle and
+// stamped its progress into the queue record the staged launch owned, so the launch was given up and the first
+// message after an app start came back as unsent.
+UAM_TEST(AcpColdLaunchIsNotGivenUpByMemoryProgressForItsUnsentInput)
+{
+	InjectedRemoteAdmissionFixture fixture;
+	PrepareColdAuthority(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	chat.memory_enabled = true;
+	chat.memory_level = "strict"; // The new row has no durable signal, so memory skips it by stamping progress at once.
+	chat.memory_last_processed_message_count = static_cast<int>(chat.messages.size());
+	int attempts = 0;
+	UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+	    [&attempts](uam::AppState&, uam::AcpSessionState& native, ChatSession&) { ++attempts; native.running = true; return true; }));
+	BindColdInput(fixture);
+	fixture.AwaitSave(); // The launch now owns its saved receipt and starts on the next poll.
+	const int processed = chat.memory_last_processed_message_count;
+	const std::string processed_at = chat.memory_last_processed_at;
+	(void)MemoryService::ProcessDueMemoryWork(app);
+	UAM_ASSERT_EQ(chat.memory_last_processed_message_count, processed);
+	UAM_ASSERT_EQ(chat.memory_last_processed_at, processed_at);
+	UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+	UAM_ASSERT_EQ(attempts, 1);
+	UAM_ASSERT(!fixture.session->queue_held && !chat.acp_queue_held && !chat.messages.back().interrupted);
+	// Memory is only deferred: once the turn is over the same rows are stamped as before.
+	fixture.session->running = fixture.session->processing = false;
+	fixture.session->queued_prompt.clear();
+	fixture.AwaitSave();
+	(void)MemoryService::ProcessDueMemoryWork(app);
+	UAM_ASSERT_EQ(chat.memory_last_processed_message_count, static_cast<int>(chat.messages.size()));
+}
+
+UAM_TEST(AcpColdLaunchGiveUpNamesTheOwnershipCheckThatFailed)
+{
+	for (const std::string mutation : {"queue", "stop", "configuration"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareColdAuthority(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+		    [](uam::AppState&, uam::AcpSessionState&, ChatSession&) { return true; }));
+		BindColdInput(fixture);
+		fixture.AwaitSave();
+		if (mutation == "queue") chat.memory_last_processed_at = "a later memory stamp";
+		if (mutation == "stop") fixture.session->remote_stop_pending = true;
+		if (mutation == "configuration") fixture.session->active_uam_agent_definition_hash = "replacement-agent";
+		UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		const auto& diagnostics = fixture.session->diagnostics;
+		const auto lost = std::ranges::find(diagnostics, std::string("cold_ownership_lost"), &uam::AcpDiagnosticEntryState::reason);
+		UAM_ASSERT(lost != diagnostics.end());
+		UAM_ASSERT_EQ(lost->event, std::string("process_launch"));
+		const std::string expected = mutation == "configuration" ? "check=configuration,changed_fields=agent_definition,delivery_configuration" : "check=" + mutation;
+		UAM_ASSERT_EQ(lost->detail, expected);
+		// Fixed words only: nothing from the chat or its host reaches the log line.
+		UAM_ASSERT(lost->detail.find("Retained cold launch input") == std::string::npos && lost->detail.find(chat.native_session_id) == std::string::npos);
+	}
+}
 
 namespace
 {
