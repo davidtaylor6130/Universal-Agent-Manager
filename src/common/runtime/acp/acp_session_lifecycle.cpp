@@ -3808,6 +3808,8 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 		chat.remote_turn_user_message_index = session.turn_user_message_index;
 		chat.remote_active_turn_id = ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpTurnIdentity(session);
 		chat.remote_turn_reconnect_pending = true;
+		// "Recovery blocked" asks for a review of the lost turn; sending the next one is that review.
+		chat.remote_recovery_state.clear();
 		chat.remote_restart_pending = false;
 		session.restart_after_remote_stop_cleanup = false;
 		if (session.remote_runner_protocol_version >= 3)

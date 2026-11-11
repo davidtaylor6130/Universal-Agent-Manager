@@ -113,7 +113,7 @@ void UamQueryHandler::HandleOpenWorkspaceTerminal(CefRefPtr<CefBrowser> browser,
 	{
 		const std::string directory = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(m_app, *chat));
 		const std::vector<std::string> argv = uam::remote::BuildRemoteWorkspaceTerminalArgv(*host, directory);
-		if (host->runner_status != "ready" || argv.empty())
+		if (!uam::remote::CanAttemptRunnerConnection(*host) || argv.empty())
 		{
 			cb->Failure(409, "The remote workspace or runner is unavailable. Check the host in Settings.");
 			return;

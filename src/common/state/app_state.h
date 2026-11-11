@@ -26,6 +26,7 @@
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <chrono>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -521,6 +522,8 @@ namespace uam
 		std::unordered_set<std::string> seen_request_ids;
 		std::deque<std::string> seen_request_order; // Insertion order, so eviction drops the oldest ID.
 		std::unordered_set<std::string> owned_agent_run_ids;
+		// When each listed but not yet readable request file was first seen; bounded by kUnreadableRequestGrace.
+		std::unordered_map<std::string, std::chrono::steady_clock::time_point> unreadable_request_since;
 		// Current-connection cancellation tombstones; overflow refuses new waits until renewal.
 		std::unordered_set<std::string> cancelled_wait_ids;
 		bool wait_cancellation_overflow = false;
@@ -528,6 +531,7 @@ namespace uam
 		int chat_create_turn_serial = -1;
 		std::size_t chat_create_turn_count = 0;
 		std::optional<PendingApproval> pending_approval;
+		std::string render_check_request_id; // Latest render-checked request; its reply is written asynchronously.
 		std::shared_ptr<UamAgentWait> pending_agent_wait;
 		// Captured by real setup; wait admission cannot adopt a changed host/workspace selection.
 		std::optional<ExecutionHost> wait_host_at_launch;
@@ -1370,6 +1374,20 @@ namespace uam
 		std::string current_label;
 	};
 
+	/// Unreachable says nothing about the host's processes; only SessionMissing is the helper's own answer.
+	enum class RemoteHostProbeOutcome { Pending, Unreachable, Reachable, SessionMissing };
+	/// Contacts the helper; with a session ID, also asks whether that process still exists.
+	using RemoteHostProbe = std::function<RemoteHostProbeOutcome(const ExecutionHost&, const std::string& session_id, std::stop_token)>;
+	struct RemoteHostProbeTask
+	{
+		ExecutionHost host;
+		std::string session_id;
+		std::atomic<RemoteHostProbeOutcome> outcome{RemoteHostProbeOutcome::Pending};
+		double retry_at_s = 0.0;
+		double delay_s = 0.0;
+		std::unique_ptr<std::jthread> worker;
+	};
+
 	struct AppState
 	{
 		WorkspaceLeaseGate worktree_retention_gate;
@@ -1392,6 +1410,15 @@ namespace uam
 		std::unordered_set<std::string> execution_routing_reserved_chat_ids;
 		std::unordered_set<std::string> execution_routing_restored_unresolved_chat_ids;
 		double execution_routing_next_poll_s = 0.0;
+		/// One background helper contact per key, retried with a doubling delay. Results apply on the app thread.
+		std::unordered_map<std::string, std::shared_ptr<RemoteHostProbeTask>> remote_host_probes;
+		/// Test seam: replaces the SSH helper contact made by a recovery probe.
+		RemoteHostProbe remote_host_probe;
+		std::unordered_map<std::string, std::pair<double, double>> execution_routing_version_check_retry;
+		/// The running version check was started by routing, so a user-started check queues behind it instead of being refused.
+		bool runtime_cli_version_check_background = false;
+		/// When each entry of repository_route_workspaces was last read; a missing entry counts as the last refresh.
+		std::vector<double> repository_route_read_at_s;
 		fs::path data_root;
 		fs::path native_history_chats_dir;
 		AppSettings settings;
@@ -1439,6 +1466,8 @@ namespace uam
 		std::deque<std::shared_ptr<UamAgentWait>> uam_wait_retirements;
 		std::string uam_control_manager_id;
 		std::deque<std::string> queued_agent_run_ids;
+		/// Terminal v2 records whose result card a previous process never wrote; the scheduler delivers each once.
+		std::deque<AgentRun> managed_result_recoveries;
 		std::size_t managed_parent_continuation_cursor = 0;
 		/// <summary>Retains cancellation intent across failed ledger writes until polling can retry.</summary>
 		std::unordered_set<std::string> pending_agent_run_cancellation_ids;
@@ -1446,6 +1475,24 @@ namespace uam
 		std::shared_ptr<const std::uint8_t> managed_subagent_control_incarnation = std::make_shared<const std::uint8_t>(0);
 		std::unordered_map<std::string, std::shared_ptr<const ManagedSubagentCancellationReceipt>> managed_subagent_cancellation_receipts;
 		std::unordered_map<std::string, int64_t> agent_run_deadline_steady_ms;
+		/// A run's result card found its saved parent out of step with memory: when to compare again, and the
+		/// parent state seen then, so a save or reload of the parent retries at once.
+		struct AgentResultRetry
+		{
+			int64_t retry_at_steady_ms = 0;
+			std::string storage_revision;
+			std::size_t message_count = 0;
+			std::string updated_at;
+		};
+		std::unordered_map<std::string, AgentResultRetry> agent_result_retry_steady_ms;
+		int64_t managed_result_recovery_retry_steady_ms = 0;
+		std::unordered_map<std::string, int> managed_result_recovery_failures;
+		/// Queued runs that routing is refusing right now: since when in total, and since when as invalid.
+		std::unordered_map<std::string, int64_t> agent_routing_wait_since_steady_ms, agent_routing_invalid_since_steady_ms;
+		std::unordered_set<std::string> agent_routing_held_this_poll;
+		/// Child chats re-admitted at startup only to stop a remote helper process a previous UAM process left
+		/// running, keyed by chat ID with the steady time at which UAM stops waiting for the confirmation.
+		std::unordered_map<std::string, int64_t> agent_startup_stop_deadline_steady_ms;
 		std::unordered_map<std::string, std::deque<int64_t>> agent_provider_crash_times_epoch_ms;
 		std::unordered_map<std::string, int64_t> agent_provider_circuit_open_until_epoch_ms;
 		int selected_chat_index = -1;

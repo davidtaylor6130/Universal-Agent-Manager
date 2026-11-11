@@ -1036,7 +1036,7 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 		}
 		if (execution_host->id != uam::execution_hosts::kLocalHostId)
 		{
-			if (execution_host->runner_status != "ready")
+			if (!uam::remote::CanAttemptRunnerConnection(*execution_host))
 			{
 				cb->Failure(409, "The selected remote runner is not ready.");
 				return;
@@ -1275,7 +1275,7 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 	};
 	if (remote)
 	{
-		if (execution_host->runner_status != "ready" ||
+		if (!uam::remote::CanAttemptRunnerConnection(*execution_host) ||
 		    !uam::execution_hosts::IsAbsoluteRemotePath(execution_host->platform,
 		        uam::paths::Utf8PathString(workspace_root)))
 		{
