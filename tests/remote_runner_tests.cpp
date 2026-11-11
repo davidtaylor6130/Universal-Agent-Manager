@@ -36,6 +36,7 @@
 #include <sys/wait.h>
 #endif
 #if defined(_WIN32)
+#include "remote/runner_service_windows.h"
 #include <fcntl.h>
 #include <io.h>
 #endif
@@ -2685,6 +2686,48 @@ UAM_TEST(WindowsRemoteRunnerServiceSupportsReconnectConcurrentChatsAndCleanShutd
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	UAM_ASSERT_EQ(runner_service_exit, 0);
 	second.Disconnect();
+}
+
+UAM_TEST(WindowsRunnerServiceSurvivesClientsThatConnectAndCloseAtOnce)
+{
+	// Every `start` probes the service by connecting and closing. A probe that had closed before the service reached
+	// ConnectNamedPipe made that call fail, which ended the service and, on Windows, every process it ran.
+	TempDir isolated("uam-win-service-probes");
+	ScopedEnvVar service_namespace("UAM_RUNNER_SERVICE_NAMESPACE", isolated.root.string());
+	auto& processes = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = processes.ResolveCurrentExecutablePath().parent_path() / "uam-runner.exe";
+	UAM_ASSERT(fs::exists(runner));
+	struct ServiceProcess
+	{
+		uam::platform::StdioProcessPlatformFields fields;
+		~ServiceProcess() { PlatformServicesFactory::Instance().process_service.StopStdioProcess(fields, true); }
+	} service;
+	std::string error;
+	UAM_ASSERT(processes.StartStdioProcess(service.fields, fs::temp_directory_path(), {runner.string(), "serve"}, &error));
+	processes.CloseStdioProcessInput(service.fields);
+	const std::wstring pipe = uam::remote::RunnerServicePipeName(std::string(uam::constants::kAppVersion).substr(1));
+	UAM_ASSERT(!pipe.empty());
+	int exit_code = -1;
+	int connected = 0;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+	while (connected < 2000 && std::chrono::steady_clock::now() < deadline && !processes.PollStdioProcessExited(service.fields, &exit_code))
+	{
+		const HANDLE probe = CreateFileW(pipe.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+		if (probe != INVALID_HANDLE_VALUE)
+		{
+			CloseHandle(probe);
+			++connected;
+		}
+		else if (GetLastError() == ERROR_PIPE_BUSY)
+			(void)WaitNamedPipeW(pipe.c_str(), 250);
+		else
+			Sleep(1); // Not listening yet.
+	}
+	UAM_ASSERT_EQ(connected, 2000);
+	UAM_ASSERT(!processes.PollStdioProcessExited(service.fields, &exit_code));
+	uam::remote::RunnerClient client(processes, {runner.string(), "bridge"});
+	UAM_ASSERT(client.Connect(&error));
+	client.Disconnect();
 }
 
 UAM_TEST(WindowsHelperActivationRetiresOnlyOtherIdleHelpersAndTheirLoginEntries)

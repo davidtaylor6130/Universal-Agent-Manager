@@ -153,6 +153,9 @@ jobs:
       - name: Verify native runner memory (Linux)
         if: runner.os == 'Linux'
         run: python3 scripts/test_remote_runner_memory.py --runner Builds/runner/uam-runner
+      - name: Verify runner survives closed bridges (Linux)
+        if: runner.os == 'Linux'
+        run: python3 scripts/test_remote_runner_closed_bridge.py --runner Builds/runner/uam-runner
       - name: Smoke runner version (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
