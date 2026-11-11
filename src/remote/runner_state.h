@@ -96,6 +96,13 @@ namespace uam::remote
 			std::int64_t expires_at_ms = 0;
 			ChannelBuffer remote_to_desktop;
 			ChannelBuffer desktop_to_remote;
+			/// Which desktop tool server serves this channel and when it was last heard, so the provider-side
+			/// shim can answer a call itself instead of waiting on a desktop that is gone.
+			std::string desktop_epoch;
+			std::int64_t desktop_seen_ms = 0;
+			/// Set by the shim after it failed its waiting calls: the desktop must reopen with a new epoch.
+			bool desktop_fenced = false;
+			bool desktop_output_mid_line = false;
 		};
 		struct Upload
 		{

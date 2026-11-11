@@ -30,6 +30,7 @@
 #include "common/config/settings_normalization.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
+#include "remote/runner_proxy.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_profile_constants.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
@@ -132,7 +133,6 @@ namespace uam
 		constexpr auto kAgentWaitSlice = std::chrono::seconds(80);
 		constexpr auto kAgentWaitPublicationBudget = std::chrono::seconds(100);
 		constexpr int64_t kCapabilityLifetimeMs = 24LL * 60LL * 60LL * 1000LL;
-		constexpr int64_t kApprovalLifetimeMs = 90LL * 1000LL;
 		constexpr int64_t kModelGoalTokenBudget = 200000;
 		constexpr std::string_view kServerFlag = "--uam-control-mcp";
 		constexpr const char* kCapabilityDirectoryEnvironment = "UAM_CONTROL_CAPABILITY_DIR";
@@ -318,6 +318,12 @@ namespace uam
 		bool IsHtmlViewMethod(std::string_view method)
 		{
 			return method == "html_view_preview" || method == "html_view_publish";
+		}
+
+		/// Requests that show a card and wait for the user: they are answered, declined or cancelled, never timed out.
+		bool IsCardMethod(std::string_view method)
+		{
+			return method == "user_question" || method == "goal_create" || method == "chat_create" || method == "computer_use_request";
 		}
 
 		std::size_t RequestLimit(std::string_view method)
@@ -698,7 +704,8 @@ namespace uam
 				out.result.push_back({{"id", definition.id}, {"description", definition.description},
 				                      {"workspaceAccess", forced_read ? "read" : "write"},
 				                      {"providerNeutral", true}, {"providerTargets", targets}});
-				if (out.result.dump().size() > kMaxResponseBytes - 1024)
+				// The stdio reply carries this list as an escaped string, so bound the escaped size.
+				if (nlohmann::json(out.result.dump()).dump().size() > kMaxResponseBytes - 1024)
 				{
 					out.result.erase(out.result.end() - 1);
 					break;
@@ -1035,7 +1042,7 @@ namespace uam
 
 		ToolResult GoalCreateRequest(AppState& app, UamControlCapability& capability,
 		                             std::string_view request_id, const nlohmann::json& arguments,
-		                             int64_t now_epoch_ms)
+		                             int64_t)
 		{
 			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
 			if (!ControlEnabled(chat, capability, true))
@@ -1057,20 +1064,18 @@ namespace uam
 				return {.error = "This chat already has an active goal."};
 			return QueueApproval(app, capability, {.request_id = std::string(request_id),
 			                                     .method = "goal_create", .objective = objective,
-			                                     .idempotency_key = key,
-			                                     .expires_at_epoch_ms = now_epoch_ms + kApprovalLifetimeMs});
+			                                     .idempotency_key = key});
 		}
 
 		ToolResult ChatCreateRequest(AppState& app, UamControlCapability& capability,
 		                             std::string_view request_id, const nlohmann::json& arguments,
-		                             int64_t now_epoch_ms)
+		                             int64_t)
 		{
 			const ChatSession* caller = ChatDomainService().FindChatById(app, capability.chat_id);
 			if (std::string refusal = ChatCreateRefusal(app, capability, caller); !refusal.empty()) return {.error = std::move(refusal)};
 			if (std::string invalid = ChatCreateArgumentError(arguments); !invalid.empty()) return {.error = std::move(invalid)};
 			return QueueApproval(app, capability, {.request_id = std::string(request_id), .method = "chat_create",
-			                                     .chat_create_arguments = arguments,
-			                                     .expires_at_epoch_ms = now_epoch_ms + kApprovalLifetimeMs});
+			                                     .chat_create_arguments = arguments});
 		}
 
 		/// Capture only the original user message owned by this active structured turn.
@@ -1127,7 +1132,7 @@ namespace uam
 
 		ToolResult ComputerUseRequest(AppState& app, UamControlCapability& capability,
 		                              std::string_view request_id, const nlohmann::json& arguments,
-		                              int64_t now_epoch_ms)
+		                              int64_t)
 		{
 			ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
 			const ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
@@ -1157,13 +1162,12 @@ namespace uam
 			pending.computer_use_origin = std::move(origin);
 			pending.computer_use_chat_incarnation = chat->metadata_incarnation;
 			pending.computer_use_root_incarnation = root_chat->metadata_incarnation;
-			pending.expires_at_epoch_ms = now_epoch_ms + kApprovalLifetimeMs;
 			return QueueApproval(app, capability, std::move(pending));
 		}
 
 		ToolResult UserQuestionRequest(AppState& app, UamControlCapability& capability,
 		                              std::string_view request_id, const nlohmann::json& arguments,
-		                              int64_t now_epoch_ms)
+		                              int64_t)
 		{
 			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
 			const ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
@@ -1175,8 +1179,7 @@ namespace uam
 			return QueueApproval(app, capability, {.request_id = std::string(request_id),
 			                                     .method = "user_question",
 			                                     .question = arguments.at("question").get<std::string>(),
-			                                     .question_options = std::move(options),
-			                                     .expires_at_epoch_ms = now_epoch_ms + kApprovalLifetimeMs});
+			                                     .question_options = std::move(options)});
 		}
 
 		ToolResult HtmlViewPreview(const nlohmann::json& arguments)
@@ -1627,6 +1630,19 @@ namespace uam
 			}
 		}
 
+		/// The caller stopped waiting (its provider cancelled the call or its tool connection closed), so the card can no longer be answered.
+		bool DeclineAbandonedApproval(AppState& app, UamControlCapability& capability, std::string_view only_request_id = {})
+		{
+			if (!capability.pending_approval.has_value() ||
+			    (!only_request_id.empty() && capability.pending_approval->request_id != only_request_id)) return false;
+			const ToolResult abandoned{.error = "The provider stopped waiting for this UAM request before it was answered."};
+			(void)AppendAuditAndSave(app, capability, capability.pending_approval->request_id, capability.pending_approval->method, abandoned);
+			// A caller replaced by another tool server may still be polling: answer it so it cannot wait forever.
+			(void)WriteResponse(capability.directory, capability.pending_approval->request_id, {{"ok", false}, {"error", abandoned.error}});
+			capability.pending_approval.reset();
+			return true;
+		}
+
 		nlohmann::json HandleRequest(AppState& app, const std::string& capability_id,
 		                             const nlohmann::json& request, int64_t now_epoch_ms)
 		{
@@ -1668,6 +1684,8 @@ namespace uam
 				if (capability->mcp_initialized && capability->mcp_connection_id == arguments.at("connectionId").get<std::string>())
 				{
 					const std::string cancelled_id = arguments.at("requestId");
+					if (DeclineAbandonedApproval(app, *capability, cancelled_id))
+						return {{"ok", true}, {"result", nlohmann::json::object()}};
 					if (capability->pending_agent_wait && capability->pending_agent_wait->request_id == cancelled_id)
 						RetireAgentWait(app, *capability);
 					if (!capability->cancelled_wait_ids.contains(cancelled_id) &&
@@ -1695,6 +1713,7 @@ namespace uam
 				if (method == "_mcp_disconnected" || capability->mcp_connection_id != connection)
 				{
 					RetireAgentWait(app, *capability);
+					(void)DeclineAbandonedApproval(app, *capability);
 					capability->cancelled_wait_ids.clear();
 					capability->wait_cancellation_overflow = false;
 				}
@@ -1711,6 +1730,18 @@ namespace uam
 			if (capability->request_times_epoch_ms.size() >= kMaxRequestsPerMinute)
 				return reject("Control capability exceeded the bounded request rate.");
 			capability->request_times_epoch_ms.push_back(now_epoch_ms);
+
+			// A delegation retried in the same turn whose first reply was never collected gets that reply again instead of a second child.
+			// Removing the uncollected reply is the proof: a caller that read it has already removed it.
+			const AcpSessionState* delegate_session = method == "agent_delegate" ? WaitSession(app, *capability) : nullptr;
+			const int delegate_turn = delegate_session != nullptr ? delegate_session->turn_serial : -1;
+			if (method == "agent_delegate" && !capability->last_delegate_request_id.empty() &&
+			    capability->last_delegate_turn_serial == delegate_turn && capability->last_delegate_arguments == arguments.dump() &&
+			    uam::paths::RemoveFileNoThrow(capability->directory / "responses" / (capability->last_delegate_request_id + ".json")))
+			{
+				capability->last_delegate_request_id = request_id;
+				return {{"ok", true}, {"result", capability->last_delegate_result}};
+			}
 
 			const ChatSession* before_chat = ChatDomainService().FindChatById(app, capability->chat_id);
 			const std::optional<ChatSession> rollback = before_chat == nullptr || method == "agent_wait" ? std::nullopt : std::optional<ChatSession>{*before_chat};
@@ -1784,10 +1815,20 @@ namespace uam
 				unavailable.not_run_reason = "no renderer is available.";
 				result.result["runtimeCheck"] = html_view::RenderCheckJson(unavailable);
 			}
+			if (result.ok && method == "agent_delegate")
+				if (UamControlCapability* owner = FindCapability(app, capability_snapshot.id))
+				{
+					owner->last_delegate_request_id = request_id;
+					owner->last_delegate_turn_serial = delegate_turn;
+					owner->last_delegate_arguments = arguments.dump();
+					owner->last_delegate_result = result.result;
+				}
 			nlohmann::json response = result.ok
 			                              ? nlohmann::json{{"ok", true}, {"result", std::move(result.result)}}
 			                              : reject(std::move(result.error));
-			if (response.dump().size() > kMaxResponseBytes)
+			// The stdio server sends the result as an escaped string inside its own envelope; bound that size here,
+			// so an oversized result is a plain error instead of a reply the transport cannot carry.
+			if (nlohmann::json(response.dump()).dump().size() + 256 > kMaxResponseBytes)
 				return reject("Control response exceeds the 64 KiB ceiling.");
 			return response;
 		}
@@ -1878,13 +1919,14 @@ namespace uam
 		                                              WaitAbortReason* abort_out = nullptr)
 		{
 			const bool wait_method = method == "agent_wait";
+			const bool card_method = IsCardMethod(method);
 			const bool cancel_receipt = method == "_mcp_cancel_request";
 			const auto deadline = std::chrono::steady_clock::now() +
 			    std::chrono::milliseconds(wait_method ? 100000 : cancel_receipt ? 2000 : 0);
 			if (abort_out != nullptr) *abort_out = WaitAbortReason::None;
 			const auto aborted = [&]()
 			{
-				WaitAbortReason reason = wait_method && wait_probe ? wait_probe() : WaitAbortReason::None;
+				WaitAbortReason reason = wait_probe ? wait_probe() : WaitAbortReason::None;
 				if (reason == WaitAbortReason::None && wait_method && std::chrono::steady_clock::now() >= deadline)
 					reason = WaitAbortReason::Deadline;
 				if (abort_out != nullptr && reason != WaitAbortReason::None) *abort_out = reason;
@@ -1907,11 +1949,12 @@ namespace uam
 			if (aborted()) return std::nullopt;
 			const nlohmann::json request{{"requestId", id}, {"method", method}, {"arguments", arguments}};
 			const std::string request_text = request.dump();
-			if (request_text.size() > RequestLimit(method) ||
-			    !uam::io::WriteTextFile(capability / "requests" / (id + ".json"), request_text)) return std::nullopt;
+			const std::filesystem::path request_path = capability / "requests" / (id + ".json");
+			if (request_text.size() > RequestLimit(method) || !uam::io::WriteTextFile(request_path, request_text)) return std::nullopt;
 			const std::filesystem::path response_path = capability / "responses" / (id + ".json");
-			const int max_attempts = method == "computer_use_request" || method == "goal_create" || method == "user_question" || method == "chat_create"
-			    ? 4000 : IsHtmlViewMethod(method) ? 800 : 400; // HTML views wait for their bounded runtime check.
+			int max_attempts = IsHtmlViewMethod(method) ? 800 : 400; // HTML views wait for their bounded runtime check.
+			bool budget_spent = false;
+			std::optional<nlohmann::json> timeout_reply;
 			for (int attempt = 0; !cancel.stop_requested(); ++attempt)
 			{
 				if (aborted()) break;
@@ -1919,7 +1962,22 @@ namespace uam
 				{
 					if (std::chrono::steady_clock::now() >= deadline) break;
 				}
-				else if (attempt >= max_attempts) break; // All other methods retain existing budgets.
+				// A card waits until the user answers it; only the probe (provider cancel, input closed) ends that wait.
+				else if (!card_method && attempt >= max_attempts)
+				{
+					if (budget_spent) break;
+					budget_spent = true;
+					// Withdraw the request. The manager claims a request by removing the same file before it runs it, so
+					// exactly one side wins: a withdrawn request never runs after this call has reported its failure.
+					if (uam::paths::RemoveFileNoThrow(request_path))
+					{
+						timeout_reply = nlohmann::json{{"ok", false}, {"error", "UAM did not answer in time, so this request was withdrawn and did not run. It is safe to retry."}};
+						break;
+					}
+					// Already claimed: its reply is being produced, so wait a little longer for the real outcome.
+					timeout_reply = nlohmann::json{{"ok", false}, {"error", "UAM accepted this request but did not answer in time. Check its effect before retrying."}};
+					max_attempts = attempt + 200;
+				}
 				const auto size = uam::paths::FileSizeNoThrow(response_path);
 				if (size.has_value())
 				{
@@ -1944,12 +2002,11 @@ namespace uam
 				    ? std::max(std::chrono::milliseconds(0), std::min(std::chrono::milliseconds(25), remaining))
 				    : std::chrono::milliseconds(25));
 			}
-			if (method == "_mcp_heartbeat")
-			{
-				(void)uam::paths::RemoveFileNoThrow(capability / "requests" / (id + ".json"));
-				(void)uam::paths::RemoveFileNoThrow(response_path);
-			}
-			return std::nullopt;
+			if (method == "_mcp_heartbeat") (void)uam::paths::RemoveFileNoThrow(response_path);
+			// An abandoned card the manager has not claimed yet is withdrawn here, so it can never be shown after its
+			// caller's cancellation was processed. A claimed one is declined by that cancellation.
+			if (card_method) (void)uam::paths::RemoveFileNoThrow(request_path);
+			return timeout_reply;
 		}
 
 		void CancelWait(const std::filesystem::path& capability, const std::string& connection,
@@ -1998,9 +2055,36 @@ namespace uam
 		const std::string connection_id = RandomRequestId();
 		bool initialization_replied = false;
 		bool connection_recorded = false;
+		// A provider that outlived its previous tool server (remote reattach, relay restart) already finished its MCP
+		// handshake and never repeats it, so this replacement records the connection itself.
+		const bool resumed = uam::env::GetNonEmptyString(uam::remote::kUamControlResumedEnvironment).has_value();
 		std::jthread heartbeat;
 		StdioInputPump input(PlatformServicesFactory::Instance().process_service);
 		int exit_code = 0;
+		const auto record_connection = [&]
+		{
+			const std::optional<nlohmann::json> receipt = SubmitToManager(*capability, "_mcp_initialized", {{"connectionId", connection_id}});
+			connection_recorded = receipt.has_value() && receipt->value("ok", false);
+			if (!connection_recorded || heartbeat.joinable()) return;
+			heartbeat = std::jthread([directory = *capability, connection_id](std::stop_token cancel)
+			{
+				std::condition_variable_any wake;
+				std::mutex mutex;
+				std::unique_lock<std::mutex> lock(mutex);
+				while (!cancel.stop_requested())
+				{
+					try
+					{
+						const std::optional<nlohmann::json> result = SubmitToManager(directory, "_mcp_heartbeat", {{"connectionId", connection_id}}, cancel);
+						if (cancel.stop_requested() || !uam::paths::IsDirectoryNoThrow(directory) ||
+						    (result.has_value() && result->value("error", "") == "MCP connection is no longer current.")) break;
+					}
+					catch (const std::exception&) { break; }
+					wake.wait_for(lock, cancel, std::chrono::seconds(5), [] { return false; });
+				}
+			});
+		};
+		if (resumed) record_connection();
 		std::string line;
 		while (input.Next(line))
 		{
@@ -2009,31 +2093,7 @@ namespace uam
 			if (!request.contains("id"))
 			{
 				if (initialization_replied && request.contains("method") && request["method"].is_string() && request["method"] == "notifications/initialized")
-				{
-					const std::optional<nlohmann::json> receipt = SubmitToManager(*capability, "_mcp_initialized", {{"connectionId", connection_id}});
-					connection_recorded = receipt.has_value() && receipt->value("ok", false);
-					if (connection_recorded && !heartbeat.joinable())
-					{
-						heartbeat = std::jthread([directory = *capability, connection_id](std::stop_token cancel)
-						{
-							std::condition_variable_any wake;
-							std::mutex mutex;
-							std::unique_lock<std::mutex> lock(mutex);
-							while (!cancel.stop_requested())
-							{
-								try
-								{
-									const std::optional<nlohmann::json> result = SubmitToManager(directory, "_mcp_heartbeat", {{"connectionId", connection_id}}, cancel);
-									if (cancel.stop_requested() || !uam::paths::IsDirectoryNoThrow(directory) ||
-									    (result.has_value() && result->value("error", "") == "MCP connection is no longer current.")) break;
-								}
-								catch (const std::exception&) { break; }
-								wake.wait_for(lock, cancel, std::chrono::seconds(5), [] { return false; });
-							}
-						});
-					}
-
-				}
+					record_connection();
 				continue;
 			}
 			const nlohmann::json id = request["id"];
@@ -2063,7 +2123,9 @@ namespace uam
 				else
 				{
 					const std::string name = request["params"]["name"].get<std::string>();
-					const bool wait_call = name == "agent_wait";
+					// Waits and cards can outlast the provider's interest: both watch the input for a cancellation or its end.
+					const bool wait_call = name == "agent_wait" || IsCardMethod(name);
+					if (resumed && !connection_recorded) record_connection();
 					if (wait_call) input.BeginWait(id);
 					std::string wait_request_id;
 					WaitAbortReason abort = WaitAbortReason::None;
@@ -2093,8 +2155,17 @@ namespace uam
 			{
 				response["error"] = {{"code", -32601}, {"message", "Method not found."}};
 			}
-			const std::string output = response.dump();
-			if (output.size() > kMaxResponseBytes) { exit_code = 2; break; }
+			std::string output = response.dump();
+			if (output.size() > kMaxResponseBytes)
+			{
+				// One oversized reply must not end the tool server for the rest of the session: answer with a bounded error.
+				response.erase("result");
+				if (method == "tools/call")
+					response["result"] = {{"content", nlohmann::json::array({{{"type", "text"}, {"text", R"({"error":"The UAM reply exceeded the 64 KiB transport limit and was not sent."})"}}})}, {"isError", true}};
+				else response["error"] = {{"code", -32603}, {"message", "The UAM reply exceeded the 64 KiB transport limit."}};
+				output = response.dump();
+				if (output.size() > kMaxResponseBytes) continue; // Only an oversized request ID remains; it cannot be answered.
+			}
 			std::cout << output << '\n' << std::flush;
 			if (method == "initialize" && std::cout.good()) initialization_replied = true;
 		}
@@ -2231,11 +2302,15 @@ namespace uam
 			if (error_out != nullptr) *error_out = "UAM control executable is unavailable.";
 			return false;
 		}
+		nlohmann::json environment = nlohmann::json::array({{{"name", kCapabilityDirectoryEnvironment},
+		                                                      {"value", uam::paths::Utf8PathString(capability.directory)}}});
+		// The provider on the host is still running and already connected: see RunStdioServerFromEnvironment.
+		if (session.recovering_remote_turn || session.recovering_remote_process)
+			environment.push_back({{"name", uam::remote::kUamControlResumedEnvironment}, {"value", "1"}});
 		request["params"]["mcpServers"].push_back({
 		    {"name", "uam-control"}, {"command", uam::paths::Utf8PathString(executable)},
 		    {"args", nlohmann::json::array({std::string(kServerFlag)})},
-		    {"env", nlohmann::json::array({{{"name", kCapabilityDirectoryEnvironment},
-		                                      {"value", uam::paths::Utf8PathString(capability.directory)}}})},
+		    {"env", std::move(environment)},
 		});
 		session.uam_control_capability_id = capability.id;
 		app.uam_control_capabilities.push_back(std::move(capability));
@@ -2320,7 +2395,6 @@ namespace uam
 		for (const UamControlCapability& capability : app.uam_control_capabilities)
 		{
 			if (!capability.pending_approval.has_value() || ApprovalChatId(capability) != chat_id ||
-			    capability.pending_approval->expires_at_epoch_ms <= now ||
 			    !HasAuthority(app, capability, now) || !ComputerUseApprovalCurrent(app, capability)) continue;
 			const ChatSession* chat = ChatDomainService().FindChatById(app, std::string(chat_id));
 			if (chat == nullptr) continue;
@@ -2390,7 +2464,7 @@ namespace uam
 				continue;
 			if (ApprovalChatId(capability) != chat_id)
 				return fail("This UAM request is no longer active in this chat.");
-			const bool authority_current = HasAuthority(app, capability, now) && capability.pending_approval->expires_at_epoch_ms > now;
+			const bool authority_current = HasAuthority(app, capability, now);
 			if ((!authority_current && capability.pending_approval->method == "computer_use_request") ||
 			    !ComputerUseApprovalCurrent(app, capability))
 			{
@@ -2535,11 +2609,10 @@ namespace uam
 				changed = true;
 				continue;
 			}
-			if (capability.pending_approval.has_value() &&
-			    (capability.pending_approval->expires_at_epoch_ms <= now || !ComputerUseApprovalCurrent(app, capability)))
+			// A question or approval waits until it is answered; only its turn, session or caller ending declines it.
+			if (capability.pending_approval.has_value() && !ComputerUseApprovalCurrent(app, capability))
 			{
-				const ToolResult expired{.error = capability.pending_approval->expires_at_epoch_ms <= now
-				    ? "UAM approval timed out." : "The original computer-use turn or launch authority changed. Request approval again."};
+				const ToolResult expired{.error = "The original computer-use turn or launch authority changed. Request approval again."};
 				(void)AppendAuditAndSave(app, capability, capability.pending_approval->request_id,
 				                         capability.pending_approval->method, expired);
 				(void)WriteResponse(capability.directory, capability.pending_approval->request_id,
@@ -2608,7 +2681,12 @@ namespace uam
 						const nlohmann::json request = nlohmann::json::parse(text, nullptr, false);
 						if (request.is_object() && request.contains("requestId") &&
 						    request["requestId"].is_string() && request["requestId"] == request_id)
+						{
+							// Claim before running. A caller that gave up withdraws its request by removing this file, and only
+							// one removal can succeed, so a withdrawn request is never run (a failed removal is retried next tick).
+							if (!uam::paths::RemoveFileNoThrow(file)) { ++processed; continue; }
 							response = HandleRequest(app, capability_id, request, now);
+						}
 					}
 					else unreadable = true;
 				}

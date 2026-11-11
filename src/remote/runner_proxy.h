@@ -5,6 +5,7 @@
 #include <map>
 #include <nlohmann/json.hpp>
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -16,6 +17,52 @@
 namespace uam::remote
 {
 	inline constexpr const char* kRemoteProcessSpecEnvironment = "UAM_REMOTE_PROCESS_SPEC";
+	/// Set for a UAM tool server that replaces an earlier one while its provider keeps running (remote reattach, relay
+	/// restart): the provider finished its MCP handshake long ago, so the server records the connection itself.
+	inline constexpr const char* kUamControlResumedEnvironment = "UAM_CONTROL_RESUMED";
+	/// Provider-side deadline for one UAM tool call, where UAM sets it (Codex, OpenCode). A question or approval card
+	/// waits for the user, so this is the default Tool call limit rather than a short transport budget; every other
+	/// UAM tool is bounded by the tool server itself.
+	inline constexpr int kUamControlToolDeadlineSeconds = 7200;
+	/// How long the desktop may stay silent on a UAM tool channel before the host-side shim answers for it.
+	inline constexpr std::int64_t kRemoteMcpDesktopSilenceLimitMs = 30000;
+
+	/// <summary>
+	/// Host-side gate of the remote UAM tool pipe. It follows which provider calls are waiting on the desktop, so a
+	/// call gets a clear error instead of waiting for the provider's own timeout when the desktop is not connected.
+	/// </summary>
+	/// <remarks>
+	/// A question or approval card waits for the user, so a silent desktop (a sleeping laptop) does not fail it; a
+	/// replaced desktop tool server does, because the card it showed is gone.
+	/// </remarks>
+	class RemoteMcpShimFilter
+	{
+	  public:
+		/// Provider bytes. Returns what to send to the desktop; a call refused while the desktop is silent is answered in replies.
+		std::string FromProvider(std::string_view bytes, bool desktop_live, std::string& replies);
+		/// The calls returned by the last FromProvider reached the channel while `epoch` was the desktop tool server.
+		void Sent(const std::string& epoch);
+		/// Desktop bytes. Returns what the provider may read: late replies to calls already failed here are dropped.
+		std::string FromDesktop(std::string_view bytes);
+		/// Applies the latest desktop state, failing calls that can no longer be answered into replies.
+		/// Returns true when the caller must fence the channel so those calls cannot reach a desktop later.
+		bool Observe(bool desktop_live, const std::string& epoch, std::string& replies);
+
+	  private:
+		struct Pending
+		{
+			nlohmann::json id;
+			std::string epoch;
+			bool tool_call = false;
+			bool card = false;
+			bool sent = false;
+		};
+		void Fail(const std::string& key, std::string& replies);
+		std::map<std::string, Pending> m_pending;
+		std::deque<std::string> m_failed;
+		std::string m_fromProvider;
+		std::string m_fromDesktop;
+	};
 	inline constexpr std::string_view kRemoteStopOutcomePrefix = "UAM_REMOTE_STOP_OUTCOME ";
 	/// Last stderr line of an attach whose bridge failed on a reachable host where neither a helper nor a process of that
 	/// session is left running. It settles a stop like the helper's own "does not exist".

@@ -1392,6 +1392,12 @@ namespace
 		return PromptAdmissionOwnershipMismatch(app, session, chat, packet).empty();
 	}
 
+	/// Providers whose UAM tools come from their launch configuration: the session, not the proxy, relays their channel.
+	bool AppOwnsRemoteUamControlRelay(std::string_view provider_id)
+	{
+		return provider_id == uam::provider_ids::kClaudeCli || provider_id == uam::provider_ids::kAntigravityCli;
+	}
+
 	bool ConfigureRemoteUamControlRelay(AppState& app, AcpSessionState& session,
 	                                    ChatSession& chat, const ExecutionHost& execution_host,
 	                                    std::string_view method,
@@ -1534,7 +1540,7 @@ namespace
 			for (const nlohmann::json& entry : server["env"]) environment[entry["name"].get<std::string>()] = entry["value"];
 			request["params"]["config"]["mcp_servers.uam-control"] = {
 			    {"command", server["command"]}, {"args", server["args"]}, {"env", std::move(environment)},
-			    {"enabled", true}, {"required", true}, {"tool_timeout_sec", 300}, {"default_tools_approval_mode", "approve"}};
+			    {"enabled", true}, {"required", true}, {"tool_timeout_sec", uam::remote::kUamControlToolDeadlineSeconds}, {"default_tools_approval_mode", "approve"}};
 			return true;
 		}
 		const bool accepts = method == "session.create" || method == "session.resume" || method == uam::acp_methods::kSessionNew || method == uam::acp_methods::kSessionLoad || method == uam::acp_methods::kSessionResume;
@@ -2758,7 +2764,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	nlohmann::json launch_control_servers = nlohmann::json::array();
 	std::function<void(AcpSessionState&)> start_control_relay;
 	AppSettings configuration_settings = app.settings;
-	if (!prepared && !session.model_discovery_only && (provider.id == uam::provider_ids::kClaudeCli || provider.id == uam::provider_ids::kAntigravityCli) && UamControlService::EnabledForChat(app.settings, chat))
+	if (!prepared && !session.model_discovery_only && AppOwnsRemoteUamControlRelay(provider.id) && UamControlService::EnabledForChat(app.settings, chat))
 	{
 		nlohmann::json control_request = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
 		if (!UamControlService::AppendSessionMcpServer(app, session, chat, uam::acp_methods::kSessionNew, control_request, &startup_error))
@@ -3162,11 +3168,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			// sending a second initialize or replaying the in-flight prompt. The local
 			// UAM-control capability did stop with the previous GUI, so rebuild only that
 			// side of the already configured remote channel.
-			const std::string_view setup_method = session.session_id.empty()
-			                                          ? uam::acp_methods::kSessionNew
-			                                          : uam::acp_methods::kSessionResume;
-			if (!ConfigureRemoteUamControlRelay(
-			        app, session, chat, *execution_host, setup_method, nullptr))
+			if (!RestoreRemoteUamControlAfterReattach(app, session, chat, *execution_host))
 			{
 				if (error_out != nullptr) *error_out = session.last_error;
 				RecoverDisconnectedRemoteAcpTransport(
@@ -3258,6 +3260,17 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		return staged;
 	}
 	return start_process(app, session, chat, error_out);
+}
+
+bool RestoreRemoteUamControlAfterReattach(AppState& app, AcpSessionState& session, ChatSession& chat,
+    const ExecutionHost& execution_host)
+{
+	// Claude and Antigravity were launched on their own channel, and this launch already issued their capability and
+	// started their relay. Configuring the proxy relay as well would revoke both and serve a channel the provider on
+	// the host never opened (#873).
+	if (AppOwnsRemoteUamControlRelay(session.provider_id)) return true;
+	return ConfigureRemoteUamControlRelay(app, session, chat, execution_host,
+	    session.session_id.empty() ? uam::acp_methods::kSessionNew : uam::acp_methods::kSessionResume, nullptr);
 }
 
 bool DecorateAcpSessionSetupRequest(AppState& app, AcpSessionState& session, std::string_view method,

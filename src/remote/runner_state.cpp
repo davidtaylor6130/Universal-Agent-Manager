@@ -1661,9 +1661,42 @@ namespace uam::remote
 				if (attached && !request.value("attachIfExists", false))
 					return ProcessError(request, "channel_exists",
 					                    "A runner channel already uses this channelId.");
+				if (request.contains("desktopEpoch") && (!request["desktopEpoch"].is_string() || !IsSessionId(request["desktopEpoch"].get_ref<const std::string&>())))
+					return ProcessError(request, "invalid_request", "The desktop epoch is invalid.");
 				const std::pair<std::unordered_map<std::string, Channel>::iterator, bool> opened = m_channels.try_emplace(channel_id);
 				const std::unordered_map<std::string, Channel>::iterator channel = opened.first;
 				if (lease_ms != 0) channel->second.expires_at_ms = LeaseClockMilliseconds() + lease_ms;
+				Channel& state = channel->second;
+				if (opened.second) state.desktop_seen_ms = LeaseClockMilliseconds();
+				const auto drop_undelivered = [&state]
+				{
+					state.remote_to_desktop.base_cursor += state.remote_to_desktop.bytes.size();
+					state.remote_to_desktop.bytes.clear();
+				};
+				if (request.value("fenceDesktop", false))
+				{
+					// The shim reported its waiting calls as failed: nothing it sent may reach a desktop afterwards.
+					drop_undelivered();
+					state.desktop_fenced = true;
+				}
+				if (request.contains("desktopEpoch"))
+				{
+					const std::string& epoch = request["desktopEpoch"].get_ref<const std::string&>();
+					if (epoch == state.desktop_epoch && state.desktop_fenced)
+						return ProcessError(request, "channel_fenced", "This desktop connection was replaced. Reconnect with a new tool server.");
+					if (epoch != state.desktop_epoch)
+					{
+						// A new desktop tool server never receives what was sent to the previous one, and a reply the
+						// previous one left unfinished is ended so it cannot merge with the next reply.
+						if (!state.desktop_epoch.empty()) drop_undelivered();
+						if (state.desktop_output_mid_line && state.desktop_to_remote.bytes.size() < kMaxChannelBytes)
+							state.desktop_to_remote.bytes.push_back('\n');
+						state.desktop_output_mid_line = false;
+						state.desktop_epoch = epoch;
+						state.desktop_fenced = false;
+					}
+					state.desktop_seen_ms = LeaseClockMilliseconds();
+				}
 				return ProcessSuccess(request, {{"channelId", channel_id}, {"attached", attached},
 				    {"remoteToDesktopCursor", channel->second.remote_to_desktop.base_cursor},
 				    {"desktopToRemoteCursor", channel->second.desktop_to_remote.base_cursor},
@@ -1693,6 +1726,17 @@ namespace uam::remote
 			                              : nullptr;
 			if (buffer == nullptr)
 				return ProcessError(request, "invalid_request", "The channel direction is invalid.");
+			// The desktop reads remoteToDesktop and writes desktopToRemote; the shim does the opposite.
+			const bool desktop_request = (direction == "desktopToRemote") == (type == "channel.write");
+			if (desktop_request && found->second.desktop_fenced)
+				return ProcessError(request, "channel_fenced", "This desktop connection was replaced. Reconnect with a new tool server.");
+			if (desktop_request) found->second.desktop_seen_ms = LeaseClockMilliseconds();
+			const auto with_desktop = [&](nlohmann::json result)
+			{
+				result["desktopEpoch"] = found->second.desktop_epoch;
+				result["desktopIdleMs"] = found->second.desktop_fenced ? std::int64_t{-1} : std::max<std::int64_t>(0, LeaseClockMilliseconds() - found->second.desktop_seen_ms);
+				return result;
+			};
 			if (type == "channel.take")
 			{
 				if (found->second.expires_at_ms == 0)
@@ -1737,14 +1781,15 @@ namespace uam::remote
 				    decoded.size() > kMaxChannelBytes - buffer->bytes.size())
 					return ProcessError(request, "channel_full", "The channel buffer limit was reached.");
 				buffer->bytes.append(decoded);
+				if (desktop_request && !decoded.empty()) found->second.desktop_output_mid_line = decoded.back() != '\n';
 				if (sequenced)
 				{
 					buffer->write_sequence = write_sequence;
 					buffer->write_digest = write_digest;
 					buffer->write_size = decoded.size();
 				}
-				return ProcessSuccess(request, {{"acceptedBytes", decoded.size()},
-				                                {"writeSequence", buffer->write_sequence}});
+				return ProcessSuccess(request, with_desktop({{"acceptedBytes", decoded.size()},
+				                                             {"writeSequence", buffer->write_sequence}}));
 			}
 			if (type == "channel.poll")
 			{
@@ -1769,8 +1814,8 @@ namespace uam::remote
 					buffer->bytes.erase(0, offset + size);
 					buffer->base_cursor = end_cursor;
 				}
-				return ProcessSuccess(request, {{"dataBase64", uam::base64::Encode(bytes)},
-				                                {"cursor", end_cursor}});
+				return ProcessSuccess(request, with_desktop({{"dataBase64", uam::base64::Encode(bytes)},
+				                                             {"cursor", end_cursor}}));
 			}
 			if (type == "channel.ack")
 			{

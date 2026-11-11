@@ -2534,6 +2534,129 @@ UAM_TEST(RemoteRunnerLeasedChannelsAreBoundedAndConsumedOnce)
 	UAM_ASSERT(!open("over-limit", 60000));
 }
 
+UAM_TEST(RemoteRunnerChannelFencesAReplacedDesktopToolServer)
+{
+	uam::remote::RunnerState state;
+	int serial = 0;
+	const auto request = [&](nlohmann::json body)
+	{
+		body["id"] = "request-" + std::to_string(++serial);
+		body["channelId"] = "control-1";
+		return uam::remote::HandleRunnerRequest(body, "test-version", &state);
+	};
+	const auto shim_write = [&](std::string_view bytes)
+	{ return request({{"type", "channel.write"}, {"direction", "remoteToDesktop"}, {"dataBase64", uam::base64::Encode(bytes)}}); };
+	const auto desktop_poll = [&]
+	{ return request({{"type", "channel.poll"}, {"direction", "remoteToDesktop"}}); };
+	const auto polled = [](const nlohmann::json& response)
+	{
+		std::string bytes;
+		UAM_ASSERT(response.value("ok", false));
+		UAM_ASSERT(uam::base64::Decode(response["result"].value("dataBase64", ""), bytes));
+		return bytes;
+	};
+	// The shim opens first; what it sends before any desktop attaches is delivered to the first one.
+	UAM_ASSERT(request({{"type", "channel.open"}, {"attachIfExists", true}}).value("ok", false));
+	nlohmann::json written = shim_write("initialize\n");
+	UAM_ASSERT_EQ(written["result"].value("desktopEpoch", "?"), std::string());
+	UAM_ASSERT(written["result"].value("desktopIdleMs", std::int64_t{-1}) >= 0);
+	UAM_ASSERT(!request({{"type", "channel.open"}, {"attachIfExists", true}, {"desktopEpoch", "not valid!"}}).value("ok", true));
+	UAM_ASSERT(request({{"type", "channel.open"}, {"attachIfExists", true}, {"desktopEpoch", "server-1"}}).value("ok", false));
+	UAM_ASSERT_EQ(polled(desktop_poll()), std::string("initialize\n"));
+
+	// A replacement tool server never receives what was sent to the one before it, and an unfinished reply is ended.
+	UAM_ASSERT_EQ(shim_write("call-for-server-1\n")["result"].value("desktopEpoch", ""), std::string("server-1"));
+	UAM_ASSERT(request({{"type", "channel.write"}, {"direction", "desktopToRemote"}, {"dataBase64", uam::base64::Encode("{\"half")}}).value("ok", false));
+	UAM_ASSERT(request({{"type", "channel.open"}, {"attachIfExists", true}, {"desktopEpoch", "server-2"}}).value("ok", false));
+	UAM_ASSERT_EQ(polled(desktop_poll()), std::string());
+	const nlohmann::json shim_poll = request({{"type", "channel.poll"}, {"direction", "desktopToRemote"}});
+	UAM_ASSERT_EQ(polled(shim_poll), std::string("{\"half\n"));
+	UAM_ASSERT_EQ(shim_poll["result"].value("desktopEpoch", ""), std::string("server-2"));
+
+	// The shim fences a desktop it gave up on: that server is refused, and its unread calls are gone for good.
+	(void)shim_write("call-for-server-2\n");
+	UAM_ASSERT(request({{"type", "channel.open"}, {"attachIfExists", true}, {"fenceDesktop", true}}).value("ok", false));
+	UAM_ASSERT_EQ(request({{"type", "channel.poll"}, {"direction", "desktopToRemote"}})["result"].value("desktopIdleMs", std::int64_t{0}), std::int64_t{-1});
+	UAM_ASSERT_EQ(desktop_poll()["error"].value("code", ""), std::string("channel_fenced"));
+	UAM_ASSERT(!request({{"type", "channel.write"}, {"direction", "desktopToRemote"}, {"dataBase64", uam::base64::Encode("late\n")}}).value("ok", true));
+	UAM_ASSERT(!request({{"type", "channel.open"}, {"attachIfExists", true}, {"desktopEpoch", "server-2"}}).value("ok", true));
+	UAM_ASSERT(request({{"type", "channel.open"}, {"attachIfExists", true}, {"desktopEpoch", "server-3"}}).value("ok", false));
+	UAM_ASSERT_EQ(polled(desktop_poll()), std::string());
+	UAM_ASSERT(request({{"type", "channel.poll"}, {"direction", "desktopToRemote"}})["result"].value("desktopIdleMs", std::int64_t{-1}) >= 0);
+}
+
+UAM_TEST(RemoteMcpShimAnswersForADesktopThatIsNotConnected)
+{
+	const auto call = [](int id, const char* tool)
+	{ return nlohmann::json{{"jsonrpc", "2.0"}, {"id", id}, {"method", "tools/call"}, {"params", {{"name", tool}, {"arguments", nlohmann::json::object()}}}}.dump() + "\n"; };
+	const auto lines = [](const std::string& text)
+	{
+		std::vector<nlohmann::json> parsed;
+		std::istringstream stream(text);
+		for (std::string line; std::getline(stream, line);) parsed.push_back(nlohmann::json::parse(line));
+		return parsed;
+	};
+	std::string replies;
+	{
+		// A call made while the desktop is silent is answered at once and never sent.
+		uam::remote::RemoteMcpShimFilter filter;
+		UAM_ASSERT_EQ(filter.FromProvider(call(1, "agent_delegate"), false, replies), std::string());
+		const auto refused = lines(replies);
+		UAM_ASSERT_EQ(refused.size(), std::size_t{1});
+		UAM_ASSERT_EQ(refused[0]["id"], nlohmann::json(1));
+		UAM_ASSERT(refused[0]["result"].value("isError", false));
+		UAM_ASSERT(refused[0]["result"]["content"][0].value("text", "").find("UAM desktop is not connected") != std::string::npos);
+		// Other requests get a protocol error; notifications still pass.
+		replies.clear();
+		const std::string notification = R"({"jsonrpc":"2.0","method":"notifications/initialized"})" "\n";
+		UAM_ASSERT_EQ(filter.FromProvider(R"({"jsonrpc":"2.0","id":2,"method":"tools/list"})" "\n" + notification, false, replies), notification);
+		UAM_ASSERT_EQ(lines(replies)[0]["error"].value("code", 0), -32000);
+	}
+	{
+		// A call in flight when the desktop goes silent is failed, the channel is fenced, and its late reply is dropped.
+		uam::remote::RemoteMcpShimFilter filter;
+		replies.clear();
+		const std::string sent = call(3, "agent_delegate");
+		// A call split across two reads is held until its line is complete.
+		UAM_ASSERT_EQ(filter.FromProvider(sent.substr(0, 20), true, replies), std::string());
+		UAM_ASSERT_EQ(filter.FromProvider(sent.substr(20), true, replies), sent);
+		filter.Sent("server-1");
+		UAM_ASSERT(!filter.Observe(true, "server-1", replies) && replies.empty());
+		UAM_ASSERT(filter.Observe(false, "server-1", replies));
+		UAM_ASSERT_EQ(lines(replies)[0]["id"], nlohmann::json(3));
+		replies.clear();
+		UAM_ASSERT(!filter.Observe(false, "server-1", replies) && replies.empty());
+		const std::string other = R"({"jsonrpc":"2.0","id":9,"result":{}})" "\n";
+		UAM_ASSERT_EQ(filter.FromDesktop(R"({"jsonrpc":"2.0","id":3,"result":{}})" "\n" + other + "{\"half\n\n"), other);
+	}
+	{
+		// A question waits for the user through a silent desktop (a sleeping laptop) and is answered normally.
+		uam::remote::RemoteMcpShimFilter filter;
+		replies.clear();
+		(void)filter.FromProvider(call(4, "user_question"), true, replies);
+		filter.Sent(""); // Sent before any desktop attached: the first tool server to attach owns it.
+		UAM_ASSERT(!filter.Observe(true, "server-1", replies));
+		UAM_ASSERT(!filter.Observe(false, "server-1", replies) && replies.empty());
+		const std::string answer = R"({"jsonrpc":"2.0","id":4,"result":{"content":[]}})" "\n";
+		UAM_ASSERT_EQ(filter.FromDesktop(answer), answer);
+		// A question its provider cancelled gets no reply, so it must not keep later calls waiting through a silence.
+		(void)filter.FromProvider(call(6, "user_question"), true, replies);
+		(void)filter.FromProvider(R"({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":6}})" "\n", true, replies);
+		(void)filter.FromProvider(call(7, "agent_delegate"), true, replies);
+		filter.Sent("server-1");
+		UAM_ASSERT(filter.Observe(false, "server-1", replies));
+		UAM_ASSERT_EQ(lines(replies).size(), std::size_t{1});
+		UAM_ASSERT_EQ(lines(replies)[0]["id"], nlohmann::json(7));
+		replies.clear();
+		// The same question fails clearly once its tool server is replaced: the card it showed is gone.
+		(void)filter.FromProvider(call(5, "user_question"), true, replies);
+		filter.Sent("server-1");
+		UAM_ASSERT(!filter.Observe(true, "server-2", replies));
+		UAM_ASSERT_EQ(lines(replies)[0]["id"], nlohmann::json(5));
+		UAM_ASSERT(lines(replies)[0]["result"]["content"][0].value("text", "").find("connection was lost") != std::string::npos);
+	}
+}
+
 UAM_TEST(RemoteRunnerChannelsRelayBoundedBytesInBothDirections)
 {
 	uam::remote::RunnerState state;

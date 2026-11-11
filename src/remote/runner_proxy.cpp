@@ -223,30 +223,22 @@ namespace uam::remote
 
 
 #if defined(__APPLE__) || defined(_WIN32)
-		void RunLocalMcpRelay(std::stop_token stop_token, const std::string& ssh_alias,
-		                      const std::string& platform, const std::string& version,
-		                      const std::string& runner_directory,
-		                      int protocol_version, DecodedProxySpec spec)
+		/// One tool server on one channel connection. Returns when either side fails or the owner stops the relay.
+		void RunLocalMcpRelayOnce(std::stop_token stop_token, IPlatformProcessService& process_service,
+		                          RunnerClient& channel, const DecodedProxySpec& spec, bool resumed, std::string& error)
 		{
-			auto& process_service = ProxyProcessService();
-			RunnerClient channel(process_service, SshBridgeArgv(
-			                         ssh_alias, platform, version, runner_directory,
-			                         protocol_version),
-			                     version, protocol_version);
-			// The owner stops this relay and joins it, on the UI thread in the app: no wait here may outlast the stop.
-			channel.SetStopToken(stop_token);
-			std::string error;
-			if (!channel.OpenChannel(spec.session_id, &error, true))
-			{
-				// A relay its owner stopped has nothing to report.
-				if (!stop_token.stop_requested()) std::cerr << error << '\n';
-				return;
-			}
+			// Each tool server gets its own name on the channel, so the host knows when the one it sent calls to is gone.
+			std::string epoch = process_service.GenerateUuid();
+			if (epoch.empty()) epoch = "relay-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+			channel.Disconnect();
+			if (!channel.OpenChannel(spec.session_id, &error, true, 0, {}, epoch)) return;
+			std::vector<std::pair<std::string, std::string>> environment = spec.environment;
+			if (resumed) environment.emplace_back(kUamControlResumedEnvironment, "1");
 			uam::platform::StdioProcessPlatformFields process;
 			if (!process_service.StartStdioProcess(process, spec.working_directory, spec.argv,
-			                                       &error, spec.environment))
+			                                       &error, environment))
 			{
-					std::cerr << (error.empty() ? "UAM control MCP could not start." : error) << '\n';
+				if (error.empty()) error = "UAM control MCP could not start.";
 				return;
 			}
 			std::array<char, 16 * 1024> buffer{};
@@ -296,8 +288,9 @@ namespace uam::remote
 				if (!channel.PollChannel(spec.session_id, "remoteToDesktop", input, &error,
 				                         &input_cursor))
 				{
+					// Same tool server, new connection. The host refuses this when it already failed this server's calls.
 					channel.Disconnect();
-					if (!channel.OpenChannel(spec.session_id, &error, true)) break;
+					if (!channel.OpenChannel(spec.session_id, &error, true, 0, {}, epoch)) break;
 					continue;
 				}
 				if (!input.empty() && !process_service.WriteToStdioProcess(
@@ -311,6 +304,42 @@ namespace uam::remote
 			process_service.CloseStdioProcessHandles(process);
 			// The channel belongs to the provider session, not this disposable relay.
 			// A replacement proxy can attach and resume at the acknowledged cursors.
+		}
+
+		void RunLocalMcpRelay(std::stop_token stop_token, const std::string& ssh_alias,
+		                      const std::string& platform, const std::string& version,
+		                      const std::string& runner_directory,
+		                      int protocol_version, DecodedProxySpec spec)
+		{
+			auto& process_service = ProxyProcessService();
+			RunnerClient channel(process_service, SshBridgeArgv(
+			                         ssh_alias, platform, version, runner_directory,
+			                         protocol_version),
+			                     version, protocol_version);
+			// The owner stops this relay and joins it, on the UI thread in the app: no wait here may outlast the stop.
+			channel.SetStopToken(stop_token);
+			// ponytail: retried for as long as the owner keeps this relay, at most one SSH connect per 30 s once backed
+			// off; the owner (session or proxy) ending is the bound. Add an attempt cap if idle hosts ever mind.
+			std::chrono::milliseconds backoff{1000};
+			bool reported = false;
+			for (bool resumed = false; !stop_token.stop_requested(); resumed = true)
+			{
+				const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+				std::string error;
+				RunLocalMcpRelayOnce(stop_token, process_service, channel, spec, resumed, error);
+				if (stop_token.stop_requested()) break; // A relay its owner stopped has nothing to report.
+				if (std::chrono::steady_clock::now() - started > std::chrono::minutes(1))
+				{
+					backoff = std::chrono::milliseconds(1000);
+					reported = false;
+				}
+				// One line per outage: the proxy's last stderr line also settles a stop, so this must not repeat.
+				if (!reported) std::cerr << "UAM tool relay stopped and is reconnecting: " << (error.empty() ? "the tool server exited." : error) << '\n';
+				reported = true;
+				for (std::chrono::milliseconds waited{0}; waited < backoff && !stop_token.stop_requested(); waited += std::chrono::milliseconds(100))
+					std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				backoff = std::min(backoff * 2, std::chrono::milliseconds(30000));
+			}
 		}
 #endif
 	}
@@ -612,6 +641,136 @@ namespace uam::remote
 			return 70;
 		}
 		return RunTerminalProcessInternal(encoded_spec, true);
+	}
+
+	namespace
+	{
+		std::string ShimErrorReply(const nlohmann::json& id, bool tool_call, std::string_view text)
+		{
+			nlohmann::json reply{{"jsonrpc", "2.0"}, {"id", id}};
+			if (tool_call)
+				reply["result"] = {{"content", nlohmann::json::array({{{"type", "text"}, {"text", nlohmann::json{{"error", text}}.dump()}}})}, {"isError", true}};
+			else reply["error"] = {{"code", -32000}, {"message", text}};
+			return reply.dump() + '\n';
+		}
+
+		/// Splits complete lines off `buffer`; a line that outgrows `limit` is passed through unread.
+		template <typename Line, typename Raw>
+		void TakeShimLines(std::string& buffer, std::string_view bytes, std::size_t limit, Line line, Raw raw)
+		{
+			buffer.append(bytes);
+			std::size_t start = 0;
+			for (std::size_t end = buffer.find('\n'); end != std::string::npos; end = buffer.find('\n', start))
+			{
+				line(std::string_view(buffer).substr(start, end - start));
+				start = end + 1;
+			}
+			buffer.erase(0, start);
+			if (buffer.size() > limit)
+			{
+				raw(buffer);
+				buffer.clear();
+			}
+		}
+	}
+
+	std::string RemoteMcpShimFilter::FromProvider(std::string_view bytes, bool desktop_live, std::string& replies)
+	{
+		std::string forward;
+		TakeShimLines(m_fromProvider, bytes, 512 * 1024, [&](std::string_view line)
+		{
+			const nlohmann::json message = nlohmann::json::parse(line, nullptr, false);
+			const bool request = message.is_object() && message.contains("id") && message.contains("method") && message["method"].is_string();
+			if (request)
+			{
+				const bool tool_call = message["method"] == "tools/call";
+				if (!desktop_live)
+				{
+					replies += ShimErrorReply(message["id"], tool_call, "UAM desktop is not connected, so this call was not sent. Retry when UAM is open and connected to this host.");
+					return;
+				}
+				const std::string name = tool_call && message.contains("params") && message["params"].is_object() && message["params"].contains("name") && message["params"]["name"].is_string()
+				    ? message["params"]["name"].get<std::string>() : std::string{};
+				// Same list as the desktop tool server's card methods: these wait for the user.
+				const bool card = name == "user_question" || name == "goal_create" || name == "chat_create" || name == "computer_use_request";
+				m_pending[message["id"].dump()] = {message["id"], {}, tool_call, card, false};
+			}
+			// The tool server sends no reply for a call its provider cancelled, so stop waiting for one.
+			else if (message.is_object() && message.value("method", nlohmann::json{}) == "notifications/cancelled" &&
+			         message.contains("params") && message["params"].is_object() && message["params"].contains("requestId"))
+				m_pending.erase(message["params"]["requestId"].dump());
+			forward.append(line).push_back('\n');
+		}, [&](const std::string& raw) { forward += raw; });
+		return forward;
+	}
+
+	void RemoteMcpShimFilter::Sent(const std::string& epoch)
+	{
+		for (auto& [key, pending] : m_pending)
+			if (!pending.sent)
+			{
+				pending.sent = true;
+				pending.epoch = epoch;
+			}
+	}
+
+	std::string RemoteMcpShimFilter::FromDesktop(std::string_view bytes)
+	{
+		std::string visible;
+		TakeShimLines(m_fromDesktop, bytes, 1024 * 1024, [&](std::string_view line)
+		{
+			// The tool server writes whole JSON lines; anything else is the tail of a server that was replaced.
+			const nlohmann::json message = nlohmann::json::parse(line, nullptr, false);
+			if (!message.is_object()) return;
+			if (message.contains("id") && !message.contains("method"))
+			{
+				const std::string key = message["id"].dump();
+				if (const auto failed = std::ranges::find(m_failed, key); failed != m_failed.end())
+				{
+					m_failed.erase(failed);
+					return;
+				}
+				m_pending.erase(key);
+			}
+			visible.append(line).push_back('\n');
+		}, [&](const std::string& raw) { visible += raw; });
+		return visible;
+	}
+
+	void RemoteMcpShimFilter::Fail(const std::string& key, std::string& replies)
+	{
+		const Pending& pending = m_pending.at(key);
+		replies += ShimErrorReply(pending.id, pending.tool_call, "The UAM desktop connection was lost before this call finished. It may not have run: check its effect before retrying.");
+		m_failed.push_back(key);
+		if (m_failed.size() > 256) m_failed.pop_front();
+		m_pending.erase(key);
+	}
+
+	bool RemoteMcpShimFilter::Observe(bool desktop_live, const std::string& epoch, std::string& replies)
+	{
+		std::vector<std::string> replaced;
+		bool waiting = false, card = false;
+		for (auto& [key, pending] : m_pending)
+		{
+			if (!pending.sent) continue;
+			// Sent before any desktop attached: the first one to attach receives it.
+			if (pending.epoch.empty()) pending.epoch = epoch;
+			if (pending.epoch != epoch) replaced.push_back(key);
+			else
+			{
+				waiting = true;
+				card = card || pending.card;
+			}
+		}
+		// The host already dropped what a replaced tool server had not read, so these cannot run later.
+		for (const std::string& key : replaced) Fail(key, replies);
+		if (desktop_live || !waiting || card) return false;
+		for (auto it = m_pending.begin(); it != m_pending.end();)
+		{
+			const std::string key = (it++)->first;
+			if (m_pending.at(key).sent) Fail(key, replies);
+		}
+		return true;
 	}
 
 	nlohmann::json BuildRemoteMcpServer(const std::string& channel, const std::string& platform, const std::string& version, const std::string& directory, int protocol)
@@ -1448,6 +1607,39 @@ $e
 	}
 	}
 
+	namespace
+	{
+		bool ShimDesktopLive(const RunnerClient& channel)
+		{
+			// A helper that does not report the desktop keeps the plain pipe behaviour.
+			return !channel.ChannelDesktopReported() ||
+			       (channel.ChannelDesktopIdleMs() >= 0 && channel.ChannelDesktopIdleMs() <= kRemoteMcpDesktopSilenceLimitMs);
+		}
+
+		/// Sends provider bytes through the gate. False only when the channel write failed.
+		bool ShimForward(RunnerClient& channel, RemoteMcpShimFilter& filter, const std::string& channel_id,
+		                 std::string_view bytes, std::string& replies, std::string& error)
+		{
+			const std::string forward = filter.FromProvider(bytes, ShimDesktopLive(channel), replies);
+			constexpr std::size_t kChunk = 128 * 1024;
+			for (std::size_t offset = 0; offset < forward.size(); offset += kChunk)
+			{
+				if (!channel.WriteChannel(channel_id, "remoteToDesktop", std::string_view(forward).substr(offset, kChunk), &error)) return false;
+				// The first accepted chunk decides which tool server owns these calls.
+				if (offset == 0) filter.Sent(channel.ChannelDesktopEpoch());
+			}
+			return true;
+		}
+
+		/// Fails calls the desktop can no longer answer, and fences the channel so they cannot run later.
+		void ShimObserve(RunnerClient& channel, RemoteMcpShimFilter& filter, const std::string& channel_id, std::string& replies)
+		{
+			if (!channel.ChannelDesktopReported()) return;
+			if (filter.Observe(ShimDesktopLive(channel), channel.ChannelDesktopEpoch(), replies))
+				(void)channel.OpenChannel(channel_id, nullptr, true, 0, {}, {}, true);
+		}
+	}
+
 	int RunRemoteMcpShim(const std::string& channel_id,
 	                     const std::filesystem::path& socket_path)
 	{
@@ -1479,13 +1671,13 @@ $e
 			return 70;
 		}
 		std::array<char, 16 * 1024> input{};
+		RemoteMcpShimFilter filter;
+		std::string replies; // Outlives one pass: a failed poll must not lose an answer already made here.
 		for (;;)
 		{
 			const ssize_t count = read(STDIN_FILENO, input.data(), input.size());
-			if (count > 0 && !channel.WriteChannel(
-			                     channel_id, "remoteToDesktop",
-			                     std::string_view(input.data(), static_cast<std::size_t>(count)),
-			                     &error))
+			if (count > 0 && !ShimForward(channel, filter, channel_id,
+			                              std::string_view(input.data(), static_cast<std::size_t>(count)), replies, error))
 			{
 				// WriteChannel already retries the same sequence; reopening could replay accepted bytes.
 				break;
@@ -1505,16 +1697,21 @@ $e
 				if (!channel.OpenChannel(channel_id, &error, true)) break;
 				continue;
 			}
-			if (!output.empty())
+			// Replies first: one that arrived with the news of a replaced tool server is still the real answer.
+			std::string visible = filter.FromDesktop(output);
+			ShimObserve(channel, filter, channel_id, replies);
+			visible += replies;
+			replies.clear();
+			if (!visible.empty())
 			{
-				std::cout.write(output.data(), static_cast<std::streamsize>(output.size()));
+				std::cout.write(visible.data(), static_cast<std::streamsize>(visible.size()));
 				std::cout.flush();
 				if (!std::cout)
 					break;
-				if (!channel.AcknowledgeChannel(
-				        channel_id, "desktopToRemote", output_cursor, &error))
-					break;
 			}
+			if (!output.empty() && !channel.AcknowledgeChannel(
+			                           channel_id, "desktopToRemote", output_cursor, &error))
+				break;
 			if (count < 0 && output.empty())
 				std::this_thread::sleep_for(std::chrono::milliseconds(50));
 		}
@@ -1539,6 +1736,8 @@ $e
 		WindowsPipeInput input;
 		bool input_failed = false;
 		std::string pending;
+		RemoteMcpShimFilter filter;
+		std::string replies; // Outlives one pass: a failed poll must not lose an answer already made here.
 		for (;;)
 		{
 			input.Drain(pending);
@@ -1547,8 +1746,7 @@ $e
 				input_failed = true;
 				break;
 			}
-			if (!pending.empty() && !channel.WriteChannel(
-			        channel_id, "remoteToDesktop", pending, &error))
+			if (!pending.empty() && !ShimForward(channel, filter, channel_id, pending, replies, error))
 			{
 				// WriteChannel already retries the same sequence; reopening could replay accepted bytes.
 				input_failed = true;
@@ -1568,28 +1766,30 @@ $e
 				}
 				continue;
 			}
-			if (!output.empty())
+			// Replies first: one that arrived with the news of a replaced tool server is still the real answer.
+			std::string visible = filter.FromDesktop(output);
+			ShimObserve(channel, filter, channel_id, replies);
+			visible += replies;
+			replies.clear();
+			std::size_t offset = 0;
+			while (offset < visible.size())
 			{
-				std::size_t offset = 0;
-				while (offset < output.size())
-				{
-					DWORD written = 0;
-					if (!WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), output.data() + offset,
-					               static_cast<DWORD>(output.size() - offset), &written,
-					               nullptr) || written == 0)
-					{
-						input_failed = true;
-						break;
-					}
-					offset += written;
-				}
-				if (input_failed) break;
-				if (!channel.AcknowledgeChannel(
-				        channel_id, "desktopToRemote", output_cursor, &error))
+				DWORD written = 0;
+				if (!WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), visible.data() + offset,
+				               static_cast<DWORD>(visible.size() - offset), &written,
+				               nullptr) || written == 0)
 				{
 					input_failed = true;
 					break;
 				}
+				offset += written;
+			}
+			if (input_failed) break;
+			if (!output.empty() && !channel.AcknowledgeChannel(
+			                           channel_id, "desktopToRemote", output_cursor, &error))
+			{
+				input_failed = true;
+				break;
 			}
 			if (input.Closed() && pending.empty()) break;
 			if (pending.empty() && output.empty()) Sleep(50);
