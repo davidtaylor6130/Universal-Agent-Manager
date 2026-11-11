@@ -1715,7 +1715,7 @@ UAM_TEST(AttachmentStagingIgnoresBlockedBackgroundQueue)
 	CefRefPtr<RecordingInstructionCallback> hollow = new RecordingInstructionCallback;
 	UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(handler, "stageChatAttachments",
 	    {{"chatId", chat.id}, {"items", nlohmann::json::array({
-	        {{"name", "clip.MOV"}, {"kind", "file"}, {"mimeType", "video/quicktime"}, {"size", 5}, {"dataBase64", ""}}})}}, hollow));
+	        {{"name", "clip.MOV"}, {"kind", "file"}, {"mimeType", "video/quicktime"}, {"size", 5u}, {"dataBase64", ""}}})}}, hollow));
 	RunCreationLoopUntil([hollow]() { return hollow->successes + hollow->failures > 0; }, std::chrono::seconds(3));
 	UAM_ASSERT_EQ(hollow->successes, 0);
 	UAM_ASSERT_EQ(hollow->failures, 1);

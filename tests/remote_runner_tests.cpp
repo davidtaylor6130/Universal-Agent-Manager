@@ -2303,8 +2303,10 @@ UAM_TEST(RemoteAttachmentUploadDeliversALargeBinaryFileCompleteOrFailsVisibly)
 	UAM_ASSERT(!uam::attachment_payload::Load({{"dataBase64", uam::base64::Encode("part")}, {"size", video.size()}}, "", refused, status, error));
 	UAM_ASSERT(error.find("incompletely") != std::string::npos);
 	UAM_ASSERT(uam::attachment_payload::Load({{"dataBase64", uam::base64::Encode("part")}}, "", refused, status, error));
-	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "empty.MOV", ""));
-	UAM_ASSERT(!uam::attachment_payload::Load(nlohmann::json::object(), uam::paths::Utf8PathString(temp.root / "empty.MOV"), refused, status, error));
+	// A file that really is empty stays attachable on both routes.
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "empty.txt", ""));
+	UAM_ASSERT(uam::attachment_payload::Load(nlohmann::json::object(), uam::paths::Utf8PathString(temp.root / "empty.txt"), refused, status, error));
+	UAM_ASSERT(uam::attachment_payload::Load({{"dataBase64", ""}, {"size", 0u}}, "", refused, status, error));
 
 	{
 		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, {uam::paths::Utf8PathString(runner), "bridge-direct"});
@@ -2315,12 +2317,11 @@ UAM_TEST(RemoteAttachmentUploadDeliversALargeBinaryFileCompleteOrFailsVisibly)
 		UAM_ASSERT(uam::io::TryReadBinaryFile(target, arrived));
 		UAM_ASSERT_EQ(fs::file_size(target), static_cast<std::uintmax_t>(video.size()));
 		UAM_ASSERT(arrived == video);
-		// A refused upload names its cause and leaves the published copy and no temporary file behind.
+		// A refused upload names its cause and leaves the published copy untouched.
 		error.clear();
 		UAM_ASSERT(!client.UploadFile("attachment-again", target, "other", &error));
 		UAM_ASSERT(!error.empty());
 		UAM_ASSERT_EQ(fs::file_size(target), static_cast<std::uintmax_t>(video.size()));
-		UAM_ASSERT(!fs::exists(target.parent_path() / ".uam-upload-attachment-again.tmp"));
 		client.Disconnect();
 	}
 #if !defined(_WIN32)

@@ -1094,9 +1094,7 @@ namespace uam::remote
 		if (const auto published = committed.find("size"); published != committed.end() &&
 		    (!published->is_number_unsigned() || published->get<std::uintmax_t>() != bytes.size()))
 		{
-			nlohmann::json ignored;
-			(void)Request({{"type", "file.remove"}, {"uploadId", upload_id},
-			               {"path", uam::paths::Utf8PathString(remote_path)}}, ignored, nullptr);
+			(void)RemoveFile(upload_id, remote_path);
 			if (error_out != nullptr)
 				*error_out = "The uploaded file is incomplete on the host (" +
 				    (published->is_number_unsigned() ? std::to_string(published->get<std::uintmax_t>()) : std::string("unknown")) +

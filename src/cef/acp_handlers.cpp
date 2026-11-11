@@ -1286,6 +1286,17 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 		}
 
 		auto staged = nlohmann::json::array();
+		// Copies already written are removed when a later item fails, as SSH staging does.
+		std::vector<std::filesystem::path> written;
+		const auto fail = [&written](const int status, const std::string& message)
+		{
+			for (const std::filesystem::path& path : written)
+			{
+				std::error_code remove_error;
+				std::filesystem::remove(path, remove_error);
+			}
+			return uam::query_handler_async::AsyncFailure(status, message);
+		};
 		std::size_t index = 0;
 		for (const nlohmann::json& item : items)
 		{
@@ -1314,12 +1325,12 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 			{
 				if (source_path_text.empty())
 				{
-					return uam::query_handler_async::AsyncFailure(400, "Directory attachments require a filesystem path.");
+					return fail(400, "Directory attachments require a filesystem path.");
 				}
 				const std::filesystem::path source_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
 				if (!uam::paths::IsDirectoryNoThrow(source_path))
 				{
-					return uam::query_handler_async::AsyncFailure(400, "Directory attachment does not exist: " + source_path_text);
+					return fail(400, "Directory attachment does not exist: " + source_path_text);
 				}
 				attachment.path = PathForPrompt(workspace_root, source_path);
 				attachment.copied = false;
@@ -1332,15 +1343,16 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 			std::string load_error;
 			if (!uam::attachment_payload::Load(item, source_path_text, bytes, load_status, load_error))
 			{
-				return uam::query_handler_async::AsyncFailure(load_status, load_error);
+				return fail(load_status, load_error);
 			}
 
 			const std::string prefix = uam::time::SystemEpochMicrosecondsTokenNow() + "-" + std::to_string(index++);
 			const std::filesystem::path target = attachment_root / (prefix + "-" + attachment.name);
 			if (!uam::io::WriteBinaryFile(target, bytes))
 			{
-				return uam::query_handler_async::AsyncFailure(500, "Failed to write attachment.");
+				return fail(500, "Failed to write attachment.");
 			}
+			written.push_back(target);
 			attachment.path = PathForPrompt(workspace_root, target);
 			attachment.preview_origin_path = uam::paths::Utf8PathString(std::filesystem::absolute(target));
 			attachment.preview_key = uam::attachment_preview::Store(data_root, bytes);

@@ -58,8 +58,9 @@ namespace uam::attachment_payload
 		}
 		if (bytes.size() > kMaxBytes)
 			return fail(413, "Attachment is larger than the 25 MB limit.", "over_limit", expected.value_or(0));
-		if (bytes.empty())
-			return fail(400, "The attachment arrived empty, so it was not copied. Files this large cannot be read by the app; attach a smaller file.", "empty_payload", expected.value_or(0));
+		// A file that really is empty may be attached; an empty payload for anything else is a failed read.
+		if (bytes.empty() && expected != std::uintmax_t{0})
+			return fail(400, "The attachment arrived empty, so it was not copied. A file too large for the app to read arrives this way; attach a smaller file.", "empty_payload", expected.value_or(0));
 		if (expected && *expected != bytes.size())
 			return fail(400, "The attachment was read incompletely, so it was not copied. Attach it again.", "size_mismatch", *expected);
 		return true;
