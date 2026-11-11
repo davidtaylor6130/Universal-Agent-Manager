@@ -1454,6 +1454,8 @@ namespace uam
 		std::deque<std::shared_ptr<UamAgentWait>> uam_wait_retirements;
 		std::string uam_control_manager_id;
 		std::deque<std::string> queued_agent_run_ids;
+		/// Terminal v2 records whose result card a previous process never wrote; the scheduler delivers each once.
+		std::deque<AgentRun> managed_result_recoveries;
 		std::size_t managed_parent_continuation_cursor = 0;
 		/// <summary>Retains cancellation intent across failed ledger writes until polling can retry.</summary>
 		std::unordered_set<std::string> pending_agent_run_cancellation_ids;
@@ -1461,6 +1463,24 @@ namespace uam
 		std::shared_ptr<const std::uint8_t> managed_subagent_control_incarnation = std::make_shared<const std::uint8_t>(0);
 		std::unordered_map<std::string, std::shared_ptr<const ManagedSubagentCancellationReceipt>> managed_subagent_cancellation_receipts;
 		std::unordered_map<std::string, int64_t> agent_run_deadline_steady_ms;
+		/// A run's result card found its saved parent out of step with memory: when to compare again, and the
+		/// parent state seen then, so a save or reload of the parent retries at once.
+		struct AgentResultRetry
+		{
+			int64_t retry_at_steady_ms = 0;
+			std::string storage_revision;
+			std::size_t message_count = 0;
+			std::string updated_at;
+		};
+		std::unordered_map<std::string, AgentResultRetry> agent_result_retry_steady_ms;
+		int64_t managed_result_recovery_retry_steady_ms = 0;
+		std::unordered_map<std::string, int> managed_result_recovery_failures;
+		/// Queued runs that routing is refusing right now: since when in total, and since when as invalid.
+		std::unordered_map<std::string, int64_t> agent_routing_wait_since_steady_ms, agent_routing_invalid_since_steady_ms;
+		std::unordered_set<std::string> agent_routing_held_this_poll;
+		/// Child chats re-admitted at startup only to stop a remote helper process a previous UAM process left
+		/// running, keyed by chat ID with the steady time at which UAM stops waiting for the confirmation.
+		std::unordered_map<std::string, int64_t> agent_startup_stop_deadline_steady_ms;
 		std::unordered_map<std::string, std::deque<int64_t>> agent_provider_crash_times_epoch_ms;
 		std::unordered_map<std::string, int64_t> agent_provider_circuit_open_until_epoch_ms;
 		int selected_chat_index = -1;

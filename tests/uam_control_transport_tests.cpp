@@ -429,9 +429,19 @@ UAM_TEST(UamControlAgentWaitCyclicAncestryRetiresWithoutOwnerHang)
 	const auto started = std::chrono::steady_clock::now();
 	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
 	UAM_ASSERT(std::chrono::steady_clock::now() - started < std::chrono::milliseconds(500));
+	// The broken graph is answered once with an explicit error and no child data; it is never walked or left to time out.
+	const auto response_path = fixture.capability_directory / "responses" / "pending-cycle-wait.json";
+	const auto reply_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	while ((!fs::exists(response_path) || fixture.app.uam_control_capabilities.front().pending_agent_wait) && std::chrono::steady_clock::now() < reply_deadline)
+	{
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(fs::exists(response_path));
+	const auto refused = nlohmann::json::parse(uam::io::ReadTextFile(response_path));
+	UAM_ASSERT(!refused.value("ok", true) && !refused.contains("result"));
 	UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_agent_wait);
-	UAM_ASSERT_EQ(fixture.app.chats.front().uam_control_audit.size(), audit_count);
-	UAM_ASSERT(!fs::exists(fixture.capability_directory / "responses" / "pending-cycle-wait.json"));
+	UAM_ASSERT_EQ(fixture.app.chats.front().uam_control_audit.size(), audit_count + 1);
 	UAM_ASSERT_EQ(fixture.Run(child_id).status, std::string("queued"));
 	UAM_ASSERT_EQ(fixture.Run(ancestor_id).status, std::string("running"));
 	const auto retry_started = std::chrono::steady_clock::now();
@@ -642,6 +652,101 @@ UAM_TEST(UamControlAgentWaitReadsAlreadyCompletedOwnedRetirement)
 	    { return record.method == "agent_wait" && record.request_id == "late-terminal-wait"; }), 1);
 }
 
+namespace
+{
+	nlohmann::json AwaitWaitResponse(ControlAgentWaitFixture& fixture, const std::string& request_id)
+	{
+		const auto path = fixture.capability_directory / "responses" / (request_id + ".json");
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+		while (!fs::exists(path) && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT(fs::exists(path));
+		// The owner observes its finished publication on a later tick.
+		while (fixture.app.uam_control_capabilities.front().pending_agent_wait && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		return nlohmann::json::parse(uam::io::ReadTextFile(path));
+	}
+	ChatSession& WaitChildTranscript(ControlAgentWaitFixture& fixture, const std::string& child_id)
+	{
+		ChatSession* transcript = ChatDomainService().FindChatById(fixture.app, fixture.Run(child_id).transcript_chat_id);
+		UAM_ASSERT(transcript);
+		return *transcript;
+	}
+	void AddRoutedHost(ControlAgentWaitFixture& fixture)
+	{
+		auto routed = uam::execution_hosts::LocalHost();
+		routed.id = "routed-host";
+		fixture.app.settings.execution_hosts.push_back(std::move(routed));
+	}
+}
+
+UAM_TEST(UamControlAgentWaitReadsChildOnAnotherExecutionHost)
+{
+	ControlAgentWaitFixture fixture;
+	AddRoutedHost(fixture);
+	const std::string child_id = fixture.Delegate("plan");
+	// Automatic routing starts a child on its source folder's host, which need not be the parent's.
+	ChatSession& transcript = WaitChildTranscript(fixture, child_id);
+	transcript.execution_host_id = "routed-host";
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, transcript));
+	const auto admitted = fixture.Call("wait-other-host", "agent_wait", {{"runId", child_id}});
+	UAM_ASSERT(admitted.value("pendingAgentWait", false));
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(fixture.app.uam_control_capabilities.front().pending_agent_wait);
+	RetireWaitFixtureChildThroughScheduler(fixture, child_id);
+	const auto response = AwaitWaitResponse(fixture, "wait-other-host");
+	UAM_ASSERT(response.value("ok", false));
+	UAM_ASSERT_EQ(response["result"]["runId"], nlohmann::json(child_id));
+	UAM_ASSERT_EQ(response["result"]["status"], nlohmann::json("completed"));
+	UAM_ASSERT_EQ(response["result"]["timedOut"], nlohmann::json(false));
+}
+
+UAM_TEST(UamControlAgentWaitFollowsQueuedChildToItsRoutedHost)
+{
+	ControlAgentWaitFixture fixture;
+	AddRoutedHost(fixture);
+	const std::string child_id = fixture.Delegate("plan");
+	// Queued and not yet assigned: automatic routing still decides where this child runs.
+	WaitChildTranscript(fixture, child_id).routing_mode = "automatic";
+	UAM_ASSERT(fixture.Call("wait-routed-later", "agent_wait", {{"runId", child_id}}).value("pendingAgentWait", false));
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(fixture.app.uam_control_capabilities.front().pending_agent_wait);
+	ChatSession& transcript = WaitChildTranscript(fixture, child_id);
+	transcript.execution_host_id = "routed-host";
+	transcript.routing_assigned_connection_identity = "fixture-routed-connection";
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, transcript));
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	// The read follows the child; it is not dropped so that the parent delegates the work again.
+	UAM_ASSERT(fixture.app.uam_control_capabilities.front().pending_agent_wait);
+	RetireWaitFixtureChildThroughScheduler(fixture, child_id);
+	const auto response = AwaitWaitResponse(fixture, "wait-routed-later");
+	UAM_ASSERT(response.value("ok", false));
+	UAM_ASSERT_EQ(response["result"]["status"], nlohmann::json("completed"));
+}
+
+UAM_TEST(UamControlAgentWaitAnswersLostChildScopeWithExplicitError)
+{
+	ControlAgentWaitFixture fixture;
+	const std::string child_id = fixture.Delegate("plan");
+	UAM_ASSERT(fixture.Call("wait-lost-scope", "agent_wait", {{"runId", child_id}}).value("pendingAgentWait", false));
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(fixture.app.uam_control_capabilities.front().pending_agent_wait);
+	// The child's transcript is replaced under the pending read; the caller's own turn is unchanged.
+	WaitChildTranscript(fixture, child_id).metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+	const auto response = AwaitWaitResponse(fixture, "wait-lost-scope");
+	UAM_ASSERT(!response.value("ok", true));
+	UAM_ASSERT(response.value("error", "").find("agent_status") != std::string::npos);
+	UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_agent_wait);
+	UAM_ASSERT_EQ(fixture.Run(child_id).status, std::string("queued")); // The child itself is untouched.
+	UAM_ASSERT(fixture.app.acp_sessions.front()->running && fixture.app.acp_sessions.front()->processing);
+}
+
 UAM_TEST(UamControlAgentWaitRejectsUnprovenOrReplacedTerminalRetirement)
 {
 	for (int mode = 0; mode < 13; ++mode)
@@ -687,10 +792,12 @@ UAM_TEST(UamControlAgentWaitRejectsUnprovenOrReplacedTerminalRetirement)
 			UAM_ASSERT(!hidden.front().managed_terminal_retirement_witness); // Catalogue cannot mint retirement.
 		}
 		if (mode == 12) fixture.Run(child_id).root_chat_id = "foreign-root";
-		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		// The original read is answered once with an explicit error and no child data, never left to time out.
+		const auto refused = AwaitWaitResponse(fixture, "guarded-terminal-wait");
+		UAM_ASSERT(!refused.value("ok", true) && !refused.contains("result"));
 		UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_agent_wait);
-		UAM_ASSERT(!fs::exists(fixture.capability_directory / "responses" / "guarded-terminal-wait.json"));
-		UAM_ASSERT_EQ(fixture.app.chats.front().uam_control_audit.size(), audits_before);
+		UAM_ASSERT_EQ(fixture.app.chats.front().uam_control_audit.size(), audits_before + 1);
+		UAM_ASSERT_EQ(fixture.app.chats.front().uam_control_audit.back().result, std::string("rejected"));
 		UAM_ASSERT(fixture.app.acp_sessions.front()->running && fixture.app.acp_sessions.front()->processing);
 		// A fresh wait cannot adopt unproven hidden metadata either. A genuinely replaced
 		// live row is governed by a new capture, so mode0 tests only the original read.
@@ -794,10 +901,10 @@ UAM_TEST(UamControlAgentWaitSidebarMergeRejectsChangedOrUnprovenRetirement)
 		UAM_ASSERT(std::ranges::none_of(fixture.app.hidden_agent_chat_ownership.chats, [](const auto& chat)
 		    { return bool(chat.managed_terminal_retirement_witness); }));
 		const auto audit_count = ChatDomainService().FindChatById(fixture.app, fixture.root_id)->uam_control_audit.size();
-		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		const auto refused = AwaitWaitResponse(fixture, "reject-changed-sidebar-binding");
+		UAM_ASSERT(!refused.value("ok", true) && !refused.contains("result"));
 		UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_agent_wait);
-		UAM_ASSERT(!fs::exists(fixture.capability_directory / "responses" / "reject-changed-sidebar-binding.json"));
-		UAM_ASSERT_EQ(ChatDomainService().FindChatById(fixture.app, fixture.root_id)->uam_control_audit.size(), audit_count);
+		UAM_ASSERT_EQ(ChatDomainService().FindChatById(fixture.app, fixture.root_id)->uam_control_audit.size(), audit_count + 1);
 	}
 }
 
@@ -1016,6 +1123,117 @@ UAM_TEST(ManagedParentContinuationCoalescesReadyChildrenAndDoesNotReplayBatch)
 	const int allocated = parent.next_request_id;
 	for (unsigned index = 0; index < 20; ++index) (void)uam::ManagedParentContinuationService::Poll(fixture.app);
 	UAM_ASSERT_EQ(parent.next_request_id, allocated); // One pending input, not one new turn per terminal poll/child.
+}
+
+namespace
+{
+	/// A later human turn on the same live Codex thread, accepted through the real response dispatcher.
+	void BeginNextHumanOrigin(ControlAgentWaitFixture& fixture, int request, const std::string& turn)
+	{
+		auto& session = *fixture.app.acp_sessions.front();
+		auto* root = ChatDomainService().FindChatById(fixture.app, fixture.root_id); UAM_ASSERT(root);
+		session.processing = true; ++session.turn_serial; session.codex_turn_id = turn;
+		session.lifecycle_state = uam::acp_detail::kAcpLifecycleProcessing;
+		session.prompt_request_id = request; session.pending_request_methods[request] = "turn/start";
+		uam::acp_detail::HandleAcpResponse(fixture.app, session, *root,
+		    {{"jsonrpc", "2.0"}, {"id", request}, {"result", {{"turn", {{"id", turn}, {"status", "inProgress"}}}}}});
+		UAM_ASSERT_EQ(session.codex_origin_rpc_turn_id, turn);
+		UAM_ASSERT_EQ(session.codex_origin_rpc_turn_serial, session.turn_serial);
+	}
+	nlohmann::json DelegateAgain(ControlAgentWaitFixture& fixture, const std::string& request)
+	{
+		const auto delegated = fixture.Call(request, "agent_delegate",
+		    {{"agentId", "plan"}, {"task", "Inspect the fixture again for request " + request + "."}});
+		UAM_ASSERT(delegated.value("ok", false));
+		return delegated["result"];
+	}
+}
+
+UAM_TEST(ManagedParentContinuationRetainedRecordYieldsToNewOriginAfterRestart)
+{
+	for (const std::string stage : {"collecting", "admitted", "write-unconfirmed", "native-accepted", "settled", "held"})
+	{
+		ControlAgentWaitFixture fixture; const std::string first = OrdinaryContinuationChild(fixture); EndOrdinaryOrigin(fixture);
+		auto& session = *fixture.app.acp_sessions.front();
+		auto* root = ChatDomainService().FindChatById(fixture.app, fixture.root_id); UAM_ASSERT(root && root->managed_parent_result);
+		// A restart reloads the saved record and its receipts, never the runtime lease.
+		root->managed_parent_result->stage = stage;
+		const std::string old_origin = root->managed_parent_result->id;
+		const auto receipts = root->managed_parent_input_receipts;
+		session.managed_parent_continuation.reset();
+		BeginNextHumanOrigin(fixture, 92, "fixture-native-turn-after-restart");
+		const auto result = DelegateAgain(fixture, "after-restart-" + stage);
+		UAM_ASSERT_EQ(result["resultDelivery"], nlohmann::json("automatic-pending"));
+		const std::string second = result["runId"];
+		root = ChatDomainService().FindChatById(fixture.app, fixture.root_id); UAM_ASSERT(root && root->managed_parent_result);
+		// The new origin owns a fresh record for its own child only; the earlier result is never sent again.
+		UAM_ASSERT(root->managed_parent_result->id != old_origin);
+		UAM_ASSERT_EQ(root->managed_parent_result->stage, std::string("collecting"));
+		UAM_ASSERT_EQ(root->managed_parent_result->run_ids, std::vector<std::string>{second});
+		UAM_ASSERT(root->managed_parent_result->delivered_ids.empty() && root->managed_parent_result->batch_ids.empty());
+		UAM_ASSERT(root->managed_parent_result->payload.empty() && root->managed_parent_result->native_request_id.empty());
+		UAM_ASSERT_EQ(root->managed_parent_input_receipts, receipts); // Earlier proof is retained, not rewritten.
+		UAM_ASSERT(session.managed_parent_continuation && !session.managed_parent_continuation->revoked);
+		UAM_ASSERT_EQ(session.managed_parent_continuation->runs.size(), std::size_t{1});
+		UAM_ASSERT_EQ(session.managed_parent_continuation->runs.front().first, second);
+		UAM_ASSERT(first != second && !session.pending_prompt_delivery);
+	}
+}
+
+UAM_TEST(ManagedParentContinuationUnwrittenHeldSlotYieldsToNextHumanOrigin)
+{
+	ControlAgentWaitFixture fixture; const std::string first = OrdinaryContinuationChild(fixture); EndOrdinaryOrigin(fixture);
+	auto& session = *fixture.app.acp_sessions.front();
+	const auto first_lease = session.managed_parent_continuation;
+	UAM_ASSERT(first_lease);
+	// New human work starts before the automatic result was admitted or written.
+	BeginNextHumanOrigin(fixture, 92, "fixture-native-turn-2");
+	const auto result = DelegateAgain(fixture, "next-origin");
+	UAM_ASSERT_EQ(result["resultDelivery"], nlohmann::json("automatic-pending"));
+	const std::string second = result["runId"];
+	const auto* root = ChatDomainService().FindChatById(fixture.app, fixture.root_id); UAM_ASSERT(root && root->managed_parent_result);
+	UAM_ASSERT(first_lease->revoked && session.managed_parent_continuation != first_lease);
+	UAM_ASSERT_EQ(root->managed_parent_result->run_ids, std::vector<std::string>{second});
+	UAM_ASSERT(root->managed_parent_input_receipts.empty() && !session.pending_prompt_delivery);
+	UAM_ASSERT(first != second);
+}
+
+UAM_TEST(ManagedParentContinuationUnacknowledgedWriteStaysQuarantinedUntilItsProcessIsGone)
+{
+	ControlAgentWaitFixture fixture; (void)OrdinaryContinuationChild(fixture); EndOrdinaryOrigin(fixture);
+	auto& session = *fixture.app.acp_sessions.front();
+	UAM_ASSERT(uam::ManagedParentContinuationService::Poll(fixture.app));
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	while ((session.pending_prompt_delivery || session.managed_parent_continuation->admission_pending) && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::FlushPendingChatSaves(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	auto* root = ChatDomainService().FindChatById(fixture.app, fixture.root_id); UAM_ASSERT(root && root->managed_parent_result);
+	UAM_ASSERT(session.managed_parent_continuation->revoked);
+	UAM_ASSERT_EQ(root->managed_parent_result->stage, std::string("held"));
+	// Model the one case that must not be re-sent: the request reached the wire and was never acknowledged.
+	auto slot = std::ranges::find(root->managed_parent_input_receipts, root->managed_parent_result->id, &ManagedParentInputReceipt::origin_id);
+	UAM_ASSERT(slot != root->managed_parent_input_receipts.end() && slot->accepted_turn_id.empty());
+	if (slot->native_request_id.empty()) slot->native_request_id = "7";
+	const auto receipts = root->managed_parent_input_receipts;
+	const std::string old_origin = root->managed_parent_result->id;
+	BeginNextHumanOrigin(fixture, 92, "fixture-native-turn-2");
+	UAM_ASSERT_EQ(DelegateAgain(fixture, "same-process")["resultDelivery"], nlohmann::json("held"));
+	root = ChatDomainService().FindChatById(fixture.app, fixture.root_id); UAM_ASSERT(root && root->managed_parent_result);
+	UAM_ASSERT_EQ(root->managed_parent_result->id, old_origin);
+	const int allocated = session.next_request_id;
+	// After a restart that process is gone. The slot is usable again and the old request is still never repeated.
+	session.managed_parent_continuation.reset();
+	BeginNextHumanOrigin(fixture, 93, "fixture-native-turn-3");
+	const auto result = DelegateAgain(fixture, "after-restart");
+	UAM_ASSERT_EQ(result["resultDelivery"], nlohmann::json("automatic-pending"));
+	root = ChatDomainService().FindChatById(fixture.app, fixture.root_id); UAM_ASSERT(root && root->managed_parent_result);
+	UAM_ASSERT(root->managed_parent_result->id != old_origin);
+	UAM_ASSERT_EQ(root->managed_parent_result->run_ids, std::vector<std::string>{result["runId"].get<std::string>()});
+	UAM_ASSERT_EQ(root->managed_parent_input_receipts, receipts);
+	UAM_ASSERT_EQ(session.next_request_id, allocated);
+	UAM_ASSERT(!session.pending_prompt_delivery);
 }
 
 #endif

@@ -80,7 +80,8 @@ namespace uam
 			std::string id, root_id, parent_id, transcript_id, provider_id, model_id, definition_hash, created_at;
 			std::string agent_id, execution_capability, resumed_from_id, result_delivery_id, workspace_access, definition_snapshot;
 			std::shared_ptr<const std::uint8_t> transcript_incarnation;
-			std::string host_id; // Execution host is birth scope; native identity/model/worktree publication is late-bound.
+			// The child's own recorded host, which need not be the caller's. Empty while automatic routing has not yet assigned one.
+			std::string host_id;
 		};
 		enum class Phase { Waiting, AuditPending, ResponsePending, Published, Retired };
 		Phase phase = Phase::Waiting;
@@ -92,7 +93,7 @@ namespace uam
 		std::string session_id, native_session_id, process_id, process_host_id, remote_delivery_token, native_turn_id;
 		int turn_serial = 0;
 		ExecutionHost host;
-		std::string root_workspace, root_worktree, workspace, worktree;
+		std::string root_workspace, root_worktree, workspace, worktree, root_host_id;
 		std::string root_provider_id, root_model_id, root_native_id, chat_provider_id, chat_model_id, origin_agent_run_id;
 		std::vector<RunIdentity> ancestry;
 		Clock::time_point semantic_deadline, publication_deadline, retry_at;
@@ -104,6 +105,7 @@ namespace uam
 		std::future<UamWaitResponsePublication> response_future;
 		UamWaitResponsePublication response_result;
 		bool response_observed = false;
+		bool scope_lost = false; // The caller is still current but the child changed: the sealed reply is an explicit error.
 	};
 
 	namespace
@@ -1326,13 +1328,14 @@ namespace uam
 			if (!proof || !proof->original_birth || proof->data_root != app.data_root ||
 			    proof->run != ManagedTerminalRetirementWitness::RunIdentity::Capture(run) ||
 			    chat->agent_run_id != run.id || chat->provider_id != run.provider_id || chat->provider_id != proof->provider_id ||
-			    chat->execution_host_id != host_id || chat->execution_host_id != proof->host_id ||
+			    (!host_id.empty() && chat->execution_host_id != host_id) || chat->execution_host_id != proof->host_id ||
 			    chat->workspace_directory != proof->workspace || chat->workspace_worktree_directory != proof->worktree ||
 			    chat->native_session_id != proof->native_session_id || chat->created_at != proof->created_at) return {};
 			return {&*chat, proof->original_birth};
 		}
 
-		bool WaitCurrent(const AppState& app, const UamControlCapability& capability, const UamAgentWait& wait)
+		/// `caller_only` checks the waiting turn and its reply route without the child run, to answer a lost child explicitly.
+		bool WaitCurrent(const AppState& app, const UamControlCapability& capability, const UamAgentWait& wait, bool caller_only = false)
 		{
 			if (!wait.publish_lease->load(std::memory_order_acquire) || app.data_root.native() != wait.data_root.native() ||
 			    UamAgentWait::Clock::now() >= wait.publication_deadline || capability.id != wait.capability_id ||
@@ -1353,7 +1356,7 @@ namespace uam
 			    chat->provider_id != wait.chat_provider_id || chat->model_id != wait.chat_model_id || capability.agent_run_id != wait.origin_agent_run_id ||
 			    root->metadata_incarnation != wait.root_incarnation || chat->metadata_incarnation != wait.chat_incarnation ||
 			    root->workspace_directory != wait.root_workspace || root->workspace_worktree_directory != wait.root_worktree ||
-			    root->execution_host_id != wait.host.id || chat->execution_host_id != wait.host.id ||
+			    root->execution_host_id != wait.root_host_id || chat->execution_host_id != wait.host.id ||
 			    chat->workspace_directory != wait.workspace || chat->workspace_worktree_directory != wait.worktree ||
 			    chat->native_session_id != wait.native_session_id || session != wait.original_session || !session ||
 			    session->permission_review_incarnation != wait.launch_incarnation || !session->running || !session->processing ||
@@ -1370,6 +1373,7 @@ namespace uam
 			})) return false;
 			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, wait.host.id);
 			if (!host || !execution_hosts::SameConnection(*host, wait.host)) return false;
+			if (caller_only || wait.scope_lost) return true;
 			const AgentRun* selected = FindRun(app, wait.run_id);
 			if (!selected || !IsWaitOwnedDescendant(app, capability, *selected)) return false;
 			for (const auto& identity : wait.ancestry)
@@ -1384,7 +1388,7 @@ namespace uam
 				    run->resumed_from_run_id != identity.resumed_from_id || run->result_delivery_id != identity.result_delivery_id ||
 				    run->effective_workspace_access != identity.workspace_access || run->definition_snapshot != identity.definition_snapshot ||
 				    view.birth != identity.transcript_incarnation || transcript->agent_run_id != identity.id ||
-				    transcript->execution_host_id != identity.host_id || transcript->provider_id != identity.provider_id) return false;
+				    (!identity.host_id.empty() && transcript->execution_host_id != identity.host_id) || transcript->provider_id != identity.provider_id) return false;
 			}
 			return true;
 		}
@@ -1460,6 +1464,7 @@ namespace uam
 			wait->turn_serial = session->turn_serial; wait->host = *host;
 			wait->workspace = chat->workspace_directory; wait->worktree = chat->workspace_worktree_directory;
 			wait->root_workspace = root->workspace_directory; wait->root_worktree = root->workspace_worktree_directory;
+			wait->root_host_id = root->execution_host_id; // A nested caller may itself run away from its root.
 			wait->root_provider_id = root->provider_id; wait->root_model_id = root->model_id; wait->root_native_id = root->native_session_id;
 			wait->chat_provider_id = chat->provider_id; wait->chat_model_id = chat->model_id; wait->origin_agent_run_id = capability.agent_run_id;
 			const auto now = UamAgentWait::Clock::now();
@@ -1472,14 +1477,17 @@ namespace uam
 					return {.error = "Agent ancestry is invalid or outside its bounded depth."};
 				if (ancestor->root_chat_id != root->id || (!ancestor->parent_run_id.empty() && !FindRun(app, ancestor->parent_run_id)))
 					return {.error = "The owned descendant ancestry is incomplete or foreign."};
-				const auto view = WaitTranscript(app, *ancestor, root->id, host->id);
+				// A child runs on its own recorded host: automatic routing may place it away from the waiting parent.
+				const auto view = WaitTranscript(app, *ancestor, root->id, {});
 				const ChatSession* transcript = view.chat;
-				if (!transcript || transcript->execution_host_id != host->id) return {.error = "The owned child transcript or execution host is unavailable."};
+				if (!transcript) return {.error = "The owned child transcript is unavailable."};
+				const bool host_unassigned = ancestor->status == "queued" && transcript->routing_mode == "automatic" &&
+				    transcript->routing_assigned_connection_identity.empty();
 				wait->ancestry.push_back({ancestor->id, ancestor->root_chat_id, ancestor->parent_run_id, ancestor->transcript_chat_id,
 				    ancestor->provider_id, ancestor->model_id, ancestor->definition_hash, ancestor->created_at,
 				    ancestor->agent_id, ancestor->execution_capability, ancestor->resumed_from_run_id, ancestor->result_delivery_id,
 				    ancestor->effective_workspace_access, ancestor->definition_snapshot,
-				    view.birth, transcript->execution_host_id});
+				    view.birth, host_unassigned ? std::string{} : transcript->execution_host_id});
 			}
 			if (!WaitCurrent(app, capability, *wait)) return {.error = "The original turn or descendant scope is no longer current."};
 			capability.pending_agent_wait = wait;
@@ -1500,7 +1508,22 @@ namespace uam
 			{
 				const auto wait = capability.pending_agent_wait;
 				if (!wait) continue;
-				if (!WaitCurrent(app, capability, *wait)) { RetireAgentWait(app, capability); continue; }
+				if (!WaitCurrent(app, capability, *wait))
+				{
+					// Only a read whose own turn is still current can be answered; the caller must not be left to time out.
+					if (wait->phase != UamAgentWait::Phase::Waiting || !WaitCurrent(app, capability, *wait, true))
+					{ RetireAgentWait(app, capability); continue; }
+					if (actions == kMaxWaitActionsPerTick) continue;
+					wait->scope_lost = true;
+					wait->sealed_response = nlohmann::json{{"ok", false}, {"error", "The waited child run changed or is no longer available. Inspect it with agent_status before delegating the work again."}}.dump();
+					wait->audit = {AuditText(wait->request_id), "agent_wait", "rejected", "The owned descendant changed during the wait.",
+					    AuditText(capability.provider_id), AuditText(capability.agent_id), AuditText(capability.agent_run_id), time::TimestampNow()};
+					ChatSession* root = ChatDomainService().FindChatById(app, capability.chat_id);
+					root->uam_control_audit.push_back(wait->audit);
+					if (root->uam_control_audit.size() > kMaxAuditRecords) root->uam_control_audit.erase(root->uam_control_audit.begin());
+					wait->phase = UamAgentWait::Phase::AuditPending;
+					++actions;
+				}
 				if (actions == kMaxWaitActionsPerTick) continue;
 				if (wait->phase == UamAgentWait::Phase::Waiting)
 				{
