@@ -659,6 +659,100 @@ describe('AppShell', () => {
     }
   })
 
+  it('expands a notification row from its bar or keyboard, but not from its buttons, and labels update computers', () => {
+    const longDetail = `${'unbroken'.repeat(40)} full failure detail`
+    const codex = {
+      providerId: 'codex-cli', installedVersion: '0.125.0', selectedVersion: '0.125.0',
+      availableVersions: [], preferredVersion: '0.125.0', status: 'verified' as const, message: '',
+      running: false, lastCommand: '', lastOutput: '', lastInstallStatus: 'succeeded' as const,
+    }
+    useAppStore.setState({
+      updateChecksEnabled: false,
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+        { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+      ],
+      providers: [{ id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', description: '', color: '#fff' }],
+      cliVersionManager: { providers: [codex], remoteProviders: [{ ...codex, executionHostId: 'lab', executionHostName: 'Homelab' }] },
+    })
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({
+      checkedAt: new Date().toISOString(), uam: { version: 'V0.0.1', url: '' }, providers: { 'codex-cli': { version: '0.130.0', url: '' } },
+    }))
+    // jsdom has no layout: a title longer than 40 characters reports itself as cut off.
+    const scrollWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollWidth')
+    Object.defineProperty(HTMLElement.prototype, 'scrollWidth', { configurable: true, get(this: HTMLElement) { return this.dataset.npTitle && (this.textContent ?? '').length > 40 ? 500 : 0 } })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<AppShell />))
+      act(() => reportAppNotice('Short notice.', 'info'))
+      act(() => reportAppNotice('A notice title that is far too long to fit on one line of the panel.', 'info'))
+      act(() => reportAppFailure('Could not save.', longDetail))
+      act(() => (host.querySelector('[data-notification-bell]') as HTMLButtonElement).click())
+      const panel = host.querySelector('[data-testid="notifications-panel"]')!
+
+      // Each completed update names its computer instead of folding it into the title.
+      const completed = Array.from(panel.querySelectorAll('.uam-np-row')).filter((row) => row.textContent?.includes('Codex update completed'))
+      expect(completed.map((row) => row.querySelector('.uam-np-row__host')?.textContent).sort()).toEqual(['Homelab', 'This computer'])
+      expect(panel.textContent).not.toContain('Codex · Homelab update completed')
+      // Copy and dismiss still name the computer, so the two rows stay distinguishable.
+      expect(completed.map((row) => row.querySelector('[aria-label^="Dismiss"]')?.getAttribute('aria-label')).sort()).toEqual(['Dismiss Codex update completed', 'Dismiss Codex · Homelab update completed'])
+
+      const rowFor = (text: string) => Array.from(panel.querySelectorAll<HTMLElement>('.uam-np-row')).find((candidate) => candidate.textContent?.includes(text))!
+      // A short notice without detail has nothing to reveal; a cut-off title does.
+      expect(rowFor('Short notice.').querySelector('[role="button"]')).toBeNull()
+      const cutOff = rowFor('far too long').querySelector<HTMLElement>('[aria-expanded]')!
+      act(() => cutOff.click())
+      expect(cutOff.getAttribute('aria-expanded')).toBe('true')
+
+      // Available updates on two computers list each update with its computer when expanded.
+      const updatesRow = rowFor('2 updates available')
+      act(() => updatesRow.querySelector<HTMLElement>('[aria-expanded]')!.click())
+      expect(Array.from(updatesRow.querySelectorAll('.uam-np-row__detail li'), (line) => line.textContent).sort()).toEqual(['HomelabCodex 0.130.0', 'This computerCodex 0.130.0'])
+
+      const row = Array.from(panel.querySelectorAll<HTMLElement>('.uam-np-row')).find((candidate) => candidate.textContent?.includes('Could not save.'))!
+      const toggle = row.querySelector<HTMLElement>('[aria-expanded]')!
+      const detail = () => row.querySelector('.uam-np-row__detail')
+      expect(toggle.getAttribute('role')).toBe('button')
+      expect(toggle.tabIndex).toBe(0)
+      expect(toggle.getAttribute('aria-expanded')).toBe('false')
+      expect(detail()).toBeNull()
+
+      // Clicking the bar outside the title expands; clicking again collapses.
+      act(() => { row.querySelector('.uam-np-row__icon')!.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      expect(detail()?.textContent).toContain(longDetail)
+      // Clicking inside the detail (to select a word) or finishing a selection does not collapse it.
+      act(() => { detail()!.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      const getSelection = vi.spyOn(window, 'getSelection').mockReturnValue({ isCollapsed: false } as Selection)
+      act(() => { row.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      getSelection.mockRestore()
+      act(() => { row.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+      expect(toggle.getAttribute('aria-expanded')).toBe('false')
+
+      // Buttons inside the row act alone.
+      act(() => { row.querySelector<HTMLButtonElement>('[aria-label="Copy message"]')!.click() })
+      expect(toggle.getAttribute('aria-expanded')).toBe('false')
+
+      // Enter and Space toggle from the keyboard and keep focus on the control.
+      act(() => toggle.focus())
+      act(() => { toggle.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) })
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      act(() => { toggle.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true })) })
+      expect(toggle.getAttribute('aria-expanded')).toBe('false')
+      expect(document.activeElement).toBe(toggle)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      window.localStorage.removeItem('uam-update-catalog-v1')
+      if (scrollWidth) Object.defineProperty(HTMLElement.prototype, 'scrollWidth', scrollWidth)
+      else delete (HTMLElement.prototype as { scrollWidth?: number }).scrollWidth
+    }
+  })
+
   it('notifies when a remote chat disconnects and when it reconnects', async () => {
     useAppStore.setState({
       executionHosts: [

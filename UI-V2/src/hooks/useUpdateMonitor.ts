@@ -241,6 +241,7 @@ export function useUpdateMonitor() {
       providerId: state.providerId,
       ...(state.executionHostId ? { executionHostId: state.executionHostId } : {}),
       name: `${provider?.shortName || provider?.name || state.providerId}${state.executionHostId ? ` · ${state.executionHostName || state.executionHostId}` : ''}`,
+      shortName: provider?.shortName || provider?.name || state.providerId,
       status: state.lastInstallStatus,
       message: state.lastInstallStatus === 'succeeded' ? `Installed ${state.installedVersion || 'provider update'}.` : state.message,
       output: state.lastOutput,
