@@ -61,6 +61,24 @@ describe('SSH routing repository matching', () => {
     } finally { vi.useRealTimers() }
   })
 
+  it('drops a check that stays silent through a rejoined wait, so the next Retry sends a new one', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(sendToCEF).mockReturnValueOnce(new Promise(() => {}) as never)
+      mount(<ExecutionRoutingDialog onClose={vi.fn()} />)
+      await flush()
+      await act(async () => { vi.advanceTimersByTime(30_000); await Promise.resolve() })
+      act(() => buttonsNamed('Retry')[0].click())
+      await flush()
+      expect(sendToCEF).toHaveBeenCalledTimes(1)
+      await act(async () => { vi.advanceTimersByTime(30_000); await Promise.resolve() })
+      act(() => buttonsNamed('Retry')[0].click())
+      await flush()
+      expect(sendToCEF).toHaveBeenCalledTimes(2)
+      expect(document.body.textContent).toContain('Same repository')
+    } finally { vi.useRealTimers() }
+  })
+
   it('keeps today\'s manual mapping and never asks for matches when the capability is off', () => {
     useAppStore.setState((state) => ({ executionRouting: { ...state.executionRouting, repositoryMatching: undefined } }))
     mount(<ExecutionRoutingDialog onClose={vi.fn()} />)
