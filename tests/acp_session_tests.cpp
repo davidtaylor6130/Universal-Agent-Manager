@@ -3404,6 +3404,23 @@ UAM_TEST(KeepAwakeCoversLiveWorkButReleasesStaleStructuredWaits)
 	UAM_ASSERT(app.acp_sessions.front()->waiting_for_user_input);
 }
 
+UAM_TEST(KeepAwakeHoldsStaleWaitsOnRemoteHosts)
+{
+	uam::AppState app;
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "remote-chat";
+	session->running = true;
+	session->processing = true;
+	session->waiting_for_user_input = true;
+	session->wait_is_stale = true;
+	session->process_execution_host_id = "ssh-host";
+	app.acp_sessions.push_back(std::move(session));
+	// Sleep would drop SSH and lose the remote turn waiting for the answer.
+	UAM_ASSERT(uam::RuntimeShouldKeepSystemAwake(app));
+	app.acp_sessions.front()->process_execution_host_id = "local";
+	UAM_ASSERT(!uam::RuntimeShouldKeepSystemAwake(app));
+}
+
 UAM_TEST(AcpTurnInactivityRecoveryUsesTransportActivityAndCancelGrace)
 {
 	uam::AcpSessionState session;
