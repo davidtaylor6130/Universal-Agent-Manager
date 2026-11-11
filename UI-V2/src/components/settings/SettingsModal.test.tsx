@@ -926,6 +926,84 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('closes the setup dialog on install, shows progress on the host row and still reports a later refusal', async () => {
+    useAppStore.setState({
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+        { id: 'ssh-homelab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '5.0.0', platform: 'linux', architecture: 'x64', lastSeenAt: '' },
+      ],
+    })
+    const refusal = 'Remote CLI verification failed. (cli-verification)'
+    let failInstall: (() => void) | null = null
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      if (parsed.action === 'previewRemoteHost') {
+        onSuccess(JSON.stringify({ host: { ...parsed.payload, transport: 'ssh', runnerStatus: 'ready', runnerVersion: '5.0.0', platform: 'linux', architecture: 'x64', lastSeenAt: '' }, preview: '1. Check remote platform' }))
+        return
+      }
+      if (parsed.action === 'installRemoteHost') { failInstall = () => onFailure(409, refusal); return }
+      onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+    await act(async () => { (host.querySelector('button[aria-label="Reinstall helper on Homelab"]') as HTMLButtonElement).click() })
+    expect(document.body.textContent).toContain('Install helper on Homelab?')
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
+    })
+
+    expect(document.body.textContent).not.toContain('Install helper on Homelab?')
+    const row = host.querySelector('[aria-label="Remote host task running on Homelab"]')
+    expect(row?.getAttribute('aria-busy')).toBe('true')
+    expect(row?.classList.contains('uam-progress-fill')).toBe(true)
+    expect(document.activeElement).toBe(host.querySelector('[data-host-open="ssh-homelab"]'))
+
+    await act(async () => { failInstall?.() })
+    expect(failures.at(-1)?.message).toBe(refusal)
+    expect(host.querySelector('[aria-label="Remote host task running on Homelab"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('returns focus to the SSH alias when a new host fails after its installing row appeared', async () => {
+    const local = { id: 'local', label: 'This computer', transport: 'local' as const, sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' }
+    useAppStore.setState({ executionHosts: [local] })
+    let failInstall: (() => void) | null = null
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      if (parsed.action === 'previewRemoteHost') {
+        onSuccess(JSON.stringify({ host: { ...parsed.payload, transport: 'ssh', runnerStatus: 'uninstalled', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' }, preview: '1. Check remote platform' }))
+        return
+      }
+      if (parsed.action === 'installRemoteHost') { failInstall = () => onFailure(502, 'ssh: connect to host homelab port 22: Connection refused'); return }
+      onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+    const alias = host.querySelector('input[aria-label="SSH config alias"]') as HTMLInputElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(alias, 'homelab')
+      alias.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click() })
+    await act(async () => { Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click() })
+    expect(document.body.textContent).not.toContain('Install helper on homelab?')
+
+    // The backend pushes the reserved row; focus follows it.
+    act(() => useAppStore.setState({ executionHosts: [local, { id: 'ssh-homelab', label: 'homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'installing', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' }] }))
+    expect(document.activeElement).toBe(host.querySelector('[data-host-open="ssh-homelab"]'))
+
+    // The failure arrives first, then the restore push removes the row.
+    await act(async () => { failInstall?.() })
+    expect(failures.at(-1)?.detail).toBe('Check the SSH connection and try again.')
+    act(() => useAppStore.setState({ executionHosts: [local] }))
+    expect(document.activeElement).toBe(host.querySelector('input[aria-label="SSH config alias"]'))
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('adds the SSH connection hint only to SSH-stage failures', async () => {
     const refusal = '“Homelab notes” has a turn in progress on this host. Stop it or let it finish, then update the helper. (chat-process)'
     let failureCode = 409

@@ -2564,7 +2564,9 @@ button:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):focus-visi
 
 /* Progress: the item doing the work is the track. Its background fills left to right in --accent-dim
    (determinate, --progress 0-1) or sweeps (indeterminate). Text stays on top; the fill follows the item's radius. */
+/* It clips the sweep, so controls inside a busy item draw their focus ring inset rather than cut. */
 .uam-progress-fill { position: relative; isolation: isolate; overflow: hidden; }
+.uam-progress-fill[data-indeterminate] { --focus-offset: var(--focus-inset); }
 .uam-progress-fill::before {
   content: '';
   position: absolute;
