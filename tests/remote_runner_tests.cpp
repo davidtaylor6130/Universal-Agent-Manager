@@ -2418,6 +2418,12 @@ UAM_TEST(LargeAttachmentStreamsFromDiskCompleteWithProgressOrFailsVisibly)
 	UAM_ASSERT(!uam::attachment_payload::CopyStreamed(source, short_target, size, {}, error, [] { return uam::attachment_payload::ExchangeCanceled("att-removed", false); }));
 	UAM_ASSERT(error.find("canceled") != std::string::npos);
 	UAM_ASSERT(!fs::exists(short_target));
+	// Shutting down cancels every running copy the same way.
+	uam::attachment_payload::ShuttingDown().store(true);
+	const bool copied_during_shutdown = uam::attachment_payload::CopyStreamed(source, short_target, size, {}, error, [] { return uam::attachment_payload::ExchangeCanceled("att-other", false); });
+	uam::attachment_payload::ShuttingDown().store(false);
+	UAM_ASSERT(!copied_during_shutdown);
+	UAM_ASSERT(!fs::exists(short_target));
 
 	{
 		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, {uam::paths::Utf8PathString(runner), "bridge-direct"});

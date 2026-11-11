@@ -197,7 +197,7 @@ function nativeFileEntries(data: unknown): NativeFileEntry[] {
 
 function readFileBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
-    if (file.size > MAX_INLINE_ATTACHMENT_BYTES) { reject(new Error(`${file.name || 'Attachment'} is larger than the 25 MB limit.`)); return }
+    if (file.size > MAX_INLINE_ATTACHMENT_BYTES) { reject(new Error(`${file.name || 'Attachment'} is larger than the 25 MB limit for dropped or pasted data. Use the attach button to add a larger file from disk.`)); return }
     const reader = new FileReader()
     reader.onload = () => {
       const result = typeof reader.result === 'string' ? reader.result : ''

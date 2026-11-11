@@ -10,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -30,10 +31,19 @@ namespace uam::attachment_payload
 
 	/// Attachment ids whose chip the user removed while its copy was still running. A copy checks this between
 	/// chunks, stops, and removes what it wrote. Ids are unique per attachment, so entries are small and never reused.
+	/// Set once when the app is shutting down: every running copy then stops between chunks and removes its
+	/// partial file, so quitting does not wait for a multi-gigabyte copy to finish.
+	inline std::atomic<bool>& ShuttingDown()
+	{
+		static std::atomic<bool> shutting_down{false};
+		return shutting_down;
+	}
+
 	inline bool ExchangeCanceled(const std::string& attachment_id, const bool cancel)
 	{
 		static std::mutex mutex;
 		static std::set<std::string> canceled;
+		if (!cancel && ShuttingDown().load()) return true;
 		const std::scoped_lock lock(mutex);
 		if (cancel) return canceled.insert(attachment_id).second;
 		return canceled.contains(attachment_id);

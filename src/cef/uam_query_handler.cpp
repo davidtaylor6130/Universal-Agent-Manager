@@ -3,6 +3,7 @@
 #include "cef/uam_bridge_request.h"
 #include "cef/pending_operation_gate.h"
 #include "cef/uam_cef_security.h"
+#include "common/chat/attachment_payload.h"
 #include "common/companion/protocol.h"
 #include "cef/uam_window_chrome.h"
 #include "common/usage/multi_host_history.h"
@@ -180,6 +181,8 @@ CefRefPtr<CefTaskRunner> UamQueryHandler::SlowQueryRunner(const ChatSession& cha
 UamQueryHandler::~UamQueryHandler()
 {
 	m_asyncLifetime.reset();
+	// Before the slow-query threads are joined: a large attachment copy stops instead of holding up exit.
+	uam::attachment_payload::ShuttingDown().store(true);
 	for (const std::pair<const std::string, std::shared_ptr<std::stop_source>>& request : m_titleRequests) request.second->request_stop();
 	for (const auto& request : m_nativeHistoryRequests) request.second->request_stop();
 	m_remoteRefreshReadThreads.clear(); // Joins the stopped reads; each read is also bounded by its own deadline.
