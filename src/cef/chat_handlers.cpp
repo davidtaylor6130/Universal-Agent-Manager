@@ -2534,9 +2534,11 @@ void UamQueryHandler::HandleRenameSession(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	if (!ChatHistorySyncService().RenameChat(m_app, *chat, title))
+	// The status line names the chat file's path, which never belongs in a user notice.
+	std::string refusal;
+	if (!ChatHistorySyncService().RenameChat(m_app, *chat, title, &refusal))
 	{
-		cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Failed to rename chat: " + chat_id));
+		cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(refusal, "The chat could not be saved. Try again."));
 		return;
 	}
 

@@ -234,8 +234,9 @@ class ChatHistorySyncService
 	/// Build a loaded detached candidate without storage or live-runtime access; false preserves a longer baseline.
 	bool BuildNativeTranscriptCandidate(ChatSession& detached, std::vector<Message> messages) const;
 	bool SaveNativeTranscript(uam::AppState& app, ChatSession& current, std::vector<Message> messages) const;
-	bool SaveChatWithStatus(uam::AppState& app, ChatSession& chat, const std::string& success, const std::string& failure) const;
-	bool RenameChat(uam::AppState& app, ChatSession& chat, const std::string& requested_title) const;
+	/// <summary>`refusal_out` receives a user-facing reason without paths; `status_line` keeps its own wording.</summary>
+	bool SaveChatWithStatus(uam::AppState& app, ChatSession& chat, const std::string& success, const std::string& failure, std::string* refusal_out = nullptr) const;
+	bool RenameChat(uam::AppState& app, ChatSession& chat, const std::string& requested_title, std::string* refusal_out = nullptr) const;
 	std::vector<ChatSession> LoadNativeSessionChats(const std::filesystem::path& chats_dir, const ProviderProfile& provider, std::stop_token stop_token = {}) const;
 	std::optional<std::filesystem::path> ResolveNativeHistoryChatsDirForWorkspace(const std::filesystem::path& workspace_root) const;
 	std::filesystem::path ResolveNativeHistoryChatsDirForChat(const uam::AppState& app, const ChatSession& chat) const;

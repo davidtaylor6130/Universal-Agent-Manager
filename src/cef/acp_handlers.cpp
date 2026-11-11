@@ -20,6 +20,7 @@
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "app/uam_control_service.h"
 #include "app/chat_domain_service.h"
+#include "common/utils/diagnostic_log.h"
 #include "app/attachment_preview_service.h"
 #include "common/provider/structured_attachments.h"
 #include "common/utils/base64.h"
@@ -1426,7 +1427,29 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const n
 	const bool hold_queue = !m_dispatchingCompanion;
 	if (!uam::CancelAcpTurn(m_app, chat_id, &error, true, hold_queue, hold_queue))
 	{
-		cb->Failure(500, FailureDetailOrFallback(error, "Failed to cancel ACP turn."));
+		// A refusal that names its own cause wins over the flags below: this call stopped nothing.
+		if (error == "Could not save quota continuation cancellation.")
+		{
+			cb->Failure(500, "The quota wait could not be cancelled because its state could not be saved. Try again.");
+			return;
+		}
+		if (error.starts_with("Held prompts could not be discarded because ") ||
+		    error == "The referenced unsent draft has pending delivery or later work. Remove it after that settles.")
+		{
+			cb->Failure(500, error);
+			return;
+		}
+		// A remote stop in flight, or one UAM is reconnecting to confirm (helper not reattached), is progress.
+		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
+		if (session != nullptr && (session->remote_stop_pending || (session->remote_stop_unconfirmed && !session->running)))
+		{
+			uam::PushStateUpdateIfChanged(browser, m_app);
+			cb->Success(R"({"pending":true})");
+			return;
+		}
+		// Transport errors and the status line can carry OS text; only fixed runtime wording reaches the notice.
+		uam::diagnostics::Write("[cancelAcpTurn] Cancel was refused; the runtime diagnostics hold the cause.");
+		cb->Failure(500, "The turn could not be cancelled. Try again.");
 		return;
 	}
 
@@ -1490,6 +1513,24 @@ void UamQueryHandler::HandleResolveAcpUserInput(CefRefPtr<CefBrowser> browser, c
 	cb->Success("{}");
 }
 
+/// The user-facing reason a stop was refused, from the chat's own state; the global status line can hold
+/// another operation's text (a quota-wait refusal sets none), so it is never forwarded.
+static std::string StopRefusalReason(uam::AppState& app, const std::string& chat_id)
+{
+	const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat_id);
+	const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+	if (session != nullptr && session->restart_marker_save_pending)
+		return "The remote restart is waiting for its recovery data to be saved. Try again shortly.";
+	if (session != nullptr && !session->running && chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId &&
+	    (chat->remote_turn_reconnect_pending || chat->remote_process_exists))
+		return "The remote host is disconnected. Reconnect it before stopping, so UAM can confirm the turn ended.";
+	if (session != nullptr && session->queue_held)
+		return "Held prompts could not be discarded, so the runtime was not stopped. Try again.";
+	if (session != nullptr && session->running && chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId)
+		return "The remote stop could not be recorded before it was sent, so nothing was stopped. Try again.";
+	return "The runtime could not be stopped. Try again.";
+}
+
 void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
@@ -1497,15 +1538,16 @@ void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser, const 
 	if (!uam::StopAcpSession(m_app, chat_id, purpose))
 	{
 		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
-		if (session != nullptr && (session->local_stop_pending || session->remote_stop_pending))
+		// A stop in flight, or an unconfirmed remote stop UAM retries after reconnecting, is progress. With the helper
+		// reattached (running) this call should have sent the stop, so a false return there is a real refusal.
+		if (session != nullptr && (session->local_stop_pending || session->remote_stop_pending || (session->remote_stop_unconfirmed && !session->running)))
 		{
 			uam::PushStateUpdateIfChanged(browser, m_app);
 			cb->Success(R"({"pending":true})");
 			return;
 		}
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Failure(409, FailureDetailOrFallback(
-		    m_app.status_line, "Failed to stop the structured runtime."));
+		cb->Failure(409, StopRefusalReason(m_app, chat_id));
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
