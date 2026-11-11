@@ -179,13 +179,20 @@ function filePathFromBrowserFile(file: File): string {
   return typeof maybeFile.path === 'string' ? maybeFile.path : ''
 }
 
+// Matches the native staging limit for inline payloads, so an oversized file is refused before it is read into memory.
+const MAX_INLINE_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
 function readFileBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (file.size > MAX_INLINE_ATTACHMENT_BYTES) { reject(new Error(`${file.name || 'Attachment'} is larger than the 25 MB limit.`)); return }
     const reader = new FileReader()
     reader.onload = () => {
       const result = typeof reader.result === 'string' ? reader.result : ''
       const comma = result.indexOf(',')
-      resolve(comma >= 0 ? result.slice(comma + 1) : result)
+      const data = comma >= 0 ? result.slice(comma + 1) : ''
+      // The browser hands back an empty result, without an error, for a file too large to hold as one string.
+      if (!data && file.size > 0) { reject(new Error(`${file.name || 'Attachment'} could not be read, so it was not attached.`)); return }
+      resolve(data)
     }
     reader.onerror = () => reject(reader.error ?? new Error('Failed to read file.'))
     reader.readAsDataURL(file)

@@ -3919,6 +3919,37 @@ describe('ChatView', () => {
     } finally { act(() => root.unmount()); host.remove() }
   })
 
+  it('refuses a file the browser reads back empty or over the limit instead of staging a hollow copy', async () => {
+    const stageChatAttachments = vi.fn(() => Promise.resolve([]))
+    useAppStore.setState({ stageChatAttachments })
+    // Chromium returns an empty result, with no error, for a file too large to hold as one string.
+    class EmptyResultReader { result = ''; onload: (() => void) | null = null; onerror: (() => void) | null = null; readAsDataURL() { queueMicrotask(() => this.onload?.()) } }
+    vi.stubGlobal('FileReader', EmptyResultReader)
+    writeChatComposerDraft('chat-1', { text: 'Keep my text', attachments: [] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
+      const attach = async (file: File) => {
+        Object.defineProperty(input, 'files', { value: [file], configurable: true })
+        await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })); await Promise.resolve(); await Promise.resolve() })
+      }
+      await attach(new File(['video'], 'clip.MOV', { type: 'video/quicktime' }))
+      expect(reportedText()).toContain('clip.MOV could not be read, so it was not attached.')
+      const oversized = new File(['video'], 'huge.MOV', { type: 'video/quicktime' })
+      Object.defineProperty(oversized, 'size', { value: 25 * 1024 * 1024 + 1 })
+      await attach(oversized)
+      expect(reportedText()).toContain('huge.MOV is larger than the 25 MB limit.')
+      expect(stageChatAttachments).not.toHaveBeenCalled()
+      // The failed chips and the draft stay; nothing can be sent until they are removed.
+      expect(host.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep my text')
+      expect(host.textContent).toContain('clip.MOV')
+      expect(host.querySelector('button[type="submit"]:not([disabled])')).toBeNull()
+    } finally { vi.unstubAllGlobals(); act(() => root.unmount()); host.remove() }
+  })
+
   it('keeps newer staging errors and the draft when an older attachment send fails', async () => {
     let settle!: (ok: boolean) => void
     useAppStore.setState({

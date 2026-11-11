@@ -25,6 +25,7 @@
 #include "common/runtime/acp/acp_model_json.h"
 #include "common/runtime/structured_framing.h"
 #include "common/chat/acp_prompt_recovery.h"
+#include "common/chat/attachment_payload.h"
 #include "remote/runner_service_posix.h"
 #include "injected_acp_input.h"
 
@@ -2269,6 +2270,80 @@ UAM_TEST(RemoteRunnerRejectsIncompleteOrCorruptFileUploadsWithoutPublishingThem)
 	UAM_ASSERT(request("abort", {{"type", "file.abort"}, {"uploadId", "upload-bad"}})
 	               .value("ok", false));
 	UAM_ASSERT(!fs::exists(temp.root / ".uam-upload-upload-bad.tmp"));
+}
+
+UAM_TEST(RemoteAttachmentUploadDeliversALargeBinaryFileCompleteOrFailsVisibly)
+{
+	const fs::path runner = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().parent_path() /
+#if defined(_WIN32)
+	                        "uam-runner.exe";
+#else
+	                        "uam-runner";
+#endif
+	UAM_ASSERT(fs::exists(runner));
+	TempDir temp("uam-attachment-upload");
+	// Every byte value, and a length that ends partway through a 256 KiB transfer chunk.
+	std::string video(3 * 1024 * 1024 + 17, '\0');
+	for (std::size_t index = 0; index < video.size(); ++index) video[index] = static_cast<char>((index * 131 + index / 251) & 0xff);
+	const fs::path source = temp.root / "clip.MOV";
+	UAM_ASSERT(uam::io::WriteBinaryFile(source, video));
+
+	// The shared staging loader: a path attachment loads whole, and a hollow inline payload never reaches a host.
+	std::string bytes;
+	std::string error;
+	int status = 0;
+	UAM_ASSERT(uam::attachment_payload::Load({{"path", source.string()}, {"size", 1}}, uam::paths::Utf8PathString(source), bytes, status, error));
+	UAM_ASSERT(bytes == video);
+	std::string refused;
+	// What the composer sent for a video too large for the browser to read: no data, and the real size.
+	UAM_ASSERT(!uam::attachment_payload::Load({{"dataBase64", ""}, {"size", video.size()}}, "", refused, status, error));
+	UAM_ASSERT_EQ(status, 400);
+	UAM_ASSERT(error.find("empty") != std::string::npos);
+	UAM_ASSERT(!uam::attachment_payload::Load({{"dataBase64", ""}}, "", refused, status, error));
+	UAM_ASSERT(!uam::attachment_payload::Load({{"dataBase64", uam::base64::Encode("part")}, {"size", video.size()}}, "", refused, status, error));
+	UAM_ASSERT(error.find("incompletely") != std::string::npos);
+	UAM_ASSERT(uam::attachment_payload::Load({{"dataBase64", uam::base64::Encode("part")}}, "", refused, status, error));
+	// A file that really is empty stays attachable on both routes.
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "empty.txt", ""));
+	UAM_ASSERT(uam::attachment_payload::Load(nlohmann::json::object(), uam::paths::Utf8PathString(temp.root / "empty.txt"), refused, status, error));
+	UAM_ASSERT(uam::attachment_payload::Load({{"dataBase64", ""}, {"size", 0u}}, "", refused, status, error));
+
+	{
+		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, {uam::paths::Utf8PathString(runner), "bridge-direct"});
+		UAM_ASSERT(client.Connect(&error));
+		const fs::path target = temp.root / "workspace" / ".UAM" / "attachments" / "chat-1" / "0-clip.MOV";
+		UAM_ASSERT(client.UploadFile("attachment-large", target, bytes, &error));
+		std::string arrived;
+		UAM_ASSERT(uam::io::TryReadBinaryFile(target, arrived));
+		UAM_ASSERT_EQ(fs::file_size(target), static_cast<std::uintmax_t>(video.size()));
+		UAM_ASSERT(arrived == video);
+		// A refused upload names its cause and leaves the published copy untouched.
+		error.clear();
+		UAM_ASSERT(!client.UploadFile("attachment-again", target, "other", &error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT_EQ(fs::file_size(target), static_cast<std::uintmax_t>(video.size()));
+		client.Disconnect();
+	}
+#if !defined(_WIN32)
+	const std::string executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string();
+	// A host that publishes fewer bytes than were sent (a full disk, say) must fail the upload and have the copy removed.
+	const fs::path requests = temp.root / "requests.log";
+	{
+		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, {executable, "--uam-test-runner-result", R"({"path":"/remote/clip.MOV","size":0})", requests.string(), "--without-central-config"});
+		UAM_ASSERT(client.Connect(&error));
+		error.clear();
+		UAM_ASSERT(!client.UploadFile("attachment-short", "/remote/clip.MOV", "video-bytes", &error));
+		UAM_ASSERT(error.find("incomplete on the host (0 of 11 bytes)") != std::string::npos);
+		const std::string seen = uam_test::ReadFile(requests);
+		UAM_ASSERT(seen.find("file.commit") < seen.find("file.remove"));
+	}
+	// A helper from before the size report keeps working on its own commit check.
+	{
+		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, {executable, "--uam-test-runner-result", R"({"path":"/remote/clip.MOV"})"});
+		UAM_ASSERT(client.Connect(&error));
+		UAM_ASSERT(client.UploadFile("attachment-older-helper", "/remote/clip.MOV", "video-bytes", &error));
+	}
+#endif
 }
 
 UAM_TEST(RemoteRunnerConcurrentProcessRemovalHasExactlyOneOwner)

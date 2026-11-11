@@ -1610,8 +1610,11 @@ namespace uam::remote
 					return ProcessError(request, "commit_failed", "Upload could not be committed.");
 				}
 				const std::string path = uam::paths::Utf8PathString(upload.target);
+				// The published file's size as the host's filesystem reports it, for the desktop to confirm.
+				const std::uintmax_t published_size = std::filesystem::file_size(upload.target, error);
 				finish_upload();
-				return ProcessSuccess(request, {{"path", path}});
+				if (error) return ProcessSuccess(request, {{"path", path}});
+				return ProcessSuccess(request, {{"path", path}, {"size", published_size}});
 			}
 			state_lock.unlock();
 			if (type == "file.write")
