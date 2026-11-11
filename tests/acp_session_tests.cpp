@@ -13746,6 +13746,45 @@ UAM_TEST(AcpIdleControlInactivityTimeoutStopsAndReconnects)
 	UAM_ASSERT(raw_session->last_error.find("setup timed out") != std::string::npos);
 }
 
+UAM_TEST(AcpNewTurnClearsPreviousStopReason)
+{
+	TempDir temp("uam-acp-new-turn-stop-reason");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-stale-stop";
+	chat.provider_id = "gemini-cli";
+	chat.workspace_directory = temp.root.string();
+	chat.last_stop_reason = "timeout";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-stale-stop";
+	session->provider_id = "gemini-cli";
+	session->protocol_kind = "gemini-acp";
+	session->running = true;
+	session->initialized = true;
+	session->session_ready = true;
+	session->session_id = "gemini-session-stale-stop";
+	session->lifecycle_state = "ready";
+	uam::AcpSessionState* raw_session = session.get();
+
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink_argv = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, temp.root, sink_argv, &error));
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-stale-stop", "Next prompt", {}, {}, false, &error));
+	UAM_ASSERT(raw_session->processing);
+	// A later Stop or lost process must not be reported as the earlier idle timeout.
+	UAM_ASSERT(app.chats.front().last_stop_reason.empty());
+}
+
 UAM_TEST(AcpIdleShutdownDeadlineOnlyExistsWhileReadyAndUnblocked)
 {
 	uam::AppState app;

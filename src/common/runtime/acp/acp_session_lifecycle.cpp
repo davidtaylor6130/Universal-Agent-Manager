@@ -4030,6 +4030,7 @@ bool BeginManagedResultPrompt(AppState& app, AcpSessionState& session, ChatSessi
 		}
 		runtime->pending_prompt_delivery.reset();
 		++runtime->turn_serial;
+		owner->last_stop_reason.clear(); // A new turn must not inherit the previous turn's stop reason.
 		runtime->processing = true;
 		runtime->lifecycle_state = kAcpLifecycleProcessing;
 		runtime->turn_started_time_s = GetAppTimeSeconds();
@@ -5136,6 +5137,7 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 	session.turn_user_message_index = -1;
 	session.turn_assistant_message_index = -1;
 	session.turn_serial += 1;
+	chat.last_stop_reason.clear(); // A new turn must not inherit the previous turn's stop reason.
 	const ChatSession* goal_owner = ChatDomainService().FindChatById(app, uam::strings::NonEmptyOrFallback(chat.goal_owner_chat_id, chat.id));
 	if (review_turn) BeginGoalReviewUsage(session, fresh_session);
 	session.goal_command_revision = goal_owner != nullptr ? goal_owner->goal_command_revision : "";
