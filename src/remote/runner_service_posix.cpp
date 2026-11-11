@@ -25,6 +25,7 @@
 #include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -118,6 +119,19 @@ namespace uam::remote
 			(void)descriptor;
 			return true;
 #endif
+		}
+
+		/// On Linux a connect to a full listen backlog sleeps until the listener accepts, which a stopped service or a
+		/// socket left open by a dead one never does. A running service empties its backlog at once, so ten seconds is ample.
+		/// macOS refuses such a connect immediately.
+		bool ConnectWithinTenSeconds(int descriptor, const sockaddr_un& address)
+		{
+			const timeval bounded{10, 0};
+			const timeval unbounded{};
+			(void)setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &bounded, sizeof(bounded));
+			const bool connected = connect(descriptor, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0;
+			(void)setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &unbounded, sizeof(unbounded));
+			return connected;
 		}
 
 		bool ReadExact(int descriptor, char* bytes, std::size_t size)
@@ -256,15 +270,14 @@ namespace uam::remote
 			return true;
 		}
 
-		bool SocketIsReachable(const std::filesystem::path& socket_path, bool nonblocking = false)
+		/// Never waits: a full backlog counts as unreachable, so a start polls and gives up instead of sleeping in connect for good.
+		bool SocketIsReachable(const std::filesystem::path& socket_path)
 		{
 			std::string error;
 			sockaddr_un address{};
 			if (!SocketAddress(socket_path, address, error)) return false;
 			Socket probe(socket(AF_UNIX, SOCK_STREAM, 0));
-			if (nonblocking && probe.Get() >= 0 && fcntl(probe.Get(), F_SETFL, O_NONBLOCK) != 0)
-				return false;
-			return probe.Get() >= 0 &&
+			return probe.Get() >= 0 && fcntl(probe.Get(), F_SETFL, O_NONBLOCK) == 0 &&
 			       connect(probe.Get(), reinterpret_cast<const sockaddr*>(&address),
 			               sizeof(address)) == 0;
 		}
@@ -364,7 +377,7 @@ namespace uam::remote
 			if (descriptor < 0)
 			{
 				if (shutdown_requested.load(std::memory_order_acquire)) break;
-				if (errno == EINTR) continue;
+				if (errno == EINTR || errno == ECONNABORTED) continue; // A bridge that left before it was accepted is not a service failure.
 				std::cerr << "Runner service could not accept a bridge.\n";
 				return 2;
 			}
@@ -415,8 +428,8 @@ namespace uam::remote
 							         {"result", nlohmann::json::object()}});
 							    // Publish shutdown only after its reply is written; client cancellation closes sockets.
 							    shutdown_requested.store(true, std::memory_order_release);
-							    // Connecting wakes accept on macOS too; never wait for a full backlog.
-							    (void)SocketIsReachable(socket_path, true);
+							    // Connecting wakes accept on macOS too.
+							    (void)SocketIsReachable(socket_path);
 							    break;
 						    }
 						    nlohmann::json response;
@@ -510,25 +523,34 @@ namespace uam::remote
 		std::string error;
 		sockaddr_un address{};
 		if (!SocketAddress(socket_path, address, error)) return 2;
-		Socket service(socket(AF_UNIX, SOCK_STREAM, 0));
-		if (service.Get() < 0 || !SetNoSigPipe(service.Get()) ||
-		    connect(service.Get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0)
+		// A service that holds its lock but does not answer may still own processes; only a free lock means it is gone.
+		const auto service_is_gone = [&]
 		{
-			// A service that holds its lock but cannot be reached may still own processes; only a free lock means it is gone.
 			const int lock = open((socket_path.string() + ".lock").c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
-			if (lock < 0) return 0;
+			if (lock < 0) return true;
 			const bool held = flock(lock, LOCK_EX | LOCK_NB) != 0 && (errno == EWOULDBLOCK || errno == EAGAIN);
 			(void)close(lock);
-			if (!held) return 0;
+			return !held;
+		};
+		Socket service(socket(AF_UNIX, SOCK_STREAM, 0));
+		if (service.Get() < 0 || !SetNoSigPipe(service.Get()) ||
+		    !ConnectWithinTenSeconds(service.Get(), address))
+		{
+			if (service_is_gone()) return 0;
 			std::cerr << "The runner service is running but does not answer. Check its sessions before replacing it.\n";
 			return 2;
 		}
-		if (!WriteSocketFrame(service.Get(),
-		                      {{"id", "stop"}, {"type", "service.shutdown"}}))
-			return 2;
+		// The shutdown reply is immediate. A socket nobody serves must fail this stop instead of holding an install open.
+		const timeval reply_wait{10, 0};
+		(void)setsockopt(service.Get(), SOL_SOCKET, SO_RCVTIMEO, &reply_wait, sizeof(reply_wait));
 		nlohmann::json response;
-		if (ReadSocketFrame(service.Get(), response, error) != FrameReadResult::Ok)
-		{ std::cerr << "The runner shutdown reply was not confirmed. Retry after checking its sessions.\n"; return 2; }
+		if (!WriteSocketFrame(service.Get(), {{"id", "stop"}, {"type", "service.shutdown"}}) ||
+		    ReadSocketFrame(service.Get(), response, error) != FrameReadResult::Ok)
+		{
+			if (service_is_gone()) return 0;
+			std::cerr << "The runner shutdown reply was not confirmed. Retry after checking its sessions.\n";
+			return 2;
+		}
 		if (!response.value("ok", false))
 		{
 			std::cerr << response.value("error", nlohmann::json::object()).value("message", "The runner cannot stop safely.") << '\n';
@@ -548,7 +570,7 @@ namespace uam::remote
 		}
 		Socket service(socket(AF_UNIX, SOCK_STREAM, 0));
 		if (service.Get() < 0 || !SetNoSigPipe(service.Get()) ||
-		    connect(service.Get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0)
+		    !ConnectWithinTenSeconds(service.Get(), address))
 		{
 			std::cerr << "Runner service is unavailable.\n";
 			return 2;

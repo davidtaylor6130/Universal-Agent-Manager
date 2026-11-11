@@ -93,11 +93,6 @@ namespace uam::remote
 			       std::wstring(suffix.begin(), suffix.end());
 		}
 
-		std::wstring PipeName(std::string_view runner_version)
-		{
-			return EndpointName(runner_version, L"\\\\.\\pipe\\uam-runner-");
-		}
-
 		bool StopRequested(HANDLE stop_event)
 		{
 			return stop_event != nullptr && WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0;
@@ -222,7 +217,7 @@ namespace uam::remote
 
 		Handle ConnectPipe(std::string_view runner_version)
 		{
-			const std::wstring name = PipeName(runner_version);
+			const std::wstring name = RunnerServicePipeName(runner_version);
 			for (int attempt = 0; attempt < 20; ++attempt)
 			{
 				HANDLE pipe = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
@@ -252,6 +247,11 @@ namespace uam::remote
 		};
 	}
 
+	std::wstring RunnerServicePipeName(std::string_view runner_version)
+	{
+		return EndpointName(runner_version, L"\\\\.\\pipe\\uam-runner-");
+	}
+
 	int RunRunnerService(std::string_view runner_version)
 	{
 		const HANDLE singleton_handle = CreateMutexW(nullptr, TRUE,
@@ -275,7 +275,7 @@ namespace uam::remote
 		Handle stop_event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
 		if (stop_event.Get() == nullptr) return 2;
 		std::vector<ClientThread> clients;
-		const std::wstring pipe_name = PipeName(runner_version);
+		const std::wstring pipe_name = RunnerServicePipeName(runner_version);
 		while (!stopping.load(std::memory_order_acquire))
 		{
 			Handle listener(CreateNamedPipeW(
@@ -297,6 +297,9 @@ namespace uam::remote
 					connected = GetOverlappedResult(listener.Get(), &connected_operation,
 					                                &transferred, TRUE);
 				}
+				// A client that connected and closed before this call (every `start` probe does) is not a service failure.
+				else if (connect_error == ERROR_NO_DATA)
+					continue;
 				else
 					connected = connect_error == ERROR_PIPE_CONNECTED;
 			}
@@ -379,7 +382,8 @@ namespace uam::remote
 		                    nullptr, nullptr, &startup, &process)) return 2;
 		CloseHandle(process.hThread);
 		CloseHandle(process.hProcess);
-		for (int attempt = 0; attempt < 200; ++attempt)
+		// A deadline, not an attempt count: each connect waits up to five seconds on a service that has stopped listening.
+		for (const ULONGLONG deadline = GetTickCount64() + 10000; GetTickCount64() < deadline;)
 		{
 			Handle ready = ConnectPipe(runner_version);
 			if (ready.Get() != INVALID_HANDLE_VALUE) return 0;

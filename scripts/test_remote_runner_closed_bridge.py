@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""The native runner service must survive bridges that close before their replies (Linux SIGPIPE)."""
+"""The native runner service must survive bridges that close first, keep its descriptors out of the processes it starts, and never hang on a socket nobody serves."""
 import argparse
 import json
+import os
 import pathlib
 import socket
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -35,6 +37,68 @@ def check_sockets_close_on_exec(pid):
     assert sockets > 0, "Runner service has no open sockets to check."
 
 
+def check_started_processes_hold_only_standard_streams(service, runner, path, workspace):
+    """A process holding anything of the service's outlives it badly: its listener keeps accepting, and another session's input pipe never ends."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as bridge, bridge.makefile("rb") as replies:
+        bridge.connect(path)
+
+        def request(kind, session, **fields):
+            body = json.dumps({"id": kind, "type": kind, "sessionId": session, "controlToken": "token", **fields}).encode()
+            bridge.sendall(struct.pack(">I", len(body)) + body)
+            reply = json.loads(replies.read(struct.unpack(">I", replies.read(4))[0]))
+            assert reply.get("ok"), f"{kind} failed: {reply}"
+
+        request("process.start", "holder", cwd=workspace, argv=["/bin/cat"])
+        request("process.write", "holder", dataBase64="eA==")  # The service now holds its own writer on this input pipe.
+        request("process.start", "later", cwd=workspace, argv=["/bin/sleep", "30"])
+        children = []
+        for entry in pathlib.Path("/proc").iterdir():
+            try:
+                if entry.name.isdigit() and (entry / "stat").read_text().rsplit(")", 1)[1].split()[1] == str(service.pid):
+                    children.append(int(entry.name))
+            except OSError:  # A process that ended while /proc was being read.
+                continue
+        assert len(children) == 2, f"Expected the two started processes, found {children}."
+        deadline = time.monotonic() + 10
+        for child in children:
+            while os.readlink(f"/proc/{child}/exe") == str(runner):  # Not yet replaced by the started program.
+                assert time.monotonic() < deadline, "A started process never ran its program."
+                time.sleep(0.01)
+            held = sorted(int(name) for name in os.listdir(f"/proc/{child}/fd"))
+            assert held == [0, 1, 2], f"A started process inherited runner descriptors: {held}."
+        for session in ("holder", "later"):
+            request("process.stop", session)
+            request("process.remove", session)
+
+
+def check_unserved_socket_cannot_hang(runner, directory):
+    """A listener nobody accepts on, as a dead or stopped service leaves, must fail start, stop and bridge instead of holding them."""
+    path = str(directory / "u.sock")
+
+    def run(command):
+        return subprocess.run([str(runner), command, "--socket", path], stdin=subprocess.DEVNULL, timeout=40).returncode
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(path)
+        listener.listen(4)
+        assert run("stop") == 0, "Stop waited on a shutdown reply nobody will send."  # Connected, never answered, and no service lock.
+        waiting = []
+        try:
+            while True:  # Fill the backlog: the next blocking connect would sleep until an accept.
+                assert len(waiting) < 64, "The listen backlog never filled."
+                waiting.append(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM))
+                waiting[-1].setblocking(False)
+                try:
+                    waiting[-1].connect(path)
+                except BlockingIOError:
+                    break
+            assert run("start") == 2, "Start reported a service on a socket nobody serves."
+            assert run("bridge") == 2, "A bridge connected to a socket nobody serves."
+        finally:
+            for client in waiting:
+                client.close()
+
+
 def verify(runner):
     runner = runner.resolve()
     body = json.dumps({"id": "closed-bridge", "type": "hello"}).encode()
@@ -61,14 +125,18 @@ def verify(runner):
                         break
             time.sleep(0.5)
             assert service.poll() is None, f"Runner service died after closed bridges (exit {service.returncode})."
-            check_sockets_close_on_exec(service.pid)
+            if sys.platform == "linux":  # The three checks below read /proc and rely on Linux backlog behaviour.
+                check_sockets_close_on_exec(service.pid)
+                directory = pathlib.Path(temporary).resolve()
+                check_started_processes_hold_only_standard_streams(service, runner, path, str(directory))
+                check_unserved_socket_cannot_hang(runner, directory)
             assert subprocess.run([str(runner), "stop", "--socket", path], timeout=15).returncode == 0
             service.wait(timeout=15)
         finally:
             if service.poll() is None:
                 service.kill()
                 service.wait()
-    print("PASS: runner service survives bridges that close before their replies")
+    print("PASS: runner service survives closed bridges, keeps its descriptors and does not hang on an unserved socket")
 
 
 if __name__ == "__main__":

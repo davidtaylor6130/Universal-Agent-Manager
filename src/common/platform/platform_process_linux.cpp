@@ -9,6 +9,8 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <random>
+#include <sys/resource.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -30,6 +32,20 @@ namespace uam::platform_linux_impl
 			return -1;
 		}
 
+		/// A started process keeps only its three standard streams. Anything else it inherited outlives the helper inside it:
+		/// a service socket then still accepts connections nobody answers, and another session's input pipe never reports its end.
+		/// Runs between fork and exec, so only async-signal-safe calls.
+		void CloseInheritedDescriptors()
+		{
+#if defined(SYS_close_range)
+			if (syscall(SYS_close_range, 3U, ~0U, 0U) == 0) return;
+#endif
+			// ponytail: kernels before 5.9 close up to the descriptor limit one by one; the cap bounds a host with a huge limit.
+			rlimit limit{};
+			const rlim_t end = getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur < 65536 ? limit.rlim_cur : 65536;
+			for (rlim_t descriptor = 3; descriptor < end; ++descriptor) (void)close(static_cast<int>(descriptor));
+		}
+
 		std::ptrdiff_t ReadNonBlocking(int descriptor, char* buffer,
 		                              std::size_t size, std::string* error_out)
 		{
@@ -48,7 +64,7 @@ namespace uam::platform_linux_impl
 		std::shared_ptr<uam::platform::AsyncByteWriter> CreateWriter(
 		    int descriptor, std::string* error_out)
 		{
-			const int writer = dup(descriptor);
+			const int writer = fcntl(descriptor, F_DUPFD_CLOEXEC, 0); // dup() would hand this session's input pipe to every process started later.
 			if (writer < 0)
 			{
 				if (error_out != nullptr) *error_out = std::strerror(errno);
@@ -180,11 +196,7 @@ namespace uam::platform_linux_impl
 					    dup2(output[1], STDOUT_FILENO) < 0 ||
 					    dup2(diagnostic[1], STDERR_FILENO) < 0)
 						_exit(126);
-					for (int* pair : {input, output, diagnostic})
-					{
-						CloseFd(pair[0]);
-						CloseFd(pair[1]);
-					}
+					CloseInheritedDescriptors();
 					for (const auto& [name, value] : environment)
 						if (setenv(name.c_str(), value.c_str(), 1) != 0) _exit(126);
 					std::vector<char*> arguments;
