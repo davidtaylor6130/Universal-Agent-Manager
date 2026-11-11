@@ -4030,6 +4030,7 @@ bool BeginManagedResultPrompt(AppState& app, AcpSessionState& session, ChatSessi
 		}
 		runtime->pending_prompt_delivery.reset();
 		++runtime->turn_serial;
+		owner->last_stop_reason.clear(); // A new turn must not inherit the previous turn's stop reason.
 		runtime->processing = true;
 		runtime->lifecycle_state = kAcpLifecycleProcessing;
 		runtime->turn_started_time_s = GetAppTimeSeconds();

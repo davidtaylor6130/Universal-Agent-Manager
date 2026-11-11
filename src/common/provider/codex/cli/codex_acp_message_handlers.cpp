@@ -1028,6 +1028,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			session.turn_user_message_index = -1;
 			session.turn_assistant_message_index = -1;
 			session.turn_serial += 1;
+			chat.last_stop_reason.clear(); // A new turn must not inherit the previous turn's stop reason.
 			session.goal_command_revision = chat.goal_command_revision;
 			session.turn_started_time_s = GetAppTimeSeconds();
 			session.last_runtime_activity_time_s = session.turn_started_time_s;
