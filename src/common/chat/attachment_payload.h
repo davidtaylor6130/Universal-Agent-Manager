@@ -63,8 +63,13 @@ namespace uam::attachment_payload
 	/// written size, and removes a partial copy on any failure.
 	inline bool CopyStreamed(const std::filesystem::path& source, const std::filesystem::path& target, const std::uintmax_t size, const Progress& progress, std::string& error, const std::function<bool()>& canceled = {})
 	{
+		std::ifstream input;
+		std::ofstream output;
 		const auto fail = [&](std::string message, const std::string_view reason, const std::uintmax_t copied)
 		{
+			// Closed first: Windows cannot remove a file that is still open.
+			input.close();
+			output.close();
 			std::error_code remove_error;
 			std::filesystem::remove(target, remove_error);
 			uam::diagnostics::Write("[stageChatAttachments] Attachment copy failed: reason=" + std::string(reason) + " expected_bytes=" + std::to_string(size) + " copied_bytes=" + std::to_string(copied));
@@ -75,8 +80,8 @@ namespace uam::attachment_payload
 		const std::filesystem::space_info space = std::filesystem::space(target.parent_path(), space_error);
 		if (!space_error && space.available != static_cast<std::uintmax_t>(-1) && space.available < size)
 			return fail("There is not enough free space in the workspace for this attachment.", "insufficient_space", 0);
-		std::ifstream input(source, std::ios::binary);
-		std::ofstream output(target, std::ios::binary | std::ios::trunc);
+		input.open(source, std::ios::binary);
+		output.open(target, std::ios::binary | std::ios::trunc);
 		if (!input || !output)
 			return fail("The attachment could not be opened for copying.", "open_failed", 0);
 		std::string buffer(1024 * 1024, '\0'); // On the heap: worker threads have small stacks.
