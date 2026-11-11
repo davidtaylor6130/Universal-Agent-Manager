@@ -394,7 +394,9 @@ void ReconcileAndStopCliTerminalAfterProviderExit(uam::AppState& app, uam::CliTe
 
 bool HandleCliTerminalInactivityTimeout(uam::AppState& app, uam::CliTerminalState& terminal, double now_seconds)
 {
-	const CliTerminalInactivityRecoveryAction action = CliTerminalInactivityRecovery(terminal, now_seconds, static_cast<double>(app.settings.active_turn_inactivity_timeout_seconds));
+	// A terminal has no tool events, so a busy turn may hold one long command: its ceiling is the tool call limit, never less than the turn timeout.
+	const int busy_limit_seconds = std::max(app.settings.tool_call_timeout_seconds, app.settings.active_turn_inactivity_timeout_seconds);
+	const CliTerminalInactivityRecoveryAction action = CliTerminalInactivityRecovery(terminal, now_seconds, static_cast<double>(busy_limit_seconds));
 	if (action == CliTerminalInactivityRecoveryAction::None)
 	{
 		return false;
@@ -403,7 +405,8 @@ bool HandleCliTerminalInactivityTimeout(uam::AppState& app, uam::CliTerminalStat
 	{
 		constexpr char interrupt = '\x03';
 		terminal.inactivity_interrupt_requested_time_s = now_seconds;
-		const std::string message = "Provider terminal turn exceeded the " + std::to_string(app.settings.active_turn_inactivity_timeout_seconds) + "-second busy limit. Interrupting it now; the delivered prompt will not be replayed.";
+		const std::string message = "Provider terminal turn exceeded the " + (busy_limit_seconds % 60 == 0 ? std::to_string(busy_limit_seconds / 60) + "-minute " : std::to_string(busy_limit_seconds) + "-second ") +
+		    (app.settings.tool_call_timeout_seconds >= app.settings.active_turn_inactivity_timeout_seconds ? "tool call limit" : "provider turn timeout") + ". Interrupting it now; the delivered prompt will not be replayed.";
 		if (!WriteToCliTerminal(terminal, &interrupt, 1))
 		{
 			StopCliTerminal(terminal, false, CliTerminalStopMode::FastExit);
