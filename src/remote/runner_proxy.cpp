@@ -238,7 +238,8 @@ namespace uam::remote
 			std::string error;
 			if (!channel.OpenChannel(spec.session_id, &error, true))
 			{
-				std::cerr << error << '\n';
+				// A relay its owner stopped has nothing to report.
+				if (!stop_token.stop_requested()) std::cerr << error << '\n';
 				return;
 			}
 			uam::platform::StdioProcessPlatformFields process;

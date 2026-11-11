@@ -459,7 +459,7 @@ namespace uam::remote
 			if (error_out != nullptr) *error_out = "The remote runner request is too large.";
 			return false;
 		}
-		if (interrupt && interrupt())
+		if (m_stopToken.stop_requested() || (interrupt && interrupt()))
 		{
 			if (interrupted_out != nullptr) *interrupted_out = true;
 			if (error_out != nullptr) *error_out = "The remote runner request was canceled.";

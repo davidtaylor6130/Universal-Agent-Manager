@@ -10703,7 +10703,19 @@ UAM_TEST(RemoteRunnerStopTokenEndsEveryWaitSoAUiThreadJoinStaysInsideTheTickBudg
 			(void)client.OpenChannel("relay", &error, true);
 		});
 		while (!waiting.load()) std::this_thread::yield();
-		std::this_thread::sleep_for(std::chrono::milliseconds(300));
+		// The bridge records its start, and the end of its handshake, as files: wait for the wait this case is about.
+		const std::string event = std::string(behaviour) == "stall" ? ".e" : ".s";
+		const auto in_wait = [&]
+		{
+			std::error_code ignored;
+			for (const fs::directory_entry& entry : fs::directory_iterator(temp.root, ignored))
+				if (entry.path().filename().string().starts_with(std::string(behaviour) + ".") && entry.path().extension() == event) return true;
+			return false;
+		};
+		const auto ready_by = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+		while (!in_wait() && std::chrono::steady_clock::now() < ready_by) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		UAM_ASSERT(in_wait());
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
 		const auto started = std::chrono::steady_clock::now();
 		worker.request_stop();
 		worker.join();
@@ -10712,7 +10724,7 @@ UAM_TEST(RemoteRunnerStopTokenEndsEveryWaitSoAUiThreadJoinStaysInsideTheTickBudg
 	}
 #if defined(__APPLE__)
 	// The relay itself, as the app owns it: its SSH connection reaches a host that never answers.
-	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "ssh", "#!/bin/sh\nexec /bin/sleep 60\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "ssh", "#!/bin/sh\n: > \"$0.started\"\nexec /bin/sleep 60\n"));
 	fs::permissions(temp.root / "ssh", fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
 	ScopedEnvVar path("PATH", temp.root.string() + ":/usr/bin:/bin");
 	const std::string spec = uam::remote::BuildProcessProxySpec("control-relay", temp.root, {"/bin/sleep", "60"}, {});
@@ -10721,7 +10733,11 @@ UAM_TEST(RemoteRunnerStopTokenEndsEveryWaitSoAUiThreadJoinStaysInsideTheTickBudg
 	{
 		uam::remote::RunLocalMcpRelayFromSpec(stop, "lab", "linux", std::string(uam::constants::kAppVersion).substr(1), "", uam::remote::kRunnerProtocolVersion, spec);
 	});
-	std::this_thread::sleep_for(std::chrono::milliseconds(500));
+	// Without this the case could pass on a relay that returned before it ever reached the host.
+	const auto connecting_by = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	while (!fs::exists(temp.root / "ssh.started") && std::chrono::steady_clock::now() < connecting_by) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	UAM_ASSERT(fs::exists(temp.root / "ssh.started"));
+	std::this_thread::sleep_for(std::chrono::milliseconds(200));
 	const auto started = std::chrono::steady_clock::now();
 	relay.reset();
 	UAM_ASSERT(ElapsedSince(started) < kJoinBudget);
