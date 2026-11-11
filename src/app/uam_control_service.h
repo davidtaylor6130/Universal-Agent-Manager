@@ -56,5 +56,7 @@ namespace uam
 		/// <summary>Sends a chat_create first prompt; production uses the ordinary structured send.</summary>
 		using ChatCreateSender = std::function<bool(AppState&, const std::string&, const std::string&, std::string*)>;
 		static void FlushChatCreateLaunchesForTests(AppState& app, const ChatCreateSender& send);
+		/// <summary>Why a new chat could not get its own worktree; empty when it can.</summary>
+		static std::string ChatWorktreeIsolationRefusal(const AppState& app, const ChatSession& chat);
 	};
 } // namespace uam

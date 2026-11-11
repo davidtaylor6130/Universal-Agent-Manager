@@ -52,7 +52,7 @@ export function UserInputInlineCard(props: Props)
 }
 
 /** Grid-rows collapse: the panel stays mounted for its exit, then unmounts (reduced motion and Motion Off unmount at once). */
-function QuestionCollapse({ open, children }: { open: boolean; children: ReactNode }) {
+export function QuestionCollapse({ open, children }: { open: boolean; children: ReactNode }) {
     const { mounted, closing } = usePresence(open)
     const lastChildren = useRef(children)
     if (open) lastChildren.current = children

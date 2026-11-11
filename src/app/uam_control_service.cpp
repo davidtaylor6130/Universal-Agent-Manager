@@ -2659,6 +2659,11 @@ namespace uam
 		return ValidStdioToolCall(request);
 	}
 
+	std::string UamControlService::ChatWorktreeIsolationRefusal(const AppState& app, const ChatSession& chat)
+	{
+		return ChatCreateIsolationRefusal(app, chat);
+	}
+
 	void UamControlService::FlushChatCreateLaunchesForTests(AppState& app, const ChatCreateSender& send)
 	{
 		FlushChatCreateLaunches(app, send);

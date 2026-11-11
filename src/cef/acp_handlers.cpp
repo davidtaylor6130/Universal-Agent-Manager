@@ -506,6 +506,12 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	{
 		return;
 	}
+	if (chat->AwaitsAutomationApproval())
+	{
+		// Ahead of the initial-mention route, which launches a child without passing through SendAcpPrompt.
+		cb->Failure(409, kAwaitingAutomationApprovalError);
+		return;
+	}
 	std::string error;
 	if (!StagedAttachmentSourcesSupported(payload, error))
 	{

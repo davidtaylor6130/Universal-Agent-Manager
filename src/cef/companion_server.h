@@ -42,6 +42,7 @@ private:
 	void StartProxy();
 	void DrainProxy(std::stop_token stop_token);
 	void ProcessApiRequest(std::string body, CefRefPtr<Callback> reply, bool transferred = false);
+	void HandleAutomationRequest(CefRefPtr<CefRequest> request, const std::string& path, CefRefPtr<Callback> reply);
 	void DispatchCompanion(nlohmann::json envelope, CefRefPtr<Callback> reply);
 	void ScheduleTransferExpiry(CefRefPtr<CefServer> server);
 	std::optional<std::string> StoreTransfer(std::string body);

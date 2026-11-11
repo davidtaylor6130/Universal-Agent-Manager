@@ -211,6 +211,10 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     (previous.subagentParentChatId ?? '') === (next.subagentParentChatId ?? '') &&
     (previous.subagentParentCreatedAt ?? '') === (next.subagentParentCreatedAt ?? '') &&
     (previous.createdByChatId ?? '') === (next.createdByChatId ?? '') &&
+    previous.automationTokenName === next.automationTokenName &&
+    previous.automationGitPermission === next.automationGitPermission &&
+    previous.automationMaxIterations === next.automationMaxIterations &&
+    previous.automationPendingPrompt === next.automationPendingPrompt &&
     (previous.managedSubagentCount ?? 0) === (next.managedSubagentCount ?? 0) &&
     (previous.managedSubagentRevision ?? 0) === (next.managedSubagentRevision ?? 0) &&
     (previous.messagesDigest ?? '') === (next.messagesDigest ?? '') &&
@@ -299,6 +303,10 @@ export function sessionFromCppChat(
     subagentParentChatId: chat.subagentParentChatId ?? '',
     subagentParentCreatedAt: chat.subagentParentCreatedAt ?? '',
     createdByChatId: chat.createdByChatId ?? '',
+    automationTokenName: chat.automationTokenName,
+    automationGitPermission: chat.automationGitPermission,
+    automationMaxIterations: chat.automationMaxIterations,
+    automationPendingPrompt: chat.automationPendingPrompt,
     managedSubagentCount: chat.managedSubagentCount ?? 0,
     managedSubagentRevision: chat.managedSubagentRevision ?? 0,
     messagesDigest: chat.messagesDigest ?? '',

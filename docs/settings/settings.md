@@ -6,7 +6,7 @@ Settings configure the shared UAM product and its provider defaults through cons
 - [Permissions](permissions.md) and [Computer Use](computer-use.md)
 - [Central Setup](central-setup/central-setup.md), [MCP Servers](mcp-servers.md)
 - [Editors](editors.md), [Shell Actions](shell-actions.md), [Compute Pools](compute-pools.md)
-- [Memory](memory.md), [Voice Input](voice-input.md), [Phone Access](phone-access.md)
+- [Memory](memory.md), [Voice Input](voice-input.md), [Phone Access](phone-access.md), [Automation](automation.md)
 - [Version Control](version-control/version-control.md)
 - [Appearance](appearance.md), [Storage](storage.md), [Remote Hosts](remote-hosts.md)
 

@@ -98,6 +98,11 @@ namespace uam
 
 	inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, ChatSession& chat, int rows, int cols)
 	{
+		if (const char* refusal = chat.AutomationLaunchRefusal())
+		{
+			terminal.last_error = refusal;
+			return false;
+		}
 		const bool awaiting_baseline = terminal.repository_baseline_pending;
 		if (!awaiting_baseline && terminal.context_preparation == nullptr && !terminal.worktree_launch_pending) StopCliTerminal(terminal);
 		if (terminal.running)
@@ -242,6 +247,11 @@ namespace uam
 		if (!GitWorktreeService().PrepareForFirstLaunch(app, chat, &runtime_handoff_error))
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, runtime_handoff_error);
+		}
+		// Preparation can clear a pending worktree and still succeed.
+		if (const char* refusal = chat.AutomationLaunchRefusal())
+		{
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, refusal);
 		}
 
 		const bool chat_uses_native_history = !remote &&

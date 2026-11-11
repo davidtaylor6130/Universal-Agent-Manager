@@ -196,7 +196,7 @@ namespace
 		Require(capabilities["restrictions"]["settingsReadOnly"] == false && capabilities["restrictions"]["configurationDefinitionsReadOnly"] == true && capabilities["restrictions"]["connectionAdministrationReadOnly"] == true && capabilities["restrictions"]["desktopSelectionReadOnly"] == true && capabilities["restrictions"]["automaticReplay"] == false, "Capabilities must explicitly declare restricted ownership and no replay");
 		for (const auto& entry : capabilities["actions"])
 			Require(FindAction(entry["action"].get<std::string>()) || IsRequestTransferAction(entry["action"].get<std::string>()), "Every advertised action must exist in the companion policy");
-		for (const char* action : {"getCompanionToken", "setCompanionEnabled", "setCompanionKeychainPrompts", "setMcpServers", "setCentralProviderConfiguration", "writeClipboardText", "selectSession", "setVisibleChatIds", "releaseChatMessages", "deleteSessions", "applyOrganizationAction", "startCli", "saveAgentDefinition", "notAnAction"})
+		for (const char* action : {"getCompanionToken", "setCompanionEnabled", "setCompanionKeychainPrompts", "setMcpServers", "setCentralProviderConfiguration", "writeClipboardText", "selectSession", "setVisibleChatIds", "releaseChatMessages", "deleteSessions", "applyOrganizationAction", "startCli", "saveAgentDefinition", "automationHttpRequest", "approveAutomationChat", "getAutomationTokens", "createAutomationToken", "revokeAutomationToken", "notAnAction"})
 		{
 			Json payload = {{"chatId", "chat-one"}};
 			Require(PrepareRequest(action, payload).status == 403, "Dangerous/global/selection actions must remain unavailable");

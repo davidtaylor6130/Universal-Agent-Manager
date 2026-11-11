@@ -2067,6 +2067,11 @@ static bool SavedImageRetryLaunchAllowed(const AppState& app, const AcpSessionSt
 bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out, const SavedImageRetryPermission* starting_saved_retry, std::shared_ptr<ColdRetryBinding> cold_binding,
     bool defer_until_saved)
 {
+	if (const char* refusal = chat.AutomationLaunchRefusal())
+	{
+		if (error_out != nullptr) *error_out = refusal;
+		return false;
+	}
 	if (const auto creation = session.pending_local_launch; creation && creation->process)
 	{
 		if (!creation->finished.load(std::memory_order_acquire)) return true;
@@ -2123,6 +2128,12 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	const WorktreeLaunchPreparationState workspace = PrepareAcpWorkspaceForLaunch(app, session, chat, error_out);
 	if (workspace != WorktreeLaunchPreparationState::Ready)
 		return workspace == WorktreeLaunchPreparationState::Pending;
+	// Preparation can clear a pending worktree and still report Ready.
+	if (const char* refusal = chat.AutomationLaunchRefusal())
+	{
+		if (error_out != nullptr) *error_out = refusal;
+		return false;
+	}
 	std::shared_ptr<PendingLocalAcpLaunch> prepared = session.pending_local_launch;
 	if (prepared && prepared->cold_start) return PollColdLaunch(app, session, chat);
 	if (prepared)

@@ -1,0 +1,3 @@
+# Automation settings
+
+Automation shows the [automation API](../automation-api.md) address and its tokens. The address appears once Phone access has one; otherwise the row says to turn Phone access on. New token asks for a name, whether chats start straight away, the most Git access a request may ask for and at least one workspace, and lists no workspace beyond those currently in UAM. The token appears once in that dialog with Copy token, and closing it discards the value. Each token's row lists the workspace IDs requests use. Revoke asks for confirmation and applies immediately. The page exists only in builds with phone support and is available only on the desktop.

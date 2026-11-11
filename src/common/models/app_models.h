@@ -492,6 +492,7 @@ struct Goal
 	std::string last_assistant_text;             // trimmed text of the last worker turn
 	int same_assistant_text_count = 0;           // consecutive identical worker outputs
 	int loop_count = 0;
+	int max_iterations = 0;                   // per-goal iteration ceiling; 0 uses only the Settings cap
 	std::string created_at;
 	std::string updated_at;
 	std::string execution_owner = "uam";
@@ -642,6 +643,9 @@ struct ManagedParentInputReceipt
 	bool operator==(const ManagedParentInputReceipt&) const = default;
 };
 
+inline constexpr const char* kAwaitingAutomationApprovalError = "This automation chat is waiting for approval. Start it from the chat first.";
+inline constexpr const char* kAutomationWorktreeRequiredError = "This automation chat needs its own worktree, so it was not started in a shared folder.";
+
 struct ChatSession
 {
 	/// <summary>Runtime identity retained by copies; a recreated chat receives a fresh tag.</summary>
@@ -758,6 +762,20 @@ struct ChatSession
 	std::string created_by_chat_id;
 	/// Hash of the creating request's arguments, so a model retry returns the same chat.
 	std::string created_by_request_key;
+	/// Token that created this chat through the automation API; the name is a snapshot so revocation keeps the label.
+	std::string automation_token_id;
+	std::string automation_token_name;
+	/// First prompt held until the chat is approved. Non-empty means no provider may launch.
+	std::string automation_pending_prompt;
+	int automation_max_iterations = 0;
+	std::string automation_git_permission;
+	bool AwaitsAutomationApproval() const { return !automation_pending_prompt.empty(); }
+	/// <summary>Why no provider may start for this chat, or null. Launch can clear a pending worktree it finds impossible.</summary>
+	const char* AutomationLaunchRefusal() const
+	{
+		if (AwaitsAutomationApproval()) return kAwaitingAutomationApprovalError;
+		return !automation_token_id.empty() && workspace_isolation_kind.empty() ? kAutomationWorktreeRequiredError : nullptr;
+	}
 	int branch_from_message_index = -1;
 	bool branch_message_edited = false;
 	std::string branch_operation_id;

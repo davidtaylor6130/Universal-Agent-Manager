@@ -95,6 +95,28 @@ namespace uam::acp_detail
 			}
 		}
 
+		/// <summary>Blocks a goal that has used its iteration allowance; every automatic continuation checks this first.</summary>
+		bool BlockGoalAtIterationCap(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& owner_chat_id,
+		                             const std::string& goal_id, Goal& goal, CefRefPtr<CefBrowser> browser)
+		{
+			if (goal.loop_count < GoalService::IterationLimit(goal, app.settings))
+			{
+				return false;
+			}
+			constexpr const char* blocker = "Maximum goal loop iterations reached";
+			goal.last_diagnostic = "goal_blocked_max_loop_iterations_reached";
+			GoalService::RecordBlocker(app, owner_chat_id, goal_id, blocker, kDecisionSourceFilter);
+			(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
+			AppendGoalLoopDiagnostic(session, "goal_blocked_max_loop_iterations_reached", goal_id, blocker);
+			if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
+			StopCompletedGoalIterationRuntime(app, chat, session);
+			if (browser)
+			{
+				uam::PushStateUpdateIfChanged(browser, app);
+			}
+			return true;
+		}
+
 		void ContinueCompletedTurn(AppState& app,
 		                           AcpSessionState& session,
 		                           ChatSession& chat,
@@ -520,26 +542,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		}
 		return true;
 	}
-	const auto stop_at_loop_cap = [&](Goal& active_goal) {
-		AppSettings bounded_settings = app.settings;
-		uam::settings::ClampGoalSettings(bounded_settings);
-		if (active_goal.loop_count < bounded_settings.goal_max_loop_iterations)
-		{
-			return false;
-		}
-		constexpr const char* blocker = "Maximum goal loop iterations reached";
-		active_goal.last_diagnostic = "goal_blocked_max_loop_iterations_reached";
-		GoalService::RecordBlocker(app, owner_chat_id, goal_id, blocker, kDecisionSourceFilter);
-		(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
-		AppendGoalLoopDiagnostic(session, "goal_blocked_max_loop_iterations_reached", goal_id, blocker);
-		if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
-		StopCompletedGoalIterationRuntime(app, chat, session);
-		if (browser)
-		{
-			uam::PushStateUpdateIfChanged(browser, app);
-		}
-		return true;
-	};
+	const auto stop_at_loop_cap = [&](Goal& active_goal) { return BlockGoalAtIterationCap(app, session, chat, owner_chat_id, goal_id, active_goal, browser); };
 	if (decision.decision == "blocked")
 	{
 		if (Goal* goal = GoalService::FindGoalById(app, owner_chat_id, goal_id); goal != nullptr)
@@ -779,6 +782,10 @@ bool ResumeStalledGoalLoopIfNeeded(AppState& app, AcpSessionState& session, Chat
 	if (session.last_runtime_activity_time_s <= 0.0 || now_seconds - session.last_runtime_activity_time_s < kGoalLoopResumeIdleSeconds)
 	{
 		return false;
+	}
+	if (BlockGoalAtIterationCap(app, session, chat, chat.id, active_goal->id, *active_goal, browser))
+	{
+		return true;
 	}
 
 	if (session.goal_auto_resume_attempts >= 3)

@@ -4,6 +4,7 @@ import { RowSubmenu } from './RowSubmenu'
 import { isCompanionContext, isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import { useState, useRef, useEffect, useLayoutEffect, useSyncExternalStore, memo, useContext } from 'react'
 import type { MouseEvent as ReactMouseEvent, RefObject } from 'react'
+import { automationStartPending, subscribeOutgoingAttempts } from '../../utils/outgoingMessagePresentation'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
   ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
@@ -88,6 +89,8 @@ function useActivityBranch(session: Session | null | undefined, row: RefObject<H
 }
 
 type ActivityStatus = { label: string; color: string; Icon: typeof CircleCheck }
+
+const AUTOMATION_HELD_STATUS: ActivityStatus = { label: 'Waiting for approval', color: 'var(--warning)', Icon: ShieldQuestion }
 
 /** T3-style at-a-glance label for a card that is not running. */
 export function activityStatusLabel(status: DisplayedChatStatus): ActivityStatus | null {
@@ -224,6 +227,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       return {
         name: session.name,
         attentionRevision: session.attentionRevision,
+        automationHeld: Boolean(session.automationPendingPrompt),
         snoozedUntilMs: session.snoozedUntilMs ?? 0,
         lastOpenedAt: session.lastOpenedAt ?? session.updatedAt ?? null,
         isPinned: session.isPinned ?? false,
@@ -242,6 +246,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     return {
       name: storeSession?.name ?? '',
       attentionRevision: storeSession?.attentionRevision,
+      automationHeld: Boolean(storeSession?.automationPendingPrompt),
       snoozedUntilMs: storeSession?.snoozedUntilMs ?? 0,
       lastOpenedAt: storeSession?.lastOpenedAt ?? storeSession?.updatedAt ?? null,
       isPinned: storeSession?.isPinned ?? false,
@@ -285,10 +290,15 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     const selectedChild = (navigationParent?.id === activeId || activeId === sessionId) && route?.kind === 'native' && route.chatId === sessionId
     return [selectedChild, selectedChild || (activeId === sessionId && !route), Boolean(route)] as const
   }))
+  // Re-renders when the attempt changes; the selector below also follows native's pending prompts.
+  useSyncExternalStore(subscribeOutgoingAttempts, () => { const state = useAppStore.getState(); const chat = session ?? state.sessions.find((x) => x.id === sessionId); return chat ? automationStartPending(chat, state.acpBindingBySessionId[sessionId]?.pendingDirectPrompts) : false })
   const lifecycleStatus = useAppStore(useShallow((s) => {
     const acpBindings = familySessionIds.flatMap((id) => s.acpBindingBySessionId[id] ? [s.acpBindingBySessionId[id]] : [])
     const cliBindings = familySessionIds.flatMap((id) => s.cliBindingBySessionId[id] ? [s.cliBindingBySessionId[id]] : [])
-    return displayedChatStatus(cliBindings, acpBindings)
+    if (sessionSummary.automationHeld) return null
+    const status = displayedChatStatus(cliBindings, acpBindings)
+    const chat = session ?? s.sessions.find((x) => x.id === sessionId)
+    return chat && automationStartPending(chat, s.acpBindingBySessionId[sessionId]?.pendingDirectPrompts) && (!status || status.type === 'done') ? { type: 'processing' as const } : status
   }))
   const workingStartedAtMs = useAppStore((s) => {
     if (!activityLayout) return null
@@ -492,7 +502,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const lastOpenedLabel = formatSidebarTime(activityDate)
   const activityBranch = useActivityBranch(activityLayout ? session : null, rowRef)
   const activityWorktree = activityLayout ? sessionSummary.worktreeDirectory.trim() : ''
-  const activityStatus = activityLayout ? activityStatusLabel(lifecycleStatus) : null
+  const activityStatus = !activityLayout ? null : sessionSummary.automationHeld ? AUTOMATION_HELD_STATUS : activityStatusLabel(lifecycleStatus)
   const lastOpenedTitle = formatSidebarTimeTitle(activityDate)
   const gridLeaves = chatGridLeaves(gridLayout.root)
   const paneIndexes = gridLeaves.flatMap((leaf, index) => familySessionIds.includes(leaf.sessionId) ? [index] : [])
@@ -669,14 +679,14 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   {/* Done overlays the status/time on hover so the row never reflows. */}
                   <span className="relative flex shrink-0 items-center justify-end">
                   {activityStatus ? (
-                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0" style={{ color: activityStatus.color }}>
+                    <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] font-medium transition-opacity duration-100${sessionSummary.automationHeld ? '' : ' group-hover:opacity-0 group-focus-within:opacity-0'}`} style={{ color: activityStatus.color }}>
                       <activityStatus.Icon size={12} className="shrink-0" aria-hidden />
                       <span role="status">{activityStatus.label}</span>
                     </span>
                   ) : (
                     <span className="shrink-0 text-[11px] tabular-nums transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0" style={{ color: 'var(--text-3)' }} title={`Updated ${activityDate?.toLocaleString() ?? ''}`}>{formatActivityAge(activityDate)}</span>
                   )}
-                  {!isCompanionContext() && (
+                  {!isCompanionContext() && !sessionSummary.automationHeld && (
                     <span className="absolute right-0 top-1/2 -translate-y-1/2 inline-flex shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-100 group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
                       {/* ui: raw button kept — inline-styled text action with its own colours; Button would restyle it */}
                       <button
@@ -1003,9 +1013,9 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           <RowSubmenu label="Copy" ariaLabel="Copy" icon={<Copy size={13} aria-hidden />}>
             <CopyDetailItems items={copyItems} />
           </RowSubmenu>
-          <RowSubmenu label="Snooze" ariaLabel={`Snooze ${sessionName}`} icon={<Clock size={13} aria-hidden />}>
+          {!sessionSummary.automationHeld && <RowSubmenu label="Snooze" ariaLabel={`Snooze ${sessionName}`} icon={<Clock size={13} aria-hidden />}>
             <SnoozeMenu chatId={sessionId} familyIds={familySessionIds} untilMs={sessionSummary.snoozedUntilMs} onSnoozed={() => setMenuPos(null)} />
-          </RowSubmenu>
+          </RowSubmenu>}
           <CollectionMenuItems showDivider={false} type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
           <MenuDivider />
           <MenuItem className="uam-sb-menu-item uam-sb-menu-item--danger" icon={<Trash2 size={13} aria-hidden />} label="Delete…" shortcut="Del"

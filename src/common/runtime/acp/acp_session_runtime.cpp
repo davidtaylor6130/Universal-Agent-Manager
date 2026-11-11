@@ -3772,6 +3772,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	static bool SendAcpPromptWithProvenance(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool goal_mode, std::string* error_out, const std::string& goal_id, bool computer_use_mode, const std::optional<std::string>& origin_request_id, const AuthoredAcpInputProvenance* continued_input, AcpInputAdmission* admission_out)
 	{
+		if (const ChatSession* held = ChatDomainService().FindChatById(app, chat_id); held != nullptr && held->AwaitsAutomationApproval())
+		{
+			if (error_out != nullptr) *error_out = kAwaitingAutomationApprovalError;
+			return false;
+		}
 		ManagedParentContinuationService::Revoke(app, chat_id, "new_authored_input");
 		if (HasPendingEmptyHeldSend(app, chat_id))
 		{

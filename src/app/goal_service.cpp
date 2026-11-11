@@ -1,4 +1,5 @@
 #include "app/goal_service.h"
+#include "common/config/settings_normalization.h"
 
 #include "app/agent_run_scheduler.h"
 #include "common/chat/chat_repository.h"
@@ -127,6 +128,12 @@ namespace
 	}
 
 } // namespace
+
+int GoalService::IterationLimit(const Goal& goal, AppSettings settings)
+{
+	uam::settings::ClampGoalSettings(settings);
+	return goal.max_iterations > 0 ? std::min(goal.max_iterations, settings.goal_max_loop_iterations) : settings.goal_max_loop_iterations;
+}
 
 bool GoalService::CreateGoal(AppState& app, const std::string& chat_id, const std::string& objective,
                               int64_t token_budget, std::string* created_goal_id,
