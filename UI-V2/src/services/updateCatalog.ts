@@ -40,6 +40,8 @@ export interface AvailableUpdate {
   remoteHostId?: string
   executionHostId?: string
   name: string
+  /** `name` without the computer suffix, for surfaces that show the computer separately. */
+  shortName?: string
   currentVersion: string
   latestVersion: string
   url: string
@@ -120,6 +122,7 @@ export function availableRemoteHelperUpdates(
       id,
       remoteHostId: host.id,
       name: `${host.label} SSH helper`,
+      shortName: 'SSH helper',
       currentVersion: `${currentVersion || 'Not detected'}${buildOutdated ? ` · build ${host.runnerSha256?.slice(0, 12) || 'unknown'}` : ''}`,
       latestVersion: updateVersion,
       url: '',
@@ -330,6 +333,7 @@ export function availableUpdates(
       providerId: state.providerId,
       ...(state.executionHostId ? { executionHostId: state.executionHostId } : {}),
       name: `${provider?.shortName || provider?.name || state.providerId}${state.executionHostId ? ` · ${state.executionHostName || state.executionHostId}` : ''}`,
+      shortName: provider?.shortName || provider?.name || state.providerId,
       currentVersion,
       latestVersion,
       url: latest?.url || `https://www.npmjs.com/package/${providerPackages[state.providerId]?.npmPackage ?? ''}`,
