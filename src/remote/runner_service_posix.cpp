@@ -254,10 +254,11 @@ namespace uam::remote
 				return false;
 			}
 			Socket probe(socket(AF_UNIX, SOCK_STREAM, 0));
-			// Non-blocking: a listener nobody accepts on (a full backlog) must fail this start, not hang it.
+			// Non-blocking, so a full backlog cannot hang this start. The caller holds the service lock, so a full backlog belongs to no
+			// service: it is a socket a dead one left open in a process it started, and is replaced like any stale socket, as macOS
+			// already does. Refusing it would roll every later install back to the helper that left it.
 			if (probe.Get() >= 0 && fcntl(probe.Get(), F_SETFL, O_NONBLOCK) == 0 &&
-			    (connect(probe.Get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0 ||
-			     errno == EAGAIN || errno == EINPROGRESS))
+			    connect(probe.Get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0)
 			{
 				error = "A runner service is already listening on this socket.";
 				return false;
@@ -527,7 +528,7 @@ namespace uam::remote
 		const auto service_is_gone = [&]
 		{
 			const int lock = open((socket_path.string() + ".lock").c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
-			if (lock < 0) return true;
+			if (lock < 0) return errno == ENOENT; // Only a missing lock proves no service; one that cannot be opened proves nothing.
 			const bool held = flock(lock, LOCK_EX | LOCK_NB) != 0 && (errno == EWOULDBLOCK || errno == EAGAIN);
 			(void)close(lock);
 			return !held;

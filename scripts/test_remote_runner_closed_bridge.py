@@ -72,7 +72,7 @@ def check_started_processes_hold_only_standard_streams(service, runner, path, wo
 
 
 def check_unserved_socket_cannot_hang(runner, directory):
-    """A listener nobody accepts on, as a dead or stopped service leaves, must fail start, stop and bridge instead of holding them."""
+    """A listener nobody accepts on, as a dead service leaves in a process it started, must not hold stop, bridge or start, and start replaces it."""
     path = str(directory / "u.sock")
 
     def run(command):
@@ -92,11 +92,14 @@ def check_unserved_socket_cannot_hang(runner, directory):
                     waiting[-1].connect(path)
                 except BlockingIOError:
                     break
-            assert run("start") == 2, "Start reported a service on a socket nobody serves."
             assert run("bridge") == 2, "A bridge connected to a socket nobody serves."
+            assert run("start") == 0, "Start did not replace a socket no service owns."  # The install would roll back otherwise.
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                probe.connect(path)  # The replacement service answers where the old socket could not.
         finally:
             for client in waiting:
                 client.close()
+            assert run("stop") == 0, "The replacement service did not stop."  # Also on failure, so no detached service is left behind.
 
 
 def verify(runner):
