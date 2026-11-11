@@ -3146,6 +3146,10 @@ bool ChatHistorySyncService::AddNativeImportTombstones(
 			const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
 			if (!retained_keys.contains(key)) candidate_keys.insert(key);
 		}
+		// A parent-owned journal (Claude Code, Gemini or Copilot sub-chat) has no native session ID; its reference ID is
+		// its identity, so a deleted one is recorded under the same key the import checks before bringing it back.
+		else if (chat.imported_read_only && uam::native_agents::ParseHistoryId(chat.id))
+			candidate_keys.insert(chat_identity::NativeChildIdentityKeyForHistoryImport(chat));
 	}
 	if (candidate_keys.empty())
 	{
@@ -4620,7 +4624,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		{
 			const ChatFolder* owner = policy == ImportPolicy::SelectedNewChatsOnly ? StartupImportWorkspaceOwner(selected_scope, candidate.chat) : nullptr;
 			const ExecutionHost* host = candidate.expected_host ? uam::execution_hosts::Find(app.settings.execution_hosts, candidate.expected_host->id) : nullptr;
-			return candidate.skipped || (!candidate.files && !candidate.native_media) || tombstones.keys.contains(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat)) || (policy == ImportPolicy::SelectedNewChatsOnly && StartupCandidateIsOwned(app, current_index, candidate.chat)) || (candidate.expected_host && (host == nullptr || host->runner_status != "ready" || !uam::execution_hosts::SameConnection(*candidate.expected_host, *host))) ||
+			return candidate.skipped || (!candidate.files && !candidate.native_media) || tombstones.keys.contains(chat_identity::NativeChildIdentityKeyForHistoryImport(candidate.chat)) || (policy == ImportPolicy::SelectedNewChatsOnly && StartupCandidateIsOwned(app, current_index, candidate.chat)) || (candidate.expected_host && (host == nullptr || host->runner_status != "ready" || !uam::execution_hosts::SameConnection(*candidate.expected_host, *host))) ||
 			       (candidate.expected_folder &&
 			        [&]()
 			        {
@@ -4650,7 +4654,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		{
 			if (candidate.skipped)
 				continue;
-			if (tombstones.keys.contains(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat))) continue;
+			if (tombstones.keys.contains(chat_identity::NativeChildIdentityKeyForHistoryImport(candidate.chat))) continue;
 			const auto current_identity = current_index.existing_id_by_native_key.find(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat));
 			if (current_identity != current_index.existing_id_by_native_key.end() && current_identity->second != candidate.chat.id) continue;
 			// A new sub-chat is published only under the parent it was linked to; that parent precedes it in this batch.

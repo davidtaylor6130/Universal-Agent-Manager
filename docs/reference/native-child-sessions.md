@@ -48,7 +48,7 @@ One path serves every provider. Each provider's reader marks a discovered child 
 
 `StartupNativeImportService` keeps children out of the review list (`m_children`) and adds them to the import behind a selected parent. `ImportDiscoveredProviderChatsBatch` admits a child only after its parent, sets the display link with `ChatRepository::ApplyImportedNativeChildLineage` and publishes it through the same staged save, tombstone, ownership and workspace checks as any history. A child is read during staging: journals through `native_agents::LoadHistory`, the reader an explicit open uses; an OpenCode child through `export`, accepted only when its `parentID` matches; a Codex child from its rollout or `thread/read`. `LinkOwnedChildren` gives a saved, unlinked child its link once its parent is saved.
 
-A parent-owned journal has no native session ID, so nothing can tombstone it by itself; it is only ever imported with a parent that is new to UAM.
+A parent-owned journal has no native session ID, so its reference ID is its import identity: deleting a journal sub-chat records `passive|<reference>` in the native-import tombstones, and admission and publication check that key (`NativeChildIdentityKeyForHistoryImport`).
 
 ## Known limits
 
@@ -62,6 +62,6 @@ A parent-owned journal has no native session ID, so nothing can tombstone it by 
 - **Codex over SSH.** The `sourceKinds` listing is unverified against a live Codex; a Codex that rejects it still imports its root threads.
 - **Gemini.** A child with inline images needs the passive media save and is reported and skipped; it opens from the parent's tool call.
 - **Different directory.** A child that ran in another directory, such as its own worktree, is not linked and so not imported.
-- **Bounds.** At most 64 children per parent are taken from its tool calls, and each child history keeps the per-history size limits.
+- **Bounds.** At most 64 children per parent are taken from its tool calls, a parent has at most 64 sub-chats counting those already saved, and each child history keeps the per-history size limits.
 
 Checks: `tests/native_subchat_import_tests.cpp` (shared path and one fixture per provider) and `tests/native_child_lineage_tests.cpp` (the explicit-open rule, unchanged).

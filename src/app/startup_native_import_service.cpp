@@ -258,6 +258,7 @@ namespace uam
 		m_initialized = true;
 		if (include_remote) m_unavailable_hosts_reported.clear();
 		m_include_unregistered_local = !include_remote;
+		m_backfill_due = !include_remote;
 		m_generation = time::SteadyEpochNanosecondsTokenNow();
 		m_phase = "scanning";
 		const ProviderProfile* configured = ProviderProfileStore::FindById(app.provider_profiles, provider_ids::kOpenCodeCli);
@@ -838,19 +839,18 @@ namespace uam
 		return true;
 	}
 
-	std::vector<StartupNativeImportService::Child> StartupNativeImportService::CollectRiders(std::unordered_map<std::string, std::string>& folders) const
+	std::vector<StartupNativeImportService::Child> StartupNativeImportService::CollectRiders(std::unordered_map<std::string, std::string>& folders, std::unordered_map<std::string, std::size_t> per_parent) const
 	{
 		// Nearest level first, each child in its parent's workspace. A rider stays known afterwards, so one already saved
 		// as an ordinary chat can still be linked once its parent is saved.
 		std::vector<Child> riders;
-		std::unordered_map<std::string, std::size_t> per_parent;
 		for (bool grew = !m_children.empty(); grew;)
 		{
 			grew = false;
 			for (const Child& child : m_children)
 			{
 				const auto parent = folders.find(child.parent_key);
-				// Journals are capped where they are discovered; this holds Codex rollouts to the same 64 per parent.
+				// At most 64 sub-chats per parent, counting those already saved.
 				if (parent == folders.end() || folders.contains(child.key) || per_parent[child.parent_key] >= 64) continue;
 				++per_parent[child.parent_key];
 				riders.push_back(child);
@@ -872,23 +872,50 @@ namespace uam
 		}
 	}
 
+	std::unordered_map<std::string, ChatSession*> StartupNativeImportService::SavedChatsNamedByChildren(AppState& app) const
+	{
+		// This runs on the app thread. An import key resolves the chat's workspace on disk, so only chats whose native
+		// ID a found child carries or names are keyed, each distinct workspace once.
+		std::unordered_set<std::string> named;
+		for (const Child& child : m_children)
+		{
+			named.insert(strings::Trim(child.chat.native_parent_session_id));
+			named.insert(child.chat.imported_read_only && strings::IsBlank(child.chat.native_session_id) ? child.chat.id : strings::Trim(child.chat.native_session_id));
+		}
+		chat_identity::NativeWorkspaceCache workspaces;
+		std::unordered_map<std::string, ChatSession*> saved;
+		for (ChatSession& chat : app.chats)
+		{
+			const bool journal = strings::IsBlank(chat.native_session_id);
+			if (journal ? !chat.imported_read_only || !named.contains(chat.id) : !named.contains(strings::Trim(chat.native_session_id))) continue;
+			saved.insert_or_assign(journal ? chat_identity::NativeChildIdentityKeyForHistoryImport(chat) : chat_identity::NativeIdentityKeyForHistoryImport(chat, workspaces), &chat);
+		}
+		return saved;
+	}
+
 	bool StartupNativeImportService::StartSavedParentBackfill(AppState& app)
 	{
-		// Only a scan the user started brings in sub-chats of chats already in UAM; startup never adds chats nobody asked for.
-		if (!m_include_unregistered_local || m_children.empty() || !m_selected.empty() || m_import.Pending()) return false;
-		chat_identity::NativeWorkspaceCache workspaces;
+		// Only a scan the user started brings in sub-chats of chats already in UAM, once, when that scan settles. Startup
+		// never adds chats nobody asked for, and neither does a background remote retry that follows a manual scan.
+		if (!std::exchange(m_backfill_due, false) || m_children.empty() || !m_selected.empty() || m_import.Pending()) return false;
+		const std::unordered_map<std::string, ChatSession*> saved = SavedChatsNamedByChildren(app);
 		std::unordered_map<std::string, std::string> folders;
-		std::unordered_set<std::string> saved;
-		for (const ChatSession& chat : app.chats)
+		std::unordered_map<std::string, std::size_t> saved_children;
+		std::unordered_map<std::string, const ChatFolder*> owners;
+		for (const Child& child : m_children)
 		{
-			if (strings::IsBlank(chat.native_session_id)) { if (chat.imported_read_only) saved.insert(chat_identity::NativeChildIdentityKeyForHistoryImport(chat)); continue; }
-			const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat, workspaces);
-			saved.insert(key);
+			if (saved.contains(child.key)) { ++saved_children[child.parent_key]; continue; }
+			const auto parent = saved.find(child.parent_key);
+			if (parent == saved.end() || folders.contains(child.parent_key)) continue;
+			const ChatSession& chat = *parent->second;
+			if (chat.imported_read_only || !paths::IsControllerLocalWorkspace(chat)) continue;
 			// The staged import files a history under the workspace that owns its directory; a parent the user moved elsewhere is left alone.
-			const ChatFolder* owner = chat.imported_read_only || !paths::IsControllerLocalWorkspace(chat) ? nullptr : ChatHistorySyncService().StartupImportWorkspaceOwner(app, chat);
-			if (owner != nullptr && owner->id == chat.folder_id) folders.emplace(key, owner->id);
+			const auto [owner, fresh] = owners.try_emplace(chat.workspace_worktree_directory + '\n' + chat.workspace_directory, nullptr);
+			if (fresh) owner->second = ChatHistorySyncService().StartupImportWorkspaceOwner(app, chat);
+			if (owner->second != nullptr && owner->second->id == chat.folder_id) folders.emplace(child.parent_key, chat.folder_id);
 		}
-		std::vector<Child> riders = CollectRiders(folders);
+		if (folders.empty()) return false;
+		std::vector<Child> riders = CollectRiders(folders, std::move(saved_children));
 		std::erase_if(riders, [&](const Child& rider) { return saved.contains(rider.key) || !paths::IsControllerLocalWorkspace(rider.chat); });
 		if (riders.empty()) return false;
 		m_import.preparation_stop = std::stop_source{};
@@ -901,13 +928,7 @@ namespace uam
 	{
 		// Workspace deletion owns its chats until it finishes; the next scan links them.
 		if (m_children.empty() || !app.worktree_operation_chat_ids.empty()) return;
-		chat_identity::NativeWorkspaceCache workspaces;
-		std::unordered_map<std::string, ChatSession*> saved;
-		for (ChatSession& chat : app.chats)
-		{
-			if (!strings::IsBlank(chat.native_session_id)) saved.insert_or_assign(chat_identity::NativeIdentityKeyForHistoryImport(chat, workspaces), &chat);
-			else if (chat.imported_read_only) saved.insert_or_assign(chat_identity::NativeChildIdentityKeyForHistoryImport(chat), &chat);
-		}
+		const std::unordered_map<std::string, ChatSession*> saved = SavedChatsNamedByChildren(app);
 		for (const Child& found : m_children)
 		{
 			const auto child = saved.find(found.key);

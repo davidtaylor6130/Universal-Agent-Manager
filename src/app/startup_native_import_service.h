@@ -135,12 +135,16 @@ namespace uam
 		};
 		/// <summary>Links a saved child that has no parent link to its saved parent, for a parent imported after its child.</summary>
 		void LinkOwnedChildren(AppState& app);
-		/// <summary>Children (and their children) of the given parent keys, each given its parent's workspace, at most 64 per parent.</summary>
-		std::vector<Child> CollectRiders(std::unordered_map<std::string, std::string>& folders) const;
+		/// <summary>Children (and their children) of the given parent keys, each given its parent's workspace, at most 64 per parent including those `per_parent` already counts.</summary>
+		std::vector<Child> CollectRiders(std::unordered_map<std::string, std::string>& folders, std::unordered_map<std::string, std::size_t> per_parent = {}) const;
 		void QueueRiders(std::vector<Child> riders);
 		/// <summary>After a scan the user started: imports the missing local sub-chats of chats already saved. Never runs for a startup scan.</summary>
 		bool StartSavedParentBackfill(AppState& app);
 		std::vector<Child> m_children;
+		/// <summary>Set by a scan the user started and cleared when that scan settles, so a later background remote retry cannot repeat the backfill.</summary>
+		bool m_backfill_due = false;
+		/// <summary>Saved chats a found child could be or belong to, by import key. Reads the file system only for chats whose native ID a child names.</summary>
+		std::unordered_map<std::string, ChatSession*> SavedChatsNamedByChildren(AppState& app) const;
 		bool Revalidate(AppState& app, std::string* error_out);
 		void StartScan(const AppState& app, bool include_remote);
 		void AddError(const std::string& error);

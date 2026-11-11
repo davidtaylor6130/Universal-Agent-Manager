@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "app/chat_lifecycle_service.h"
 #include "app/opencode_import_stream.h"
 #include "app/startup_native_import_service.h"
 #include "common/chat/native_chat_identity.h"
@@ -467,6 +468,66 @@ UAM_TEST(NativeSubchatImportClaudeSubagentJournalsFollowTheirSession)
 	});
 	UAM_ASSERT_EQ(fixture.Scan(again).total_count, std::size_t{0});
 	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{2});
+
+	// A journal sub-chat has no native session ID. Deleting it must still be recorded, or the next scan the user
+	// starts would bring it back as a missing sub-chat of its saved parent.
+	UAM_ASSERT(RemoveChatById(fixture.app, child_id));
+	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{1});
+	const auto tombstones = ChatHistorySyncService().NativeImportTombstoneKeys(fixture.app.data_root);
+	UAM_ASSERT(tombstones && tombstones->size() == 1 && tombstones->begin()->find(child_id) != std::string::npos);
+	uam::StartupNativeImportService manual([](const uam::StartupNativeImportScanRequest&, std::stop_token stop)
+	{
+		return ChatHistorySyncService().DiscoverProviderChatsForFolder({}, nullptr, stop, 0, false, {}, {}, "claude-cli");
+	});
+	UAM_ASSERT(manual.DiscoverLocalHistory(fixture.app, &error));
+	fixture.Wait(manual);
+	UAM_ASSERT_EQ(manual.Snapshot().imported_count, 0);
+	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{1});
+	UAM_ASSERT(fixture.Chat(child_id) == nullptr);
+}
+
+UAM_TEST(NativeSubchatManualScanBackfillsJournalChildrenOfASavedClaudeSession)
+{
+	SubchatFixture fixture;
+	ScopedEnvVar claude{"CLAUDE_CONFIG_DIR", (fixture.temp.root / "claude").string()};
+	const std::string workspace = uam::paths::Utf8PathString(fixture.workspace);
+	const std::string agent = "a1b2c3d4e5f60718";
+	std::string encoded = workspace;
+	for (char& value : encoded) if (!uam::strings::IsAsciiAlnum(static_cast<unsigned char>(value))) value = '-';
+	const fs::path project = fixture.temp.root / "claude" / "projects" / encoded;
+	const auto row = [&](const char* type, const char* uuid, const char* previous, nlohmann::json content, bool sidechain = false)
+	{
+		nlohmann::json record{{"type", type}, {"uuid", uuid}, {"parentUuid", previous == nullptr ? nlohmann::json(nullptr) : nlohmann::json(previous)},
+		    {"sessionId", kParentId}, {"isSidechain", sidechain}, {"cwd", workspace}, {"timestamp", "2026-11-01T10:00:00Z"}, {"message", {{"role", type}, {"content", std::move(content)}}}};
+		if (sidechain) record["agentId"] = agent;
+		return record;
+	};
+	auto result = row("user", "p3", "p2", nlohmann::json::array({{{"type", "tool_result"}, {"tool_use_id", "toolu_spawn"}, {"content", "Child finished"}}}));
+	result["toolUseResult"] = {{"status", "completed"}, {"agentId", agent}};
+	const std::string parent_text = JsonLines({row("user", "p1", nullptr, "Parent request"),
+	    row("assistant", "p2", "p1", nlohmann::json::array({{{"type", "tool_use"}, {"id", "toolu_spawn"}, {"name", "Task"}, {"input", {{"description", "Inspect the tests"}, {"prompt", "Do the work"}}}}})),
+	    result, row("assistant", "p4", "p3", "Parent answer")});
+	UAM_ASSERT(uam::io::WriteTextFile(project / (kParentId + ".jsonl"), parent_text));
+	const auto scanner = [](const uam::StartupNativeImportScanRequest&, std::stop_token stop)
+	{
+		return ChatHistorySyncService().DiscoverProviderChatsForFolder({}, nullptr, stop, 0, false, {}, {}, "claude-cli");
+	};
+	{
+		// The session is imported while its sub-agent journal does not exist yet.
+		uam::StartupNativeImportService first(scanner);
+		(void)fixture.Import(first);
+		UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{1});
+	}
+	UAM_ASSERT(uam::io::WriteTextFile(project / kParentId / "subagents" / ("agent-" + agent + ".jsonl"), JsonLines({
+	    row("user", "c1", nullptr, "Inspect the tests", true), row("assistant", "c2", "c1", "Child answer", true)})));
+	const std::string child_id = uam::native_agents::BuildHistoryId("claude-cli", kParentId, agent, "local");
+	uam::StartupNativeImportService manual(scanner);
+	std::string error;
+	UAM_ASSERT(manual.DiscoverLocalHistory(fixture.app, &error));
+	fixture.Wait(manual);
+	UAM_ASSERT_EQ(Joined(manual.Snapshot().errors), std::string{});
+	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{2});
+	fixture.AssertLinked(child_id, kParentId);
 }
 #endif
 
