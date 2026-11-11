@@ -103,6 +103,9 @@ namespace uam::remote
 		/// interrupt is polled while the handshake waits, like PollProcess interrupts.
 		bool Connect(std::string* error_out = nullptr, std::stop_token stop_token = {}, const std::function<bool()>& interrupt = {});
 		bool IsConnected() const { return m_connected; }
+		/// Ends every wait on this client, the handshake included, once stop is requested. A thread that is stopped and then
+		/// joined must set this: a join on the UI thread otherwise lasts as long as the host stays silent.
+		void SetStopToken(std::stop_token stop_token) { m_stopToken = std::move(stop_token); }
 		/// The handshake covers the SSH connection, the remote shell and helper start; a request covers one reply.
 		void SetDeadlines(std::chrono::milliseconds handshake, std::chrono::milliseconds request, std::chrono::milliseconds cleanup = std::chrono::seconds(5))
 		{
@@ -231,6 +234,7 @@ namespace uam::remote
 		std::string m_bridgeDiagnostics;
 		/// Polled by every wait while ExecuteCommand owns the client, so its inner requests need no parameter each.
 		std::function<bool()> m_commandInterrupt;
+		std::stop_token m_stopToken;
 		std::chrono::milliseconds m_handshakeDeadline = std::chrono::seconds(45);
 		std::chrono::milliseconds m_requestDeadline = std::chrono::seconds(15);
 		std::chrono::milliseconds m_cleanupLimit = std::chrono::seconds(5);

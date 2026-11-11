@@ -303,7 +303,7 @@ namespace uam::remote
 			if (error_out != nullptr) *error_out = kShutdownError;
 			return false;
 		}
-		const auto canceled = [&] { return stop_token.stop_requested() || (interrupt && interrupt()) || (m_commandInterrupt && m_commandInterrupt()); };
+		const auto canceled = [&] { return stop_token.stop_requested() || m_stopToken.stop_requested() || (interrupt && interrupt()) || (m_commandInterrupt && m_commandInterrupt()); };
 		if (canceled())
 		{
 			if (error_out != nullptr) *error_out = "The remote runner request was canceled.";
@@ -459,7 +459,7 @@ namespace uam::remote
 			if (error_out != nullptr) *error_out = "The remote runner request is too large.";
 			return false;
 		}
-		if (interrupt && interrupt())
+		if (m_stopToken.stop_requested() || (interrupt && interrupt()))
 		{
 			if (interrupted_out != nullptr) *interrupted_out = true;
 			if (error_out != nullptr) *error_out = "The remote runner request was canceled.";
@@ -518,7 +518,7 @@ namespace uam::remote
 				if (error_out != nullptr) *error_out = kShutdownError;
 				return false;
 			}
-			if ((interrupt && interrupt()) || (m_commandInterrupt && m_commandInterrupt()))
+			if (m_stopToken.stop_requested() || (interrupt && interrupt()) || (m_commandInterrupt && m_commandInterrupt()))
 			{
 				if (interrupted_out != nullptr) *interrupted_out = true;
 				if (error_out != nullptr) *error_out = "The remote runner request was interrupted.";

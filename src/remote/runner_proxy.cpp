@@ -233,10 +233,13 @@ namespace uam::remote
 			                         ssh_alias, platform, version, runner_directory,
 			                         protocol_version),
 			                     version, protocol_version);
+			// The owner stops this relay and joins it, on the UI thread in the app: no wait here may outlast the stop.
+			channel.SetStopToken(stop_token);
 			std::string error;
 			if (!channel.OpenChannel(spec.session_id, &error, true))
 			{
-				std::cerr << error << '\n';
+				// A relay its owner stopped has nothing to report.
+				if (!stop_token.stop_requested()) std::cerr << error << '\n';
 				return;
 			}
 			uam::platform::StdioProcessPlatformFields process;
