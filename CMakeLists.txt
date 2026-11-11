@@ -1629,6 +1629,7 @@ if(UAM_BUILD_TESTS)
     tests/usage_history_transport_tests.cpp
     tests/chat_icon_mutation_tests.cpp
     tests/workspace_chat_save_ticket_tests.cpp
+    tests/chat_save_stall_tests.cpp
     tests/chat_icon_metadata_tests.cpp
     tests/usage_ledger_tests.cpp
     tests/usage_store_tests.cpp

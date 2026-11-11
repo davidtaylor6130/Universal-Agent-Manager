@@ -4883,10 +4883,11 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat, AcpChatSavePurpose 
 		if (active)
 			active->queued_rollback_save_pending = false;
 		app.pending_chat_save_at_by_chat_id.erase(chat.id);
+		NoteChatSaveSucceeded(app, chat.id);
 	}
 	else if (persisted != nullptr)
 	{
-		ScheduleChatSave(app, *persisted, 1.0);
+		ScheduleChatSave(app, *persisted, NoteChatSaveFailed(app, chat.id));
 	}
 	ResolvePendingChatSaveResults(app, chat.id, saved);
 	return saved;
@@ -4907,14 +4908,30 @@ bool ClearSavedAcpResumeId(AppState& app, AcpSessionState& session, ChatSession&
 	return false;
 }
 
-void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds)
+void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds, bool append_only)
 {
 	NoteChatSaveScheduled(app, chat);
 	// Streaming may retain a scoped admission; queue, owner changes and force barriers revoke it.
-	InvalidatePendingChatSave(app, chat.id, true);
-	const double now = GetAppTimeSeconds();
-	const double due_at = now + delay_seconds;
-	app.pending_chat_save_at_by_chat_id[chat.id] = due_at;
+	InvalidatePendingChatSave(app, chat.id, true, append_only);
+	app.pending_chat_save_at_by_chat_id[chat.id] = ArmChatSave(app, chat.id, delay_seconds, append_only);
+}
+
+void SaveChatSoon(AppState& app, const ChatSession& chat)
+{
+	// A tool status or plan row gates nothing, so it must not hold the UI thread for a whole-transcript
+	// write. Every state the synchronous save settles, stamps or refuses keeps the synchronous path.
+	const ChatSession* live = ChatDomainService().FindChatById(app, chat.id);
+	const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+	const bool local = live != nullptr && (live->execution_host_id.empty() || live->execution_host_id == uam::execution_hosts::kLocalHostId);
+	if (!local || session == nullptr || !session->processing || session->lifecycle_state == kAcpLifecycleError ||
+	    session->managed_parent_continuation || session->queued_rollback_save_pending || !live->messages_loaded || live->imported_read_only ||
+	    AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, *live) ||
+	    std::ranges::any_of(app.model_discovery_chats, [&chat](const ChatSession& discovery) { return discovery.id == chat.id; }))
+	{
+		(void)SaveChatQuietly(app, chat);
+		return;
+	}
+	ScheduleChatSave(app, *live, 0.0, true);
 }
 
 bool BindPendingProviderHandoff(AcpSessionState& session, ChatSession& chat)

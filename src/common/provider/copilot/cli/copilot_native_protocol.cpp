@@ -2105,7 +2105,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 		owner.task_id = agent;
 		owner.sub_agent_id = BuildCopilotAgentHistoryId(session.session_id, agent, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
-		ScheduleChatSave(app, chat, 0);
+		ScheduleChatSave(app, chat, 0, true);
 	}
 	const bool projects_content = type.starts_with("assistant.message") || type.starts_with("assistant.reasoning") ||
 	    type.starts_with("tool.execution_") || type.starts_with("subagent.") || type == "session.compaction_complete";
@@ -2267,7 +2267,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 		AppendTrackedToolEvent(session, id);
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 		RecordEventReceipt(session, chat, event);
-		ScheduleChatSave(app, chat, 0);
+		ScheduleChatSave(app, chat, 0, true);
 		return true;
 	}
 	if (type.starts_with("tool.execution_"))
@@ -2279,7 +2279,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 		session.copilot_native_state["turnObserved"] = true;
 		ApplyToolEvent(session, chat, event, data, type);
 		RecordEventReceipt(session, chat, event);
-		ScheduleChatSave(app, chat, 0);
+		ScheduleChatSave(app, chat, 0, true);
 		return true;
 	}
 	if (!child && session.processing && !session.manual_compaction_pending && !uam::AcpSessionHasPendingCancel(session))
@@ -2293,7 +2293,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 			const std::string appended = AppendNativeText(session, chat, data, type.ends_with("_delta"), type.starts_with("assistant.reasoning"));
 			RecordEventReceipt(session, chat, event);
 			if (browser && !appended.empty()) uam::PushStreamToken(browser, chat.id, session.current_assistant_message_index, appended);
-			ScheduleChatSave(app, chat, 0);
+			ScheduleChatSave(app, chat, 0, true);
 		}
 	}
 	return true;

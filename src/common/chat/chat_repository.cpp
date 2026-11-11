@@ -1920,16 +1920,37 @@ namespace
 		// Preserve uncertainty for this owner, without importing a known foreign owner's marker.
 		if (managed_marker && (raw_owner.empty() || raw_owner == owner))
 			chat.managed_followup_input_unavailable = true;
-		const bool matches = journal && journal->owner == owner &&
-		    journal->base_queue_revision == chat.acp_queue_storage_revision &&
+		// The journal extends exactly the queue revision this primary carries. An ordinary UAM full save
+		// either consumes the journal (handled above) or is refused while it exists, so a primary whose size
+		// or time witness alone differs was restored, synced or touched outside UAM. The one UAM writer that
+		// skips the journal check, a stopped-launch own publication, can write a newer transcript under the
+		// same queue revision; the journal is then still the newer queue over that transcript. In both cases
+		// its input is kept, held, and each prompt is re-validated against the transcript when dispatched.
+		const bool extends_saved_queue = journal && journal->owner == owner &&
+		    journal->base_queue_revision == chat.acp_queue_storage_revision;
+		const bool matches = extends_saved_queue &&
 		    ChatRepository::ChatStorageRevision(data_root, chat.id) == journal->base_revision;
-		if (matches)
+		if (extends_saved_queue)
 		{
 			chat.acp_queued_prompts = journal->prompts;
-			chat.acp_queue_held = journal->held;
+			// A rebound journal never sends on its own: its input stays held and visible until the user
+			// resumes it. The next queue or full save records the current primary as its base.
+			chat.acp_queue_held = journal->held || (!matches && !journal->prompts.empty());
+			if (!matches)
+			{
+				// Every load repeats the rebind until a save records the new base; say so once per launch.
+				static std::mutex logged_mutex;
+				static std::unordered_set<std::string> logged;
+				const std::lock_guard<std::mutex> lock(logged_mutex);
+				if (logged.insert(chat.id).second)
+					uam::diagnostics::Write("Queued inputs kept held: journal rebound to a saved chat whose file witness changed " + chat.id);
+			}
 			chat.acp_dispatched_queued_prompt_count = journal->dispatched;
 			chat.acp_queue_storage_revision = journal->revision;
-			if (journal->memory_progress)
+			// Memory progress counts rows of the transcript the journal was written beside. A restored older
+			// primary can hold fewer, so a rebound journal keeps the primary's own progress: rows may be
+			// processed again, never skipped.
+			if (journal->memory_progress && matches)
 			{
 				chat.memory_last_processed_message_count = journal->memory_progress->first;
 				chat.memory_last_processed_at = journal->memory_progress->second;
@@ -3934,16 +3955,20 @@ private:
 	std::function<bool(ChatPublicationFile, uam::io::AtomicWriteStage)> m_stopped_creation_hook;
 };
 
+bool ChatRepository::ChatContentRefusesSave(const ChatSession& chat)
+{
+	return (!chat.managed_followup_incarnation.empty() && !uam::uuid::IsCanonicalUuid(chat.managed_followup_incarnation)) ||
+	    !std::ranges::all_of(chat.acp_queued_prompts, ValidManagedPrompt) ||
+	    !uam::chat_ids::IsSafeStorageChatId(chat.id) || !ChatAttachmentsPersistable(chat);
+}
+
 bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged, PreparedChatSave* prepared, std::string* fingerprint, std::string* saved_revision, PreparedChatPublication* publication, SavedChatPrimaryWitness* primary_witness)
 try
 {
 	std::unique_lock<std::mutex> lock(ChatSaveMutex(), std::defer_lock);
 	if (prepared == nullptr && fingerprint == nullptr) lock.lock();
 
-	if ((fingerprint == nullptr && chat.managed_followup_input_unavailable) ||
-	    (!chat.managed_followup_incarnation.empty() && !uam::uuid::IsCanonicalUuid(chat.managed_followup_incarnation)) ||
-	    !std::ranges::all_of(chat.acp_queued_prompts, ValidManagedPrompt) ||
-	    !uam::chat_ids::IsSafeStorageChatId(chat.id) || !ChatAttachmentsPersistable(chat))
+	if ((fingerprint == nullptr && chat.managed_followup_input_unavailable) || ChatContentRefusesSave(chat))
 	{
 		return false;
 	}
