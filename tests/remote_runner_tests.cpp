@@ -3423,6 +3423,8 @@ UAM_TEST(RemoteHelperCheckScriptRunsAgainstAProcessTableAndFailsClosed)
 	// A process that cannot be judged gives no answer: one that hides its details and is not the SSH server's, or one
 	// whose environment or folder cannot be read.
 	expect(add("", "ssh-agent", "", ""), "", 3);
+	// systemd's per-user PAM holder hides its details on every systemd login; it must not leave a lost process unconfirmable forever.
+	expect(add("", "(sd-pam)", "", ""), token);
 	{
 		const fs::path hidden = add("/usr/bin/node", "node", plain, "/");
 		fs::permissions(hidden / "environ", fs::perms::none);
