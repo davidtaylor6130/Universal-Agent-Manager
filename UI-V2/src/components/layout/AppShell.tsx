@@ -324,21 +324,22 @@ function providerUpdateNotificationId(result: UpdateMonitor['providerUpdateResul
 
 /** Full per-update detail for the bell row and copy text; versions may themselves contain ` · `, so updates are separated by `; `. */
 function updateSummaryText(updates: UpdateMonitor['updates']): string {
-  return updates.map((update) => `${update.name} ${update.latestVersion}`).join('; ')
+  return updates.map((update) => `${update.name} ${update.latestDisplay ?? update.latestVersion}`).join('; ')
 }
 
 const UPDATE_NOTICE_LIST_LIMIT = 3
 
 /** Toast copy: one update reads as one sentence; several get a plural title and a short list, full details stay in the bell and Review updates. */
 export function updateNoticeText(updates: UpdateMonitor['updates']): string {
-  const line = (update: UpdateMonitor['updates'][number]) => `${update.name} ${update.latestVersion.split(' · ')[0]}`
+  const line = (update: UpdateMonitor['updates'][number]) => `${update.name} ${(update.latestDisplay ?? update.latestVersion).split(' · ')[0]}`
   if (updates.length === 1) return `Update available: ${line(updates[0])}`
   const extra = updates.length - UPDATE_NOTICE_LIST_LIMIT
   return [`${updates.length} updates available`, ...updates.slice(0, extra > 1 ? UPDATE_NOTICE_LIST_LIMIT : updates.length).map(line), ...(extra > 1 ? [`and ${extra} more`] : [])].join('\n')
 }
 
 function updateNotificationId(updates: UpdateMonitor['updates']): string {
-  return `updates-${updateSummaryText(updates)}`
+  // Keyed on latestVersion, not display text, so a new local build label does not re-raise a seen notice.
+  return `updates-${updates.map((update) => `${update.name} ${update.latestVersion}`).join('; ')}`
 }
 
 function missingFolderNotificationId(folder: { id: string; name: string; directory: string }): string {
@@ -557,7 +558,7 @@ function NotificationsPanel({
       id: updateNotificationId(updates),
       title: `${updates.length} update${updates.length === 1 ? '' : 's'} available`,
       detail: updateSummaryText(updates),
-      hostLines: updates.map((update) => ({ key: update.id, hostId: updateHostId(update), text: `${update.shortName ?? update.name} ${update.latestVersion}` })),
+      hostLines: updates.map((update) => ({ key: update.id, hostId: updateHostId(update), text: `${update.shortName ?? update.name} ${update.latestDisplay ?? update.latestVersion}` })),
       // Updates for one computer name it on the collapsed row too.
       ...new Set(updates.map(updateHostId)).size === 1 ? { hostId: updateHostId(updates[0]) } : {},
       actions: [{ label: 'Review updates', variant: 'primary' as const, run: onReviewUpdates }],

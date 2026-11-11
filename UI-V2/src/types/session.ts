@@ -24,6 +24,8 @@ export interface ExecutionHost {
   runnerSha256?: string
   /** SHA-256 of this app's packaged helper for the host's platform; absent when none is packaged. */
   bundledRunnerSha256?: string
+  /** Display only: local build label (X.Y.Z-alpha-Q) of the app that installed the helper; absent shows runnerVersion. */
+  runnerBuildLabel?: string
   instructionFile?: string
   /** Inline host instructions. Absent or null keeps the legacy instruction file; an explicit empty string suppresses it. */
   instructionText?: string | null

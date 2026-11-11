@@ -711,6 +711,35 @@ describe('SettingsModal memory settings', () => {
     }
   })
 
+  it('shows each helper build label and flags only a recorded label that differs from the app build', () => {
+    const { appVersion, uiBuildId } = useAppStore.getState()
+    useAppStore.setState({
+      appVersion: 'V5.1.0',
+      uiBuildId: '5.1.0-alpha-13-Darwin-20261111T000000Z',
+      executionHosts: [
+        { ...subPageHost('old', 'Old build'), runnerVersion: '5.1.0', runnerBuildLabel: '5.1.0-alpha-11', runnerSha256: 'a'.repeat(64), bundledRunnerSha256: 'b'.repeat(64) },
+        // An identical helper binary from an older counter needs no hint.
+        { ...subPageHost('rebuilt', 'Same binary'), runnerVersion: '5.1.0', runnerBuildLabel: '5.1.0-alpha-12', runnerSha256: 'b'.repeat(64), bundledRunnerSha256: 'b'.repeat(64) },
+        { ...subPageHost('same', 'Same build'), runnerVersion: '5.1.0', runnerBuildLabel: '5.1.0-alpha-13' },
+        { ...subPageHost('release', 'Release'), runnerVersion: '5.1.0' },
+      ] as never,
+    })
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host)
+      expect(host.textContent).toContain('helper 5.1.0-alpha-11')
+      expect(host.textContent).toContain('helper 5.1.0-alpha-12')
+      expect(host.textContent).toContain('helper 5.1.0-alpha-13')
+      // Records without a label (older apps, release installs) keep the plain version and no hint.
+      expect(host.textContent).toMatch(/helper 5\.1\.0(?!-)/)
+      expect(host.textContent!.match(/App is 5\.1\.0-alpha-13/g)).toHaveLength(1)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState({ appVersion, uiBuildId })
+    }
+  })
+
   it('opens each configured host on its own sub-page and returns focus on Back', () => {
     useAppStore.setState({ executionHosts: [subPageHost('host-a', 'Host A'), subPageHost('host-b', 'Host B')] as never })
     const { host, root } = renderModal()
