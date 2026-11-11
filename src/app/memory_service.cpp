@@ -2360,8 +2360,9 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			continue;
 		}
 
-		// Progress must follow the owned history save, rather than forcing its full rewrite here.
-		if (task.data_root == app.data_root && app.pending_chat_save_at_by_chat_id.contains(task.chat_id) &&
+		// Progress must follow the owned history save, rather than forcing its full rewrite here. A finished task
+		// also waits for a provider that is still starting, so its entries are never published without their progress.
+		if (task.data_root == app.data_root && (app.pending_chat_save_at_by_chat_id.contains(task.chat_id) || ChatHasUnstartedProviderTurn(app, task.chat_id)) &&
 		    !task.state->result.canceled && (task.state->result.ok ||
 		    (task.extraction_state && task.extraction_state->low_signal_skip)))
 		{

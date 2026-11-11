@@ -7059,8 +7059,8 @@ UAM_TEST(AcpColdLaunchGiveUpNamesTheOwnershipCheckThatFailed)
 		UAM_ASSERT_EQ(lost->event, std::string("process_launch"));
 		const std::string expected = mutation == "configuration" ? "check=configuration,changed_fields=agent_definition,delivery_configuration" : "check=" + mutation;
 		UAM_ASSERT_EQ(lost->detail, expected);
-		// Fixed words only: nothing from the chat or its host reaches the log line.
-		UAM_ASSERT(lost->detail.find("Retained cold launch input") == std::string::npos && lost->detail.find(chat.native_session_id) == std::string::npos);
+		// Fixed words only: nothing from the chat or its host can reach the log line.
+		UAM_ASSERT(lost->detail.find_first_not_of("abcdefghijklmnopqrstuvwxyz_=,") == std::string::npos);
 	}
 }
 
