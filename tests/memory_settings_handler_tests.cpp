@@ -100,7 +100,7 @@ UAM_TEST(MemorySettingsHandlerGetPrimaryOnlyAdvancesFenceWithoutSaving)
 	UAM_ASSERT_EQ(keys, (std::vector<std::string>{"acpSetupInactivityTimeoutSeconds", "acpTurnOutputLimitMiB",
 	    "activeTurnInactivityTimeoutSeconds", "goalMaxLoopIterations", "goalTokenBudget", "memoryEnabledDefault",
 	    "memoryIdleDelaySeconds", "memoryLevelDefault", "memoryRecallBudgetBytes", "memoryWorkerBindings",
-	    "permissionReviewerModelId", "permissionReviewerProviderId", "streamLoopRepeatLimit"}));
+	    "permissionReviewerModelId", "permissionReviewerProviderId", "streamLoopRepeatLimit", "toolCallTimeoutSeconds"}));
 	UAM_ASSERT_EQ(first->body.at("scope"), second->body.at("scope"));
 	UAM_ASSERT_EQ(second->body.at("revision").get<std::uint64_t>(), revision + 2);
 	UAM_ASSERT_EQ(ReadFile(path), before);
