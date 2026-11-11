@@ -2264,7 +2264,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	{
 		bool stopping = !chat.side_cleanup_stop_finished->load();
 		for (const AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
-			if (task.finished == chat.side_cleanup_stop_finished && task.observe_exit && !task.result->exit_confirmed) stopping = true;
+			if (task.finished == chat.side_cleanup_stop_finished && task.observe_exit && (!task.finished->load() || !task.result->exit_confirmed)) stopping = true;
 		if (stopping)
 		{
 			if (error_out != nullptr) *error_out = "The previous side-chat process is still stopping.";

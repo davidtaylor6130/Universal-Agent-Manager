@@ -249,7 +249,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		return true;
 	}
 	if (const std::string_view refusal = uam::cef::PendingOperationRefusal(action, !chat_id.empty() && m_app.worktree_operation_chat_ids.contains(chat_id),
-	        !m_app.worktree_operation_chat_ids.empty(), m_workspaceDeletionPending); !refusal.empty())
+	        !m_app.worktree_operation_chat_ids.empty(), m_workspaceDeletionPending, !chat_id.empty() && m_chatsDeletedAtRestart.contains(chat_id)); !refusal.empty())
 	{
 		cb->Failure(409, std::string(refusal));
 		return true;

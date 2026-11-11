@@ -1724,6 +1724,18 @@ UAM_TEST(PendingOperationGatesNeverRefuseSelectionReadsOrStops)
 	UAM_ASSERT(PendingOperationRefusal("sendAcpPrompt", false, false, false).empty());
 }
 
+UAM_TEST(ChatFencedByARejectedDeletionSaysItIsDeletedAtRestart)
+{
+	using uam::cef::PendingOperationRefusal;
+	const std::string_view restart = "This chat will be deleted when UAM restarts.";
+	for (const std::string_view action : {"sendAcpPrompt", "renameSession", "setChatModel"})
+		UAM_ASSERT_EQ(PendingOperationRefusal(action, true, true, false, true), restart);
+	// It can still be selected, read and stopped; an ordinary worktree operation keeps its own message.
+	for (const std::string_view action : {"selectSession", "getChatMessages", "stopAcpSession", "cancelAcpTurn"})
+		UAM_ASSERT(PendingOperationRefusal(action, true, true, false, true).empty());
+	UAM_ASSERT_EQ(PendingOperationRefusal("sendAcpPrompt", true, true, false, false), std::string_view("Wait for the chat worktree operation to finish."));
+}
+
 UAM_TEST(UnfinishedDeletionRefusesOnlyAnotherDeletionAndSaysToRestart)
 {
 	using uam::cef::UnfinishedDeletionRefusal;

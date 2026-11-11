@@ -6701,7 +6701,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 	bool AcpStopExitUnobserved(const AppState& app, std::string_view chat_id)
 	{
 		return std::ranges::any_of(app.acp_process_stop_tasks, [chat_id](const AsyncAcpProcessStopTask& task)
-		{ return task.chat_id == chat_id && task.exit_abandoned && task.result != nullptr && !task.result->exit_confirmed; });
+		{
+			// The result is written by the stop worker and published by `finished`; never read it while a worker runs.
+			return task.chat_id == chat_id && task.exit_abandoned && task.result != nullptr &&
+			    (task.finished == nullptr || !task.finished->load() || !task.result->exit_confirmed);
+		});
 	}
 
 	bool AcpStopInProgress(const AppState& app, std::string_view chat_id)

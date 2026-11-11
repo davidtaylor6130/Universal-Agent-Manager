@@ -173,6 +173,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	// A deletion's commit was rejected: its recovery record completes it at restart, its chats stay fenced until
 	// then, and no other deletion can start. Nothing else in the app is held.
 	bool m_deletionAwaitsRestart = false;
+	std::unordered_set<std::string> m_chatsDeletedAtRestart;
 	// Chats whose last-opened value could not be written to a stale summary: an ordinary background save is queued
 	// for each once the history read started by the same selection has finished with the file.
 	std::unordered_set<std::string> m_recencySaveAfterRead;
