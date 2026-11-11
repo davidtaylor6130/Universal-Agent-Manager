@@ -1027,6 +1027,9 @@ struct ExecutionHost
 	std::string runner_install_identity;
 	/// SHA-256 of the helper this computer verified and published at installation; empty is unknown.
 	std::string runner_sha256;
+	/// Display only: the local build label (X.Y.Z-alpha-Q) of the app that installed the helper; empty for release builds or older records.
+	/// Never part of SameConnection, paths, sockets or compatibility checks.
+	std::string runner_build_label;
 	bool operator==(const ExecutionHost&) const = default;
 };
 

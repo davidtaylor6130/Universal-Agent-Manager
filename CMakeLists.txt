@@ -357,6 +357,8 @@ if(UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
   )
 endif()
 
+# Display-only helper build label: one source, so a new local counter rebuilds one file and never changes the runner binary.
+set_property(SOURCE src/cef/remote_host_handlers.cpp APPEND PROPERTY COMPILE_DEFINITIONS UAM_LOCAL_BUILD_LABEL="${UAM_LOCAL_BUILD_VERSION}")
 set(UAM_FEATURE_APP_SOURCES)
 if(UAM_ENABLE_SSH)
   list(APPEND UAM_FEATURE_APP_SOURCES

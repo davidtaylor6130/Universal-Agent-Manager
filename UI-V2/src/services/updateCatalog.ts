@@ -44,6 +44,8 @@ export interface AvailableUpdate {
   shortName?: string
   currentVersion: string
   latestVersion: string
+  /** Display text for latestVersion when it differs; latestVersion stays the dismissal and install key. */
+  latestDisplay?: string
   url: string
   installable: boolean
   releaseNotesExcerpt?: string
@@ -98,11 +100,18 @@ export function compareVersions(left: string, right: string): number {
   return 0
 }
 
+/** This app's local build label (X.Y.Z-alpha-Q) from its UI build ID; empty for release builds. */
+export function localBuildLabel(appVersion: string, uiBuildId: string): string {
+  const local = uiBuildId.match(/^(\d+\.\d+\.\d+-alpha-[1-9]\d*)-/)?.[1]
+  return local?.startsWith(`${cleanVersion(appVersion)}-alpha-`) ? local : ''
+}
+
 export function availableRemoteHelperUpdates(
   appVersion: string,
   expectedProtocolVersion: number,
   executionHosts: ExecutionHost[],
   dismissedVersions: Record<string, string>,
+  appBuildLabel = '',
 ): AvailableUpdate[] {
   const latestVersion = cleanVersion(appVersion)
   if (!latestVersion || expectedProtocolVersion <= 0) return []
@@ -116,15 +125,17 @@ export function availableRemoteHelperUpdates(
     const protocolOutdated = (host.runnerProtocolVersion ?? 0) < expectedProtocolVersion
     // Only a build-only offer carries the build in its dismissal key, so earlier version/protocol dismissals still hold.
     const buildOnly = buildOutdated && !versionOutdated && !protocolOutdated
-    const updateVersion = `${latestVersion} · helper protocol ${expectedProtocolVersion}${buildOnly ? ` · build ${bundledBuild.slice(0, 12)}` : ''}`
+    const updateDetail = ` · helper protocol ${expectedProtocolVersion}${buildOnly ? ` · build ${bundledBuild.slice(0, 12)}` : ''}`
+    const updateVersion = `${latestVersion}${updateDetail}`
     if (!isSshHost(host) || (!versionOutdated && !protocolOutdated && !buildOutdated) || dismissedVersions[id] === updateVersion) return []
     return [{
       id,
       remoteHostId: host.id,
       name: `${host.label} SSH helper`,
       shortName: 'SSH helper',
-      currentVersion: `${currentVersion || 'Not detected'}${buildOutdated ? ` · build ${host.runnerSha256?.slice(0, 12) || 'unknown'}` : ''}`,
+      currentVersion: `${host.runnerBuildLabel || currentVersion || 'Not detected'}${buildOutdated ? ` · build ${host.runnerSha256?.slice(0, 12) || 'unknown'}` : ''}`,
       latestVersion: updateVersion,
+      ...(appBuildLabel ? { latestDisplay: `${appBuildLabel}${updateDetail}` } : {}),
       url: '',
       installable: true,
     }]

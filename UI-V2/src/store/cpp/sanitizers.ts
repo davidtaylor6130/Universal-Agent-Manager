@@ -1928,6 +1928,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         runnerProtocolVersion: finiteNumberOr(entry.runnerProtocolVersion, 0),
         ...(/^[0-9a-f]{64}$/.test(stringOr(entry.runnerSha256)) ? { runnerSha256: stringOr(entry.runnerSha256) } : {}),
         ...(/^[0-9a-f]{64}$/.test(stringOr(entry.bundledRunnerSha256)) ? { bundledRunnerSha256: stringOr(entry.bundledRunnerSha256) } : {}),
+        ...(/^\d+\.\d+\.\d+-alpha-[1-9]\d*$/.test(stringOr(entry.runnerBuildLabel)) ? { runnerBuildLabel: stringOr(entry.runnerBuildLabel) } : {}),
         instructionFile: stringOr(entry.instructionFile),
         instructionText: typeof entry.instructionText === 'string' ? entry.instructionText : undefined,
         startupEnabled: booleanOr(entry.startupEnabled, false),

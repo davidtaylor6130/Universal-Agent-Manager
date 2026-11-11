@@ -1384,6 +1384,30 @@ UAM_TEST(RemoteHelperChecksumSurvivesSerializationAndMalformedIsUnknown)
 	}
 }
 
+UAM_TEST(RemoteHelperBuildLabelIsDisplayOnlyAndOptional)
+{
+	ExecutionHost host;
+	host.id = "homelab";
+	host.transport = "ssh";
+	host.ssh_alias = "uam-homelab";
+	host.platform = "linux";
+	host.runner_version = "5.1.0";
+	host.runner_build_label = "5.1.0-alpha-13";
+	nlohmann::json saved = uam::execution_hosts::Serialize({host});
+	UAM_ASSERT_EQ(uam::execution_hosts::Parse(saved).back().runner_build_label, "5.1.0-alpha-13");
+	// Records from older apps and release builds have no label; the UI then shows the plain version.
+	saved.back().erase("runnerBuildLabel");
+	UAM_ASSERT(uam::execution_hosts::Parse(saved).back().runner_build_label.empty());
+	saved.back()["runnerBuildLabel"] = 42;
+	UAM_ASSERT(uam::execution_hosts::Parse(saved).back().runner_build_label.empty());
+	saved.back()["runnerBuildLabel"] = std::string(200, 'x');
+	UAM_ASSERT_EQ(uam::execution_hosts::Parse(saved).back().runner_build_label.size(), std::size_t{64});
+	// A different label is the same helper connection: never a path, socket or compatibility input.
+	ExecutionHost relabelled = host;
+	relabelled.runner_build_label = "5.1.0-alpha-11";
+	UAM_ASSERT(uam::execution_hosts::SameConnection(host, relabelled));
+}
+
 UAM_TEST(RemoteHelperInstalledChecksumMatchesInstalledPlatformArtifact)
 {
 	uam::remote::BootstrapPlan plan;
@@ -1411,9 +1435,11 @@ UAM_TEST(RemoteHelperRollbackRestoresPreviousChecksumAndConnectionIdentity)
 	previous.ssh_alias = "uam-homelab";
 	previous.runner_status = "installing";
 	previous.runner_sha256 = std::string(64, 'a');
+	previous.runner_build_label = "5.1.0-alpha-11";
 	previous.runner_install_nonce = "earlier";
 	const ExecutionHost restored = uam::execution_hosts::RestoredPreviousInstallation(previous);
 	UAM_ASSERT_EQ(restored.runner_sha256, previous.runner_sha256);
+	UAM_ASSERT_EQ(restored.runner_build_label, previous.runner_build_label);
 	UAM_ASSERT(!uam::execution_hosts::HasInstallFence(restored));
 	UAM_ASSERT_EQ(restored.runner_status, "error");
 

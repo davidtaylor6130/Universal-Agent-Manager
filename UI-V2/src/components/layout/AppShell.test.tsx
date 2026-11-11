@@ -1946,6 +1946,8 @@ describe('AppShell', () => {
       .toBe('2 updates available\nGaming AI Desktop SSH helper 5.0.0\nHomelab Main PC SSH helper 5.0.0')
     expect(updateNoticeText(['A', 'B', 'C', 'D', 'E'].map((name) => update(name, '2.0.0'))))
       .toBe('5 updates available\nA 2.0.0\nB 2.0.0\nC 2.0.0\nand 2 more')
+     expect(updateNoticeText([{ ...update('Homelab SSH helper', '5.0.0 · helper protocol 3'), latestDisplay: '5.0.0-alpha-13 · helper protocol 3' }]))
+      .toBe('Update available: Homelab SSH helper 5.0.0-alpha-13')
   })
 
   // David explicitly superseded composer-clearance on 2026-10-21: bottom edge, allow covering Send.

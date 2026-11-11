@@ -274,7 +274,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
                     : update.providerId ? <ProviderLogo providerId={update.providerId} size={14} className="shrink-0" /> : <ArrowUpCircle size={14} aria-hidden className="shrink-0" style={{ color: 'var(--text-3)' }} />}
                   <span className="min-w-0 flex-1 truncate text-sm font-medium" style={{ color: 'var(--text)' }}>{update.name}</span>
                   {!succeeded && <span className="shrink-0 font-mono text-xs" style={{ color: 'var(--text-3)' }}>
-                    {update.currentVersion} <span aria-hidden>→</span> <span data-kind="next" style={{ color: 'var(--accent)' }}>{update.latestVersion}</span>
+                    {update.currentVersion} <span aria-hidden>→</span> <span data-kind="next" style={{ color: 'var(--accent)' }}>{update.latestDisplay ?? update.latestVersion}</span>
                   </span>}
                   {update.url && !succeeded && (
                     <IconButton

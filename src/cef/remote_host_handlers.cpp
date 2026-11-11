@@ -29,6 +29,11 @@
 #include <unordered_set>
 #include <vector>
 
+// Set per source by CMake from UAM_LOCAL_BUILD_VERSION; empty for release builds.
+#ifndef UAM_LOCAL_BUILD_LABEL
+#define UAM_LOCAL_BUILD_LABEL ""
+#endif
+
 namespace
 {
 	std::unordered_map<std::string, std::string> g_remote_install_tokens;
@@ -367,6 +372,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		host.runner_version = existing->runner_version;
 		host.runner_protocol_version = existing->runner_protocol_version;
 		host.runner_sha256 = existing->runner_sha256;
+		host.runner_build_label = existing->runner_build_label;
 		host.last_seen_at = existing->last_seen_at;
 		*existing = host;
 	}
@@ -626,6 +632,8 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 			    found->runner_protocol_version = uam::remote::kRunnerProtocolVersion;
 			    // The checksum the bootstrap verified before publishing the remote manifest; it identifies a rebuild with an unchanged version.
 			    found->runner_sha256 = uam::remote::InstalledArtifactSha256(*install_plan, *result);
+			    // Display only: names the local build that packaged this helper; release builds record none.
+			    found->runner_build_label = UAM_LOCAL_BUILD_LABEL;
 		    }
 		    if (!PersistenceCoordinator().SaveSettings(m_app))
 		    {

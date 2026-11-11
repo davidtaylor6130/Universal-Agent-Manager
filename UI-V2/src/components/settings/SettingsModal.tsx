@@ -6,6 +6,7 @@ import { TypographySettings } from './TypographySettings'
 import { AppearanceDisplaySettings } from './AppearanceDisplaySettings'
 import { PermissionsSettings } from './PermissionsSettings'
 import { SaveButton, SettingRow, SettingsField, SettingsSection, StatusMark } from './SettingsPrimitives'
+import { localBuildLabel } from '../../services/updateCatalog'
 import { SettingsScopeBar } from './SettingsScopeBar'
 import { PhonePairingPanel } from './PhonePairingPanel'
 import { AutomationSettings } from './AutomationSettings'
@@ -764,8 +765,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const acpTurnOutputLimitMiB = useAppStore((s) => s.acpTurnOutputLimitMiB)
   const appVersion = useAppStore((s) => s.appVersion)
   const uiBuildId = useAppStore((s) => s.uiBuildId)
-  const localVersion = uiBuildId.match(/^(\d+\.\d+\.\d+-alpha-[1-9]\d*)-/)?.[1]
-  const displayedVersion = localVersion?.startsWith(`${appVersion.replace(/^v/i, '')}-alpha-`) ? `V${localVersion}` : appVersion
+  const localVersion = localBuildLabel(appVersion, uiBuildId)
+  const displayedVersion = localVersion ? `V${localVersion}` : appVersion
+  const appBuildLabel = displayedVersion.replace(/^v/i, '')
   const expandWorkTraces = useAppStore((s) => s.expandWorkTraces)
   const setExpandWorkTraces = useAppStore((s) => s.setExpandWorkTraces)
   const collapsibleWorkSections = useAppStore((s) => s.collapsibleWorkSections)
@@ -2547,7 +2549,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       const remoteHostStatus = (host: ExecutionHost) => (
         <span className="inline-flex flex-wrap items-center gap-1.5">
           <StatusMark tone={host.runnerStatus === 'ready' ? 'success' : host.runnerStatus === 'error' ? 'error' : 'neutral'} label={host.runnerStatus === 'ready' ? 'Ready' : host.runnerStatus === 'error' ? 'Error' : host.runnerStatus} />
-          <Reveal as="span" open={Boolean(host.runnerVersion || host.platform)}><span style={{ color: 'var(--text-3)' }}>· {[host.runnerVersion ? `helper ${host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span></Reveal>
+          <Reveal as="span" open={Boolean(host.runnerVersion || host.platform)}><span style={{ color: 'var(--text-3)' }}>· {[host.runnerVersion ? `helper ${host.runnerBuildLabel || host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span></Reveal>
+          {/* Only a recorded label can differ (older records and release installs have none), and only a different helper binary matters. */}
+          {host.runnerBuildLabel && host.runnerBuildLabel !== appBuildLabel && host.runnerSha256 !== host.bundledRunnerSha256 && <StatusMark tone="warning" label={`App is ${appBuildLabel}`} />}
         </span>
       )
       const remoteHostActions = (host: ExecutionHost) => <>

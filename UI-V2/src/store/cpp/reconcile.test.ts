@@ -544,6 +544,12 @@ describe('remote host startup applied state sanitization', () => {
     expect(entry).not.toHaveProperty('bundledRunnerSha256')
   })
 
+  it('keeps only a well-formed helper build label', () => {
+    const [labelled, malformed] = sanitizeCppSettings({ executionHosts: [{ ...host, runnerBuildLabel: '5.1.0-alpha-13' }, { ...host, id: 'other', sshAlias: 'other', runnerBuildLabel: '5.1.0; rm' }] }).executionHosts!.slice(1)
+    expect(labelled.runnerBuildLabel).toBe('5.1.0-alpha-13')
+    expect(malformed).not.toHaveProperty('runnerBuildLabel')
+  })
+
   it('drops unknown applied states', () => {
     const [entry] = sanitizeCppSettings({ executionHosts: [{ ...host, runnerStartupApplied: 'exploded' }] }).executionHosts!.slice(1)
     expect(entry).not.toHaveProperty('runnerStartupApplied')
