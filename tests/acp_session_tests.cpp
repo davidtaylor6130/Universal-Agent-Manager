@@ -12287,6 +12287,244 @@ UAM_TEST(AcpMissingRemoteProcessCompletesRestartCleanupWithoutDroppingPrompt)
 	UAM_ASSERT(persisted->remote_restart_pending);
 }
 
+namespace
+{
+	// The host answers for the process while only the saved marker records the stop: both saved fields clear.
+	void CheckSavedStopCleanupSettlesOn(const std::string& answer)
+	{
+	TempDir temp("uam-acp-missing-remote-saved-cleanup");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-missing-remote-saved-cleanup";
+	chat.execution_host_id = "ssh-test";
+	chat.remote_stop_cleanup_pending = true;
+	chat.remote_process_exists = true;
+	chat.remote_process_control_token = "fixture-saved-cleanup-token";
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	session->recovering_remote_process = true;
+	uam::AcpSessionState* raw_session = session.get();
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", "echo Remote process could not start. 1>&2 & echo " + answer + " 1>&2 & exit /b 70"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "printf 'Remote process could not start.\\n" + answer + "\\n' >&2; exit 70"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, temp.root, argv, &error));
+	app.acp_sessions.push_back(std::move(session));
+	for (int attempt = 0; attempt < 200 && app.chats.front().remote_stop_cleanup_pending; ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(!app.chats.front().remote_stop_cleanup_pending);
+	UAM_ASSERT(!app.chats.front().remote_process_exists);
+	UAM_ASSERT(!raw_session->running && !raw_session->reconnect_pending && !raw_session->recovering_remote_process);
+	UAM_ASSERT(!uam::AcpStopInProgress(app, chat.id));
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT(!persisted->remote_stop_cleanup_pending && !persisted->remote_process_exists);
+	}
+}
+
+UAM_TEST(MissingRemoteProcessSettlesSavedStopCleanupWithoutRuntimeFlag)
+{
+	CheckSavedStopCleanupSettlesOn("The remote process does not exist.");
+}
+
+UAM_TEST(HelperVerifiablyNotRunningSettlesSavedStopCleanup)
+{
+	// A reachable host with no helper left to own the process is an answer too; the attach reports it as its last line.
+	CheckSavedStopCleanupSettlesOn(std::string(uam::remote::kRemoteHelperNotRunningLine));
+}
+
+UAM_TEST(AbsentAnswerDoesNotSettleAStopWhileTheHostShowsASurvivorOrCannotBeChecked)
+{
+	// The helper said the process does not exist, then the host's process table said otherwise or could not be read.
+	for (const std::string_view closing : {uam::remote::kRemoteSessionProcessRunningLine, uam::remote::kRemoteProcessUncheckedLine, uam::remote::kRemoteHelperUnreachableLine})
+	{
+		TempDir temp("uam-acp-absent-answer-unsettled");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "chat-absent-answer-unsettled";
+		chat.execution_host_id = "ssh-test";
+		chat.remote_stop_cleanup_pending = true;
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = "fixture-unsettled-token";
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->running = true;
+		session->remote_stop_unconfirmed = true;
+		session->recovering_remote_process = true;
+		uam::AcpSessionState* raw_session = session.get();
+		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "stderr.txt", "The remote process does not exist.\n" + std::string(closing) + "\n"));
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", "type stderr.txt 1>&2 & exit /b 70"};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", "cat stderr.txt >&2; exit 70"};
+#endif
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, temp.root, argv, &error));
+		app.acp_sessions.push_back(std::move(session));
+		for (int attempt = 0; attempt < 300 && raw_session->running; ++attempt)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(!raw_session->running);
+		UAM_ASSERT(app.chats.front().remote_stop_cleanup_pending && app.chats.front().remote_process_exists);
+		UAM_ASSERT(raw_session->remote_stop_unconfirmed);
+		UAM_ASSERT(raw_session->recent_stderr.find(closing) != std::string::npos);
+		const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(persisted.has_value() && persisted->remote_stop_cleanup_pending && persisted->remote_process_exists);
+	}
+}
+
+UAM_TEST(RestartAfterConfirmedStopIsScheduledAfterRepeatedFailedStopRetries)
+{
+	TempDir temp("uam-acp-restart-after-failed-stops");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "chat-restart-after-failed-stops";
+	chat.execution_host_id = "missing-remote-host";
+	chat.remote_stop_cleanup_pending = true;
+	chat.remote_restart_pending = true;
+	app.chats.push_back(chat);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->processing = true;
+	session->queued_prompt = "Send after the restart.";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	const auto finish_stop = [&](const std::string& shell)
+	{
+		raw_session->remote_stop_pending = true;
+		// Keep the automatic retry out of the way; only the stop outcomes are under test.
+		raw_session->reconnect_not_before_time_s = uam::GetAppTimeSeconds() + 600.0;
+		auto pending = std::make_unique<uam::PendingAcpRemoteStop>();
+		pending->chat_id = chat.id;
+		pending->deadline_time_s = uam::GetAppTimeSeconds() + 5.0;
+		pending->recoverable_turn = true;
+		pending->restart_after_stop = true;
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", shell};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", shell};
+#endif
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*pending, temp.root, argv, &error));
+		app.pending_acp_remote_stops.push_back(std::move(pending));
+		for (int attempt = 0; attempt < 300 && !app.pending_acp_remote_stops.empty(); ++attempt)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	};
+	// The host is unreachable for longer than the relaunch budget allows attempts.
+	for (int failed = 1; failed <= 4; ++failed)
+	{
+#if defined(_WIN32)
+		finish_stop("echo Remote process could not start. 1>&2 & exit /b 70");
+#else
+		finish_stop("printf 'Remote process could not start.\\n' >&2; exit 70");
+#endif
+		UAM_ASSERT(raw_session->remote_stop_unconfirmed && raw_session->recovering_remote_turn && raw_session->reconnect_pending);
+		UAM_ASSERT_EQ(raw_session->reconnect_attempts, failed);
+		UAM_ASSERT(app.chats.front().remote_stop_cleanup_pending);
+	}
+	// The host returns and confirms the stop: the relaunch is scheduled with a fresh budget and the prompt is kept for it.
+#if defined(_WIN32)
+	finish_stop("exit /b 0");
+#else
+	finish_stop("exit 0");
+#endif
+	UAM_ASSERT(!raw_session->remote_stop_unconfirmed && !raw_session->remote_stop_pending);
+	UAM_ASSERT(!app.chats.front().remote_stop_cleanup_pending);
+	UAM_ASSERT(raw_session->reconnect_pending);
+	UAM_ASSERT_EQ(raw_session->reconnect_attempts, 0);
+	UAM_ASSERT(raw_session->processing);
+	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("Send after the restart."));
+}
+
+UAM_TEST(UnreachableRemoteStopStaysUnconfirmedBacksOffAndStillAllowsRemove)
+{
+	TempDir temp("uam-acp-unreachable-remote-stop");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-unreachable-remote-stop";
+	chat.provider_id = "gemini-cli";
+	chat.execution_host_id = "ssh-test";
+	chat.messages_loaded = true;
+	Message row{MessageRole::User, "Never sent."};
+	row.acp_prompt_not_sent = true;
+	row.created_at = "2026-11-09T10:00:00Z";
+	chat.messages.push_back(row);
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->provider_id = chat.provider_id;
+	session->running = true;
+	uam::AcpSessionState* raw_session = session.get();
+	// The bridge never reached the helper, so nothing on the host has answered for the process.
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", "set /p line= & echo Remote process could not start. 1>&2 & exit /b 70"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line; printf 'Remote process could not start.\\n' >&2; exit 70"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, temp.root, argv, &error));
+	app.acp_sessions.push_back(std::move(session));
+	const auto digest = [&app]
+	{
+		std::uint64_t hash = uam::hashing::kFnv1a64OffsetBasis;
+		for (const Message& message : app.chats.front().messages) uam::chat_pages::AppendMessageDigest(hash, message);
+		return uam::chat_pages::FinishMessageDigest(hash, app.chats.front().messages.size());
+	};
+	UAM_ASSERT(!uam::StopAcpSession(app, chat.id));
+	// While the stop is running, the row cannot be removed.
+	UAM_ASSERT(uam::AcpStopInFlight(app, chat.id));
+	UAM_ASSERT(!uam::DiscardUnsentAcpMessage(app, chat.id, 0, digest(), &error));
+	for (int attempt = 0; attempt < 200 && !app.pending_acp_remote_stops.empty(); ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	// An unreachable host is not an answer: nothing is cleared and the stop is not reported as done.
+	UAM_ASSERT(raw_session->remote_stop_unconfirmed);
+	UAM_ASSERT(app.chats.front().remote_stop_cleanup_pending && app.chats.front().remote_process_exists);
+	UAM_ASSERT(uam::AcpStopInProgress(app, chat.id));
+	UAM_ASSERT_EQ(raw_session->last_error, std::string("Remote stop could not be confirmed."));
+	// The failed attempt counts, so a retry backs off instead of repeating at once.
+	UAM_ASSERT_EQ(raw_session->reconnect_attempts, 1);
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(persisted.has_value() && persisted->remote_stop_cleanup_pending && persisted->remote_process_exists);
+	// Nothing is running now, so the unsent row can be removed although the stop was never confirmed.
+	for (int attempt = 0; attempt < 200 && uam::AcpStopInFlight(app, chat.id); ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	error.clear();
+	const bool removed = uam::DiscardUnsentAcpMessage(app, chat.id, 0, digest(), &error);
+	UAM_ASSERT_EQ(error, std::string());
+	UAM_ASSERT(removed);
+	UAM_ASSERT(app.chats.front().messages.front().acp_prompt_discarded);
+	// Removing the row claims nothing about the stop.
+	UAM_ASSERT(app.chats.front().remote_stop_cleanup_pending && raw_session->remote_stop_unconfirmed);
+}
+
 UAM_TEST(AcpRestartWaitsForCleanupMarkerPersistence)
 {
 	TempDir temp("uam-acp-restart-cleanup-persistence");
@@ -21423,6 +21661,121 @@ UAM_TEST(AntigravityCapturedRetryRetiresOnlyNewOwnedSuccess)
 		fixture.CheckCommitted(expected);
 		if (outcome == "SUCCESS") UAM_ASSERT(!fixture.session->processing);
 		fixture.ReloadWithoutReplay(expected);
+	}
+#endif
+}
+
+namespace
+{
+	/// <summary>Gives the retried row an input ID after dispatch, so only a provider's completion gate can confirm it.</summary>
+	Message& IdentifyRetriedRow(NativeRetirementCaptureFixture& fixture)
+	{
+		Message& row = fixture.app.chats.front().messages[1];
+		row.native_input_id = "66666666-6666-4666-8666-000000000001";
+		row.input_write_completed = false;
+		return row;
+	}
+}
+
+UAM_TEST(ClaudeConfirmsInputOnlyOnFreshOwnedSuccess)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string outcome : {"success", "cancelled", "unknown", "foreign", "missing-uuid"})
+	{
+		NativeRetirementCaptureFixture fixture("claude-cli");
+		(void)fixture.Retry();
+		Message& row = IdentifyRetriedRow(fixture);
+		if (outcome == "cancelled")
+		{
+			std::string error;
+			UAM_ASSERT(uam::CancelAcpTurn(fixture.app, fixture.app.chats.front().id, &error));
+			UAM_ASSERT(fixture.observed->Flush(std::chrono::seconds(1)) && fixture.transport->Flush(std::chrono::seconds(1)));
+		}
+		const std::string native_id = fixture.app.chats.front().native_session_id;
+		nlohmann::json result = {{"type", "result"}, {"subtype", outcome == "unknown" ? "unknown" : "success"},
+		    {"session_id", outcome == "foreign" ? "550e8400-e29b-41d4-a716-446655440001" : native_id},
+		    {"uuid", "native-confirmation-claude-result"}, {"result", "Private Claude completion"}};
+		if (outcome == "missing-uuid") result.erase("uuid");
+		fixture.Response(result);
+		UAM_ASSERT_EQ(fixture.app.chats.front().messages[1].input_write_completed, outcome == "success");
+		(void)row;
+	}
+#endif
+}
+
+UAM_TEST(CopilotConfirmsInputOnlyOnAcceptedOwnedIdle)
+{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	for (const std::string outcome : {"success", "aborted", "foreign", "unaccepted"})
+	{
+		NativeRetirementCaptureFixture fixture("copilot-cli");
+		const auto request = fixture.Retry();
+		auto& session = *fixture.session;
+		const auto& chat = fixture.app.chats.front();
+		(void)IdentifyRetriedRow(fixture);
+		const auto event = [&](const char* type, nlohmann::json data)
+		{
+			fixture.Response({{"jsonrpc", "2.0"}, {"method", "session.event"}, {"params", {
+			    {"sessionId", outcome == "foreign" ? "550e8400-e29b-41d4-a716-446655440001" : chat.native_session_id},
+			    {"event", {{"type", type}, {"id", std::string("native-confirmation-") + type}, {"data", std::move(data)}}}}}});
+		};
+		if (outcome == "unaccepted")
+			// Output and an idle arrive before the send is acknowledged: they can belong to a background agent.
+			event("assistant.turn_start", nlohmann::json::object());
+		else
+			fixture.Response({{"jsonrpc", "2.0"}, {"id", request.at("id")}, {"result", {{"messageId", "native-confirmation-accepted"}}}});
+		event("session.idle", {{"aborted", outcome == "aborted"}});
+		UAM_ASSERT_EQ(session.processing, outcome == "foreign");
+		UAM_ASSERT_EQ(chat.messages[1].input_write_completed, outcome == "success");
+	}
+#endif
+}
+
+UAM_TEST(AntigravityConfirmsInputOnlyOnNewOwnedSuccess)
+{
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	for (const std::string outcome : {"SUCCESS", "FAILED", "foreign", "zero-turn"})
+	{
+		NativeRetirementCaptureFixture fixture("antigravity-cli");
+		(void)fixture.Retry();
+		(void)IdentifyRetriedRow(fixture);
+		const std::string native_id = fixture.app.chats.front().native_session_id;
+		fixture.Response({{"event", "result"}, {"result", {
+		    {"conversation_id", outcome == "foreign" ? "550e8400-e29b-41d4-a716-446655440001" : native_id},
+		    {"status", outcome == "FAILED" ? "FAILED" : "SUCCESS"}, {"num_turns", outcome == "zero-turn" ? 0 : 1},
+		    {"response", "Private Antigravity completion"}}}});
+		UAM_ASSERT_EQ(fixture.app.chats.front().messages[1].input_write_completed, outcome == "SUCCESS");
+	}
+#endif
+}
+
+UAM_TEST(CodexConfirmsInputOnlyWhenThePromptsOwnTurnCompletes)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (const std::string outcome : {"own", "other-turn-first"})
+	{
+		NativeRetirementCaptureFixture fixture("codex-cli");
+		const auto request = fixture.Retry();
+		auto& session = *fixture.session;
+		const auto& chat = fixture.app.chats.front();
+		(void)IdentifyRetriedRow(fixture);
+		const auto notify = [&](const char* method, const std::string& turn, const char* status)
+		{
+			fixture.Response({{"jsonrpc", "2.0"}, {"method", method}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", turn}, {"status", status}}}}}});
+		};
+		if (outcome == "other-turn-first")
+		{
+			// Another turn (a native goal's own) starts and completes before this prompt's turn/start reply arrives.
+			notify("turn/started", "native-confirmation-other-turn", "inProgress");
+			notify("turn/completed", "native-confirmation-other-turn", "completed");
+			UAM_ASSERT(!chat.messages[1].input_write_completed);
+			continue;
+		}
+		fixture.Response({{"jsonrpc", "2.0"}, {"id", request.at("id")}, {"result", {{"turn", {{"id", "native-confirmation-own-turn"}, {"status", "inProgress"}}}}}});
+		notify("turn/started", "native-confirmation-own-turn", "inProgress");
+		UAM_ASSERT(!chat.messages[1].input_write_completed);
+		notify("turn/completed", "native-confirmation-own-turn", "completed");
+		UAM_ASSERT(chat.messages[1].input_write_completed);
 	}
 #endif
 }

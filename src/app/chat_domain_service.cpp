@@ -1072,6 +1072,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	if (branch_input.content != original_input.content || branch_input.attachments != original_input.attachments ||
 	    branch_input.markdown_store_files != original_input.markdown_store_files || branch_input.markdown_store_prompt_blocks != original_input.markdown_store_prompt_blocks)
 		branch_input.input_write_completed = false;
+		branch_input.input_delivery_tracked = false; // A copy in a branch was never dispatched from it.
 	// Asset-bearing default calls are worker/test-only. The only production CEF
 	// caller supplies a bounded-worker prepared token, including for cold history.
 	std::unique_ptr<uam::PreparedBranchOriginals> synchronous_originals;

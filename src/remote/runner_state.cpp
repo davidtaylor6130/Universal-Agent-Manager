@@ -1894,8 +1894,11 @@ namespace uam::remote
 					                    "The remote process output spool could not be created.");
 				}
 			}
+			// The marker is launch-only: the saved environment still compares equal to a repeated start request.
+			auto marked_environment = environment;
+			marked_environment.emplace_back(std::string(kRemoteSessionEnvironment), session_id);
 			if (!ProcessService().StartStdioProcess(process->fields, working_directory,
-			                                                arguments, &error, environment))
+			                                                arguments, &error, marked_environment))
 			{
 				abandon_start();
 				return ProcessError(request, "start_failed",

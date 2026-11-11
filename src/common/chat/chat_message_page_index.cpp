@@ -35,6 +35,11 @@ namespace uam::chat_pages
 			FingerprintHashString(hash, "input_write_completed");
 			FingerprintHashBool(hash, true);
 		}
+		if (message.role == MessageRole::User && message.input_delivery_tracked)
+		{
+			FingerprintHashString(hash, "input_delivery_tracked");
+			FingerprintHashBool(hash, true);
+		}
 		if (message.origin_request_id && input_provenance::ValidOriginRequestId(*message.origin_request_id))
 		{
 			FingerprintHashString(hash, "origin_request_id");

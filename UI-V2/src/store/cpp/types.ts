@@ -38,6 +38,7 @@ export type AcpAttentionKind =
 export interface CppMessage {
   /** Positive historical local OS-sink write fact only; absent/false is unknown, never retry authority. */
   inputWriteCompleted?: boolean
+  inputDeliveryTracked?: boolean
   /** Inert per-input provenance; never admission/delivery/control proof. */
   nativeInputId?: string
   originRequestId?: string
