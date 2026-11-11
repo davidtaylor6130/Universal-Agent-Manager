@@ -397,6 +397,18 @@ namespace uam
 			    (exit_code == 70 && RemoteProxyExitConfirmsMissingProcess(stderr_tail)));
 		}
 
+		/// Names why a remote stop stayed unconfirmed, as a fixed word. The proxy's own text can carry host detail and is not logged.
+		const char* RemoteStopUnconfirmedOutcome(bool exited, int exit_code, const std::string& stderr_tail)
+		{
+			if (!exited) return "no_exit_before_deadline";
+			const std::string_view line = RemoteProxyExitLine(stderr_tail);
+			if (line == uam::remote::kRemoteSessionProcessRunningLine) return "process_in_chat_folder";
+			if (line == uam::remote::kRemoteProcessUncheckedLine) return "host_not_checked";
+			if (line == uam::remote::kRemoteHelperUnreachableLine) return "helper_unreachable";
+			if (exit_code != 70 && RemoteProxyExitConfirmsMissingProcess(stderr_tail)) return "unexpected_exit_code";
+			return "other";
+		}
+
 		/// The proxy writes its token-bound outcome line only after the runner removed the owned process.
 		bool RemoteStopOutcomeReported(const std::string& delivery_token, std::string_view stderr_tail)
 		{
@@ -7842,6 +7854,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (session != nullptr && session->remote_stop_pending && !pending.stderr_tail.empty())
 				acp_detail::AppendRecentStderr(*session, pending.stderr_tail);
 			if (confirmed_stop && session != nullptr) ApplyConfirmedRemoteStopOutcome(app, *session, chat, pending.stderr_tail);
+			// The retry loop that follows logs no stderr of its own: record why this stop could not be confirmed.
+			if (!confirmed_stop && session != nullptr && session->remote_stop_pending)
+				AppendAcpDiagnostic(*session, "remote_stop", "unconfirmed", "", "", false, 0, "Remote stop could not be confirmed.",
+				    std::string("outcome=") + RemoteStopUnconfirmedOutcome(exited, exit_code, pending.stderr_tail));
 			if (pending.restart_after_stop && session != nullptr && session->remote_stop_pending)
 			{
 				if (confirmed_stop)

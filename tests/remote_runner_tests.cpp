@@ -5751,7 +5751,8 @@ UAM_TEST(MacRemoteStopRetainsSuccessfulExitAcrossMultipleDrainPolls)
 
 namespace
 {
-	void VerifyPendingRemoteStopConfirmation(bool shutdown, int helper_exit_code, const std::string& diagnostic, bool confirmed, bool restart = false)
+	void VerifyPendingRemoteStopConfirmation(bool shutdown, int helper_exit_code, const std::string& diagnostic, bool confirmed, bool restart = false,
+	    const std::string& expected_outcome = {})
 	{
 		TempDir temp("uam-stop-confirmation");
 		uam::AppState app;
@@ -5833,7 +5834,26 @@ namespace
 		UAM_ASSERT(saved.has_value());
 		UAM_ASSERT_EQ(saved->remote_stop_cleanup_pending, !confirmed);
 		if (shutdown && confirmed && restart) UAM_ASSERT(saved->messages.back().interrupted);
+		if (!expected_outcome.empty())
+		{
+			const auto logged = std::ranges::find(raw_session->diagnostics, std::string("unconfirmed"), &uam::AcpDiagnosticEntryState::reason);
+			UAM_ASSERT(logged != raw_session->diagnostics.end());
+			UAM_ASSERT_EQ(logged->event, std::string("remote_stop"));
+			UAM_ASSERT_EQ(logged->detail, "outcome=" + expected_outcome);
+		}
 	}
+}
+
+// A stop that stays unconfirmed is retried every minute by a path that logs none of the helper's answer, so the
+// reason was invisible. The log names it as a fixed word and never repeats the helper's own text.
+UAM_TEST(PendingRemoteStopLogsWhyItStayedUnconfirmed)
+{
+	const std::string missing = "The remote process does not exist.\n";
+	VerifyPendingRemoteStopConfirmation(false, 70, missing + std::string(uam::remote::kRemoteSessionProcessRunningLine) + "\n", false, false, "process_in_chat_folder");
+	VerifyPendingRemoteStopConfirmation(false, 70, missing + std::string(uam::remote::kRemoteProcessUncheckedLine) + "\n", false, false, "host_not_checked");
+	VerifyPendingRemoteStopConfirmation(false, 70, std::string(uam::remote::kRemoteHelperUnreachableLine) + "\n", false, false, "helper_unreachable");
+	VerifyPendingRemoteStopConfirmation(false, 23, missing, false, false, "unexpected_exit_code");
+	VerifyPendingRemoteStopConfirmation(false, 70, "ssh: connect to host private.example port 22\n", false, false, "other");
 }
 
 UAM_TEST(PendingRemoteStopConfirmsExactMissingDiagnosticsDuringPollAndShutdown)
