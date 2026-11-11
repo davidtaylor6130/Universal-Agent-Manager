@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { ArrowRight, LoaderCircle, Pencil, Plus, RotateCcw, Unlink } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
-import { boundedRead, sendToCEF } from '../../ipc/cefBridge'
+import { boundedRead, sendToCEF, type CEFResponse } from '../../ipc/cefBridge'
 import { routingConfigurationError, routingFolderRows, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings as RoutingSettings, type RoutingFolderGroup, type RoutingHostPolicy, type RoutingWorkspaceMapping, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import type { ExecutionHost, Folder } from '../../types/session'
 import { Button, Disclosure, IconButton, Presence, Switch, type StatusTone, Reveal } from '../ui'
@@ -57,6 +57,8 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
     const [repositories, setRepositories] = useState<WorkspaceRepositoryMatches[] | null>(null)
     const [repositoryError, setRepositoryError] = useState('')
     const [repositoryAttempt, setRepositoryAttempt] = useState(0)
+    // A slow native check holds a shared VCS-context slot; Retry rejoins it instead of starting another.
+    const repositoryRead = useRef<Promise<CEFResponse> | null>(null)
     const [chooser, setChooser] = useState<{ hostId: string; folderId: string } | 'all' | null>(null)
     const chooserOpener = useRef<HTMLElement | null>(null)
     const root = useRef<HTMLFieldSetElement>(null)
@@ -73,7 +75,12 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
       let cancelled = false
       // A retry clears the failure so the check row shows again; earlier matches stay until replaced.
       setRepositoryError('')
-      void boundedRead(sendToCEF({ action: 'listRepositoryMatches', payload: {} }), 'Repository matching did not answer in time.').then((response) => {
+      const reply = repositoryRead.current ?? sendToCEF({ action: 'listRepositoryMatches', payload: {} })
+      if (!repositoryRead.current) {
+        repositoryRead.current = reply
+        void reply.finally(() => { if (repositoryRead.current === reply) repositoryRead.current = null })
+      }
+      void boundedRead(reply, 'Repository matching did not answer in time.').then((response) => {
         if (cancelled) return
         if (response.ok) { setRepositories(sanitizeRepositoryMatches(response.data)); setRepositoryError('') }
         else setRepositoryError(response.error || 'Repository matching is unavailable right now.')
@@ -253,7 +260,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
           </>}>
             <Reveal open={localFolders.length === 0}><SettingRow title={<span className="uam-rt-dialog__empty">Give a local folder a path first, then it can be mapped here.</span>} /></Reveal>
             <Reveal open={checking}><SettingRow title={<span className="inline-flex items-center gap-1.5" role="status"><LoaderCircle size={13} aria-hidden className="animate-spin motion-reduce:animate-none" />Checking repositories… You can map folders by hand meanwhile.</span>} /></Reveal>
-            <Reveal open={!!repositoryError}><SettingRow title={<span className="uam-rt-dialog__empty" role="status">Repository matching is unavailable right now. Choose folders by hand.</span>}
+            <Reveal open={matching && localFolders.length > 0 && !!repositoryError}><SettingRow title={<span className="uam-rt-dialog__empty" role="status">Repository matching is unavailable right now. Choose folders by hand.</span>}
               control={<Button size="sm" onClick={() => { root.current?.querySelector<HTMLElement>('[data-routing-map-folder]')?.focus({ preventScroll: true }); setRepositoryAttempt((value) => value + 1) }}>Retry</Button>} /></Reveal>
             {groups.map((group, index) => {
               const problems = group.entries.filter((entry) => entry.error)

@@ -35,10 +35,11 @@ describe('SSH routing repository matching', () => {
   })
   afterEach(() => { for (const { host, root } of mounted.splice(0)) { act(() => root.unmount()); host.remove() } vi.clearAllMocks() })
 
-  it('keeps folder mapping usable while matches are checked, bounds a silent check and retries it', async () => {
+  it('keeps folder mapping usable while matches are checked, bounds a slow check and lets Retry rejoin it', async () => {
     vi.useFakeTimers()
     try {
-      vi.mocked(sendToCEF).mockReturnValueOnce(new Promise(() => {}))
+      let answer!: (value: unknown) => void
+      vi.mocked(sendToCEF).mockReturnValueOnce(new Promise((resolve) => { answer = resolve }) as never)
       mount(<ExecutionRoutingDialog onClose={vi.fn()} />)
       await flush()
       expect(document.body.textContent).toContain('Checking repositories')
@@ -52,7 +53,10 @@ describe('SSH routing repository matching', () => {
       act(() => buttonsNamed('Retry')[0].click())
       expect(document.activeElement?.textContent).toBe('Map folder…')
       await flush()
-      expect(sendToCEF).toHaveBeenCalledTimes(2)
+      // The slow check still holds its native slot, so Retry waits on it rather than sending another.
+      expect(sendToCEF).toHaveBeenCalledTimes(1)
+      expect(document.body.textContent).toContain('Checking repositories')
+      await act(async () => { answer({ ok: true, data: workspaces, requestId: 'r' }); await Promise.resolve(); await Promise.resolve() })
       expect(document.body.textContent).toContain('Same repository')
     } finally { vi.useRealTimers() }
   })
