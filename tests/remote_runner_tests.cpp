@@ -9664,7 +9664,7 @@ static void VerifyProviderSwitchStopsTheOldHelper(const bool automatic, const bo
 	fs::permissions(provider_bin.root / "claude", fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
 	const std::string inherited_path = uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
 	ScopedEnvVar runner_path("PATH", provider_bin.root.string() + ":" + inherited_path);
-	// The old helper leaves output for replay and ignores the polite stop, so the first confirmation can be made to fail.
+	// The old helper leaves output for replay and ignores TERM. Its first stop goes unconfirmed because the host is away (below).
 	RemoteAdmissionFixture fixture("trap '' TERM; printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Stale old helper output.\"}]}}'; ");
 	auto& app = fixture.app;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
@@ -9755,7 +9755,7 @@ static void VerifyProviderSwitchStopsTheOldHelper(const bool automatic, const bo
 		}
 		return done();
 	};
-	// The stop is written, then its confirmation never arrives: a dropped link or a passed deadline.
+	// The stop is written, then its confirmation never arrives: the host is unreachable, and the deadline only bounds the wait.
 	UAM_ASSERT(until([&] { return !app.pending_acp_remote_stops.empty(); }, 15));
 	app.pending_acp_remote_stops.front()->deadline_time_s = 0.0;
 	UAM_ASSERT(until([&] { return app.pending_acp_remote_stops.empty(); }, 5));
