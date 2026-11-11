@@ -306,3 +306,9 @@ A transcript save that fails while UAM is running is reported once through the s
 ## Treat as stopped
 
 **Decided by David, 2026-11-11.** A remote chat whose helper died stayed stuck for over twenty minutes: Stop reported that the remote stop could not be confirmed and UAM reattached about once a minute, and the only way out was editing the chat's saved file by hand. David approved a manual **Treat as stopped** escape that deliberately overrides the fail-closed rule of [issue #860](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/860) (never assume a remote process is gone without proof), for the user only: it appears on the chat's existing error notice after the stop has stayed unconfirmed for about two minutes, and it confirms first with a warning that names the computer and folder. Automatic behaviour is unchanged and stays fail-closed. He also decided the same day that it pauses the chat's active goal, which the user resumes by hand. The [SSH agreement](remote-environments/ssh.md#stops-the-host-has-not-confirmed) owns the behaviour. This approves the product rule, not its implementation, review or acceptance.
+
+## Native sub-chat import
+
+**Decided by David, 2026-11-11.** Native import brings a provider's sub-agent sessions in as [sub-chats of the imported parent](chat/native-imports.md#sub-chats). For a chat that is already in UAM, imported earlier or started in UAM, missing sub-chats are imported only by a Chat Data scan the user starts, never at startup. Sub-chats stay exempt from the startup age limit and the import filters, which apply to their parent.
+
+Recorded limits that are not decisions: Claude Code, Gemini and Copilot children on SSH hosts, and Antigravity children, are not imported, for the reasons in the [child session reference](reference/native-child-sessions.md).

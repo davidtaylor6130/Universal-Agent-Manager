@@ -271,7 +271,9 @@ namespace
 	void ApplyOpenCodeChildIdentity(std::string& child_id, std::string& child_title,
 	                              const nlohmann::json& metadata, std::string_view title)
 	{
-		const std::string_view parsed_id = uam::nlohmann_json::StringViewOrEmpty(metadata, "sessionId");
+		// OpenCode 1 records `sessionId`; OpenCode 2's subagent tool records `sessionID`.
+		std::string_view parsed_id = uam::nlohmann_json::StringViewOrEmpty(metadata, "sessionId");
+		if (parsed_id.empty()) parsed_id = uam::nlohmann_json::StringViewOrEmpty(metadata, "sessionID");
 		if (!uam::execution_hosts::IsPortableId(parsed_id) || parsed_id.starts_with('-')) return;
 		if (child_id != parsed_id) child_title.clear();
 		child_id = parsed_id;
@@ -422,7 +424,7 @@ MessageRole OpenCodeCliProviderRuntime::RoleFromNativeType(const ProviderProfile
 
 void OpenCodeCliProviderRuntime::ApplyNativeToolMetadata(ToolCall& tool, const nlohmann::json& native_item) const
 {
-	if (tool.name != "task") return;
+	if (tool.name != "task" && tool.name != "subagent") return;
 	tool.is_sub_agent = true;
 	const nlohmann::json* state = uam::nlohmann_json::FindObjectField(native_item, "state");
 	if (state == nullptr) return;

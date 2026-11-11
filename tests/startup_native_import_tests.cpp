@@ -1528,6 +1528,80 @@ UAM_TEST(StartupRemoteScanReconnectsOnceThenDefersAnUnreachableHostAndKeepsOther
 	UAM_ASSERT_EQ(dead_calls.load(), 2);
 }
 
+UAM_TEST(SettingsNativeSubchatBackfillRunsForTheManualScanNotALaterRemoteRetry)
+{
+	TempDir temp("uam-settings-native-backfill-once");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	app.settings.native_import_startup_max_age_days = 0;
+	app.settings.execution_hosts.push_back(StartupRemoteHost("dead"));
+	app.folders.push_back({"dead-a", "Dead A", "C:\\work\\a", false, "dead"});
+	const auto history = [&](const std::string& id, const std::string& parent)
+	{
+		ChatSession chat = StartupHistory(temp.root / "workspace", id);
+		chat.provider_id = "opencode-cli";
+		chat.created_at = chat.updated_at = "2026-11-01T10:00:00Z";
+		chat.native_parent_session_id = parent;
+		return chat;
+	};
+	const auto save_parent = [&](const std::string& native_id)
+	{
+		ChatSession parent = history(native_id, {});
+		parent.id = "chat-" + native_id;
+		parent.folder_id = "known";
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, parent));
+		ChatHistorySyncService().LoadSidebarChats(app);
+	};
+	const auto has_native = [&](const std::string& id) { return std::ranges::any_of(app.chats, [&](const ChatSession& chat) { return chat.native_session_id == id; }); };
+	save_parent("ses_first_parent");
+	std::atomic<bool> dead_reachable{false};
+	std::atomic<int> reached{0};
+	uam::StartupNativeImportService service(
+	    [&](const uam::StartupNativeImportScanRequest&, std::stop_token)
+	    {
+		    ChatHistorySyncService::LocalHistoryDiscovery discovery;
+		    discovery.chats = {history("ses_first_child", "ses_first_parent"), history("ses_later_child", "ses_later_parent")};
+		    return discovery;
+	    },
+	    [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
+	    {
+		    ChatHistorySyncService::LocalHistoryDiscovery result;
+		    if (dead_reachable) { ++reached; return result; }
+		    result.remote_host_unreachable = true;
+		    result.result.Fail("The remote runner bridge closed.");
+		    return result;
+	    },
+	    uam::StartupNativeImportRemoteRetry{std::chrono::milliseconds(10), std::chrono::milliseconds(100), std::chrono::milliseconds(100)});
+	// Startup finds the children and leaves an unreachable host waiting for its retry; it imports nothing.
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	// The scan the user starts imports the missing sub-chat of the saved parent.
+	std::string error;
+	UAM_ASSERT(service.DiscoverLocalHistory(app, &error));
+	WaitForStartup(service, app);
+	UAM_ASSERT(has_native("ses_first_child"));
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{2});
+	// Another parent arrives afterwards. The background retry for the remote host must not repeat the backfill for it.
+	save_parent("ses_later_parent");
+	dead_reachable = true;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	while (reached.load() == 0)
+	{
+		UAM_ASSERT(std::chrono::steady_clock::now() < deadline);
+		service.Poll(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	WaitForStartup(service, app);
+	for (int settle = 0; settle < 40; ++settle)
+	{
+		service.Poll(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(!has_native("ses_later_child"));
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{3});
+}
+
 UAM_TEST(StartupRemoteScanReportsAnUnavailableHostOncePerHost)
 {
 	TempDir temp("uam-startup-remote-unavailable");
