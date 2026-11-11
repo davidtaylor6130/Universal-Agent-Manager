@@ -75,12 +75,15 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
       let cancelled = false
       // A retry clears the failure so the check row shows again; earlier matches stay until replaced.
       setRepositoryError('')
+      const rejoined = repositoryRead.current !== null
       const reply = repositoryRead.current ?? sendToCEF({ action: 'listRepositoryMatches', payload: {} })
       if (!repositoryRead.current) {
         repositoryRead.current = reply
         void reply.finally(() => { if (repositoryRead.current === reply) repositoryRead.current = null })
       }
       void boundedRead(reply, 'Repository matching did not answer in time.').then((response) => {
+        // A check that stays silent through a second wait is treated as lost, so the next Retry sends a new one.
+        if (!response.ok && rejoined && repositoryRead.current === reply) repositoryRead.current = null
         if (cancelled) return
         if (response.ok) { setRepositories(sanitizeRepositoryMatches(response.data)); setRepositoryError('') }
         else setRepositoryError(response.error || 'Repository matching is unavailable right now.')

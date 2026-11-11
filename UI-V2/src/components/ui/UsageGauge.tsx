@@ -19,7 +19,7 @@ export const USAGE_GAUGE_BANDS = [[0, 100 / 3, 'var(--success)'], [100 / 3, 200 
 /** Gap, in percent of the dial, trimmed from each side of an inner band join so the thirds read as separate segments. */
 const BAND_GAP = 3
 /** Index of the third that holds the used percentage. */
-export const usageGaugeBand = (usedPercent: number) => Math.min(2, Math.floor(Math.min(100, Math.max(0, usedPercent)) / (100 / 3)))
+export const usageGaugeBand = (usedPercent: number) => Number.isFinite(usedPercent) ? Math.min(2, Math.floor(Math.min(100, Math.max(0, usedPercent)) / (100 / 3))) : 0
 /** Needle rotation in degrees from straight up: 0% → -90, 50% → 0, 100% → 90. */
 export const usageGaugeRotation = (usedPercent: number) => (Math.min(100, Math.max(0, usedPercent)) - 50) * 1.8
 
