@@ -9745,7 +9745,7 @@ static void VerifyProviderSwitchStopsTheOldHelper(const bool automatic, const bo
 	fs::permissions(provider_bin.root / "claude", fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
 	const std::string inherited_path = uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
 	ScopedEnvVar runner_path("PATH", provider_bin.root.string() + ":" + inherited_path);
-	// The old helper leaves output for replay and ignores the polite stop, so the first confirmation can be made to fail.
+	// The old helper leaves output for replay and ignores TERM. Its first stop goes unconfirmed because the host is away (below).
 	RemoteAdmissionFixture fixture("trap '' TERM; printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Stale old helper output.\"}]}}'; ");
 	auto& app = fixture.app;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
@@ -9806,6 +9806,12 @@ static void VerifyProviderSwitchStopsTheOldHelper(const bool automatic, const bo
 	fixture.session->processing = fixture.session->recovering_remote_turn = true;
 	fixture.session = nullptr; // The switch erases it.
 
+	// The host stays away for the first reattach. Its bridge cannot reach the helper, so that stop can never be
+	// confirmed, however long this thread is kept off the CPU. A reachable helper finishes a stop within
+	// milliseconds, which used to race the deadline forced below: a finished stop left nothing to retry, and one
+	// finished but not yet seen left a removed process this fixture's host cannot vouch for (#869).
+	std::optional<ScopedEnvVar> host_away(std::in_place, "UAM_TEST_SOCKET", (fixture.temp.root / "host-away.sock").string());
+
 	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli"), uam::ChatProviderSwitchResult::UncertainDelivery);
 	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "claude-cli", true), uam::ChatProviderSwitchResult::Changed);
 	UAM_ASSERT(chat.remote_stop_cleanup_pending && chat.remote_process_exists);
@@ -9830,7 +9836,7 @@ static void VerifyProviderSwitchStopsTheOldHelper(const bool automatic, const bo
 		}
 		return done();
 	};
-	// The stop is written, then its confirmation never arrives: a dropped link or a passed deadline.
+	// The stop is written, then its confirmation never arrives: the host is unreachable, and the deadline only bounds the wait.
 	UAM_ASSERT(until([&] { return !app.pending_acp_remote_stops.empty(); }, 15));
 	app.pending_acp_remote_stops.front()->deadline_time_s = 0.0;
 	UAM_ASSERT(until([&] { return app.pending_acp_remote_stops.empty(); }, 5));
@@ -9838,6 +9844,7 @@ static void VerifyProviderSwitchStopsTheOldHelper(const bool automatic, const bo
 	UAM_ASSERT(retrying != nullptr && retrying->remote_stop_unconfirmed);
 	UAM_ASSERT(chat.remote_stop_cleanup_pending);
 	UAM_ASSERT(retrying->reconnect_pending && retrying->recovering_remote_process); // It retries by itself; Send cannot stay refused.
+	host_away.reset(); // The host is back before the retry, which only this thread's polling can start.
 	UAM_ASSERT(until([&] { return !chat.remote_stop_cleanup_pending; }, 30));
 	app.settings.provider_availability = settings_availability;
 	UAM_ASSERT_EQ(chat.messages.size(), rows_before); // Replayed old-helper output produced no row.
