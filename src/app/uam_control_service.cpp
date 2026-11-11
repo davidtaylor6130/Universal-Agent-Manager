@@ -1952,10 +1952,12 @@ namespace uam
 			const std::filesystem::path request_path = capability / "requests" / (id + ".json");
 			if (request_text.size() > RequestLimit(method) || !uam::io::WriteTextFile(request_path, request_text)) return std::nullopt;
 			const std::filesystem::path response_path = capability / "responses" / (id + ".json");
-			int max_attempts = IsHtmlViewMethod(method) ? 800 : 400; // HTML views wait for their bounded runtime check.
+			// Measured on the clock, not in polls: a poll's 25 ms sleep can stretch several times over on a loaded or
+			// timer-throttled machine, and the caller's wait must not stretch with it. HTML views wait for their bounded runtime check.
+			auto budget_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(IsHtmlViewMethod(method) ? 20 : 10);
 			bool budget_spent = false;
 			std::optional<nlohmann::json> timeout_reply;
-			for (int attempt = 0; !cancel.stop_requested(); ++attempt)
+			while (!cancel.stop_requested())
 			{
 				if (aborted()) break;
 				if (wait_method || cancel_receipt)
@@ -1963,7 +1965,7 @@ namespace uam
 					if (std::chrono::steady_clock::now() >= deadline) break;
 				}
 				// A card waits until the user answers it; only the probe (provider cancel, input closed) ends that wait.
-				else if (!card_method && attempt >= max_attempts)
+				else if (!card_method && std::chrono::steady_clock::now() >= budget_deadline)
 				{
 					if (budget_spent) break;
 					budget_spent = true;
@@ -1976,7 +1978,7 @@ namespace uam
 					}
 					// Already claimed: its reply is being produced, so wait a little longer for the real outcome.
 					timeout_reply = nlohmann::json{{"ok", false}, {"error", "UAM accepted this request but did not answer in time. Check its effect before retrying."}};
-					max_attempts = attempt + 200;
+					budget_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 				}
 				const auto size = uam::paths::FileSizeNoThrow(response_path);
 				if (size.has_value())

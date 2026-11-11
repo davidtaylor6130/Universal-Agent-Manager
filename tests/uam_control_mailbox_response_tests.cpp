@@ -571,13 +571,17 @@ UAM_TEST(UamControlStdioTimedOutRequestIsWithdrawnOrWaitsForItsClaimedReply)
 	(void)fixture.Initialize();
 	// Never claimed by the manager: the request file is withdrawn before the error is reported, so it cannot run later.
 	fixture.Call(2, "agent_delegate", {{"agentId", "worker"}, {"task", "Run once."}});
+	const auto asked = std::chrono::steady_clock::now();
 	UAM_ASSERT(WaitProxyFixture::ErrorText(fixture.NativeWithin(2, std::chrono::seconds(25))).find("withdrawn and did not run") != std::string::npos);
+	// The budget is 10 s on the clock however slowly this machine polls.
+	UAM_ASSERT(std::chrono::steady_clock::now() - asked >= std::chrono::milliseconds(9500));
+	UAM_ASSERT(std::chrono::steady_clock::now() - asked < std::chrono::seconds(20));
 	for (const auto& file : fs::directory_iterator(fixture.capability / "requests"))
 		if (const auto listed = ReadListedRequest(file.path())) UAM_ASSERT(listed->value("method", "") != "agent_delegate");
 	// Claimed by the manager (its file is gone) but answered late: the caller gets the real outcome, not a failure.
 	fixture.Call(3, "agent_delegate", {{"agentId", "worker"}, {"task", "Run once."}});
 	const auto claimed = fixture.Take("agent_delegate");
-	std::this_thread::sleep_for(std::chrono::seconds(14)); // Past the 10 s budget, inside the claimed-reply grace.
+	std::this_thread::sleep_for(std::chrono::milliseconds(12500)); // Past the 10 s budget, inside the 5 s claimed-reply grace.
 	UAM_ASSERT(!fixture.Read().has_value());
 	fixture.Reply(claimed, {{"runId", "late-run"}});
 	const auto late = fixture.NativeWithin(3, std::chrono::seconds(4));
