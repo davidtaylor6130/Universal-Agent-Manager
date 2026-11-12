@@ -57,7 +57,7 @@ namespace uam::platform
 		fd_set writable;
 		FD_ZERO(&writable);
 		FD_SET(socket_fd, &writable);
-		const auto bounded = std::min(timeout, std::chrono::milliseconds(200));
+		const auto bounded = (std::min)(timeout, std::chrono::milliseconds(200)); // Parenthesised: <windows.h> may define min.
 		timeval wait{};
 		wait.tv_usec = static_cast<decltype(wait.tv_usec)>(bounded.count() * 1000);
 		if (select(static_cast<int>(socket_fd + 1), nullptr, &writable, nullptr, &wait) <= 0) return false;
