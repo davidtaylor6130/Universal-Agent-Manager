@@ -14,6 +14,7 @@
 #include "cef/uam_query_handler.h"
 #include "common/companion/connection_lifecycle.h"
 #include "common/companion/pairing_certificate.h"
+#include "common/companion/token_store.h"
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
 
@@ -139,6 +140,9 @@ namespace
 
 	bool ReadCompanionConfig(const uam::AppState& app, nlohmann::json& config)
 	{
+#if UAM_ENABLE_MOBILE_COMPANION
+		(void)UamCompanionService::MigrateLegacyToken(app.data_root);
+#endif
 		std::string text;
 		if (!uam::io::TryReadTextFile(CompanionConfigPath(app), text)) return false;
 		try
@@ -178,7 +182,7 @@ namespace
 
 	nlohmann::json CompanionSettingsResponse(const nlohmann::json& config)
 	{
-		const bool configured = config.is_object() && config.contains("token_file") && config["token_file"].is_string();
+		const bool configured = uam::companion::HasTokenSource(config);
 		const bool enabled = config.contains("enabled") && config["enabled"].is_boolean() && config["enabled"].get<bool>();
 		return {
 			{"configured", configured},
@@ -958,7 +962,7 @@ void UamQueryHandler::HandleRestartCompanion(CefRefPtr<CefBrowser> browser, cons
 	if (!payload.is_object() || !payload.empty())
 	{ cb->Failure(400, "Restart phone access does not accept configuration changes."); return; }
 	nlohmann::json config;
-	if (!ReadCompanionConfig(m_app, config) || !config.contains("token_file") || !config["token_file"].is_string())
+	if (!ReadCompanionConfig(m_app, config) || !uam::companion::HasTokenSource(config))
 	{ cb->Failure(409, "Phone access is not configured in Universal Agent Manager."); return; }
 	ApplyCompanionConfiguration(browser, config);
 	cb->Success(CompanionConnectionStatus(config).dump());
@@ -981,7 +985,7 @@ void UamQueryHandler::HandleSetCompanionEnabled(CefRefPtr<CefBrowser> browser, c
 	}
 
 	nlohmann::json config;
-	if (!ReadCompanionConfig(m_app, config) || !config.contains("token_file") || !config["token_file"].is_string())
+	if (!ReadCompanionConfig(m_app, config) || !uam::companion::HasTokenSource(config))
 	{
 		cb->Failure(409, "Phone access is not configured.");
 		return;
@@ -1006,34 +1010,55 @@ void UamQueryHandler::HandleSetCompanionKeychainPrompts(CefRefPtr<CefBrowser>, c
 	const std::optional<bool> allowed = uam::nlohmann_json::BoolFieldStrict(payload, "allowed");
 	if (!allowed) { cb->Failure(400, "allowed must be a boolean."); return; }
 	nlohmann::json config;
-	if (!ReadCompanionConfig(m_app, config) || !config.contains("token_file") || !config["token_file"].is_string()) { cb->Failure(409, "Phone access is not configured."); return; }
+	if (!ReadCompanionConfig(m_app, config) || !uam::companion::HasTokenSource(config)) { cb->Failure(409, "Phone access is not configured."); return; }
 	config["allow_keychain_prompts"] = *allowed;
 	if (!WriteCompanionConfig(m_app, config)) { cb->Failure(500, "Failed to persist phone access settings."); return; }
 	cb->Success(CompanionConnectionStatus(config).dump());
 }
 
-void UamQueryHandler::HandleGetCompanionToken(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleRegenerateCompanionToken(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	if (!payload.is_object() || !payload.empty()) { cb->Failure(400, "Regenerating the phone token takes no options."); return; }
 	nlohmann::json config;
-	if (!ReadCompanionConfig(m_app, config) || !config.contains("token_file") || !config["token_file"].is_string())
+	if (!ReadCompanionConfig(m_app, config) || !uam::companion::HasTokenSource(config)) { cb->Failure(409, "Phone access is not configured."); return; }
+	std::string error;
+	if (!UamCompanionService::RotateToken(m_app.data_root, &error)) { cb->Failure(409, error); return; }
+	cb->Success(CompanionConnectionStatus(config).dump());
+}
+
+void UamQueryHandler::HandleGetCompanionToken(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const nlohmann::json* rotate = payload.is_object() ? uam::nlohmann_json::FindField(payload, "rotate") : nullptr;
+	if (!payload.is_object() || payload.size() > (rotate ? 1u : 0u) || (rotate && !rotate->is_boolean()))
+	{
+		cb->Failure(400, "The phone token request accepts only a boolean rotate option.");
+		return;
+	}
+	nlohmann::json config;
+	if (!ReadCompanionConfig(m_app, config) || !uam::companion::HasTokenSource(config))
 	{
 		cb->Failure(409, "Phone access is not configured.");
 		return;
 	}
-	std::string token;
-	if (!uam::io::TryReadTextFile(config["token_file"].get<std::string>(), token))
+	// A new pairing code pairs with a fresh credential, so the shared old one stops working at once.
+	// Copy token reads the current credential and leaves every paired device connected.
+	std::string error;
+	std::optional<std::string> token;
+	if (rotate && rotate->get<bool>())
 	{
-		cb->Failure(404, "Phone access token is unavailable.");
-		return;
+		token = UamCompanionService::RotateToken(m_app.data_root, &error);
+		if (!token) { cb->Failure(409, error); return; }
 	}
-	token = uam::strings::Trim(token);
-	if (token.size() != 64 || token.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+	else
 	{
-		cb->Failure(404, "Phone access token is invalid or unavailable.");
-		return;
+		std::string text;
+		if (uam::companion::UsesCredentialStore(config)) text = UamCompanionService::ReadStoredToken(m_app.data_root).value_or(std::string{});
+		else if (uam::companion::HasLegacyTokenFile(config) && uam::io::TryReadTextFile(config["token_file"].get<std::string>(), text)) text = uam::strings::Trim(text);
+		if (!uam::companion::IsValidToken(text)) { cb->Failure(404, "Phone access token is invalid or unavailable."); return; }
+		token = std::move(text);
 	}
 	const auto status = CompanionConnectionStatus(config);
-	nlohmann::json response{{"token", token}, {"url", status.value("state", std::string{}) == "ready" ? status.value("effectiveUrl", std::string{}) : std::string{}},
+	nlohmann::json response{{"token", *token}, {"url", status.value("state", std::string{}) == "ready" ? status.value("effectiveUrl", std::string{}) : std::string{}},
 	    {"state", status["state"]}, {"reasonCode", status["reasonCode"]}, {"reason", status["reason"]}};
 	// The public CA is optional and is never a reason to expose an unready saved URL.
 	try

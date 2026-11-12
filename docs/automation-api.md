@@ -1,10 +1,12 @@
 # Automation API
 
-The automation API lets another program, such as an n8n workflow, start a UAM chat in an allowed workspace. It is served by the [phone access](phone-access.md) companion server, so it is only reachable while Phone access is on and UAM opens no additional network listener. It is a narrower interface than phone access: its tokens are separate from the companion token and cannot use the companion API, and the companion token cannot use this one.
+The automation API lets another program, such as an n8n workflow, start a UAM chat in an allowed workspace. It is served by the [phone access](phone-access.md) companion server, so it is only reachable while Phone access is on and UAM opens no additional network listener. It is a narrower interface than phone access: its tokens are separate from the companion token and cannot use the companion API, and the companion token cannot use this one. Like phone access, it refuses requests from programs UAM itself started, such as provider agents and terminals.
 
 ## Tokens
 
 Tokens are created and revoked in [Automation settings](settings/automation.md). Each has a trust level, an allowed workspace list and the most Git access a request may ask for. The token is shown once, when it is created; UAM stores only its SHA-256 hash, and the desktop settings actions that manage tokens are not available to the phone. Every request re-reads the token file, so revocation applies to the next request. A revoked token cannot create chats or read status; chats it already created are kept, and a waiting one can still be started or deleted by the user.
+
+Each token expires after the lifetime chosen when it was created: 30 days, 90 days (the default) or one year. An expired token is refused with 401 and a message saying it has expired. Regenerate, on the desktop only, replaces a token's secret while keeping its name, trust, workspaces, Git ceiling and chats, and restarts its lifetime. The old secret is refused from the next request, including status polls of chats it created, and the new one is shown once. Neither the companion nor the automation API can regenerate, create or revoke tokens. Tokens created before expiry existed receive the 90-day default, counted from the first time UAM reads them after the upgrade.
 
 ## Requests
 
@@ -19,7 +21,7 @@ Tokens are created and revoked in [Automation settings](settings/automation.md).
 | `gitPermission` | Yes | `commit` or `pr`, no more than the token allows. |
 | `modelId`, `title` | No | Otherwise the provider default and a generated title. |
 
-An unknown or malformed token returns 401, a workspace or Git permission outside the token returns 403, an invalid field including a missing `maxIterations` returns 400, an oversized body 413, a workspace that cannot be isolated or a provider that is unavailable 409, and 16 open chats for one token 429. None of these creates a chat, a worktree or a provider process. A trusted chat that is created but cannot start returns an error naming the chat, which stays waiting for the user. A successful response is `{"chatId": "...", "status": "running"}` for a trusted token, or `"awaitingApproval"` for an untrusted one.
+An unknown, malformed or expired token returns 401, a workspace or Git permission outside the token returns 403, an invalid field including a missing `maxIterations` returns 400, an oversized body 413, a workspace that cannot be isolated or a provider that is unavailable 409, and 16 open chats for one token 429. None of these creates a chat, a worktree or a provider process. A trusted chat that is created but cannot start returns an error naming the chat, which stays waiting for the user. A successful response is `{"chatId": "...", "status": "running"}` for a trusted token, or `"awaitingApproval"` for an untrusted one.
 
 `GET /automation/chats/<chatId>` returns `status` (`awaitingApproval`, `running`, `completed`, `blocked`, `paused` or `stopped`), `iterationsUsed`, `maxIterations` and `gitPermission`. `blocked` includes a chat whose worktree preparation failed after the send was accepted. A chat created by a different token reads as not found. Status is polling only: UAM makes no outbound callbacks or webhooks. The API does not return transcript content.
 

@@ -2,7 +2,12 @@
 // parseUamPushPayload is the sole entry point for all C++ → frontend pushes.
 
 import { isRecord, isString, sanitizeCppAppState, sanitizeCppStatePatch } from '../cpp/sanitizers'
-import type { CppCliDebugState, ParsedPushResult } from '../cpp/types'
+import type { CompanionConfirmation, CppCliDebugState, ParsedPushResult } from '../cpp/types'
+
+function isCompanionConfirmation(item: unknown): item is CompanionConfirmation {
+  return isRecord(item) && isString(item.id) && isString(item.chatId) && isString(item.chatTitle) && isString(item.description) &&
+    typeof item.expiresAt === 'number' && Number.isFinite(item.expiresAt)
+}
 
 export function parseUamPushPayload(payload: unknown): ParsedPushResult {
   let raw: unknown = payload
@@ -83,6 +88,14 @@ export function parseUamPushPayload(payload: unknown): ParsedPushResult {
       return { ok: false, status: 'invalid-message', error: 'attachmentProgress requires a chat, an attachment and byte counts.' }
     }
     return { ok: true, message: { type, chatId: raw.chatId, attachmentId: raw.attachmentId, copiedBytes: raw.copiedBytes, totalBytes: raw.totalBytes } }
+  }
+
+  if (type === 'companionConfirmations') {
+    const items: unknown = raw.items
+    if (!Array.isArray(items) || items.length > 64 || !items.every(isCompanionConfirmation)) {
+      return { ok: false, status: 'invalid-message', error: 'companionConfirmations requires a list of requests.' }
+    }
+    return { ok: true, message: { type, items: items.map(({ id, chatId, chatTitle, description, expiresAt }) => ({ id, chatId, chatTitle, description, expiresAt })) } }
   }
 
   if (type === 'dictation') {

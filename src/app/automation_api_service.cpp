@@ -42,6 +42,9 @@ namespace uam
 		constexpr std::size_t kMaxTokenNameChars = 80;
 		constexpr std::size_t kMaxOpenChatsPerToken = 16;
 		constexpr int kMaxIterations = 200;
+		constexpr int kDefaultLifetimeDays = 90;
+		constexpr int kMaxLifetimeDays = 365;
+		constexpr std::int64_t kSecondsPerDay = 24 * 60 * 60;
 
 		struct TokenRecord
 		{
@@ -52,12 +55,16 @@ namespace uam
 			std::vector<std::string> workspaces;
 			std::string max_git_permission = "commit";
 			std::string created_at;
+			int lifetime_days = kDefaultLifetimeDays;
+			std::int64_t expires_at = 0; // Epoch seconds; checked on every request.
 		};
 
 		std::filesystem::path TokenFile(const AppState& app)
 		{
 			return app.data_root / "automation_tokens.json";
 		}
+
+		bool WriteTokens(const AppState& app, const std::vector<TokenRecord>& tokens);
 
 		/// <summary>Null means the store exists but cannot be trusted; callers refuse rather than treat it as empty.</summary>
 		std::optional<std::vector<TokenRecord>> ReadTokens(const AppState& app)
@@ -71,6 +78,7 @@ namespace uam
 			const nlohmann::json root = nlohmann::json::parse(text, nullptr, false);
 			if (!root.is_object() || !root.contains("tokens") || !root["tokens"].is_array()) return std::nullopt;
 			std::vector<TokenRecord> tokens;
+			bool migrated = false;
 			try
 			{
 				for (const nlohmann::json& value : root["tokens"])
@@ -83,6 +91,15 @@ namespace uam
 					record.workspaces = value.at("workspaces").get<std::vector<std::string>>();
 					record.max_git_permission = value.at("maxGitPermission").get<std::string>();
 					record.created_at = value.value("createdAt", "");
+					record.lifetime_days = value.value("lifetimeDays", kDefaultLifetimeDays);
+					if (record.lifetime_days < 1 || record.lifetime_days > kMaxLifetimeDays) return std::nullopt;
+					// Tokens from before expiry existed get their full lifetime from the first read after upgrade.
+					if (value.contains("expiresAt")) record.expires_at = value.at("expiresAt").get<std::int64_t>();
+					else
+					{
+						record.expires_at = uam::time::TimestampNowSec() + record.lifetime_days * kSecondsPerDay;
+						migrated = true;
+					}
 					tokens.push_back(std::move(record));
 				}
 			}
@@ -90,6 +107,7 @@ namespace uam
 			{
 				return std::nullopt;
 			}
+			if (migrated && !WriteTokens(app, tokens)) uam::diagnostics::Write("Automation API: token expiry could not be saved; it is applied in memory and retried on the next read.");
 			return tokens;
 		}
 
@@ -98,7 +116,8 @@ namespace uam
 			nlohmann::json list = nlohmann::json::array();
 			for (const TokenRecord& token : tokens)
 				list.push_back({{"id", token.id}, {"name", token.name}, {"hash", token.hash}, {"trusted", token.trusted},
-				                {"workspaces", token.workspaces}, {"maxGitPermission", token.max_git_permission}, {"createdAt", token.created_at}});
+				                {"workspaces", token.workspaces}, {"maxGitPermission", token.max_git_permission}, {"createdAt", token.created_at},
+				                {"lifetimeDays", token.lifetime_days}, {"expiresAt", token.expires_at}});
 			const std::filesystem::path path = TokenFile(app);
 			if (!uam::io::WriteTextFile(path, nlohmann::json{{"version", 1}, {"tokens", std::move(list)}}.dump(1, '\t'))) return false;
 			std::error_code error;
@@ -126,6 +145,23 @@ namespace uam
 		int GitRank(std::string_view permission)
 		{
 			return permission == "pr" ? 2 : permission == "commit" ? 1 : 0;
+		}
+
+		nlohmann::json TokenMetadata(const TokenRecord& token)
+		{
+			return {{"id", token.id}, {"name", token.name}, {"trusted", token.trusted}, {"workspaces", token.workspaces}, {"maxGitPermission", token.max_git_permission},
+			    {"createdAt", token.created_at}, {"lifetimeDays", token.lifetime_days}, {"expiresAt", token.expires_at}};
+		}
+
+		/// <summary>A fresh secret replaces any earlier one; the returned plaintext is the only copy.</summary>
+		std::optional<std::string> IssueSecret(TokenRecord& record)
+		{
+			const std::string secret = std::string(kTokenPrefix) + RandomHex(8);
+			const std::optional<std::string> hash = Sha256(secret);
+			if (!hash) return std::nullopt;
+			record.hash = *hash;
+			record.expires_at = uam::time::TimestampNowSec() + record.lifetime_days * kSecondsPerDay;
+			return secret;
 		}
 
 		AutomationApiResponse Refuse(int status, std::string message)
@@ -270,6 +306,7 @@ namespace uam
 			if (ConstantTimeEquals(candidate.hash, request.token_hash)) token = &candidate;
 		AutomationApiResponse response;
 		if (token == nullptr || request.token_hash.empty()) response = Refuse(401, "Invalid automation token.");
+		else if (uam::time::TimestampNowSec() >= token->expires_at) response = Refuse(401, "This automation token has expired. Regenerate it in UAM Settings.");
 		else if (request.body.size() > kMaxBodyBytes) response = Refuse(413, "Request exceeds 256 KiB.");
 		else if (request.method == "POST" && request.path == kChatsPath) response = CreateChat(app, request, *token);
 		else if (request.method == "GET" && IsApiPath(request.path) && request.path != kChatsPath) response = ChatStatus(app, std::string_view(request.path).substr(kChatsPath.size() + 1), *token);
@@ -287,8 +324,7 @@ namespace uam
 			return std::nullopt;
 		}
 		nlohmann::json list = nlohmann::json::array();
-		for (const TokenRecord& token : *tokens)
-			list.push_back({{"id", token.id}, {"name", token.name}, {"trusted", token.trusted}, {"workspaces", token.workspaces}, {"maxGitPermission", token.max_git_permission}, {"createdAt", token.created_at}});
+		for (const TokenRecord& token : *tokens) list.push_back(TokenMetadata(token));
 		return list;
 	}
 
@@ -310,16 +346,32 @@ namespace uam
 			if (std::ranges::find(record.workspaces, value.get<std::string>()) == record.workspaces.end()) record.workspaces.push_back(value.get<std::string>());
 		}
 		if (record.workspaces.empty()) return fail("Choose at least one workspace.");
-		const std::string secret = std::string(kTokenPrefix) + RandomHex(8);
-		const std::optional<std::string> hash = Sha256(secret);
-		if (!hash) return fail("The token could not be generated.");
-		record.hash = *hash;
+		const nlohmann::json lifetime = spec.value("lifetimeDays", nlohmann::json(kDefaultLifetimeDays));
+		if (!lifetime.is_number_integer() || lifetime.get<std::int64_t>() < 1 || lifetime.get<std::int64_t>() > kMaxLifetimeDays) return fail("Choose an expiry from 1 to 365 days.");
+		record.lifetime_days = lifetime.get<int>();
+		const std::optional<std::string> secret = IssueSecret(record);
+		if (!secret) return fail("The token could not be generated.");
 		record.id = "at_" + RandomHex(2);
 		record.created_at = uam::time::TimestampNow();
 		tokens->push_back(record);
 		if (!WriteTokens(app, *tokens)) return fail("The automation token could not be saved.");
 		uam::diagnostics::Write("Automation API: created token " + record.id + ".");
-		return nlohmann::json{{"secret", secret}, {"token", {{"id", record.id}, {"name", record.name}, {"trusted", record.trusted}, {"workspaces", record.workspaces}, {"maxGitPermission", record.max_git_permission}, {"createdAt", record.created_at}}}};
+		return nlohmann::json{{"secret", *secret}, {"token", TokenMetadata(record)}};
+	}
+
+	std::optional<nlohmann::json> AutomationApiService::RegenerateToken(const AppState& app, std::string_view token_id, std::string* error_out)
+	{
+		const auto fail = [&](std::string message) { if (error_out != nullptr) *error_out = std::move(message); return std::nullopt; };
+		std::optional<std::vector<TokenRecord>> tokens = ReadTokens(app);
+		if (!tokens) return fail("The automation token file could not be read, so the token was not regenerated.");
+		const auto token = std::ranges::find(*tokens, token_id, &TokenRecord::id);
+		if (token == tokens->end()) return fail("That token no longer exists.");
+		const std::optional<std::string> secret = IssueSecret(*token);
+		if (!secret) return fail("The token could not be generated.");
+		// Every request reads this file, so a completed write retires the old secret, including for later status polls.
+		if (!WriteTokens(app, *tokens)) return fail("The token could not be regenerated; the old token still works. Try again.");
+		uam::diagnostics::Write("Automation API: regenerated token " + token->id + ".");
+		return nlohmann::json{{"secret", *secret}, {"token", TokenMetadata(*token)}};
 	}
 
 	bool AutomationApiService::RevokeToken(const AppState& app, std::string_view token_id, std::string* error_out)

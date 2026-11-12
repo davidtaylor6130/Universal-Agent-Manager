@@ -3002,6 +3002,10 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	if (!defer_cold_launch && !session.managed_agent_run_id.empty()) session.managed_launch_attempted = true;
 	std::filesystem::path process_working_directory = workspace_root;
 	std::vector<std::string> process_argv = launch_argv;
+	{
+		const auto read_environment = uam::command_safety::ReadCommandEnvironment(execution_host->id == uam::execution_hosts::kLocalHostId);
+		launch_environment.insert(launch_environment.end(), read_environment.begin(), read_environment.end());
+	}
 	std::vector<std::pair<std::string, std::string>> process_environment = launch_environment;
 	session.remote_output_delivery_token.clear();
 	session.pending_remote_output_ack_line.clear();

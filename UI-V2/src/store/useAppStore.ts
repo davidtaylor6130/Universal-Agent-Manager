@@ -26,6 +26,7 @@ import {
   fallbackProviderForId,
 } from '../utils/providerMetadata'
 import {
+  isRecord,
   sanitizeCppAppState,
   sanitizeMemoryActivity,
   defaultEditorFileAssociations,
@@ -808,6 +809,10 @@ export const useAppStore = create<AppState>((set, get) => {
     if (isCompanionContext()) return
     bootstrapPulls += 1
     sendToCEF<CppAppState>({ action: 'getInitialState', payload: { summaryOnly: true } }).then((resp) => {
+      // A reloaded or new desktop window still shows phone requests waiting for confirmation.
+      const confirmations = resp.ok && isRecord(resp.data) && resp.data.companionConfirmations !== undefined
+        ? parseUamPushPayload({ type: 'companionConfirmations', items: resp.data.companionConfirmations }) : null
+      if (confirmations?.ok) window.dispatchEvent(new CustomEvent('uam-companion-confirmations', { detail: confirmations.message }))
       // resp.data is the raw CppAppState object. Sanitize before deserializing.
       const sanitized = resp.ok ? sanitizeCppAppState(resp.data) : null
       if (!sanitized) {
@@ -1318,6 +1323,9 @@ export const useAppStore = create<AppState>((set, get) => {
           break
         case 'attachmentProgress':
           window.dispatchEvent(new CustomEvent('uam-attachment-progress', { detail: msg }))
+          break
+        case 'companionConfirmations':
+          window.dispatchEvent(new CustomEvent('uam-companion-confirmations', { detail: msg }))
           break
       }
     }

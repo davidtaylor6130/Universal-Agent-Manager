@@ -447,6 +447,7 @@ namespace uam::acp_detail
 					if (const nlohmann::json* command = uam::nlohmann_json::FindStringField(input, "command"))
 						permission.execution_command = command->get_ref<const std::string&>();
 				permission.options = {{"allow", "Allow", "allow_once"}, {"deny", "Deny", "reject_once"}};
+				ApplyCommandSafetyDecision(app, chat, permission); // Before replay: saved responses are checked against the captured scope.
 				if (ReplayPersistedInteractionResponseIfMatched(app, session, chat, {{"id", id}}, &permission)) return;
 			}
 			AcpToolCallState& tool = UpsertToolCall(session, tool_id);
@@ -501,7 +502,6 @@ namespace uam::acp_detail
 			}
 			else
 			{
-				ApplyCommandSafetyDecision(app, chat, permission);
 				QueueAcpPermission(app, session, chat, std::move(permission));
 			}
 			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);

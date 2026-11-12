@@ -203,6 +203,14 @@ void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, c
 	}
 	nlohmann::json state = uam::StateSerializer::Serialize(m_app, payload.value("summaryOnly", true));
 	state["bootId"] = CompanionBootId();
+#if UAM_ENABLE_MOBILE_COMPANION
+	// Desktop only: a reloaded or new desktop window still shows phone requests waiting for confirmation.
+	if (!m_dispatchingCompanion)
+	{
+		m_companionConfirmations.Expire(uam::companion::DesktopConfirmations::Clock::now());
+		state["companionConfirmations"] = m_companionConfirmations.ToJson();
+	}
+#endif
 	std::string body;
 	try
 	{

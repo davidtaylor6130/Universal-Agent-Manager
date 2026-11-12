@@ -372,6 +372,7 @@ if(UAM_ENABLE_MOBILE_COMPANION)
     src/cef/companion_server.cpp
     src/cef/automation_handlers.cpp
     src/common/platform/companion_network_platform.cpp
+    src/common/platform/app_secret_store.cpp
   )
 endif()
 if(UAM_ENABLE_COMPUTER_USE)
@@ -1431,7 +1432,8 @@ if(UAM_BUILD_TESTS)
       PolicyQueueStableIdentityAndHeldState PolicyQueueAdmissionTransitionAndStaleIdentity
       PolicyQueueRequiresBoundedIdentity PolicyQueueExistingEditAndReorderOwnership
       SettingsProviderDefaultsPartialAndScoped SettingsMemoryAndWorkerPartialUpdates SettingsMemoryFenceAndOutcomeProjection SettingsPreferencesStorageAndAvailability
-      SettingsRejectPrivilegedAndMalformedUpdates SettingsMcpAndNestedProjectionRedaction SettingsTransferredEnvelopeUsesFinalPolicy)
+      SettingsRejectPrivilegedAndMalformedUpdates SettingsMcpAndNestedProjectionRedaction SettingsTransferredEnvelopeUsesFinalPolicy
+      DesktopConfirmationGatesOnlyLoosening DesktopConfirmationQueueBoundsAndExpiry)
     add_test(NAME uam_companion_${companion_case} COMMAND uam_companion_protocol_tests ${companion_case})
   endforeach()
   add_executable(uam_ui_asset_snapshot_tests tests/ui_asset_snapshot_tests.cpp)
@@ -1502,10 +1504,13 @@ if(UAM_BUILD_TESTS)
         ENVIRONMENT "UAM_NLOHMANN_INCLUDE=${nlohmann_json_SOURCE_DIR}/include")
     endforeach()
   endif()
-  add_executable(uam_companion_connection_tests tests/companion_connection_lifecycle_tests.cpp)
+  add_executable(uam_companion_connection_tests tests/companion_connection_lifecycle_tests.cpp src/common/platform/companion_network_platform.cpp)
   add_subdirectory(tests/svn-branch)
   target_include_directories(uam_companion_connection_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
   target_link_libraries(uam_companion_connection_tests PRIVATE nlohmann_json::nlohmann_json)
+  if(WIN32)
+    target_link_libraries(uam_companion_connection_tests PRIVATE ws2_32 iphlpapi)
+  endif()
   add_test(NAME uam_companion_connection_lifecycle COMMAND uam_companion_connection_tests)
 
   # Provider files whose build flag is OFF are not in the shared objects, so core tests compile them.

@@ -1002,6 +1002,8 @@ export interface VcsCommitMessageSuggestion {
 
 export interface CppAppState {
   startupNativeImports?: StartupNativeImportStatus
+  /** Desktop bootstrap only: phone requests still waiting for confirmation; read raw, never stored in app state. */
+  companionConfirmations?: unknown
   unchanged?: false
   stateRevision?: number
   bootId?: string
@@ -1151,6 +1153,16 @@ export interface CliTranscript {
 
 export type PushChannelStatus = 'no-push-yet' | 'connected' | 'parse-error' | 'invalid-message'
 
+/** A phone request held until the desktop user allows or denies it; the stored request itself stays native. */
+export interface CompanionConfirmation {
+  id: string
+  chatId: string
+  chatTitle: string
+  description: string
+  /** Epoch milliseconds. */
+  expiresAt: number
+}
+
 export type DictationPushMessage =
   | { type: 'dictation'; dictationId: string; event: 'interim' | 'final'; text: string }
   | { type: 'dictation'; dictationId: string; event: 'error'; message: string }
@@ -1171,6 +1183,7 @@ export type ParsedPushMessage =
   | { type: 'streamDone'; chatId: string }
   | DictationPushMessage
   | { type: 'attachmentProgress'; chatId: string; attachmentId: string; copiedBytes: number; totalBytes: number }
+  | { type: 'companionConfirmations'; items: CompanionConfirmation[] }
 
 export type ParsedPushResult =
   | { ok: true; message: ParsedPushMessage }

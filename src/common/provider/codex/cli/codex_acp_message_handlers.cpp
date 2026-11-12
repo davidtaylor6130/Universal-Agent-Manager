@@ -618,6 +618,8 @@ void HandleCodexPendingPermission(AppState& app, AcpSessionState& session, ChatS
 		pending.content = JsonDiagnosticStringValueOr(params, "command", JsonDiagnosticStringValue(params, "reason"));
 		if (const nlohmann::json* command = uam::nlohmann_json::FindStringField(params, "command"))
 			pending.execution_command = command->get_ref<const std::string&>();
+		if (const nlohmann::json* cwd = uam::nlohmann_json::FindStringField(params, "cwd"))
+			pending.read_scope.cwd = uam::paths::PathFromUtf8(cwd->get_ref<const std::string&>());
 		const nlohmann::json decisions = JsonArrayValue(params, "availableDecisions");
 		if (decisions.is_array())
 		{
@@ -637,6 +639,13 @@ void HandleCodexPendingPermission(AppState& app, AcpSessionState& session, ChatS
 		pending.title = "File change approval";
 		pending.kind = uam::acp_tool_items::kFileChange;
 		pending.content = JsonDiagnosticStringValueOr(params, "reason", JsonDiagnosticStringValue(params, "grantRoot"));
+		// The approval names only the item; its observed changes say which files it writes.
+		const auto item = std::ranges::find(session.tool_calls, pending.tool_call_id, &AcpToolCallState::id);
+		if (item != session.tool_calls.end())
+		{
+			const nlohmann::json observed = nlohmann::json::parse(item->content, nullptr, false);
+			if (observed.is_object() && observed.contains("changes")) pending.provider_input_json = nlohmann::json{{"changes", observed["changes"]}}.dump();
+		}
 	}
 	else
 	{
@@ -652,6 +661,7 @@ void HandleCodexPendingPermission(AppState& app, AcpSessionState& session, ChatS
 	}
 	pending.options.push_back(AcpPermissionOptionState{uam::acp_permissions::kCancelledOptionId, "Cancel", uam::acp_permissions::kCancelOptionKind});
 
+	ApplyCommandSafetyDecision(app, chat, pending); // Before replay: saved responses are checked against the captured scope.
 	if (ReplayPersistedInteractionResponseIfMatched(app, session, chat, message, &pending)) return;
 
 	if (!pending.tool_call_id.empty())
@@ -663,7 +673,6 @@ void HandleCodexPendingPermission(AppState& app, AcpSessionState& session, ChatS
 		tracked_tool_call.content = pending.content;
 	}
 	AppendPermissionTurnEventIfNeeded(session, pending.request_id_json, pending.tool_call_id);
-	ApplyCommandSafetyDecision(app, chat, pending);
 	QueueAcpPermission(app, session, chat, std::move(pending));
 }
 

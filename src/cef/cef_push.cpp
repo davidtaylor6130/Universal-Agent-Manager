@@ -34,6 +34,7 @@ namespace
 	constexpr const char* kPushTypeCliOutput = "cliOutput";
 	constexpr const char* kPushTypeDictation = "dictation";
 	constexpr const char* kPushTypeAttachmentProgress = "attachmentProgress";
+	constexpr const char* kPushTypeCompanionConfirmations = "companionConfirmations";
 	constexpr long long kStatePatchSlowSerializationMs = 50;
 	constexpr std::size_t kStatePatchLargeMessageBytes = 64 * 1024;
 	// Streaming chat summaries (selected or background) carry the live turn
@@ -749,6 +750,13 @@ namespace uam
 		msg["attachmentId"] = attachment_id;
 		msg["copiedBytes"] = copied_bytes;
 		msg["totalBytes"] = total_bytes;
+		PostPush(browser, DumpFrontendJson(msg));
+	}
+
+	void PushCompanionConfirmations(CefRefPtr<CefBrowser> browser, const nlohmann::json& items)
+	{
+		nlohmann::json msg = PushMessage(kPushTypeCompanionConfirmations);
+		msg["items"] = items;
 		PostPush(browser, DumpFrontendJson(msg));
 	}
 

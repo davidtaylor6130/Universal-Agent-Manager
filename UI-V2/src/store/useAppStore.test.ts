@@ -1555,6 +1555,22 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts).toEqual([expect.objectContaining({ id: 'real-outbox', revision: 1, text: 'Keep this input', attachments: [expect.objectContaining(attachment)] })])
   })
 
+  it('hands held phone confirmations from the desktop bootstrap to the confirmation prompt', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    const item = { id: 'confirm-1', chatId: 'chat-1', chatTitle: 'Chat 1', description: 'Change permission mode to YOLO', expiresAt: Date.now() + 60_000 }
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).action === 'getInitialState') onSuccess(JSON.stringify({ ...makeCppState(1), companionConfirmations: [item] }))
+      else onSuccess('{}')
+    }
+    const dispatched = vi.fn((_event: Event) => true)
+    testWindow.dispatchEvent = dispatched
+    await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const event = dispatched.mock.calls.map(([sent]) => sent as CustomEvent).find((sent) => sent.type === 'uam-companion-confirmations')
+    expect(event?.detail).toEqual({ type: 'companionConfirmations', items: [item] })
+  })
+
   it('hydrates the bootstrap full state even when a same-revision patch arrived first (#622)', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
