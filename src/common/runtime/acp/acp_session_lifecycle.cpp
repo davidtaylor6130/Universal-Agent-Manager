@@ -5188,7 +5188,7 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 	session.turn_serial += 1;
 	chat.last_stop_reason.clear(); // A new turn must not inherit the previous turn's stop reason.
 	const ChatSession* goal_owner = ChatDomainService().FindChatById(app, uam::strings::NonEmptyOrFallback(chat.goal_owner_chat_id, chat.id));
-	if (review_turn) BeginGoalReviewUsage(session, fresh_session);
+	BeginGoalReviewUsage(session, fresh_session);
 	session.goal_command_revision = goal_owner != nullptr ? goal_owner->goal_command_revision : "";
 	ResetAcpTurnStreamState(session);
 	ResetAcpPendingInteractionState(session);

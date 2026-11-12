@@ -1034,7 +1034,8 @@ void BeginGoalReviewUsage(AcpSessionState& session, bool fresh_session)
 void RecordGoalReviewTurnUsage(AcpSessionState& session, std::int64_t tokens, bool incremental)
 {
 	auto& receipt = session.goal_review_usage;
-	if (!session.processing || !session.goal_review_turn || receipt.turn_serial != session.turn_serial || receipt.consumed || tokens < 0) return;
+	// Worker and reviewer turns share the receipt; it only counts the turn it was opened for.
+	if (!session.processing || receipt.turn_serial != session.turn_serial || receipt.consumed || tokens < 0) return;
 	if (session.session_id.empty() || (!receipt.session_id.empty() && receipt.session_id != session.session_id))
 	{
 		receipt.tokens.reset();
@@ -1060,7 +1061,7 @@ void RecordGoalReviewCumulativeUsage(AcpSessionState& session, std::int64_t toke
 	}
 	usage.goal_cumulative_total = std::max(usage.goal_cumulative_total.value_or(0), tokens);
 	auto& receipt = session.goal_review_usage;
-	if (!session.processing || !session.goal_review_turn || receipt.turn_serial != session.turn_serial || receipt.consumed) return;
+	if (!session.processing || receipt.turn_serial != session.turn_serial || receipt.consumed) return;
 	if (receipt.fresh_session && receipt.session_id.empty()) receipt.session_id = session.session_id;
 	if (session.session_id.empty() || receipt.session_id != session.session_id ||
 	    !receipt.cumulative_baseline)

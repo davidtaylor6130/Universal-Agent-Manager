@@ -2913,6 +2913,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session.turn_assistant_message_index = -1;
 			session.delivered_prompt_recoveries.clear();
 			session.turn_serial += 1;
+			// A goal's first worker turn is an ordinary send; open its usage receipt like a goal-internal turn's.
+			acp_detail::BeginGoalReviewUsage(session, false);
 			chat.last_stop_reason.clear(); // A new turn must not inherit the previous turn's stop reason.
 			if (saved_retry)
 			{

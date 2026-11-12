@@ -2003,6 +2003,55 @@ UAM_TEST(AcpGoalIterationsUsePrivateContextsInOwnerChat)
 	(void)uam::StopAcpSession(app, root.id);
 }
 
+UAM_TEST(AcpGoalWorkerTurnChargesProviderReportedUsageAndLabelsTheEstimateFallback)
+{
+	// Worker turns were charged only as visible text / 4 while reviews used provider usage, so budgets stopped ~3x late.
+	for (const bool reported : {true, false})
+	{
+		TempDir temp("uam-goal-worker-usage");
+		ScopedEnvVar scoped_path("PATH", InstallSilentGoalProviderShims(temp));
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession owner;
+		owner.id = "goal-owner";
+		owner.provider_id = "gemini-cli";
+		Goal goal;
+		goal.id = "goal-worker-usage";
+		goal.objective = "Count the worker's real usage.";
+		goal.status = GoalStatus::Active;
+		owner.active_goal_id = goal.id;
+		owner.goals.push_back(goal);
+		app.chats.push_back(std::move(owner));
+		ChatSession iteration;
+		iteration.id = "worker-iteration";
+		iteration.provider_id = "gemini-cli";
+		iteration.goal_owner_chat_id = "goal-owner";
+		iteration.goal_iteration_goal_id = goal.id;
+		iteration.goal_iteration_turn_kind = "worker_continuation";
+		iteration.messages.push_back({MessageRole::User, "Implement one step."});
+		iteration.messages.push_back({MessageRole::Assistant, "Implemented one step."});
+		app.chats.push_back(std::move(iteration));
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = "worker-iteration";
+		session->provider_id = "gemini-cli";
+		session->session_id = "native-worker";
+		session->turn_serial = 3;
+		session->turn_user_message_index = 0;
+		session->turn_assistant_message_index = 1;
+		uam::AcpSessionState* raw_session = session.get();
+		app.acp_sessions.push_back(std::move(session));
+		raw_session->processing = true;
+		uam::acp_detail::BeginGoalReviewUsage(*raw_session, false);
+		if (reported) uam::acp_detail::RecordGoalReviewTurnUsage(*raw_session, 46000);
+		raw_session->processing = false;
+		uam::acp_detail::ScheduleGoalReviewAfterSuccessfulTurn(app, *raw_session, app.chats.back(), nullptr);
+		const std::int64_t estimate = std::string("Implement one step.").size() / 4 + std::string("Implemented one step.").size() / 4;
+		UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, reported ? std::int64_t{46000} : estimate);
+		UAM_ASSERT_EQ(std::ranges::any_of(raw_session->diagnostics, [](const auto& diagnostic) { return diagnostic.reason == "goal_worker_usage_estimated"; }), !reported);
+		(void)uam::StopAcpSession(app, "worker-iteration");
+	}
+}
+
 UAM_TEST(AcpLegacyGoalIterationSwapsReviewerAndWorkerModelsFromOwner)
 {
 	TempDir temp("uam-legacy-goal-model-swap");
