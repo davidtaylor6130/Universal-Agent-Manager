@@ -190,7 +190,7 @@ jobs:
           key: macOS-arm64-uam-ninja-deps-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: macOS-arm64-uam-ninja-deps-
       # Same key and configuration as the macOS ARM test job, which alone saves the cache.
-      - uses: hendrikmuhs/ccache-action@v1.2
+      - uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
         with:
           key: macOS-arm64-uam-native
           max-size: 3G
@@ -264,7 +264,7 @@ jobs:
       # Pull requests reuse the compiler cache saved by the latest base-branch push. A 2 GB limit filled the Windows
       # cache and evicted entries mid-build (about 70% hits on base pushes). Entries unused for two days are dropped
       # before a push saves, so a failed build cannot empty the cache and one copy per platform stays well under 10 GB.
-      - uses: hendrikmuhs/ccache-action@v1.2
+      - uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
         with:
           key: ${{ runner.os }}-${{ matrix.arch }}-uam-native
           max-size: 3G
@@ -364,7 +364,7 @@ jobs:
       # Pull requests reuse the compiler cache saved by the latest base-branch push. A 2 GB limit filled the Windows
       # cache and evicted entries mid-build (about 70% hits on base pushes). Entries unused for two days are dropped
       # before a push saves, so a failed build cannot empty the cache and one copy per platform stays well under 10 GB.
-      - uses: hendrikmuhs/ccache-action@v1.2
+      - uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
         with:
           key: Windows-x64-uam-native
           max-size: 3G
@@ -375,7 +375,7 @@ jobs:
         # Real-time scanning of compiler outputs and the thousands of fixture files the native suite
         # creates dominates hosted-runner builds and fixed test deadlines; product code and budgets are unchanged.
         run: Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE", "$env:RUNNER_TEMP", "$env:TEMP"
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: x64
       - run: npm --prefix UI-V2 ci
