@@ -1,0 +1,308 @@
+import type { PointerEvent as ReactPointerEvent } from 'react'
+import { motionAllowed, scaledMs } from '../ui/Overlay'
+
+/**
+ * Pointer-driven sortable rows: the dragged row lifts and follows the pointer while its siblings glide aside
+ * to open the gap where it will land. Rows carry `data-sort-id`; their sortable siblings are the other
+ * `[data-sort-id]` children of the same parent. Styles are written straight to the DOM so a drag never
+ * re-renders the sidebar; React only hears about drop-target changes and the final drop.
+ */
+
+export interface SortRow { id: string; top: number; height: number }
+
+/** Order and per-row offsets when the dragged row's centre sits at `centerY` (same coordinates as `rows`). */
+export function sortPreview(rows: readonly SortRow[], draggedId: string, centerY: number) {
+  const others = rows.filter((row) => row.id !== draggedId)
+  const order = others.map((row) => row.id)
+  order.splice(others.filter((row) => row.top + row.height / 2 < centerY).length, 0, draggedId)
+  const byId = new Map(rows.map((row) => [row.id, row]))
+  const offsets = new Map<string, number>()
+  let top = rows[0]?.top ?? 0
+  for (const id of order) {
+    const row = byId.get(id)!
+    offsets.set(id, top - row.top)
+    top += row.height
+  }
+  return { order, offsets }
+}
+
+export interface SortableDrop {
+  /** Sibling ids in their new order (unchanged when dropped on a target). */
+  order: string[]
+  changed: boolean
+  /** Drop target from `targetAt`, or null for a reorder among siblings. */
+  target: string | null
+}
+
+export interface SortableDragOptions {
+  /** Pointer travel before a press becomes a drag, so ordinary clicks still open rows. */
+  threshold?: number
+  /** A drop target under the pointer (for example a collection), which replaces sorting while hovered. */
+  targetAt?: (x: number, y: number) => string | null
+  onTargetChange?: (target: string | null) => void
+  onStart?: (id: string) => void
+  /** Resolves true once the change is saved; false animates the row back. */
+  onDrop: (drop: SortableDrop) => Promise<boolean> | boolean
+  onCancel?: (id: string) => void
+}
+
+const AUTO_SCROLL_EDGE = 36
+const AUTO_SCROLL_MAX = 14
+let busy = false
+
+const sortId = (element: Element) => (element as HTMLElement).dataset.sortId ?? ''
+const siblingsOf = (row: HTMLElement) => Array.from(row.parentElement?.children ?? []).filter((element): element is HTMLElement => element instanceof HTMLElement && element.dataset.sortId !== undefined)
+
+function scrollParent(element: HTMLElement): HTMLElement | null {
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    if (/(auto|scroll)/.test(getComputedStyle(node).overflowY)) return node
+  }
+  return null
+}
+
+function clearStyles(rows: readonly HTMLElement[]) {
+  for (const row of rows) {
+    row.style.transform = ''
+    row.style.transition = ''
+    row.style.boxShadow = ''
+    row.style.zIndex = ''
+    row.style.position = ''
+    row.style.pointerEvents = ''
+    row.style.background = ''
+    row.style.borderRadius = ''
+    row.style.opacity = ''
+    delete row.dataset.sortDragging
+  }
+}
+
+/** Waits for the DOM to show `order`, then returns, so held transforms can drop without a jump. */
+function afterOrder(rows: readonly HTMLElement[], order: readonly string[], done: (settled: boolean) => void) {
+  let frames = 0
+  const check = () => {
+    const live = rows[0]?.parentElement ? siblingsOf(rows[0]).map(sortId) : []
+    if (order.every((id, index) => live[index] === id)) return done(true)
+    if (++frames > 20) return done(false)
+    requestAnimationFrame(check)
+  }
+  check()
+}
+
+/**
+ * The release that ends a drag, or follows an Escape-cancelled one, is not a click on the row under it.
+ * The browser fires that click in the same task as pointerup, so clicks re-arm right after the release.
+ */
+function swallowNextClick(doc: Document, released: boolean) {
+  const win = doc.defaultView ?? window
+  const swallow = (event: Event) => { event.stopPropagation(); event.preventDefault(); clear() }
+  const clear = () => {
+    doc.removeEventListener('click', swallow, true)
+    doc.removeEventListener('pointerup', clearSoon, true)
+    doc.removeEventListener('pointerdown', clear, true)
+    doc.removeEventListener('keydown', clear, true)
+  }
+  const clearSoon = () => win.setTimeout(clear, 0)
+  doc.addEventListener('click', swallow, true)
+  // A release outside the window produces no click; the next press or key re-arms clicks at once.
+  doc.addEventListener('pointerdown', clear, true)
+  doc.addEventListener('keydown', clear, true)
+  if (released) clearSoon()
+  else doc.addEventListener('pointerup', clearSoon, true)
+}
+
+/** Starts tracking a press on a sortable row's handle; it becomes a drag only after the threshold. */
+export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options: SortableDragOptions) {
+  if (busy || down.button !== 0 || down.nativeEvent.isPrimary === false) return
+  if ((down.target as Element).closest('input, textarea, select, button, a, [contenteditable="true"]')) return
+  const row = down.currentTarget.closest<HTMLElement>('[data-sort-id]')
+  if (!row) return
+  const id = sortId(row)
+  const doc = row.ownerDocument
+  const win = doc.defaultView ?? window
+  const threshold = options.threshold ?? 4
+  const startX = down.clientX
+  const startY = down.clientY
+  let pointerX = startX
+  let pointerY = startY
+  let started = false
+  let rows: HTMLElement[] = []
+  let measured: SortRow[] = []
+  let scroller: HTMLElement | null = null
+  let startScroll = 0
+  let grabOffset = 0
+  let target: string | null = null
+  let order: string[] = []
+  let offsets = new Map<string, number>()
+  let frame = 0
+  let layoutKey = ''
+  let cancelledByKey = false
+
+  const scrollTop = () => scroller?.scrollTop ?? 0
+  const update = () => {
+    // Hit-test before writing styles so the pointer move costs one style pass, not two.
+    const nextTarget = options.targetAt?.(pointerX, pointerY) ?? null
+    if (nextTarget !== target) {
+      target = nextTarget
+      // Let the highlighted target show through the lifted row.
+      row.style.opacity = target === null ? '' : '0.85'
+      options.onTargetChange?.(target)
+    }
+    row.style.transform = `translate3d(0, ${pointerY - startY + scrollTop() - startScroll}px, 0) scale(1.02)`
+    const dragged = measured.find((entry) => entry.id === id)!
+    const preview = target === null
+      ? sortPreview(measured, id, pointerY + scrollTop() - grabOffset + dragged.height / 2)
+      : { order: measured.map((entry) => entry.id), offsets: new Map<string, number>() }
+    const key = `${target === null}:${preview.order.join('\n')}`
+    order = preview.order
+    offsets = preview.offsets
+    // Siblings only move when the gap does.
+    if (key === layoutKey) return
+    layoutKey = key
+    for (const sibling of rows) {
+      if (sibling === row) continue
+      sibling.style.transform = `translate3d(0, ${preview.offsets.get(sortId(sibling)) ?? 0}px, 0)`
+    }
+  }
+  const autoScroll = () => {
+    frame = 0
+    if (!scroller || !started) return
+    const box = scroller.getBoundingClientRect()
+    const speed = pointerY < box.top + AUTO_SCROLL_EDGE
+      ? -Math.ceil(((box.top + AUTO_SCROLL_EDGE - pointerY) / AUTO_SCROLL_EDGE) * AUTO_SCROLL_MAX)
+      : pointerY > box.bottom - AUTO_SCROLL_EDGE
+        ? Math.ceil(((pointerY - box.bottom + AUTO_SCROLL_EDGE) / AUTO_SCROLL_EDGE) * AUTO_SCROLL_MAX)
+        : 0
+    if (!speed) return
+    const before = scroller.scrollTop
+    scroller.scrollTop = before + Math.max(-AUTO_SCROLL_MAX, Math.min(AUTO_SCROLL_MAX, speed))
+    if (scroller.scrollTop !== before) update()
+    frame = requestAnimationFrame(autoScroll)
+  }
+
+  const begin = () => {
+    started = true
+    busy = true
+    rows = siblingsOf(row)
+    scroller = scrollParent(row)
+    startScroll = scrollTop()
+    measured = rows.map((element) => {
+      const box = element.getBoundingClientRect()
+      return { id: sortId(element), top: box.top + startScroll, height: box.height }
+    })
+    grabOffset = startY - row.getBoundingClientRect().top
+    for (const sibling of rows) if (sibling !== row) sibling.style.transition = 'transform var(--dur-base) var(--ease)'
+    row.dataset.sortDragging = ''
+    row.style.position = 'relative'
+    row.style.zIndex = '20'
+    row.style.pointerEvents = 'none'
+    row.style.background = 'var(--surface)'
+    row.style.borderRadius = '6px'
+    row.style.boxShadow = 'var(--elev-2), 0 0 0 1px var(--border)'
+    row.style.transition = 'box-shadow var(--dur-fast) var(--ease)'
+    doc.body.style.cursor = 'grabbing'
+    options.onStart?.(id)
+    update()
+  }
+
+  const detach = () => {
+    doc.removeEventListener('pointermove', move, true)
+    doc.removeEventListener('pointerup', up, true)
+    doc.removeEventListener('pointercancel', cancel, true)
+    doc.removeEventListener('keydown', key, true)
+    doc.removeEventListener('dragstart', preventDefault, true)
+    win.removeEventListener('blur', cancel)
+    if (frame) cancelAnimationFrame(frame)
+    frame = 0
+    doc.body.style.cursor = ''
+  }
+  const finish = () => { clearStyles(rows); busy = false }
+  /** Glides every row back to where it started, then hands styles back to React. */
+  const settleBack = () => {
+    for (const element of rows) {
+      element.style.transition = 'transform var(--dur-base) var(--ease-out-soft), box-shadow var(--dur-base) var(--ease)'
+      element.style.transform = ''
+      element.style.boxShadow = ''
+    }
+    if (motionAllowed()) win.setTimeout(finish, scaledMs(180) + 20)
+    else finish()
+  }
+
+  const move = (event: PointerEvent) => {
+    pointerX = event.clientX
+    pointerY = event.clientY
+    if (!started) {
+      if (Math.hypot(pointerX - startX, pointerY - startY) < threshold) return
+      begin()
+    }
+    event.preventDefault()
+    update()
+    if (!frame) frame = requestAnimationFrame(autoScroll)
+  }
+  const cancel = () => {
+    detach()
+    if (!started) return
+    // Escape leaves the button held; blur and pointercancel never produce a click.
+    if (cancelledByKey) swallowNextClick(doc, false)
+    if (target !== null) options.onTargetChange?.(null)
+    settleBack()
+    options.onCancel?.(id)
+  }
+  const key = (event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || !started) return
+    event.preventDefault()
+    event.stopPropagation()
+    cancelledByKey = true
+    cancel()
+  }
+  const up = (event: PointerEvent) => {
+    detach()
+    if (!started) return
+    pointerX = event.clientX
+    pointerY = event.clientY
+    update()
+    swallowNextClick(doc, true)
+    const dropTarget = target
+    if (dropTarget !== null) options.onTargetChange?.(null)
+    const changed = dropTarget !== null || order.some((entry, index) => entry !== measured[index]?.id)
+    const slot = offsets.get(id) ?? 0
+    // Settle the lifted row into its slot while the change saves.
+    row.style.transition = 'transform var(--dur-base) var(--ease-out-soft), box-shadow var(--dur-base) var(--ease)'
+    row.style.transform = `translate3d(0, ${slot}px, 0)`
+    row.style.boxShadow = ''
+    if (!changed) { settleBack(); return }
+    void Promise.resolve(options.onDrop({ order, changed, target: dropTarget })).catch(() => false).then((saved) => {
+      if (!saved) { settleBack(); return }
+      if (dropTarget !== null) { finish(); return }
+      afterOrder(rows, order, (settled) => {
+        if (!settled) { settleBack(); return }
+        // The DOM now matches what the transforms showed, so dropping them changes nothing on screen.
+        for (const element of rows) element.style.transition = 'none'
+        finish()
+      })
+    })
+  }
+  const preventDefault = (event: Event) => event.preventDefault()
+
+  doc.addEventListener('pointermove', move, true)
+  doc.addEventListener('pointerup', up, true)
+  doc.addEventListener('pointercancel', cancel, true)
+  doc.addEventListener('keydown', key, true)
+  doc.addEventListener('dragstart', preventDefault, true)
+  win.addEventListener('blur', cancel)
+}
+
+/** Glides rows from their old positions after a keyboard move commits; reduced motion moves them at once. */
+export function glideAfter(rows: readonly HTMLElement[], commit: () => Promise<boolean>) {
+  const before = new Map(rows.map((row) => [sortId(row), row.getBoundingClientRect().top]))
+  const doc = rows[0]?.ownerDocument
+  return commit().then((saved) => {
+    if (!saved || !doc || !motionAllowed() || typeof HTMLElement.prototype.animate !== 'function') return saved
+    requestAnimationFrame(() => {
+      for (const element of doc.querySelectorAll<HTMLElement>('[data-sort-id]')) {
+        const top = before.get(sortId(element))
+        const dy = top === undefined ? 0 : top - element.getBoundingClientRect().top
+        if (dy) element.animate([{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }], { duration: scaledMs(180), easing: 'cubic-bezier(0.22, 1, 0.36, 1)' })
+      }
+    })
+    return saved
+  })
+}

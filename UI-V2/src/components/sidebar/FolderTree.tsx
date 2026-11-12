@@ -5,7 +5,7 @@ import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
 import { isCompanionContext } from '../../ipc/cefBridge'
 import { reportAppFailure } from '../../utils/appFailure'
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, useSyncExternalStore } from 'react'
-import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, RefObject } from 'react'
 import { automationStartPending, subscribeOutgoingAttempts } from '../../utils/outgoingMessagePresentation'
 import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw, Monitor, Server } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -28,6 +28,7 @@ import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../type
 import { chatGridLeaves, chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
 import { RowSubmenu } from './RowSubmenu'
+import { glideAfter, startSortableDrag } from './sortableDrag'
 import { ChatSelectionContext, MenuDivider, SingleOnlyMenuItem, type ChatSelection } from './bulkActions'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import type { ResourceCollection } from '../../types/resourceCollection'
@@ -245,8 +246,11 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const [recoveryLoading, setRecoveryLoading] = useState(false)
   const [recoveryApplying, setRecoveryApplying] = useState(false)
   const [gridLayout, setGridLayout] = useState(readChatGridLayout)
-  const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null)
-  const [folderDropTarget, setFolderDropTarget] = useState<{ id: string; edge: FolderDropEdge } | null>(null)
+  // Collection a dragged workspace would join on release; '' is the top level.
+  const [folderDropCollectionId, setFolderDropCollectionId] = useState<string | null>(null)
+  // Written directly so announcing a drag never re-renders the whole tree.
+  const moveStatusRef = useRef<HTMLDivElement>(null)
+  const setMoveAnnouncement = (text: string) => { if (moveStatusRef.current) moveStatusRef.current.textContent = text }
   const addControlsRef = useRef<HTMLDivElement>(null)
   const treeRef = useRef<HTMLDivElement>(null)
   const unsortedMenuTriggerRef = useRef<HTMLButtonElement>(null)
@@ -800,10 +804,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         selectionTargets={!companionContext && selectedCollectionIds.has(collection.id) ? selectedCollectionTargets : null}
         onHeaderClick={(event) => handleCollectionClick(collection.id, event)}
         onDeleteSelected={requestCollectionDelete}
-        onFolderDrop={(folderId) => {
-          const folder = folders.find((item) => item.id === folderId)
-          if (folder) void moveFolderToCollection(collection.id, folder.id, folder.name)
-        }}
+        folderDropTarget={folderDropCollectionId === collection.id}
       >
         {collectionGroups.filter((group) => parentOf(group.collection) === collection.id).map(renderCollection)}
         {folderRows.map(renderFolderRow)}
@@ -811,8 +812,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     )
   }
 
-  const commitFolderMove = (sourceId: string, targetId: string, edge: FolderDropEdge) => {
-    if (sourceId === targetId) return
+  const commitFolderMove = async (sourceId: string, targetId: string, edge: FolderDropEdge): Promise<boolean> => {
+    if (sourceId === targetId) return false
     const sourceCollectionId = folderCollectionIds.get(sourceId)
     const targetCollectionId = folderCollectionIds.get(targetId)
     if (sourceCollectionId && sourceCollectionId === targetCollectionId) {
@@ -820,22 +821,69 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       const referenceIds = collection
         ? reorderCollectionFolderReferences(collection, sourceId, targetId, edge)
         : null
-      if (referenceIds) void reorderResourceReferences(sourceCollectionId, referenceIds)
-      return
+      return referenceIds ? reorderResourceReferences(sourceCollectionId, referenceIds) : false
     }
     if (!sourceCollectionId && !targetCollectionId) {
-      void reorderFolders(moveId(folders.map((folder) => folder.id), sourceId, targetId, edge))
+      return reorderFolders(moveId(folders.map((folder) => folder.id), sourceId, targetId, edge))
     }
+    return false
+  }
+
+  const folderListOf = (folderId: string) => {
+    const collectionId = folderCollectionIds.get(folderId)
+    return collectionId
+      ? collectionGroups.find(({ collection }) => collection.id === collectionId)?.folderRows ?? []
+      : ungroupedFolderRows
+  }
+  const announcePosition = (folderId: string, ids: readonly string[]) => {
+    const name = folders.find((folder) => folder.id === folderId)?.name ?? 'Workspace'
+    setMoveAnnouncement(`${name} moved to position ${ids.indexOf(folderId) + 1} of ${ids.length}`)
   }
 
   const moveFolderWithKeyboard = (sourceId: string, direction: -1 | 1) => {
-    const collectionId = folderCollectionIds.get(sourceId)
-    const rows = collectionId
-      ? collectionGroups.find(({ collection }) => collection.id === collectionId)?.folderRows ?? []
-      : ungroupedFolderRows
+    const rows = folderListOf(sourceId)
     const sourceIndex = rows.findIndex(({ folder }) => folder.id === sourceId)
     const target = rows[sourceIndex + direction]
-    if (target) commitFolderMove(sourceId, target.folder.id, direction < 0 ? 'before' : 'after')
+    if (!target) return
+    const ids = rows.map(({ folder }) => folder.id)
+    ids.splice(sourceIndex + direction, 0, ...ids.splice(sourceIndex, 1))
+    const rowElements = () => Array.from(treeRef.current?.querySelectorAll<HTMLElement>('[data-sort-id]') ?? [])
+    const header = () => rowElements().find((row) => row.dataset.sortId === sourceId)?.querySelector<HTMLElement>('[data-workspace-id]')
+    void glideAfter(rowElements(), () => commitFolderMove(sourceId, target.folder.id, direction < 0 ? 'before' : 'after')).then((moved) => {
+      if (!moved) return
+      announcePosition(sourceId, ids)
+      // Reordering moves DOM nodes, which can drop focus; keep it on the moved workspace.
+      if (document.activeElement !== header()) header()?.focus()
+    })
+  }
+
+  const startFolderDrag = (folder: Folder, event: ReactPointerEvent<HTMLElement>) => {
+    const ownCollectionId = folderCollectionIds.get(folder.id) ?? ''
+    startSortableDrag(event, {
+      targetAt: (x, y) => {
+        const under = document.elementFromPoint?.(x, y)
+        if (!under?.closest('#all-chat-list')) return null
+        // The innermost collection under the pointer, or '' outside every collection; the row's own list sorts.
+        const collectionId = under.closest<HTMLElement>('[data-drop-collection-id]')?.dataset.dropCollectionId ?? ''
+        return collectionId === ownCollectionId ? null : collectionId
+      },
+      onTargetChange: setFolderDropCollectionId,
+      onStart: () => setMoveAnnouncement(`Moving ${folder.name}. Press Escape to cancel.`),
+      onCancel: () => setMoveAnnouncement(`Move of ${folder.name} cancelled`),
+      onDrop: async ({ order, target }) => {
+        if (target !== null) {
+          const moved = await moveFolderToCollection(target || null, folder.id, folder.name)
+          const collectionName = resourceCollections.find((collection) => collection.id === target)?.name
+          if (moved) setMoveAnnouncement(collectionName ? `${folder.name} moved into ${collectionName}` : `${folder.name} removed from its collection`)
+          return moved
+        }
+        const index = order.indexOf(folder.id)
+        const neighbour = order[index - 1] ?? order[index + 1]
+        const moved = neighbour ? await commitFolderMove(folder.id, neighbour, index > 0 ? 'after' : 'before') : false
+        if (moved) announcePosition(folder.id, order)
+        return moved
+      },
+    })
   }
 
   const renderActivitySessionItem = (id: string) => {
@@ -907,16 +955,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       selectedSessionIds={companionContext ? EMPTY_SELECTION_IDS : selectedSessionIds}
       onSessionClick={handleSessionClick} onSessionOpen={onSessionOpen}
       draggable={!searchModel.isSearching && !isCompanionContext()}
-      dropEdge={folderDropTarget?.id === folder.id ? folderDropTarget.edge : null}
-      onDragStart={() => setDraggedFolderId(folder.id)}
-      onDragOver={(edge) => setFolderDropTarget({ id: folder.id, edge })}
-      onDragEnd={() => { setDraggedFolderId(null); setFolderDropTarget(null) }}
+      onDragPointerDown={(event) => startFolderDrag(folder, event)}
       onMove={(direction) => moveFolderWithKeyboard(folder.id, direction)}
-      onDrop={(edge) => {
-        if (draggedFolderId) commitFolderMove(draggedFolderId, folder.id, edge)
-        setDraggedFolderId(null)
-        setFolderDropTarget(null)
-      }}
     />
   }
 
@@ -1430,6 +1470,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         {workspaceDeleteChatCount > 0 && <p className="mt-2 text-xs" style={{ color: 'var(--error)' }}>Deleted chats cannot be restored from this app.</p>}
         {deletingFolder && <DeletionProgressBar label={workspaceDeleteCount === 1 ? 'Deleting workspace' : 'Deleting workspaces'} className="mt-2" />}
       </DeleteConfirmDialog>
+      <div ref={moveStatusRef} className="sr-only" role="status" aria-live="polite" data-testid="workspace-move-status" />
     </div>
     </ChatSelectionContext.Provider>
     </SubagentSearchMatches.Provider>
@@ -1507,12 +1548,13 @@ async function moveCollection(collectionId: string, parentId: string | null) {
   return false
 }
 
-function FolderCollection({ collection, folderCount, hiddenPaneColors, selected, selectionTargets, onHeaderClick, onDeleteSelected, onFolderDrop, children }: {
+function FolderCollection({ collection, folderCount, hiddenPaneColors, selected, selectionTargets, onHeaderClick, onDeleteSelected, folderDropTarget, children }: {
   collection: ResourceCollection; folderCount: number; hiddenPaneColors: string[]; selected: boolean
   /** Selected collections the menu acts on when this header is part of a multi-selection. */
   selectionTargets: BulkTarget[] | null
   onHeaderClick: (event: ReactMouseEvent<HTMLElement>) => void; onDeleteSelected: () => void
-  onFolderDrop: (folderId: string) => void; children: ReactNode
+  /** A dragged workspace would join this collection on release. */
+  folderDropTarget: boolean; children: ReactNode
 }) {
   const iconPicker = useCustomIconPicker()
   const toggle = useAppStore((state) => state.toggleResourceCollection)
@@ -1582,27 +1624,27 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
 
   return (
     <div
-      className="mb-0"
       data-testid={`folder-collection-${collection.id}`}
+      // Workspace rows drag by pointer (sortableDrag) and find their target collection through this attribute.
+      data-drop-collection-id={collection.id}
+      // The lifted workspace covers the header, so a workspace drop outlines the whole collection.
+      className={`mb-0 rounded-md transition-colors duration-150${folderDropTarget ? ' uam-sb-drop-target' : ''}`}
       onDragOver={(event) => {
-        const nesting = isCollectionDrag(event)
-        if (!nesting && !event.dataTransfer.types.includes('text/x-uam-folder-resource-id')) return
+        if (!isCollectionDrag(event)) return
         // Only the innermost collection is a target; invalid nesting targets do not accept the drop.
         event.stopPropagation()
-        if (nesting && (!draggedCollectionId || !canNestCollection(collections, draggedCollectionId, collection.id))) return
+        if (!draggedCollectionId || !canNestCollection(collections, draggedCollectionId, collection.id)) return
         event.preventDefault()
         setDropTarget(true)
       }}
       onDragLeave={() => setDropTarget(false)}
       onDrop={(event) => {
         const nestedId = event.dataTransfer.getData(COLLECTION_DRAG_TYPE)
-        const folderId = event.dataTransfer.getData('text/x-uam-folder-resource-id')
-        if (!nestedId && !folderId) return
+        if (!nestedId) return
         event.preventDefault()
         event.stopPropagation()
         setDropTarget(false)
-        if (nestedId) { if (canNestCollection(collections, nestedId, collection.id)) void moveCollection(nestedId, collection.id) }
-        else onFolderDrop(folderId)
+        if (canNestCollection(collections, nestedId, collection.id)) void moveCollection(nestedId, collection.id)
       }}
     >
       <Tooltip label={isCompanionContext() ? undefined : 'Shift-click to select collections'}>
@@ -1974,12 +2016,8 @@ interface FolderRowProps {
   onSessionOpen?: (sessionId: string) => void
   onSessionClick: (sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => boolean
   draggable: boolean
-  dropEdge: FolderDropEdge | null
-  onDragStart: () => void
-  onDragOver: (edge: FolderDropEdge) => void
-  onDragEnd: () => void
+  onDragPointerDown: (event: ReactPointerEvent<HTMLElement>) => void
   onMove: (direction: -1 | 1) => void
-  onDrop: (edge: FolderDropEdge) => void
 }
 
 const FolderRow = memo(function FolderRow({
@@ -2011,12 +2049,8 @@ const FolderRow = memo(function FolderRow({
   onSessionClick,
   onSessionOpen,
   draggable,
-  dropEdge,
-  onDragStart,
-  onDragOver,
-  onDragEnd,
+  onDragPointerDown,
   onMove,
-  onDrop,
 }: FolderRowProps) {
   const iconPicker = useCustomIconPicker()
   const host = useAppStore((state) => state.executionHosts.find((candidate) => candidate.id === (folder.executionHostId || 'local')))
@@ -2056,35 +2090,7 @@ const FolderRow = memo(function FolderRow({
     <div
       className="mb-0"
       data-testid={`folder-row-${folder.id}`}
-      draggable={draggable}
-      onDragStart={(event) => {
-        event.dataTransfer.effectAllowed = 'move'
-        event.dataTransfer.setData('text/x-uam-folder-id', folder.id)
-        event.dataTransfer.setData('text/x-uam-folder-resource-id', folder.id)
-        onDragStart()
-      }}
-      onDragOver={(event) => {
-        // Only workspace drags reorder rows; a collection drag passes through to the enclosing collection or list.
-        if (!draggable || !event.dataTransfer.types.includes('text/x-uam-folder-id')) return
-        event.preventDefault()
-        const rect = event.currentTarget.getBoundingClientRect()
-        onDragOver(event.clientY < rect.top + rect.height / 2 ? 'before' : 'after')
-      }}
-      onDrop={(event) => {
-        if (!event.dataTransfer.types.includes('text/x-uam-folder-id')) return
-        event.preventDefault()
-        const rect = event.currentTarget.getBoundingClientRect()
-        onDrop(event.clientY < rect.top + rect.height / 2 ? 'before' : 'after')
-      }}
-      onDragEnd={onDragEnd}
-      style={{
-        boxShadow:
-          dropEdge === 'before'
-            ? 'inset 0 2px var(--accent)'
-            : dropEdge === 'after'
-              ? 'inset 0 -2px var(--accent)'
-              : 'none',
-      }}
+      data-sort-id={folder.id}
     >
       {/* Folder header; its actions button is a sibling, not nested inside the role=button header. */}
       <div
@@ -2113,6 +2119,7 @@ const FolderRow = memo(function FolderRow({
           color: selected ? 'var(--text)' : 'var(--text-2)',
         }}
         onClick={onToggle}
+        onPointerDown={draggable && !isEditing ? onDragPointerDown : undefined}
         onKeyDown={(event) => {
           if (event.currentTarget !== event.target) return
           if (event.key === 'Enter' || event.key === ' ') {

@@ -6,6 +6,13 @@ import { useAppStore } from '../../store/useAppStore'
 import { APP_FAILURE_EVENT } from '../../utils/appFailure'
 import type { Folder, Session } from '../../types/session'
 import { FolderTree } from './FolderTree'
+
+const stubRect = (element: HTMLElement, top: number, height: number) =>
+  vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({ top, bottom: top + height, height, left: 0, right: 100, width: 100, x: 0, y: top, toJSON: () => ({}) })
+const pointer = (target: EventTarget, type: string, clientX: number, clientY: number) =>
+  target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY, button: 0 }))
+/** A drag swallows the click that follows its release until the next task; let that pass before later clicks. */
+const releaseClickGuard = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
 import { chatGridLeaves, defaultChatGridLayout, setChatInLeaf, splitChatLeaf, writeChatGridLayout } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -457,29 +464,25 @@ describe('FolderTree', () => {
     expect(host.querySelector('[data-testid="collection-children-work"]')?.parentElement?.parentElement?.getAttribute('aria-hidden')).toBe('true')
     expect(host.querySelector('[data-testid="folder-row-second"]')).toBeTruthy()
 
-    const data = new Map<string, string>()
-    const transfer = {
-      effectAllowed: '',
-      get types() { return [...data.keys()] },
-      getData: (type: string) => data.get(type) ?? '',
-      setData: (type: string, value: string) => { data.set(type, value) },
+    // Dragging a workspace over a collection highlights the collection; releasing moves it in.
+    const collectionHeaderTarget = host.querySelector<HTMLElement>('[data-testid="collection-header-work"]')!
+    const elementFromPoint = vi.fn(() => collectionHeaderTarget)
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: elementFromPoint })
+    try {
+      const secondHeader = host.querySelector<HTMLElement>('[data-testid="folder-header-second"]')!
+      act(() => pointer(secondHeader, 'pointerdown', 10, 50))
+      act(() => pointer(document, 'pointermove', 10, 20))
+      expect(collection?.classList.contains('uam-sb-drop-target')).toBe(true)
+      await act(async () => { pointer(document, 'pointerup', 10, 20); await Promise.resolve() })
+      expect(collection?.classList.contains('uam-sb-drop-target')).toBe(false)
+    } finally {
+      delete (document as { elementFromPoint?: unknown }).elementFromPoint
     }
-    const dragStart = new Event('dragstart', { bubbles: true })
-    Object.defineProperty(dragStart, 'dataTransfer', { value: transfer })
-    const dragOver = new Event('dragover', { bubbles: true, cancelable: true })
-    Object.defineProperty(dragOver, 'dataTransfer', { value: transfer })
-    const drop = new Event('drop', { bubbles: true, cancelable: true })
-    Object.defineProperty(drop, 'dataTransfer', { value: transfer })
-
-    await act(async () => {
-      host.querySelector('[data-testid="folder-row-second"]')?.dispatchEvent(dragStart)
-      collection?.dispatchEvent(dragOver)
-      collection?.dispatchEvent(drop)
-    })
 
     expect(useAppStore.getState().resourceCollections[0].references.map((reference) => reference.target)).toEqual(['project', 'second'])
     expect(collection?.querySelector('[data-testid="folder-row-second"]')).toBeTruthy()
 
+    await releaseClickGuard()
     act(() => root.unmount())
     host.remove()
   })
@@ -509,7 +512,7 @@ describe('FolderTree', () => {
     expect(collectionHeader?.className).toContain('px-2.5')
     expect(collectionHeader?.className).toContain('py-0.5')
     expect(folder?.className).toContain('mb-0')
-    expect(folder?.style.boxShadow).toBe('none')
+    expect(folder?.style.boxShadow).toBe('')
     expect(folderHeader?.className).toContain('gap-1.5')
     expect(folderHeader?.className).toContain('px-2.5')
     expect(folderHeader?.className).toContain('py-0.5')
@@ -763,7 +766,7 @@ describe('FolderTree', () => {
       const self = dragged('homelab', 'dragover')
       act(() => { row().dispatchEvent(self) })
       expect(self.defaultPrevented).toBe(false)
-      expect(row().style.boxShadow).toBe('none')
+      expect(row().style.boxShadow).toBe('')
       const selfDrop = dragged('homelab', 'drop')
       await act(async () => { row().dispatchEvent(selfDrop); await Promise.resolve() })
       expect(failures).toEqual([])
@@ -773,7 +776,7 @@ describe('FolderTree', () => {
       const valid = dragged('other', 'dragover')
       act(() => { row().dispatchEvent(valid) })
       expect(valid.defaultPrevented).toBe(true)
-      expect(row().style.boxShadow).toBe('none')
+      expect(row().style.boxShadow).toBe('')
       const validDrop = dragged('other', 'drop')
       await act(async () => { row().dispatchEvent(validDrop); await Promise.resolve() })
       expect(useAppStore.getState().resourceCollections.find((collection) => collection.id === 'other')?.parentId).toBe('homelab')
@@ -1019,9 +1022,12 @@ describe('FolderTree', () => {
     host.remove()
   })
 
-  it('shows a drop indicator and persists drag reordering', () => {
+  it('moves siblings aside while dragging and persists the dropped order', async () => {
     const second = { ...makeFolder(), id: 'second', name: 'Second', directory: '/tmp/second' }
-    const reorderFolders = vi.fn(async () => true)
+    const reorderFolders = vi.fn(async (ids: string[]) => {
+      useAppStore.setState((state) => ({ folders: ids.flatMap((id) => state.folders.filter((folder) => folder.id === id)) }))
+      return true
+    })
     useAppStore.setState({ folders: [makeFolder(), second], sessions: [], reorderFolders })
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -1030,30 +1036,102 @@ describe('FolderTree', () => {
 
     const source = host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
     const target = host.querySelector('[data-testid="folder-row-second"]') as HTMLElement
-    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: 40, height: 40, left: 0, right: 100, width: 100, x: 0, y: 0, toJSON: () => ({}) })
-    const transfer = { effectAllowed: '', types: ['text/x-uam-folder-id'], getData: () => '', setData: vi.fn() }
-    const dragStart = new Event('dragstart', { bubbles: true })
-    Object.defineProperty(dragStart, 'dataTransfer', { value: transfer })
-    const dragOver = new Event('dragover', { bubbles: true, cancelable: true })
-    Object.defineProperty(dragOver, 'clientY', { value: 35 })
-    Object.defineProperty(dragOver, 'dataTransfer', { value: transfer })
-    const drop = new Event('drop', { bubbles: true, cancelable: true })
-    Object.defineProperty(drop, 'clientY', { value: 35 })
-    Object.defineProperty(drop, 'dataTransfer', { value: transfer })
+    stubRect(source, 0, 40)
+    stubRect(target, 40, 40)
+    const header = host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!
 
-    act(() => {
-      source.dispatchEvent(dragStart)
-      target.dispatchEvent(dragOver)
+    // A press that moves less than the threshold stays a click.
+    act(() => pointer(header, 'pointerdown', 10, 10))
+    act(() => pointer(document, 'pointermove', 11, 12))
+    expect(source.style.transform).toBe('')
+    act(() => pointer(document, 'pointermove', 10, 55))
+    expect(source.style.transform).toBe('translate3d(0, 45px, 0) scale(1.02)')
+    expect(target.style.transform).toBe('translate3d(0, -40px, 0)')
+    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Moving Project. Press Escape to cancel.')
+    const expanded = header.getAttribute('aria-expanded')
+    await act(async () => {
+      pointer(document, 'pointerup', 10, 55)
+      // The click that follows the release ends the drag; it does not toggle the workspace.
+      header.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
     })
-    expect(target.style.boxShadow).toContain('inset 0 -2px var(--accent)')
-    act(() => target.dispatchEvent(drop))
+    expect(header.getAttribute('aria-expanded')).toBe(expanded)
     expect(reorderFolders).toHaveBeenCalledWith(['second', 'project'])
+    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Project moved to position 2 of 2')
+    // Held transforms drop once the saved order is on screen.
+    expect([...host.querySelectorAll('[data-sort-id]')].map((row) => (row as HTMLElement).dataset.sortId)).toEqual(['second', 'project'])
+    expect(source.style.transform).toBe('')
+    expect(target.style.transform).toBe('')
 
+    await releaseClickGuard()
     act(() => root.unmount())
     host.remove()
   })
 
-  it('persists dragged workspace order inside a collection', () => {
+  it('drags a workspace out of its collection to the top level', async () => {
+    const second = { ...makeFolder(), id: 'second', name: 'Second', directory: '/tmp/second' }
+    useAppStore.setState({
+      folders: [makeFolder(), second],
+      sessions: [],
+      resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const outside = host.querySelector<HTMLElement>('[data-testid="folder-header-second"]')!
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => outside })
+    try {
+      const header = host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!
+      act(() => pointer(header, 'pointerdown', 10, 10))
+      act(() => pointer(document, 'pointermove', 10, 80))
+      await act(async () => { pointer(document, 'pointerup', 10, 80); await Promise.resolve() })
+    } finally {
+      delete (document as { elementFromPoint?: unknown }).elementFromPoint
+    }
+    expect(useAppStore.getState().resourceCollections[0].references).toEqual([])
+    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Project removed from its collection')
+
+    await releaseClickGuard()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('cancels a workspace drag with Escape and saves nothing', async () => {
+    const second = { ...makeFolder(), id: 'second', name: 'Second', directory: '/tmp/second' }
+    const reorderFolders = vi.fn(async () => true)
+    useAppStore.setState({ folders: [makeFolder(), second], sessions: [], reorderFolders })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const source = host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
+    const target = host.querySelector('[data-testid="folder-row-second"]') as HTMLElement
+    stubRect(source, 0, 40)
+    stubRect(target, 40, 40)
+    const header = host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!
+
+    act(() => pointer(header, 'pointerdown', 10, 10))
+    act(() => pointer(document, 'pointermove', 10, 55))
+    expect(target.style.transform).toBe('translate3d(0, -40px, 0)')
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    const expanded = header.getAttribute('aria-expanded')
+    act(() => {
+      pointer(document, 'pointerup', 10, 55)
+      header.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(header.getAttribute('aria-expanded')).toBe(expanded)
+    expect(source.style.transform).toBe('')
+    expect(target.style.transform).toBe('')
+    expect(reorderFolders).not.toHaveBeenCalled()
+    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Move of Project cancelled')
+
+    await releaseClickGuard()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('persists dragged workspace order inside a collection', async () => {
     const second = { ...makeFolder(), id: 'second', name: 'Second', directory: '/tmp/second' }
     const reorderFolders = vi.fn(async () => true)
     const reorderResourceReferences = vi.fn(async () => true)
@@ -1081,31 +1159,23 @@ describe('FolderTree', () => {
     const source = host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
     const keyboardSource = host.querySelector('[data-testid="folder-header-project"]') as HTMLElement
     const target = host.querySelector('[data-testid="folder-row-second"]') as HTMLElement
-    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: 40, height: 40, left: 0, right: 100, width: 100, x: 0, y: 0, toJSON: () => ({}) })
-    const data = new Map<string, string>()
-    const transfer = {
-      effectAllowed: '',
-      get types() { return [...data.keys()] },
-      getData: (type: string) => data.get(type) ?? '',
-      setData: (type: string, value: string) => { data.set(type, value) },
-    }
-    const dragStart = new Event('dragstart', { bubbles: true })
-    Object.defineProperty(dragStart, 'dataTransfer', { value: transfer })
-    const drop = new Event('drop', { bubbles: true, cancelable: true })
-    Object.defineProperty(drop, 'dataTransfer', { value: transfer })
-    Object.defineProperty(drop, 'clientY', { value: 35 })
+    stubRect(source, 0, 40)
+    stubRect(target, 40, 40)
 
-    act(() => source.dispatchEvent(dragStart))
-    act(() => target.dispatchEvent(drop))
+    act(() => pointer(keyboardSource, 'pointerdown', 10, 10))
+    act(() => pointer(document, 'pointermove', 10, 55))
+    await act(async () => { pointer(document, 'pointerup', 10, 55); await Promise.resolve() })
 
     expect(host.querySelector('[data-testid="folder-drag-handle-project"]')).toBeNull()
     expect(reorderResourceReferences).toHaveBeenCalledWith('work', ['second-ref', 'website-ref', 'project-ref'])
     expect(reorderFolders).not.toHaveBeenCalled()
 
     reorderResourceReferences.mockClear()
-    act(() => keyboardSource.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+    await act(async () => { keyboardSource.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); await Promise.resolve() })
     expect(reorderResourceReferences).toHaveBeenCalledWith('work', ['second-ref', 'website-ref', 'project-ref'])
+    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Project moved to position 2 of 2')
 
+    await releaseClickGuard()
     act(() => root.unmount())
     host.remove()
   })

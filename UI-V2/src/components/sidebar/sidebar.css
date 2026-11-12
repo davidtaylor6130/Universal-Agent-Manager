@@ -13,6 +13,9 @@
   transition-timing-function: var(--ease);
 }
 .uam-sb-collapse__inner { min-height: 0; overflow: hidden; }
+/* A lifted row may follow the pointer past its list's end; the clip exists only for the collapse animation. */
+.uam-sb-collapse__inner:has([data-sort-dragging]) { overflow: visible; }
+.uam-sb-drop-target { background: var(--sidebar-item-hover); outline: 1px solid var(--accent); outline-offset: -1px; }
 /* The collapse clips during its animation, so everything inside draws the focus ring inside its own shape. */
 .uam-sb-collapse__inner :focus-visible { outline-offset: var(--focus-inset); }
 .uam-sb-collapse[hidden] {
