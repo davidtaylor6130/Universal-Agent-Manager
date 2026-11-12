@@ -188,7 +188,11 @@ def native_artifacts(build_dir, values):
         found.append(('resources', bundle / 'Contents' / 'Info.plist'))
         frameworks = bundle / 'Contents' / 'Frameworks'
         if frameworks.is_dir():
-            # Nested apps (CEF helpers, UAM Computer Use) run copies of the main executable, which is scanned once as 'native'.
+            # The CEF helpers run copies of one separate helper executable, scanned once as 'native'.
+            helper = frameworks / 'universal_agent_manager Helper.app' / 'Contents' / 'MacOS' / 'universal_agent_manager Helper'
+            if helper.is_file():
+                found.append(('native', helper))
+            # UAM Computer Use runs a copy of the main executable, which is scanned once as 'native'.
             for app in frameworks.iterdir():
                 if app.name in SKIP_NAMES or app.name.startswith('universal_agent_manager Helper'):
                     continue

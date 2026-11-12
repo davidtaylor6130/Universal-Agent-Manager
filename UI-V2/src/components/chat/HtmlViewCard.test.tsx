@@ -84,8 +84,9 @@ describe('HtmlViewCard isolation', () => {
     // No policy directive or switch stops these in this CEF, and V8 is unavailable here: the probe in html-views.md proved the behaviour.
     const security = readFileSync(resolve(root, 'src/cef/uam_cef_security.h'), 'utf8')
     const app = readFileSync(resolve(root, 'src/cef/uam_cef_app.cpp'), 'utf8')
+    const renderer = readFileSync(resolve(root, 'src/cef/uam_cef_renderer_app.cpp'), 'utf8')
     for (const name of ['"RTCPeerConnection"', '"webkitRTCPeerConnection"', '"RTCIceTransport"']) expect(security).toContain(name)
-    const hook = app.slice(app.indexOf('void UamCefApp::OnContextCreated'), app.indexOf('void UamCefApp::OnContextReleased'))
+    const hook = renderer.slice(renderer.indexOf('void UamCefRendererApp::OnContextCreated'), renderer.indexOf('void UamCefRendererApp::OnContextReleased'))
     expect(hook).toContain('kRendererGlobalsRemoved) (void)global->DeleteValue(name)')
     expect(hook.indexOf('DeleteValue')).toBeLessThan(hook.indexOf('IsTrustedRendererFrame'))
     expect(security).toContain('kNetworkPredictionNever = 2')

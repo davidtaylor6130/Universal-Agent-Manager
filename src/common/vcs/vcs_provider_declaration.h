@@ -51,7 +51,8 @@ namespace uam::vcs
 	}};
 #undef UAM_SVN_COMMON_READ_SWITCHES
 
-	/// <summary>What a system can do, for callers that need to decline an unsupported operation. Nothing reads this yet.</summary>
+	/// <summary>What a system can do. VcsCommitService declines History, Update and OriginComparison for a system that does not declare them,
+	/// and the commit panel offers them from the list sent with each status.</summary>
 	enum class VcsCapability
 	{
 		Status,
@@ -63,16 +64,44 @@ namespace uam::vcs
 		BranchCreate,
 		BranchSwitch,
 		WorkspaceIsolation,
+		/// Paged revision history with changed paths and one revision's patch for a path.
+		History,
+		/// Bring the working copy up to the repository's latest revision.
+		Update,
+		/// Relate a branch or tag to the path it was copied from, for the history graph: the copy point, its own revisions and the origin's.
+		OriginComparison,
 	};
+
+	/// <summary>Stable bridge name for a capability.</summary>
+	constexpr std::string_view VcsCapabilityId(const VcsCapability capability)
+	{
+		switch (capability)
+		{
+		case VcsCapability::Status: return "status";
+		case VcsCapability::Diff: return "diff";
+		case VcsCapability::Commit: return "commit";
+		case VcsCapability::ChatComparison: return "chatComparison";
+		case VcsCapability::RevisionComparison: return "revisionComparison";
+		case VcsCapability::BranchList: return "branchList";
+		case VcsCapability::BranchCreate: return "branchCreate";
+		case VcsCapability::BranchSwitch: return "branchSwitch";
+		case VcsCapability::WorkspaceIsolation: return "workspaceIsolation";
+		case VcsCapability::History: return "history";
+		case VcsCapability::Update: return "update";
+		case VcsCapability::OriginComparison: return "originComparison";
+		}
+		return "";
+	}
 
 	inline constexpr std::array<VcsCapability, 9> kGitCapabilities = {
 	    VcsCapability::Status, VcsCapability::Diff, VcsCapability::Commit, VcsCapability::ChatComparison, VcsCapability::RevisionComparison,
 	    VcsCapability::BranchList, VcsCapability::BranchCreate, VcsCapability::BranchSwitch, VcsCapability::WorkspaceIsolation};
 	// SVN has no chat or revision comparison in the panel and cannot create a branch. Its branch listing and switching are local-only,
-	// and its isolation is a managed local Git snapshot.
-	inline constexpr std::array<VcsCapability, 6> kSvnCapabilities = {
+	// and its isolation is a managed local Git snapshot. Git has no History, Update or origin comparison in the panel yet.
+	inline constexpr std::array<VcsCapability, 9> kSvnCapabilities = {
 	    VcsCapability::Status, VcsCapability::Diff, VcsCapability::Commit,
-	    VcsCapability::BranchList, VcsCapability::BranchSwitch, VcsCapability::WorkspaceIsolation};
+	    VcsCapability::BranchList, VcsCapability::BranchSwitch, VcsCapability::WorkspaceIsolation,
+	    VcsCapability::History, VcsCapability::Update, VcsCapability::OriginComparison};
 
 	/// <summary>Static facts about one version-control system. Lives below the application layer so the
 	/// command filter can read each system's allow-list.</summary>

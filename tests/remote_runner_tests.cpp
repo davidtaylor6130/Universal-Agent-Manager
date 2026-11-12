@@ -1255,14 +1255,20 @@ UAM_TEST(StdioProcessWithInputAcceptsAnEmptyWorkingDirectory)
 
 UAM_TEST(RemoteRunnerKeepsTheSpoolLimitForUnreadDisconnectedOutput)
 {
-#if defined(__APPLE__) || defined(__linux__)
 	uam::remote::RunnerState state(8);
-	const nlohmann::json started = uam::remote::HandleRunnerRequest(
-	    {{"id", "unread-cap-start"}, {"type", "process.start"}, {"sessionId", "unread-cap"},
-	     {"controlToken", kProcessControlToken}, {"cwd", fs::temp_directory_path().string()},
-	     {"argv", nlohmann::json::array({"/bin/sh", "-c", "printf 12345678abcdefgh"})}},
-	    "test-version", &state);
-	UAM_ASSERT(started.value("ok", false));
+#if defined(_WIN32)
+	const nlohmann::json argv = nlohmann::json::array({"cmd.exe", "/d", "/s", "/c", "echo 12345678abcdefgh"});
+#else
+	const nlohmann::json argv = nlohmann::json::array({"/bin/sh", "-c", "printf 12345678abcdefgh"});
+#endif
+	const auto start = [&]
+	{
+		return uam::remote::HandleRunnerRequest(
+		    {{"id", "unread-cap-start"}, {"type", "process.start"}, {"sessionId", "unread-cap"},
+		     {"controlToken", kProcessControlToken}, {"cwd", fs::temp_directory_path().string()}, {"argv", argv}},
+		    "test-version", &state);
+	};
+	UAM_ASSERT(start().value("ok", false));
 	nlohmann::json polled;
 	for (int attempt = 0; attempt < 100; ++attempt)
 	{
@@ -1275,9 +1281,26 @@ UAM_TEST(RemoteRunnerKeepsTheSpoolLimitForUnreadDisconnectedOutput)
 	}
 	UAM_ASSERT(!polled.value("ok", true));
 	UAM_ASSERT_EQ(polled["error"].value("code", ""), std::string("read_failed"));
-	UAM_ASSERT(polled["error"].value("message", "").find("disconnect spool limit") !=
-	           std::string::npos);
-#endif
+	const std::string message = polled["error"].value("message", "");
+	UAM_ASSERT(message.find("disconnect spool limit") != std::string::npos);
+	// Clients settle the turn on this suffix instead of reattaching to a process that can deliver nothing more.
+	UAM_ASSERT(message.ends_with(uam::remote::kRemoteSpoolEndedSuffix));
+	// That answer also dropped the record and its spool: a later attach hears the process is gone, and a new launch starts.
+	const nlohmann::json again = uam::remote::HandleRunnerRequest(
+	    {{"id", "unread-cap-again"}, {"type", "process.poll"}, {"sessionId", "unread-cap"}, {"controlToken", kProcessControlToken}},
+	    "test-version", &state);
+	UAM_ASSERT_EQ(again["error"].value("code", ""), std::string("session_not_found"));
+	UAM_ASSERT(start().value("ok", false));
+	nlohmann::json removed;
+	for (int attempt = 0; attempt < 250; ++attempt)
+	{
+		removed = uam::remote::HandleRunnerRequest(
+		    {{"id", "unread-cap-remove"}, {"type", "process.remove"}, {"sessionId", "unread-cap"}, {"controlToken", kProcessControlToken}},
+		    "test-version", &state);
+		if (removed.value("ok", false) || removed["error"].value("code", "") == "session_not_found") break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	}
+	UAM_ASSERT(removed.value("ok", false) || removed["error"].value("code", "") == "session_not_found");
 }
 
 UAM_TEST(RemoteRunnerProcessProxySpecStaysOffTheCommandLineAndReconnectCanAttach)
@@ -3109,6 +3132,55 @@ UAM_TEST(WindowsRunnerServiceSurvivesClientsThatConnectAndCloseAtOnce)
 	client.Disconnect();
 }
 
+UAM_TEST(WindowsRunnerBridgeEndsWhenItsClientLeavesDuringAStalledServiceReply)
+{
+	// Win32-OpenSSH keeps a session alive while its child runs and does not end that child when the client drops.
+	// A bridge waiting on a service that never answers must still end once its client's stdin is gone.
+	TempDir isolated("uam-win-bridge-client-gone");
+	ScopedEnvVar service_namespace("UAM_RUNNER_SERVICE_NAMESPACE", isolated.root.string());
+	auto& processes = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = processes.ResolveCurrentExecutablePath().parent_path() / "uam-runner.exe";
+	UAM_ASSERT(fs::exists(runner));
+	const std::wstring pipe = uam::remote::RunnerServicePipeName(std::string(uam::constants::kAppVersion).substr(1));
+	UAM_ASSERT(!pipe.empty());
+	// A listening instance the bridge can connect to, which accepts its request and never replies.
+	struct SilentService
+	{
+		HANDLE pipe;
+		~SilentService() { if (pipe != INVALID_HANDLE_VALUE) CloseHandle(pipe); }
+	} service{CreateNamedPipeW(pipe.c_str(), PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+	                           1, 64 * 1024, 64 * 1024, 0, nullptr)};
+	const HANDLE silent = service.pipe;
+	UAM_ASSERT(silent != INVALID_HANDLE_VALUE);
+	struct Bridge
+	{
+		uam::platform::StdioProcessPlatformFields fields;
+		~Bridge() { PlatformServicesFactory::Instance().process_service.StopStdioProcess(fields, true); }
+	} bridge;
+	std::string error;
+	UAM_ASSERT(processes.StartStdioProcess(bridge.fields, fs::temp_directory_path(), {runner.string(), "bridge"}, &error));
+	std::stringstream wire;
+	const nlohmann::json hello = {{"id", "1"}, {"type", "hello"}, {"protocolVersion", uam::remote::kRunnerProtocolVersion}, {"nonce", "n"}};
+	UAM_ASSERT(uam::remote::WriteFrame(wire, hello, &error));
+	const std::string frame = wire.str();
+	UAM_ASSERT(processes.WriteToStdioProcess(bridge.fields, frame.data(), frame.size(), &error));
+	// Polled, not blocking, so a bridge that never connects fails this test instead of hanging it.
+	DWORD forwarded = 0;
+	const auto forward_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (forwarded < frame.size() && std::chrono::steady_clock::now() < forward_deadline)
+		if (!PeekNamedPipe(silent, nullptr, 0, nullptr, &forwarded, nullptr) || forwarded < frame.size())
+			std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	// The bridge has forwarded the request and is now waiting on the silent service.
+	UAM_ASSERT_EQ(static_cast<std::size_t>(forwarded), frame.size());
+	int exit_code = -1;
+	UAM_ASSERT(!processes.PollStdioProcessExited(bridge.fields, &exit_code));
+	processes.CloseStdioProcessInput(bridge.fields);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (!processes.PollStdioProcessExited(bridge.fields, &exit_code) && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	UAM_ASSERT_EQ(exit_code, 0);
+}
+
 UAM_TEST(WindowsHelperActivationRetiresOnlyOtherIdleHelpersAndTheirLoginEntries)
 {
 	TempDir temp("uam-helper-retire");
@@ -4909,9 +4981,11 @@ UAM_TEST(RemoteWorkspaceTerminalQuotesHostilePathsWithoutControllerInterpolation
 	for (const std::string& directory : std::vector<std::string>{"/tmp/project space", "/tmp/a'b;$(touch bad)&x", "/tmp/项目"})
 	{
 		const std::vector<std::string> argv = uam::remote::BuildRemoteWorkspaceTerminalArgv(host, directory);
-		UAM_ASSERT_EQ(argv.size(), static_cast<std::size_t>(10));
+		UAM_ASSERT_EQ(argv.size(), static_cast<std::size_t>(14));
 		UAM_ASSERT_EQ(argv[1], std::string("-tt"));
-		UAM_ASSERT_EQ(argv[8], host.ssh_alias);
+		// A dropped network must end the session, not leave a half-open one on the host.
+		UAM_ASSERT(std::ranges::find(argv, "ServerAliveInterval=15") != argv.end());
+		UAM_ASSERT_EQ(argv[12], host.ssh_alias);
 		UAM_ASSERT(argv.back().starts_with("cd -- '"));
 		UAM_ASSERT(argv.back().ends_with(" && exec \"${SHELL:-/bin/sh}\" -l"));
 		if (directory.find('\'') != std::string::npos) UAM_ASSERT(argv.back().find("'\\''") != std::string::npos);
