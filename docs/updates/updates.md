@@ -4,6 +4,8 @@ Updates distinguishes the desktop application, provider CLIs and remote helpers,
 
 Available UAM and managed provider updates show a collapsed release-note excerpt when the checked release supplies one. Excerpts are bounded to 500 characters, presented as plain text and tied to the displayed version and installation method, including a selected remote computer's provider update. Expanding an excerpt does not install or dismiss an update; a different available version starts collapsed. Missing notes add no placeholder or invented summary, and release links and installation actions remain available under their existing rules.
 
+Install provider updates automatically installs only releases that have been public for at least 7 days, read from the npm registry's publish time for the provider's package. It takes the newest stable release newer than the installed version that is old enough; an installer that can only move to its current release, such as Homebrew or an npm install pinned to a version, waits until that release is old enough. A deprecated, unpublished or prerelease version, or one whose publish time cannot be read, is never installed automatically, and the update stays available to install manually. Manual updates are unchanged and install the offered version immediately.
+
 Like a build-excluded provider, a provider disabled on a computer in [Provider settings](../settings/providers.md) is not offered, version-swept or automatically updated there; turning it back on checks its installed version again.
 
 [About settings](../settings/about.md) · [Provider settings](../settings/providers.md) · [Remote Hosts](../settings/remote-hosts.md) · [Notifications](../ui/notifications.md).

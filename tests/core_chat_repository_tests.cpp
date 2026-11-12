@@ -133,6 +133,59 @@ UAM_TEST(ChatRepositoryToleratesLegacyFieldsAndDropsThemOnWrite)
 	UAM_ASSERT(!inherited->service_tier_explicit);
 }
 
+UAM_TEST(ChatRepositoryKeepsRemoteOpenCodeServerPasswordInMemoryAndScrubsLegacyFiles)
+{
+	TempDir temp("uam-chat-opencode-native-secret");
+	const std::string password = "private-opencode-server-password";
+	ChatSession chat;
+	chat.id = "remote-opencode";
+	chat.provider_id = "opencode-cli";
+	chat.execution_host_id = "ssh-test";
+	chat.title = "Remote OpenCode";
+	chat.remote_process_exists = true;
+	chat.remote_structured_protocol = "acp";
+	chat.remote_opencode_native_port = 50001;
+	chat.remote_opencode_native_token = password;
+	chat.messages.push_back(Message{MessageRole::User, "Keep this history"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path primary = AppPaths::UamChatFilePath(temp.root, chat.id);
+	const fs::path summary = AppPaths::UamChatSummaryFilePath(temp.root, chat.id);
+	UAM_ASSERT(ChatRepository::LoadLocalChatSummaries(temp.root).size() == 1);
+	for (const fs::path& path : {primary, summary})
+	{
+		const std::string text = ReadFile(path);
+		UAM_ASSERT(text.find(password) == std::string::npos);
+		UAM_ASSERT(text.find("remote_opencode_native") == std::string::npos);
+	}
+	UAM_ASSERT_EQ(chat.remote_opencode_native_token, password);
+
+	// Migration: files written by older builds lose the password on the next load, together with its backup and summary.
+	auto legacy = nlohmann::json::parse(ReadFile(primary));
+	legacy["remote_opencode_native_port"] = 50001;
+	legacy["remote_opencode_native_token"] = password;
+	const fs::path backup = uam::io::MakeBackupPath(primary);
+	for (const fs::path& path : {primary, backup})
+		UAM_ASSERT(uam::io::WriteTextFile(path, legacy.dump()));
+	auto legacy_summary = nlohmann::json::parse(ReadFile(summary));
+	legacy_summary["remote_opencode_native_token"] = password;
+	legacy_summary["summary_source_size"] = fs::file_size(primary);
+	UAM_ASSERT(uam::io::WriteTextFile(summary, legacy_summary.dump()));
+	for (const bool include_messages : {false, true})
+	{
+		const std::vector<ChatSession> loaded = include_messages ? ChatRepository::LoadLocalChats(temp.root) : ChatRepository::LoadLocalChatSummaries(temp.root);
+		UAM_ASSERT_EQ(loaded.size(), std::size_t{1});
+		UAM_ASSERT(loaded.front().remote_opencode_native_token.empty());
+		UAM_ASSERT_EQ(loaded.front().remote_opencode_native_port, 0);
+		UAM_ASSERT(loaded.front().remote_process_exists);
+		UAM_ASSERT_EQ(loaded.front().title, chat.title);
+		for (const fs::path& path : {primary, backup, summary})
+			UAM_ASSERT(!fs::exists(path) || ReadFile(path).find(password) == std::string::npos);
+	}
+	const std::optional<ChatSession> full = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(full.has_value());
+	UAM_ASSERT_EQ(full->messages, chat.messages);
+}
+
 UAM_TEST(ChatRepositoryPersistsRemoteTurnReconnectMarker)
 {
 	TempDir temp("uam-chat-remote-turn-reconnect");

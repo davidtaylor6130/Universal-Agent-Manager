@@ -304,6 +304,64 @@ export async function fetchLatestUpdateCatalog(): Promise<LatestUpdateCatalog> {
   }
 }
 
+/** Automatic provider updates install only npm releases at least this old, leaving time for a bad publish to be pulled. */
+export const AUTOMATIC_UPDATE_MIN_AGE_DAYS = 7
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** Publish times (ms) of a provider package's versions that npm still lists and has not deprecated. */
+export type NpmReleaseHistory = Record<string, number>
+
+/** Reads publish times from the full npm document; abbreviated metadata omits them. Null when unavailable. */
+export async function fetchNpmReleaseHistory(providerId: string, signal?: AbortSignal): Promise<NpmReleaseHistory | null> {
+  const npmPackage = providerPackages[providerId]?.npmPackage
+  if (!npmPackage) return null
+  try {
+    const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(npmPackage)}`, { signal })
+    if (!response.ok) return null
+    const payload: unknown = await response.json()
+    if (!payload || typeof payload !== 'object') return null
+    const { versions, time } = payload as { versions?: unknown; time?: unknown }
+    if (!versions || typeof versions !== 'object' || !time || typeof time !== 'object') return null
+    const times = time as Record<string, unknown>
+    // A fully unpublished package keeps only `time.unpublished`; nothing in it is installable.
+    if (times.unpublished) return {}
+    const history: NpmReleaseHistory = {}
+    for (const [version, manifest] of Object.entries(versions as Record<string, unknown>)) {
+      if (!manifest || typeof manifest !== 'object' || (manifest as { deprecated?: unknown }).deprecated) continue
+      const published = typeof times[version] === 'string' ? Date.parse(times[version] as string) : Number.NaN
+      if (Number.isFinite(published)) history[version] = published
+    }
+    return history
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Picks the version an automatic update may install: the newest stable, listed, non-deprecated release newer than
+ * the installed one and no newer than the offered one, published at least the minimum age ago. With `exactOnly`
+ * (installers that can only move to their current release, such as Homebrew) only the offered version qualifies.
+ * Empty when nothing qualifies yet.
+ */
+export function automaticUpdateVersion(
+  history: NpmReleaseHistory,
+  currentVersion: string,
+  offeredVersion: string,
+  exactOnly: boolean,
+  now = Date.now(),
+  minAgeDays = AUTOMATIC_UPDATE_MIN_AGE_DAYS,
+): string {
+  const cutoff = now - minAgeDays * DAY_MS
+  let chosen = ''
+  for (const [version, published] of Object.entries(history)) {
+    const clean = cleanVersion(version)
+    if (published > cutoff || clean.includes('-') || compareVersions(clean, currentVersion) <= 0 || compareVersions(clean, offeredVersion) > 0) continue
+    if (exactOnly && compareVersions(clean, offeredVersion) !== 0) continue
+    if (!chosen || compareVersions(clean, chosen) > 0) chosen = clean
+  }
+  return chosen
+}
+
 export function availableUpdates(
   catalog: LatestUpdateCatalog | null,
   appVersion: string,

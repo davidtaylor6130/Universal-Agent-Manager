@@ -1290,20 +1290,33 @@ if(APPLE AND UAM_MACOS_BUNDLE AND EXISTS "${UAM_BUNDLE_ICON_ICNS}")
 endif()
 
 if(APPLE AND UAM_MACOS_BUNDLE AND UAM_ENABLE_MOBILE_COMPANION)
-  find_program(UAM_CADDY_EXECUTABLE NAMES caddy)
-  if(UAM_CADDY_EXECUTABLE)
-    get_filename_component(_uam_caddy_real "${UAM_CADDY_EXECUTABLE}" REALPATH)
-    get_filename_component(_uam_caddy_bin "${_uam_caddy_real}" DIRECTORY)
-    find_file(UAM_CADDY_LICENSE NAMES LICENSE PATHS "${_uam_caddy_bin}/.." NO_DEFAULT_PATH REQUIRED)
-    add_custom_command(TARGET universal_agent_manager POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/companion"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${UAM_CADDY_EXECUTABLE}" "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/companion/caddy"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${UAM_CADDY_LICENSE}" "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/companion/LICENSE-caddy"
-      COMMAND codesign --force --sign "${UAM_MACOS_SIGNING_IDENTITY}" "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/companion/caddy"
-      VERBATIM
-      COMMENT "Bundling companion HTTPS transport"
-    )
+  # The companion HTTPS transport is a pinned upstream release, never whatever caddy is on the build machine's PATH.
+  # A changed archive fails the download hash check and therefore the configure step.
+  set(UAM_CADDY_VERSION "2.11.9")
+  # Build folders configured before the pin cached the PATH lookup; drop it so nothing reuses that binary.
+  unset(UAM_CADDY_EXECUTABLE CACHE)
+  unset(UAM_CADDY_LICENSE CACHE)
+  if(PROJECT_ARCH STREQUAL "arm64")
+    set(_uam_caddy_arch "arm64")
+    set(_uam_caddy_sha256 "d075afc620376679a77b453399bf7ada264cab3280b2833e4ed1372abc0c1c13")
+  else()
+    set(_uam_caddy_arch "amd64")
+    set(_uam_caddy_sha256 "22af256a2cc45606f6bfa8786cd89130529331319665926f4e972234a658fb30")
   endif()
+  FetchContent_Declare(uam_caddy
+    URL "https://github.com/caddyserver/caddy/releases/download/v${UAM_CADDY_VERSION}/caddy_${UAM_CADDY_VERSION}_mac_${_uam_caddy_arch}.tar.gz"
+    URL_HASH SHA256=${_uam_caddy_sha256}
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
+  FetchContent_MakeAvailable(uam_caddy)
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/companion"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${uam_caddy_SOURCE_DIR}/caddy" "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/companion/caddy"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${uam_caddy_SOURCE_DIR}/LICENSE" "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/companion/LICENSE-caddy"
+    COMMAND codesign --force --sign "${UAM_MACOS_SIGNING_IDENTITY}" "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/companion/caddy"
+    VERBATIM
+    COMMENT "Bundling companion HTTPS transport"
+  )
 endif()
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD

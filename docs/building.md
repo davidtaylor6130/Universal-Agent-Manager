@@ -93,11 +93,13 @@ cmake -S . -B Builds \
 cmake --build Builds --config Release --parallel 4
 ```
 
-The GitHub release workflow builds these helpers independently, verifies their reported version, and injects all three into each desktop package.
+The GitHub release workflow builds these helpers independently, verifies their reported version, attests each tagged runner archive's build provenance, and injects all three into each desktop package.
 
-On Windows, `./build.ps1` acquires the three matching `UAM-runner-<platform>-<architecture>.zip` release assets before configuring the app. Existing artifacts are reused only after their SHA-256, exact application version, protocol and source fingerprint pass validation. Releases publish these small archives separately from desktop packages. Local builds and CI use `scripts/acquire_remote_runners.ps1` and the same four-file contract.
+macOS builds with phone access bundle the companion HTTPS transport from a pinned Caddy release (`UAM_CADDY_VERSION` in `CMakeLists.txt`), downloaded and checked against its repository-pinned SHA-256 during configuration; a mismatch fails the build. A `caddy` on the build machine's PATH is never used. The packaged-app smoke test checks the bundled version.
 
-For an offline or unreleased source version, download that revision's three runner artifacts from CI. Put the runner, `uam-runner.sha256`, `uam-runner.version` and `uam-runner.manifest.json` files in each directory above, or provide the standalone ZIPs with `./build.ps1 -RemoteRunnerArchiveDirectory C:\UAM-helpers -Offline`. Acquisition fails before CMake and names the missing platform or mismatched version. It never substitutes an older helper.
+On Windows, `./build.ps1` acquires the three matching `UAM-runner-<platform>-<architecture>.zip` release assets before configuring the app. Each downloaded or supplied archive must pass `gh attestation verify` against the build provenance the release workflow signs for the exact `v<version>` tag, so the GitHub CLI must be installed and signed in; an archive without that provenance, including one from a release published before attestations, is refused. Existing artifacts are reused only after their SHA-256, exact application version, protocol and source fingerprint pass validation. Releases publish these small archives separately from desktop packages. Local builds and CI use `scripts/acquire_remote_runners.ps1` and the same four-file contract.
+
+For an offline or unreleased source version, download that revision's three runner artifacts from CI. Put the runner, `uam-runner.sha256`, `uam-runner.version` and `uam-runner.manifest.json` files in each directory above, or provide the standalone ZIPs with `./build.ps1 -RemoteRunnerArchiveDirectory C:\UAM-helpers -Offline`. `-Offline` skips the provenance check, so use it only for artifacts you obtained from this repository's CI yourself. Acquisition fails before CMake and names the missing platform or mismatched version. It never substitutes an older helper.
 
 
 ## Tests and release gates

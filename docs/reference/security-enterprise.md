@@ -50,7 +50,9 @@ This document captures the current security posture for Universal Agent Managerâ
 - Chromium web security remains enabled. The UI is served only from the private standard/secure `uam://app/` origin, and resource resolution rejects traversal, links/reparse points, missing files, and paths outside the bundled UI root.
 - JavaScript clipboard access is enabled in CEF. App copy flows prefer explicit app logic and the bounded native clipboard bridge where needed.
 - The privileged bridge validates the exact trusted origin and main frame again in the browser process before dispatching actions.
-- Downloaded nlohmann/json and CEF archives are verified against repository-pinned SHA-256 hashes during configuration.
+- Downloaded nlohmann/json, CEF and Caddy archives are verified against repository-pinned SHA-256 hashes during configuration.
+- Released remote-helper archives carry GitHub build provenance, and `scripts/acquire_remote_runners.ps1` refuses a downloaded or supplied archive that does not verify against the release workflow and its version tag.
+- The remote OpenCode server password stays in memory and is never written to chat files, summaries, backups or exported bundles; loading chats removes one saved by an older build.
 - CI and release workflows generate and validate a CycloneDX SBOM from the locked frontend dependency graph.
 - Exact-artifact smoke jobs compare the packaged React tree with the production build, validate required CEF resources, and launch the isolated macOS and Windows packages.
 

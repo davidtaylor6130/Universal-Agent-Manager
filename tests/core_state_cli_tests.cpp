@@ -2462,6 +2462,27 @@ UAM_TEST(CanonicalUuidValidationRejectsMalformedRunIds)
 	}
 }
 
+UAM_TEST(GeneratedUuidsAreCanonicalVersionFourWithAllRandomBits)
+{
+	std::array<std::uint8_t, 16> ones{};
+	ones.fill(0xff);
+	UAM_ASSERT_EQ(uam::uuid::FormatUuidV4(ones), std::string("ffffffff-ffff-4fff-bfff-ffffffffffff"));
+	UAM_ASSERT_EQ(uam::uuid::FormatUuidV4({}), std::string("00000000-0000-4000-8000-000000000000"));
+	std::array<std::uint8_t, 16> counting{};
+	for (std::size_t index = 0; index < counting.size(); ++index) counting[index] = static_cast<std::uint8_t>(index * 17);
+	UAM_ASSERT_EQ(uam::uuid::FormatUuidV4(counting), std::string("00112233-4455-4677-8899-aabbccddeeff"));
+	// Every platform's generator (the Linux runner shares FormatUuidV4) yields distinct canonical v4 identifiers.
+	std::set<std::string> seen;
+	for (int attempt = 0; attempt < 64; ++attempt)
+	{
+		const std::string uuid = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+		UAM_ASSERT(uam::uuid::IsCanonicalUuid(uuid));
+		UAM_ASSERT_EQ(uuid[14], '4');
+		UAM_ASSERT(std::string_view("89abAB").find(uuid[19]) != std::string_view::npos);
+		UAM_ASSERT(seen.insert(uuid).second);
+	}
+}
+
 UAM_TEST(CodexThreadIdValidatorAcceptsOnlyUuidThreadIds)
 {
 #if UAM_ENABLE_RUNTIME_CODEX_CLI

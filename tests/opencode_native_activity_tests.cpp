@@ -456,7 +456,12 @@ UAM_TEST(OpenCodeNativeCompanionRetiresDeliveredDecisionAfterControllerRestart)
 	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.app.chats.front()));
 	const auto restored = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.app.chats.front().id);
 	UAM_ASSERT(restored.has_value());
+	// The companion password is memory-only: the saved chat never carries it, so the still-live companion keeps its endpoint.
+	UAM_ASSERT(restored->remote_opencode_native_token.empty() && restored->remote_opencode_native_port == 0);
+	const auto endpoint = fixture.Session().opencode_native_companion->endpoint;
 	fixture.app.chats.front() = *restored;
+	fixture.app.chats.front().remote_opencode_native_port = endpoint.port;
+	fixture.app.chats.front().remote_opencode_native_token = endpoint.token;
 	fixture.Until([&] { return fixture.app.chats.front().remote_interaction_responses.size() == 1; });
 	UAM_ASSERT_EQ(fixture.app.chats.front().remote_interaction_responses.front().request_id_json, Json("different-native:request").dump());
 	UAM_ASSERT_EQ(fixture.replies->load(), 0);
