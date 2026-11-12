@@ -15,6 +15,8 @@
 .uam-sb-collapse__inner { min-height: 0; overflow: hidden; }
 /* A lifted row may follow the pointer past its list's end; the clip exists only for the collapse animation. */
 .uam-sb-collapse__inner:has([data-sort-dragging]) { overflow: visible; }
+/* Siblings of a dragged row glide aside (sortableDrag.ts). */
+[data-sorting] > [data-sort-id]:not([data-sort-dragging]) { transition: transform var(--dur-base) var(--ease); }
 [data-drop-collection-id] { transition: background var(--dur-fast) var(--ease); }
 .uam-sb-drop-target { background: var(--sidebar-item-hover); outline: 1px solid var(--accent); outline-offset: -1px; }
 @media (forced-colors: active) {

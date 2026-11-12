@@ -171,6 +171,7 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
   let offsets = new Map<string, number>()
   let frame = 0
   let layoutKey = ''
+  const shifted = new Map<HTMLElement, number>()
   let cancelledByKey = false
 
   const scrollTop = () => scroller?.scrollTop ?? 0
@@ -193,9 +194,13 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
     // Siblings only move when the gap does.
     if (key === layoutKey) return
     layoutKey = key
+    // Only rows whose offset changes are written, so a long list costs little per move.
     for (const sibling of rows) {
       if (sibling === row) continue
-      sibling.style.transform = `translate3d(0, ${preview.offsets.get(sortId(sibling)) ?? 0}px, 0)`
+      const next = preview.offsets.get(sortId(sibling)) ?? 0
+      if ((shifted.get(sibling) ?? 0) === next) continue
+      shifted.set(sibling, next)
+      sibling.style.transform = next ? `translate3d(0, ${next}px, 0)` : ''
     }
   }
   const autoScroll = () => {
@@ -224,7 +229,8 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
       const box = element.getBoundingClientRect()
       return { id: sortId(element), top: box.top + startScroll, height: box.height }
     })
-    for (const sibling of rows) if (sibling !== row) sibling.style.transition = 'transform var(--dur-base) var(--ease)'
+    // One attribute gives every sibling its glide (sidebar.css) instead of a style write per row.
+    row.parentElement?.setAttribute('data-sorting', '')
     row.dataset.sortDragging = ''
     row.style.position = 'relative'
     row.style.zIndex = '20'
@@ -252,14 +258,18 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
     frame = 0
     doc.body.style.cursor = ''
   }
-  const finish = () => { clearStyles(rows); busy = false }
+  const finish = () => {
+    // Dropping the glide and the transforms in one pass changes nothing on screen when the DOM already matches.
+    row.parentElement?.removeAttribute('data-sorting')
+    clearStyles([row, ...shifted.keys()])
+    busy = false
+  }
   /** Glides every row back to where it started, then hands styles back to React. */
   const settleBack = () => {
-    for (const element of rows) {
-      element.style.transition = 'transform var(--dur-base) var(--ease-out-soft), box-shadow var(--dur-base) var(--ease)'
-      element.style.transform = ''
-      element.style.boxShadow = ''
-    }
+    row.style.transition = 'transform var(--dur-base) var(--ease-out-soft), box-shadow var(--dur-base) var(--ease)'
+    row.style.transform = ''
+    row.style.boxShadow = ''
+    for (const element of shifted.keys()) element.style.transform = ''
     if (motionAllowed()) win.setTimeout(finish, scaledMs(180) + 20)
     else finish()
   }
@@ -323,7 +333,7 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
       afterOrder(rows, order, (shown) => {
         if (!shown) { settleBack(); return }
         // The DOM now matches what the transforms showed, so dropping them changes nothing on screen.
-        for (const element of rows) element.style.transition = 'none'
+        row.style.transition = 'none'
         finish()
       })
     })
