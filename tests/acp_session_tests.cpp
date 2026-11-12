@@ -9872,7 +9872,9 @@ UAM_TEST(DefaultAndAcceptEditsPermissionModesStayWithinTheirExactBoundary)
 	UAM_ASSERT(std::ranges::any_of(raw_session->diagnostics, [](const auto& diagnostic) {
 		return diagnostic.request_id == "5" && diagnostic.reason == "rejected_by_access_ceiling";
 	}));
-	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), request(6, "read")));
+	nlohmann::json named_read = nlohmann::json::parse(request(6, "read"));
+	named_read["params"]["toolCall"]["rawInput"] = {{"file_path", "src/main.cpp"}}; // A read must name what it reads.
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), named_read.dump()));
 	UAM_ASSERT(raw_session->pending_permission.request_id_json.empty());
 	UAM_ASSERT(std::ranges::any_of(raw_session->diagnostics, [](const auto& diagnostic) {
 		return diagnostic.request_id == "6" && diagnostic.reason == uam::acp_statuses::kAutoApproved;

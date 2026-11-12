@@ -54,8 +54,10 @@ namespace uam::companion
 		if (action == "setAcpConfigOption")
 		{
 			const std::string id = payload.contains("configId") && payload["configId"].is_string() ? uam::strings::ToLowerAscii(payload["configId"].get<std::string>()) : std::string{};
-			for (const char* sensitive : {"mode", "approval", "permission", "sandbox", "autonomy", "yolo"})
-				if (id.find(sensitive) != std::string::npos) return "Change the provider option " + id;
+			for (const std::string_view sensitive : {"mode", "approval", "permission", "sandbox", "autonomy", "yolo"})
+				for (std::size_t at = id.find(sensitive); at != std::string::npos; at = id.find(sensitive, at + 1))
+					if (sensitive != "mode" || at + 4 == id.size() || id[at + 4] != 'l') // "model" is not a mode.
+						return "Change the provider option " + id;
 			return {};
 		}
 		if (chat == nullptr) return {};

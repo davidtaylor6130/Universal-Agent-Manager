@@ -769,7 +769,9 @@ namespace
 		// Provider-native options that carry permission or sandbox modes are confirmed; others are not.
 		for (const char* id : {"mode", "approval_policy", "permissionMode", "sandbox"})
 			Require(gated("setAcpConfigOption", {{"chatId", "c"}, {"configId", id}, {"value", "bypassPermissions"}}), "Mode-like provider options need confirmation");
-		Require(!gated("setAcpConfigOption", {{"chatId", "c"}, {"configId", "model"}, {"value", "fast"}}), "Other provider options apply directly");
+		Require(!gated("setAcpConfigOption", {{"chatId", "c"}, {"configId", "model"}, {"value", "fast"}}) &&
+		    !gated("setAcpConfigOption", {{"chatId", "c"}, {"configId", "reasoning_effort"}, {"value", "high"}}), "Other provider options apply directly");
+		Require(gated("setAcpConfigOption", {{"chatId", "c"}, {"configId", "model_mode"}, {"value", "auto"}}), "A mode named after the model is still a mode");
 		for (const char* action : {"sendAcpPrompt", "setChatModel", "renameSession"})
 			Require(!gated(action, {{"commandSafetyTier", "yolo"}, {"enabled", true}}), "Other actions are not gated");
 	}
