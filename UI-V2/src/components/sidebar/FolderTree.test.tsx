@@ -28,6 +28,7 @@ const now = new Date('2026-01-01T12:00:00.000Z')
 const originalAddFolder = useAppStore.getState().addFolder
 const originalListRemoteDirectories = useAppStore.getState().listRemoteDirectories
 const originalSetActiveSession = useAppStore.getState().setActiveSession
+const originalSetSidebarChatOrder = useAppStore.getState().setSidebarChatOrder
 const originalDeleteFolder = useAppStore.getState().deleteFolder
 const originalDeleteFolders = useAppStore.getState().deleteFolders
 
@@ -71,7 +72,6 @@ describe('FolderTree', () => {
       resourceCollections: [],
       sidebarPinnedChatOrder: [],
       sidebarActiveChatOrder: [],
-      sidebarActiveChatOrderSavedAtMs: 0,
 	  executionHosts: [
 		{ id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
 	  ],
@@ -1180,27 +1180,68 @@ describe('FolderTree', () => {
     host.remove()
   })
 
-  it('brings a placed Active chat back on top when it returns after Done', () => {
-    const savedAt = Date.now() - 60 * 60_000
-    const at = (offset: number) => new Date(savedAt + offset)
-    const chat = (index: number, extra: Partial<Session>) => ({ ...makeSession(index), createdAt: at(0), updatedAt: at(10 * 60_000 - index), lastOpenedAt: at(0), ...extra })
-    useAppStore.setState({
-      // The user placed chat-2 above chat-1. chat-1 was then marked Done and has new work since.
-      sessions: [chat(1, { settledAt: at(60_000).toISOString() }), chat(2, {})],
-      sidebarActiveChatOrder: ['chat-2', 'chat-1'],
-      sidebarActiveChatOrderSavedAtMs: savedAt,
-    })
+  it('brings an Active chat that left and came back to the top, and keeps chats that stayed in place', () => {
+    const base = Date.now() - 60 * 60_000
+    const at = (minutes: number) => new Date(base + minutes * 60_000)
+    const chat = (index: number, updated: number, extra: Partial<Session> = {}) => ({ ...makeSession(index), createdAt: at(0), updatedAt: at(updated), lastOpenedAt: at(0), ...extra })
+    // The user placed chat-2 above chat-1 and chat-3.
+    useAppStore.setState({ sessions: [chat(1, 30), chat(2, 20), chat(3, 10)], sidebarActiveChatOrder: ['chat-2', 'chat-1', 'chat-3'] })
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<FolderTree searchQuery="" />))
     const active = () => [...host.querySelectorAll<HTMLElement>('#active-chat-list [data-sort-id]')].map((row) => row.dataset.sortId)
-    expect(active()).toEqual(['chat-1', 'chat-2'])
+    expect(active()).toEqual(['chat-2', 'chat-1', 'chat-3'])
 
-    // Done before the order was saved does not count as returning.
-    act(() => useAppStore.setState({ sessions: [chat(1, { settledAt: at(-60_000).toISOString() }), chat(2, {})] }))
-    expect(active()).toEqual(['chat-2', 'chat-1'])
+    // chat-1 is marked Done and leaves Active: it drops out of the saved order; the others keep theirs.
+    act(() => useAppStore.setState({ sessions: [chat(1, 30, { settledAt: at(40).toISOString() }), chat(2, 20), chat(3, 10)] }))
+    expect(active()).toEqual(['chat-2', 'chat-3'])
+    expect(useAppStore.getState().sidebarActiveChatOrder).toEqual(['chat-2', 'chat-3'])
 
+    // New work brings it back, on top like a new arrival.
+    act(() => useAppStore.setState({ sessions: [chat(1, 50, { settledAt: at(40).toISOString() }), chat(2, 20), chat(3, 10)] }))
+    expect(active()).toEqual(['chat-1', 'chat-2', 'chat-3'])
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('drops an unpinned chat from the saved Pinned order', () => {
+    const settled = new Date(now).toISOString()
+    useAppStore.setState({ sessions: [1, 2].map((index) => ({ ...makeSession(index), isPinned: true, settledAt: settled })), sidebarPinnedChatOrder: ['chat-2', 'chat-1'] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-2' ? { ...session, isPinned: false } : session) })))
+    expect(useAppStore.getState().sidebarPinnedChatOrder).toEqual(['chat-1'])
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('drops the held offsets as soon as an optimistic save shows the new order', async () => {
+    const settled = new Date(now).toISOString()
+    // The order shows at once but native has not answered yet.
+    const setSidebarChatOrder = vi.fn((list: 'pinned' | 'active', order: string[]) => {
+      if (list === 'pinned') useAppStore.setState({ sidebarPinnedChatOrder: order })
+      return new Promise<boolean>(() => {})
+    })
+    useAppStore.setState({ sessions: [1, 2, 3].map((index) => ({ ...makeSession(index), isPinned: true, settledAt: settled })), setSidebarChatOrder })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const pinned = () => [...host.querySelectorAll<HTMLElement>('#pinned-chat-list [data-sort-id]')]
+    pinned().forEach((row, index) => stubRect(row, index * 30, 30))
+    const [first, second, third] = pinned()
+    act(() => pointer(first.querySelector('[data-session-id]')!, 'pointerdown', 10, 10))
+    act(() => pointer(document, 'pointermove', 10, 85))
+    await act(async () => { pointer(document, 'pointerup', 10, 85); await Promise.resolve() })
+    expect(pinned().map((row) => row.dataset.sortId)).toEqual(['chat-2', 'chat-3', 'chat-1'])
+    expect([first, second, third].map((row) => row.style.transform)).toEqual(['', '', ''])
+    expect(host.querySelector('#pinned-chat-list')?.hasAttribute('data-sorting')).toBe(false)
+    await releaseClickGuard()
+    useAppStore.setState({ setSidebarChatOrder: originalSetSidebarChatOrder })
     act(() => root.unmount())
     host.remove()
   })
@@ -1317,6 +1358,8 @@ describe('FolderTree', () => {
     expect(collections.find((collection) => collection.id === 'work')?.references).toEqual([])
     expect(collections.find((collection) => collection.id === 'home')?.references.map((reference) => reference.target)).toEqual(['project'])
     expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Project moved into Home')
+    // The row left its list, but the list's glide is still switched off.
+    expect(document.querySelector('[data-sorting]')).toBeNull()
     await releaseClickGuard()
 
     act(() => root.unmount())

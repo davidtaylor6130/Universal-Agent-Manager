@@ -49,10 +49,6 @@ describe('applyManualOrder', () => {
     expect(applyManualOrder(['e', 'a', 'd', 'b', 'c'], ['b', 'c', 'a'])).toEqual(['e', 'd', 'b', 'c', 'a'])
   })
 
-  it('puts ids reported as returned since the save back on top', () => {
-    expect(applyManualOrder(['a', 'b', 'c'], ['c', 'b', 'a'], (id) => id === 'a')).toEqual(['a', 'c', 'b'])
-  })
-
   it('ignores saved ids that are not in the list', () => {
     expect(applyManualOrder(['a', 'b'], ['gone', 'b', 'a'])).toEqual(['b', 'a'])
   })

@@ -1121,8 +1121,6 @@ struct AppSettings
 	// Manual sidebar order of Pinned and Active chat ids; empty keeps the default (most recent first).
 	std::vector<std::string> sidebar_pinned_chat_order;
 	std::vector<std::string> sidebar_active_chat_order;
-	// When the Active order was last saved (Unix ms); a placed chat marked Done or snoozed after it returns on top.
-	std::int64_t sidebar_active_chat_order_saved_at_ms = 0;
 	bool steer_active_turn_on_send = false;
 	bool git_enabled = true;
 	bool git_auto_worktree = true;

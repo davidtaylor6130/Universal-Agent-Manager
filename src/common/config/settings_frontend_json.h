@@ -113,7 +113,6 @@ namespace uam::settings_frontend_json
 		settings_json["showWorktreePathInSidebar"] = settings.show_worktree_path_in_sidebar;
 		settings_json["sidebarPinnedChatOrder"] = settings.sidebar_pinned_chat_order;
 		settings_json["sidebarActiveChatOrder"] = settings.sidebar_active_chat_order;
-		settings_json["sidebarActiveChatOrderSavedAtMs"] = settings.sidebar_active_chat_order_saved_at_ms;
 		settings_json["steerActiveTurnOnSend"] = settings.steer_active_turn_on_send;
 		settings_json["gitEnabled"] = settings.git_enabled;
 		settings_json["gitAutoWorktree"] = settings.git_auto_worktree;

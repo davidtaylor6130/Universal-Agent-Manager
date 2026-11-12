@@ -3099,7 +3099,6 @@ UAM_TEST(SettingsStorePersistsSidebarChatOrder)
 	AppSettings settings;
 	settings.sidebar_pinned_chat_order = {" chat-b ", "chat-a", "", "chat-b"};
 	settings.sidebar_active_chat_order = {"chat-c", std::string(300, 'x'), "chat-a"};
-	settings.sidebar_active_chat_order_saved_at_ms = 1767225600123;
 
 	UAM_ASSERT(SettingsStore::Save(settings_file, settings));
 	AppSettings loaded;
@@ -3110,8 +3109,6 @@ UAM_TEST(SettingsStorePersistsSidebarChatOrder)
 	const nlohmann::json frontend = uam::settings_frontend_json::SerializeCommonSettingsFields(loaded);
 	UAM_ASSERT_EQ(frontend["sidebarPinnedChatOrder"], nlohmann::json::array({"chat-b", "chat-a"}));
 	UAM_ASSERT_EQ(frontend["sidebarActiveChatOrder"], nlohmann::json::array({"chat-c", "chat-a"}));
-	UAM_ASSERT_EQ(loaded.sidebar_active_chat_order_saved_at_ms, static_cast<std::int64_t>(1767225600123));
-	UAM_ASSERT_EQ(frontend["sidebarActiveChatOrderSavedAtMs"], 1767225600123);
 
 	// A settings file from before manual ordering loads with the default order.
 	AppSettings legacy;
@@ -3119,7 +3116,6 @@ UAM_TEST(SettingsStorePersistsSidebarChatOrder)
 	SettingsStore::Load(settings_file, legacy);
 	UAM_ASSERT(legacy.sidebar_pinned_chat_order.empty());
 	UAM_ASSERT(legacy.sidebar_active_chat_order.empty());
-	UAM_ASSERT_EQ(legacy.sidebar_active_chat_order_saved_at_ms, static_cast<std::int64_t>(0));
 }
 
 UAM_TEST(SettingsStorePersistsNativeImportFilters)

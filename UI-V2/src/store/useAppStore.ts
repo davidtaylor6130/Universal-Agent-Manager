@@ -120,7 +120,6 @@ function deserializeState(
     showWorktreePathInSidebar: boolean
     sidebarPinnedChatOrder: string[]
     sidebarActiveChatOrder: string[]
-    sidebarActiveChatOrderSavedAtMs: number
     steerActiveTurnOnSend: boolean
     gitEnabled?: boolean
     svnEnabled?: boolean
@@ -345,7 +344,6 @@ function deserializeState(
     showWorktreePathInSidebar: cpp.settings.showWorktreePathInSidebar ?? true,
     sidebarPinnedChatOrder: cpp.settings.sidebarPinnedChatOrder ?? [],
     sidebarActiveChatOrder: cpp.settings.sidebarActiveChatOrder ?? [],
-    sidebarActiveChatOrderSavedAtMs: cpp.settings.sidebarActiveChatOrderSavedAtMs ?? 0,
     steerActiveTurnOnSend: cpp.settings.steerActiveTurnOnSend ?? false,
     gitEnabled: typeof cpp.settings.gitEnabled === 'boolean' ? cpp.settings.gitEnabled : true,
     svnEnabled: typeof cpp.settings.svnEnabled === 'boolean' ? cpp.settings.svnEnabled : true,
@@ -593,7 +591,6 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     showWorktreePathInSidebar: patch.settings?.showWorktreePathInSidebar ?? current.showWorktreePathInSidebar,
     sidebarPinnedChatOrder: patch.settings?.sidebarPinnedChatOrder ?? current.sidebarPinnedChatOrder,
     sidebarActiveChatOrder: patch.settings?.sidebarActiveChatOrder ?? current.sidebarActiveChatOrder,
-    sidebarActiveChatOrderSavedAtMs: patch.settings?.sidebarActiveChatOrderSavedAtMs ?? current.sidebarActiveChatOrderSavedAtMs,
     steerActiveTurnOnSend: patch.settings?.steerActiveTurnOnSend ?? current.steerActiveTurnOnSend,
     gitEnabled: typeof patch.settings?.gitEnabled === 'boolean' ? patch.settings.gitEnabled : current.gitEnabled,
     svnEnabled: typeof patch.settings?.svnEnabled === 'boolean' ? patch.settings.svnEnabled : current.svnEnabled,
@@ -862,7 +859,6 @@ export const useAppStore = create<AppState>((set, get) => {
           showWorktreePathInSidebar: current.showWorktreePathInSidebar,
           sidebarPinnedChatOrder: current.sidebarPinnedChatOrder,
           sidebarActiveChatOrder: current.sidebarActiveChatOrder,
-          sidebarActiveChatOrderSavedAtMs: current.sidebarActiveChatOrderSavedAtMs,
           steerActiveTurnOnSend: current.steerActiveTurnOnSend,
         gitEnabled: current.gitEnabled,
         svnEnabled: current.svnEnabled,
@@ -1378,7 +1374,6 @@ export const useAppStore = create<AppState>((set, get) => {
       showWorktreePathInSidebar: current.showWorktreePathInSidebar,
       sidebarPinnedChatOrder: current.sidebarPinnedChatOrder,
       sidebarActiveChatOrder: current.sidebarActiveChatOrder,
-      sidebarActiveChatOrderSavedAtMs: current.sidebarActiveChatOrderSavedAtMs,
       steerActiveTurnOnSend: current.steerActiveTurnOnSend,
       gitEnabled: current.gitEnabled,
       svnEnabled: current.svnEnabled,

@@ -32,15 +32,14 @@ export function sortPreview(rows: readonly SortRow[], draggedId: string, probeY:
 
 /**
  * Applies a saved manual order to a list's default order. Ids the user has not placed yet (new pins, chats newly
- * active) and ids `returned` reports as back since the save stay on top in their default order; placed ids follow in
- * the saved order. An empty save is the default.
+ * active) stay on top in their default order; placed ids follow in the saved order. An empty save is the default.
+ * ponytail: an id that leaves the list keeps its saved slot until the next reorder saves the visible list.
  */
-export function applyManualOrder(ids: readonly string[], saved: readonly string[], returned?: (id: string) => boolean): readonly string[] {
+export function applyManualOrder(ids: readonly string[], saved: readonly string[]): readonly string[] {
   if (saved.length === 0) return ids
   const rank = new Map(saved.map((id, index) => [id, index]))
-  const isPlaced = (id: string) => rank.has(id) && !returned?.(id)
-  const fresh = ids.filter((id) => !isPlaced(id))
-  const placed = ids.filter(isPlaced).sort((a, b) => rank.get(a)! - rank.get(b)!)
+  const fresh = ids.filter((id) => !rank.has(id))
+  const placed = ids.filter((id) => rank.has(id)).sort((a, b) => rank.get(a)! - rank.get(b)!)
   return [...fresh, ...placed]
 }
 
@@ -171,6 +170,8 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
   let offsets = new Map<string, number>()
   let frame = 0
   let layoutKey = ''
+  // The row's list, kept so cleanup reaches it even after the row moved elsewhere (into a collection).
+  let list: HTMLElement | null = null
   const shifted = new Map<HTMLElement, number>()
   let cancelledByKey = false
 
@@ -230,7 +231,8 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
       return { id: sortId(element), top: box.top + startScroll, height: box.height }
     })
     // One attribute gives every sibling its glide (sidebar.css) instead of a style write per row.
-    row.parentElement?.setAttribute('data-sorting', '')
+    list = row.parentElement
+    list?.setAttribute('data-sorting', '')
     row.dataset.sortDragging = ''
     row.style.position = 'relative'
     row.style.zIndex = '20'
@@ -260,7 +262,7 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
   }
   const finish = () => {
     // Dropping the glide and the transforms in one pass changes nothing on screen when the DOM already matches.
-    row.parentElement?.removeAttribute('data-sorting')
+    list?.removeAttribute('data-sorting')
     clearStyles([row, ...shifted.keys()])
     busy = false
   }
@@ -322,9 +324,27 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
     row.style.pointerEvents = ''
     if (!changed) { settleBack(); return }
     let settled = false
-    const timeout = win.setTimeout(() => { settled = true; settleBack() }, SAVE_TIMEOUT_MS)
+    const timeout = win.setTimeout(() => { settled = true; observer?.disconnect(); settleBack() }, SAVE_TIMEOUT_MS)
+    // An optimistic save re-renders the list in its new order before it answers. Drop the held offsets the moment
+    // the DOM shows that order (before the next paint), so rows are never shifted twice.
+    const shown = () => {
+      const live = Array.from(list?.children ?? []).filter((element) => (element as HTMLElement).dataset.sortId !== undefined).map(sortId)
+      return order.every((entry, index) => live[index] === entry)
+    }
+    const observer = list && dropTarget === null && typeof MutationObserver === 'function'
+      ? new MutationObserver(() => {
+        if (settled || !shown()) return
+        settled = true
+        observer?.disconnect()
+        win.clearTimeout(timeout)
+        row.style.transition = 'none'
+        finish()
+      })
+      : null
+    observer?.observe(list!, { childList: true })
     void Promise.resolve(options.onDrop({ order, changed, target: dropTarget })).catch(() => false).then((saved) => {
       win.clearTimeout(timeout)
+      observer?.disconnect()
       if (settled) return
       settled = true
       if (!saved) { settleBack(); return }

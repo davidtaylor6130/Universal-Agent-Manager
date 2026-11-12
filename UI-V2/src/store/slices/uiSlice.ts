@@ -149,7 +149,6 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
     showWorktreePathInSidebar: true,
     sidebarPinnedChatOrder: [] as string[],
     sidebarActiveChatOrder: [] as string[],
-    sidebarActiveChatOrderSavedAtMs: 0,
     steerActiveTurnOnSend: false,
     nativeImportExcludedTitlePrefixes: [] as string[],
     nativeImportExcludedDirectories: [] as string[],
@@ -339,14 +338,9 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
 
     setSidebarChatOrder: async (list: 'pinned' | 'active', order: string[]) => {
       const field = list === 'pinned' ? 'sidebarPinnedChatOrder' : 'sidebarActiveChatOrder'
-      // Native stamps an Active save with its own clock; the optimistic stamp keeps returned chats right meanwhile.
-      const fields: string[] = list === 'active' ? [field, 'sidebarActiveChatOrderSavedAtMs'] : [field]
-      const state = get()
-      const previous = list === 'active'
-        ? { sidebarActiveChatOrder: state.sidebarActiveChatOrder, sidebarActiveChatOrderSavedAtMs: state.sidebarActiveChatOrderSavedAtMs }
-        : { sidebarPinnedChatOrder: state.sidebarPinnedChatOrder }
-      const optimisticRevision = rememberOptimisticFields(fields)
-      set(list === 'active' ? { sidebarActiveChatOrder: order, sidebarActiveChatOrderSavedAtMs: Date.now() } : { sidebarPinnedChatOrder: order })
+      const previous = { [field]: get()[field] }
+      const optimisticRevision = rememberOptimisticFields([field])
+      set({ [field]: order })
       if (!isCefContext()) return true
       const response = await sendToCEF({ action: 'setSidebarChatOrder', payload: { list, order }, requestId: createRequestId('setSidebarChatOrder') })
       if (!response.ok) {

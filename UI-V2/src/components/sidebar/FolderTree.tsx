@@ -254,7 +254,6 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   }
   const pinnedChatOrder = useAppStore((s) => s.sidebarPinnedChatOrder)
   const activeChatOrder = useAppStore((s) => s.sidebarActiveChatOrder)
-  const activeChatOrderSavedAtMs = useAppStore((s) => s.sidebarActiveChatOrderSavedAtMs)
   // Pinned and Active rows reach the latest drag and keyboard handlers through a stable context value.
   const chatSortRef = useRef<{ start: (list: ChatSortList, sessionId: string, event: ReactPointerEvent<HTMLElement>) => void; move: (list: ChatSortList, sessionId: string, direction: -1 | 1) => void } | null>(null)
   const chatSort = useMemo(() => ({
@@ -899,15 +898,25 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     })
   }
 
-  // A placed Active chat that left (Done, Clear all, snooze) after the order was saved and is back shows on top again.
-  // ponytail: leaving by three days of inactivity sets no timestamp, so such a chat returns to its saved place.
-  const returnedToActive = (id: string) => {
-    const session = sessionsById.get(id)
-    const settledMs = session?.settledAt ? Date.parse(session.settledAt) : NaN
-    const wokeMs = session?.snoozedUntilMs ?? 0
-    return settledMs > activeChatOrderSavedAtMs || (wokeMs > activeChatOrderSavedAtMs && wokeMs <= snoozeNowMs)
-  }
-  const chatSortIds = { pinned: applyManualOrder(searchModel.pinnedSessionIds, pinnedChatOrder), active: applyManualOrder(searchModel.activeSessionIds, activeChatOrder, returnedToActive) }
+  const chatSortIds = { pinned: applyManualOrder(searchModel.pinnedSessionIds, pinnedChatOrder), active: applyManualOrder(searchModel.activeSessionIds, activeChatOrder) }
+  // A placed chat that leaves Active (Done, Clear all, snooze, inactivity) or is unpinned drops out of the saved order,
+  // so when it comes back it arrives on top like any new arrival. Chats that stay keep their place.
+  // ponytail: a refused prune is not retried in this session; the next reorder saves the visible list anyway.
+  const triedPrunesRef = useRef(new Set<string>())
+  useEffect(() => {
+    if (searchModel.isSearching || companionContext) return
+    const active = new Set(searchModel.activeSessionIds)
+    const prune = (list: ChatSortList, saved: readonly string[], gone: (id: string) => boolean) => {
+      const kept = saved.filter((id) => !gone(id))
+      const key = `${list}:${kept.join('\n')}`
+      if (kept.length === saved.length || triedPrunesRef.current.has(key)) return
+      triedPrunesRef.current.add(key)
+      void useAppStore.getState().setSidebarChatOrder(list, kept)
+    }
+    // Only chats that still exist are judged, so a chat list that has not loaded yet prunes nothing.
+    prune('active', activeChatOrder, (id) => sessionsById.has(id) && !active.has(id))
+    prune('pinned', pinnedChatOrder, (id) => sessionsById.get(id)?.isPinned === false)
+  }, [activeChatOrder, companionContext, pinnedChatOrder, searchModel.activeSessionIds, searchModel.isSearching, sessionsById])
   const chatListElement = (list: ChatSortList) => document.getElementById(list === 'pinned' ? 'pinned-chat-list' : 'active-chat-list')
   const chatName = (sessionId: string) => sessionsById.get(sessionId)?.name || 'Chat'
   const announceChatPosition = (sessionId: string, ids: readonly string[]) =>

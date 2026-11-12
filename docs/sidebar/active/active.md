@@ -4,6 +4,6 @@ Active Chats brings running conversations, new completed work and chats needing 
 
 Subagent chats do not appear as separate Active entries; their main chat remains the attention and return destination, with children available beneath it in [All Chats](../all-chats/all-chats.md).
 
-Active chats can be reordered like [Pinned chats](../pinned/pinned.md), by drag or Arrow Up/Down, and the order is saved in the app's settings. Reordering does not change why a chat is in the section or when it leaves. A chat that newly enters goes above the ones already placed, in most-recent-first order, which is also the whole order until it is first changed. A chat that leaves through Done, Clear all or Snooze after the order was saved, then comes back, returns on top like a new arrival; a chat that left only by the three-day inactivity rule returns to its saved place.
+Active chats can be reordered like [Pinned chats](../pinned/pinned.md), by drag or Arrow Up/Down, and the order is saved in the app's settings. Reordering does not change why a chat is in the section or when it leaves. A chat that newly enters goes above the ones already placed, in most-recent-first order, which is also the whole order until it is first changed. A chat that leaves the section, whether through Done, Clear all, Snooze or inactivity, loses its saved place, so when it comes back it arrives on top like any new chat; a chat that stays, such as a running chat after Clear all, keeps its place.
 
 [Activity states](activity-status.md) · [Snoozing](../snoozed/snoozed.md).
