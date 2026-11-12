@@ -134,7 +134,13 @@ inline RiskLevel ClassifyCommand(std::string_view command, const ReadScope& scop
 	{
 		if (assignment(words[first])) { ++first; continue; }
 		if (std::ranges::find(wrappers, words[first]) == wrappers.end()) break;
-		for (++first; first < words.size() && (words[first].starts_with('-') || words[first].find_first_not_of("0123456789.smhd") == std::string_view::npos); ++first) {}
+		// Options, numbers, durations and masks start with '-' or a digit; a signal name follows -s/--signal.
+		for (++first; first < words.size(); ++first)
+		{
+			const std::string_view word = words[first];
+			const bool signal = (words[first - 1] == "-s" || words[first - 1] == "--signal") && std::ranges::all_of(word, [](char ch) { return ch >= 'a' && ch <= 'z'; });
+			if (!word.starts_with('-') && !(word.front() >= '0' && word.front() <= '9') && !signal) break;
+		}
 	}
 	if (first == words.size()) return RiskLevel::WarnHigh;
 	std::string_view executable = words[first];

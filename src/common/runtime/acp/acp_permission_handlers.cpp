@@ -121,8 +121,8 @@ namespace
 	/// shell startup files: writing one changes what later code or agents may do, so no automatic path approves it.</summary>
 	bool ProtectedWorkspacePath(const std::filesystem::path& relative)
 	{
-		constexpr auto directories = std::to_array<std::string_view>({".git", ".claude", ".gemini", ".codex", ".opencode", ".copilot", ".vscode", ".agents"});
-		constexpr auto files = std::to_array<std::string_view>({".mcp.json", "opencode.json", "opencode.jsonc", ".envrc", ".gitmodules", ".gitattributes"});
+		constexpr auto directories = std::to_array<std::string_view>({".git", ".husky", ".claude", ".gemini", ".codex", ".opencode", ".copilot", ".vscode", ".agents"});
+		constexpr auto files = std::to_array<std::string_view>({".mcp.json", "opencode.json", "opencode.jsonc", ".envrc", ".gitmodules", ".gitattributes", ".pre-commit-config.yaml", "lefthook.yml"});
 		for (const std::filesystem::path& part : relative)
 		{
 			std::string name = uam::strings::ToLowerAscii(uam::paths::PortablePathString(part));

@@ -2849,7 +2849,8 @@ UAM_TEST(CommandSafetyClassifiesReadsWritesNetworkAndTierEnforcement)
 	UAM_ASSERT_EQ(ClassifyCommand(""), RiskLevel::WarnHigh);
 	// Assignments, wrappers and versioned interpreters do not hide the program that runs.
 	for (const char* wrapped : {"FOO=1 rm -rf src", "command rm -rf src", "timeout 5 python3 -c 1", "nice -n 10 curl example.invalid",
-	         "python3.12 -c 1", "perl5.36 -e 1", "FOO=1 BAR=2 node22 -e 1", "time bash run.sh", "env"})
+	         "python3.12 -c 1", "perl5.36 -e 1", "FOO=1 BAR=2 node22 -e 1", "time bash run.sh", "env",
+	         "time sh evil.sh", "nice sh x.sh", "timeout 5 ssh host cmd", "taskset 0x1 rm -rf src", "timeout -s KILL 5 rm -rf src"})
 		UAM_ASSERT_EQ(ClassifyCommand(wrapped), RiskLevel::WarnHigh);
 	UAM_ASSERT_EQ(ClassifyCommand("FOO=1 npm test"), RiskLevel::Warn);
 	// A reader the filter refused (a provider drive, a Git object outside the workspace) goes to the user.
@@ -2917,7 +2918,7 @@ UAM_TEST(CommandSafetyDecisionScopesAcceptEditsAndSendsHighRiskToTheUser)
 	UAM_ASSERT(!accepted({{"file_path", ".git./config"}}));
 	// Agent and editor configuration grants permissions, hooks or tasks to later agents.
 	for (const char* protected_file : {".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".gemini/settings.json", "opencode.json",
-	         ".codex/config.toml", ".vscode/tasks.json", ".envrc", "src/.copilot/config.json"})
+	         ".codex/config.toml", ".vscode/tasks.json", ".envrc", "src/.copilot/config.json", ".husky/pre-commit", ".pre-commit-config.yaml"})
 		UAM_ASSERT(!accepted({{"file_path", protected_file}}));
 	// A Codex rename names its destination separately from the source.
 	UAM_ASSERT(accepted({{"changes", {{{"path", "src/a.cpp"}, {"kind", {{"type", "update"}, {"move_path", "src/b.cpp"}}}}}}}));
