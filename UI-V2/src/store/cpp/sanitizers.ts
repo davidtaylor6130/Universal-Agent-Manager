@@ -1891,9 +1891,9 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         .filter((id) => id !== 'build' && id !== 'plan' && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(id))))
         .slice(0, 64)
     : []
-  // Native keeps at most 500 ids per list (settings_normalization.h).
+  // Native keeps at most 2,000 ids per list (settings_normalization.h).
   const sidebarChatOrder = (raw: unknown) => Array.isArray(raw)
-    ? Array.from(new Set(raw.filter((id): id is string => typeof id === 'string').map((id) => id.trim()).filter((id) => id && id.length <= 256))).slice(0, 500)
+    ? Array.from(new Set(raw.filter((id): id is string => typeof id === 'string').map((id) => id.trim()).filter((id) => id && id.length <= 256))).slice(0, 2000)
     : []
   const importRules = (raw: unknown) => Array.isArray(raw)
     ? Array.from(new Set(raw.filter((rule): rule is string => typeof rule === 'string').map((rule) => rule.trim())

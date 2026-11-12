@@ -28,7 +28,7 @@ import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../type
 import { chatGridLeaves, chatPaneColors, readChatGridLayout, setChatInLeaf, subscribeChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
 import { RowSubmenu } from './RowSubmenu'
-import { applyManualOrder, ChatSortContext, glideAfter, isSorting, startSortableDrag, type ChatSortList } from './sortableDrag'
+import { applyManualOrder, ChatSortContext, glideAfter, isSorting, MAX_SORTED_CHATS, startSortableDrag, type ChatSortList } from './sortableDrag'
 import { ChatSelectionContext, MenuDivider, SingleOnlyMenuItem, type ChatSelection } from './bulkActions'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import type { ResourceCollection } from '../../types/resourceCollection'
@@ -906,7 +906,10 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const showPaneDropTarget = (leafId: string | null) => {
     for (const element of document.querySelectorAll<HTMLElement>('[data-leaf-id]')) element.toggleAttribute('data-pointer-drop', element.dataset.leafId === leafId)
   }
-  const saveChatOrder = (list: ChatSortList, ids: string[]) => useAppStore.getState().setSidebarChatOrder(list, ids)
+  // Active saves exactly what it shows, so a chat that left drops its old place. A snoozed pin is hidden from
+  // Pinned for a while, so it keeps its saved place after the visible ones.
+  const saveChatOrder = (list: ChatSortList, ids: string[]) => useAppStore.getState().setSidebarChatOrder(list,
+    list === 'pinned' ? [...ids, ...pinnedChatOrder.filter((id) => !ids.includes(id))] : ids)
   chatSortRef.current = {
     start: (list, sessionId, event) => startSortableDrag(event, {
       // Dragging a Pinned or Active chat onto a chat pane still opens it there, as dragging any chat row does.
@@ -933,7 +936,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       if (isSorting()) return
       const ids = [...chatSortIds[list]]
       const index = ids.indexOf(sessionId)
-      if (index < 0 || !ids[index + direction]) return
+      if (index < 0) return
+      if (!ids[index + direction]) { setMoveAnnouncement(`${chatName(sessionId)} is already ${direction < 0 ? 'first' : 'last'}`); return }
       ids.splice(index + direction, 0, ...ids.splice(index, 1))
       const row = () => sortRow(chatListElement(list), sessionId)
       void glideAfter(row(), () => saveChatOrder(list, ids)).then((moved) => {
@@ -945,7 +949,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     },
   }
   // Sorting is for the plain lists: search shows a filtered view, and the phone companion only browses.
-  const chatSortList = (list: ChatSortList) => searchModel.isSearching || companionContext ? undefined : list
+  const chatSortList = (list: ChatSortList) => searchModel.isSearching || companionContext || chatSortIds[list].length > MAX_SORTED_CHATS ? undefined : list
 
   const renderActivitySessionItem = (id: string) => {
     const activitySession = sessionsById.get(id)
@@ -1533,7 +1537,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         {workspaceDeleteChatCount > 0 && <p className="mt-2 text-xs" style={{ color: 'var(--error)' }}>Deleted chats cannot be restored from this app.</p>}
         {deletingFolder && <DeletionProgressBar label={workspaceDeleteCount === 1 ? 'Deleting workspace' : 'Deleting workspaces'} className="mt-2" />}
       </DeleteConfirmDialog>
-      <div ref={moveStatusRef} className="sr-only" role="status" aria-live="polite" data-testid="workspace-move-status" />
+      <div ref={moveStatusRef} className="sr-only" role="status" aria-live="polite" data-testid="sidebar-move-status" />
     </div>
     </ChatSortContext.Provider>
     </ChatSelectionContext.Provider>

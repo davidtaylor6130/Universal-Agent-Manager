@@ -44,6 +44,8 @@ export function applyManualOrder(ids: readonly string[], saved: readonly string[
 }
 
 export type ChatSortList = 'pinned' | 'active'
+/** Native keeps this many ids per saved list (settings_normalization.h); longer lists are not sortable. */
+export const MAX_SORTED_CHATS = 2000
 /** Lets a chat row in Pinned or Active start a drag or a keyboard move without the sidebar passing callbacks per row. */
 export const ChatSortContext = createContext<{
   start: (list: ChatSortList, sessionId: string, event: ReactPointerEvent<HTMLElement>) => void
@@ -145,6 +147,8 @@ function swallowNextClick(doc: Document, released: boolean) {
 export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options: SortableDragOptions) {
   // A macOS Ctrl-click opens the context menu rather than starting a drag.
   if (busy || down.button !== 0 || down.ctrlKey || down.nativeEvent.isPrimary === false) return
+  // React bubbles presses from a row's portalled menu or dialog up to the row; only presses on the row itself drag it.
+  if (!down.currentTarget.contains(down.target as Node)) return
   if ((down.target as Element).closest('input, textarea, select, button, a, [contenteditable="true"]')) return
   const row = down.currentTarget.closest<HTMLElement>('[data-sort-id]')
   if (!row) return

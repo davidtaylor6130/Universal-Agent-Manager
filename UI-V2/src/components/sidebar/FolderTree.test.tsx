@@ -1049,7 +1049,7 @@ describe('FolderTree', () => {
     act(() => pointer(document, 'pointermove', 10, 65))
     expect(source.style.transform).toBe('translate3d(0, 55px, 0) scale(1.02)')
     expect(target.style.transform).toBe('translate3d(0, -40px, 0)')
-    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Moving Project. Press Escape to cancel.')
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Moving Project. Press Escape to cancel.')
     const expanded = header.getAttribute('aria-expanded')
     await act(async () => {
       pointer(document, 'pointerup', 10, 65)
@@ -1059,7 +1059,7 @@ describe('FolderTree', () => {
     })
     expect(header.getAttribute('aria-expanded')).toBe(expanded)
     expect(reorderFolders).toHaveBeenCalledWith(['second', 'project'])
-    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Project moved to position 2 of 2')
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Project moved to position 2 of 2')
     // Held transforms drop once the saved order is on screen.
     expect([...host.querySelectorAll('[data-sort-id]')].map((row) => (row as HTMLElement).dataset.sortId)).toEqual(['second', 'project'])
     expect(source.style.transform).toBe('')
@@ -1092,7 +1092,7 @@ describe('FolderTree', () => {
       delete (document as { elementFromPoint?: unknown }).elementFromPoint
     }
     expect(useAppStore.getState().resourceCollections[0].references).toEqual([])
-    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Project removed from its collection')
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Project removed from its collection')
 
     await releaseClickGuard()
     act(() => root.unmount())
@@ -1103,7 +1103,8 @@ describe('FolderTree', () => {
     const settled = new Date(now).toISOString()
     useAppStore.setState({
       sessions: [1, 2, 3].map((index) => ({ ...makeSession(index), isPinned: true, settledAt: settled })),
-      sidebarPinnedChatOrder: [],
+      // chat-snoozed is a pin hidden by its snooze; reordering the visible pins keeps its place.
+      sidebarPinnedChatOrder: ['chat-1', 'chat-2', 'chat-3', 'chat-snoozed'],
     })
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -1123,10 +1124,20 @@ describe('FolderTree', () => {
     expect(third.style.transform).toBe('translate3d(0, -30px, 0)')
     await act(async () => { pointer(document, 'pointerup', 10, 85); await Promise.resolve() })
 
-    expect(useAppStore.getState().sidebarPinnedChatOrder).toEqual(['chat-2', 'chat-3', 'chat-1'])
+    expect(useAppStore.getState().sidebarPinnedChatOrder).toEqual(['chat-2', 'chat-3', 'chat-1', 'chat-snoozed'])
     expect(pinned().map((row) => row.dataset.sortId)).toEqual(['chat-2', 'chat-3', 'chat-1'])
     expect(first.style.transform).toBe('')
-    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Chat 1 moved to position 3 of 3')
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Chat 1 moved to position 3 of 3')
+    // A press inside the row's portalled menu bubbles through React to the row but never drags it.
+    const menuRow = pinned()[0]
+    act(() => { menuRow.querySelector('[data-session-id]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })) })
+    const menu = document.querySelector<HTMLElement>('[role="menu"]')!
+    expect(menuRow.contains(menu)).toBe(false)
+    act(() => pointer(menu, 'pointerdown', 20, 20))
+    act(() => pointer(document, 'pointermove', 20, 80))
+    expect(menuRow.hasAttribute('data-sort-dragging')).toBe(false)
+    act(() => pointer(document, 'pointerup', 20, 80))
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
     // Workspace chats keep their time order and native drag.
     expect((host.querySelector('[data-testid="folder-row-project"] [data-session-id="chat-1"]')?.parentElement as HTMLElement).draggable).toBe(true)
     await releaseClickGuard()
@@ -1152,12 +1163,13 @@ describe('FolderTree', () => {
     await act(async () => { row.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); await Promise.resolve() })
     expect(useAppStore.getState().sidebarActiveChatOrder).toEqual(['chat-2', 'chat-1'])
     expect(active()).toEqual(['chat-2', 'chat-1'])
-    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Chat 1 moved to position 2 of 2')
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Chat 1 moved to position 2 of 2')
     expect((document.activeElement as HTMLElement | null)?.dataset.sessionId).toBe('chat-1')
 
     // The last row has nowhere further down to go.
     await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); await Promise.resolve() })
     expect(active()).toEqual(['chat-2', 'chat-1'])
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Chat 1 is already last')
 
     // Search shows a filtered view, so rows are not sortable there.
     act(() => root.render(<FolderTree searchQuery="Chat" />))
@@ -1278,7 +1290,7 @@ describe('FolderTree', () => {
     const collections = useAppStore.getState().resourceCollections
     expect(collections.find((collection) => collection.id === 'work')?.references).toEqual([])
     expect(collections.find((collection) => collection.id === 'home')?.references.map((reference) => reference.target)).toEqual(['project'])
-    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Project moved into Home')
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Project moved into Home')
     await releaseClickGuard()
 
     act(() => root.unmount())
@@ -1312,7 +1324,7 @@ describe('FolderTree', () => {
     expect(source.style.transform).toBe('')
     expect(target.style.transform).toBe('')
     expect(reorderFolders).not.toHaveBeenCalled()
-    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Move of Project cancelled')
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Move of Project cancelled')
 
     await releaseClickGuard()
     act(() => root.unmount())
@@ -1368,7 +1380,7 @@ describe('FolderTree', () => {
     const header = () => host.querySelector('[data-testid="folder-header-project"]') as HTMLElement
     await act(async () => { header().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })); await Promise.resolve() })
     expect(reorderResourceReferences).toHaveBeenCalledWith('work', ['project-ref', 'website-ref', 'second-ref'])
-    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Project moved to position 1 of 2')
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Project moved to position 1 of 2')
 
     await releaseClickGuard()
     act(() => root.unmount())

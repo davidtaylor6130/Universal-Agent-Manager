@@ -63,7 +63,7 @@ namespace uam::settings
 	inline constexpr int kMaxAcpTurnOutputLimitMiB = 4096;
 	inline constexpr std::size_t kMaxFavoriteUamAgents = 64;
 	// Bounds the saved Pinned and Active orders; ids past it fall back to the default order.
-	inline constexpr std::size_t kMaxSidebarChatOrder = 500;
+	inline constexpr std::size_t kMaxSidebarChatOrder = 2000; // MAX_SORTED_CHATS in sortableDrag.ts
 	inline constexpr auto kUamAgentCycleShortcuts = std::to_array<std::string_view>({
 	    "shift+tab",
 	    "control+shift+tab",
