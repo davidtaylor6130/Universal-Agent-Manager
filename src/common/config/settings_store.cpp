@@ -4,6 +4,7 @@
 #include "common/config/settings_store.h"
 
 #include "common/config/editor_file_associations.h"
+#include "common/config/svn_repository_layout.h"
 #include "common/config/execution_host_config.h"
 #include "common/config/approval_modes.h"
 #include "common/config/line_value_codec.h"
@@ -67,6 +68,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kWorktreeRetentionDaysKey = "worktree_retention_days";
 	constexpr std::string_view kSvnEnabledKey = "svn_enabled";
 	constexpr std::string_view kSvnUpdateBeforeChatKey = "svn_update_before_chat";
+	constexpr std::string_view kSvnRepositoryLayoutsKey = "svn_repository_layouts";
 	constexpr std::string_view kConfirmDeleteChatKey = "confirm_delete_chat";
 	constexpr std::string_view kConfirmDeleteFolderKey = "confirm_delete_folder";
 	constexpr std::string_view kRememberLastChatKey = "remember_last_chat";
@@ -697,6 +699,7 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteSettingValue(lines, kWorktreeRetentionDaysKey, normalized.worktree_retention_days);
 		WriteBoolSetting(lines, kSvnEnabledKey, normalized.svn_enabled);
 		WriteBoolSetting(lines, kSvnUpdateBeforeChatKey, normalized.svn_update_before_chat);
+		if (!normalized.svn_repository_layouts.empty()) WriteEncodedSetting(lines, kSvnRepositoryLayoutsKey, uam::svn_layout::ToJson(normalized.svn_repository_layouts).dump());
 		WriteBoolSetting(lines, kConfirmDeleteChatKey, normalized.confirm_delete_chat);
 		WriteBoolSetting(lines, kConfirmDeleteFolderKey, normalized.confirm_delete_folder);
 		WriteBoolSetting(lines, kRememberLastChatKey, normalized.remember_last_chat);
@@ -1028,6 +1031,11 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		else if (key == kSvnUpdateBeforeChatKey)
 		{
 			settings.svn_update_before_chat = uam::parse::BoolOr(value, settings.svn_update_before_chat);
+		}
+		else if (key == kSvnRepositoryLayoutsKey)
+		{
+			// A damaged entry list keeps the standard layout for every repository rather than failing the load.
+			(void)uam::svn_layout::Parse(nlohmann::json::parse(decoded_value, nullptr, false), settings.svn_repository_layouts);
 		}
 		else if (key == kConfirmDeleteChatKey)
 		{

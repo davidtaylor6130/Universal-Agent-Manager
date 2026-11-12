@@ -10,7 +10,7 @@ vi.mock('../../utils/appFailure', async importOriginal => ({ ...await importOrig
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const initial = useAppStore.getState()
-beforeEach(() => { useAppStore.setState({ ...initial, gitEnabled: true, svnEnabled: true, gitSnapshotSvn: true, gitSnapshotPlainFolders: true, gitAutoWorktree: true, gitDefaultBaseBranch: '', gitPortMethod: 'patch', gitPullBeforeChat: false, svnUpdateBeforeChat: false }, true) })
+beforeEach(() => { useAppStore.setState({ ...initial, gitEnabled: true, svnEnabled: true, gitSnapshotSvn: true, gitSnapshotPlainFolders: true, gitAutoWorktree: true, gitDefaultBaseBranch: '', gitPortMethod: 'patch', gitPullBeforeChat: false, svnUpdateBeforeChat: false, svnRepositoryLayouts: [] }, true) })
 afterEach(() => { delete window.cefQuery; document.body.replaceChildren(); useAppStore.setState(initial, true) })
 function input(element: HTMLInputElement, value: string) {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(element, value)
@@ -34,7 +34,7 @@ describe('VCS defaults controls', () => {
       act(() => input(host.querySelector<HTMLInputElement>('[aria-label="Default local Git base branch"]')!, branch))
       expect(requests).toHaveLength(0)
       await act(async () => button(host, 'Save VCS settings').click())
-      expect(requests).toEqual([{ action: 'setVcsSettings', payload: { gitEnabled: true, svnEnabled: true, gitSnapshotSvn: true, gitSnapshotPlainFolders: true, gitAutoWorktree: true, gitDefaultBaseBranch: branch, gitPortMethod: 'patch', gitPullBeforeChat: false, svnUpdateBeforeChat: false } }])
+      expect(requests).toEqual([{ action: 'setVcsSettings', payload: { gitEnabled: true, svnEnabled: true, gitSnapshotSvn: true, gitSnapshotPlainFolders: true, gitAutoWorktree: true, gitDefaultBaseBranch: branch, gitPortMethod: 'patch', gitPullBeforeChat: false, svnUpdateBeforeChat: false, svnRepositoryLayouts: [] } }])
       expect(button(host, 'Save VCS settings').disabled).toBe(true)
       expect(useAppStore.getState().gitDefaultBaseBranch).toBe(branch)
     } finally { act(() => root.unmount()) }
@@ -156,7 +156,7 @@ describe('separate Git and SVN sections', () => {
     const { host, root } = mount()
     try {
       const sections = Array.from(host.querySelectorAll('section')).map((section) => section.getAttribute('aria-label'))
-      expect(sections).toEqual(['Git', 'SVN'])
+      expect(sections).toEqual(['Git', 'SVN', 'SVN repository layouts'])
       expect(host.querySelector('[aria-label="Git and SVN"]')).toBeNull()
       const git = host.querySelector<HTMLElement>('section[aria-label="Git"]')!
       const svn = host.querySelector<HTMLElement>('section[aria-label="SVN"]')!
@@ -369,6 +369,54 @@ describe('local snapshot Git settings', () => {
       expect(base).toContain('background: var(--bg)')
       expect(base).toContain('color: var(--text)')
       expect(css).toMatch(/\.uam-field:disabled \{[^}]*opacity: 0\.5;[^}]*cursor: not-allowed;/)
+    } finally { act(() => root.unmount()) }
+  })
+})
+
+describe('SVN repository layouts', () => {
+  const field = (label: string) => {
+    const caption = Array.from(document.body.querySelectorAll('label')).find((value) => value.textContent === label)!
+    return document.getElementById(caption.htmlFor) as HTMLInputElement
+  }
+  const dialogButton = (text: string) => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')).find((value) => value.textContent === text)!
+  it('starts on the standard layout and adds a repository through the editor, then saves it', async () => {
+    const requests: { svnRepositoryLayouts?: unknown }[] = []
+    window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request).payload); onSuccess('{}') }
+    const { host, root } = mount()
+    try {
+      expect(host.querySelector('section[aria-label="SVN repository layouts"]')!.textContent).toContain('Standard layout for every repository')
+      act(() => button(host, 'Add repository').click())
+      expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
+      expect(field('Branches folder').value).toBe('branches')
+      // The reason is linked to the fields, and the editor cannot be applied until it is resolved.
+      expect(document.getElementById('svn-layout-problem')!.textContent).toBe('Enter the repository root URL or its UUID.')
+      expect(field('Main line folder').getAttribute('aria-describedby')).toBe('svn-layout-problem')
+      expect(dialogButton('Add layout').disabled).toBe(true)
+      act(() => input(field('Repository root URL or UUID'), 'https://svn.example.test/repo/'))
+      act(() => input(field('Main line folder'), 'main'))
+      act(() => input(field('Branches folder'), '/lines'))
+      expect(document.getElementById('svn-layout-problem')!.textContent).toContain('without a leading slash')
+      act(() => input(field('Branches folder'), 'lines/dev'))
+      expect(document.getElementById('svn-layout-problem')).toBeNull()
+      act(() => dialogButton('Add layout').click())
+      expect(host.textContent).toContain('https://svn.example.test/repo')
+      expect(host.textContent).toContain('main · lines/dev · tags')
+      await act(async () => button(host, 'Save VCS settings').click())
+      expect(requests).toHaveLength(1)
+      expect(requests[0].svnRepositoryLayouts).toEqual([{ repository: 'https://svn.example.test/repo', trunk: 'main', branches: 'lines/dev', tags: 'tags' }])
+    } finally { act(() => root.unmount()) }
+  })
+  it('refuses a second layout for the same repository, whatever its case, and removes a row', () => {
+    useAppStore.setState({ svnRepositoryLayouts: [{ repository: 'https://svn.example.test/repo', trunk: 'main', branches: 'lines', tags: 'releases' }] })
+    const { host, root } = mount()
+    try {
+      act(() => button(host, 'Add repository').click())
+      act(() => input(field('Repository root URL or UUID'), 'HTTPS://svn.example.test/repo/'))
+      expect(document.getElementById('svn-layout-problem')!.textContent).toBe('This repository already has a layout.')
+      act(() => dialogButton('Cancel').click())
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Remove layout for https://svn.example.test/repo"]')!.click())
+      expect(host.textContent).toContain('Standard layout for every repository')
+      expect(button(host, 'Save VCS settings').disabled).toBe(false)
     } finally { act(() => root.unmount()) }
   })
 })

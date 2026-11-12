@@ -21,6 +21,7 @@ export function RepositoryDiffDialog({
   comparisonLabel,
   zIndex = 1000,
   showFileStats = true,
+  inspectable = true,
 }: {
   chatId: string
   file: VcsChangedFile
@@ -32,6 +33,8 @@ export function RepositoryDiffDialog({
   comparisonLabel?: string
   zIndex?: number
   showFileStats?: boolean
+  /** False when the diff is not of the current workspace file, such as a past revision. */
+  inspectable?: boolean
 }) {
   const dialogRef = useRef<HTMLElement>(null)
   const [diff, setDiff] = useState<string | null>(file.binary ? '' : null)
@@ -121,7 +124,7 @@ export function RepositoryDiffDialog({
               </span>}
             </div>}
           </div>
-          <Button type="button" size="sm" variant="ghost" onClick={() => setInspection({ chatId, path: sourcePath ?? file.path })}>Inspect file</Button>
+          {inspectable && <Button type="button" size="sm" variant="ghost" onClick={() => setInspection({ chatId, path: sourcePath ?? file.path })}>Inspect file</Button>}
           {!file.binary && !narrow && <div role="group" aria-label="Diff layout" className="uam-rv-segmented">
             {/* ui: raw buttons kept — per-option Tooltip and aria-label ("... diff view") that SegmentedControl options cannot carry */}
             <Tooltip label="Unified diff view"><button type="button" aria-label="Unified diff view" aria-pressed={layout === 'unified'} onClick={() => chooseLayout('unified')}><Rows3 size={14} aria-hidden />Unified</button></Tooltip>
