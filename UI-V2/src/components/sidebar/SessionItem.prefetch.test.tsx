@@ -126,6 +126,19 @@ it('starts a read when keyboard focus rests on a row', () => {
   expect(useAppStore.getState().activeSessionId).toBeNull()
 })
 
+it('keeps the focus warm-up when the pointer leaves a focused row, and cancels once both leave', () => {
+  render([chat('kept-a'), chat('left-b')])
+  act(() => row('kept-a').focus())
+  pointer('kept-a', 'pointerover'); wait(50); pointer('kept-a', 'pointerout')
+  wait(100)
+  expect(reads()).toHaveLength(1)
+
+  pointer('left-b', 'pointerover'); act(() => row('left-b').focus()); wait(50)
+  pointer('left-b', 'pointerout'); act(() => row('left-b').blur())
+  wait(200)
+  expect(reads()).toHaveLength(1)
+})
+
 it('keeps at most two preloads in flight while sweeping across many rows', () => {
   const sessions = Array.from({ length: 8 }, (_, index) => chat(`sweep-${index}`))
   render(sessions)

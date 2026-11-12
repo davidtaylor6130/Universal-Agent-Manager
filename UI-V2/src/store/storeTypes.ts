@@ -219,6 +219,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   memoryScanCandidates: MemoryScanCandidate[]
   selectedMemoryScanChatIds: string[]
   memoryScanLoading: boolean
+  /** Why the eligible-chat list could not be read; distinct from a scan that did not run. */
+  memoryScanLoadError: string
   memoryScanRunning: boolean
   memoryScanError: string
   isMarkdownStoreOpen: boolean

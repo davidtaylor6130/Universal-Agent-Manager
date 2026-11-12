@@ -1,7 +1,7 @@
 import type { Folder, RemoteDirectoryBrowseResult, RemoteDirectoryListing, WorkspaceFolderRecoveryPreview } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope, MemoryScanCandidate } from '../../types/memory'
 import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../../types/markdownStore'
-import { sendWhenRemoteStopSettles, sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
+import { boundedRead, sendWhenRemoteStopSettles, sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
 import { pendingRequestIdsByKey } from '../push/pushBuffers'
 import {
   clearPendingRequest,
@@ -24,6 +24,8 @@ function makeId(prefix: string, counter: number) {
 }
 
 export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
+  // Each opening owns its candidate read; a reply for a closed or reopened chooser is ignored.
+  let memoryScanReadGeneration = 0
   async function deleteWorkspaceFolders(ids: string[], action: 'deleteFolder' | 'deleteFolders'): Promise<boolean> {
     set({ workspaceDeletionError: '' })
     const folderIds = new Set(ids.map((id) => id.trim()))
@@ -104,6 +106,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     memoryScanCandidates: [] as MemoryScanCandidate[],
     selectedMemoryScanChatIds: [] as string[],
     memoryScanLoading: false,
+    memoryScanLoadError: '',
     memoryScanRunning: false,
     memoryScanError: '',
     isMarkdownStoreOpen: false,
@@ -915,22 +918,25 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       }),
 
     openMemoryScanModal: async () => {
+      const generation = ++memoryScanReadGeneration
       set({
         isMemoryScanModalOpen: true,
         memoryScanLoading: true,
+        memoryScanLoadError: '',
         memoryScanError: '',
         memoryScanCandidates: [],
         selectedMemoryScanChatIds: [],
       })
 
       if (isCefContext()) {
-        const response = await sendToCEF<{ candidates?: MemoryScanCandidate[] }>({
+        const response = await boundedRead(sendToCEF<{ candidates?: MemoryScanCandidate[] }>({
           action: 'listMemoryScanCandidates',
-        })
+        }), 'Eligible chats did not load in time.')
+        if (generation !== memoryScanReadGeneration) return false
         if (!response.ok) {
           set({
             memoryScanLoading: false,
-            memoryScanError: response.error ?? 'Failed to load chats for memory scan.',
+            memoryScanLoadError: response.error ?? 'Failed to load chats for memory scan.',
           })
           return false
         }
@@ -968,14 +974,15 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       return true
     },
 
-    closeMemoryScanModal: () => set({
+    closeMemoryScanModal: () => { memoryScanReadGeneration += 1; set({
       isMemoryScanModalOpen: false,
       memoryScanCandidates: [],
       selectedMemoryScanChatIds: [],
       memoryScanLoading: false,
+      memoryScanLoadError: '',
       memoryScanRunning: false,
       memoryScanError: '',
-    }),
+    }) },
 
     toggleMemoryScanChat: (chatId: string) => set((state) => ({
       selectedMemoryScanChatIds: state.selectedMemoryScanChatIds.includes(chatId)

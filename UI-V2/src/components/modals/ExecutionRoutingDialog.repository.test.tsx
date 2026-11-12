@@ -35,6 +35,50 @@ describe('SSH routing repository matching', () => {
   })
   afterEach(() => { for (const { host, root } of mounted.splice(0)) { act(() => root.unmount()); host.remove() } vi.clearAllMocks() })
 
+  it('keeps folder mapping usable while matches are checked, bounds a slow check and lets Retry rejoin it', async () => {
+    vi.useFakeTimers()
+    try {
+      let answer!: (value: unknown) => void
+      vi.mocked(sendToCEF).mockReturnValueOnce(new Promise((resolve) => { answer = resolve }) as never)
+      mount(<ExecutionRoutingDialog onClose={vi.fn()} />)
+      await flush()
+      expect(document.body.textContent).toContain('Checking repositories')
+      expect(document.body.textContent).toContain('/other · Checking repository…')
+      expect(buttonsNamed('Map folder…')[0].disabled).toBe(false)
+
+      await act(async () => { vi.advanceTimersByTime(30_000); await Promise.resolve() })
+      expect(document.body.textContent).toContain('Repository matching is unavailable right now')
+      expect(document.body.textContent).not.toContain('Checking repositories')
+
+      act(() => buttonsNamed('Retry')[0].click())
+      expect(document.activeElement?.textContent).toBe('Map folder…')
+      await flush()
+      // The slow check still holds its native slot, so Retry waits on it rather than sending another.
+      expect(sendToCEF).toHaveBeenCalledTimes(1)
+      expect(document.body.textContent).toContain('Checking repositories')
+      await act(async () => { answer({ ok: true, data: workspaces, requestId: 'r' }); await Promise.resolve(); await Promise.resolve() })
+      expect(document.body.textContent).toContain('Same repository')
+    } finally { vi.useRealTimers() }
+  })
+
+  it('drops a check that stays silent through a rejoined wait, so the next Retry sends a new one', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(sendToCEF).mockReturnValueOnce(new Promise(() => {}) as never)
+      mount(<ExecutionRoutingDialog onClose={vi.fn()} />)
+      await flush()
+      await act(async () => { vi.advanceTimersByTime(30_000); await Promise.resolve() })
+      act(() => buttonsNamed('Retry')[0].click())
+      await flush()
+      expect(sendToCEF).toHaveBeenCalledTimes(1)
+      await act(async () => { vi.advanceTimersByTime(30_000); await Promise.resolve() })
+      act(() => buttonsNamed('Retry')[0].click())
+      await flush()
+      expect(sendToCEF).toHaveBeenCalledTimes(2)
+      expect(document.body.textContent).toContain('Same repository')
+    } finally { vi.useRealTimers() }
+  })
+
   it('keeps today\'s manual mapping and never asks for matches when the capability is off', () => {
     useAppStore.setState((state) => ({ executionRouting: { ...state.executionRouting, repositoryMatching: undefined } }))
     mount(<ExecutionRoutingDialog onClose={vi.fn()} />)

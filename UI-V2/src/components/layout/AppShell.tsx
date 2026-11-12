@@ -56,15 +56,16 @@ import { useRowLeave } from './useRowLeave'
 import { isSshHost } from '../../utils/remoteWorkspace'
 import { SSH_ENABLED } from '../../config/buildFeatures'
 import { CustomIcon } from '../shared/CustomIcon'
+import { loadNewChatPanel, loadSettingsPanel, loadUsagePanel, warmPanelOn } from './panelModules'
 
 // These panels subscribe to their own state; shell navigation must not rerender their histories.
 const ChatPanel = memo(MainPanel)
 const ChatSidebar = memo(Sidebar)
 
-const SettingsModal = lazy(() => import('../settings/SettingsModal').then(({ SettingsModal }) => ({ default: SettingsModal })))
-const UsagePage = lazy(() => import('../usage/UsagePage').then(({ UsagePage }) => ({ default: UsagePage })))
+const SettingsModal = lazy(() => loadSettingsPanel().then(({ SettingsModal }) => ({ default: SettingsModal })))
+const UsagePage = lazy(() => loadUsagePanel().then(({ UsagePage }) => ({ default: UsagePage })))
 const VcsCommitPanel = lazy(() => import('./VcsCommitPanel').then(({ VcsCommitPanel }) => ({ default: VcsCommitPanel })))
-const NewChatModal = lazy(() => import('../sidebar/NewChatModal').then(({ NewChatModal }) => ({ default: NewChatModal })))
+const NewChatModal = lazy(() => loadNewChatPanel().then(({ NewChatModal }) => ({ default: NewChatModal })))
 const MemoryScanModal = lazy(() => import('../settings/MemoryScanModal').then(({ MemoryScanModal }) => ({ default: MemoryScanModal })))
 const MarkdownStoreModal = lazy(() => import('../settings/MarkdownStoreModal').then(({ MarkdownStoreModal }) => ({ default: MarkdownStoreModal })))
 
@@ -442,7 +443,7 @@ function LeftActivityRail({ settingsOpen, usageOpen, onToggleUsage, onToggleSett
       />
       <div className="uam-side-rail__spacer" />
       <ThemeToggle />
-      <IconButton icon={<ChartNoAxesCombined size={17} />} label="Usage" tooltipSide="right" active={usageOpen} onClick={onToggleUsage} />
+      <IconButton icon={<ChartNoAxesCombined size={17} />} label="Usage" tooltipSide="right" active={usageOpen} onClick={onToggleUsage} {...warmPanelOn(loadUsagePanel)} />
       <IconButton
         icon={<Settings2 size={17} />}
         label="Settings"
@@ -450,6 +451,7 @@ function LeftActivityRail({ settingsOpen, usageOpen, onToggleUsage, onToggleSett
         shortcut={shortcutLabel('settings')}
         active={settingsOpen}
         onClick={onToggleSettings}
+        {...warmPanelOn(loadSettingsPanel)}
       />
     </aside>
   )
