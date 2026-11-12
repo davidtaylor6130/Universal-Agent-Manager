@@ -1585,6 +1585,8 @@ int main(int argc, char** argv)
 			}
 			// Every request gets a canned result here, so this fake cannot answer a launch setup location.
 			if (request.value("type", "") == "hello") response["capabilities"]["providerConfigurationLocation"] = false;
+			// A helper from before large uploads does not report its limit.
+			if (request.value("type", "") == "hello" && fixture_result.is_object() && fixture_result.value("legacyUploadLimit", false)) response["capabilities"].erase("maxUploadBytes");
 			if (argc == 5 && std::string_view(argv[4]) == "--without-central-config" && request.value("type", "") == "hello")
 				response["capabilities"]["centralProviderConfiguration"] = false;
 			if (argc == 5 && std::string_view(argv[4]).starts_with("--reject-config-start=") && request.value("type", "") == "process.start")

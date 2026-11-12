@@ -109,6 +109,8 @@ class UamCefClient : public CefClient, public CefLifeSpanHandler, public CefLoad
 
 	// CefDragHandler — only the trusted root document may define the frameless window's drag area.
 	void OnDraggableRegionsChanged(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const std::vector<CefDraggableRegion>& regions) override;
+	/// Remembers the dragged files' paths for the composer; the drag itself proceeds unchanged.
+	bool OnDragEnter(CefRefPtr<CefBrowser> browser, CefRefPtr<CefDragData> dragData, DragOperationsMask mask) override;
 
 	// CefRequestHandler — block bridge access and route external links safely.
 	bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefRequest> request, bool user_gesture, bool is_redirect) override;

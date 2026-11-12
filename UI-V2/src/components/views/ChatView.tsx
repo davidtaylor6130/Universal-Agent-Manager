@@ -181,10 +181,23 @@ function filePathFromBrowserFile(file: File): string {
 
 // Matches the native staging limit for inline payloads, so an oversized file is refused before it is read into memory.
 const MAX_INLINE_ATTACHMENT_BYTES = 25 * 1024 * 1024
+// A file with a path on this computer is copied from disk in chunks, up to the native streamed limit.
+const MAX_PATH_ATTACHMENT_BYTES = 4 * 1024 * 1024 * 1024
+const IMAGE_FILE_NAME = /\.(png|jpe?g|gif|webp|bmp|heic|heif|tiff?)$/i
+
+/** A file the native picker or a drop named by path; the composer never reads its bytes. */
+interface NativeFileEntry { path: string; name: string; size: number }
+
+function nativeFileEntries(data: unknown): NativeFileEntry[] {
+  const files = (data as { files?: unknown } | null | undefined)?.files
+  return Array.isArray(files)
+    ? files.filter((file): file is NativeFileEntry => Boolean(file) && typeof file.path === 'string' && Boolean(file.path) && typeof file.name === 'string' && typeof file.size === 'number')
+    : []
+}
 
 function readFileBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
-    if (file.size > MAX_INLINE_ATTACHMENT_BYTES) { reject(new Error(`${file.name || 'Attachment'} is larger than the 25 MB limit.`)); return }
+    if (file.size > MAX_INLINE_ATTACHMENT_BYTES) { reject(new Error(isCefContext() && !isCompanionContext() ? `${file.name || 'Attachment'} is larger than the 25 MB limit for dropped or pasted data. Use the attach button to add a larger file from disk.` : `${file.name || 'Attachment'} is larger than the 25 MB limit.`)); return }
     const reader = new FileReader()
     reader.onload = () => {
       const result = typeof reader.result === 'string' ? reader.result : ''
@@ -477,6 +490,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     readChatComposerDraft(session.id).attachments.map((attachment) => ({ ...attachment, status: 'ready' }))
   )
   const [attachmentError, setAttachmentError] = useState('')
+  const [attachmentProgress, setAttachmentProgress] = useState<Record<string, number>>({})
   const [dismissedAcpErrorKey, setDismissedAcpErrorKey] = useState('')
   const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null)
   const [editingMessageText, setEditingMessageText] = useState('')
@@ -1059,6 +1073,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const showScrollToBottomRef = useRef(false)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const attachmentDialogOpenRef = useRef(false)
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
   const workspaceMenuRef = useRef<HTMLDivElement>(null)
@@ -1506,19 +1521,28 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
   }, [modelOpen, workspaceMenuOpen])
 
-  const stageFiles = async (files: File[]) => {
+  const stageFiles = async (files: File[], nativeEntries: NativeFileEntry[] = []) => {
     if (!showComposerRef.current) return
     if (isCompanionContext()) { setAttachmentError('Add attachments from the desktop app.'); return }
     const stagingSessionId = session.id
-    const realFiles = files.filter((file) => file.size > 0 || file.type || file.name)
-    if (realFiles.length === 0) return
+    // A dropped File pairs with the native path of the same name and size; picked files arrive as paths only.
+    const unpaired = [...nativeEntries]
+    const sources = files.filter((file) => file.size > 0 || file.type || file.name).map((file) => {
+      const match = unpaired.findIndex((entry) => entry.name === file.name && entry.size === file.size)
+      const path = filePathFromBrowserFile(file) || (match >= 0 ? unpaired.splice(match, 1)[0].path : '')
+      return { file: file as File | null, name: file.name || 'attachment', size: file.size, mimeType: file.type, path, image: file.type.startsWith('image/') }
+    })
+    if (files.length === 0) {
+      sources.push(...nativeEntries.map((entry) => ({ file: null, name: entry.name || 'attachment', size: entry.size, mimeType: '', path: entry.path, image: IMAGE_FILE_NAME.test(entry.name) })))
+    }
+    if (sources.length === 0) return
 
-    const pending = realFiles.map<LocalAttachment>((file) => ({
-      id: `${Date.now()}-${Math.random().toString(16).slice(2)}-${file.name}`,
-      name: file.name || 'attachment',
-      type: file.type.startsWith('image/') ? 'image' : 'file',
-      size: file.size,
-      path: filePathFromBrowserFile(file),
+    const pending = sources.map<LocalAttachment>((source) => ({
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}-${source.name}`,
+      name: source.name,
+      type: source.image ? 'image' : 'file',
+      size: source.size,
+      path: source.path,
       status: 'staging',
     }))
     setAttachmentError('')
@@ -1526,18 +1550,17 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
 
     try {
       const items: ChatAttachmentInput[] = []
-      for (let index = 0; index < realFiles.length; index += 1) {
-        const file = realFiles[index]
-        const pendingItem = pending[index]
-        const path = filePathFromBrowserFile(file)
+      for (let index = 0; index < sources.length; index += 1) {
+        const source = sources[index]
+        if (source.path && source.size > MAX_PATH_ATTACHMENT_BYTES) throw new Error(`${source.name} is larger than the 4 GB limit.`)
         items.push({
-          id: pendingItem.id,
-          name: file.name || 'attachment',
-          kind: file.type.startsWith('image/') ? 'image' : 'file',
-          mimeType: file.type,
-          size: file.size,
-          path,
-          dataBase64: path ? undefined : await readFileBase64(file),
+          id: pending[index].id,
+          name: source.name,
+          kind: source.image ? 'image' : 'file',
+          mimeType: source.mimeType,
+          size: source.size,
+          path: source.path,
+          dataBase64: source.path || !source.file ? undefined : await readFileBase64(source.file),
         })
       }
 
@@ -1564,6 +1587,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       )
     } catch (err) {
       if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
+      // Every chip of this request was removed while copying: the copy was canceled on purpose, so nothing to report.
+      if (pending.every((attachment) => removedAttachmentIdsRef.current.has(attachment.id))) return
       const message = err instanceof Error ? err.message : 'Failed to stage attachments.'
       setAttachmentError(message)
       const failedIds = new Set(pending.map((attachment) => attachment.id))
@@ -1643,7 +1668,21 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         .map(fileUriToPath)
       void stageDirectoryPaths(paths)
     }
-    void stageFiles(files)
+    if (files.length === 0 || !isCefContext() || isCompanionContext()) { void stageFiles(files); return }
+    // The desktop app knows where the dropped files live, so large ones are copied from disk instead of read here.
+    void sendToCEF({ action: 'takeDroppedAttachmentPaths', payload: {} })
+      .then((response) => stageFiles(files, response.ok ? nativeFileEntries(response.data) : []), () => stageFiles(files))
+  }
+
+  const pickAttachmentFiles = () => {
+    if (!isCefContext() || isCompanionContext()) { fileInputRef.current?.click(); return }
+    if (attachmentDialogOpenRef.current) return
+    attachmentDialogOpenRef.current = true
+    void sendToCEF({ action: 'pickChatAttachmentFiles', payload: {} }).then((response) => {
+      attachmentDialogOpenRef.current = false
+      if (!response.ok) { fileInputRef.current?.click(); return }
+      void stageFiles([], nativeFileEntries(response.data))
+    }, () => { attachmentDialogOpenRef.current = false; fileInputRef.current?.click() })
   }
 
   const onComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -2459,6 +2498,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     window.setTimeout(() => { if (showComposerRef.current) composerTextareaRef.current?.focus() }, 0)
   }
 
+  // Large attachments are copied from disk in chunks; the native side reports how far each copy has got.
+  useEffect(() => {
+    setAttachmentProgress({})
+    const onAttachmentProgress = (event: Event) => {
+      const detail = (event as CustomEvent<{ chatId?: string; attachmentId?: string; copiedBytes?: number; totalBytes?: number }>).detail
+      if (!detail || detail.chatId !== session.id || !detail.attachmentId || !detail.totalBytes) return
+      const percent = Math.min(100, Math.floor(((detail.copiedBytes ?? 0) / detail.totalBytes) * 100))
+      setAttachmentProgress((current) => current[detail.attachmentId!] === percent ? current : { ...current, [detail.attachmentId!]: percent })
+    }
+    window.addEventListener('uam-attachment-progress', onAttachmentProgress)
+    return () => window.removeEventListener('uam-attachment-progress', onAttachmentProgress)
+  }, [session.id])
+
   useEffect(() => {
     if (!showComposer) {
       dictationSubmitAfterStopRef.current = false
@@ -2914,7 +2966,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           icon: <Brain size={15} />,
           run: () => setDraft('/memory '),
         },
-        { id: 'attach', label: '/attach', hint: 'Attach files', icon: <Paperclip size={15} />, run: () => fileInputRef.current?.click() },
+        { id: 'attach', label: '/attach', hint: 'Attach files', icon: <Paperclip size={15} />, run: pickAttachmentFiles },
         { id: 'skills', label: '/skills', hint: 'Open Skills', icon: <BookOpen size={15} />, run: () => void openMarkdownStore() },
         ...groupedSkills(favorites),
       ]
@@ -4186,10 +4238,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                     name={attachment.name}
                     detail={attachment.error || attachmentLabel(attachment)}
                     path={attachment.status === 'ready' ? attachment.path : undefined}
-                    meta={attachment.status === 'staging' ? 'copying' : undefined}
+                    meta={attachment.status === 'staging' ? (attachmentProgress[attachment.id] === undefined ? 'copying' : `copying ${attachmentProgress[attachment.id]}%`) : undefined}
                     error={attachment.status === 'failed'}
                     onRemove={() => {
                       removedAttachmentIdsRef.current.add(attachment.id)
+                      // A copy still running stops between chunks and removes what it wrote.
+                      if (attachment.status === 'staging' && isCefContext()) void sendToCEF({ action: 'cancelChatAttachmentStaging', payload: { attachmentId: attachment.id } }).catch(() => undefined)
+                      // A finished copy that was never sent is deleted with its chip; the native side keeps anything a message or queue holds.
+                      if (attachment.status === 'ready' && attachment.type !== 'directory' && attachment.path && !submitInFlightRef.current && isCefContext() && !isCompanionContext()) void sendToCEF({ action: 'discardStagedChatAttachment', payload: { chatId: session.id, path: attachment.path } }, false).catch(() => undefined)
                       setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id))
                     }}
                     removeLabel={`Remove ${attachment.name} attachment`}
@@ -4434,7 +4490,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 void submit(undefined, undefined, !useAppStore.getState().steerActiveTurnOnSend)
                 composerTextareaRef.current?.focus({ preventScroll: true })
               }}
-              onAttachFile={() => fileInputRef.current?.click()}
+              onAttachFile={pickAttachmentFiles}
               onOpenMarkdownStore={() => void openMarkdownStore()}
               dictationState={dictationState}
               dictationError={dictationError}

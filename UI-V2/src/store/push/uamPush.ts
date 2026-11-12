@@ -77,6 +77,14 @@ export function parseUamPushPayload(payload: unknown): ParsedPushResult {
     return { ok: true, message: { type, chatId: raw.chatId } }
   }
 
+  if (type === 'attachmentProgress') {
+    if (!isString(raw.chatId) || !isString(raw.attachmentId) || typeof raw.copiedBytes !== 'number' || typeof raw.totalBytes !== 'number' ||
+        !(raw.copiedBytes >= 0) || !(raw.totalBytes >= raw.copiedBytes)) {
+      return { ok: false, status: 'invalid-message', error: 'attachmentProgress requires a chat, an attachment and byte counts.' }
+    }
+    return { ok: true, message: { type, chatId: raw.chatId, attachmentId: raw.attachmentId, copiedBytes: raw.copiedBytes, totalBytes: raw.totalBytes } }
+  }
+
   if (type === 'dictation') {
     const dictationId = raw.dictationId
     if (!isString(dictationId) || !dictationId || dictationId.length > 128) {

@@ -3,6 +3,7 @@
 #include "cef/uam_bridge_request.h"
 #include "cef/pending_operation_gate.h"
 #include "cef/uam_cef_security.h"
+#include "common/chat/attachment_payload.h"
 #include "common/companion/protocol.h"
 #include "cef/uam_window_chrome.h"
 #include "common/usage/multi_host_history.h"
@@ -157,6 +158,7 @@ UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_inde
 UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_index_url, bool start_background_readers)
     : m_app(app), m_trustedUiIndexUrl(std::move(trusted_ui_index_url))
 {
+	uam::attachment_payload::ShuttingDown().store(false); // A handler exists again: copies may run (tests and reloads build more than one).
 	if (start_background_readers)
 	{
 		m_usageHistory = std::make_shared<uam::usage::MultiHostHistory>(m_app.data_root, m_app.settings.execution_hosts);
@@ -180,6 +182,8 @@ CefRefPtr<CefTaskRunner> UamQueryHandler::SlowQueryRunner(const ChatSession& cha
 UamQueryHandler::~UamQueryHandler()
 {
 	m_asyncLifetime.reset();
+	// Before the slow-query threads are joined: a large attachment copy stops instead of holding up exit.
+	uam::attachment_payload::ShuttingDown().store(true);
 	for (const std::pair<const std::string, std::shared_ptr<std::stop_source>>& request : m_titleRequests) request.second->request_stop();
 	for (const auto& request : m_nativeHistoryRequests) request.second->request_stop();
 	m_remoteRefreshReadThreads.clear(); // Joins the stopped reads; each read is also bounded by its own deadline.
@@ -471,6 +475,10 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"startDictation", &UamQueryHandler::HandleStartDictation},
 		{"stopDictation", &UamQueryHandler::HandleStopDictation},
 		{"stageChatAttachments", &UamQueryHandler::HandleStageChatAttachments},
+		{"pickChatAttachmentFiles", &UamQueryHandler::HandlePickChatAttachmentFiles},
+		{"takeDroppedAttachmentPaths", &UamQueryHandler::HandleTakeDroppedAttachmentPaths},
+		{"cancelChatAttachmentStaging", &UamQueryHandler::HandleCancelChatAttachmentStaging},
+		{"discardStagedChatAttachment", &UamQueryHandler::HandleDiscardStagedChatAttachment},
 		{"sendAcpPrompt", &UamQueryHandler::HandleSendAcpPrompt},
 		{"compactAcpSession", &UamQueryHandler::HandleCompactAcpSession},
 		{"resumeQueuedAcpPrompts", &UamQueryHandler::HandleResumeQueuedAcpPrompts},

@@ -168,6 +168,13 @@ namespace uam::remote
 		bool UploadFile(const std::string& upload_id,
 		                const std::filesystem::path& remote_path,
 		                std::string_view bytes, std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// Streams a controller file to the host in bounded chunks without holding it in memory. The file is read twice:
+		/// once for the digest the helper verifies at commit, once to send. `progress` receives (sent, total) per chunk.
+		bool UploadFileFromPath(const std::string& upload_id,
+		                        const std::filesystem::path& remote_path,
+		                        const std::filesystem::path& source,
+		                        const std::function<void(std::uintmax_t, std::uintmax_t)>& progress = {},
+		                        std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool RemoveFile(const std::string& request_id,
 		                const std::filesystem::path& remote_path,
 		                std::string* error_out = nullptr);
@@ -247,6 +254,7 @@ namespace uam::remote
 		bool m_connected = false;
 		bool m_connectionAllowed = true;
 		bool m_directoryBrowsing = false;
+		std::uintmax_t m_maxUploadBytes = kLegacyMaxUploadBytes;
 		bool m_safePathInspection = false;
 		bool m_contextRead = false;
 		bool m_providerHistoryRead = false;

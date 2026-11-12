@@ -2344,6 +2344,13 @@ describe('useAppStore Gemini CLI slice', () => {
     })
   })
 
+  it('accepts attachment copy progress only with a chat, an attachment and consistent byte counts', () => {
+    const progress = { type: 'attachmentProgress', chatId: 'chat-1', attachmentId: 'a', copiedBytes: 4, totalBytes: 10 }
+    expect(parseUamPushPayload(progress)).toMatchObject({ ok: true, message: progress })
+    for (const bad of [{ copiedBytes: 11 }, { copiedBytes: -1 }, { totalBytes: '10' }, { attachmentId: 3 }, { chatId: undefined }])
+      expect(parseUamPushPayload({ ...progress, ...bad }).ok).toBe(false)
+  })
+
   it('validates optional native stream message positions', () => {
     const token = { type: 'streamToken', chatId: 'chat-1', token: 'text' }
     expect(parseUamPushPayload(token).ok).toBe(true)
