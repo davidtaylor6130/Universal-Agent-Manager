@@ -86,7 +86,7 @@ inline constexpr auto kShellStartupFiles = std::to_array<std::string_view>({
 
 inline bool IsShellStartupFile(const std::filesystem::path& path)
 {
-	const std::string name = uam::strings::ToLowerAscii(uam::paths::PortablePathString(path.filename()));
+	const std::string name = uam::strings::ToLowerAscii(read_only_detail::Utf8Text(path.filename()));
 	return std::ranges::find(kShellStartupFiles, name) != kShellStartupFiles.end();
 }
 

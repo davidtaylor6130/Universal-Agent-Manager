@@ -1,6 +1,5 @@
 #pragma once
 
-#include "common/paths/path_utils.h"
 #include "common/utils/env_utils.h"
 #include "common/vcs/vcs_provider_declaration.h"
 
@@ -129,11 +128,23 @@ inline std::string Lower(std::string text)
 	return text;
 }
 
+// UTF-8 path conversion without path_utils.h, which brings <windows.h> (and its min/max macros) into every includer.
+inline std::filesystem::path Utf8Path(std::string_view text)
+{
+	return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size()));
+}
+
+inline std::string Utf8Text(const std::filesystem::path& path)
+{
+	const std::u8string value = path.generic_u8string();
+	return std::string(reinterpret_cast<const char*>(value.data()), value.size());
+}
+
 // Case-insensitive volumes are the default on Windows and macOS; fold ASCII so case cannot dodge a boundary.
 inline std::filesystem::path Folded(const std::filesystem::path& path)
 {
 #if defined(_WIN32) || defined(__APPLE__)
-	return paths::PathFromUtf8(Lower(paths::PortablePathString(path)));
+	return Utf8Path(Lower(Utf8Text(path)));
 #else
 	return path;
 #endif
@@ -192,7 +203,7 @@ inline std::optional<std::filesystem::path> ScopeRelative(std::string_view opera
 	if (!scope.local) std::replace(text.begin(), text.end(), '\\', '/'); // A remote Windows path must not hide its separators lexically.
 	const std::filesystem::path workspace = Resolved(scope.workspace, scope.local);
 	const std::filesystem::path base = BaseDirectory(scope);
-	const std::filesystem::path target = Resolved(text.empty() ? base : base / paths::PathFromUtf8(text), scope.local);
+	const std::filesystem::path target = Resolved(text.empty() ? base : base / Utf8Path(text), scope.local);
 	if (!Within(target, workspace)) return std::nullopt;
 	const std::filesystem::path data_root = Resolved(scope.data_root, scope.local);
 	if (Within(target, data_root) && !Within(workspace, data_root)) return std::nullopt;
@@ -220,7 +231,7 @@ inline bool TrustedExecutable(std::string_view name, const ReadScope& scope)
 		const auto end = rest.find(separator);
 		std::string_view entry = rest.substr(0, end);
 		if (entry.size() >= 2 && entry.front() == '"' && entry.back() == '"') entry = entry.substr(1, entry.size() - 2);
-		const std::filesystem::path directory = paths::PathFromUtf8(entry);
+		const std::filesystem::path directory = Utf8Path(entry);
 		directories.emplace_back(directory, entry.empty() || !directory.is_absolute());
 		if (end == std::string_view::npos) break;
 		rest.remove_prefix(end + 1);
@@ -245,7 +256,7 @@ inline bool TrustedExecutable(std::string_view name, const ReadScope& scope)
 	{
 		for (const std::string& candidate : names)
 		{
-			const std::filesystem::path file = (relative ? base / directory : directory) / paths::PathFromUtf8(candidate);
+			const std::filesystem::path file = (relative ? base / directory : directory) / Utf8Path(candidate);
 			std::error_code error;
 			const std::filesystem::file_status status = std::filesystem::status(file, error);
 			if (error || !std::filesystem::is_regular_file(status)) continue;

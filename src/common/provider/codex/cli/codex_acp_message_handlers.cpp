@@ -2,6 +2,7 @@
 #include "common/provider/codex/cli/codex_acp_message_handlers.h"
 #include "app/agent_run_scheduler.h"
 #include "common/runtime/acp/acp_goal_loop.h"
+#include "common/paths/path_utils.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 
