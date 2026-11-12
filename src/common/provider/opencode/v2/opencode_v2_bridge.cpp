@@ -113,7 +113,7 @@ class Service
 {
 public:
 	Process server, events;
-	std::string url, password, nonce, captured_directory;
+	std::string url, password, nonce, captured_directory, version;
 	std::filesystem::path directory, policy_path, proof_path;
 	bool connected = false;
 	explicit Service(IPlatformProcessService& process_service) : server(process_service), events(process_service)
@@ -235,7 +235,10 @@ public:
 				unsigned int port = 0; const auto parsed = std::from_chars(port_text.data(), port_text.data() + port_text.size(), port);
 				if (parsed.ec != std::errc{} || parsed.ptr != port_text.data() + port_text.size() || port == 0 || port > 65535) break;
 				url = std::string(prefix) + std::to_string(port);
-				if (Query("GET", "/api/info", nullptr).value("version", "") != "2.1.2") throw std::runtime_error("The actual OpenCode service is not the verified V2.1.2 protocol.");
+				// The running service, not the PATH check, is the protocol witness.
+				const Json info = Query("GET", "/api/info", nullptr);
+				version = info.contains("version") && info.at("version").is_string() ? info.at("version").get<std::string>() : std::string{};
+				if (!IsVerifiedV2(version)) throw std::runtime_error("The running OpenCode service is not a verified V2 protocol version. " + UnverifiedV2Message(version.empty() ? "(unreported)" : version, "native API adapter"));
 				std::string config = Config();
 				if (!events.service.StartStdioProcessWithInput(events.fields, {}, {Curl(), "-q", "--silent", "--fail", "--no-buffer", "--noproxy", "*", "--proto", "=http", "--connect-timeout", "2", "--config", "-", url + "/api/event"}, config, nullptr)) break;
 				std::fill(config.begin(), config.end(), '\0');
@@ -301,7 +304,7 @@ int Bridge(const std::vector<std::string>& command, IPlatformProcessService& pro
 			worker_done = true;
 			worker_failed = value.at("result").value("stopReason", "") != "end_turn";
 		}
-	});
+	}, service.version);
 	std::string input, sse, frame;
 	std::array<char, 8192> bytes{};
 	const auto initial_deadline = Clock::now() + std::chrono::seconds(15);

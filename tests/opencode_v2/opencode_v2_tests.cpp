@@ -13,7 +13,7 @@ struct Native
 {
 	Json info{{"id", "ses_owned"}, {"agent", "build"}, {"location", {{"directory", "/workspace"}}}, {"permissions", Json::array({{{"action", "*"}, {"resource", "*"}, {"effect", "allow"}}})}};
 	std::vector<Json> calls, output, policies;
-	bool mismatch = false;
+	bool mismatch = false, project_default_variant = false;
 	bool queued_native_input = false, lose_prompt_receipt = false, lose_cancel_receipt = false, lose_delete_receipt = false, interrupt_idle = false, fail_event_control = false;
 	Session session;
 	Native() : session([&](const auto& method, const auto& route, const auto& body) { return Query(method, route, body); },
@@ -30,7 +30,13 @@ struct Native
 		if (method == "PATCH" && route == "/api/session/ses_owned") { if (!mismatch) info["permissions"] = body.at("permissions"); return Json::object(); }
 		if (method == "POST" && route.ends_with("/model")) { info["model"] = body.at("model"); return Json::object(); }
 		if (method == "POST" && route.ends_with("/agent")) { info["agent"] = body.at("agent"); return Json::object(); }
-		if (method == "GET" && route == "/api/session/ses_owned") return {{"data", info}};
+		if (method == "GET" && route == "/api/session/ses_owned")
+		{
+			// Real OpenCode 2.1.2 through 2.2.7 reads an unset session variant back as "default".
+			Json projected = info;
+			if (project_default_variant && projected.contains("model") && !projected["model"].contains("variant")) projected["model"]["variant"] = "default";
+			return {{"data", projected}};
+		}
 		if (method == "GET" && route.ends_with("/inbox")) return {{"data", queued_native_input ? Json::array({{{"id", "msg_preexisting"}}}) : Json::array()}};
 		if (method == "POST" && route.ends_with("/prompt"))
 		{
@@ -81,7 +87,20 @@ int main(int argc, char** argv)
 			Check(!WorkerVersionError(true, true, "1.invalid", "").empty(), "malformed V1 identity authorized worker");
 			Check(WorkerVersionError(true, true, "1.19.4", "").empty(), "confirmed V1 worker lost its route");
 			Check(WorkerVersionError(true, true, "2.1.2", "").empty(), "checked V2 worker lost its route");
-			Check(!WorkerVersionError(true, true, "2.2.0", "").empty(), "unknown V2 worker authorized");
+			for (const std::string verified : {"2.1.4", "2.2.0", "2.2.6", "2.2.7"})
+				Check(WorkerVersionError(true, true, verified, "").empty(), "verified V2 worker lost its route");
+			for (const std::string unverified : {"2.1.1", "2.2.8", "2.3.0", "2.2.7-beta.1"})
+				Check(!WorkerVersionError(true, true, unverified, "").empty(), "unverified V2 worker authorized");
+			Check(WorkerVersionError(true, true, "2.3.0", "").find("OpenCode 2.3.0 is installed") != std::string::npos, "worker refusal did not name the installed version");
+		});
+		Run("VerifiedV2RangeComparesNumericComponentsAndRefusesDecoratedVersions", []
+		{
+			for (const std::string verified : {"2.1.2", "2.1.3", "2.1.4", "2.2.0", "2.2.6", "2.2.7"})
+				Check(IsVerifiedV2(verified), "verified V2 version refused");
+			// 2.2.10 sorts after 2.2.7 numerically, not lexically; 2.10.0 likewise.
+			for (const std::string refused : {"", "2.1.1", "2.2.8", "2.2.10", "2.10.0", "3.0.0", "1.19.4", "2.2.6-beta.1", "2.2.6+build", "v2.2.6", " 2.2.6", "2.2", "2.2.99999999999999999999999"})
+				Check(!IsVerifiedV2(refused), "unverified or decorated V2 version admitted");
+			Check(UnverifiedV2Message("2.3.0\nnoise", "test").find('\n') == std::string::npos, "refusal carried a line break");
 		});
 		Run("DecoratedCliVersionsAndCompleteHistoryBudgetsRemainCompatible", []
 		{
@@ -103,10 +122,12 @@ int main(int argc, char** argv)
 			Check(RemoteHistoryArgv("1.19.4", {"opencode"}, "export", "ses_exact") == HistoryArgv("1.19.4", {"opencode"}, "export", "ses_exact"), "V1 remote export changed");
 			Check(RemoteHistoryArgv("2.1.4", {"opencode"}, "list", {}) == std::vector<std::string>({"opencode", "session", "list", "--format", "json", "--standalone", "--max-count", "200"}), "V2 remote list sent --pure or lost its bound");
 			Check(RemoteHistoryArgv("2.1.4", {"opencode"}, "export", "ses_exact") == std::vector<std::string>({"opencode", "session", "export", "ses_exact", "--standalone"}), "V2 remote export sent --pure");
-			std::string remote_refusal; try { (void)RemoteHistoryArgv("2.2.0", {"opencode"}, "list", {}); } catch (const std::exception& error) { remote_refusal = error.what(); }
-			Check(remote_refusal.find("OpenCode 2.2.0 history has not been verified") != std::string::npos, "unverified remote V2 was admitted");
-			std::string refusal; try { (void)HistoryArgv("2.2.0", {"opencode"}, "export", "ses_exact"); } catch (const std::exception& error) { refusal = error.what(); }
-			Check(refusal.find("OpenCode 2.2.0 history has not been verified") != std::string::npos, "unknown V2 history admitted or unnamed");
+			Check(HistoryArgv("2.2.6", {"opencode"}, "export", "ses_exact") == HistoryArgv("2.1.4", {"opencode"}, "export", "ses_exact"), "2.2.6 export not on the V2 route");
+			Check(RemoteHistoryArgv("2.2.7", {"opencode"}, "list", {}) == RemoteHistoryArgv("2.1.4", {"opencode"}, "list", {}), "2.2.7 remote list not on the V2 route");
+			std::string remote_refusal; try { (void)RemoteHistoryArgv("2.3.0", {"opencode"}, "list", {}); } catch (const std::exception& error) { remote_refusal = error.what(); }
+			Check(remote_refusal.find("OpenCode 2.3.0 history has not been verified") != std::string::npos, "unverified remote V2 was admitted");
+			std::string refusal; try { (void)HistoryArgv("2.3.0", {"opencode"}, "export", "ses_exact"); } catch (const std::exception& error) { refusal = error.what(); }
+			Check(refusal.find("OpenCode 2.3.0 history has not been verified") != std::string::npos && refusal.find("2.1.2 through 2.2.7") != std::string::npos, "unknown V2 history admitted or unnamed");
 			Check(AdapterError("native noise\nUAM OpenCode adapter: " + refusal + "\n") == refusal && AdapterError("native only\n").empty(), "adapter refusal not isolated from native stderr");
 		});
 		Run("CreatePublishesAndReadsBackExactPolicy", []
@@ -332,6 +353,21 @@ int main(int argc, char** argv)
 			native.Send(3, "session/set_mode", {{"sessionId", "ses_owned"}, {"modeId", "plan"}});
 			Check(native.policies.back()["read"] == true, "Plan policy not published");
 			native.Prompt(4); Check(native.policies.back()["read"] == true, "prompt widened Plan");
+		});
+		Run("NativeDefaultVariantReadbackConfirmsBaseModelAndResume", []
+		{
+			Native native; native.project_default_variant = true; native.Setup();
+			native.Send(2, "session/set_model", {{"sessionId", "ses_owned"}, {"modelId", "mock/model/with/slash"}});
+			Check(native.output.back().contains("result"), "base model readback with the native default variant was refused");
+			native.Send(3, "session/set_config_option", {{"sessionId", "ses_owned"}, {"configId", "effort"}, {"value", "high"}});
+			native.Send(4, "session/set_config_option", {{"sessionId", "ses_owned"}, {"configId", "effort"}, {"value", "default"}});
+			Check(native.output.back().contains("result") && !native.info["model"].contains("variant"), "resetting effort to Default was refused");
+			native.Prompt(5); Check(!native.output.back().contains("error"), "base model input was refused after default readback");
+			Native resumed; resumed.info["model"] = {{"providerID", "mock"}, {"id", "model/with/slash"}, {"variant", "default"}}; resumed.Setup(true);
+			Check(resumed.output.back()["result"]["models"]["currentModelId"] == "mock/model/with/slash", "resumed native default variant became an unknown model");
+			Session reported([](const auto&, const auto&, const auto&) { return Json::object(); }, [](const auto&, const auto&, bool) {}, [&](const Json& value) { resumed.output.push_back(value); }, "2.2.6");
+			reported.Handle({{"id", 1}, {"method", "initialize"}, {"params", Json::object()}});
+			Check(resumed.output.back()["result"]["agentInfo"]["version"] == "2.2.6", "bridge did not report the running native version");
 		});
 		Run("NativeQuestionsRetainFieldAndOptionIdentity", []
 		{

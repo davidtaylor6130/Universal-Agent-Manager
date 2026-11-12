@@ -1,8 +1,12 @@
 #pragma once
 
 #include "common/config/build_features.h"
+#include "common/runtime/cli_version_parser.h"
+#include "common/utils/string_utils.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <functional>
 #include <deque>
 #include <cstdint>
@@ -25,6 +29,37 @@ using Json = nlohmann::json;
 using Query = std::function<Json(const std::string&, const std::string&, const Json&)>;
 using PublishPolicy = std::function<void(const std::string&, const std::string&, bool)>;
 using Emit = std::function<void(const Json&)>;
+
+// The one OpenCode V2 native-protocol contract UAM has verified, for chat, model
+// refresh, text workers and history. See docs/reference/opencode-v2-protocol-assessment.md
+// for how each bound was verified before widening it.
+inline constexpr std::string_view kVerifiedV2Minimum = "2.1.2";
+inline constexpr std::string_view kVerifiedV2Maximum = "2.2.7";
+/// <summary>True only for an exact x.y.z inside the verified V2 range; pre-release, build and decorated text are unverified.</summary>
+inline bool IsVerifiedV2(std::string_view version)
+{
+	if (cli_versions::ExtractSemverVersion(version) != std::optional<std::string>{std::string(version)}) return false;
+	const auto parse = [](std::string_view text)
+	{
+		std::array<unsigned long long, 3> parts{};
+		const char* cursor = text.data();
+		for (auto& part : parts)
+		{
+			const auto parsed = std::from_chars(cursor, text.data() + text.size(), part);
+			if (parsed.ec != std::errc{}) return std::optional<std::array<unsigned long long, 3>>{};
+			cursor = parsed.ptr + 1;
+		}
+		return std::optional{parts};
+	};
+	const auto value = parse(version);
+	return value && *value >= *parse(kVerifiedV2Minimum) && *value <= *parse(kVerifiedV2Maximum);
+}
+/// <summary>Names the installed and supported versions for a refused V2 installation.</summary>
+inline std::string UnverifiedV2Message(std::string_view installed, std::string_view use)
+{
+	return "OpenCode " + strings::SafeLine(installed, 32) + " is installed, but UAM's " + std::string(use) + " is verified only for OpenCode V2 " +
+	       std::string(kVerifiedV2Minimum) + " through " + std::string(kVerifiedV2Maximum) + ".";
+}
 
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 std::string Encode(std::string_view value);
@@ -67,7 +102,7 @@ std::vector<std::string> FileBackedStdoutArgv(std::vector<std::string> command);
 class Session
 {
 public:
-	Session(Query query, PublishPolicy publish_policy, Emit emit);
+	Session(Query query, PublishPolicy publish_policy, Emit emit, std::string native_version = std::string(kVerifiedV2Minimum));
 	void Handle(const Json& message);
 	void Event(const Json& event);
 	void CheckDeadlines(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
@@ -90,7 +125,7 @@ private:
 	Query query_;
 	PublishPolicy publish_policy_;
 	Emit emit_;
-	std::string cwd_, session_id_, mode_ = "build", model_, prompt_inbox_;
+	std::string native_version_, cwd_, session_id_, mode_ = "build", model_, prompt_inbox_;
 	bool read_only_ = false, prompt_started_ = false, disconnected_ = false, ready_ = false;
 	bool usage_invalid_ = false;
 	bool cancel_requested_ = false, cancel_interrupt_sent_ = false;
