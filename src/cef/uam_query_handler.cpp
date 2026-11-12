@@ -185,6 +185,7 @@ UamQueryHandler::~UamQueryHandler()
 	// Before the slow-query threads are joined: a large attachment copy stops instead of holding up exit.
 	uam::attachment_payload::ShuttingDown().store(true);
 	for (const std::pair<const std::string, std::shared_ptr<std::stop_source>>& request : m_titleRequests) request.second->request_stop();
+	for (const auto& request : m_vcsRequestStops) request.second->request_stop();
 	for (const auto& request : m_nativeHistoryRequests) request.second->request_stop();
 	m_remoteRefreshReadThreads.clear(); // Joins the stopped reads; each read is also bounded by its own deadline.
 	for (const auto& install : m_remoteInstallStops)
@@ -458,6 +459,11 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"getVcsCommitStatus", &UamQueryHandler::HandleGetVcsCommitStatus},
 		{"captureChatReferenceContext", &UamQueryHandler::HandleCaptureChatReferenceContext},
 		{"getVcsFileDiff", &UamQueryHandler::HandleGetVcsFileDiff},
+		{"getVcsHistory", &UamQueryHandler::HandleGetVcsHistory},
+		{"getVcsRevisionDiff", &UamQueryHandler::HandleGetVcsRevisionDiff},
+		{"updateVcsWorkspace", &UamQueryHandler::HandleUpdateVcsWorkspace},
+		{"getVcsOrigin", &UamQueryHandler::HandleGetVcsOrigin},
+		{"cancelVcsRequest", &UamQueryHandler::HandleCancelVcsRequest},
 		{"getWorkspaceFilePreview", &UamQueryHandler::HandleGetWorkspaceFilePreview},
 		{"commitVcsChanges", &UamQueryHandler::HandleCommitVcsChanges},
 		{"generateVcsCommitMessage", &UamQueryHandler::HandleGenerateVcsCommitMessage},

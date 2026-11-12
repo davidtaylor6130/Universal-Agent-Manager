@@ -34,8 +34,11 @@ src/                                 C++ backend (CMake target: universal_agent_
     runtime_orchestration_services.* Native history sync and provider request dispatch
     vcs_commit_service.*             VCS status/diff/commit + commit-message generation
     vcs_provider.h                   Git/SVN provider interface behind vcs_commit_service
+    svn_history.*                    SVN log paging, per-revision patch, update and branch origin behind the SVN provider
   cef/
-    uam_cef_app.*                    CefApp, command line switches, renderer router
+    uam_cef_app.*                    Browser-process CefApp, command line switches
+    uam_cef_renderer_app.*           Subprocess CefApp, renderer router (window.cefQuery)
+    uam_cef_helper_main_mac.cpp      Sandboxed macOS helper entry point
     uam_cef_client.*                 CefClient, navigation, context menu, keyboard
     uam_query_handler.*              JS to C++ bridge action dispatch
     state_serializer.*               AppState to frontend JSON
@@ -129,6 +132,11 @@ Current bridge actions, grouped by domain (the live dispatch table is `UamQueryH
 | `getVcsCommitStatus` | Return VCS status for the commit panel |
 | `getVcsFileDiff` | Return a file diff for the commit panel |
 | `commitVcsChanges` | Commit staged changes |
+| `getVcsHistory` | Return one page of revision history for the commit panel |
+| `getVcsRevisionDiff` | Return the patch one revision applied to a path |
+| `updateVcsWorkspace` | Update the working copy to the latest revision |
+| `getVcsOrigin` | Relate a branch or tag to the path it was copied from, for the history graph (copy point, its own revisions, the origin's) |
+| `cancelVcsRequest` | Stop a history, revision-diff, branch-origin or update request in flight |
 | `generateVcsCommitMessage` | Generate a commit message via a worker |
 | `listMemoryScanCandidates` | List chats eligible for a memory scan |
 | `scanCurrentChats` | Run a memory scan over current chats |

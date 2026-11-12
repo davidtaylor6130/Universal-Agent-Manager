@@ -1122,6 +1122,24 @@ UAM_TEST(OpenCodeMetadataDefersOwnershipUntilFirstAssistantChunk)
 	UAM_ASSERT(fixture.Session().processing && fixture.Session().prompt_request_id == 99);
 }
 
+UAM_TEST(OpenCodeMetadataBindsAShortTurnThatSettlesBeforeTheNextPoll)
+{
+	// A goal review reply can arrive and settle between two polls; it must still own its row, not stop the next prompt.
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate();
+	fixture.Chat().messages.resize(1);
+	fixture.Session().queued_prompt.clear();
+	fixture.Session().prompt_request_id = 99;
+	fixture.Session().turn_assistant_message_index = fixture.Session().current_assistant_message_index = -1;
+	fixture.Session().turn_events.clear();
+	for (int tick = 0; tick < 100; ++tick) (void)fixture.service->Poll(fixture.app);
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Short review reply.");
+	fixture.Session().current_assistant_message_index = -1; // Settlement clears it before the next poll.
+	fixture.Settle();
+	UAM_ASSERT(fixture.WaitGate() == uam::OpenCodeCompactionGateState::Ready);
+	UAM_ASSERT(fixture.Boundaries().empty());
+}
+
 UAM_TEST(OpenCodeMetadataUsesNativeToolPartBoundaryWithinOneMessage)
 {
 	NativeMetadataFixture fixture;

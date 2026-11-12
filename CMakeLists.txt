@@ -219,36 +219,36 @@ if(NOT UAM_RUNNER_ONLY)
 if(WIN32)
   set(CEF_PLATFORM "windows64")
   set(PROJECT_ARCH "x86_64")
-  set(CEF_VERSION "146.0.10+g8219561+chromium-146.0.7680.179")
-  set(CEF_SHA256 "f5b0a6fcd3c6d4abd7486e849db2640c27bb4d94d7b792691be348dec8063ff6")
+  set(CEF_VERSION "156.0.28+g57389f0+chromium-156.0.8078.88")
+  set(CEF_SHA256 "ea72adb3a1de39289f3c928dc7b1820070f58bb9a2b0551435ae092c42562af7")
 elseif(APPLE)
   if(CMAKE_OSX_ARCHITECTURES)
     if(CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
       set(CEF_PLATFORM "macosarm64")
       set(PROJECT_ARCH "arm64")
-      set(CEF_SHA256 "7ac8e9ba2980bfa607c64f3e4d67feb630ebb9ba2d680f8945212b79d30da2ae")
+      set(CEF_SHA256 "840d05646fc88d986c3ce9f8fe87e6388607239180fc3e14e221cefd05c12e87")
     elseif(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
       set(CEF_PLATFORM "macosx64")
       set(PROJECT_ARCH "x86_64")
-      set(CEF_SHA256 "a245962946c4ae90cd7b31a998a5b0b4aac88f71d55c682c5c7ec4099486271c")
+      set(CEF_SHA256 "29df7be4b887799158450a50ae723d885657ebf84724fb46094af86f83ef1bfd")
     else()
       message(FATAL_ERROR "CEF macOS builds require exactly one architecture: arm64 or x86_64.")
     endif()
   elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     set(CEF_PLATFORM "macosarm64")
     set(PROJECT_ARCH "arm64")
-    set(CEF_SHA256 "7ac8e9ba2980bfa607c64f3e4d67feb630ebb9ba2d680f8945212b79d30da2ae")
+    set(CEF_SHA256 "840d05646fc88d986c3ce9f8fe87e6388607239180fc3e14e221cefd05c12e87")
   else()
     set(CEF_PLATFORM "macosx64")
     set(PROJECT_ARCH "x86_64")
-    set(CEF_SHA256 "a245962946c4ae90cd7b31a998a5b0b4aac88f71d55c682c5c7ec4099486271c")
+    set(CEF_SHA256 "29df7be4b887799158450a50ae723d885657ebf84724fb46094af86f83ef1bfd")
   endif()
-  set(CEF_VERSION "146.0.10+g8219561+chromium-146.0.7680.179")
+  set(CEF_VERSION "156.0.28+g57389f0+chromium-156.0.8078.88")
 else()
   set(CEF_PLATFORM "linux64")
   set(PROJECT_ARCH "x86_64")
-  set(CEF_VERSION "138.0.61+g664e74a+chromium-138.0.7204.308")
-  set(CEF_SHA256 "dd2de7339c4f56de23ed2d80c9b11db81a6553180c18af64f694963a50be5707")
+  set(CEF_VERSION "156.0.28+g57389f0+chromium-156.0.8078.88")
+  set(CEF_SHA256 "7b53123d0628fce62c755c090b0ae52b454431d98b53b8d99fb505757f48f43a")
 endif()
 
 # Encode the + characters as %2B for the URL.
@@ -264,6 +264,11 @@ FetchContent_Declare(
 # Force libcef_dll_wrapper to be a STATIC library regardless of BUILD_SHARED_LIBS.
 # Shared wrapper builds can hide symbols and leave the app with unresolved CEF
 # references at link time.
+if(WIN32)
+  # CEF's sandbox option builds the wrapper for a bootstrap.exe client DLL (versioned API, bootstrap entry points).
+  # UAM still ships a plain executable on Windows; the bootstrap sandbox is a documented known gap.
+  set(USE_SANDBOX OFF)
+endif()
 set(_saved_bsl ${BUILD_SHARED_LIBS})
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(cef_binary)
@@ -624,6 +629,7 @@ add_library(uam_core_objects OBJECT
   src/app/vcs_commit_service.cpp
   src/app/workspace_vcs_context_service.cpp
   src/app/svn_branch_service.cpp
+  src/app/svn_history.cpp
   src/app/svn_branch_process.cpp
   src/cef/uam_cef_command_line_config.cpp
   src/cef/uam_bridge_request.cpp
@@ -707,6 +713,7 @@ add_library(uam_app_objects OBJECT
   src/app/application.cpp
   src/common/discovery/management_discovery.cpp
   src/cef/uam_cef_app.cpp
+  src/cef/uam_cef_renderer_app.cpp
   src/cef/uam_cef_client.cpp
   src/cef/uam_query_handler.cpp
   src/cef/chat_title_handlers.cpp
@@ -843,6 +850,10 @@ elseif(WIN32)
   )
 endif()
 
+if(APPLE AND UAM_MACOS_BUNDLE)
+  # Only the macOS helper bundles enter the Chromium sandbox. Windows (bootstrap.exe) and Linux are known gaps.
+  target_compile_definitions(universal_agent_manager PRIVATE UAM_CEF_SANDBOX)
+endif()
 target_compile_definitions(universal_agent_manager PRIVATE
   ${UAM_FEATURE_DEFINITIONS}
   NOMINMAX
@@ -882,7 +893,7 @@ if(APPLE)
 
     # -----------------------------------------------------------------------
     # CEF helper app bundles
-    # Each helper is a minimal .app containing a copy of the main executable.
+    # Each helper is a minimal .app containing a copy of the uam_cef_helper executable.
     # CEF discovers them by convention:
     #   Contents/Frameworks/<ExeName> Helper[<suffix>].app/Contents/MacOS/<ExeName> Helper[<suffix>]
     #
@@ -891,6 +902,14 @@ if(APPLE)
     # a small CMake script at configure time and executing it via cmake -P at
     # build time.  Generator expressions are expanded via a GENEX_EVAL wrapper.
     # -----------------------------------------------------------------------
+    # The helpers run a separate small executable: the macOS sandbox requires it to enter the sandbox first and
+    # load the CEF framework at runtime, so it must not link the framework or the application services.
+    add_executable(uam_cef_helper src/cef/uam_cef_helper_main_mac.cpp src/cef/uam_cef_renderer_app.cpp)
+    set_target_properties(uam_cef_helper PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "App")
+    target_include_directories(uam_cef_helper PRIVATE src src/common ${cef_binary_SOURCE_DIR})
+    target_link_libraries(uam_cef_helper PRIVATE libcef_dll_wrapper "-Wl,-framework,AppKit")
+    add_dependencies(universal_agent_manager uam_cef_helper)
+
     set(_cef_plists_dir "${CMAKE_BINARY_DIR}/cef_helper_plists")
     # Local network access exists only for phone access; builds without it neither declare nor require it.
     set(_uam_privacy_keys NSMicrophoneUsageDescription NSSpeechRecognitionUsageDescription)
@@ -985,7 +1004,7 @@ endif()
   <key>CFBundleShortVersionString</key><string>${UAM_PRODUCT_VERSION}</string>
   <key>CFBundleVersion</key><string>${PROJECT_VERSION}</string>
   <key>LSBackgroundOnly</key><true/>
-  <key>LSMinimumSystemVersion</key><string>10.15.0</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSMicrophoneUsageDescription</key><string>Universal Agent Manager uses the microphone when you choose to dictate a prompt.</string>${_uam_local_network_plist}
   <key>NSSpeechRecognitionUsageDescription</key><string>Universal Agent Manager converts your spoken prompt into text when dictation is active.</string>
 </dict>
@@ -998,7 +1017,7 @@ endif()
 set(_hdir \"\${UAM_BUNDLE_CONTENTS}/Frameworks/${_hname}.app/Contents\")
 file(MAKE_DIRECTORY \"\${_hdir}/MacOS\")
 file(MAKE_DIRECTORY \"\${_hdir}/Frameworks\")
-file(COPY_FILE \"\${UAM_MAIN_EXE}\" \"\${_hdir}/MacOS/${_hname}\" ONLY_IF_DIFFERENT)
+file(COPY_FILE \"\${UAM_HELPER_EXE}\" \"\${_hdir}/MacOS/${_hname}\" ONLY_IF_DIFFERENT)
 file(COPY_FILE \"${_cef_plists_dir}/${_hid}/Info.plist\" \"\${_hdir}/Info.plist\" ONLY_IF_DIFFERENT)
 require_dictation_usage_descriptions(\"\${_hdir}/Info.plist\")
 # Symlink to the CEF framework in the parent bundle so that
@@ -1040,7 +1059,7 @@ sign_owned_code(\"\${UAM_BUNDLE_CONTENTS}/Frameworks/${_hname}.app\" \"${_jit_en
   <key>CFBundleShortVersionString</key><string>${UAM_PRODUCT_VERSION}</string>
   <key>CFBundleVersion</key><string>${PROJECT_VERSION}</string>
   <key>LSUIElement</key><true/>
-  <key>LSMinimumSystemVersion</key><string>10.15.0</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
 </dict>
 </plist>")
     string(APPEND _helper_script_content
@@ -1086,6 +1105,7 @@ sign_owned_code(\"\${UAM_MAIN_EXE}\" \"${_jit_entitlements}\")
         -DUAM_BUNDLE_CONTENTS=$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>
         -DUAM_BUNDLE_DIR=$<TARGET_BUNDLE_DIR:universal_agent_manager>
         -DUAM_MAIN_EXE=$<TARGET_FILE:universal_agent_manager>
+        -DUAM_HELPER_EXE=$<TARGET_FILE:uam_cef_helper>
         -P "${_helper_cmake_script}"
       VERBATIM
       COMMENT "Creating and signing CEF helper bundles"
@@ -1567,6 +1587,7 @@ if(UAM_BUILD_TESTS)
     tests/provider_model_metadata_tests.cpp
     tests/claude_model_metadata_tests.cpp
     tests/svn_commit_scheduling_tests.cpp
+    tests/svn_history_tests.cpp
     tests/native_import_failure_tests.cpp
     tests/empty_native_import_tests.cpp
     tests/opencode_import_stream_tests.cpp

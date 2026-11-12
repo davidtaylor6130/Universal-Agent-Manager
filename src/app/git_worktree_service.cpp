@@ -1241,7 +1241,16 @@ namespace uam
 			    !execution_hosts::RemotePathsMatch(host.platform, output, common) ||
 			    !RemoteGit(client, host, source, {"rev-parse", "--path-format=absolute", "--git-common-dir"}, output, error, stop) ||
 			    !execution_hosts::RemotePathsMatch(host.platform, output, common) ||
-			    !RemoteGit(client, host, directory, {"symbolic-ref", "--short", "HEAD"}, output, error, stop) || output != chat.workspace_branch_name) return false;
+			    !RemoteGit(client, host, directory, {"rev-parse", "--symbolic-full-name", "HEAD"}, output, error, stop)) return false;
+			// An agent can switch the worktree away from its own branch. That branch is the one cleanup deletes, so another
+			// branch is never adopted; the user is told exactly how to restore it instead of the chat waiting silently.
+			if (output != "refs/heads/" + chat.workspace_branch_name)
+			{
+				const std::string current = output.starts_with("refs/heads/") ? output.substr(11) : "a detached HEAD";
+				error = "This chat's worktree " + directory + " is on " + current + " instead of its own branch " + chat.workspace_branch_name +
+				    ". Switch it back with `git switch " + chat.workspace_branch_name + "` in that folder, then retry.";
+				return false;
+			}
 			std::string head, reference, admin;
 			if (!RemoteGit(client, host, directory, {"rev-parse", "HEAD"}, head, error, stop) || !IsCommitId(head) ||
 			    !RemoteGit(client, host, source, {"rev-parse", "--verify", "--end-of-options", "refs/heads/" + chat.workspace_branch_name}, reference, error, stop) || reference != head ||

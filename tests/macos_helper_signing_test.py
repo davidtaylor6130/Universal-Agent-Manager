@@ -94,7 +94,7 @@ class MacosHelperSigningTests(unittest.TestCase):
                 self.run_tool(OPTIONS.cmake, '-P', script)
                 for phase in ['cold', 'incremental']:
                     self.run_tool(OPTIONS.cmake, f'-DUAM_BUNDLE_CONTENTS={contents}',
-                                  f'-DUAM_BUNDLE_DIR={app}', f'-DUAM_MAIN_EXE={executable}',
+                                  f'-DUAM_BUNDLE_DIR={app}', f'-DUAM_MAIN_EXE={executable}', f'-DUAM_HELPER_EXE={executable}',
                                   '-P', generated / 'cef_helper_plists/create_helpers.cmake')
                     names = HELPERS + (['UAM Computer Use'] if enabled else [])
                     for name in names:

@@ -373,6 +373,7 @@ function deserializeState(
     gitDefaultBaseBranch: cpp.settings.gitDefaultBaseBranch ?? existing.gitDefaultBaseBranch,
     gitPullBeforeChat: cpp.settings.gitPullBeforeChat ?? existing.gitPullBeforeChat,
     svnUpdateBeforeChat: cpp.settings.svnUpdateBeforeChat ?? existing.svnUpdateBeforeChat,
+    svnRepositoryLayouts: cpp.settings.svnRepositoryLayouts ?? existing.svnRepositoryLayouts,
     gitPortMethod: cpp.settings.gitPortMethod ?? existing.gitPortMethod,
     worktreeCleanupEnabled: cpp.settings.worktreeCleanupEnabled ?? existing.worktreeCleanupEnabled,
     worktreeRetentionDays: cpp.settings.worktreeRetentionDays ?? existing.worktreeRetentionDays,
@@ -618,6 +619,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     gitDefaultBaseBranch: patch.settings?.gitDefaultBaseBranch ?? current.gitDefaultBaseBranch,
     gitPullBeforeChat: patch.settings?.gitPullBeforeChat ?? current.gitPullBeforeChat,
     svnUpdateBeforeChat: patch.settings?.svnUpdateBeforeChat ?? current.svnUpdateBeforeChat,
+    svnRepositoryLayouts: patch.settings?.svnRepositoryLayouts ?? current.svnRepositoryLayouts,
     gitPortMethod: patch.settings?.gitPortMethod ?? current.gitPortMethod,
     worktreeCleanupEnabled: patch.settings?.worktreeCleanupEnabled ?? current.worktreeCleanupEnabled,
     worktreeRetentionDays: patch.settings?.worktreeRetentionDays ?? current.worktreeRetentionDays,
@@ -880,6 +882,7 @@ export const useAppStore = create<AppState>((set, get) => {
           gitDefaultBaseBranch: current.gitDefaultBaseBranch,
           gitPullBeforeChat: current.gitPullBeforeChat,
           svnUpdateBeforeChat: current.svnUpdateBeforeChat,
+          svnRepositoryLayouts: current.svnRepositoryLayouts,
           gitPortMethod: current.gitPortMethod,
           worktreeCleanupEnabled: current.worktreeCleanupEnabled,
           worktreeRetentionDays: current.worktreeRetentionDays,
@@ -915,6 +918,8 @@ export const useAppStore = create<AppState>((set, get) => {
         set({ ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), bootstrapStateError: '', bootstrapStateLoading: false })
         // Only after the state applied: a throw above must still reach failBootstrap.
         bootstrapHydrated = true
+        // Native writes "[UI startup]" console lines to the diagnostic log; the packaged smoke tests wait for this one.
+        console.info('[UI startup] Initial state loaded through the native bridge.')
         if (bootstrapRetryTimer !== null) clearTimeout(bootstrapRetryTimer)
         bootstrapRetryTimer = null
         // Sync theme to DOM
@@ -1393,6 +1398,7 @@ export const useAppStore = create<AppState>((set, get) => {
       gitDefaultBaseBranch: current.gitDefaultBaseBranch,
       gitPullBeforeChat: current.gitPullBeforeChat,
       svnUpdateBeforeChat: current.svnUpdateBeforeChat,
+      svnRepositoryLayouts: current.svnRepositoryLayouts,
       gitPortMethod: current.gitPortMethod,
       worktreeCleanupEnabled: current.worktreeCleanupEnabled,
       worktreeRetentionDays: current.worktreeRetentionDays,

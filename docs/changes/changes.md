@@ -8,7 +8,7 @@ Change review lets users inspect the current workspace or recorded chat edits be
 - [File inspection](../files/inspection.md)
 - [Version Control settings](../settings/version-control/version-control.md)
 
-**Scope:** David keeps the existing Git/SVN commit panel in V5 (2026-10-25). This keeps the current surface and does not approve new panel features. See [recorded scope](../architecture/decisions.md#existing-vcs-panel).
+**Scope:** David keeps the existing Git/SVN commit panel in V5 (2026-10-25) and asked for SVN history and update in it (2026-11-11). Other new panel features are not approved. See [recorded scope](../architecture/decisions.md#existing-vcs-panel).
 
 [Checkpoints and rollback](../workspaces/checkpoints.md).
 

@@ -2,6 +2,7 @@
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_text_worker.h"
 #include "remote/memory_protocol.h"
+#include "remote/runner_protocol.h"
 #include "remote/runner_state.h"
 #include "common/platform/observed_process_stop.h"
 
@@ -520,7 +521,8 @@ namespace uam::remote
 			stream.flush();
 			if (!stream)
 			{
-				error = "Remote process output could not be spooled.";
+				// ponytail: a full disk is the cause seen in practice; the stream does not say which write error it hit.
+				error = "Remote process output could not be saved on the host; its disk may be full.";
 				return false;
 			}
 			return true;
@@ -648,7 +650,7 @@ namespace uam::remote
 				if (!stdout_stream || !stderr_stream)
 				{
 					std::scoped_lock lock(process.mutex);
-					process.spool_error = "Remote process output spool could not be created.";
+					process.spool_error = "Remote process output could not be saved on the host; its disk may be full.";
 					ProcessService().TerminateStdioProcess(process.fields, true);
 					process.exited.store(true, std::memory_order_release);
 					return;
@@ -2185,6 +2187,7 @@ namespace uam::remote
 		if (type == "process.poll")
 		{
 			const bool acknowledged_output = request.value("acknowledgedOutput", false);
+			bool spool_ended = false;
 			std::string output_error;
 			std::string standard_output;
 			std::string standard_error;
@@ -2196,7 +2199,13 @@ namespace uam::remote
 			int exit_code = -1;
 			{
 				std::scoped_lock lock(process.mutex);
-				if (!process.spool_error.empty()) output_error = process.spool_error;
+				if (!process.spool_error.empty())
+				{
+					// A graceful stop can record a spool failure and still leave the process running; only an exit is final.
+					spool_ended = process.exited.load(std::memory_order_acquire);
+					// The running case must not read as a legacy final line, which clients treat as the process gone.
+					output_error = process.spool_error + (spool_ended ? std::string(kRemoteSpoolEndedSuffix) : std::string(" The process is still running."));
+				}
 				if (output_error.empty())
 				{
 					std::uintmax_t stdout_offset = process.stdout_offset;
@@ -2243,6 +2252,24 @@ namespace uam::remote
 				input_sequence = process.input_sequence;
 				exited = process.exited.load(std::memory_order_acquire);
 				exit_code = process.exit_code.load(std::memory_order_acquire);
+			}
+			if (spool_ended)
+			{
+				// Nothing more can be delivered. Drop the record and its spool files now: on a full disk they are UAM's
+				// to free, a later attach hears that the process is gone, and a new launch of the session starts cleanly.
+				// Held throughout, so a new start of the session cannot open its spool files before these are removed.
+				// The drainer never takes this lock, so joining it here cannot deadlock.
+				std::scoped_lock relock(m_stateMutex);
+				if (const auto current = m_processes.find(session_id); current != m_processes.end() && current->second == process_pointer)
+				{
+					m_processes.erase(current); // Only one concurrent poll gets here.
+					if (process.drainer.joinable()) process.drainer.join(); // It returned when it recorded the failure.
+					std::scoped_lock lock(process.mutex);
+					ProcessService().CloseStdioProcessHandles(process.fields);
+					std::error_code remove_error;
+					std::filesystem::remove(process.stdout_spool, remove_error);
+					std::filesystem::remove(process.stderr_spool, remove_error);
+				}
 			}
 			if (!output_error.empty())
 				return ProcessError(request, "read_failed", std::move(output_error));

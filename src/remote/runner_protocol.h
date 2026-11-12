@@ -16,6 +16,17 @@ namespace uam::remote
 	/// its helper can still be found from the host's process table by the session it belongs to.
 	inline constexpr std::string_view kRemoteSessionEnvironment = "UAM_REMOTE_SESSION_ID";
 	inline constexpr std::size_t kMaxRunnerFrameBytes = 1024 * 1024;
+	/// Ends the poll answer for a process the helper ended because its output could not be saved. Nothing is left to
+	/// deliver: the helper drops the record with that answer, and clients settle the turn instead of reattaching.
+	inline constexpr std::string_view kRemoteSpoolEndedSuffix = " The helper ended this process.";
+	/// Spool failures as helpers before this suffix reported them; each also meant the helper had ended the process.
+	inline bool IsLegacyRemoteSpoolFailure(std::string_view line)
+	{
+		return line == "Remote process output could not be spooled." || line == "Remote process output spool could not be created." ||
+		       line == "Remote process output exceeded the disconnect spool limit." || line == "Remote process output spool could not be read." ||
+		       line == "Remote process output spool could not be reclaimed." || line == "Remote process output spool could not be reopened." ||
+		       line == "Remote process output could not be read.";
+	}
 	/// Largest file a helper accepts through file.begin. Helpers from before the `maxUploadBytes` capability accept the legacy size.
 	inline constexpr std::uintmax_t kMaxUploadBytes = 4ull * 1024ull * 1024ull * 1024ull;
 	inline constexpr std::uintmax_t kLegacyMaxUploadBytes = 25ull * 1024ull * 1024ull;

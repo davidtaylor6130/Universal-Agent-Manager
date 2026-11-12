@@ -463,6 +463,8 @@ std::vector<std::string> OpenCodeCliProviderRuntime::BuildWorkerArgv(const Provi
 	argv.push_back("run");
 	// Workers must not inherit a default subagent or generate a second model-backed title.
 	uam::provider_runtime_internal::AppendArgs(argv, {"--agent", "uam-text-worker", "--title", "UAM text worker"});
+	// `run` retries usage/rate-limit errors silently; its error log is UAM's only signal to stop the worker.
+	uam::provider_runtime_internal::AppendArgs(argv, {"--print-logs", "--log-level", "ERROR"});
 	const std::vector<std::string> flags = uam::provider_runtime_internal::ProviderWorkerFlags(profile, settings);
 	uam::provider_runtime_internal::AppendArgs(argv, flags);
 

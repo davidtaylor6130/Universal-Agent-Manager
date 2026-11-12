@@ -10,7 +10,7 @@ namespace uam::cef
 	/// </summary>
 	inline std::string_view PendingOperationRefusal(std::string_view action, bool chat_has_worktree_operation, bool any_worktree_operation, bool workspace_deletion_pending, bool chat_deleted_at_restart = false)
 	{
-		const bool is_runtime_stop = action == "cancelAcpTurn" || action == "stopAcpSession" || action == "cancelChatTitle";
+		const bool is_runtime_stop = action == "cancelAcpTurn" || action == "stopAcpSession" || action == "cancelChatTitle" || action == "cancelVcsRequest";
 		const bool is_cached_history_read = action == "getChatMessages" || action == "getToolCallContent" || action == "getAttachmentImagePreview";
 		// Selecting a chat changes no chat data, so neither gate refuses the click.
 		const bool is_selection = action == "selectSession";
