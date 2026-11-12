@@ -64,6 +64,9 @@ import type {
   PullRequestWatch,
   VcsCommitResult,
   VcsCommitStatus,
+  VcsHistoryPage,
+  VcsOriginReply,
+  SvnRepositoryLayout,
   VcsType,
 } from './types'
 import type { Attachment, MessageBlock } from '../../types/message'
@@ -1373,9 +1376,75 @@ export function sanitizeVcsCommitStatus(value: unknown): VcsCommitStatus | null 
       : [],
     lineStatsReady: typeof value.lineStatsReady === 'boolean' ? value.lineStatsReady : true,
     baselineUnavailable: value.baselineUnavailable === true,
+    capabilities: Array.isArray(value.capabilities) ? value.capabilities.filter((capability): capability is string => typeof capability === 'string') : [],
     warning: stringOr(value.warning),
     error: stringOr(value.error),
   }
+}
+
+export function sanitizeVcsHistoryPage(value: unknown): VcsHistoryPage | null {
+  if (!isRecord(value) || !Array.isArray(value.entries)) return null
+  return {
+    entries: value.entries.flatMap((entry) => {
+      if (!isRecord(entry)) return []
+      const revision = stringOr(entry.revision)
+      return revision
+        ? [{
+            revision,
+            author: stringOr(entry.author),
+            date: stringOr(entry.date),
+            message: stringOr(entry.message),
+            paths: Array.isArray(entry.paths)
+              ? entry.paths.flatMap((path) => isRecord(path) && stringOr(path.path)
+                  ? [{ action: stringOr(path.action), path: stringOr(path.path), kind: stringOr(path.kind), copyFromPath: stringOr(path.copyFromPath), copyFromRevision: stringOr(path.copyFromRevision) }]
+                  : [])
+              : [],
+            pathsOmitted: finiteNumberOr(entry.pathsOmitted, 0),
+          }]
+        : []
+    }),
+    next: stringOr(value.next),
+    workingRevision: stringOr(value.workingRevision),
+    location: stringOr(value.location),
+    repositoryRoot: stringOr(value.repositoryRoot),
+    repositoryUuid: stringOr(value.repositoryUuid),
+  }
+}
+
+export function sanitizeVcsOriginReply(value: unknown): VcsOriginReply | null {
+  if (!isRecord(value)) return null
+  return {
+    branchPath: stringOr(value.branchPath),
+    originPath: stringOr(value.originPath),
+    copyRevision: stringOr(value.copyRevision),
+    originRevision: stringOr(value.originRevision),
+    behindRevisions: Array.isArray(value.behindRevisions) ? value.behindRevisions.filter((revision): revision is string => typeof revision === 'string' && /^\d+$/.test(revision)) : [],
+    mergesRecorded: value.mergesRecorded === true,
+    behindFromLog: value.behindFromLog === true,
+    page: sanitizeVcsHistoryPage(value.page) ?? { entries: [], next: '', workingRevision: '', location: '', repositoryRoot: '', repositoryUuid: '' },
+  }
+}
+
+/** A repository-relative folder: no leading or trailing slash and no empty, `.` or `..` segment. */
+export function isSvnLayoutFolder(value: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  return value.length > 0 && value.length <= 512 && !/[\u0000-\u001f\u007f\\]/.test(value) && value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..')
+}
+
+/** Complete, unique entries only; `undefined` when any entry is unusable so a bad list is never half-applied. */
+export function sanitizeSvnRepositoryLayouts(value: unknown): SvnRepositoryLayout[] | undefined {
+  if (!Array.isArray(value) || value.length > 64) return undefined
+  const layouts: SvnRepositoryLayout[] = []
+  for (const item of value) {
+    if (!isRecord(item)) return undefined
+    const repository = stringOr(item.repository).trim().replace(/(.)\/+$/, '$1')
+    const layout = { repository, trunk: stringOr(item.trunk).trim(), branches: stringOr(item.branches).trim(), tags: stringOr(item.tags).trim() }
+    // eslint-disable-next-line no-control-regex
+    if (!repository || repository.length > 512 || /[\u0000-\u0020\u007f]/.test(repository) || !isSvnLayoutFolder(layout.trunk) || !isSvnLayoutFolder(layout.branches) || !isSvnLayoutFolder(layout.tags)) return undefined
+    if (layouts.some((other) => other.repository.toLowerCase() === repository.toLowerCase())) return undefined
+    layouts.push(layout)
+  }
+  return layouts
 }
 
 export function sanitizeVcsCommitResult(value: unknown): VcsCommitResult {
@@ -1766,6 +1835,8 @@ export function sanitizeVcsStorageSettings(value: unknown): Partial<VcsStorageSe
   }
   const branch = sanitizeGitBaseBranch(value.gitDefaultBaseBranch)
   if (branch !== undefined) settings.gitDefaultBaseBranch = branch
+  const layouts = sanitizeSvnRepositoryLayouts(value.svnRepositoryLayouts)
+  if (layouts !== undefined) settings.svnRepositoryLayouts = layouts
   if (value.gitPortMethod === 'patch' || value.gitPortMethod === 'merge' || value.gitPortMethod === 'squash') settings.gitPortMethod = value.gitPortMethod
   for (const key of ['worktreeRetentionDays', 'backupLogRetentionDays', 'httpCacheClearIntervalDays'] as const) {
     const days = value[key]

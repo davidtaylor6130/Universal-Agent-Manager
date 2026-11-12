@@ -1534,7 +1534,7 @@ namespace
 		fs::path directory;
 		if (!client.PrepareTextWorker(id, provider_id, directory, &result.error, stop_token)) return result;
 		uam::provider_workers::RemapWorkerPaths(invocation.argv, invocation.isolated_working_directory ? *invocation.isolated_working_directory : fs::path{}, directory, host.platform);
-		result = client.ExecuteCommand(id, directory, invocation.argv, kMemoryWorkerTimeoutMs, stop_token, invocation.standard_input);
+		result = client.ExecuteCommand(id, directory, invocation.argv, kMemoryWorkerTimeoutMs, stop_token, invocation.standard_input, {}, nullptr, invocation.output_failure);
 		std::string cleanup_error;
 		if (!client.RemoveTextWorker(id, &cleanup_error) && result.ok) { result.ok = false; result.error = cleanup_error; }
 		if (!result.ok) return result;

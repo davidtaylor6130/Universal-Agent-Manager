@@ -46,6 +46,8 @@ namespace uam
 		bool direct_process = false;
 		bool structured_stdout = false;
 		std::function<bool(std::string_view)> output_sink;
+		/// Given output not yet scanned (from the last line start) and a running report count, a non-empty reason stops the worker at once.
+		std::function<std::string(std::string_view, int&)> output_failure;
 		std::vector<std::string> argv;
 		std::string standard_input;
 		std::string shell_command;

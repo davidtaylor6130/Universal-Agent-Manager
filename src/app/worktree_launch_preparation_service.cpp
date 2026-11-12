@@ -561,10 +561,9 @@ namespace uam
 				    : update_only
 				    ? (!svn_update || PrepareSvnUpdate(root, prepared.metadata, true, prepared.operation.message, cancellation->get_token()))
 				    : GitWorktreeService().ValidatePreparedWorkspace(root, receipt, prepared.metadata, prepared.operation.message, cancellation->get_token());
-				if (!prepared.operation.ok)
-				{
+				// Keep a specific cause (such as a worktree switched off its branch); it says how to recover.
+				if (!prepared.operation.ok && prepared.operation.message.empty())
 					prepared.operation.message = "Prepared workspace ownership changed. The workspace was preserved.";
-				}
 				return prepared;
 			});
 			task->worker = validation.get_future();
