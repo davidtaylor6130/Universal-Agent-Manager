@@ -291,7 +291,8 @@ export function VcsCommitPanel() {
           vcsType={selectedVcsType}
           compareOrigin={capabilities.includes('originComparison')}
         />
-      ) : scope === 'recorded' ? (
+      ) : CODEX_ENABLED && scope === 'recorded' ? (
+        /* The constant comes first so builds without Codex drop RecordedChatEdits from the bundle. */
         activeSessionId && session ? (
           <RecordedChatEdits
             key={JSON.stringify([activeSessionId, session?.workspaceDirectory, session?.workspaceWorktreeDirectory, session?.executionHostId, gitEnabled, svnEnabled])}
