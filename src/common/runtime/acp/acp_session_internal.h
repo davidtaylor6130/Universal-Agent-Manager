@@ -401,6 +401,9 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 bool DecorateAcpSessionSetupRequest(AppState& app, AcpSessionState& session, std::string_view method,
     const std::string& cwd, nlohmann::json& request);
 bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
+/// Rebuilds the desktop side of a reattached remote session's UAM tools on the channel its provider was launched with.
+bool RestoreRemoteUamControlAfterReattach(AppState& app, AcpSessionState& session, ChatSession& chat,
+    const ExecutionHost& execution_host);
 bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpResponseFailureDetails& details);
 bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat);
 bool SendStartupModelIfNeeded(AcpSessionState& session, ChatSession& chat);

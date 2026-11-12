@@ -374,17 +374,21 @@ UAM_TEST(UamControlChatCreateBranchKeepsProvenanceAndDepth)
 	UAM_ASSERT(chained.value("error", "").find("started by another chat") != std::string::npos);
 }
 
-UAM_TEST(UamControlChatCreateApprovalTimeoutCreatesNothing)
+UAM_TEST(UamControlChatCreateApprovalWaitsUntilAnsweredAndCreatesNothingMeanwhile)
 {
 	ChatCreateFixture fixture;
 	fixture.app.chats.front().command_safety_tier = "off";
-	UAM_ASSERT(fixture.Call("expires", {{"task", "Do work."}}).value("pendingApproval", false));
-	fixture.app.uam_control_capabilities.front().pending_approval->expires_at_epoch_ms = 1;
+	UAM_ASSERT(fixture.Call("waits", {{"task", "Do work."}}).value("pendingApproval", false));
 	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
-	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(fixture.app, "caller").has_value());
+	const auto pending = uam::UamControlService::PendingApprovalForChat(fixture.app, "caller");
+	UAM_ASSERT(pending.has_value());
+	UAM_ASSERT(!fs::exists(fixture.temp.root / "caller-capability" / "responses" / "waits.json"));
+	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{0});
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(fixture.app, "caller", pending->request_id_json, {{"chatCreate", {"Deny"}}}, &error));
 	std::string text;
-	UAM_ASSERT(uam::io::TryReadTextFile(fixture.temp.root / "caller-capability" / "responses" / "expires.json", text));
-	UAM_ASSERT(nlohmann::json::parse(text).value("error", "").find("timed out") != std::string::npos);
+	UAM_ASSERT(uam::io::TryReadTextFile(fixture.temp.root / "caller-capability" / "responses" / "waits.json", text));
+	UAM_ASSERT(nlohmann::json::parse(text).value("error", "").find("denied") != std::string::npos);
 	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{0});
 }
 

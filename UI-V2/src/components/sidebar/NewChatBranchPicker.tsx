@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { LoaderCircle } from 'lucide-react'
-import { sendToCEF } from '../../ipc/cefBridge'
+import { boundedRead, sendToCEF } from '../../ipc/cefBridge'
 import { sanitizeGitBaseBranch } from '../../store/cpp/sanitizers'
 import { useAppStore } from '../../store/useAppStore'
 import { chatWorktreeBranches, preferredStartingBranch, rankBranches } from '../../utils/branchRecency'
@@ -56,13 +56,14 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
   const busyRetried = useRef(false)
 
   useEffect(() => {
-    if (unavailableReason) return
+    if (unavailableReason) { setLoading(false); return }
     let cancelled = false
     let busyRetry: ReturnType<typeof setTimeout> | undefined
     setLoading(true)
     setSettled(false)
     // An unreadable branch list is an expected state, so it is not logged as an error.
-    void sendToCEF({ action: 'getWorkspaceVcsContext', payload: { folderId } }, false).then((response) => {
+    // A silent bridge must not hold the picker busy; a timeout keeps any list already shown.
+    void boundedRead(sendToCEF({ action: 'getWorkspaceVcsContext', payload: { folderId } }, false), 'Branches did not load in time.').then((response) => {
       if (cancelled) return
       if (response.code === 429 && !busyRetried.current) {
         // Native shares four context-read slots; one silent re-read covers a momentary busy reply.
@@ -124,9 +125,10 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
     }
   }, [disabled, ready, attachedContext, value, defaultBranch, onChange])
   useEffect(() => {
-    if (loading || unavailableReason || value === undefined || (!context && !settled)) return
+    // While creation is in progress the submitted choice stands; a refreshed list cannot clear it.
+    if (disabled || loading || unavailableReason || value === undefined || (!context && !settled)) return
     if (!ready || (value !== '' && !attachedContext?.localBranches.some((branch) => branch.name === value))) onChange(undefined)
-  }, [loading, unavailableReason, value, context, settled, ready, attachedContext, onChange])
+  }, [disabled, loading, unavailableReason, value, context, settled, ready, attachedContext, onChange])
   const message = unavailableReason || (loading ? 'Loading branches…' : context?.vcs === 'svn'
     ? 'SVN workspaces do not support Git branch selection.'
     : context?.vcs === '' ? 'This workspace has no enabled Git repository.'

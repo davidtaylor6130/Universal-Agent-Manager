@@ -177,6 +177,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     [runtimeStatuses, sessions],
   )
   const snoozeNowMs = useSnoozeClock(sessions)
+  const prWatches = useAppStore((s) => s.prWatches)
+  const watchingSessionIds = useMemo(() => new Set(prWatches.filter((watch) => watch.watching).map((watch) => watch.chatId)), [prWatches])
   const runtimeBindings = useMemo<ChatSearchFilterContext>(() => {
     const acpBindingBySessionId: NonNullable<ChatSearchFilterContext['acpBindingBySessionId']> = {}
     sessions.forEach((session, index) => {
@@ -185,8 +187,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       else if (status === 'done') acpBindingBySessionId[session.id] = { readySinceLastSelect: true }
       else if (status) acpBindingBySessionId[session.id] = { attentionKind: status.slice('attention:'.length) as AcpAttentionKind }
     })
-    return { acpBindingBySessionId, nowMs: snoozeNowMs }
-  }, [runtimeStatuses, sessions, snoozeNowMs])
+    return { acpBindingBySessionId, nowMs: snoozeNowMs, watchingSessionIds }
+  }, [runtimeStatuses, sessions, snoozeNowMs, watchingSessionIds])
   const toggleFolder        = useAppStore((s) => s.toggleFolder)
   const addFolder           = useAppStore((s) => s.addFolder)
   const renameFolder        = useAppStore((s) => s.renameFolder)

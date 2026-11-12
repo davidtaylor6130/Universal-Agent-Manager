@@ -829,7 +829,8 @@ namespace uam::provider_setup
 				// entries, then uses their per-server timeout for the dynamically registered server.
 				if (!native_servers.contains("uam-control"))
 					config["mcp"]["uam-control"] = {{"type", "local"}, {"command", nlohmann::json::array()}, {"enabled", false}};
-				config["mcp"]["uam-control"]["timeout"] = 120000;
+				// A question or approval card waits for the user: see kUamControlToolDeadlineSeconds in runner_proxy.h.
+				config["mcp"]["uam-control"]["timeout"] = 7200000;
 			}
 			if (manifest.contains("openCodeRequestTimeout"))
 			{

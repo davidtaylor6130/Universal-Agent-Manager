@@ -3,13 +3,13 @@ import { SnoozeMenu } from './SnoozeMenu'
 import { RowSubmenu } from './RowSubmenu'
 import { isCompanionContext, isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import { useState, useRef, useEffect, useLayoutEffect, useSyncExternalStore, memo, useContext } from 'react'
-import type { MouseEvent as ReactMouseEvent, RefObject } from 'react'
+import type { FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
 import { automationStartPending, subscribeOutgoingAttempts } from '../../utils/outgoingMessagePresentation'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
   ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
   Folder as FolderIcon, GitBranch, Monitor, Server, CircleDashed, CircleCheck,
-  MessageCircleQuestion, ShieldQuestion, Copy, RefreshCw, MessageSquarePlus, AlarmClockOff, Clock, SmilePlus, Bot,
+  MessageCircleQuestion, ShieldQuestion, Copy, RefreshCw, MessageSquarePlus, AlarmClockOff, Clock, SmilePlus, Bot, Eye,
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -91,6 +91,8 @@ function useActivityBranch(session: Session | null | undefined, row: RefObject<H
 type ActivityStatus = { label: string; color: string; Icon: typeof CircleCheck }
 
 const AUTOMATION_HELD_STATUS: ActivityStatus = { label: 'Waiting for approval', color: 'var(--warning)', Icon: ShieldQuestion }
+/** Shown between wakes while a pull request watch keeps the chat in Active Chats. */
+const WATCHING_STATUS: ActivityStatus = { label: 'Watching PR', color: 'var(--info)', Icon: Eye }
 
 /** T3-style at-a-glance label for a card that is not running. */
 export function activityStatusLabel(status: DisplayedChatStatus): ActivityStatus | null {
@@ -497,12 +499,19 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   }
   const cancelPrefetch = () => clearTimeout(prefetchTimer.current)
   useEffect(() => cancelPrefetch, [])
+  // Pointer and keyboard intent share one dwell: leaving with the pointer keeps it while the row holds focus,
+  // and focus moving between the row's own controls neither restarts nor cancels it.
+  const crossesRow = (event: ReactFocusEvent<HTMLDivElement>) =>
+    !(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)
   const menuReturnFocusRef = useRef<HTMLElement | null>(null)
   const activityDate = activityLayout ? session?.updatedAt ?? sessionLastOpenedAt : sessionLastOpenedAt
   const lastOpenedLabel = formatSidebarTime(activityDate)
   const activityBranch = useActivityBranch(activityLayout ? session : null, rowRef)
   const activityWorktree = activityLayout ? sessionSummary.worktreeDirectory.trim() : ''
-  const activityStatus = !activityLayout ? null : sessionSummary.automationHeld ? AUTOMATION_HELD_STATUS : activityStatusLabel(lifecycleStatus)
+  const watchingPullRequest = useAppStore((s) => s.prWatches.some((watch) => watch.watching && familySessionIds.includes(watch.chatId)))
+  // Attention outranks the watch; a finished turn does not, because the chat is still waiting on its pull request.
+  const activityStatus = !activityLayout ? null : sessionSummary.automationHeld ? AUTOMATION_HELD_STATUS
+    : watchingPullRequest && lifecycleStatus?.type !== 'attention' ? WATCHING_STATUS : activityStatusLabel(lifecycleStatus)
   const lastOpenedTitle = formatSidebarTimeTitle(activityDate)
   const gridLeaves = chatGridLeaves(gridLayout.root)
   const paneIndexes = gridLeaves.flatMap((leaf, index) => familySessionIds.includes(leaf.sessionId) ? [index] : [])
@@ -621,9 +630,9 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           // Hover, active and bulk-selected backgrounds come from sidebar.css / .uam-selected-item so they share one box.
         }}
         onPointerEnter={schedulePrefetch}
-        onPointerLeave={cancelPrefetch}
-        onFocus={schedulePrefetch}
-        onBlur={cancelPrefetch}
+        onPointerLeave={(event) => { if (!event.currentTarget.contains(document.activeElement)) cancelPrefetch() }}
+        onFocus={(event) => { if (crossesRow(event)) schedulePrefetch() }}
+        onBlur={(event) => { if (crossesRow(event) && !event.currentTarget.matches(':hover')) cancelPrefetch() }}
         onClick={(event) => {
           if (editing || onSessionClick?.(sessionId, event)) return
           selectChat()

@@ -390,6 +390,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setComputePools", &UamQueryHandler::HandleSetComputePools},
 		{"applyShellActions", &UamQueryHandler::HandleApplyShellActions},
 		{"dismissShellActionNotification", &UamQueryHandler::HandleDismissShellActionNotification},
+		{"managePullRequestWatch", &UamQueryHandler::HandleManagePullRequestWatch},
 		{"refreshCliProviderVersion", &UamQueryHandler::HandleRefreshCliProviderVersion},
 		{"refreshAllCliProviderVersions", &UamQueryHandler::HandleRefreshAllCliProviderVersions},
 		{"applyCliProviderVersions", &UamQueryHandler::HandleApplyCliProviderVersions},

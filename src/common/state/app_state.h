@@ -43,6 +43,7 @@ namespace uam
 
 	class StartupNativeImportService;
 	class StorageRetentionService;
+	class PrWatchService;
 	class DataFolderSettingsService;
 	class OpenCodeNativeActivityService;
 	class ManagedSubagentCancellationReceipt;
@@ -498,7 +499,6 @@ namespace uam
 			std::shared_ptr<const std::uint8_t> computer_use_root_incarnation;
 			/// Validated chat_create arguments awaiting the user's decision.
 			nlohmann::json chat_create_arguments;
-			int64_t expires_at_epoch_ms = 0;
 		};
 
 		std::string id;
@@ -531,6 +531,10 @@ namespace uam
 		// chat_create admissions within the caller's current structured turn.
 		int chat_create_turn_serial = -1;
 		std::size_t chat_create_turn_count = 0;
+		// Latest successful agent_delegate, to answer a retry whose first reply was never collected.
+		std::string last_delegate_request_id, last_delegate_arguments;
+		nlohmann::json last_delegate_result;
+		int last_delegate_turn_serial = -1;
 		std::optional<PendingApproval> pending_approval;
 		std::string render_check_request_id; // Latest render-checked request; its reply is written asynchronously.
 		std::shared_ptr<UamAgentWait> pending_agent_wait;
@@ -1436,6 +1440,8 @@ namespace uam
 	{
 		WorkspaceLeaseGate worktree_retention_gate;
 		std::shared_ptr<StorageRetentionService> storage_retention_service;
+		/// Pull request watches for every chat; null in tools and tests that do not create it.
+		std::shared_ptr<PrWatchService> pr_watch_service;
 		std::shared_ptr<DataFolderSettingsService> data_folder_settings;
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
 		std::vector<RepositoryRouteWorkspace> repository_route_workspaces;

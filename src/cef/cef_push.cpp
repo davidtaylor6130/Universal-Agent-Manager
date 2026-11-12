@@ -66,6 +66,7 @@ namespace
 	nlohmann::json g_last_pushed_cli_version_manager_fingerprint;
 	nlohmann::json g_last_pushed_shell_actions_fingerprint;
 	nlohmann::json g_last_pushed_compute_pool_usage_fingerprint;
+	nlohmann::json g_last_pushed_pr_watches_fingerprint;
 	std::string g_last_pushed_shell_action_notification;
 	std::string g_last_pushed_status_line;
 	std::string g_last_pushed_selected_chat_id;
@@ -199,6 +200,7 @@ namespace
 		g_last_pushed_cli_version_manager_fingerprint = fingerprint_state.at("cliVersionManager");
 		g_last_pushed_shell_actions_fingerprint = fingerprint_state.at("shellActions");
 		g_last_pushed_compute_pool_usage_fingerprint = fingerprint_state.at("computePoolUsage");
+		g_last_pushed_pr_watches_fingerprint = fingerprint_state.at("prWatches");
 		g_last_pushed_shell_action_notification = uam::nlohmann_json::TrimmedStringValue(fingerprint_state, {"shellActionNotification"});
 		g_last_pushed_status_line = fingerprint_state.value("statusLine", std::string{});
 		g_last_pushed_selected_chat_id = ChatDomainService().SelectedChatId(app);
@@ -448,6 +450,7 @@ namespace
 
 		AddChangedJsonField(data, "shellActions", fingerprint_state.at("shellActions"), g_last_pushed_shell_actions_fingerprint);
 		AddChangedJsonField(data, "computePoolUsage", fingerprint_state.at("computePoolUsage"), g_last_pushed_compute_pool_usage_fingerprint);
+		AddChangedJsonField(data, "prWatches", fingerprint_state.at("prWatches"), g_last_pushed_pr_watches_fingerprint);
 
 		const std::string shell_notification = uam::nlohmann_json::TrimmedStringValue(fingerprint_state, {"shellActionNotification"});
 		if (shell_notification != g_last_pushed_shell_action_notification)

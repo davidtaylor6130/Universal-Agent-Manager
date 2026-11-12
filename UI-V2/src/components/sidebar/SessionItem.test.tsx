@@ -1255,3 +1255,23 @@ describe('SessionItem snooze actions', () => {
     }
   })
 })
+
+describe('SessionItem pull request watch', () => {
+  it('labels an Active row that is waiting on a watched pull request, until the watch ends', () => {
+    const previous = useAppStore.getState()
+    const session = { ...makeSession(), id: 'watch-row' }
+    const watch = { chatId: session.id, repository: 'acme/app', number: 12, url: 'https://github.com/acme/app/pull/12', title: '', state: 'open' as const, watching: true,
+      checksPassed: 0, checksFailed: 0, checksPending: 0, conflicting: false, readFailing: false, paused: false }
+    const host = document.createElement('div'), root = createRoot(host)
+    document.body.appendChild(host)
+    try {
+      act(() => { useAppStore.setState({ sessions: [session], prWatches: [watch] }); root.render(<SessionItem sessionId={session.id} session={session} activityLayout />) })
+      expect(host.querySelector('[role="status"]')?.textContent).toBe('Watching PR')
+      act(() => useAppStore.setState({ prWatches: [{ ...watch, watching: false }] }))
+      expect(host.textContent).not.toContain('Watching PR')
+    } finally {
+      act(() => root.unmount()); host.remove()
+      useAppStore.setState(previous, true)
+    }
+  })
+})

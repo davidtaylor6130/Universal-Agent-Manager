@@ -50,6 +50,7 @@ import type {
   ShellAction,
   ComputePool,
   ComputePoolUsage,
+  PullRequestWatch,
   PushChannelStatus,
   VcsCommitMessageSuggestion,
   VcsCommitResult,
@@ -193,6 +194,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   shellActions: ShellAction[]
   computePools: ComputePool[]
   computePoolUsage: ComputePoolUsage
+  /** Pull requests linked to chats, with their watch state; native-owned. */
+  prWatches: PullRequestWatch[]
   shellActionNotification: string
   statusLine: string
   deletionProgress?: CppDeletionProgress
@@ -216,6 +219,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   memoryScanCandidates: MemoryScanCandidate[]
   selectedMemoryScanChatIds: string[]
   memoryScanLoading: boolean
+  /** Why the eligible-chat list could not be read; distinct from a scan that did not run. */
+  memoryScanLoadError: string
   memoryScanRunning: boolean
   memoryScanError: string
   isMarkdownStoreOpen: boolean

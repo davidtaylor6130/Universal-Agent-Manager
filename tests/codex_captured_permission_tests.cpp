@@ -38,7 +38,15 @@ namespace
 				const std::ptrdiff_t count = process.ReadStdioProcessStdout(m_session, bytes, sizeof(bytes), &error);
 				if (count > 0) wire.append(bytes, static_cast<std::size_t>(count));
 				const bool observed_exit = process.PollStdioProcessExited(m_session, &exit_code);
-				if (observed_exit && count <= 0) { exited = true; break; }
+				if (observed_exit && count <= 0)
+				{
+					// The sink can write and exit between the read above and the exit check, so drain what it left.
+					for (std::ptrdiff_t rest = process.ReadStdioProcessStdout(m_session, bytes, sizeof(bytes), &error); rest > 0;
+					     rest = process.ReadStdioProcessStdout(m_session, bytes, sizeof(bytes), &error))
+						wire.append(bytes, static_cast<std::size_t>(rest));
+					exited = true;
+					break;
+				}
 				std::this_thread::yield();
 			}
 			UAM_ASSERT(exited);

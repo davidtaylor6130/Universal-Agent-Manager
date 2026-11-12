@@ -733,6 +733,29 @@ export interface ComputePoolWait {
 
 export type ComputePoolUsage = Record<string, { inUse: number; waiting: number }>
 
+/** One pull request linked to one chat. The native watch service owns it; the UI only displays and toggles it. */
+export interface PullRequestWatch {
+  chatId: string
+  /** owner/name on github.com. */
+  repository: string
+  number: number
+  url: string
+  title: string
+  state: 'open' | 'closed' | 'merged' | 'missing' | 'unknown'
+  /** False for a link that is kept but no longer wakes the chat. */
+  watching: boolean
+  checksPassed: number
+  checksFailed: number
+  checksPending: number
+  conflicting: boolean
+  /** The last read failed; watching ends after eight in a row. */
+  readFailing: boolean
+  /** GitHub's rate limit paused reading. */
+  paused: boolean
+  /** Latest news of this app run; a new serial is reported once in the notifications panel. */
+  notice?: { serial: number; message: string; tone: 'info' | 'success' | 'warning' }
+}
+
 export interface ShellAction {
   id: string
   label: string
@@ -997,6 +1020,7 @@ export interface CppAppState {
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
+  prWatches?: PullRequestWatch[]
   shellActionNotification?: string
   statusLine?: string
   deletionProgress?: CppDeletionProgress
@@ -1032,6 +1056,7 @@ export interface CppStatePatch {
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
+  prWatches?: PullRequestWatch[]
   shellActionNotification?: string
   statusLine?: string
 }

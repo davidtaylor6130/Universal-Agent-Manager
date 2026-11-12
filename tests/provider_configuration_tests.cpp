@@ -3152,7 +3152,7 @@ UAM_TEST(OpenCodeUamControlDeadlineUsesOwnedProfileAndPreservesNativePolicy)
 	const auto before_argv = argv;
 	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
 	auto actual = nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT"));
-	UAM_ASSERT_EQ(actual["mcp"]["uam-control"], (nlohmann::json{{"type", "local"}, {"command", nlohmann::json::array()}, {"enabled", false}, {"timeout", 120000}}));
+	UAM_ASSERT_EQ(actual["mcp"]["uam-control"], (nlohmann::json{{"type", "local"}, {"command", nlohmann::json::array()}, {"enabled", false}, {"timeout", 7200000}}));
 	actual["mcp"].erase("uam-control");
 	UAM_ASSERT_EQ(actual, original);
 	UAM_ASSERT_EQ(argv, before_argv);
@@ -3167,7 +3167,7 @@ UAM_TEST(OpenCodeUamControlDeadlineUsesOwnedProfileAndPreservesNativePolicy)
 	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error, session_servers));
 	actual = nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT"));
 	UAM_ASSERT_EQ(actual["mcp"]["uam-control"], (nlohmann::json{{"type", "local"}, {"command", {"private-owned-uam", "--uam-control-mcp"}},
-	    {"environment", {{"PRIVATE_FIXTURE", "owned-value"}}}, {"enabled", true}, {"timeout", 120000}}));
+	    {"environment", {{"PRIVATE_FIXTURE", "owned-value"}}}, {"enabled", true}, {"timeout", 7200000}}));
 	actual["mcp"].erase("uam-control");
 	UAM_ASSERT_EQ(actual, original);
 

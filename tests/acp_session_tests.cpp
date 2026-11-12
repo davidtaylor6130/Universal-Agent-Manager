@@ -4224,6 +4224,69 @@ done
 	UAM_ASSERT_EQ(request_methods[1], std::string("session/new"));
 }
 
+UAM_TEST(RemoteReattachKeepsTheChannelItsProviderWasLaunchedWith)
+{
+	// #873: Claude and Antigravity serve their own channel from the session. Reattaching must not revoke that relay
+	// and its capability in favour of the proxy's channel, which their provider on the host never opened.
+	for (const std::string provider : {std::string(uam::provider_ids::kClaudeCli), std::string(uam::provider_ids::kAntigravityCli), std::string(uam::provider_ids::kOpenCodeCli)})
+	{
+		TempDir temp("uam-remote-reattach-control");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ExecutionHost host;
+		host.id = "lab";
+		host.label = "Lab";
+		host.transport = "ssh";
+		host.ssh_alias = "home-lab";
+		host.runner_status = "ready";
+		host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+		host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+		host.platform = "linux";
+		host.architecture = "arm64";
+		app.settings.execution_hosts = {host};
+		uam::execution_hosts::Normalize(app.settings.execution_hosts);
+		ChatSession chat;
+		chat.id = "remote-reattach";
+		chat.provider_id = provider;
+		chat.execution_host_id = "lab";
+		chat.workspace_directory = temp.root.string();
+		chat.uam_control_enabled = true;
+		chat.remote_uam_control_channel_id = "11111111-1111-4111-8111-111111111111";
+		app.chats.push_back(std::move(chat));
+		std::string error;
+		UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+		app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+		uam::AcpSessionState& session = *app.acp_sessions.back();
+		session.chat_id = app.chats.front().id;
+		session.provider_id = provider;
+		session.running = true;
+		session.recovering_remote_process = true;
+		// What the launch has already done for an app-relayed provider before the reattach step runs.
+		nlohmann::json setup = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
+		UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, session, app.chats.front(), "session/new", setup, &error));
+		session.uam_control_relay = std::make_unique<std::jthread>([](std::stop_token) {});
+		const std::string launched_capability = session.uam_control_capability_id;
+		UAM_ASSERT(!launched_capability.empty());
+		const bool restored = uam::acp_detail::RestoreRemoteUamControlAfterReattach(app, session, app.chats.front(), app.settings.execution_hosts.back());
+		if (provider == uam::provider_ids::kOpenCodeCli)
+		{
+			// The proxy relays this provider's channel: with no proxy process here its control line cannot be written.
+			UAM_ASSERT(!restored);
+			UAM_ASSERT(session.uam_control_relay == nullptr);
+			UAM_ASSERT(session.uam_control_capability_id.empty());
+		}
+		else
+		{
+			UAM_ASSERT(restored);
+			UAM_ASSERT(session.uam_control_relay != nullptr);
+			UAM_ASSERT_EQ(session.uam_control_capability_id, launched_capability);
+			UAM_ASSERT_EQ(app.uam_control_capabilities.size(), std::size_t{1});
+		}
+		uam::UamControlService::Shutdown(app);
+	}
+}
+
 UAM_TEST(RemoteAcpPublishesOnlyTheRemoteUamControlShim)
 {
 	TempDir temp("uam-remote-control-setup");

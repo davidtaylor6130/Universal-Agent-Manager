@@ -49,21 +49,23 @@ import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonit
 import { FILE_MANAGER_NAME, matchShortcut, shortcutLabel } from '../../utils/shortcuts'
 import { focusActiveInput } from '../../utils/activeInputFocus'
 import { APP_FAILURE_EVENT, reportAppFailure, type AppFailure } from '../../utils/appFailure'
+import { reportPullRequestWatchNotices } from '../../utils/prWatchNotices'
 import { useNotificationClock, useNotificationTimes } from '../../hooks/useNotificationTimes'
 import { notificationTimeGroup } from '../../utils/notificationTime'
 import { useRowLeave } from './useRowLeave'
 import { isSshHost } from '../../utils/remoteWorkspace'
 import { SSH_ENABLED } from '../../config/buildFeatures'
 import { CustomIcon } from '../shared/CustomIcon'
+import { loadNewChatPanel, loadSettingsPanel, loadUsagePanel, warmPanelOn } from './panelModules'
 
 // These panels subscribe to their own state; shell navigation must not rerender their histories.
 const ChatPanel = memo(MainPanel)
 const ChatSidebar = memo(Sidebar)
 
-const SettingsModal = lazy(() => import('../settings/SettingsModal').then(({ SettingsModal }) => ({ default: SettingsModal })))
-const UsagePage = lazy(() => import('../usage/UsagePage').then(({ UsagePage }) => ({ default: UsagePage })))
+const SettingsModal = lazy(() => loadSettingsPanel().then(({ SettingsModal }) => ({ default: SettingsModal })))
+const UsagePage = lazy(() => loadUsagePanel().then(({ UsagePage }) => ({ default: UsagePage })))
 const VcsCommitPanel = lazy(() => import('./VcsCommitPanel').then(({ VcsCommitPanel }) => ({ default: VcsCommitPanel })))
-const NewChatModal = lazy(() => import('../sidebar/NewChatModal').then(({ NewChatModal }) => ({ default: NewChatModal })))
+const NewChatModal = lazy(() => loadNewChatPanel().then(({ NewChatModal }) => ({ default: NewChatModal })))
 const MemoryScanModal = lazy(() => import('../settings/MemoryScanModal').then(({ MemoryScanModal }) => ({ default: MemoryScanModal })))
 const MarkdownStoreModal = lazy(() => import('../settings/MarkdownStoreModal').then(({ MarkdownStoreModal }) => ({ default: MarkdownStoreModal })))
 
@@ -441,7 +443,7 @@ function LeftActivityRail({ settingsOpen, usageOpen, onToggleUsage, onToggleSett
       />
       <div className="uam-side-rail__spacer" />
       <ThemeToggle />
-      <IconButton icon={<ChartNoAxesCombined size={17} />} label="Usage" tooltipSide="right" active={usageOpen} onClick={onToggleUsage} />
+      <IconButton icon={<ChartNoAxesCombined size={17} />} label="Usage" tooltipSide="right" active={usageOpen} onClick={onToggleUsage} {...warmPanelOn(loadUsagePanel)} />
       <IconButton
         icon={<Settings2 size={17} />}
         label="Settings"
@@ -449,6 +451,7 @@ function LeftActivityRail({ settingsOpen, usageOpen, onToggleUsage, onToggleSett
         shortcut={shortcutLabel('settings')}
         active={settingsOpen}
         onClick={onToggleSettings}
+        {...warmPanelOn(loadSettingsPanel)}
       />
     </aside>
   )
@@ -888,6 +891,12 @@ export function AppShell() {
     window.addEventListener(APP_FAILURE_EVENT, onFailure)
     return () => window.removeEventListener(APP_FAILURE_EVENT, onFailure)
   }, [showTransientAlert])
+
+  // Pull request watch news goes to the same panel; declared after the listener above so the first notices are heard.
+  const prWatches = useAppStore((s) => s.prWatches)
+  useEffect(() => {
+    reportPullRequestWatchNotices(prWatches, (chatId) => useAppStore.getState().sessions.find((candidate) => candidate.id === chatId)?.name)
+  }, [prWatches])
 
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)
