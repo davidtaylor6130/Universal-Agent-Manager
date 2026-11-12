@@ -1038,7 +1038,7 @@ bool PollPendingGoalIterations(AppState& app)
 		if (session == nullptr || session->provider_id != uam::provider_ids::kCodexCli || chat.active_goal_id.empty()) continue;
 		if ((!session->codex_goal_owner.goal_id.empty() || !session->codex_goal_pending_requests.empty()) &&
 			(chat.imported_read_only || chat.approval_mode == "plan" || session->current_mode_id == "plan" ||
-			 session->active_uam_agent_workspace_access == "read" || session->goal_review_turn))
+			 session->active_uam_agent_workspace_access != "write" || session->goal_review_turn))
 		{
 			const std::string id = chat.active_goal_id;
 			(void)GoalService::UpdateGoalStatus(app, chat.id, id, GoalStatus::Paused);

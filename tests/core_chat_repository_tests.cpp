@@ -675,6 +675,41 @@ UAM_TEST(ChatRepositoryPersistsMemoryLevelAndMigratesLegacyBoolean)
 	UAM_ASSERT(!loaded.front().memory_enabled);
 }
 
+UAM_TEST(ChatRepositoryQueuedAgentAccessFailsClosedToRead)
+{
+	TempDir temp("uam-chat-queued-agent-access");
+	ChatSession chat;
+	chat.id = "queued-agent-access";
+	chat.provider_id = "codex-cli";
+	chat.title = "Queued access";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-01T00:00:01.000Z";
+	for (const std::string id : {"write", "missing", "unknown", "empty"})
+	{
+		uam::AcpQueuedUserPromptState queued;
+		queued.id = id;
+		queued.text = "Queued " + id;
+		chat.acp_queued_prompts.push_back(queued);
+	}
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path path = AppPaths::UamChatFilePath(temp.root, chat.id);
+	nlohmann::json saved = nlohmann::json::parse(ReadFile(path));
+	nlohmann::json& prompts = saved["acp_queued_prompts"];
+	UAM_ASSERT_EQ(prompts.size(), std::size_t{4});
+	UAM_ASSERT_EQ(prompts[0].value("uam_agent_workspace_access", ""), std::string("write"));
+	prompts[1].erase("uam_agent_workspace_access");
+	prompts[2]["uam_agent_workspace_access"] = "Write";
+	prompts[3]["uam_agent_workspace_access"] = "";
+	UAM_ASSERT(uam::io::WriteTextFile(path, saved.dump(2)));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->acp_queued_prompts.size(), std::size_t{4});
+	// Only an explicit write grant survives; anything else loads as the read ceiling.
+	UAM_ASSERT_EQ(loaded->acp_queued_prompts[0].uam_agent_workspace_access, std::string("write"));
+	for (std::size_t index = 1; index < 4; ++index)
+		UAM_ASSERT_EQ(loaded->acp_queued_prompts[index].uam_agent_workspace_access, std::string("read"));
+}
+
 UAM_TEST(ChatRepositoryValidPrimaryIgnoresOlderBackupMemoryMetadata)
 {
 	TempDir temp("uam-chat-memory-backup-mismatch");

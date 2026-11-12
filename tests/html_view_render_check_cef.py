@@ -5,6 +5,8 @@ Usage: python3 tests/html_view_render_check_cef.py Builds/agent/universal_agent_
 Never launches an installed UAM, never sends a real model prompt, and stops only the process it started.
 """
 import argparse
+import hashlib
+import hmac
 import atexit
 import concurrent.futures
 import http.server
@@ -53,9 +55,12 @@ try { top.location.href = '__LISTENER__/top' } catch (e) {}
 NAVIGATION_PAGE = '''<!doctype html><body><script>setTimeout(() => { location.href = '__LISTENER__/self' }, 100)</script></body>'''
 
 
-def write_request(directory, name, html):
+def write_request(directory, name, html, key):
     """Mailbox requests dropped directly run at the same time; the tool server sends them one by one."""
     payload = {'requestId': name, 'method': 'html_view_preview', 'arguments': {'title': name, 'html': html}}
+    # Signed as the session's tool server signs it (HMAC-SHA256 over the compact, key-sorted body).
+    body = json.dumps(payload, separators=(',', ':'), sort_keys=True, ensure_ascii=False)
+    payload['mac'] = hmac.new(key.encode(), body.encode(), hashlib.sha256).hexdigest()
     temporary = Path(directory) / 'requests' / (name + '.tmp-write')
     temporary.write_text(json.dumps(payload))
     temporary.rename(Path(directory) / 'requests' / (name + '.json'))
@@ -113,7 +118,7 @@ def fake_provider():
             prompts += 1
             if prompts == 2:
                 # A stuck check in a turn the test then cancels.
-                write_request(directory, 'at-cancel', STUCK_PAGE)
+                write_request(directory, 'at-cancel', STUCK_PAGE, environment['UAM_CONTROL_REQUEST_KEY'])
                 held = identity
                 log.with_suffix('.held').write_text('held')
                 continue
@@ -125,7 +130,7 @@ def fake_provider():
                 records.append({'name': step['name'], 'seconds': round(time.monotonic() - started, 2), 'reply': reply})
             names = [f'burst-{secrets.token_hex(4)}' for _ in range(plan['burst'])]
             for name in names:
-                write_request(directory, name, STUCK_PAGE)
+                write_request(directory, name, STUCK_PAGE, environment['UAM_CONTROL_REQUEST_KEY'])
             bursts = []
             deadline = time.monotonic() + 15
             while len(bursts) < len(names) and time.monotonic() < deadline:
@@ -134,7 +139,7 @@ def fake_provider():
                     if name not in [item['name'] for item in bursts] and path.is_file():
                         bursts.append({'name': name, 'reply': json.loads(path.read_text())})
                 time.sleep(.05)
-            log.write_text(json.dumps({'steps': records, 'bursts': bursts, 'directory': str(directory)}))
+            log.write_text(json.dumps({'steps': records, 'bursts': bursts, 'directory': str(directory), 'key': environment['UAM_CONTROL_REQUEST_KEY']}))
             result(identity, {'stopReason': 'end_turn'})
         elif method == 'session/cancel':
             if held is not None:
@@ -353,7 +358,7 @@ def main():
         print('PASS cancelling the turn ended the check and its page stopped', flush=True)
 
         # A check still running at quit must not hold the app open. The eight second fallback is what a browser that never closes would hit.
-        write_request(directory, 'at-quit', STUCK_PAGE)
+        write_request(directory, 'at-quit', STUCK_PAGE, records['key'])
         time.sleep(1.5)
         quit_request = subprocess.run(['osascript', '-e', f'tell application "{bundle}" to quit'], capture_output=True, text=True, timeout=30)
         assert quit_request.returncode == 0, quit_request.stderr

@@ -1387,7 +1387,8 @@ UAM_TEST(UamControlComputerUseRequiresVisibleGuiApproval)
 	nlohmann::json allow_request = request;
 	allow_request["requestId"] = "computer-use-allow";
 	UAM_ASSERT(uam::io::WriteTextFile(
-	    allow_directory / "requests" / "computer-use-allow.json", allow_request.dump()));
+	    allow_directory / "requests" / "computer-use-allow.json",
+	    uam::UamControlService::SignRequestForTests(allow_request, app.uam_control_capabilities.front().request_key).dump()));
 	UAM_ASSERT(uam::UamControlService::ProcessPendingRequests(app));
 	UAM_ASSERT(!app.chats.front().computer_use_enabled);
 	const std::optional<uam::AcpPendingUserInputState> allow_question =
@@ -2724,6 +2725,15 @@ UAM_TEST(AgentRunSchedulerKeepsMixedProviderChildrenInsideTheParentAccessCeiling
 
 			std::string run_id;
 			std::string error;
+			// A read-only parent keeps its own provider's enforcement; another provider is refused.
+			if (child_provider != parent_provider)
+			{
+				UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(
+				    app, root.id, parent.id, "worker", "Do the child task.", &run_id, &error, child_provider));
+				UAM_ASSERT(error.find("own provider") != std::string::npos);
+				UAM_ASSERT_EQ(app.agent_runs.size(), std::size_t{1});
+				continue;
+			}
 			UAM_ASSERT(uam::AgentRunScheduler::Enqueue(
 			    app, root.id, parent.id, "worker", "Do the child task.", &run_id, &error, child_provider));
 			const AgentRun& child = app.agent_runs.back();
@@ -3165,7 +3175,14 @@ UAM_TEST(UamControlDelegationUsesCapabilityAndRunSnapshotsAcrossProviders)
 	UAM_ASSERT_EQ(listed["result"].size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(listed["result"][0].value("id", ""), std::string("worker"));
 
-	const std::string child_provider = app.provider_profiles.back().id;
+	// The read-only parent may not hand its child to another provider's enforcement.
+	const nlohmann::json cross_provider = uam::UamControlService::HandleRequestForTests(
+	    app, capability.id,
+	    {{"requestId", "delegate-cross"}, {"method", "agent_delegate"},
+	     {"arguments", {{"agentId", "worker"}, {"task", "Must not start."}, {"providerId", app.provider_profiles.back().id}}}}, 1001);
+	UAM_ASSERT(app.provider_profiles.back().id != root.provider_id);
+	UAM_ASSERT(cross_provider.value("error", "").find("own provider") != std::string::npos);
+	const std::string child_provider = root.provider_id;
 	const nlohmann::json rejected_delegate = uam::UamControlService::HandleRequestForTests(
 	    app, capability.id,
 	    {{"requestId", "delegate-rejected"}, {"method", "agent_delegate"},
