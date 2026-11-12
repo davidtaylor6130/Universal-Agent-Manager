@@ -796,7 +796,6 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   showProviderIconsInSidebar?: boolean
   showWorktreePathInSidebar?: boolean
   steerActiveTurnOnSend?: boolean
-  goalCheaperReviewer?: boolean
   gitEnabled?: boolean
   svnEnabled?: boolean
   memoryEnabledDefault: boolean

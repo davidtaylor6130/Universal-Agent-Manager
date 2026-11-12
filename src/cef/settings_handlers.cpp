@@ -724,28 +724,6 @@ void UamQueryHandler::HandleSetComposerSettings(CefRefPtr<CefBrowser> browser, c
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleSetGoalLoopSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
-{
-	const std::optional<bool> cheaper = uam::nlohmann_json::BoolFieldStrict(payload, "goalCheaperReviewer");
-	if (!cheaper)
-	{
-		cb->Failure(400, "goalCheaperReviewer must be a boolean.");
-		return;
-	}
-
-	const AppSettings previous = m_app.settings;
-	m_app.settings.goal_cheaper_reviewer = *cheaper;
-	if (!PersistenceCoordinator().SaveSettings(m_app))
-	{
-		m_app.settings = previous;
-		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist goal loop settings."));
-		return;
-	}
-
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success("{}");
-}
-
 void UamQueryHandler::HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const AppSettings previous = m_app.settings;

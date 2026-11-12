@@ -890,7 +890,7 @@ UAM_TEST(GoalServiceRejectsBlankObjectivesAndUpdatesOnlyEditableUamGoals)
 	UAM_ASSERT_EQ(error, std::string("Only non-complete UAM-managed goals can be edited."));
 }
 
-UAM_TEST(GoalServiceUsesTheNormalChatModelWhenArchitectModeIsOff)
+UAM_TEST(GoalServiceReviewsWithTheGoalReviewerModelInEveryMode)
 {
 	ChatSession chat;
 	chat.model_id = "normal-model";
@@ -898,29 +898,26 @@ UAM_TEST(GoalServiceUsesTheNormalChatModelWhenArchitectModeIsOff)
 	goal.worker_model_id = "fast-worker";
 	goal.reviewer_model_id = "smart-reviewer";
 
-	AppSettings settings;
+	// The worker uses the chat model unless Architect + worker is on; the reviewer model always applies.
 	UAM_ASSERT_EQ(uam::GoalService::WorkerModelId(chat, goal), std::string("normal-model"));
-	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal), std::string("normal-model"));
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal), std::string("smart-reviewer"));
 	chat.small_model_mode = true;
 	UAM_ASSERT_EQ(uam::GoalService::WorkerModelId(chat, goal), std::string("fast-worker"));
-	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal), std::string("smart-reviewer"));
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal), std::string("smart-reviewer"));
+	chat.small_model_mode = false;
+	goal.reviewer_model_id.clear();
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal), std::string("normal-model"));
 }
 
-UAM_TEST(GoalCheaperReviewerSettingPicksTheLowCostModelTheSessionAdvertises)
+UAM_TEST(GoalReviewerModelFallsBackToTheChatModelWhenTheSessionDoesNotOfferIt)
 {
-	AppSettings settings;
 	ChatSession chat;
-	chat.provider_id = "claude-cli";
 	chat.model_id = "opus";
-	chat.reviewer_model_id = "smart-reviewer"; // the small-model reviewer is not the cheaper one
 	Goal goal;
-	// Off by default: the reviewer stays on the chat model.
-	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal), std::string("opus"));
-	settings.goal_cheaper_reviewer = true;
-#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
-	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal), std::string("haiku"));
-	// A session whose model list lacks the low-cost name keeps the chat model instead of failing the review.
+	goal.reviewer_model_id = "haiku";
 	uam::AcpSessionState session;
+	// No advertised model list: the configured reviewer is used as-is.
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal, &session), std::string("haiku"));
 	uam::AcpConfigOptionState option;
 	option.id = "model";
 	option.category = "model";
@@ -928,16 +925,10 @@ UAM_TEST(GoalCheaperReviewerSettingPicksTheLowCostModelTheSessionAdvertises)
 	choice.value = "opus";
 	option.choices.push_back(choice);
 	session.available_config_options.push_back(option);
-	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal, &session), std::string("opus"));
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal, &session), std::string("opus"));
 	choice.value = "haiku";
 	session.available_config_options.front().choices.push_back(choice);
-	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal, &session), std::string("haiku"));
-#endif
-	// A provider without a low-cost model keeps the chat model.
-	ChatSession other;
-	other.provider_id = "antigravity-cli";
-	other.model_id = "chat-model";
-	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, other, goal), std::string("chat-model"));
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal, &session), std::string("haiku"));
 }
 
 UAM_TEST(GoalReviewPromptCarriesCappedWorkspaceChangesAndAcceptedGitReads)

@@ -48,9 +48,9 @@ class GoalService
 	/// <summary>The stricter of the goal's own ceiling and the Settings cap.</summary>
 	static int IterationLimit(const Goal& goal, AppSettings settings);
 	static std::string WorkerModelId(const ChatSession& chat, const Goal& goal);
-	/// <summary>The chat model, unless small-model mode or the cheaper-reviewer setting picks a reviewer model.</summary>
-	/// A low-cost model the session does not advertise falls back to the chat model rather than failing the review.
-	static std::string ReviewerModelId(const AppSettings& settings, const ChatSession& chat, const Goal& goal, const AcpSessionState* session = nullptr);
+	/// <summary>The goal's reviewer model (provider "Goal reviewer model"), else the chat model; a model the session
+	/// does not offer falls back to the chat model rather than failing the review.</summary>
+	static std::string ReviewerModelId(const ChatSession& chat, const Goal& goal, const AcpSessionState* session = nullptr);
 	static std::size_t PauseActiveGoalsAfterRestart(AppState& app,
 	                                                std::size_t* failed_out = nullptr);
 	static bool CancelGoalWork(AppState& app, const std::string& chat_id,

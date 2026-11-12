@@ -772,8 +772,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const memoryRecallBudgetBytes = useAppStore((s) => s.memoryRecallBudgetBytes)
   const goalMaxLoopIterations = useAppStore((s) => s.goalMaxLoopIterations)
   const goalTokenBudget = useAppStore((s) => s.goalTokenBudget)
-  const goalCheaperReviewer = useAppStore((s) => s.goalCheaperReviewer)
-  const setGoalCheaperReviewer = useAppStore((s) => s.setGoalCheaperReviewer)
   const acpSetupInactivityTimeoutSeconds = useAppStore((s) => s.acpSetupInactivityTimeoutSeconds)
   const activeTurnInactivityTimeoutSeconds = useAppStore((s) => s.activeTurnInactivityTimeoutSeconds)
   const toolCallTimeoutSeconds = useAppStore((s) => s.toolCallTimeoutSeconds)
@@ -2205,7 +2203,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                               ],
                               (featurePreference) => updateProviderDefaults(provider.id, { ...defaults, featurePreference: featurePreference === 'provider' ? 'provider' : 'uam' })
                             )} />
-                            <SettingRow title="Goal reviewer model" description="Used for architecture and read-only review." control={renderDefaultsMenu(
+                            <SettingRow title="Goal reviewer model" description="Reviews every goal and plans Architect + worker goals." control={renderDefaultsMenu(
                               `${provider.id}:goal-reviewer`,
                               defaults.reviewerModelId || defaults.modelId,
                               `${providerName} goal reviewer model`,
@@ -2821,11 +2819,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             title="Maximum iterations"
             description="Loops a goal may run before it stops."
             control={<MenuSelect label="Maximum goal loop iterations" value={String(goalMaxLoopIterations)} options={Array.from({ length: 200 }, (_, index) => ({ value: String(index + 1), label: String(index + 1) }))} onChange={(value) => void setMemorySettings({ goalMaxLoopIterations: Number(value) })} />}
-          />
-          <SettingRow
-            title="Cheaper goal reviewer"
-            description="Reviews run on a low-cost model; checks are weaker."
-            control={<Switch hideLabel label="Cheaper goal reviewer" checked={goalCheaperReviewer} onChange={(event) => void setGoalCheaperReviewer(event.currentTarget.checked)} />}
           />
           <SettingRow
             title="Provider setup timeout"

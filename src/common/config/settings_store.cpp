@@ -87,7 +87,6 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kMemoryRecallBudgetBytesKey = "memory_recall_budget_bytes";
 	constexpr std::string_view kGoalMaxLoopIterationsKey = "goal_max_loop_iterations";
 	constexpr std::string_view kGoalTokenBudgetKey = "goal_token_budget";
-	constexpr std::string_view kGoalCheaperReviewerKey = "goal_cheaper_reviewer";
 	constexpr std::string_view kAcpTurnOutputLimitMiBKey = "acp_turn_output_limit_mib";
 	constexpr std::string_view kUpdateChecksEnabledKey = "update_checks_enabled";
 	constexpr std::string_view kUpdateLastCheckedAtKey = "update_last_checked_at";
@@ -718,7 +717,6 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteSettingValue(lines, kMemoryRecallBudgetBytesKey, normalized.memory_recall_budget_bytes);
 		WriteSettingValue(lines, kGoalMaxLoopIterationsKey, normalized.goal_max_loop_iterations);
 		WriteSettingValue(lines, kGoalTokenBudgetKey, normalized.goal_token_budget);
-		WriteBoolSetting(lines, kGoalCheaperReviewerKey, normalized.goal_cheaper_reviewer);
 		WriteSettingValue(lines, kAcpTurnOutputLimitMiBKey, normalized.acp_turn_output_limit_mib);
 		WriteBoolSetting(lines, kUpdateChecksEnabledKey, normalized.update_checks_enabled);
 		WriteBoolSetting(lines, "automatic_provider_updates", normalized.automatic_provider_updates);
@@ -1110,10 +1108,6 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		else if (key == kGoalTokenBudgetKey)
 		{
 			settings.goal_token_budget = uam::parse::IntOr(value, settings.goal_token_budget);
-		}
-		else if (key == kGoalCheaperReviewerKey)
-		{
-			settings.goal_cheaper_reviewer = uam::parse::BoolOr(value, settings.goal_cheaper_reviewer);
 		}
 		else if (key == kAcpTurnOutputLimitMiBKey)
 		{

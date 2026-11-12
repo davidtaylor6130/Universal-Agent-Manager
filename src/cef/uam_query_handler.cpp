@@ -370,7 +370,6 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setUamAgentPreferences", &UamQueryHandler::HandleSetUamAgentPreferences},
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},
 		{"setComposerSettings", &UamQueryHandler::HandleSetComposerSettings},
-		{"setGoalLoopSettings", &UamQueryHandler::HandleSetGoalLoopSettings},
 		{"setNativeImportFilters", &UamQueryHandler::HandleSetNativeImportFilters},
 		{"setVcsSettings", &UamQueryHandler::HandleSetVcsSettings},
 		{"setStorageSettings", &UamQueryHandler::HandleSetStorageSettings},

@@ -112,7 +112,6 @@ namespace uam::settings_frontend_json
 		settings_json["showProviderIconsInSidebar"] = settings.show_provider_icons_in_sidebar;
 		settings_json["showWorktreePathInSidebar"] = settings.show_worktree_path_in_sidebar;
 		settings_json["steerActiveTurnOnSend"] = settings.steer_active_turn_on_send;
-		settings_json["goalCheaperReviewer"] = settings.goal_cheaper_reviewer;
 		settings_json["gitEnabled"] = settings.git_enabled;
 		settings_json["gitAutoWorktree"] = settings.git_auto_worktree;
 		settings_json["gitSnapshotSvn"] = settings.git_snapshot_svn;

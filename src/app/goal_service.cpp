@@ -4,7 +4,6 @@
 #include "app/agent_run_scheduler.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/provider_chat_defaults.h"
-#include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_model_json.h"
 #include "common/utils/range_utils.h"
 #include "common/platform/platform_services.h"
@@ -208,16 +207,13 @@ std::string GoalService::WorkerModelId(const ChatSession& chat, const Goal& goal
 	return chat.small_model_mode ? uam::strings::NonEmptyOrFallback(goal.worker_model_id, chat.model_id) : chat.model_id;
 }
 
-std::string GoalService::ReviewerModelId(const AppSettings& settings, const ChatSession& chat, const Goal& goal, const AcpSessionState* session)
+std::string GoalService::ReviewerModelId(const ChatSession& chat, const Goal& goal, const AcpSessionState* session)
 {
-	if (chat.small_model_mode) return uam::strings::NonEmptyOrFallback(goal.reviewer_model_id, chat.model_id);
-	if (!settings.goal_cheaper_reviewer) return chat.model_id;
-	// The small-model reviewer is usually the stronger model, so the cheaper reviewer uses the provider's
-	// low-cost side-work model directly.
-	const std::string model(ProviderRuntimeRegistry::ResolveById(chat.provider_id).DefaultTextWorkerModel());
-	if (model.empty()) return chat.model_id;
-	if (session != nullptr)
+	// The provider's "Goal reviewer model" (copied onto the goal at creation) reviews every UAM goal.
+	const std::string model = uam::strings::NonEmptyOrFallback(goal.reviewer_model_id, chat.model_id);
+	if (session != nullptr && model != chat.model_id)
 	{
+		// A model this session does not offer would fail the review, so keep the chat model.
 		const auto option = std::ranges::find_if(session->available_config_options, [](const AcpConfigOptionState& value)
 		{ return value.category == "model" || value.id == "model"; });
 		if (option != session->available_config_options.end() && !uam::ranges::Contains(uam::acp_models::ConfigModelIds(*option), model))
