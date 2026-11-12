@@ -1209,6 +1209,13 @@ add_custom_command(TARGET universal_agent_manager POST_BUILD
   COMMENT "Copying UI-V2 and bundled Markdown Store entries"
   VERBATIM
 )
+if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
+  # Gemini structured launches load this admin-tier Plan ceiling with --admin-policy.
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/providers/gemini-plan-ceiling.toml" "${UAM_RESOURCE_DEST}/gemini-plan-ceiling.toml"
+    VERBATIM
+  )
+endif()
 if(UAM_ENABLE_COMPUTER_USE)
   if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
     set(_uam_gemini_policy_command COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/gemini-policy.toml" "${UAM_RESOURCE_DEST}/gemini-policy.toml")
@@ -1678,6 +1685,7 @@ if(UAM_BUILD_TESTS)
     tests/attachment_preview_tests.cpp
 	    tests/computer_use_tests.cpp
     tests/computer_use_global_policy_tests.cpp
+    tests/provider_permission_launch_tests.cpp
     tests/remote_runner_tests.cpp
     tests/process_exit_drain_tests.cpp
     tests/runner_startup_rollback_tests.cpp
@@ -1788,6 +1796,13 @@ if(UAM_BUILD_TESTS)
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll"
         "$<TARGET_FILE_DIR:uam_core_tests>/chrome_elf.dll"
+    )
+  endif()
+  if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
+    # Gemini Plan and goal-review launches resolve their admin policy beside the executable, as in the app.
+    add_custom_command(TARGET uam_core_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/assets/providers/gemini-plan-ceiling.toml" "$<TARGET_FILE_DIR:uam_core_tests>/gemini-plan-ceiling.toml"
+      VERBATIM
     )
   endif()
   # Source scans in this file must not depend on the test working directory.

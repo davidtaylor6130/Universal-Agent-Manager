@@ -1,0 +1,159 @@
+# UAM Plan ceiling for Gemini CLI, loaded with --admin-policy on structured launches.
+# Admin tier (5.x) outranks workspace (3.x), user (4.x), settings, --allowed-tools,
+# trusted MCP servers and saved "Always Allow" approvals, so none of them can widen
+# Plan. Every rule applies only in Plan; other modes keep their normal policies.
+# Mirrors Gemini CLI 0.67.0 policies/plan.toml (Plan rules) and read-only.toml.
+
+[[rule]]
+toolName = "enter_plan_mode"
+decision = "deny"
+priority = 70
+modes = ["plan"]
+denyMessage = "You are already in Plan Mode."
+
+[[rule]]
+toolName = "exit_plan_mode"
+decision = "ask_user"
+priority = 70
+modes = ["plan"]
+interactive = true
+
+[[rule]]
+toolName = "exit_plan_mode"
+decision = "allow"
+priority = 70
+modes = ["plan"]
+interactive = false
+
+[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 40
+modes = ["plan"]
+denyMessage = "You are in Plan Mode with access to read-only tools. Execution of scripts (including those from skills) is blocked."
+
+[[rule]]
+toolName = "*"
+mcpName = "*"
+toolAnnotations = { readOnlyHint = true }
+decision = "ask_user"
+priority = 50
+modes = ["plan"]
+interactive = true
+
+[[rule]]
+name = "Allow specific subagents in Plan mode"
+toolName = "invoke_agent"
+argsPattern = "\"agent_name\":\\s*\"(codebase_investigator|cli_help)\""
+decision = "allow"
+priority = 50
+modes = ["plan"]
+
+[[rule]]
+toolName = ["ask_user", "web_fetch", "activate_skill"]
+decision = "ask_user"
+priority = 50
+modes = ["plan"]
+interactive = true
+
+[[rule]]
+toolName = ["write_file", "replace"]
+decision = "allow"
+priority = 70
+modes = ["plan"]
+argsPattern = "\\x00\"file_path\":\"[^\\\"]+[\\\\/]+\\.gemini[\\\\/]+tmp[\\\\/]+[\\w-]+[\\\\/]+[\\w-]+[\\\\/]+plans[\\\\/]+[\\w-]+\\.md\"\\x00"
+
+[[rule]]
+toolName = ["write_file", "replace"]
+decision = "allow"
+priority = 70
+modes = ["plan"]
+argsPattern = "\\x00\"file_path\":\"[^\\\"]+[\\\\/]+\\.gemini[\\\\/]+tmp[\\\\/]+[\\w-]+[\\\\/]+plans[\\\\/]+[\\w-]+\\.md\"\\x00"
+
+[[rule]]
+toolName = ["write_file", "replace"]
+decision = "allow"
+priority = 70
+modes = ["plan"]
+argsPattern = "\\x00\"file_path\":\"\\.gemini[\\\\/]+tmp[\\\\/]+[\\w-]+[\\\\/]+[\\w-]+[\\\\/]+plans[\\\\/]+[\\w-]+\\.md\"\\x00"
+
+[[rule]]
+toolName = ["write_file", "replace"]
+decision = "allow"
+priority = 70
+modes = ["plan"]
+argsPattern = "\\x00\"file_path\":\"\\.gemini[\\\\/]+tmp[\\\\/]+[\\w-]+[\\\\/]+plans[\\\\/]+[\\w-]+\\.md\"\\x00"
+
+[[rule]]
+toolName = ["write_file", "replace"]
+decision = "allow"
+priority = 70
+modes = ["plan"]
+argsPattern = "\\x00\"file_path\":\"\\.[\\\\/]+\\.gemini[\\\\/]+tmp[\\\\/]+[\\w-]+[\\\\/]+[\\w-]+[\\\\/]+plans[\\\\/]+[\\w-]+\\.md\"\\x00"
+
+[[rule]]
+toolName = ["write_file", "replace"]
+decision = "allow"
+priority = 70
+modes = ["plan"]
+argsPattern = "\\x00\"file_path\":\"\\.[\\\\/]+\\.gemini[\\\\/]+tmp[\\\\/]+[\\w-]+[\\\\/]+plans[\\\\/]+[\\w-]+\\.md\"\\x00"
+
+[[rule]]
+toolName = ["write_file", "replace"]
+decision = "allow"
+priority = 70
+modes = ["plan"]
+argsPattern = "\\x00\"file_path\":\"[\\w-]+\\.md\"\\x00"
+
+[[rule]]
+toolName = ["write_file", "replace"]
+decision = "allow"
+priority = 70
+modes = ["plan"]
+argsPattern = "\\x00\"file_path\":\"\\.[\\\\/]+[\\w-]+\\.md\"\\x00"
+
+[[rule]]
+toolName = ["write_file", "replace"]
+decision = "allow"
+priority = 70
+modes = ["plan"]
+argsPattern = "\\x00\"file_path\":\"plans[\\\\/]+[\\w-]+\\.md\"\\x00"
+
+[[rule]]
+toolName = ["write_file", "replace"]
+decision = "allow"
+priority = 70
+modes = ["plan"]
+argsPattern = "\\x00\"file_path\":\"\\.[\\\\/]+plans[\\\\/]+[\\w-]+\\.md\"\\x00"
+
+[[rule]]
+toolName = ["write_file", "replace"]
+decision = "deny"
+priority = 65
+modes = ["plan"]
+denyMessage = "You are in Plan Mode and cannot modify source code. You may ONLY use write_file or replace to save plans to the designated plans directory as .md files."
+
+[[rule]]
+toolName = [
+  "glob",
+  "grep_search",
+  "list_directory",
+  "read_file",
+  "google_web_search",
+  "codebase_investigator",
+  "cli_help",
+  "get_internal_docs",
+  "tracker_create_task",
+  "tracker_update_task",
+  "tracker_get_task",
+  "tracker_list_tasks",
+  "tracker_add_dependency",
+  "tracker_visualize",
+  "update_topic",
+  "complete_task",
+  "read_mcp_resource",
+  "list_mcp_resources"
+]
+decision = "allow"
+modes = ["plan"]
+priority = 50

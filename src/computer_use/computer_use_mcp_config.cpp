@@ -1,6 +1,7 @@
 #include "common/config/build_features.h"
 #include "computer_use/computer_use_mcp_config.h"
 
+#include "common/config/approval_modes.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_ids.h"
 #include "common/utils/string_utils.h"
@@ -61,6 +62,11 @@ namespace uam::computer_use
 		return UAM_ENABLE_COMPUTER_USE && chat.computer_use_globally_enabled && (chat.execution_host_id.empty() || chat.execution_host_id == "local");
 	}
 
+	bool AttachableForLaunch(const ChatSession& chat)
+	{
+		return AvailableForChat(chat) && uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) != uam::approval_modes::kPlanApprovalMode;
+	}
+
 	std::string EffectiveBackend(const ChatSession& chat)
 	{
 		const std::string preference = BackendPreference(chat.computer_use_backend);
@@ -111,7 +117,7 @@ namespace uam::computer_use
 
 	nlohmann::json AcpMcpServers(const ChatSession& chat)
 	{
-		if (!AvailableForChat(chat) || !UsesUamBackend(chat) || !IsPortableMcpChatId(chat.id))
+		if (!AttachableForLaunch(chat) || !UsesUamBackend(chat) || !IsPortableMcpChatId(chat.id))
 		{
 			return nlohmann::json::array();
 		}
@@ -124,14 +130,14 @@ namespace uam::computer_use
 
 	std::string ClaudeMcpConfig(const ChatSession& chat)
 	{
-		if (!AvailableForChat(chat) || !UsesUamBackend(chat) || !IsPortableMcpChatId(chat.id))
+		if (!AttachableForLaunch(chat) || !UsesUamBackend(chat) || !IsPortableMcpChatId(chat.id))
 			return nlohmann::json({{"mcpServers", nlohmann::json::object()}}).dump();
 		return nlohmann::json({{"mcpServers", {{kMcpServerName, ServerDefinition(chat)}}}}).dump();
 	}
 
 	void AppendCodexMcpLaunchArguments(std::vector<std::string>& argv, const ChatSession& chat)
 	{
-		if (!AvailableForChat(chat))
+		if (!AttachableForLaunch(chat))
 		{
 			argv.push_back("--disable");
 			argv.push_back("computer_use");
@@ -168,7 +174,7 @@ namespace uam::computer_use
 
 	void AppendClaudeMcpLaunchArguments(std::vector<std::string>& argv, const ChatSession& chat)
 	{
-		if (AvailableForChat(chat) && UsesUamBackend(chat) && IsPortableMcpChatId(chat.id))
+		if (AttachableForLaunch(chat) && UsesUamBackend(chat) && IsPortableMcpChatId(chat.id))
 		{
 			argv.push_back("--mcp-config");
 			argv.push_back(ClaudeMcpConfig(chat));
@@ -179,7 +185,7 @@ namespace uam::computer_use
 
 	void AppendGeminiMcpLaunchArguments(std::vector<std::string>& argv, const ChatSession& chat)
 	{
-		if (AvailableForChat(chat) && UsesUamBackend(chat) && IsPortableMcpChatId(chat.id))
+		if (AttachableForLaunch(chat) && UsesUamBackend(chat) && IsPortableMcpChatId(chat.id))
 		{
 			argv.push_back("--policy");
 			argv.push_back(GeminiPolicyPath().string());
