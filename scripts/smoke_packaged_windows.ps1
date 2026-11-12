@@ -76,8 +76,16 @@ $env:UAM_DATA_DIR = $dataRoot
 $process = $null
 try {
     $process = Start-Process $executable -PassThru
-    Start-Sleep -Seconds 5
+    # The UI logs this after its first native bridge reply, so it proves the renderer ran and the bridge answered.
+    $bridgeMarker = '[frontend] [UI startup] Initial state loaded through the native bridge.'
+    $log = Join-Path $dataRoot 'uam.log'
+    $bridged = $false
+    for ($i = 0; $i -lt 60 -and -not $process.HasExited; $i++) {
+        if ((Test-Path -LiteralPath $log) -and (Select-String -LiteralPath $log -SimpleMatch $bridgeMarker -Quiet)) { $bridged = $true; break }
+        Start-Sleep -Seconds 1
+    }
     if ($process.HasExited) { throw "Packaged Windows app exited during startup with code $($process.ExitCode)." }
+    if (-not $bridged) { throw 'Packaged Windows UI did not complete a native bridge round-trip.' }
     Stop-Process -Id $process.Id -Force
     if (-not $process.WaitForExit(10000)) { throw 'Packaged Windows app did not stop.' }
 } finally {

@@ -12318,6 +12318,54 @@ UAM_TEST(AcpMissingRemoteProcessCompletesPersistedStopCleanup)
 	UAM_ASSERT(!persisted->remote_stop_cleanup_pending);
 }
 
+UAM_TEST(AcpRemoteSpoolFailureSettlesTheTurnInsteadOfReattaching)
+{
+	// A helper that could not save a process's output ended that process and reports so on every later poll;
+	// reattaching retried it for as long as the helper kept the record (seen when a host's disk filled).
+	TempDir temp("uam-acp-remote-spool-failure");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-remote-spool-failure";
+	chat.execution_host_id = "ssh-test";
+	chat.remote_process_exists = true;
+	chat.remote_turn_reconnect_pending = true;
+	chat.messages.push_back({.role = MessageRole::User, .content = "Build it."});
+	chat.messages.push_back({.role = MessageRole::Assistant, .content = "Building."});
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	auto owned_session = std::make_unique<uam::AcpSessionState>();
+	owned_session->chat_id = chat.id;
+	owned_session->provider_id = "claude-cli";
+	owned_session->running = true;
+	owned_session->processing = true;
+	owned_session->recovering_remote_turn = true;
+	owned_session->turn_user_message_index = 0;
+	owned_session->turn_assistant_message_index = 1;
+	owned_session->current_assistant_message_index = 1;
+	uam::AcpSessionState* session = owned_session.get();
+	// The line helpers before the explicit suffix report.
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", "echo Remote process output could not be spooled. 1>&2 & exit /b 70"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "printf 'Remote process output could not be spooled.\\n' >&2; exit 70"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, argv, &error));
+	app.acp_sessions.push_back(std::move(owned_session));
+	for (int attempt = 0; attempt < 250 && session->lifecycle_state != "error"; ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	}
+	UAM_ASSERT(session->last_error.starts_with("Remote process output could not be spooled."));
+	UAM_ASSERT(session->last_error.find("free space") != std::string::npos);
+	UAM_ASSERT(!session->processing);
+	UAM_ASSERT(!session->reconnect_pending);
+	UAM_ASSERT(!app.chats.front().remote_process_exists);
+	UAM_ASSERT(!app.chats.front().remote_turn_reconnect_pending);
+}
+
 UAM_TEST(AcpMissingRemoteProcessClearsDeadTurnDeliveryOutbox)
 {
 	TempDir temp("uam-acp-missing-turn-outbox");

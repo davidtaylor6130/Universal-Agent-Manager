@@ -2710,6 +2710,32 @@ UAM_TEST(AcpInitialRepositoryBaselineQueuesDurablyBeforeProviderLaunch)
 	UAM_ASSERT_EQ(vcs.Status(restarted, *saved, uam::VcsType::Git, true, "chat").changed_files.size(), static_cast<std::size_t>(1));
 }
 
+UAM_TEST(AcpStopKeepsAFinishedRepositoryBaselineReadyForTheImmediateRestart)
+{
+	// A goal's fresh worker or reviewer context stops the chat and relaunches at once; the launch
+	// refuses a Pending baseline, so stopping must not discard a capture that already finished.
+	if (!GitAvailableForTests()) return;
+	TempDir temp("uam-acp-stop-keeps-baseline");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "prior.txt", "preexisting\n"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "goal-restart-baseline";
+	chat.workspace_directory = repo.string();
+	app.chats.push_back(chat);
+	std::string error;
+	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, chat, &error) == uam::ChatBaselineReadiness::Pending);
+	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Ready);
+	app.chats.front().persisted_message_count = 2; // The first worker turn has run.
+	UAM_ASSERT(uam::StopAcpSession(app, chat.id));
+	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &error) == uam::ChatBaselineReadiness::Ready);
+	UAM_ASSERT(uam::StopAcpSession(app, chat.id));
+	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &error, nullptr, true) == uam::ChatBaselineReadiness::Ready);
+}
+
 UAM_TEST(AcpRepositoryBaselineFailureRetriesTheExistingDurableQueueOnce)
 {
 	if (!GitAvailableForTests()) return;

@@ -12,11 +12,10 @@ namespace uam::cef
 }
 
 /// <summary>
-/// CefApp implementation for both the browser (main) process and renderer subprocesses.
-/// Implements CefRenderProcessHandler so CefMessageRouterRendererSide is created in the
-/// renderer process — this is what injects window.cefQuery into the page.
+/// CefApp implementation for the browser (main) process. Subprocesses use UamCefRendererApp,
+/// which injects window.cefQuery into the trusted UI document.
 /// </summary>
-class UamCefApp : public CefApp, public CefBrowserProcessHandler, public CefRenderProcessHandler
+class UamCefApp : public CefApp, public CefBrowserProcessHandler
 {
   public:
 	using FatalStartupCallback = std::function<void(const std::string&)>;
@@ -32,10 +31,6 @@ class UamCefApp : public CefApp, public CefBrowserProcessHandler, public CefRend
 	{
 		return this;
 	}
-	CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler() override
-	{
-		return this;
-	}
 
 	void OnBeforeCommandLineProcessing(const CefString& process_type, CefRefPtr<CefCommandLine> command_line) override;
 	void OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar) override;
@@ -44,17 +39,10 @@ class UamCefApp : public CefApp, public CefBrowserProcessHandler, public CefRend
 	void OnContextInitialized() override;
 	void OnBeforeChildProcessLaunch(CefRefPtr<CefCommandLine> command_line) override;
 
-	// CefRenderProcessHandler — creates the renderer-side message router that injects window.cefQuery
-	void OnWebKitInitialized() override;
-	void OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefV8Context> context) override;
-	void OnContextReleased(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefV8Context> context) override;
-	bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefProcessId source_process, CefRefPtr<CefProcessMessage> message) override;
-
   private:
 	void FailStartup(const std::string& error);
 
 	std::string m_trustedUiIndexUrl;
-	CefRefPtr<CefMessageRouterRendererSide> m_renderer_router;
 	FatalStartupCallback m_onFatalStartup;
 	std::function<void()> m_onManagementReady;
 
