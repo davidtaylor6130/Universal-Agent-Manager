@@ -198,8 +198,9 @@ jobs:
       - run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$GITHUB_WORKSPACE/Builds/remote-artifacts"
       - run: cmake --build Builds/tests --config Release --target uam_core_tests --parallel 4
       # The cases find uam-runner and its metadata beside the binary, read the runner's generated build header, and
-      # resolve source paths from the build folder (CMakeCache.txt).
-      - run: tar -cf core-tests.tar -C Builds/tests uam_core_tests uam-runner uam-runner.sha256 uam-runner.version uam-runner.manifest.json CMakeCache.txt generated
+      # resolve source paths from the build folder (CMakeCache.txt). Gemini Plan and goal-review launches refuse to
+      # start without gemini-plan-ceiling.toml beside the binary, as in the app.
+      - run: tar -cf core-tests.tar -C Builds/tests uam_core_tests uam-runner uam-runner.sha256 uam-runner.version uam-runner.manifest.json gemini-plan-ceiling.toml CMakeCache.txt generated
       - uses: actions/upload-artifact@v4
         with:
           name: uam-core-tests-macos-arm64
