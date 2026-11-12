@@ -28,9 +28,6 @@
 #include "common/utils/diagnostic_log.h"
 #include "common/utils/time_utils.h"
 #include "common/utils/uuid.h"
-#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
-#include "common/provider/claude/cli/claude_cli_provider_runtime.h"
-#endif
 
 #include <cstdio>
 #include <fstream>
@@ -2533,11 +2530,27 @@ UAM_TEST(ClaudeWorkerArgvKeepsUserAuthWithoutHooksPluginsOrMcp)
 	UAM_ASSERT(settings != argv.end() && nlohmann::json::parse(*std::next(settings))["disableAllHooks"].get<bool>());
 	UAM_ASSERT(uam::ranges::Contains(argv, "--strict-mcp-config"));
 	UAM_ASSERT(uam::ranges::Contains(argv, "--disable-slash-commands"));
-	// Generated settings keep only auth/routing keys; unreadable or malformed files carry none.
-	const nlohmann::json kept = nlohmann::json::parse(ClaudeWorkerSettingsJson(R"({"awsAuthRefresh":"aws sso login","forceLoginMethod":"console","permissions":{"allow":["Bash"]},"statusLine":{}})"));
-	UAM_ASSERT_EQ(kept, (nlohmann::json{{"disableAllHooks", true}, {"awsAuthRefresh", "aws sso login"}, {"forceLoginMethod", "console"}}));
-	for (const std::string_view broken : {std::string_view{}, std::string_view{"{broken"}, std::string_view{"[]"}})
-		UAM_ASSERT_EQ(nlohmann::json::parse(ClaudeWorkerSettingsJson(broken)), (nlohmann::json{{"disableAllHooks", true}}));
+	// A local launch replaces them with only the auth/routing keys of settings.json; broken files carry none.
+	TempDir config("uam-claude-worker-settings");
+	uam_test::ScopedEnvVar config_dir("CLAUDE_CONFIG_DIR", config.root.string());
+	uam::AppState app;
+	const auto local_settings = [&]() {
+		std::string error;
+		const uam::ProviderWorkerInvocation invocation = uam::BuildProviderWorkerInvocation(app, profile, AppSettings{}, "prompt", "", uam::ProviderWorkerPathMode::BasePath, &error);
+		UAM_ASSERT(!invocation.Empty());
+		const auto found = std::ranges::find(invocation.argv, "--settings");
+		UAM_ASSERT(found != invocation.argv.end() && std::next(found) != invocation.argv.end());
+		return nlohmann::json::parse(*std::next(found));
+	};
+	UAM_ASSERT(uam::io::WriteTextFile(config.root / "settings.json", R"({"awsAuthRefresh":"aws sso login","forceLoginMethod":"console","permissions":{"allow":["Bash"]},"statusLine":{}})"));
+	UAM_ASSERT_EQ(local_settings(), (nlohmann::json{{"disableAllHooks", true}, {"awsAuthRefresh", "aws sso login"}, {"forceLoginMethod", "console"}}));
+	for (const std::string broken : {"{broken", "[]"})
+	{
+		UAM_ASSERT(uam::io::WriteTextFile(config.root / "settings.json", broken));
+		UAM_ASSERT_EQ(local_settings(), (nlohmann::json{{"disableAllHooks", true}}));
+	}
+	fs::remove(config.root / "settings.json");
+	UAM_ASSERT_EQ(local_settings(), (nlohmann::json{{"disableAllHooks", true}}));
 }
 #endif
 
