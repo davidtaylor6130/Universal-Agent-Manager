@@ -1478,7 +1478,7 @@ namespace uam
 			session.goal_review_scheduled = session.goal_review_turn;
 			session.goal_review_goal_id = chat.goal_iteration_goal_id;
 			session.goal_review_repair_attempts = chat.goal_iteration_repair_attempts;
-			if (session.goal_review_turn) acp_detail::BeginGoalReviewUsage(session, false);
+			if (!session.goal_turn_kind.empty()) acp_detail::BeginGoalReviewUsage(session, false);
 			RestoreRemoteAcpTranscript(session, chat);
 			if (chat.remote_source_exit_pending)
 			{
@@ -8642,7 +8642,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					session.goal_review_user_prompt = goal_review_user_prompt;
 					session.goal_review_assistant_text = goal_review_assistant_text;
 					// A replacement process can resume native history; do not infer a zero cumulative baseline.
-					if (session.goal_review_turn) BeginGoalReviewUsage(session, false);
+					if (!session.goal_turn_kind.empty()) BeginGoalReviewUsage(session, false);
 					session.last_error.clear();
 					AppendGoalLoopDiagnostic(session, "auto_restart_after_startup_crash", goal_review_goal_id, pending_prompt);
 				}

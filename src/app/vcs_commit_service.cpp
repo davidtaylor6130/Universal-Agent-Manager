@@ -2268,8 +2268,12 @@ namespace uam
 		// Only a capture still running is cancelled. Stopping a finished one would make the next launch
 		// (for example a goal's fresh worker or reviewer context, started right after this stop) reload the
 		// saved baseline and see Pending, which a launch treats as not ready.
-		std::scoped_lock lock(found->second->mutex);
-		if (found->second->result == ChatBaselineReadiness::Pending) found->second->cancellation->request_stop();
+		bool pending = false;
+		{
+			std::scoped_lock lock(found->second->mutex);
+			pending = found->second->result == ChatBaselineReadiness::Pending;
+		}
+		if (pending) found->second->cancellation->request_stop();
 	}
 
 	ChatBaselineReadiness WaitForChatRepositoryBaseline(const std::shared_ptr<ChatBaselinePreparation>& task, std::stop_token cancellation, std::string* error_out)

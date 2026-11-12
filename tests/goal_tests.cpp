@@ -2048,6 +2048,16 @@ UAM_TEST(AcpGoalWorkerTurnChargesProviderReportedUsageAndLabelsTheEstimateFallba
 		const std::int64_t estimate = std::string("Implement one step.").size() / 4 + std::string("Implemented one step.").size() / 4;
 		UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, reported ? std::int64_t{46000} : estimate);
 		UAM_ASSERT_EQ(std::ranges::any_of(raw_session->diagnostics, [](const auto& diagnostic) { return diagnostic.reason == "goal_worker_usage_estimated"; }), !reported);
+		// The next worker turn, queued by the review, opens its own receipt so its provider usage is charged too.
+		raw_session->processing = false;
+		raw_session->queued_prompt.clear();
+		app.chats.back().messages.push_back({MessageRole::Assistant,
+		    R"({"decision":"continue","reason":"One step remains.","nextPrompt":"Implement the final step.","progressUpdate":{"remaining":["Implement the final step."],"currentStep":"Implement the final step."}})"});
+		raw_session->turn_assistant_message_index = 2;
+		UAM_ASSERT(uam::acp_detail::HandleGoalReviewCompletion(app, *raw_session, app.chats.back(), nullptr));
+		UAM_ASSERT_EQ(raw_session->goal_turn_kind, std::string("worker_continuation"));
+		UAM_ASSERT_EQ(raw_session->goal_review_usage.turn_serial, raw_session->turn_serial);
+		UAM_ASSERT(!raw_session->goal_review_usage.consumed);
 		(void)uam::StopAcpSession(app, "worker-iteration");
 	}
 }
