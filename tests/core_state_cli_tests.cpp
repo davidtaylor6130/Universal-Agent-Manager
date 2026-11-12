@@ -2562,11 +2562,18 @@ UAM_TEST(ProviderTextWorkersAreIsolatedAndIgnoreUnsafeExtraFlags)
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--ignore-user-config"));
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "features.shell_tool=false"));
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "web_search=\"disabled\""));
+				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "gpt-5.4-mini"));
 			}
 			else if (profile.id == uam::provider_ids::kClaudeCli)
 			{
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--tools"));
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--no-session-persistence"));
+				const auto sources = std::ranges::find(invocation.argv, "--setting-sources");
+				UAM_ASSERT(sources != invocation.argv.end() && std::next(sources) != invocation.argv.end() && std::next(sources)->empty());
+				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--strict-mcp-config"));
+				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--disable-slash-commands"));
+				const auto model = std::ranges::find(invocation.argv, "--model");
+				UAM_ASSERT(model != invocation.argv.end() && std::next(model) != invocation.argv.end() && *std::next(model) == "haiku");
 			}
 			else if (profile.id == uam::provider_ids::kOpenCodeCli)
 			{
@@ -2590,6 +2597,10 @@ UAM_TEST(ProviderTextWorkersAreIsolatedAndIgnoreUnsafeExtraFlags)
 			{
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--admin-policy"));
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "plan"));
+				const auto extensions = std::ranges::find(invocation.argv, "--extensions");
+				UAM_ASSERT(extensions != invocation.argv.end() && std::next(extensions) != invocation.argv.end() && *std::next(extensions) == "none");
+				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--allowed-mcp-server-names"));
+				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "flash-lite"));
 				const std::string policy = uam::io::ReadTextFile(isolation_directory / "deny-all-tools.toml");
 				UAM_ASSERT(uam::strings::Contains(policy, "decision = \"deny\""));
 			}

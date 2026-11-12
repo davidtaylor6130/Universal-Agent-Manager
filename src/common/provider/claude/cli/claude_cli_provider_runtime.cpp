@@ -166,6 +166,8 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildWorkerArgv(const Provide
 	argv.push_back("--no-session-persistence");
 	argv.push_back("--tools");
 	argv.push_back("");
+	// Like Codex --ignore-user-config: no user/project settings (hooks, plugins, CLAUDE.md), MCP servers or skills.
+	uam::provider_runtime_internal::AppendArgs(argv, {"--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands"});
 
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", model_id);
 

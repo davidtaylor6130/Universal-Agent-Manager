@@ -1369,6 +1369,16 @@ namespace
 		return static_cast<std::size_t>(std::max(0, (start_override >= 0) ? start_override : default_start));
 	}
 
+	/// <summary>Keeps every message but shortens long ones (pasted logs, tool dumps) to their start and end, where requests and conclusions sit.</summary>
+	std::string MemoryWorkerMessageText(std::string_view content)
+	{
+		constexpr std::size_t kKeepBytes = 2048; // ponytail: fixed head/tail; a setting if extraction quality ever needs it
+		if (content.size() <= 2 * kKeepBytes) return std::string(content);
+		const std::string_view head = uam::strings::Utf8Prefix(content, kKeepBytes);
+		const std::string_view tail = uam::strings::Utf8Suffix(content, kKeepBytes);
+		return std::string(head) + "\n[... " + std::to_string(content.size() - head.size() - tail.size()) + " bytes omitted ...]\n" + std::string(tail);
+	}
+
 	std::string BuildWorkerPrompt(const ChatSession& chat, int start_override)
 	{
 		const std::size_t start = MemoryWorkerStartIndex(chat, start_override);
@@ -1405,7 +1415,7 @@ namespace
 		{
 			const Message& message = chat.messages[i];
 			if (message.acp_prompt_discarded) continue;
-			out << RoleToString(message.role) << ": " << uam::strings::TrimAsciiView(message.content) << "\n\n";
+			out << RoleToString(message.role) << ": " << MemoryWorkerMessageText(uam::strings::TrimAsciiView(message.content)) << "\n\n";
 		}
 		out << "</transcript>\n";
 		return std::move(out).str();
@@ -1986,19 +1996,9 @@ std::string MemoryService::BuildRecallPreface(const uam::AppState& app, const Ch
 		const int score = RecallScore(preview, terms);
 		if (score > 0) ranked.emplace_back(score, preview);
 	}
+	// Nothing in the request matches a memory: send nothing rather than unrelated memories.
+	if (ranked.empty()) return {};
 	std::string preface = header;
-	if (ranked.empty())
-	{
-		// Generic continuation and unmatched requests retain the existing complete-fact fallback.
-		const std::size_t budget = static_cast<std::size_t>(std::max(512, app.settings.memory_recall_budget_bytes));
-		for (const std::string& preview : previews)
-		{
-			if (stop_token.stop_requested()) return {};
-			if (preface.size() + preview.size() + 1 > budget) break;
-			preface += preview + '\n';
-		}
-		return preface + footer;
-	}
 
 	std::sort(ranked.begin(), ranked.end(), [](const auto& lhs, const auto& rhs)
 	{

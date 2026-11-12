@@ -296,7 +296,9 @@ namespace uam
 		}
 
 		const auto& runtime = ProviderRuntimeRegistry::Resolve(profile);
-		auto argv = runtime.BuildWorkerArgv(profile, settings, prompt, model_id);
+		// The user's chosen worker model wins; otherwise side work runs on the provider's cheap model.
+		const std::string_view worker_model = uam::strings::TrimAsciiView(model_id).empty() ? runtime.DefaultTextWorkerModel() : model_id;
+		auto argv = runtime.BuildWorkerArgv(profile, settings, prompt, worker_model);
 		if (IsProvider(profile, uam::provider_ids::kCopilotCli))
 		{
 			UseLegacyCopilotWorkerFlagsBefore103(app, remote_host_id, argv);
