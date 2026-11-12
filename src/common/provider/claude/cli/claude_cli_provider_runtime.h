@@ -3,6 +3,9 @@
 #include "common/provider/provider_runtime.h"
 #include <stop_token>
 
+/// <summary>Worker --settings JSON: hooks off plus only the auth/routing keys of the user's settings.json text.</summary>
+std::string ClaudeWorkerSettingsJson(std::string_view user_settings_text);
+
 class ClaudeCliProviderRuntime final : public IProviderRuntime
 {
   public:
@@ -14,6 +17,7 @@ class ClaudeCliProviderRuntime final : public IProviderRuntime
 	bool SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat) const override;
 	std::string_view DefaultTextWorkerModel() const override { return "haiku"; }
 	std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const override;
+	bool PrepareLocalWorkerLaunch(const uam::AppState&, const ProviderProfile&, std::vector<std::string>& argv, std::string&, bool* private_isolation = nullptr) const override;
 	std::vector<std::string> BuildStructuredLaunchArgv(const ProviderProfile& profile, const ChatSession& chat) const override;
 
 	const char* AcpProtocolKind() const override { return "claude-code-stream-json"; }

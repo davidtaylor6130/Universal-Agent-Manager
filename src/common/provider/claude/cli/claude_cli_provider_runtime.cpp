@@ -23,6 +23,8 @@
 #include "common/paths/path_utils.h"
 #include "common/platform/async_byte_writer.h"
 #include "common/utils/nlohmann_json_utils.h"
+#include "common/utils/env_utils.h"
+#include "common/utils/io_utils.h"
 #include "app/attachment_preview_service.h"
 
 #include <algorithm>
@@ -166,14 +168,42 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildWorkerArgv(const Provide
 	argv.push_back("--no-session-persistence");
 	argv.push_back("--tools");
 	argv.push_back("");
-	// Like Codex --ignore-user-config: no user/project settings (hooks, plugins, CLAUDE.md), MCP servers or skills.
-	uam::provider_runtime_internal::AppendArgs(argv, {"--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands"});
+	// No MCP servers, skills or hooks. User settings stay loaded so auth, proxy, Bedrock/Vertex and apiKeyHelper
+	// keep working; a local launch replaces them with only those keys (PrepareLocalWorkerLaunch).
+	uam::provider_runtime_internal::AppendArgs(argv, {"--setting-sources", "user", "--settings", R"({"disableAllHooks":true})", "--strict-mcp-config", "--disable-slash-commands"});
 
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", model_id);
 
 	argv.push_back("--");
 	argv.push_back(std::string(prompt));
 	return argv;
+}
+
+std::string ClaudeWorkerSettingsJson(std::string_view user_settings_text)
+{
+	// Only keys that authenticate or route requests; never hooks, plugins, permissions or status lines.
+	static constexpr std::array<std::string_view, 6> kAuthKeys = {"env", "apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "forceLoginMethod", "forceLoginOrgUUID"};
+	nlohmann::json settings = {{"disableAllHooks", true}};
+	const nlohmann::json user = nlohmann::json::parse(user_settings_text, nullptr, false);
+	if (user.is_object())
+		for (const std::string_view key : kAuthKeys)
+			if (const auto found = user.find(std::string(key)); found != user.end()) settings[std::string(key)] = *found;
+	return settings.dump();
+}
+
+bool ClaudeCliProviderRuntime::PrepareLocalWorkerLaunch(const uam::AppState&, const ProviderProfile&, std::vector<std::string>& argv, std::string&, bool* private_isolation) const
+{
+	if (private_isolation) *private_isolation = false;
+	const std::filesystem::path root = uam::env::GetTrimmedPath("CLAUDE_CONFIG_DIR").value_or(uam::env::GetUserHomePath().value_or(std::filesystem::path{}) / ".claude");
+	std::string text;
+	// ponytail: missing, oversized or malformed user settings just mean no auth keys to carry.
+	if (!uam::io::TryReadTextFile(root / "settings.json", text, 1024 * 1024)) text.clear();
+	const auto sources = std::ranges::find(argv, "--setting-sources");
+	const auto settings = std::ranges::find(argv, "--settings");
+	if (sources == argv.end() || std::next(sources) == argv.end() || settings == argv.end() || std::next(settings) == argv.end()) return true;
+	*std::next(sources) = ""; // no user/project settings files, so no global CLAUDE.md or plugins
+	*std::next(settings) = ClaudeWorkerSettingsJson(text);
+	return true;
 }
 
 std::vector<std::string> ClaudeCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession& chat) const
