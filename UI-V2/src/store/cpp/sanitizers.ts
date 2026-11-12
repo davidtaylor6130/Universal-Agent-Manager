@@ -61,6 +61,7 @@ import type {
   ShellAction,
   ComputePool,
   ComputePoolUsage,
+  PullRequestWatch,
   VcsCommitResult,
   VcsCommitStatus,
   VcsType,
@@ -2086,6 +2087,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
     cliVersionManager: sanitizeCliVersionManager(value.cliVersionManager),
     shellActions,
     computePoolUsage: sanitizeComputePoolUsage(value.computePoolUsage),
+    prWatches: sanitizePullRequestWatches(value.prWatches),
     shellActionNotification: stringOr(value.shellActionNotification),
     statusLine: stringOr(value.statusLine),
     deletionProgress: sanitizeDeletionProgress(value.deletionProgress),
@@ -2157,6 +2159,32 @@ function sanitizeComputePoolUsage(value: unknown): ComputePoolUsage {
   return Object.fromEntries(Object.entries(value).flatMap(([id, entry]) => isRecord(entry)
     ? [[id, { inUse: nonNegativeInteger(entry.inUse) ?? 0, waiting: nonNegativeInteger(entry.waiting) ?? 0 }]]
     : []))
+}
+
+const noticeTone = (value: unknown): 'info' | 'success' | 'warning' => value === 'success' || value === 'warning' ? value : 'info'
+
+export function sanitizePullRequestWatches(value: unknown): PullRequestWatch[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) return []
+    const chatId = stringOr(entry.chatId)
+    const repository = stringOr(entry.repository)
+    const number = nonNegativeInteger(entry.number) ?? 0
+    // The link is rebuilt here, so a pushed value can never point the row anywhere but github.com.
+    if (!chatId || number < 1 || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return []
+    const state = stringOr(entry.state)
+    const notice = isRecord(entry.notice) && (nonNegativeInteger(entry.notice.serial) ?? 0) > 0 && stringOr(entry.notice.message)
+      ? { serial: nonNegativeInteger(entry.notice.serial) ?? 0, message: stringOr(entry.notice.message), tone: noticeTone(entry.notice.tone) }
+      : undefined
+    return [{
+      chatId, repository, number, url: `https://github.com/${repository}/pull/${number}`, title: stringOr(entry.title),
+      state: state === 'open' || state === 'closed' || state === 'merged' || state === 'missing' ? state : 'unknown',
+      watching: entry.watching === true,
+      checksPassed: nonNegativeInteger(entry.checksPassed) ?? 0, checksFailed: nonNegativeInteger(entry.checksFailed) ?? 0, checksPending: nonNegativeInteger(entry.checksPending) ?? 0,
+      conflicting: entry.conflicting === true, readFailing: entry.readFailing === true, paused: entry.paused === true,
+      ...(notice ? { notice } : {}),
+    }]
+  })
 }
 
 function sanitizeShellActions(value: unknown): ShellAction[] {
@@ -2270,6 +2298,7 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
     cliVersionManager: value.cliVersionManager !== undefined ? sanitizeCliVersionManager(value.cliVersionManager) : undefined,
     shellActions: value.shellActions !== undefined ? sanitizeShellActions(value.shellActions) : undefined,
     computePoolUsage: value.computePoolUsage !== undefined ? sanitizeComputePoolUsage(value.computePoolUsage) : undefined,
+    prWatches: value.prWatches !== undefined ? sanitizePullRequestWatches(value.prWatches) : undefined,
     shellActionNotification: value.shellActionNotification !== undefined ? stringOr(value.shellActionNotification) : undefined,
     statusLine: value.statusLine !== undefined ? stringOr(value.statusLine) : undefined,
   }

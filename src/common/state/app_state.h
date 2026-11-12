@@ -43,6 +43,7 @@ namespace uam
 
 	class StartupNativeImportService;
 	class StorageRetentionService;
+	class PrWatchService;
 	class DataFolderSettingsService;
 	class OpenCodeNativeActivityService;
 	class ManagedSubagentCancellationReceipt;
@@ -1437,6 +1438,8 @@ namespace uam
 	{
 		WorkspaceLeaseGate worktree_retention_gate;
 		std::shared_ptr<StorageRetentionService> storage_retention_service;
+		/// Pull request watches for every chat; null in tools and tests that do not create it.
+		std::shared_ptr<PrWatchService> pr_watch_service;
 		std::shared_ptr<DataFolderSettingsService> data_folder_settings;
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
 		std::vector<RepositoryRouteWorkspace> repository_route_workspaces;

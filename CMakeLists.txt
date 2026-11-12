@@ -587,6 +587,8 @@ add_library(uam_core_objects OBJECT
   src/app/git_worktree_service.cpp
   src/app/worktree_retention_service.cpp
   src/app/storage_retention_service.cpp
+  src/app/pr_watch_service.cpp
+  src/common/pr_watch/pr_watch_rules.cpp
   src/app/data_folder_preflight.cpp
   src/app/data_folder_settings_service.cpp
   src/app/data_folder_transition.cpp
@@ -718,6 +720,7 @@ add_library(uam_app_objects OBJECT
   src/cef/local_chat_bundle_handlers.cpp
   src/cef/theme_handlers.cpp
   src/cef/shell_action_handlers.cpp
+  src/cef/pr_watch_handlers.cpp
   src/cef/markdown_handlers.cpp
   src/cef/folder_handlers.cpp
   src/cef/chat_branch_handlers.cpp
@@ -1599,6 +1602,7 @@ if(UAM_BUILD_TESTS)
     tests/queued_prompt_hold_tests.cpp
     tests/agent_target_metadata_tests.cpp
     tests/uam_control_chat_create_tests.cpp
+    tests/pr_watch_tests.cpp
     tests/automation_api_tests.cpp
     tests/turn_finalization_ownership_tests.cpp
     tests/checkpoint_staging_tests.cpp

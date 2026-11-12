@@ -312,3 +312,17 @@ A transcript save that fails while UAM is running is reported once through the s
 **Decided by David, 2026-11-11.** Native import brings a provider's sub-agent sessions in as [sub-chats of the imported parent](chat/native-imports.md#sub-chats). For a chat that is already in UAM, imported earlier or started in UAM, missing sub-chats are imported only by a Chat Data scan the user starts, never at startup. Sub-chats stay exempt from the startup age limit and the import filters, which apply to their parent.
 
 Recorded limits that are not decisions: Claude Code, Gemini and Copilot children on SSH hosts, and Antigravity children, are not imported, for the reasons in the [child session reference](reference/native-child-sessions.md).
+
+## Pull request watching
+
+[Pull request watching](chat/pull-request-watch.md) follows T3 Code where UAM has an equivalent. David decided on 2026-11-12: the read cadence stands (an unwatched linked pull request every 2 minutes while it is being updated, 5 once quiet for 30 minutes and 15 while closed); a merged or closed pull request wakes the agent once with a final message and then ends the watch; and a chat with an active watch stays in Active Chats between wakes until the watch ends.
+
+**Open, pending David's decision.** These interim choices were made where T3 Code has no equivalent:
+
+- Marking a watched chat done ends its watches, so Done and Clear all still clear its row; a chat marked done earlier can start a watch. T3 Code instead asks the user to unsettle the thread first.
+- The Active Chats row of a watched chat reads "Watching PR" rather than "Working", because no turn is running.
+- `pr_watch` and `pr_unwatch` need no approval and are allowed in Plan and read-only chats, because they act only on the calling chat. They carry no read-only hint.
+- The wake is delivered as an ordinary message in the chat, shown like a message the user sent. There is no separate transcript style for it.
+- Only the turn Stop control ends a chat's watches; stopping the provider session does not.
+- GitHub Enterprise hosts, GitLab and Azure DevOps are not supported.
+- The phone clients show no linked pull request row and cannot start or stop a watch.

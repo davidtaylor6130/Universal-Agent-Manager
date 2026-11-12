@@ -8,7 +8,7 @@ import {
   isLatestPendingRequest,
   rememberPendingRequest,
 } from '../cpp/reconcile'
-import type { ComputePool, ComputePoolUsage, CppFolder, ShellAction } from '../cpp/types'
+import type { ComputePool, ComputePoolUsage, CppFolder, PullRequestWatch, ShellAction } from '../cpp/types'
 import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 import type { ZustandSet, ZustandGet } from '../storeTypes'
 import { deleteSessionsFromState } from './sessionsSlice'
@@ -114,6 +114,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     shellActions: [] as ShellAction[],
     computePools: [] as ComputePool[],
     computePoolUsage: {} as ComputePoolUsage,
+    prWatches: [] as PullRequestWatch[],
     shellActionNotification: '',
     workspaceFolderRecoveryError: '',
     workspaceDeletionError: '',
