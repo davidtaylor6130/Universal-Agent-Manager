@@ -31,7 +31,7 @@ std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::
 {
 	const bool v2 = IsCheckedHistoryV2(version);
 	if (command.empty() || (!v2 && !version.starts_with("1.")))
-		throw std::runtime_error("OpenCode " + uam::strings::SafeLine(version, 32) + " history has not been verified. " + UnverifiedV2Message(version, "history import") + " OpenCode 1.x also imports.");
+		throw std::runtime_error("This OpenCode history has not been verified. " + UnverifiedV2Message(version, "history import") + " OpenCode 1.x also imports.");
 	if (operation == "list")
 	{
 		command.insert(command.end(), {"session", "list", "--format", "json", v2 ? "--standalone" : "--pure"});

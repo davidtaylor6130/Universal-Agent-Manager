@@ -106,7 +106,7 @@ UAM_TEST(OpenCodeTextWorkerSelectsCheckedLocalV2WithoutLegacyFlags)
 	UAM_ASSERT_EQ(argv.size(), std::size_t(5));
 	UAM_ASSERT_EQ(argv[1], std::string("--uam-opencode-v2-text-worker"));
 	UAM_ASSERT_EQ(argv[2], std::string("mock/demo/high"));
-	argv = original; version.installed_version = "2.2.0";
+	argv = original; version.installed_version = "2.3.0";
 	UAM_ASSERT(!runtime.PrepareLocalWorkerLaunch(app, profile, argv, error)); UAM_ASSERT_EQ(argv, original);
 	version.installed_version = "2.1.2"; version.execution_host.transport = "ssh";
 	UAM_ASSERT(!runtime.PrepareLocalWorkerLaunch(app, profile, argv, error)); UAM_ASSERT_EQ(argv, original);

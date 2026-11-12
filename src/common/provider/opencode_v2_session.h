@@ -43,11 +43,14 @@ inline bool IsVerifiedV2(std::string_view version)
 	{
 		std::array<unsigned long long, 3> parts{};
 		const char* cursor = text.data();
+		const char* const end = text.data() + text.size();
 		for (auto& part : parts)
 		{
-			const auto parsed = std::from_chars(cursor, text.data() + text.size(), part);
+			// Leading zeros ("2.02.6") are not a version OpenCode prints.
+			if (cursor != end && *cursor == '0' && cursor + 1 != end && *(cursor + 1) != '.') return std::optional<std::array<unsigned long long, 3>>{};
+			const auto parsed = std::from_chars(cursor, end, part);
 			if (parsed.ec != std::errc{}) return std::optional<std::array<unsigned long long, 3>>{};
-			cursor = parsed.ptr + 1;
+			cursor = parsed.ptr == end ? end : parsed.ptr + 1;
 		}
 		return std::optional{parts};
 	};
@@ -57,7 +60,8 @@ inline bool IsVerifiedV2(std::string_view version)
 /// <summary>Names the installed and supported versions for a refused V2 installation.</summary>
 inline std::string UnverifiedV2Message(std::string_view installed, std::string_view use)
 {
-	return "OpenCode " + strings::SafeLine(installed, 32) + " is installed, but UAM's " + std::string(use) + " is verified only for OpenCode V2 " +
+	const std::string shown = strings::SafeLine(installed, 32, true);
+	return "OpenCode " + (shown.empty() ? std::string("(unreported version)") : shown) + " is installed, but UAM's " + std::string(use) + " is verified only for OpenCode V2 " +
 	       std::string(kVerifiedV2Minimum) + " through " + std::string(kVerifiedV2Maximum) + ".";
 }
 

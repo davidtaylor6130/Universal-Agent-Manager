@@ -238,7 +238,7 @@ public:
 				// The running service, not the PATH check, is the protocol witness.
 				const Json info = Query("GET", "/api/info", nullptr);
 				version = info.contains("version") && info.at("version").is_string() ? info.at("version").get<std::string>() : std::string{};
-				if (!IsVerifiedV2(version)) throw std::runtime_error("The running OpenCode service is not a verified V2 protocol version. " + UnverifiedV2Message(version.empty() ? "(unreported)" : version, "native API adapter"));
+				if (!IsVerifiedV2(version)) throw std::runtime_error("The running OpenCode service is not a verified V2 protocol version. " + UnverifiedV2Message(version, "native API adapter"));
 				std::string config = Config();
 				if (!events.service.StartStdioProcessWithInput(events.fields, {}, {Curl(), "-q", "--silent", "--fail", "--no-buffer", "--noproxy", "*", "--proto", "=http", "--connect-timeout", "2", "--config", "-", url + "/api/event"}, config, nullptr)) break;
 				std::fill(config.begin(), config.end(), '\0');
