@@ -25,10 +25,10 @@ import {
   tokenizeChatSearchQuery,
 } from './chatSearch'
 import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../types/session'
-import { chatGridLeaves, chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
+import { chatGridLeaves, chatPaneColors, readChatGridLayout, setChatInLeaf, subscribeChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
 import { RowSubmenu } from './RowSubmenu'
-import { glideAfter, isSorting, startSortableDrag } from './sortableDrag'
+import { applyManualOrder, ChatSortContext, glideAfter, isSorting, startSortableDrag, type ChatSortList } from './sortableDrag'
 import { ChatSelectionContext, MenuDivider, SingleOnlyMenuItem, type ChatSelection } from './bulkActions'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import type { ResourceCollection } from '../../types/resourceCollection'
@@ -252,6 +252,14 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       element.classList.toggle('uam-sb-drop-target', element.dataset.dropCollectionId === collectionId)
     }
   }
+  const pinnedChatOrder = useAppStore((s) => s.sidebarPinnedChatOrder)
+  const activeChatOrder = useAppStore((s) => s.sidebarActiveChatOrder)
+  // Pinned and Active rows reach the latest drag and keyboard handlers through a stable context value.
+  const chatSortRef = useRef<{ start: (list: ChatSortList, sessionId: string, event: ReactPointerEvent<HTMLElement>) => void; move: (list: ChatSortList, sessionId: string, direction: -1 | 1) => void } | null>(null)
+  const chatSort = useMemo(() => ({
+    start: (list: ChatSortList, sessionId: string, event: ReactPointerEvent<HTMLElement>) => chatSortRef.current?.start(list, sessionId, event),
+    move: (list: ChatSortList, sessionId: string, direction: -1 | 1) => chatSortRef.current?.move(list, sessionId, direction),
+  }), [])
   // Written directly so announcing a drag never re-renders the whole tree.
   const moveStatusRef = useRef<HTMLDivElement>(null)
   const setMoveAnnouncement = (text: string) => { if (moveStatusRef.current) moveStatusRef.current.textContent = text }
@@ -851,9 +859,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     if (!target) return
     const ids = rows.map(({ folder }) => folder.id)
     ids.splice(sourceIndex + direction, 0, ...ids.splice(sourceIndex, 1))
-    const rowElements = () => Array.from(treeRef.current?.querySelectorAll<HTMLElement>('[data-sort-id]') ?? [])
-    const header = () => rowElements().find((row) => row.dataset.sortId === sourceId)?.querySelector<HTMLElement>('[data-workspace-id]')
-    void glideAfter(rowElements(), () => commitFolderMove(sourceId, target.folder.id, direction < 0 ? 'before' : 'after')).then((moved) => {
+    const row = () => sortRow(treeRef.current, sourceId)
+    const header = () => row()?.querySelector<HTMLElement>('[data-workspace-id]')
+    void glideAfter(row(), () => commitFolderMove(sourceId, target.folder.id, direction < 0 ? 'before' : 'after')).then((moved) => {
       if (!moved) return
       announcePosition(sourceId, ids)
       // Reordering moves DOM nodes, which can drop focus; keep it on the moved workspace.
@@ -890,6 +898,55 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     })
   }
 
+  const chatSortIds = { pinned: applyManualOrder(searchModel.pinnedSessionIds, pinnedChatOrder), active: applyManualOrder(searchModel.activeSessionIds, activeChatOrder) }
+  const chatListElement = (list: ChatSortList) => document.getElementById(list === 'pinned' ? 'pinned-chat-list' : 'active-chat-list')
+  const chatName = (sessionId: string) => sessionsById.get(sessionId)?.name || 'Chat'
+  const announceChatPosition = (sessionId: string, ids: readonly string[]) =>
+    setMoveAnnouncement(`${chatName(sessionId)} moved to position ${ids.indexOf(sessionId) + 1} of ${ids.length}`)
+  const showPaneDropTarget = (leafId: string | null) => {
+    for (const element of document.querySelectorAll<HTMLElement>('[data-leaf-id]')) element.toggleAttribute('data-pointer-drop', element.dataset.leafId === leafId)
+  }
+  const saveChatOrder = (list: ChatSortList, ids: string[]) => useAppStore.getState().setSidebarChatOrder(list, ids)
+  chatSortRef.current = {
+    start: (list, sessionId, event) => startSortableDrag(event, {
+      // Dragging a Pinned or Active chat onto a chat pane still opens it there, as dragging any chat row does.
+      targetAt: (x, y) => {
+        const leafId = document.elementFromPoint?.(x, y)?.closest<HTMLElement>('[data-leaf-id]')?.dataset.leafId
+        return leafId ? `pane:${leafId}` : null
+      },
+      onTargetChange: (target) => showPaneDropTarget(target?.slice('pane:'.length) ?? null),
+      onStart: () => setMoveAnnouncement(`Moving ${chatName(sessionId)}. Press Escape to cancel.`),
+      onCancel: () => setMoveAnnouncement(`Move of ${chatName(sessionId)} cancelled`),
+      onDrop: async ({ order, target }) => {
+        if (target !== null) {
+          writeChatGridLayout(setChatInLeaf(readChatGridLayout(), sessionId, target.slice('pane:'.length)))
+          useAppStore.getState().setActiveSession(sessionId)
+          setMoveAnnouncement(`${chatName(sessionId)} opened in the pane`)
+          return true
+        }
+        const saved = await saveChatOrder(list, order)
+        if (saved) announceChatPosition(sessionId, order)
+        return saved
+      },
+    }),
+    move: (list, sessionId, direction) => {
+      if (isSorting()) return
+      const ids = [...chatSortIds[list]]
+      const index = ids.indexOf(sessionId)
+      if (index < 0 || !ids[index + direction]) return
+      ids.splice(index + direction, 0, ...ids.splice(index, 1))
+      const row = () => sortRow(chatListElement(list), sessionId)
+      void glideAfter(row(), () => saveChatOrder(list, ids)).then((moved) => {
+        if (!moved) return
+        announceChatPosition(sessionId, ids)
+        const focusTarget = row()?.querySelector<HTMLElement>('[data-session-id]')
+        if (focusTarget && document.activeElement !== focusTarget) focusTarget.focus()
+      })
+    },
+  }
+  // Sorting is for the plain lists: search shows a filtered view, and the phone companion only browses.
+  const chatSortList = (list: ChatSortList) => searchModel.isSearching || companionContext ? undefined : list
+
   const renderActivitySessionItem = (id: string) => {
     const activitySession = sessionsById.get(id)
     const folder = folders.find((candidate) => candidate.id === activitySession?.folderId)
@@ -908,6 +965,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         activityHostLabel={`Runs on ${host?.label || hostId}`}
         activityHostRemote={SSH_ENABLED && hostId !== 'local'}
         onSessionClick={handleSessionClick} onSessionOpen={onSessionOpen}
+        sortList={chatSortList('active')}
       />
     )
   }
@@ -967,6 +1025,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   return (
     <SubagentSearchMatches.Provider value={searchModel.matchedSubagentChildIds}>
     <ChatSelectionContext.Provider value={chatSelection}>
+    <ChatSortContext.Provider value={chatSort}>
     <div ref={treeRef} className="select-none"
       onContextMenuCapture={(event) => { if (isCompanionContext()) { event.preventDefault(); event.stopPropagation() } }}
       onDragStartCapture={(event) => { if (isCompanionContext()) { event.preventDefault(); event.stopPropagation() } }}
@@ -1048,7 +1107,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             {...(!activeExpanded ? { inert: '' } : {})}
           >
             <div className="uam-sb-collapse__inner">
-              {activeList.mounted && searchModel.activeSessionIds.map(renderActivitySessionItem)}
+              {activeList.mounted && chatSortIds.active.map(renderActivitySessionItem)}
             </div>
           </div>
           {!activeExpanded && activeStatusCounts.attention > 0 && (
@@ -1099,8 +1158,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             {...(!pinnedExpanded ? { inert: '' } : {})}
           >
             <div className="uam-sb-collapse__inner">
-              {pinnedList.mounted && searchModel.pinnedSessionIds.map((id) => (
-                <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={rowSelection(id)} onSessionClick={handleSessionClick} onSessionOpen={onSessionOpen} />
+              {pinnedList.mounted && chatSortIds.pinned.map((id) => (
+                <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={rowSelection(id)} onSessionClick={handleSessionClick} onSessionOpen={onSessionOpen} sortList={chatSortList('pinned')} />
               ))}
             </div>
           </div>
@@ -1476,10 +1535,15 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       </DeleteConfirmDialog>
       <div ref={moveStatusRef} className="sr-only" role="status" aria-live="polite" data-testid="workspace-move-status" />
     </div>
+    </ChatSortContext.Provider>
     </ChatSelectionContext.Provider>
     </SubagentSearchMatches.Provider>
   )
 }
+
+/** The sortable row with `id` inside `scope`; chat ids can appear in both Pinned and Active, so callers scope the lookup. */
+const sortRow = (scope: ParentNode | null | undefined, id: string) =>
+  Array.from(scope?.querySelectorAll<HTMLElement>('[data-sort-id]') ?? []).find((row) => row.dataset.sortId === id)
 
 const COLLECTION_DRAG_TYPE = 'text/x-uam-collection-id'
 // dataTransfer values are unreadable during dragover, so valid drop targets read the dragged id from here.

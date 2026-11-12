@@ -1118,6 +1118,9 @@ struct AppSettings
 	std::string ui_theme = "focus";
 	bool show_provider_icons_in_sidebar = true;
 	bool show_worktree_path_in_sidebar = true;
+	// Manual sidebar order of Pinned and Active chat ids; empty keeps the default (most recent first).
+	std::vector<std::string> sidebar_pinned_chat_order;
+	std::vector<std::string> sidebar_active_chat_order;
 	bool steer_active_turn_on_send = false;
 	bool git_enabled = true;
 	bool git_auto_worktree = true;

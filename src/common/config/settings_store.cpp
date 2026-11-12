@@ -55,6 +55,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kUiThemeKey = "ui_theme";
 	constexpr std::string_view kShowProviderIconsInSidebarKey = "show_provider_icons_in_sidebar";
 	constexpr std::string_view kShowWorktreePathInSidebarKey = "show_worktree_path_in_sidebar";
+	constexpr std::string_view kSidebarPinnedChatOrderKey = "sidebar_pinned_chat_order";
+	constexpr std::string_view kSidebarActiveChatOrderKey = "sidebar_active_chat_order";
 	constexpr std::string_view kSteerActiveTurnOnSendKey = "steer_active_turn_on_send";
 	constexpr std::string_view kGitEnabledKey = "git_enabled";
 	constexpr std::string_view kGitAutoWorktreeKey = "git_auto_worktree";
@@ -685,6 +687,8 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteEncodedSetting(lines, kUiThemeKey, normalized.ui_theme);
 		WriteBoolSetting(lines, kShowProviderIconsInSidebarKey, normalized.show_provider_icons_in_sidebar);
 		WriteBoolSetting(lines, kShowWorktreePathInSidebarKey, normalized.show_worktree_path_in_sidebar);
+		WriteEncodedSetting(lines, kSidebarPinnedChatOrderKey, EncodeFavoriteUamAgentIds(normalized.sidebar_pinned_chat_order));
+		WriteEncodedSetting(lines, kSidebarActiveChatOrderKey, EncodeFavoriteUamAgentIds(normalized.sidebar_active_chat_order));
 		WriteBoolSetting(lines, kSteerActiveTurnOnSendKey, normalized.steer_active_turn_on_send);
 		WriteBoolSetting(lines, kGitEnabledKey, normalized.git_enabled);
 		WriteBoolSetting(lines, kGitAutoWorktreeKey, normalized.git_auto_worktree);
@@ -1235,6 +1239,14 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		else if (key == kNativeImportExcludedTitlePrefixesKey)
 		{
 			DecodeFavoriteUamAgentIds(decoded_value, settings.native_import_excluded_title_prefixes);
+		}
+		else if (key == kSidebarPinnedChatOrderKey)
+		{
+			DecodeFavoriteUamAgentIds(decoded_value, settings.sidebar_pinned_chat_order);
+		}
+		else if (key == kSidebarActiveChatOrderKey)
+		{
+			DecodeFavoriteUamAgentIds(decoded_value, settings.sidebar_active_chat_order);
 		}
 		else if (key == kNativeImportExcludedDirectoriesKey)
 		{

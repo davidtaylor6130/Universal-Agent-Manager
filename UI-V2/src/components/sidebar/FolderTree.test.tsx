@@ -13,7 +13,7 @@ const pointer = (target: EventTarget, type: string, clientX: number, clientY: nu
   target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY, button: 0, buttons: type === 'pointerup' ? 0 : 1 }))
 /** A drag swallows the click that follows its release until the next task; let that pass before later clicks. */
 const releaseClickGuard = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
-import { chatGridLeaves, defaultChatGridLayout, setChatInLeaf, splitChatLeaf, writeChatGridLayout } from '../../utils/chatGridStorage'
+import { chatGridLeaves, defaultChatGridLayout, readChatGridLayout, setChatInLeaf, splitChatLeaf, subscribeChatGridLayout, writeChatGridLayout, type ChatGridLayout } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -69,6 +69,8 @@ describe('FolderTree', () => {
       acpBindingBySessionId: {},
       cliTranscriptBySessionId: {},
       resourceCollections: [],
+      sidebarPinnedChatOrder: [],
+      sidebarActiveChatOrder: [],
 	  executionHosts: [
 		{ id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
 	  ],
@@ -1093,6 +1095,111 @@ describe('FolderTree', () => {
     expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Project removed from its collection')
 
     await releaseClickGuard()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('reorders Pinned chats by drag and keeps the saved order', async () => {
+    const settled = new Date(now).toISOString()
+    useAppStore.setState({
+      sessions: [1, 2, 3].map((index) => ({ ...makeSession(index), isPinned: true, settledAt: settled })),
+      sidebarPinnedChatOrder: [],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const pinned = () => [...host.querySelectorAll<HTMLElement>('#pinned-chat-list [data-sort-id]')]
+    // No saved order yet: the default, most recent first.
+    expect(pinned().map((row) => row.dataset.sortId)).toEqual(['chat-1', 'chat-2', 'chat-3'])
+    pinned().forEach((row, index) => stubRect(row, index * 30, 30))
+    const [first, second, third] = pinned()
+    // Pinned rows drag by pointer, not by the native split-pane drag.
+    expect(first.draggable).toBe(false)
+
+    act(() => pointer(first.querySelector('[data-session-id]')!, 'pointerdown', 10, 10))
+    act(() => pointer(document, 'pointermove', 10, 85))
+    expect(second.style.transform).toBe('translate3d(0, -30px, 0)')
+    expect(third.style.transform).toBe('translate3d(0, -30px, 0)')
+    await act(async () => { pointer(document, 'pointerup', 10, 85); await Promise.resolve() })
+
+    expect(useAppStore.getState().sidebarPinnedChatOrder).toEqual(['chat-2', 'chat-3', 'chat-1'])
+    expect(pinned().map((row) => row.dataset.sortId)).toEqual(['chat-2', 'chat-3', 'chat-1'])
+    expect(first.style.transform).toBe('')
+    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Chat 1 moved to position 3 of 3')
+    // Workspace chats keep their time order and native drag.
+    expect((host.querySelector('[data-testid="folder-row-project"] [data-session-id="chat-1"]')?.parentElement as HTMLElement).draggable).toBe(true)
+    await releaseClickGuard()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('moves an Active chat with Arrow keys, announces it and keeps focus', async () => {
+    // Recent unsettled work puts both chats in Active.
+    const recent = (index: number) => { const at = new Date(Date.now() - index * 60_000); return { ...makeSession(index), createdAt: at, updatedAt: at, lastOpenedAt: at } }
+    useAppStore.setState({ sessions: [recent(1), recent(2)], sidebarActiveChatOrder: [] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const active = () => [...host.querySelectorAll<HTMLElement>('#active-chat-list [data-sort-id]')].map((row) => row.dataset.sortId)
+    expect(active()).toEqual(['chat-1', 'chat-2'])
+    const row = host.querySelector<HTMLElement>('#active-chat-list [data-session-id="chat-1"]')!
+    expect(row.getAttribute('aria-keyshortcuts')).toBe('ArrowUp ArrowDown')
+    row.focus()
+
+    await act(async () => { row.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); await Promise.resolve() })
+    expect(useAppStore.getState().sidebarActiveChatOrder).toEqual(['chat-2', 'chat-1'])
+    expect(active()).toEqual(['chat-2', 'chat-1'])
+    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Chat 1 moved to position 2 of 2')
+    expect((document.activeElement as HTMLElement | null)?.dataset.sessionId).toBe('chat-1')
+
+    // The last row has nowhere further down to go.
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); await Promise.resolve() })
+    expect(active()).toEqual(['chat-2', 'chat-1'])
+
+    // Search shows a filtered view, so rows are not sortable there.
+    act(() => root.render(<FolderTree searchQuery="Chat" />))
+    expect(host.querySelector('#active-chat-list [data-sort-id]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('opens a dragged Pinned chat in the pane it is dropped on', async () => {
+    const settled = new Date(now).toISOString()
+    const setActiveSession = vi.fn()
+    useAppStore.setState({ sessions: [1, 2].map((index) => ({ ...makeSession(index), isPinned: true, settledAt: settled })), setActiveSession })
+    const layouts: ChatGridLayout[] = []
+    const unsubscribe = subscribeChatGridLayout((layout) => layouts.push(layout))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const leafId = chatGridLeaves(readChatGridLayout().root)[0].id
+    const pane = document.createElement('div')
+    pane.dataset.leafId = leafId
+    document.body.appendChild(pane)
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => pane })
+    try {
+      const row = host.querySelector<HTMLElement>('#pinned-chat-list [data-sort-id="chat-2"]')!
+      act(() => pointer(row.querySelector('[data-session-id]')!, 'pointerdown', 10, 10))
+      act(() => pointer(document, 'pointermove', 400, 10))
+      expect(pane.hasAttribute('data-pointer-drop')).toBe(true)
+      await act(async () => { pointer(document, 'pointerup', 400, 10); await Promise.resolve() })
+      expect(pane.hasAttribute('data-pointer-drop')).toBe(false)
+    } finally {
+      delete (document as { elementFromPoint?: unknown }).elementFromPoint
+      pane.remove()
+    }
+    unsubscribe()
+    expect(chatGridLeaves(layouts.at(-1)!.root)[0].sessionId).toBe('chat-2')
+    expect(setActiveSession).toHaveBeenCalledWith('chat-2')
+    expect(useAppStore.getState().sidebarPinnedChatOrder).toEqual([])
+    await releaseClickGuard()
+    useAppStore.setState({ setActiveSession: originalSetActiveSession })
+
     act(() => root.unmount())
     host.remove()
   })

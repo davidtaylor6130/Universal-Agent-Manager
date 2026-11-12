@@ -118,6 +118,8 @@ function deserializeState(
     runnerProtocolVersion: number
     showProviderIconsInSidebar: boolean
     showWorktreePathInSidebar: boolean
+    sidebarPinnedChatOrder: string[]
+    sidebarActiveChatOrder: string[]
     steerActiveTurnOnSend: boolean
     gitEnabled?: boolean
     svnEnabled?: boolean
@@ -340,6 +342,8 @@ function deserializeState(
     runnerProtocolVersion: cpp.runnerProtocolVersion || existing.runnerProtocolVersion,
     showProviderIconsInSidebar: cpp.settings.showProviderIconsInSidebar ?? true,
     showWorktreePathInSidebar: cpp.settings.showWorktreePathInSidebar ?? true,
+    sidebarPinnedChatOrder: cpp.settings.sidebarPinnedChatOrder ?? [],
+    sidebarActiveChatOrder: cpp.settings.sidebarActiveChatOrder ?? [],
     steerActiveTurnOnSend: cpp.settings.steerActiveTurnOnSend ?? false,
     gitEnabled: typeof cpp.settings.gitEnabled === 'boolean' ? cpp.settings.gitEnabled : true,
     svnEnabled: typeof cpp.settings.svnEnabled === 'boolean' ? cpp.settings.svnEnabled : true,
@@ -585,6 +589,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     acpTurnOutputLimitMiB: patch.settings?.acpTurnOutputLimitMiB ?? current.acpTurnOutputLimitMiB,
     showProviderIconsInSidebar: patch.settings?.showProviderIconsInSidebar ?? current.showProviderIconsInSidebar,
     showWorktreePathInSidebar: patch.settings?.showWorktreePathInSidebar ?? current.showWorktreePathInSidebar,
+    sidebarPinnedChatOrder: patch.settings?.sidebarPinnedChatOrder ?? current.sidebarPinnedChatOrder,
+    sidebarActiveChatOrder: patch.settings?.sidebarActiveChatOrder ?? current.sidebarActiveChatOrder,
     steerActiveTurnOnSend: patch.settings?.steerActiveTurnOnSend ?? current.steerActiveTurnOnSend,
     gitEnabled: typeof patch.settings?.gitEnabled === 'boolean' ? patch.settings.gitEnabled : current.gitEnabled,
     svnEnabled: typeof patch.settings?.svnEnabled === 'boolean' ? patch.settings.svnEnabled : current.svnEnabled,
@@ -851,6 +857,8 @@ export const useAppStore = create<AppState>((set, get) => {
           runnerProtocolVersion: current.runnerProtocolVersion,
           showProviderIconsInSidebar: current.showProviderIconsInSidebar,
           showWorktreePathInSidebar: current.showWorktreePathInSidebar,
+          sidebarPinnedChatOrder: current.sidebarPinnedChatOrder,
+          sidebarActiveChatOrder: current.sidebarActiveChatOrder,
           steerActiveTurnOnSend: current.steerActiveTurnOnSend,
         gitEnabled: current.gitEnabled,
         svnEnabled: current.svnEnabled,
@@ -1364,6 +1372,8 @@ export const useAppStore = create<AppState>((set, get) => {
       runnerProtocolVersion: current.runnerProtocolVersion,
       showProviderIconsInSidebar: current.showProviderIconsInSidebar,
       showWorktreePathInSidebar: current.showWorktreePathInSidebar,
+      sidebarPinnedChatOrder: current.sidebarPinnedChatOrder,
+      sidebarActiveChatOrder: current.sidebarActiveChatOrder,
       steerActiveTurnOnSend: current.steerActiveTurnOnSend,
       gitEnabled: current.gitEnabled,
       svnEnabled: current.svnEnabled,

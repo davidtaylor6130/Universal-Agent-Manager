@@ -50,7 +50,7 @@ it('commits chat selection within 250ms with 1,000 mounted sidebar rows', () => 
 }, 30_000)
 
 
-it('follows the pointer within the input budget while dragging a workspace among 600 chats', () => {
+it('follows the pointer within the input budget while dragging a workspace or an Active chat among 600 chats', () => {
   vi.useRealTimers()
   const initial = useAppStore.getState()
   const now = new Date()
@@ -66,7 +66,7 @@ it('follows the pointer within the input budget while dragging a workspace among
     target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 10, clientY: y, button: 0, buttons: type === 'pointerup' ? 0 : 1 }))
   try {
     act(() => root.render(<FolderTree searchQuery="" />))
-    const rows = [...host.querySelectorAll<HTMLElement>('[data-sort-id]')]
+    const rows = [...host.querySelectorAll<HTMLElement>('[data-testid^="folder-row-"]')]
     expect(rows).toHaveLength(120)
     rows.forEach((row, index) => vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({ top: index * 150, bottom: index * 150 + 150, height: 150, left: 0, right: 200, width: 200, x: 0, y: index * 150, toJSON: () => ({}) }))
     act(() => move('pointerdown', 10, host.querySelector('[data-testid="folder-header-drag-perf-0"]')!))
@@ -74,6 +74,18 @@ it('follows the pointer within the input budget while dragging a workspace among
       expectWithinBudget('workspace drag pointer move', INPUT_BUDGET_MS, () => act(() => move('pointermove', 10 + step * 250)))
     }
     expect(rows[1].style.transform).toBe('translate3d(0, -150px, 0)')
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    act(() => move('pointerup', 10))
+
+    // The same 600 recent chats fill Active chats; dragging one stays within the input budget too.
+    const activeRows = [...host.querySelectorAll<HTMLElement>('#active-chat-list [data-sort-id]')]
+    expect(activeRows).toHaveLength(600)
+    activeRows.forEach((row, index) => vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({ top: index * 40, bottom: index * 40 + 40, height: 40, left: 0, right: 200, width: 200, x: 0, y: index * 40, toJSON: () => ({}) }))
+    act(() => move('pointerdown', 10, activeRows[0].querySelector('[data-session-id]')!))
+    for (let step = 1; step <= 30; step++) {
+      expectWithinBudget('active chat drag pointer move', INPUT_BUDGET_MS, () => act(() => move('pointermove', 10 + step * 400)))
+    }
+    expect(activeRows[1].style.transform).toBe('translate3d(0, -40px, 0)')
     act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
     act(() => move('pointerup', 10))
   } finally {

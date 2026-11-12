@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sortPreview } from './sortableDrag'
+import { applyManualOrder, sortPreview } from './sortableDrag'
 
 const rows = [
   { id: 'a', top: 100, height: 20 },
@@ -36,5 +36,20 @@ describe('sortPreview', () => {
     expect(offsets.get('c')).toBe(-80)
     expect(offsets.get('a')).toBe(20)
     expect(offsets.get('b')).toBe(20)
+  })
+})
+
+describe('applyManualOrder', () => {
+  it('keeps the default order until the user saves one', () => {
+    expect(applyManualOrder(['c', 'b', 'a'], [])).toEqual(['c', 'b', 'a'])
+  })
+
+  it('puts saved ids in their saved order and new ids on top in default order', () => {
+    // d and e are new pins or newly active chats; a, b, c were placed by the user.
+    expect(applyManualOrder(['e', 'a', 'd', 'b', 'c'], ['b', 'c', 'a'])).toEqual(['e', 'd', 'b', 'c', 'a'])
+  })
+
+  it('ignores saved ids that are not in the list', () => {
+    expect(applyManualOrder(['a', 'b'], ['gone', 'b', 'a'])).toEqual(['b', 'a'])
   })
 })

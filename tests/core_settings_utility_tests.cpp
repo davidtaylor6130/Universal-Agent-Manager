@@ -3089,6 +3089,35 @@ UAM_TEST(SettingsStorePersistsProviderChatDefaults)
 	}
 }
 
+UAM_TEST(SettingsStorePersistsSidebarChatOrder)
+{
+	TempDir temp("uam-sidebar-chat-order-settings");
+	const fs::path settings_file = temp.root / "settings.txt";
+	AppSettings defaults;
+	UAM_ASSERT(defaults.sidebar_pinned_chat_order.empty());
+	UAM_ASSERT(defaults.sidebar_active_chat_order.empty());
+	AppSettings settings;
+	settings.sidebar_pinned_chat_order = {" chat-b ", "chat-a", "", "chat-b"};
+	settings.sidebar_active_chat_order = {"chat-c", std::string(300, 'x'), "chat-a"};
+
+	UAM_ASSERT(SettingsStore::Save(settings_file, settings));
+	AppSettings loaded;
+	SettingsStore::Load(settings_file, loaded);
+
+	UAM_ASSERT_EQ(loaded.sidebar_pinned_chat_order, std::vector<std::string>({"chat-b", "chat-a"}));
+	UAM_ASSERT_EQ(loaded.sidebar_active_chat_order, std::vector<std::string>({"chat-c", "chat-a"}));
+	const nlohmann::json frontend = uam::settings_frontend_json::SerializeCommonSettingsFields(loaded);
+	UAM_ASSERT_EQ(frontend["sidebarPinnedChatOrder"], nlohmann::json::array({"chat-b", "chat-a"}));
+	UAM_ASSERT_EQ(frontend["sidebarActiveChatOrder"], nlohmann::json::array({"chat-c", "chat-a"}));
+
+	// A settings file from before manual ordering loads with the default order.
+	AppSettings legacy;
+	SettingsStore::Save(settings_file, AppSettings{});
+	SettingsStore::Load(settings_file, legacy);
+	UAM_ASSERT(legacy.sidebar_pinned_chat_order.empty());
+	UAM_ASSERT(legacy.sidebar_active_chat_order.empty());
+}
+
 UAM_TEST(SettingsStorePersistsNativeImportFilters)
 {
 	TempDir temp("uam-native-import-filters-settings");

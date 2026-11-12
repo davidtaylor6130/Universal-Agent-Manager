@@ -1,3 +1,4 @@
+import { createContext } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { motionAllowed, scaledMs } from '../ui/Overlay'
 
@@ -28,6 +29,26 @@ export function sortPreview(rows: readonly SortRow[], draggedId: string, probeY:
   }
   return { order, offsets }
 }
+
+/**
+ * Applies a saved manual order to a list's default order. Ids the user has not placed yet (new pins, chats newly
+ * active) stay on top in their default order; placed ids follow in the saved order. An empty save is the default.
+ * ponytail: an id that leaves the list keeps its saved slot until the next reorder saves the visible list.
+ */
+export function applyManualOrder(ids: readonly string[], saved: readonly string[]): readonly string[] {
+  if (saved.length === 0) return ids
+  const rank = new Map(saved.map((id, index) => [id, index]))
+  const fresh = ids.filter((id) => !rank.has(id))
+  const placed = ids.filter((id) => rank.has(id)).sort((a, b) => rank.get(a)! - rank.get(b)!)
+  return [...fresh, ...placed]
+}
+
+export type ChatSortList = 'pinned' | 'active'
+/** Lets a chat row in Pinned or Active start a drag or a keyboard move without the sidebar passing callbacks per row. */
+export const ChatSortContext = createContext<{
+  start: (list: ChatSortList, sessionId: string, event: ReactPointerEvent<HTMLElement>) => void
+  move: (list: ChatSortList, sessionId: string, direction: -1 | 1) => void
+} | null>(null)
 
 export interface SortableDrop {
   /** Sibling ids in their new order (unchanged when dropped on a target). */
@@ -292,7 +313,8 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
       if (settled) return
       settled = true
       if (!saved) { settleBack(); return }
-      if (dropTarget !== null) { finish(); return }
+      // A row that moved elsewhere (into a collection) is gone from this list; one that stayed (opened in a pane) glides home.
+      if (dropTarget !== null) { if (row.isConnected && siblingsOf(row).length === rows.length) settleBack(); else finish(); return }
       afterOrder(rows, order, (shown) => {
         if (!shown) { settleBack(); return }
         // The DOM now matches what the transforms showed, so dropping them changes nothing on screen.
@@ -311,14 +333,14 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
   win.addEventListener('blur', cancel)
 }
 
-/** Glides rows from their old positions after a keyboard move commits; reduced motion moves them at once. */
-export function glideAfter(rows: readonly HTMLElement[], commit: () => Promise<boolean>) {
-  const before = new Map(rows.map((row) => [sortId(row), row.getBoundingClientRect().top]))
-  const doc = rows[0]?.ownerDocument
+/** Glides `row` and its siblings from their old positions after a keyboard move commits; reduced motion moves them at once. */
+export function glideAfter(row: HTMLElement | undefined, commit: () => Promise<boolean>) {
+  const parent = row?.parentElement
+  const before = new Map((row ? siblingsOf(row) : []).map((element) => [sortId(element), element.getBoundingClientRect().top]))
   return commit().then((saved) => {
-    if (!saved || !doc || !motionAllowed() || typeof HTMLElement.prototype.animate !== 'function') return saved
+    if (!saved || !parent || !motionAllowed() || typeof HTMLElement.prototype.animate !== 'function') return saved
     requestAnimationFrame(() => {
-      for (const element of doc.querySelectorAll<HTMLElement>('[data-sort-id]')) {
+      for (const element of parent.children as HTMLCollectionOf<HTMLElement>) {
         const top = before.get(sortId(element))
         const dy = top === undefined ? 0 : top - element.getBoundingClientRect().top
         // Web Animations cannot read CSS variables; these mirror --dur-base and --ease-out-soft.
