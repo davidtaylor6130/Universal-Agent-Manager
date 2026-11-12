@@ -2824,7 +2824,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           />
           <SettingRow
             title="Cheaper goal reviewer"
-            description="Reviews use the reviewer or low-cost model."
+            description="Reviews run on a low-cost model; checks are weaker."
             control={<Switch hideLabel label="Cheaper goal reviewer" checked={goalCheaperReviewer} onChange={(event) => void setGoalCheaperReviewer(event.currentTarget.checked)} />}
           />
           <SettingRow

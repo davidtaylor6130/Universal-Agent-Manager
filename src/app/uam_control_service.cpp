@@ -1881,12 +1881,17 @@ namespace uam
 			return tools;
 		}
 
+		bool ToolHidden(std::string_view hidden, std::string_view name)
+		{
+			return ("," + std::string(hidden) + ",").find("," + std::string(name) + ",") != std::string::npos;
+		}
+
 		/// <summary>The tool list minus the comma-separated names this session cannot use, fixed for the session.</summary>
 		nlohmann::json VisibleTools(std::string_view hidden)
 		{
-			nlohmann::json tools = Tools();
-			const std::string list = "," + std::string(hidden) + ",";
-			std::erase_if(tools, [&](const nlohmann::json& tool) { return list.find("," + tool.value("name", "") + ",") != std::string::npos; });
+			nlohmann::json tools = nlohmann::json::array();
+			for (nlohmann::json& tool : Tools())
+				if (!ToolHidden(hidden, tool.value("name", ""))) tools.push_back(std::move(tool));
 			return tools;
 		}
 
@@ -2125,6 +2130,12 @@ namespace uam
 				else
 				{
 					const std::string name = request["params"]["name"].get<std::string>();
+					if (ToolHidden(uam::env::GetNonEmptyString(kHiddenToolsEnvironment).value_or(""), name))
+					{
+						response["error"] = {{"code", -32602}, {"message", "This UAM tool is not available in this session."}};
+						std::cout << response.dump() << '\n' << std::flush;
+						continue;
+					}
 					const bool wait_call = name == "agent_wait";
 					if (wait_call) input.BeginWait(id);
 					std::string wait_request_id;

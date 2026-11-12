@@ -906,23 +906,33 @@ UAM_TEST(GoalServiceUsesTheNormalChatModelWhenArchitectModeIsOff)
 	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal), std::string("smart-reviewer"));
 }
 
-UAM_TEST(GoalCheaperReviewerSettingPicksAReviewerOrLowCostModel)
+UAM_TEST(GoalCheaperReviewerSettingPicksTheLowCostModelTheSessionAdvertises)
 {
 	AppSettings settings;
 	ChatSession chat;
 	chat.provider_id = "claude-cli";
 	chat.model_id = "opus";
+	chat.reviewer_model_id = "smart-reviewer"; // the small-model reviewer is not the cheaper one
 	Goal goal;
 	// Off by default: the reviewer stays on the chat model.
 	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal), std::string("opus"));
 	settings.goal_cheaper_reviewer = true;
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal), std::string("haiku"));
+	// A session whose model list lacks the low-cost name keeps the chat model instead of failing the review.
+	uam::AcpSessionState session;
+	uam::AcpConfigOptionState option;
+	option.id = "model";
+	option.category = "model";
+	uam::AcpConfigOptionChoiceState choice;
+	choice.value = "opus";
+	option.choices.push_back(choice);
+	session.available_config_options.push_back(option);
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal, &session), std::string("opus"));
+	choice.value = "haiku";
+	session.available_config_options.front().choices.push_back(choice);
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal, &session), std::string("haiku"));
 #endif
-	settings.provider_chat_defaults["claude-cli"].reviewer_model_id = "sonnet";
-	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal), std::string("sonnet"));
-	chat.reviewer_model_id = "chosen-reviewer";
-	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal), std::string("chosen-reviewer"));
 	// A provider without a low-cost model keeps the chat model.
 	ChatSession other;
 	other.provider_id = "antigravity-cli";
@@ -937,6 +947,7 @@ UAM_TEST(GoalReviewPromptCarriesCappedWorkspaceChangesAndAcceptedGitReads)
 	const std::string summary = uam::GoalService::SummarizeWorkspaceChanges(files);
 	UAM_ASSERT(summary.size() <= 2048 + 64);
 	UAM_ASSERT(summary.find("M src/file_0.cpp +0 -1\n") != std::string::npos);
+	UAM_ASSERT(uam::GoalService::SummarizeWorkspaceChanges({{"a.txt", "A", 0, 0}}) == "A a.txt\n"); // no counts without line stats
 	UAM_ASSERT(summary.find("more changed files") != std::string::npos);
 	UAM_ASSERT(uam::GoalService::SummarizeWorkspaceChanges({}).empty());
 	Goal goal;

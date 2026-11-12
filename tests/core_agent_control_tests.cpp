@@ -1106,7 +1106,9 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 		UAM_ASSERT_EQ(server.value("name", ""), std::string("uam-control"));
 		UAM_ASSERT_EQ(server["args"].size(), static_cast<std::size_t>(1));
 		UAM_ASSERT_EQ(server["args"][0].get<std::string>(), std::string("--uam-control-mcp"));
-		UAM_ASSERT_EQ(server["env"].size(), static_cast<std::size_t>(1));
+		// The capability directory comes first; a hidden-tool list may follow (e.g. builds without Computer Use).
+		UAM_ASSERT(!server["env"].empty() && server["env"].size() <= static_cast<std::size_t>(2));
+		UAM_ASSERT_EQ(server["env"][0].value("name", ""), std::string("UAM_CONTROL_CAPABILITY_DIR"));
 		UAM_ASSERT(server["args"].dump().find(server["env"][0].value("value", "")) == std::string::npos);
 		return raw_session->uam_control_capability_id;
 	};

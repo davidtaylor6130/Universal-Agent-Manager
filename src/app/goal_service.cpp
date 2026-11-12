@@ -5,6 +5,8 @@
 #include "common/chat/chat_repository.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/provider/provider_runtime.h"
+#include "common/runtime/acp/acp_model_json.h"
+#include "common/utils/range_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_internal.h"
@@ -206,15 +208,22 @@ std::string GoalService::WorkerModelId(const ChatSession& chat, const Goal& goal
 	return chat.small_model_mode ? uam::strings::NonEmptyOrFallback(goal.worker_model_id, chat.model_id) : chat.model_id;
 }
 
-std::string GoalService::ReviewerModelId(const AppSettings& settings, const ChatSession& chat, const Goal& goal)
+std::string GoalService::ReviewerModelId(const AppSettings& settings, const ChatSession& chat, const Goal& goal, const AcpSessionState* session)
 {
 	if (chat.small_model_mode) return uam::strings::NonEmptyOrFallback(goal.reviewer_model_id, chat.model_id);
 	if (!settings.goal_cheaper_reviewer) return chat.model_id;
-	// A chosen reviewer model wins; otherwise the provider's low-cost side-work model, then the chat model.
-	const ProviderChatDefaults defaults = uam::provider_chat_defaults::ForProvider(settings, chat.provider_id, chat.execution_host_id);
-	std::string model = uam::strings::NonEmptyOrFallback(chat.reviewer_model_id, defaults.reviewer_model_id);
-	if (model.empty()) model = std::string(ProviderRuntimeRegistry::ResolveById(chat.provider_id).DefaultTextWorkerModel());
-	return uam::strings::NonEmptyOrFallback(model, chat.model_id);
+	// The small-model reviewer is usually the stronger model, so the cheaper reviewer uses the provider's
+	// low-cost side-work model directly.
+	const std::string model(ProviderRuntimeRegistry::ResolveById(chat.provider_id).DefaultTextWorkerModel());
+	if (model.empty()) return chat.model_id;
+	if (session != nullptr)
+	{
+		const auto option = std::ranges::find_if(session->available_config_options, [](const AcpConfigOptionState& value)
+		{ return value.category == "model" || value.id == "model"; });
+		if (option != session->available_config_options.end() && !uam::ranges::Contains(uam::acp_models::ConfigModelIds(*option), model))
+			return chat.model_id;
+	}
+	return model;
 }
 
 std::size_t GoalService::PauseActiveGoalsAfterRestart(AppState& app, std::size_t* failed_out)
@@ -1077,7 +1086,7 @@ std::string GoalService::SummarizeWorkspaceChanges(const std::vector<std::tuple<
 	for (const auto& [path, status, added, deleted] : files)
 	{
 		std::string line = uam::strings::NonEmptyOrFallback(status, "M") + " " + uam::strings::SafeLine(path, 300) +
-		    " +" + std::to_string(added) + " -" + std::to_string(deleted) + "\n";
+		    (added > 0 || deleted > 0 ? " +" + std::to_string(added) + " -" + std::to_string(deleted) : std::string{}) + "\n";
 		if (out.size() + line.size() > kMaxBytes) break;
 		out += line;
 		++listed;

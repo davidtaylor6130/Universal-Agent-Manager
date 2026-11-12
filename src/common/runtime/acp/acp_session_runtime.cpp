@@ -2192,7 +2192,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				{
 					const std::string terminal_prompt = GoalService::BuildReadOnlyTerminalPrompt(*terminal_goal);
 					// The provider keeps this text in its history, so send it once per goal state and provider process.
-					const std::string delivery = terminal_prompt.empty() ? std::string{} : provider_setup::Digest(terminal_prompt);
+					const std::string delivery = terminal_prompt.empty() ? std::string{} : session.session_id + ":" + provider_setup::Digest(terminal_prompt);
 					session.pending_terminal_goal_delivery.clear();
 					if (!terminal_prompt.empty() && session.terminal_goal_delivery != delivery)
 					{
@@ -2690,7 +2690,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			                       ? GoalService::FindActiveGoal(app, chat.id)
 			                       : GoalService::FindGoalById(app, chat.id, first.goal_id);
 			const std::string turn_model_id = goal != nullptr && chat.small_model_mode && goal->loop_count == 0
-			    ? GoalService::ReviewerModelId(app.settings, chat, *goal)
+			    ? GoalService::ReviewerModelId(app.settings, chat, *goal, &session)
 			    : goal != nullptr ? GoalService::WorkerModelId(chat, *goal) : chat.model_id;
 			const std::string desired_mode = uam::approval_modes::EffectiveProviderMode(
 			    first.uam_agent_workspace_access == "read" ? uam::approval_modes::kPlanApprovalMode : chat.approval_mode,
