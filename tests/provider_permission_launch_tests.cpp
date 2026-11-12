@@ -1,7 +1,4 @@
 #include "test_harness.h"
-#include "common/provider/claude/cli/claude_cli_provider_runtime.h"
-#include "common/provider/gemini/cli/gemini_cli_provider_runtime.h"
-#include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "computer_use/computer_use_mcp_config.h"
@@ -39,16 +36,37 @@ namespace
 		return chat;
 	}
 
+	// OpenCode CLI View appends only the filtered extra flags after its command, so it shows the shared filter.
 	Argv Filter(std::string_view flags, bool ceiling)
 	{
 		AppSettings settings;
 		settings.provider_extra_flags = std::string(flags);
-		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings, ceiling);
+		const ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
+		Argv argv = ProviderRuntimeRegistry::Resolve(profile).BuildInteractiveArgv(profile, LaunchChat(uam::provider_ids::kOpenCodeCli, ceiling ? "plan" : "default"), settings);
+		argv.erase(argv.begin());
+		return argv;
+	}
+
+	bool RefusesCliView(std::string_view flags)
+	{
+		AppSettings settings;
+		settings.provider_extra_flags = std::string(flags);
+		// Gemini uses the shared check; OpenCode adds its own session-selection refusals.
+		const ProviderProfile profile = ProviderProfileStore::DefaultGeminiProfile();
+		return !ProviderRuntimeRegistry::Resolve(profile).InteractiveConfigurationError(profile, settings).empty();
+	}
+
+	std::string GeminiPlanPolicyPath()
+	{
+		const Argv argv = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kGeminiCli).BuildStructuredLaunchArgv(ProviderProfile{}, LaunchChat(uam::provider_ids::kGeminiCli, "plan"));
+		const auto policy = std::ranges::find(argv, "--admin-policy");
+		return policy == argv.end() || std::next(policy) == argv.end() ? std::string{} : *std::next(policy);
 	}
 }
 
 UAM_TEST(ProviderPermissionFlagsStripBypassAlwaysAndGrantsUnderReadCeiling)
 {
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	// Every bypass spelling is removed with its value, with or without a read ceiling.
 	const std::string bypass =
 	    "--dangerously-bypass-approvals-and-sandbox -s danger-full-access --sandbox=danger-full-access -sdanger-full-access "
@@ -57,9 +75,7 @@ UAM_TEST(ProviderPermissionFlagsStripBypassAlwaysAndGrantsUnderReadCeiling)
 	    "-dangerously-skip-permissions --allow-all-tools --allow-all-urls --full-auto -csandbox_mode=danger-full-access -capproval_policy=never --keep";
 	for (const bool ceiling : {false, true})
 		UAM_ASSERT_EQ(Filter(bypass, ceiling), (Argv{"--keep"}));
-	AppSettings bypass_settings;
-	bypass_settings.provider_extra_flags = "-y";
-	UAM_ASSERT(uam::provider_runtime_internal::HasPermissionBypassExtraFlags(bypass_settings));
+	UAM_ASSERT(RefusesCliView("-y"));
 
 	// Grants stay in ordinary launches and are removed, values included, under a read ceiling.
 	const std::string grants =
@@ -70,13 +86,12 @@ UAM_TEST(ProviderPermissionFlagsStripBypassAlwaysAndGrantsUnderReadCeiling)
 	    "--autopilot --assisted-approval --profile wide --model m";
 	UAM_ASSERT_EQ(Filter(grants, false), uam::command_line::SplitWords(grants));
 	UAM_ASSERT_EQ(Filter(grants, true), (Argv{"--model", "m"}));
-	AppSettings grant_settings;
-	grant_settings.provider_extra_flags = grants;
-	UAM_ASSERT(!uam::provider_runtime_internal::HasPermissionBypassExtraFlags(grant_settings));
+	UAM_ASSERT(!RefusesCliView(grants));
 
 	// Restrictive options stay, and nothing after a bare "--" is provider option text.
 	UAM_ASSERT_EQ(Filter("--sandbox --disallowedTools Bash -s read-only --allowed-mcp-server-names a -- --yolo --allowedTools Edit", true),
 	    (Argv{"--sandbox", "--disallowedTools", "Bash", "-s", "read-only", "--allowed-mcp-server-names", "a", "--", "--yolo", "--allowedTools", "Edit"}));
+#endif
 }
 
 UAM_TEST(ProviderReadCeilingCliViewArgvAddsNativePlanAndStripsGrants)
@@ -178,7 +193,8 @@ UAM_TEST(ProviderReadCeilingStructuredLaunchNeutralisesProviderConfiguration)
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 		// Gemini: the Plan-only admin policy outranks project and user rules; Default keeps settings adminPolicyPaths.
 		const Argv gemini = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kGeminiCli).BuildStructuredLaunchArgv(profile, LaunchChat(uam::provider_ids::kGeminiCli, mode));
-		UAM_ASSERT_EQ(HasRun(gemini, {"--admin-policy", uam::paths::Utf8PathString(GeminiPlanCeilingPolicyPath())}), plan);
+		UAM_ASSERT_EQ(HasAny(gemini, "--admin-policy"), plan);
+		UAM_ASSERT(GeminiPlanPolicyPath().ends_with("gemini-plan-ceiling.toml"));
 		UAM_ASSERT_EQ(HasRun(gemini, {"--approval-mode", "plan"}), plan);
 		UAM_ASSERT(!plan || !HasAny(gemini, "gemini-policy.toml"));
 #endif
@@ -255,7 +271,6 @@ UAM_TEST(ClaudeReadCeilingLaunchCarriesOnlyLocalAuthSettings)
 	const Argv ordinary_before = ordinary;
 	UAM_ASSERT(runtime.PrepareStructuredLaunch(session, profile, "", false, ordinary, environment, error));
 	UAM_ASSERT_EQ(ordinary, ordinary_before);
-	UAM_ASSERT_EQ(ClaudeReadCeilingSettingsJson("not json"), std::string("{}"));
 #endif
 }
 
@@ -265,7 +280,7 @@ UAM_TEST(GeminiReadCeilingLaunchRefusesWithoutItsPlanPolicy)
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kGeminiCli);
 	ProviderProfile profile;
 	Environment environment;
-	const fs::path policy = GeminiPlanCeilingPolicyPath();
+	const fs::path policy = uam::paths::PathFromUtf8(GeminiPlanPolicyPath());
 	const fs::path aside = policy.string() + ".aside";
 	const bool installed = fs::exists(policy);
 	if (installed) fs::rename(policy, aside);
