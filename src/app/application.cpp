@@ -976,7 +976,12 @@ bool Application::InitializeState()
 bool Application::InitializeCef(CefMainArgs main_args)
 {
 	CefSettings settings;
+#if defined(UAM_CEF_SANDBOX)
+	settings.no_sandbox = false;
+#else
+	// Known gap on Windows (CEF's bootstrap.exe client-DLL layout) and Linux; see docs/reference/security-enterprise.md.
 	settings.no_sandbox = true;
+#endif
 	const fs::path cef_cache_path = m_app.data_root / "cef";
 	CefString(&settings.root_cache_path) = uam::paths::NormalizedNativePathString(cef_cache_path);
 	CefString(&settings.cache_path) = uam::paths::NormalizedNativePathString(cef_cache_path);

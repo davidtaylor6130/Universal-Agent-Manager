@@ -918,6 +918,8 @@ export const useAppStore = create<AppState>((set, get) => {
         set({ ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), bootstrapStateError: '', bootstrapStateLoading: false })
         // Only after the state applied: a throw above must still reach failBootstrap.
         bootstrapHydrated = true
+        // Native writes "[UI startup]" console lines to the diagnostic log; the packaged smoke tests wait for this one.
+        console.info('[UI startup] Initial state loaded through the native bridge.')
         if (bootstrapRetryTimer !== null) clearTimeout(bootstrapRetryTimer)
         bootstrapRetryTimer = null
         // Sync theme to DOM
