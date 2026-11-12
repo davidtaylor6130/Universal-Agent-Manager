@@ -1910,6 +1910,12 @@ namespace uam
 		std::vector<std::string> UnusableTools(const UamControlCapability& capability, const ChatSession& chat, const AcpSessionState& session)
 		{
 			std::vector<std::string> hidden;
+			// A goal reviewer only reads the workspace and answers in JSON; it gets no UAM tools at all.
+			if (session.goal_review_turn)
+			{
+				for (const nlohmann::json& tool : Tools()) hidden.push_back(tool.value("name", ""));
+				return hidden;
+			}
 			const bool read_only = capability.agent_id == "plan" || session.active_uam_agent_workspace_access == "read";
 			const bool subagent = !capability.agent_run_id.empty();
 			// A child may delegate only to its listed agents; with none, the agent tools have nothing to act on.

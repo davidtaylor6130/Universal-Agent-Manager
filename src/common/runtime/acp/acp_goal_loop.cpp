@@ -5,6 +5,7 @@
 
 #include "app/chat_domain_service.h"
 #include "app/git_worktree_service.h"
+#include "app/vcs_commit_service.h"
 #include "app/worktree_launch_preparation_service.h"
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
@@ -51,6 +52,19 @@ namespace uam::acp_detail
 		std::string GoalOwnerChatId(const ChatSession& chat)
 		{
 			return uam::strings::NonEmptyOrFallback(chat.goal_owner_chat_id, chat.id);
+		}
+
+		/// <summary>Capped changed-file list so the reviewer starts from the worker's actual edits.</summary>
+		std::string ReviewWorkspaceChanges(const AppState& app, const ChatSession& chat)
+		{
+			// ponytail: synchronous local Git read once per review; SSH reviewers run git themselves. Move it to a
+			// background worker if large repositories stall the goal loop.
+			if (!app.settings.git_enabled || !uam::paths::IsControllerLocalWorkspace(chat)) return {};
+			const VcsCommitStatus status = VcsCommitService().Status(app, chat, VcsType::Git, true);
+			if (!status.available || !status.error.empty()) return {};
+			std::vector<std::tuple<std::string, std::string, int, int>> files;
+			for (const VcsChangedFile& file : status.changed_files) files.emplace_back(file.path, file.status, file.additions, file.deletions);
+			return GoalService::SummarizeWorkspaceChanges(files);
 		}
 
 		ChatSession* GoalOwnerChat(AppState& app, const ChatSession& chat)
@@ -493,9 +507,9 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 			if (iteration_review
 				        ? ContinueGoalIterationInChat(app, chat, session, repair_prompt,
 				                                      kGoalTurnKindReview, 1,
-				                                      GoalService::ReviewerModelId(*model_chat, *active_goal), false)
+				                                      GoalService::ReviewerModelId(app.settings, *model_chat, *active_goal), false)
 				        : QueueGoalInternalPrompt(app, session, chat, repair_prompt, true,
-				                                  GoalService::ReviewerModelId(chat, *active_goal)))
+				                                  GoalService::ReviewerModelId(app.settings, chat, *active_goal)))
 			{
 				return true;
 			}
@@ -525,7 +539,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		const ChatSession* reviewer_chat = GoalOwnerChat(app, chat);
 		// The turn's own model outranks the chat's current selection, which can change during the turn.
 		decision.source = ModelDecisionSource(uam::strings::NonEmptyOrFallback(session.goal_turn_model_id, uam::strings::NonEmptyOrFallback(
-		    GoalService::ReviewerModelId(reviewer_chat != nullptr ? *reviewer_chat : chat, *reviewed_goal), session.current_model_id)));
+		    GoalService::ReviewerModelId(app.settings, reviewer_chat != nullptr ? *reviewer_chat : chat, *reviewed_goal), session.current_model_id)));
 	}
 	if (decision.decision == "complete")
 	{
@@ -722,17 +736,17 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 	if (model_chat == nullptr) model_chat = &chat;
 	const std::string review_prompt = GoalService::BuildReviewPrompt(
 	    *active_goal, recent_user_prompt, recent_assistant_text,
-	    active_goal->same_assistant_text_count, model_chat->small_model_mode);
+	    active_goal->same_assistant_text_count, model_chat->small_model_mode, ReviewWorkspaceChanges(app, chat));
 	AppendGoalLoopDiagnostic(session, "schedule_review", goal_id, recent_assistant_text);
 	std::string queue_error;
 	const bool queued = goal_iteration
 	                      ? ContinueGoalIterationInChat(app, chat, session, review_prompt,
 	                                                    kGoalTurnKindReview, 0,
-	                                                    GoalService::ReviewerModelId(*model_chat, *active_goal),
+	                                                    GoalService::ReviewerModelId(app.settings, *model_chat, *active_goal),
 	                                                    true,
 	                                                    &queue_error)
 	                      : QueueGoalInternalPrompt(app, session, chat, review_prompt, true,
-	                                                GoalService::ReviewerModelId(chat, *active_goal), true);
+	                                                GoalService::ReviewerModelId(app.settings, chat, *active_goal), true);
 	if (queued && !goal_iteration)
 	{
 		session.goal_review_scheduled = true;

@@ -6987,6 +6987,25 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().steerActiveTurnOnSend).toBe(false)
   })
 
+  it('persists the cheaper goal reviewer setting, off by default, and rolls back a refused save', async () => {
+    expect(useAppStore.getState().goalCheaperReviewer).toBe(false)
+    const restarted = makeCppState(1)
+    restarted.settings.goalCheaperReviewer = true
+    useAppStore.getState().loadFromCef(restarted)
+    expect(useAppStore.getState().goalCheaperReviewer).toBe(true)
+
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      requests.push(JSON.parse(request))
+      if (requests.length === 1) onSuccess('{}')
+      else onFailure(500, 'Failed to persist goal loop settings.')
+    }
+    await expect(useAppStore.getState().setGoalCheaperReviewer(false)).resolves.toBe(true)
+    expect(requests[0]).toMatchObject({ action: 'setGoalLoopSettings', payload: { goalCheaperReviewer: false } })
+    await expect(useAppStore.getState().setGoalCheaperReviewer(true)).resolves.toBe(false)
+    expect(useAppStore.getState().goalCheaperReviewer).toBe(false)
+  })
+
   it('projects native Computer Use cleanup and retains it across unrelated sparse patches', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()

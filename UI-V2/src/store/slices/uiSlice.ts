@@ -147,6 +147,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
     showProviderIconsInSidebar: true,
     showWorktreePathInSidebar: true,
     steerActiveTurnOnSend: false,
+    goalCheaperReviewer: false,
     nativeImportExcludedTitlePrefixes: [] as string[],
     nativeImportExcludedDirectories: [] as string[],
     nativeImportStartupMaxAgeDays: DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS,
@@ -339,6 +340,16 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
       set({ steerActiveTurnOnSend: steer })
       if (!isCefContext()) return true
       const response = await sendToCEF({ action: 'setComposerSettings', payload: { steerActiveTurnOnSend: steer }, requestId: createRequestId('setComposerSettings') })
+      if (!response.ok) set(latestOptimisticRollback(previous, optimisticRevision))
+      return response.ok
+    },
+
+    setGoalCheaperReviewer: async (enabled: boolean) => {
+      const previous = { goalCheaperReviewer: get().goalCheaperReviewer }
+      const optimisticRevision = rememberOptimisticFields(['goalCheaperReviewer'])
+      set({ goalCheaperReviewer: enabled })
+      if (!isCefContext()) return true
+      const response = await sendToCEF({ action: 'setGoalLoopSettings', payload: { goalCheaperReviewer: enabled }, requestId: createRequestId('setGoalLoopSettings') })
       if (!response.ok) set(latestOptimisticRollback(previous, optimisticRevision))
       return response.ok
     },

@@ -4,6 +4,7 @@
 #include "app/agent_run_scheduler.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/provider_chat_defaults.h"
+#include "common/provider/provider_runtime.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_internal.h"
@@ -205,9 +206,15 @@ std::string GoalService::WorkerModelId(const ChatSession& chat, const Goal& goal
 	return chat.small_model_mode ? uam::strings::NonEmptyOrFallback(goal.worker_model_id, chat.model_id) : chat.model_id;
 }
 
-std::string GoalService::ReviewerModelId(const ChatSession& chat, const Goal& goal)
+std::string GoalService::ReviewerModelId(const AppSettings& settings, const ChatSession& chat, const Goal& goal)
 {
-	return chat.small_model_mode ? uam::strings::NonEmptyOrFallback(goal.reviewer_model_id, chat.model_id) : chat.model_id;
+	if (chat.small_model_mode) return uam::strings::NonEmptyOrFallback(goal.reviewer_model_id, chat.model_id);
+	if (!settings.goal_cheaper_reviewer) return chat.model_id;
+	// A chosen reviewer model wins; otherwise the provider's low-cost side-work model, then the chat model.
+	const ProviderChatDefaults defaults = uam::provider_chat_defaults::ForProvider(settings, chat.provider_id, chat.execution_host_id);
+	std::string model = uam::strings::NonEmptyOrFallback(chat.reviewer_model_id, defaults.reviewer_model_id);
+	if (model.empty()) model = std::string(ProviderRuntimeRegistry::ResolveById(chat.provider_id).DefaultTextWorkerModel());
+	return uam::strings::NonEmptyOrFallback(model, chat.model_id);
 }
 
 std::size_t GoalService::PauseActiveGoalsAfterRestart(AppState& app, std::size_t* failed_out)
@@ -988,11 +995,13 @@ std::string GoalService::BuildReadOnlyTerminalPrompt(const Goal& goal)
 
 std::string GoalService::BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt,
                                            const std::string& recent_assistant_text, int repeated_output_count,
-                                           bool small_model_mode)
+                                           bool small_model_mode, const std::string& workspace_changes)
 {
 	std::ostringstream ss;
 	ss << "Read-only goal review: inspect the workspace, changed files, diff, relevant tests/build evidence, and objective. "
 	      "Do not rely on the worker summary alone; do not edit files or run mutating commands. "
+	      "Run one command per call (no ;, && or pipes). Accepted Git reads: `git status --short` and "
+	      "`git diff --no-ext-diff --no-textconv` (add --stat or a path as needed). "
 	      "Your ONLY output must be a single JSON object, without prose or code fences:\n";
 	ss << R"({"decision":"continue|complete|blocked","reason":"","nextPrompt":"","evidence":[],"blockerKind":"","progressUpdate":{"completed":[],"remaining":[],"currentStep":"","lastVerification":""}})" << "\n\n";
 	if (repeated_output_count >= 3)
@@ -1052,8 +1061,29 @@ std::string GoalService::BuildReviewPrompt(const Goal& goal, const std::string& 
 	{
 		ss << "<recentUserPrompt>\n" << recent_user_prompt << "\n</recentUserPrompt>\n\n";
 	}
+	if (!workspace_changes.empty())
+	{
+		ss << "<workspaceChanges>\n" << workspace_changes << "</workspaceChanges>\n\n";
+	}
 	ss << "<recentAssistantText>\n" << recent_assistant_text << "\n</recentAssistantText>\n";
 	return ss.str();
+}
+
+std::string GoalService::SummarizeWorkspaceChanges(const std::vector<std::tuple<std::string, std::string, int, int>>& files)
+{
+	constexpr std::size_t kMaxBytes = 2048; // ponytail: fixed cap; the reviewer reads full diffs with git itself
+	std::string out;
+	std::size_t listed = 0;
+	for (const auto& [path, status, added, deleted] : files)
+	{
+		std::string line = uam::strings::NonEmptyOrFallback(status, "M") + " " + uam::strings::SafeLine(path, 300) +
+		    " +" + std::to_string(added) + " -" + std::to_string(deleted) + "\n";
+		if (out.size() + line.size() > kMaxBytes) break;
+		out += line;
+		++listed;
+	}
+	if (listed < files.size()) out += "... " + std::to_string(files.size() - listed) + " more changed files\n";
+	return out;
 }
 
 std::optional<GoalService::ReviewDecision> GoalService::ParseReviewDecision(const std::string& text)

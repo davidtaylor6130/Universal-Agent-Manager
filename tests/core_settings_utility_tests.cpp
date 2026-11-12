@@ -3223,15 +3223,18 @@ UAM_TEST(SettingsStorePersistsSidebarDisplaySettings)
 	settings.show_provider_icons_in_sidebar = false;
 	settings.show_worktree_path_in_sidebar = false;
 	settings.steer_active_turn_on_send = true;
+	settings.goal_cheaper_reviewer = true;
 
 	UAM_ASSERT(SettingsStore::Save(settings_file, settings));
 	AppSettings loaded;
 	UAM_ASSERT(!loaded.steer_active_turn_on_send);
+	UAM_ASSERT(!loaded.goal_cheaper_reviewer); // off by default
 	SettingsStore::Load(settings_file, loaded);
 
 	UAM_ASSERT(!loaded.show_provider_icons_in_sidebar);
 	UAM_ASSERT(!loaded.show_worktree_path_in_sidebar);
 	UAM_ASSERT(loaded.steer_active_turn_on_send);
+	UAM_ASSERT(loaded.goal_cheaper_reviewer);
 }
 
 UAM_TEST(TemporarySideChatObservedStopOnlyTerminatesItsOwnedProcess)

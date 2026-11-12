@@ -1634,6 +1634,12 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 	UAM_ASSERT(hidden.find("agent_delegate") == std::string::npos);
 	raw.active_uam_agent_workspace_access.clear();
 
+	// A goal reviewer gets no UAM tools; the worker that follows keeps them.
+	raw.goal_review_turn = true;
+	UAM_ASSERT(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).empty());
+	raw.goal_review_turn = false;
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).size(), std::size_t{UAM_ENABLE_COMPUTER_USE ? 14 : 13});
+
 	// CLI View cannot show HTML views or hold an agent wait.
 	app.cli_terminals.push_back(std::make_unique<uam::CliTerminalState>());
 	nlohmann::json server;

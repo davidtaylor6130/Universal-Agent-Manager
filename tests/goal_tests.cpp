@@ -4,6 +4,7 @@
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/provider/provider_runtime.h"
+#include "common/security/read_only_command.h"
 #include <functional>
 #include <limits>
 #include <source_location>
@@ -897,11 +898,58 @@ UAM_TEST(GoalServiceUsesTheNormalChatModelWhenArchitectModeIsOff)
 	goal.worker_model_id = "fast-worker";
 	goal.reviewer_model_id = "smart-reviewer";
 
+	AppSettings settings;
 	UAM_ASSERT_EQ(uam::GoalService::WorkerModelId(chat, goal), std::string("normal-model"));
-	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal), std::string("normal-model"));
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal), std::string("normal-model"));
 	chat.small_model_mode = true;
 	UAM_ASSERT_EQ(uam::GoalService::WorkerModelId(chat, goal), std::string("fast-worker"));
-	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal), std::string("smart-reviewer"));
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal), std::string("smart-reviewer"));
+}
+
+UAM_TEST(GoalCheaperReviewerSettingPicksAReviewerOrLowCostModel)
+{
+	AppSettings settings;
+	ChatSession chat;
+	chat.provider_id = "claude-cli";
+	chat.model_id = "opus";
+	Goal goal;
+	// Off by default: the reviewer stays on the chat model.
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal), std::string("opus"));
+	settings.goal_cheaper_reviewer = true;
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal), std::string("haiku"));
+#endif
+	settings.provider_chat_defaults["claude-cli"].reviewer_model_id = "sonnet";
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal), std::string("sonnet"));
+	chat.reviewer_model_id = "chosen-reviewer";
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, chat, goal), std::string("chosen-reviewer"));
+	// A provider without a low-cost model keeps the chat model.
+	ChatSession other;
+	other.provider_id = "antigravity-cli";
+	other.model_id = "chat-model";
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(settings, other, goal), std::string("chat-model"));
+}
+
+UAM_TEST(GoalReviewPromptCarriesCappedWorkspaceChangesAndAcceptedGitReads)
+{
+	std::vector<std::tuple<std::string, std::string, int, int>> files;
+	for (int index = 0; index < 200; ++index) files.emplace_back("src/file_" + std::to_string(index) + ".cpp", "M", index, 1);
+	const std::string summary = uam::GoalService::SummarizeWorkspaceChanges(files);
+	UAM_ASSERT(summary.size() <= 2048 + 64);
+	UAM_ASSERT(summary.find("M src/file_0.cpp +0 -1\n") != std::string::npos);
+	UAM_ASSERT(summary.find("more changed files") != std::string::npos);
+	UAM_ASSERT(uam::GoalService::SummarizeWorkspaceChanges({}).empty());
+	Goal goal;
+	goal.objective = "Add the parser.";
+	const std::string review = uam::GoalService::BuildReviewPrompt(goal, goal.objective, "Done.", 0, false, summary);
+	UAM_ASSERT(review.find("<workspaceChanges>\nM src/file_0.cpp") != std::string::npos);
+	UAM_ASSERT(uam::GoalService::BuildReviewPrompt(goal, goal.objective, "Done.").find("<workspaceChanges>") == std::string::npos);
+	// The commands the prompt names pass the reviewer's read-only ceiling; compound forms do not.
+	UAM_ASSERT(review.find("git status --short") != std::string::npos);
+	UAM_ASSERT(uam::command_safety::IsReadOnlyCommand("git status --short"));
+	UAM_ASSERT(uam::command_safety::IsReadOnlyCommand("git diff --no-ext-diff --no-textconv"));
+	UAM_ASSERT(uam::command_safety::IsReadOnlyCommand("git diff --no-ext-diff --no-textconv --stat"));
+	UAM_ASSERT(!uam::command_safety::IsReadOnlyCommand("git status; git diff"));
 }
 
 UAM_TEST(GoalServiceMaintainsOnlyOneActiveGoalPerChat)

@@ -119,6 +119,7 @@ function deserializeState(
     showProviderIconsInSidebar: boolean
     showWorktreePathInSidebar: boolean
     steerActiveTurnOnSend: boolean
+    goalCheaperReviewer: boolean
     gitEnabled?: boolean
     svnEnabled?: boolean
     updateChecksEnabled: boolean
@@ -340,6 +341,7 @@ function deserializeState(
     showProviderIconsInSidebar: cpp.settings.showProviderIconsInSidebar ?? true,
     showWorktreePathInSidebar: cpp.settings.showWorktreePathInSidebar ?? true,
     steerActiveTurnOnSend: cpp.settings.steerActiveTurnOnSend ?? false,
+    goalCheaperReviewer: cpp.settings.goalCheaperReviewer ?? false,
     gitEnabled: typeof cpp.settings.gitEnabled === 'boolean' ? cpp.settings.gitEnabled : true,
     svnEnabled: typeof cpp.settings.svnEnabled === 'boolean' ? cpp.settings.svnEnabled : true,
     updateChecksEnabled: cpp.settings.updateChecksEnabled,
@@ -584,6 +586,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     showProviderIconsInSidebar: patch.settings?.showProviderIconsInSidebar ?? current.showProviderIconsInSidebar,
     showWorktreePathInSidebar: patch.settings?.showWorktreePathInSidebar ?? current.showWorktreePathInSidebar,
     steerActiveTurnOnSend: patch.settings?.steerActiveTurnOnSend ?? current.steerActiveTurnOnSend,
+    goalCheaperReviewer: patch.settings?.goalCheaperReviewer ?? current.goalCheaperReviewer,
     gitEnabled: typeof patch.settings?.gitEnabled === 'boolean' ? patch.settings.gitEnabled : current.gitEnabled,
     svnEnabled: typeof patch.settings?.svnEnabled === 'boolean' ? patch.settings.svnEnabled : current.svnEnabled,
     updateChecksEnabled: patch.settings?.updateChecksEnabled ?? current.updateChecksEnabled,
@@ -849,6 +852,7 @@ export const useAppStore = create<AppState>((set, get) => {
           showProviderIconsInSidebar: current.showProviderIconsInSidebar,
           showWorktreePathInSidebar: current.showWorktreePathInSidebar,
           steerActiveTurnOnSend: current.steerActiveTurnOnSend,
+          goalCheaperReviewer: current.goalCheaperReviewer,
         gitEnabled: current.gitEnabled,
         svnEnabled: current.svnEnabled,
           updateChecksEnabled: current.updateChecksEnabled,
@@ -1361,6 +1365,7 @@ export const useAppStore = create<AppState>((set, get) => {
       showProviderIconsInSidebar: current.showProviderIconsInSidebar,
       showWorktreePathInSidebar: current.showWorktreePathInSidebar,
       steerActiveTurnOnSend: current.steerActiveTurnOnSend,
+      goalCheaperReviewer: current.goalCheaperReviewer,
       gitEnabled: current.gitEnabled,
       svnEnabled: current.svnEnabled,
       updateChecksEnabled: current.updateChecksEnabled,
