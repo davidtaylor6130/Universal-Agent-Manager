@@ -99,7 +99,7 @@ The trial merges `uam/v5-improvements` at `e28ba717`, including empty native-cha
 
 ## Remaining scope and source mismatches
 
-- [Existing VCS panel](architecture/decisions.md#existing-vcs-panel): resolved 2026-10-25; David keeps the existing Git/SVN commit panel in V5. New panel features still need approval, and the `AGENTS.md` Release Slice exclusion still needs a matching update.
+- [Existing VCS panel](architecture/decisions.md#existing-vcs-panel): resolved 2026-10-25; David keeps the existing Git/SVN commit panel in V5. On 2026-11-11 he asked for SVN history, update and further SVN actions in it; history and update are implemented and await his acceptance. Other new panel features still need approval. The `AGENTS.md` Release Slice now records both exceptions.
 - Antigravity availability copy now follows the agreed structured Chat and CLI View scope after removing the stale terminal-only description; the [checklist](providers/antigravity/antigravity.md) and the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md) retain broader capability and acceptance gaps.
 
 ## System-wide native import

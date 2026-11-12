@@ -6,6 +6,8 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
+#include <algorithm>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -368,5 +370,30 @@ namespace uam::paths
 			if (directory == directory.parent_path()) break;
 		}
 		return result;
+	}
+	/// <summary>True when one directory is the other or lies inside it, compared as text so a remote host's paths work
+	/// on any controller: `\\` and `/` are the same separator, `.` segments and trailing separators are ignored, and
+	/// `case_insensitive` suits Windows and default macOS volumes. An empty path overlaps nothing.</summary>
+	inline bool DirectoriesOverlap(std::string_view left, std::string_view right, const bool case_insensitive)
+	{
+		const auto segments = [&](std::string_view path)
+		{
+			std::vector<std::string> parts;
+			std::string part;
+			const auto flush = [&] { if (!part.empty() && part != ".") parts.push_back(part); part.clear(); };
+			for (const char c : path)
+			{
+				if (c == '/' || c == '\\') flush();
+				else part.push_back(case_insensitive && c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c);
+			}
+			flush();
+			return parts;
+		};
+		const std::vector<std::string> a = segments(left), b = segments(right);
+		if (a.empty() || b.empty()) return false;
+		const std::size_t shared = std::min(a.size(), b.size());
+		for (std::size_t index = 0; index < shared; ++index)
+			if (a[index] != b[index]) return false;
+		return true;
 	}
 } // namespace uam::paths

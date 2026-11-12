@@ -517,3 +517,152 @@
     transition: none;
   }
 }
+
+/* Revision history: one linear rail. Each entry is a dot on the rail with a disclosure beside it. */
+.uam-vh-list { position: relative; margin: 0; padding: 0; list-style: none; }
+
+.uam-vh-entry {
+  position: relative;
+  padding-left: 18px;
+  border-bottom: 1px solid var(--border);
+  animation: uam-rv-rise var(--dur-base) var(--ease-out-soft) backwards;
+}
+
+/* The rail runs through every entry; the first starts at its dot and the last ends at it. */
+.uam-vh-entry::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 1px;
+  background: var(--border-bright);
+}
+.uam-vh-entry:first-child::before { top: 16px; }
+.uam-vh-entry:last-child::before { bottom: auto; height: 16px; }
+.uam-vh-entry:only-child::before { display: none; }
+
+.uam-vh-entry__dot {
+  position: absolute;
+  top: 12px;
+  left: 1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--text-3);
+  background: var(--surface);
+}
+/* Working-copy revision: filled accent. Not updated yet: hollow info ring. Both also carry a text tag. */
+.uam-vh-entry[data-state="current"] .uam-vh-entry__dot { border-color: var(--accent); background: var(--accent); }
+.uam-vh-entry[data-state="incoming"] .uam-vh-entry__dot { border-color: var(--info); border-style: dashed; }
+
+.uam-vh-entry__disclosure .uam-disclosure__summary { align-items: flex-start; padding: 6px 4px 6px 0; outline-offset: var(--focus-inset); }
+.uam-vh-entry__disclosure .uam-disclosure__chevron { margin-top: 3px; }
+.uam-vh-entry__disclosure .uam-disclosure__label { flex: 1; }
+
+.uam-vh-entry__summary { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.uam-vh-entry__line { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.uam-vh-entry__revision { flex: none; font-family: var(--font-mono); font-size: var(--fs-xs); font-weight: 600; color: var(--text-2); }
+.uam-vh-entry__subject { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.uam-vh-entry__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; font-size: var(--fs-xs); color: var(--text-3); }
+
+.uam-vh-tag {
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 5px;
+  border-radius: var(--r-sm);
+  background: var(--surface-up);
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+}
+.uam-vh-tag[data-tone="accent"] { background: var(--accent-dim); color: var(--text); }
+.uam-vh-tag[data-tone="info"] { background: color-mix(in srgb, var(--info) 14%, var(--surface)); color: var(--text); }
+
+.uam-vh-entry__details { padding: 0 4px 8px 22px; }
+.uam-vh-entry__details ul { margin: 6px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--border); }
+.uam-vh-entry__body { margin: 0 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-sm); color: var(--text-2); }
+
+.uam-vh-path { animation: none; }
+.uam-vh-path__open {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 14px;
+  flex: 1;
+  align-items: center;
+  column-gap: var(--sp-2);
+  height: 100%;
+  min-width: 0;
+  padding: 0 var(--sp-1) 0 0;
+  color: var(--text-2);
+  text-align: left;
+}
+button.uam-vh-path__open { cursor: pointer; }
+button.uam-vh-path__open:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
+
+/* Commit panel: tabs keep clear gaps, and one heading band sets the commit form apart from the files above it. */
+.uam-rv-scopes { gap: var(--sp-4); }
+.uam-rv-section {
+  flex: none;
+  align-items: center;
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-up);
+}
+.uam-rv-section .uam-section-header__title { font-size: var(--fs-sm); }
+.uam-rv-section .uam-section-header__desc { font-size: var(--fs-xs); margin-top: 0; }
+
+/* Where a branch or tag was copied from, with the List/Graph switch: one line above the search field. */
+.uam-vh-origin {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 28px;
+  margin-bottom: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+
+/* Graph: two rails above the copy point (the origin on the left, this line on the right) that join where the line was
+   copied, then one rail for the history they share. Lane is also said in words by each row's tags. */
+.uam-vh-list[data-graph] .uam-vh-entry { padding-left: 34px; }
+.uam-vh-list[data-graph] .uam-vh-entry::before { top: 0; bottom: 0; height: auto; display: block; left: 5px; background: var(--info); opacity: 0.55; }
+.uam-vh-list[data-graph] .uam-vh-entry::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 21px;
+  width: 1px;
+  background: var(--accent);
+  opacity: 0.7;
+}
+.uam-vh-list[data-graph] .uam-vh-entry[data-lane="shared"]::after { display: none; }
+/* The copy row ends this line's rail at its dot and ties it back to the origin's rail. */
+.uam-vh-list[data-graph] .uam-vh-entry[data-lane="copy"]::after { bottom: auto; height: 16px; }
+.uam-vh-list[data-graph] .uam-vh-entry[data-lane="copy"] .uam-vh-entry__dot::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 100%;
+  width: 9px;
+  height: 1px;
+  background: var(--accent);
+  opacity: 0.7;
+}
+.uam-vh-list[data-graph] .uam-vh-entry:last-child::before { bottom: auto; height: 16px; }
+.uam-vh-list[data-graph] .uam-vh-entry[data-lane="branch"] .uam-vh-entry__dot,
+.uam-vh-list[data-graph] .uam-vh-entry[data-lane="copy"] .uam-vh-entry__dot { left: 17px; border-color: var(--accent); }
+.uam-vh-list[data-graph] .uam-vh-entry[data-lane="origin"] .uam-vh-entry__dot,
+.uam-vh-list[data-graph] .uam-vh-entry[data-lane="shared"] .uam-vh-entry__dot { border-color: var(--info); border-style: solid; }
+.uam-vh-list[data-graph] .uam-vh-entry__dot { z-index: 1; }
+
+.uam-vh-legend { margin: 0; display: flex; gap: var(--sp-3); padding: 2px 0 4px; font-size: var(--fs-xs); color: var(--text-2); }
+.uam-vh-legend span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uam-vh-legend span::before { content: ""; flex: none; width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--info); }
+.uam-vh-legend span[data-lane="branch"]::before { border-color: var(--accent); }

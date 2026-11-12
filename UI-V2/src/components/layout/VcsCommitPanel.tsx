@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle2, ChevronRight, Circle, GitBranch, GitCommitHorizontal, LoaderCircle, PanelRightClose, RotateCw, Sparkles, TriangleAlert } from 'lucide-react'
+import { ArrowDownToLine, CheckCircle2, ChevronRight, Circle, FolderGit2, GitBranch, GitCommitHorizontal, History, LoaderCircle, MessageSquareDiff, PanelRightClose, RotateCw, Sparkles, TriangleAlert } from 'lucide-react'
 import { useAppStore, type VcsChangedFile, type VcsCommitStatus, type VcsType } from '../../store/useAppStore'
-import { Button, IconButton, MenuSelect, Presence, RowButton, Tab, Tabs } from '../ui'
+import type { VcsUpdateResult } from '../../store/cpp/types'
+import { Button, IconButton, MenuSelect, Presence, RowButton, SectionHeader, Tab, Tabs } from '../ui'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { RecordedChatEdits } from './RecordedChatEdits'
+import { VcsHistory } from './VcsHistory'
 import { CODEX_ENABLED } from '../../config/buildFeatures'
 import '../shared/review.css'
 
@@ -36,6 +38,9 @@ function statusColor(status: string) {
   return code === 'A' || code === '?' ? 'var(--success)' : code === 'D' ? 'var(--error)' : code === 'R' ? 'var(--info)' : 'var(--warning)'
 }
 
+/** Updates still running, by chat: the panel is per selected chat, but an update outlives a switch to another chat. */
+const updatesInFlight = new Map<string, { requestId: string; result: Promise<VcsUpdateResult> }>()
+
 export function VcsCommitPanel() {
   const gitEnabled = useAppStore((s) => s.gitEnabled)
   const svnEnabled = useAppStore((s) => s.svnEnabled)
@@ -46,8 +51,10 @@ export function VcsCommitPanel() {
   const generateVcsCommitMessage = useAppStore((s) => s.generateVcsCommitMessage)
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const getVcsFileDiff = useAppStore((s) => s.getVcsFileDiff)
+  const updateVcsWorkspace = useAppStore((s) => s.updateVcsWorkspace)
+  const cancelVcsRequest = useAppStore((s) => s.cancelVcsRequest)
   const [diffSelection, setDiffSelection] = useState<{ file: VcsChangedFile; chatId: string; workspaceDirectory: string | undefined; workspaceWorktreeDirectory: string | undefined; executionHostId: string | undefined } | null>(null)
-  const [reviewScope, setReviewScope] = useState<'workspace' | 'recorded'>('workspace')
+  const [reviewScope, setReviewScope] = useState<'workspace' | 'recorded' | 'history'>('workspace')
   const [status, setStatus] = useState<VcsCommitStatus>(() => emptyStatus(session?.workspaceDirectory ?? ''))
   const [selectedVcsType, setSelectedVcsType] = useState<VcsType>('git')
   const [selectedFiles, setSelectedFiles] = useState<string[]>([])
@@ -57,6 +64,12 @@ export function VcsCommitPanel() {
   const [committing, setCommitting] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [notice, setNotice] = useState('')
+  const [noticeTone, setNoticeTone] = useState<'success' | 'warning' | 'error'>('error')
+  const [updating, setUpdating] = useState(false)
+  // Bumped after an update so History reloads against the new working-copy revision.
+  const [historyEpoch, setHistoryEpoch] = useState(0)
+  const latestUpdateRequestRef = useRef(0)
+  const updateRequestIdRef = useRef('')
   const [commitOutput, setCommitOutput] = useState('')
   const latestStatusRequestRef = useRef('')
   const latestGenerateRequestRef = useRef(0)
@@ -67,6 +80,9 @@ export function VcsCommitPanel() {
     latestStatusRequestRef.current = ''
     latestGenerateRequestRef.current += 1
     latestCommitRequestRef.current += 1
+    latestUpdateRequestRef.current += 1
+    updateRequestIdRef.current = ''
+    setUpdating(false)
     draftRevisionRef.current += 1
     setStatus(emptyStatus(session?.workspaceDirectory ?? ''))
     setDiffSelection(null)
@@ -123,7 +139,7 @@ export function VcsCommitPanel() {
 
   const commitMessage = [title.trim(), description.trim()].filter(Boolean).join('\n\n')
   const systemEnabled = selectedVcsType === 'git' ? gitEnabled : svnEnabled
-  const commitDisabled = !systemEnabled || committing || !status.available || selectedFiles.length === 0 || title.trim().length === 0
+  const commitDisabled = !systemEnabled || committing || updating || !status.available || selectedFiles.length === 0 || title.trim().length === 0
   const generateDisabled = !systemEnabled || generating || !status.available || selectedFiles.length === 0
   const selectedFileSet = useMemo(() => new Set(selectedFiles), [selectedFiles])
   const allSelected = status.changedFiles.length > 0 && status.changedFiles.every((file) => selectedFileSet.has(file.path))
@@ -151,6 +167,7 @@ export function VcsCommitPanel() {
     if (latestGenerateRequestRef.current !== request || useAppStore.getState().activeSessionId !== sourceSessionId) return
     setGenerating(false)
     if (!suggestion) {
+      setNoticeTone('error')
       setNotice('Failed to generate a commit message.')
       return
     }
@@ -172,6 +189,7 @@ export function VcsCommitPanel() {
     if (latestCommitRequestRef.current !== request || useAppStore.getState().activeSessionId !== sourceSessionId) return
     setCommitting(false)
     if (!result.ok) {
+      setNoticeTone('error')
       setNotice(result.error || 'Failed to commit changes.')
       return
     }
@@ -181,10 +199,60 @@ export function VcsCommitPanel() {
       setDescription('')
     }
     setSelectedFiles([])
+    setNoticeTone('success')
     setNotice('Commit created.')
     setCommitOutput(result.message || '')
+    setHistoryEpoch((epoch) => epoch + 1)
     await refresh(selectedVcsType, true)
   }
+
+  const capabilities = status.available ? status.capabilities ?? [] : []
+  const historyAvailable = systemEnabled && capabilities.includes('history')
+  const updateAvailable = systemEnabled && capabilities.includes('update')
+  // A scope the current workspace cannot show falls back to the workspace list instead of an empty panel.
+  const scope = (reviewScope === 'history' && !historyAvailable) || (reviewScope === 'recorded' && !CODEX_ENABLED) ? 'workspace' : reviewScope
+  const revisionPrefix = selectedVcsType === 'svn' ? 'r' : ''
+
+  /** Shows an update's progress and outcome while its chat stays selected; switching away and back picks it up again. */
+  const followUpdate = useCallback(async (sourceSessionId: string, vcsType: VcsType, running: { requestId: string; result: Promise<VcsUpdateResult> }) => {
+    const request = ++latestUpdateRequestRef.current
+    updateRequestIdRef.current = running.requestId
+    setUpdating(true)
+    const result = await running.result
+    if (latestUpdateRequestRef.current !== request || useAppStore.getState().activeSessionId !== sourceSessionId) return
+    updateRequestIdRef.current = ''
+    setUpdating(false)
+    setCommitOutput(result.output)
+    if (!result.ok) {
+      setNoticeTone('error')
+      setNotice(result.error || 'Failed to update the working copy.')
+    } else {
+      setNoticeTone(result.conflicts ? 'warning' : 'success')
+      const reached = result.revision ? ` to ${vcsType === 'svn' ? 'r' : ''}${result.revision}` : ''
+      setNotice(result.conflicts ? `Updated${reached} with conflicts. Resolve them before committing.` : `Updated${reached}.`)
+    }
+    setHistoryEpoch((epoch) => epoch + 1)
+    await refresh(vcsType, true)
+  }, [refresh])
+
+  useEffect(() => {
+    const running = activeSessionId ? updatesInFlight.get(activeSessionId) : undefined
+    if (running && activeSessionId) void followUpdate(activeSessionId, selectedVcsType, running)
+    // Only on arriving at a chat; followUpdate itself changes with every refresh.
+  }, [activeSessionId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const update = async () => {
+    if (!activeSessionId || updating || committing) return
+    const sourceSessionId = activeSessionId
+    const requestId = `vcs-update:${sourceSessionId}:${Date.now()}`
+    const running = { requestId, result: updateVcsWorkspace(sourceSessionId, selectedVcsType, requestId) }
+    updatesInFlight.set(sourceSessionId, running)
+    void running.result.finally(() => { if (updatesInFlight.get(sourceSessionId) === running) updatesInFlight.delete(sourceSessionId) })
+    setNotice('')
+    await followUpdate(sourceSessionId, selectedVcsType, running)
+  }
+
+  const shownTone = notice ? noticeTone : status.error ? 'error' : 'warning'
 
   return (
     <aside aria-label="Commit" className="uam-rv-dialog flex min-h-0 flex-1 flex-col overflow-hidden" style={{ borderRadius: 0, border: 0, borderLeft: '1px solid var(--border)', boxShadow: 'none' }}>
@@ -196,7 +264,7 @@ export function VcsCommitPanel() {
         <IconButton
           icon={<RotateCw size={16} />}
           label="Refresh VCS status"
-          disabled={loading}
+          disabled={loading || updating || committing}
           onClick={() => { void refresh(selectedVcsType, true) }}
         />
         <IconButton
@@ -209,13 +277,21 @@ export function VcsCommitPanel() {
       </div>
 
       {/* Recorded chat edits are Codex receipts; builds without Codex keep only the workspace scope. */}
-      {CODEX_ENABLED && <div className="shrink-0 px-3" style={{ borderBottom: '1px solid var(--border)' }}>
-        <Tabs aria-label="Change review scope" variant="underline" value={reviewScope} onChange={(scope) => { setReviewScope(scope); setDiffSelection(null) }}>
-          <Tab value="workspace">Workspace</Tab>
-          <Tab value="recorded">Recorded chat edits</Tab>
+      {(CODEX_ENABLED || historyAvailable) && <div className="shrink-0 px-3" style={{ borderBottom: '1px solid var(--border)' }}>
+        <Tabs aria-label="Change review scope" variant="underline" className="uam-rv-scopes" value={scope} onChange={(next) => { setReviewScope(next); setDiffSelection(null) }}>
+          <Tab value="workspace" icon={<FolderGit2 size={14} aria-hidden />}>Workspace</Tab>
+          {CODEX_ENABLED && <Tab value="recorded" icon={<MessageSquareDiff size={14} aria-hidden />}>Recorded chat edits</Tab>}
+          {historyAvailable && <Tab value="history" icon={<History size={14} aria-hidden />}>History</Tab>}
         </Tabs>
       </div>}
-      {CODEX_ENABLED && reviewScope === 'recorded' ? (
+      {scope === 'history' && activeSessionId ? (
+        <VcsHistory
+          key={JSON.stringify([activeSessionId, session?.workspaceDirectory, session?.workspaceWorktreeDirectory, session?.executionHostId, selectedVcsType, historyEpoch])}
+          chatId={activeSessionId}
+          vcsType={selectedVcsType}
+          compareOrigin={capabilities.includes('originComparison')}
+        />
+      ) : scope === 'recorded' ? (
         activeSessionId && session ? (
           <RecordedChatEdits
             key={JSON.stringify([activeSessionId, session?.workspaceDirectory, session?.workspaceWorktreeDirectory, session?.executionHostId, gitEnabled, svnEnabled])}
@@ -228,10 +304,10 @@ export function VcsCommitPanel() {
       ) : <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         <div className="shrink-0 px-3 pt-3">
           {(status.warning || status.error || notice) && (
-            <div role="status" className="uam-rv-alert mb-3 flex items-start gap-2" style={{ background: notice === 'Commit created.' ? 'var(--success-dim)' : status.error || notice ? 'var(--error-dim)' : 'var(--warning-dim)', border: '1px solid var(--border)', color: 'var(--text)' }}>
-              {notice === 'Commit created.'
+            <div role="status" className="uam-rv-alert mb-3 flex items-start gap-2" style={{ background: `var(--${shownTone}-dim)`, border: '1px solid var(--border)', color: 'var(--text)' }}>
+              {shownTone === 'success'
                 ? <CheckCircle2 size={14} aria-hidden className="mt-0.5 shrink-0" style={{ color: 'var(--success)' }} />
-                : <TriangleAlert size={14} aria-hidden className="mt-0.5 shrink-0" style={{ color: status.error || notice ? 'var(--error)' : 'var(--warning)' }} />}
+                : <TriangleAlert size={14} aria-hidden className="mt-0.5 shrink-0" style={{ color: `var(--${shownTone})` }} />}
               <span>{notice || status.error || status.warning}</span>
             </div>
           )}
@@ -248,7 +324,11 @@ export function VcsCommitPanel() {
               <span className="rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold" style={{ background: 'var(--surface-up)', color: 'var(--text-2)' }}>{status.available ? status.activeVcsType.toUpperCase() : 'NONE'}</span>
             )}
             <GitBranch size={13} aria-hidden style={{ color: 'var(--text-3)' }} />
-            <span className="min-w-0 truncate font-mono" style={{ color: 'var(--text)' }}>{status.branchOrRevision || '-'}</span>
+            <span className="min-w-0 flex-1 truncate font-mono" style={{ color: 'var(--text)' }}>{status.branchOrRevision || '-'}</span>
+            {updateAvailable && <Button size="sm" variant="secondary" loading={updating} disabled={committing} leadingIcon={<ArrowDownToLine size={14} />} onClick={() => { void update() }}>
+              {updating ? 'Updating…' : 'Update'}
+            </Button>}
+            {updateAvailable && updating && <Button size="sm" variant="ghost" onClick={() => cancelVcsRequest(updateRequestIdRef.current)}>Stop</Button>}
           </div>
         </div>
 
@@ -266,7 +346,7 @@ export function VcsCommitPanel() {
             {allSelected ? <CheckCircle2 size={16} aria-hidden style={{ color: 'var(--accent)' }} /> : <Circle size={16} aria-hidden />}
           </button>
           <span className="min-w-0 flex-1 font-medium">{loading ? 'Refreshing changes' : `${status.changedFiles.length} changed file${status.changedFiles.length === 1 ? '' : 's'}`}</span>
-          {(loading || (!lineStatsReady && status.changedFiles.length > 0)) && <LoaderCircle size={13} role="img" aria-label="Loading VCS status" />}
+          {(loading || (!lineStatsReady && status.changedFiles.length > 0)) && <LoaderCircle size={13} role="img" aria-label="Loading VCS status" className="animate-spin motion-reduce:animate-none" />}
           <span style={{ color: 'var(--text-3)' }}>{selectedFiles.length} selected</span>
         </div>
         {/* Sized to its rows (scrolling once full) so the form stays attached directly below; the bottom padding keeps the last row's focus ring inside this clip. */}
@@ -320,7 +400,9 @@ export function VcsCommitPanel() {
           })}
         </div>
 
-        <div className="flex flex-1 flex-col p-3" style={{ borderTop: '1px solid var(--border)' }}>
+        {/* The one heading in the panel: it is what separates the form from the list of files above it. */}
+        <SectionHeader className="uam-rv-section" icon={<GitCommitHorizontal size={14} aria-hidden />} title="Commit" description="Publishes only the selected files" />
+        <div className="flex flex-1 flex-col p-3">
           <div className="mb-2 flex items-center gap-2">
             <input
               className="uam-rv-field min-w-0 flex-1"
@@ -330,7 +412,7 @@ export function VcsCommitPanel() {
               onChange={(event) => { draftRevisionRef.current += 1; setTitle(event.target.value) }}
             />
             <IconButton
-              icon={generating ? <LoaderCircle size={16} /> : <Sparkles size={16} />}
+              icon={generating ? <LoaderCircle size={16} className="animate-spin motion-reduce:animate-none" /> : <Sparkles size={16} />}
               label="Generate commit message"
               disabled={generateDisabled}
               onClick={() => { void generateMessage() }}
@@ -343,12 +425,12 @@ export function VcsCommitPanel() {
             value={description}
             onChange={(event) => { draftRevisionRef.current += 1; setDescription(event.target.value) }}
           />
-          <Button variant="primary" block disabled={commitDisabled} leadingIcon={committing ? <LoaderCircle size={15} /> : <GitCommitHorizontal size={15} />} onClick={() => { void commit() }}>
+          <Button variant="primary" block disabled={commitDisabled} leadingIcon={committing ? <LoaderCircle size={15} className="animate-spin motion-reduce:animate-none" /> : <GitCommitHorizontal size={15} />} onClick={() => { void commit() }}>
             {committing ? 'Committing…' : `Commit ${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'}`}
           </Button>
         </div>
       </div>}
-      {(() => { const diffOpen = Boolean(reviewScope === 'workspace' && diffSelection && diffSelection.chatId === activeSessionId && diffSelection.workspaceDirectory === session?.workspaceDirectory && diffSelection.workspaceWorktreeDirectory === session?.workspaceWorktreeDirectory && diffSelection.executionHostId === session?.executionHostId); return <Presence open={diffOpen}>{diffOpen && diffSelection && (
+      {(() => { const diffOpen = Boolean(scope === 'workspace' && diffSelection && diffSelection.chatId === activeSessionId && diffSelection.workspaceDirectory === session?.workspaceDirectory && diffSelection.workspaceWorktreeDirectory === session?.workspaceWorktreeDirectory && diffSelection.executionHostId === session?.executionHostId); return <Presence open={diffOpen}>{diffOpen && diffSelection && (
         <RepositoryDiffDialog
           chatId={diffSelection.chatId}
           file={diffSelection.file}
