@@ -78,6 +78,7 @@ The source patch uses a shared captured submission, refuses a changed target cha
 | Notifications and undo | Shared notification system and organization-undo removal are implemented; review and user testing remain pending | [Recorded decisions](architecture/decisions.md), Single Notification System and Remove Organization Undo |
 | Account usage | Independent local reads exist for four providers; Gemini eligibility, OpenCode acquisition, custom commands, remote feeds and platform acceptance remain limited | [Allowances](usage/allowances.md), Independent Account Allowance Snapshots |
 | Cross-platform/SSH | Source routes and fixture receipts do not prove every real CLI, OS or SSH combination | [Provider checklists](providers/providers.md#provider-checklists) |
+| CEF process sandbox | Enabled for macOS app bundles only; Windows needs CEF's `bootstrap.exe` client-DLL layout and Linux desktop builds are not shipped | [Security reference](reference/security-enterprise.md#known-gaps) |
 
 Do not treat these items as fixed from this documentation trial. Statuses are conservative source-level assessments, not a replacement for running a provider implementation audit.
 
