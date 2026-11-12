@@ -177,7 +177,7 @@ UAM_TEST(MemoryServiceWritesDedupesAndBuildsRecall)
 	UAM_ASSERT_EQ(app.memory_activity.last_created_count, 1);
 	UAM_ASSERT(!app.memory_activity.last_created_at.empty());
 
-	const std::string recall = MemoryService::BuildRecallPreface(app, app.chats[0], "Implement feature");
+	const std::string recall = MemoryService::BuildRecallPreface(app, app.chats[0], "Which brace style?");
 	UAM_ASSERT(recall.find("Relevant UAM memories") != std::string::npos);
 	UAM_ASSERT(recall.find("Prefer Allman brace style") != std::string::npos);
 }
