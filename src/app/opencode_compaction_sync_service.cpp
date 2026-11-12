@@ -713,7 +713,10 @@ struct OpenCodeCompactionSyncService::State
 			if (context.owner->live && context.owner->assistant < 0 && session.turn_serial == context.owner->serial)
 			{
 				const int index = session.turn_assistant_message_index;
-				if (index >= 0 && index == session.current_assistant_message_index && index < static_cast<int>(chat.messages.size()) &&
+				// A short turn (such as a goal review reply) can create its row and settle between two polls;
+				// settlement clears current_assistant_message_index, so the settled turn still owns its row.
+				const bool settled = !session.processing && session.prompt_request_id == 0 && session.last_settled_turn_serial == session.turn_serial;
+				if (index >= 0 && (index == session.current_assistant_message_index || settled) && index < static_cast<int>(chat.messages.size()) &&
 				    chat.messages[index].role == MessageRole::Assistant &&
 				    acp_detail::MessageBlocksEqual(chat.messages[index].blocks, acp_detail::MessageBlocksFromTurnEvents(session)))
 				{

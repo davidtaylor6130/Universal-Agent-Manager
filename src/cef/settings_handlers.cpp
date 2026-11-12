@@ -5,6 +5,7 @@
 #include "common/config/voice_input_settings.h"
 #include "app/execution_routing_integration.h"
 #include "common/config/settings_store.h"
+#include "common/config/svn_repository_layout.h"
 #include "common/config/host_scoped_settings.h"
 #include "common/config/provider_availability.h"
 #include <stdexcept>
@@ -1558,6 +1559,12 @@ void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const 
 	{
 		cb->Failure(400, "SVN update before chat requires a boolean."); return;
 	}
+	std::vector<SvnRepositoryLayout> svn_layouts;
+	const bool has_svn_layouts = payload.contains("svnRepositoryLayouts");
+	if (has_svn_layouts && !uam::svn_layout::Parse(payload["svnRepositoryLayouts"], svn_layouts))
+	{
+		cb->Failure(400, "Each SVN repository layout needs a repository root URL or UUID and repository-relative folders for trunk, branches and tags."); return;
+	}
 	const nlohmann::json* port_value = uam::nlohmann_json::FindStringField(payload, "gitPortMethod");
 	const std::string port_method = port_value ? port_value->get<std::string>() : std::string();
 	if (payload.contains("gitPortMethod") && (!port_value || (port_method != "patch" && port_method != "merge" && port_method != "squash")))
@@ -1608,6 +1615,7 @@ void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const 
 	if (snapshot_plain_folders) m_app.settings.git_snapshot_plain_folders = *snapshot_plain_folders;
 	if (pull_before_chat) m_app.settings.git_pull_before_chat = *pull_before_chat;
 	if (svn_update_before_chat) m_app.settings.svn_update_before_chat = *svn_update_before_chat;
+	if (has_svn_layouts) m_app.settings.svn_repository_layouts = std::move(svn_layouts);
 	if (port_value) m_app.settings.git_port_method = port_method == "merge" ? GitPortMethod::Merge : port_method == "squash" ? GitPortMethod::Squash : GitPortMethod::Patch;
 	if (base_value) m_app.settings.git_default_base_branch = base_branch;
 	if (cleanup_enabled) m_app.settings.worktree_cleanup_enabled = *cleanup_enabled;

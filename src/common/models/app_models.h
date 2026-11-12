@@ -1098,6 +1098,18 @@ struct ComputePool
 	std::vector<ComputePoolMember> members;
 };
 
+/// <summary>Where one SVN repository keeps its main line, branches and tags, as repository-relative folders.</summary>
+struct SvnRepositoryLayout
+{
+	/// Repository root URL or repository UUID.
+	std::string repository;
+	std::string trunk = "trunk";
+	std::string branches = "branches";
+	std::string tags = "tags";
+
+	bool operator==(const SvnRepositoryLayout&) const = default;
+};
+
 struct AppSettings
 {
 	std::string voice_input_mode = "system";
@@ -1135,6 +1147,8 @@ struct AppSettings
 	int http_cache_clear_interval_days = 0;
 	bool svn_enabled = true;
 	bool svn_update_before_chat = false;
+	/// Repositories that do not use `trunk`/`branches`/`tags`; display only, never used to choose an action's target.
+	std::vector<SvnRepositoryLayout> svn_repository_layouts;
 	bool confirm_delete_chat = true;
 	bool confirm_delete_folder = true;
 	bool remember_last_chat = true;

@@ -134,7 +134,8 @@ namespace uam::remote
 		    const std::filesystem::path& working_directory,
 		    const std::vector<std::string>& argv, int timeout_ms,
 		    std::stop_token stop_token = {}, std::string_view standard_input = {},
-		    std::string retained_control_token = {}, bool* start_request_attempted_out = nullptr);
+		    std::string retained_control_token = {}, bool* start_request_attempted_out = nullptr,
+		    const std::function<std::string(std::string_view, int&)>& output_failure = {});
 		void SetProcessControlToken(const std::string& session_id,
 		                            std::string control_token);
 		bool WriteProcess(const std::string& session_id, std::string_view bytes,

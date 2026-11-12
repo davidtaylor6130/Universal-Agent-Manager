@@ -929,7 +929,7 @@ namespace uam
 		std::string goal_review_user_prompt;
 		std::string goal_review_assistant_text;
 		int goal_review_repair_attempts = 0;
-		// Runtime receipt from validated provider usage, never reconstructed from review text.
+		// Runtime receipt from validated provider usage for the current goal worker or review turn, never reconstructed from turn text.
 		struct GoalReviewUsage
 		{
 			int turn_serial = -1;
