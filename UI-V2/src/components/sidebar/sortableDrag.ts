@@ -32,14 +32,15 @@ export function sortPreview(rows: readonly SortRow[], draggedId: string, probeY:
 
 /**
  * Applies a saved manual order to a list's default order. Ids the user has not placed yet (new pins, chats newly
- * active) stay on top in their default order; placed ids follow in the saved order. An empty save is the default.
- * ponytail: an id that leaves the list keeps its saved slot until the next reorder saves the visible list.
+ * active) and ids `returned` reports as back since the save stay on top in their default order; placed ids follow in
+ * the saved order. An empty save is the default.
  */
-export function applyManualOrder(ids: readonly string[], saved: readonly string[]): readonly string[] {
+export function applyManualOrder(ids: readonly string[], saved: readonly string[], returned?: (id: string) => boolean): readonly string[] {
   if (saved.length === 0) return ids
   const rank = new Map(saved.map((id, index) => [id, index]))
-  const fresh = ids.filter((id) => !rank.has(id))
-  const placed = ids.filter((id) => rank.has(id)).sort((a, b) => rank.get(a)! - rank.get(b)!)
+  const isPlaced = (id: string) => rank.has(id) && !returned?.(id)
+  const fresh = ids.filter((id) => !isPlaced(id))
+  const placed = ids.filter(isPlaced).sort((a, b) => rank.get(a)! - rank.get(b)!)
   return [...fresh, ...placed]
 }
 

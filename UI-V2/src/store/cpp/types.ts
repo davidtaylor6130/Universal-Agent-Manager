@@ -820,6 +820,7 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   showWorktreePathInSidebar?: boolean
   sidebarPinnedChatOrder?: string[]
   sidebarActiveChatOrder?: string[]
+  sidebarActiveChatOrderSavedAtMs?: number
   steerActiveTurnOnSend?: boolean
   gitEnabled?: boolean
   svnEnabled?: boolean

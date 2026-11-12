@@ -140,6 +140,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   /** Manual order of the Pinned and Active chat lists; ids not listed keep the default order above them. */
   sidebarPinnedChatOrder: string[]
   sidebarActiveChatOrder: string[]
+  /** When the Active order was last saved; a placed chat marked Done or snoozed since then returns on top. */
+  sidebarActiveChatOrderSavedAtMs: number
   steerActiveTurnOnSend: boolean
   gitEnabled: boolean
   svnEnabled: boolean

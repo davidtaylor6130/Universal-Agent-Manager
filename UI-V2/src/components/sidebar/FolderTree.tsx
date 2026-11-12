@@ -254,6 +254,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   }
   const pinnedChatOrder = useAppStore((s) => s.sidebarPinnedChatOrder)
   const activeChatOrder = useAppStore((s) => s.sidebarActiveChatOrder)
+  const activeChatOrderSavedAtMs = useAppStore((s) => s.sidebarActiveChatOrderSavedAtMs)
   // Pinned and Active rows reach the latest drag and keyboard handlers through a stable context value.
   const chatSortRef = useRef<{ start: (list: ChatSortList, sessionId: string, event: ReactPointerEvent<HTMLElement>) => void; move: (list: ChatSortList, sessionId: string, direction: -1 | 1) => void } | null>(null)
   const chatSort = useMemo(() => ({
@@ -898,7 +899,15 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     })
   }
 
-  const chatSortIds = { pinned: applyManualOrder(searchModel.pinnedSessionIds, pinnedChatOrder), active: applyManualOrder(searchModel.activeSessionIds, activeChatOrder) }
+  // A placed Active chat that left (Done, Clear all, snooze) after the order was saved and is back shows on top again.
+  // ponytail: leaving by three days of inactivity sets no timestamp, so such a chat returns to its saved place.
+  const returnedToActive = (id: string) => {
+    const session = sessionsById.get(id)
+    const settledMs = session?.settledAt ? Date.parse(session.settledAt) : NaN
+    const wokeMs = session?.snoozedUntilMs ?? 0
+    return settledMs > activeChatOrderSavedAtMs || (wokeMs > activeChatOrderSavedAtMs && wokeMs <= snoozeNowMs)
+  }
+  const chatSortIds = { pinned: applyManualOrder(searchModel.pinnedSessionIds, pinnedChatOrder), active: applyManualOrder(searchModel.activeSessionIds, activeChatOrder, returnedToActive) }
   const chatListElement = (list: ChatSortList) => document.getElementById(list === 'pinned' ? 'pinned-chat-list' : 'active-chat-list')
   const chatName = (sessionId: string) => sessionsById.get(sessionId)?.name || 'Chat'
   const announceChatPosition = (sessionId: string, ids: readonly string[]) =>

@@ -71,6 +71,7 @@ describe('FolderTree', () => {
       resourceCollections: [],
       sidebarPinnedChatOrder: [],
       sidebarActiveChatOrder: [],
+      sidebarActiveChatOrderSavedAtMs: 0,
 	  executionHosts: [
 		{ id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
 	  ],
@@ -1174,6 +1175,31 @@ describe('FolderTree', () => {
     // Search shows a filtered view, so rows are not sortable there.
     act(() => root.render(<FolderTree searchQuery="Chat" />))
     expect(host.querySelector('#active-chat-list [data-sort-id]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('brings a placed Active chat back on top when it returns after Done', () => {
+    const savedAt = Date.now() - 60 * 60_000
+    const at = (offset: number) => new Date(savedAt + offset)
+    const chat = (index: number, extra: Partial<Session>) => ({ ...makeSession(index), createdAt: at(0), updatedAt: at(10 * 60_000 - index), lastOpenedAt: at(0), ...extra })
+    useAppStore.setState({
+      // The user placed chat-2 above chat-1. chat-1 was then marked Done and has new work since.
+      sessions: [chat(1, { settledAt: at(60_000).toISOString() }), chat(2, {})],
+      sidebarActiveChatOrder: ['chat-2', 'chat-1'],
+      sidebarActiveChatOrderSavedAtMs: savedAt,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const active = () => [...host.querySelectorAll<HTMLElement>('#active-chat-list [data-sort-id]')].map((row) => row.dataset.sortId)
+    expect(active()).toEqual(['chat-1', 'chat-2'])
+
+    // Done before the order was saved does not count as returning.
+    act(() => useAppStore.setState({ sessions: [chat(1, { settledAt: at(-60_000).toISOString() }), chat(2, {})] }))
+    expect(active()).toEqual(['chat-2', 'chat-1'])
 
     act(() => root.unmount())
     host.remove()

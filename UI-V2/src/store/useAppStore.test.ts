@@ -6993,8 +6993,10 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().sidebarActiveChatOrder).toEqual([])
     const restarted = makeCppState(1)
     restarted.settings.sidebarPinnedChatOrder = ['chat-b', 'chat-a']
+    restarted.settings.sidebarActiveChatOrderSavedAtMs = 1767225600123
     useAppStore.getState().loadFromCef(restarted)
     expect(useAppStore.getState().sidebarPinnedChatOrder).toEqual(['chat-b', 'chat-a'])
+    expect(useAppStore.getState().sidebarActiveChatOrderSavedAtMs).toBe(1767225600123)
 
     const requests: Array<{ action: string; payload?: unknown }> = []
     window.cefQuery = ({ request, onSuccess, onFailure }) => {
@@ -7002,12 +7004,17 @@ describe('useAppStore Gemini CLI slice', () => {
       if (requests.length === 1) onSuccess('{}')
       else onFailure(500, 'Failed to save the sidebar order.')
     }
+    const before = Date.now()
     await expect(useAppStore.getState().setSidebarChatOrder('active', ['chat-c', 'chat-a'])).resolves.toBe(true)
     expect(requests[0]).toMatchObject({ action: 'setSidebarChatOrder', payload: { list: 'active', order: ['chat-c', 'chat-a'] } })
     expect(useAppStore.getState().sidebarActiveChatOrder).toEqual(['chat-c', 'chat-a'])
-    // A refused save restores the confirmed order.
+    // An Active save is stamped, so chats marked Done or snoozed after it come back on top.
+    const savedAt = useAppStore.getState().sidebarActiveChatOrderSavedAtMs
+    expect(savedAt).toBeGreaterThanOrEqual(before)
+    // A refused save restores the confirmed order and its stamp.
     await expect(useAppStore.getState().setSidebarChatOrder('active', ['chat-a', 'chat-c'])).resolves.toBe(false)
     expect(useAppStore.getState().sidebarActiveChatOrder).toEqual(['chat-c', 'chat-a'])
+    expect(useAppStore.getState().sidebarActiveChatOrderSavedAtMs).toBe(savedAt)
   })
 
   it('projects native Computer Use cleanup and retains it across unrelated sparse patches', async () => {

@@ -46,6 +46,7 @@
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <chrono>
 #include <array>
 #include <filesystem>
 #include "common/config/execution_host_config.h"
@@ -716,6 +717,9 @@ void UamQueryHandler::HandleSetSidebarChatOrder(CefRefPtr<CefBrowser> browser, c
 	const AppSettings previous = m_app.settings;
 	std::vector<std::string>& target = list == "pinned" ? m_app.settings.sidebar_pinned_chat_order : m_app.settings.sidebar_active_chat_order;
 	target = uam::nlohmann_json::TrimmedStringArrayField(payload, "order");
+	// Chats marked Done or snoozed after this moment return to the top of Active instead of their saved place.
+	if (list == "active")
+		m_app.settings.sidebar_active_chat_order_saved_at_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 	uam::settings::NormalizeUamAgentPreferences(m_app.settings);
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{

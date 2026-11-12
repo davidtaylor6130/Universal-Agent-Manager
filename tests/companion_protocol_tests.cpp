@@ -390,8 +390,8 @@ namespace
 		Require(safe["theme"] == "dark" && safe["executionHosts"][0]["id"] == "remote", "Mobile must retain display settings and host identity");
 		Require(safe.dump().find("secret") == std::string::npos && safe.dump().find("private") == std::string::npos, "Mobile settings must not expose credentials, instructions or unknown configuration");
 		Require(safe["hostScopedSettingsValues"]["remote"]["defaultNewChatProviderId"] == "codex-cli", "Safe host defaults must survive projection");
-		const auto ordered = MobileSettings({{"sidebarPinnedChatOrder", Json::array({"chat-b", "chat-a"})}, {"sidebarActiveChatOrder", Json::array({"chat-c"})}});
-		Require(ordered["sidebarPinnedChatOrder"] == Json::array({"chat-b", "chat-a"}) && ordered["sidebarActiveChatOrder"] == Json::array({"chat-c"}), "The phone shows Pinned and Active in the same manual order as the desktop");
+		const auto ordered = MobileSettings({{"sidebarPinnedChatOrder", Json::array({"chat-b", "chat-a"})}, {"sidebarActiveChatOrder", Json::array({"chat-c"})}, {"sidebarActiveChatOrderSavedAtMs", 1767225600123}});
+		Require(ordered["sidebarPinnedChatOrder"] == Json::array({"chat-b", "chat-a"}) && ordered["sidebarActiveChatOrder"] == Json::array({"chat-c"}) && ordered["sidebarActiveChatOrderSavedAtMs"] == 1767225600123, "The phone shows Pinned and Active in the same manual order as the desktop");
 	}
 
 	Json SettingsState()
