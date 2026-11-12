@@ -10,11 +10,14 @@ import { motionAllowed, scaledMs } from '../ui/Overlay'
 
 export interface SortRow { id: string; top: number; height: number }
 
-/** Order and per-row offsets when the dragged row's centre sits at `centerY` (same coordinates as `rows`). */
-export function sortPreview(rows: readonly SortRow[], draggedId: string, centerY: number) {
+/**
+ * Order and per-row offsets when the pointer is at `probeY` (same coordinates as `rows`). The pointer, not the
+ * dragged row's centre, picks the slot, so a tall expanded row moves past a sibling as soon as its handle does.
+ */
+export function sortPreview(rows: readonly SortRow[], draggedId: string, probeY: number) {
   const others = rows.filter((row) => row.id !== draggedId)
   const order = others.map((row) => row.id)
-  order.splice(others.filter((row) => row.top + row.height / 2 < centerY).length, 0, draggedId)
+  order.splice(others.filter((row) => row.top + row.height / 2 < probeY).length, 0, draggedId)
   const byId = new Map(rows.map((row) => [row.id, row]))
   const offsets = new Map<string, number>()
   let top = rows[0]?.top ?? 0
@@ -48,14 +51,20 @@ export interface SortableDragOptions {
 
 const AUTO_SCROLL_EDGE = 36
 const AUTO_SCROLL_MAX = 14
+/** A save that has not answered by then glides the row back, so a stalled bridge never leaves it lifted. */
+const SAVE_TIMEOUT_MS = 5000
 let busy = false
+
+/** True while a drag runs or its drop is still settling; other reorder paths wait for it. */
+export const isSorting = () => busy
 
 const sortId = (element: Element) => (element as HTMLElement).dataset.sortId ?? ''
 const siblingsOf = (row: HTMLElement) => Array.from(row.parentElement?.children ?? []).filter((element): element is HTMLElement => element instanceof HTMLElement && element.dataset.sortId !== undefined)
 
 function scrollParent(element: HTMLElement): HTMLElement | null {
   for (let node = element.parentElement; node; node = node.parentElement) {
-    if (/(auto|scroll)/.test(getComputedStyle(node).overflowY)) return node
+    // Only an ancestor that actually overflows can scroll; skip the style lookup for the rest.
+    if (node.scrollHeight > node.clientHeight && /(auto|scroll)/.test(getComputedStyle(node).overflowY)) return node
   }
   return null
 }
@@ -98,20 +107,23 @@ function swallowNextClick(doc: Document, released: boolean) {
     doc.removeEventListener('click', swallow, true)
     doc.removeEventListener('pointerup', clearSoon, true)
     doc.removeEventListener('pointerdown', clear, true)
-    doc.removeEventListener('keydown', clear, true)
+    doc.removeEventListener('keydown', onKey, true)
   }
+  // Key repeat or a lone modifier is not a new action; anything else (Enter on a button) re-arms clicks.
+  const onKey = (event: KeyboardEvent) => { if (!event.repeat && !['Shift', 'Control', 'Alt', 'Meta', 'Escape'].includes(event.key)) clear() }
   const clearSoon = () => win.setTimeout(clear, 0)
   doc.addEventListener('click', swallow, true)
   // A release outside the window produces no click; the next press or key re-arms clicks at once.
   doc.addEventListener('pointerdown', clear, true)
-  doc.addEventListener('keydown', clear, true)
+  doc.addEventListener('keydown', onKey, true)
   if (released) clearSoon()
   else doc.addEventListener('pointerup', clearSoon, true)
 }
 
 /** Starts tracking a press on a sortable row's handle; it becomes a drag only after the threshold. */
 export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options: SortableDragOptions) {
-  if (busy || down.button !== 0 || down.nativeEvent.isPrimary === false) return
+  // A macOS Ctrl-click opens the context menu rather than starting a drag.
+  if (busy || down.button !== 0 || down.ctrlKey || down.nativeEvent.isPrimary === false) return
   if ((down.target as Element).closest('input, textarea, select, button, a, [contenteditable="true"]')) return
   const row = down.currentTarget.closest<HTMLElement>('[data-sort-id]')
   if (!row) return
@@ -128,7 +140,6 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
   let measured: SortRow[] = []
   let scroller: HTMLElement | null = null
   let startScroll = 0
-  let grabOffset = 0
   let target: string | null = null
   let order: string[] = []
   let offsets = new Map<string, number>()
@@ -147,9 +158,8 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
       options.onTargetChange?.(target)
     }
     row.style.transform = `translate3d(0, ${pointerY - startY + scrollTop() - startScroll}px, 0) scale(1.02)`
-    const dragged = measured.find((entry) => entry.id === id)!
     const preview = target === null
-      ? sortPreview(measured, id, pointerY + scrollTop() - grabOffset + dragged.height / 2)
+      ? sortPreview(measured, id, pointerY + scrollTop())
       : { order: measured.map((entry) => entry.id), offsets: new Map<string, number>() }
     const key = `${target === null}:${preview.order.join('\n')}`
     order = preview.order
@@ -188,7 +198,6 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
       const box = element.getBoundingClientRect()
       return { id: sortId(element), top: box.top + startScroll, height: box.height }
     })
-    grabOffset = startY - row.getBoundingClientRect().top
     for (const sibling of rows) if (sibling !== row) sibling.style.transition = 'transform var(--dur-base) var(--ease)'
     row.dataset.sortDragging = ''
     row.style.position = 'relative'
@@ -199,6 +208,8 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
     row.style.boxShadow = 'var(--elev-2), 0 0 0 1px var(--border)'
     row.style.transition = 'box-shadow var(--dur-fast) var(--ease)'
     doc.body.style.cursor = 'grabbing'
+    // Wheel or trackpad scrolling mid-drag keeps the lifted row under the pointer.
+    scroller?.addEventListener('scroll', update)
     options.onStart?.(id)
     update()
   }
@@ -210,6 +221,7 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
     doc.removeEventListener('keydown', key, true)
     doc.removeEventListener('dragstart', preventDefault, true)
     win.removeEventListener('blur', cancel)
+    scroller?.removeEventListener('scroll', update)
     if (frame) cancelAnimationFrame(frame)
     frame = 0
     doc.body.style.cursor = ''
@@ -227,6 +239,8 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
   }
 
   const move = (event: PointerEvent) => {
+    // The release was lost (outside the window, a system gesture): end rather than start a phantom drag.
+    if (!(event.buttons & 1)) { cancel(); return }
     pointerX = event.clientX
     pointerY = event.clientY
     if (!started) {
@@ -268,12 +282,19 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
     row.style.transition = 'transform var(--dur-base) var(--ease-out-soft), box-shadow var(--dur-base) var(--ease)'
     row.style.transform = `translate3d(0, ${slot}px, 0)`
     row.style.boxShadow = ''
+    // The settling row no longer blocks clicks on whatever sits under it.
+    row.style.pointerEvents = ''
     if (!changed) { settleBack(); return }
+    let settled = false
+    const timeout = win.setTimeout(() => { settled = true; settleBack() }, SAVE_TIMEOUT_MS)
     void Promise.resolve(options.onDrop({ order, changed, target: dropTarget })).catch(() => false).then((saved) => {
+      win.clearTimeout(timeout)
+      if (settled) return
+      settled = true
       if (!saved) { settleBack(); return }
       if (dropTarget !== null) { finish(); return }
-      afterOrder(rows, order, (settled) => {
-        if (!settled) { settleBack(); return }
+      afterOrder(rows, order, (shown) => {
+        if (!shown) { settleBack(); return }
         // The DOM now matches what the transforms showed, so dropping them changes nothing on screen.
         for (const element of rows) element.style.transition = 'none'
         finish()
@@ -300,6 +321,7 @@ export function glideAfter(rows: readonly HTMLElement[], commit: () => Promise<b
       for (const element of doc.querySelectorAll<HTMLElement>('[data-sort-id]')) {
         const top = before.get(sortId(element))
         const dy = top === undefined ? 0 : top - element.getBoundingClientRect().top
+        // Web Animations cannot read CSS variables; these mirror --dur-base and --ease-out-soft.
         if (dy) element.animate([{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }], { duration: scaledMs(180), easing: 'cubic-bezier(0.22, 1, 0.36, 1)' })
       }
     })

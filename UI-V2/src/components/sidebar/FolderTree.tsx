@@ -28,7 +28,7 @@ import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../type
 import { chatGridLeaves, chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
 import { RowSubmenu } from './RowSubmenu'
-import { glideAfter, startSortableDrag } from './sortableDrag'
+import { glideAfter, isSorting, startSortableDrag } from './sortableDrag'
 import { ChatSelectionContext, MenuDivider, SingleOnlyMenuItem, type ChatSelection } from './bulkActions'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import type { ResourceCollection } from '../../types/resourceCollection'
@@ -246,8 +246,12 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const [recoveryLoading, setRecoveryLoading] = useState(false)
   const [recoveryApplying, setRecoveryApplying] = useState(false)
   const [gridLayout, setGridLayout] = useState(readChatGridLayout)
-  // Collection a dragged workspace would join on release; '' is the top level.
-  const [folderDropCollectionId, setFolderDropCollectionId] = useState<string | null>(null)
+  // Outlines the collection a dragged workspace would join, straight on the DOM so the tree never re-renders mid-drag.
+  const showFolderDropTarget = (collectionId: string | null) => {
+    for (const element of treeRef.current?.querySelectorAll<HTMLElement>('[data-drop-collection-id]') ?? []) {
+      element.classList.toggle('uam-sb-drop-target', element.dataset.dropCollectionId === collectionId)
+    }
+  }
   // Written directly so announcing a drag never re-renders the whole tree.
   const moveStatusRef = useRef<HTMLDivElement>(null)
   const setMoveAnnouncement = (text: string) => { if (moveStatusRef.current) moveStatusRef.current.textContent = text }
@@ -804,7 +808,6 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         selectionTargets={!companionContext && selectedCollectionIds.has(collection.id) ? selectedCollectionTargets : null}
         onHeaderClick={(event) => handleCollectionClick(collection.id, event)}
         onDeleteSelected={requestCollectionDelete}
-        folderDropTarget={folderDropCollectionId === collection.id}
       >
         {collectionGroups.filter((group) => parentOf(group.collection) === collection.id).map(renderCollection)}
         {folderRows.map(renderFolderRow)}
@@ -841,6 +844,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   }
 
   const moveFolderWithKeyboard = (sourceId: string, direction: -1 | 1) => {
+    if (isSorting()) return
     const rows = folderListOf(sourceId)
     const sourceIndex = rows.findIndex(({ folder }) => folder.id === sourceId)
     const target = rows[sourceIndex + direction]
@@ -867,7 +871,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         const collectionId = under.closest<HTMLElement>('[data-drop-collection-id]')?.dataset.dropCollectionId ?? ''
         return collectionId === ownCollectionId ? null : collectionId
       },
-      onTargetChange: setFolderDropCollectionId,
+      onTargetChange: showFolderDropTarget,
       onStart: () => setMoveAnnouncement(`Moving ${folder.name}. Press Escape to cancel.`),
       onCancel: () => setMoveAnnouncement(`Move of ${folder.name} cancelled`),
       onDrop: async ({ order, target }) => {
@@ -1548,13 +1552,12 @@ async function moveCollection(collectionId: string, parentId: string | null) {
   return false
 }
 
-function FolderCollection({ collection, folderCount, hiddenPaneColors, selected, selectionTargets, onHeaderClick, onDeleteSelected, folderDropTarget, children }: {
+function FolderCollection({ collection, folderCount, hiddenPaneColors, selected, selectionTargets, onHeaderClick, onDeleteSelected, children }: {
   collection: ResourceCollection; folderCount: number; hiddenPaneColors: string[]; selected: boolean
   /** Selected collections the menu acts on when this header is part of a multi-selection. */
   selectionTargets: BulkTarget[] | null
   onHeaderClick: (event: ReactMouseEvent<HTMLElement>) => void; onDeleteSelected: () => void
-  /** A dragged workspace would join this collection on release. */
-  folderDropTarget: boolean; children: ReactNode
+  children: ReactNode
 }) {
   const iconPicker = useCustomIconPicker()
   const toggle = useAppStore((state) => state.toggleResourceCollection)
@@ -1627,8 +1630,8 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
       data-testid={`folder-collection-${collection.id}`}
       // Workspace rows drag by pointer (sortableDrag) and find their target collection through this attribute.
       data-drop-collection-id={collection.id}
-      // The lifted workspace covers the header, so a workspace drop outlines the whole collection.
-      className={`mb-0 rounded-md transition-colors duration-150${folderDropTarget ? ' uam-sb-drop-target' : ''}`}
+      // The lifted workspace covers the header, so a workspace drop outlines the whole collection (uam-sb-drop-target).
+      className="mb-0 rounded-md"
       onDragOver={(event) => {
         if (!isCollectionDrag(event)) return
         // Only the innermost collection is a target; invalid nesting targets do not accept the drop.

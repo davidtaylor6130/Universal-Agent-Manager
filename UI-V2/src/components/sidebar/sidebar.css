@@ -15,7 +15,13 @@
 .uam-sb-collapse__inner { min-height: 0; overflow: hidden; }
 /* A lifted row may follow the pointer past its list's end; the clip exists only for the collapse animation. */
 .uam-sb-collapse__inner:has([data-sort-dragging]) { overflow: visible; }
+[data-drop-collection-id] { transition: background var(--dur-fast) var(--ease); }
 .uam-sb-drop-target { background: var(--sidebar-item-hover); outline: 1px solid var(--accent); outline-offset: -1px; }
+@media (forced-colors: active) {
+  /* Forced colours drop the lift shadow; an outline keeps the dragged row distinct. */
+  [data-sort-dragging] { outline: 1px solid Highlight; }
+  .uam-sb-drop-target { outline-color: Highlight; }
+}
 /* The collapse clips during its animation, so everything inside draws the focus ring inside its own shape. */
 .uam-sb-collapse__inner :focus-visible { outline-offset: var(--focus-inset); }
 .uam-sb-collapse[hidden] {

@@ -63,7 +63,7 @@ it('follows the pointer within the input budget while dragging a workspace among
   document.body.append(host)
   const root = createRoot(host)
   const move = (type: string, y: number, target: EventTarget = document) =>
-    target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 10, clientY: y, button: 0 }))
+    target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 10, clientY: y, button: 0, buttons: type === 'pointerup' ? 0 : 1 }))
   try {
     act(() => root.render(<FolderTree searchQuery="" />))
     const rows = [...host.querySelectorAll<HTMLElement>('[data-sort-id]')]

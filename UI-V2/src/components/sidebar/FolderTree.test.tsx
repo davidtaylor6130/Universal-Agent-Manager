@@ -10,7 +10,7 @@ import { FolderTree } from './FolderTree'
 const stubRect = (element: HTMLElement, top: number, height: number) =>
   vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({ top, bottom: top + height, height, left: 0, right: 100, width: 100, x: 0, y: top, toJSON: () => ({}) })
 const pointer = (target: EventTarget, type: string, clientX: number, clientY: number) =>
-  target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY, button: 0 }))
+  target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY, button: 0, buttons: type === 'pointerup' ? 0 : 1 }))
 /** A drag swallows the click that follows its release until the next task; let that pass before later clicks. */
 const releaseClickGuard = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
 import { chatGridLeaves, defaultChatGridLayout, setChatInLeaf, splitChatLeaf, writeChatGridLayout } from '../../utils/chatGridStorage'
@@ -1044,13 +1044,13 @@ describe('FolderTree', () => {
     act(() => pointer(header, 'pointerdown', 10, 10))
     act(() => pointer(document, 'pointermove', 11, 12))
     expect(source.style.transform).toBe('')
-    act(() => pointer(document, 'pointermove', 10, 55))
-    expect(source.style.transform).toBe('translate3d(0, 45px, 0) scale(1.02)')
+    act(() => pointer(document, 'pointermove', 10, 65))
+    expect(source.style.transform).toBe('translate3d(0, 55px, 0) scale(1.02)')
     expect(target.style.transform).toBe('translate3d(0, -40px, 0)')
     expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Moving Project. Press Escape to cancel.')
     const expanded = header.getAttribute('aria-expanded')
     await act(async () => {
-      pointer(document, 'pointerup', 10, 55)
+      pointer(document, 'pointerup', 10, 65)
       // The click that follows the release ends the drag; it does not toggle the workspace.
       header.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       await Promise.resolve()
@@ -1097,6 +1097,87 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('keeps a short press a click and glides back when a dropped order fails to save', async () => {
+    const second = { ...makeFolder(), id: 'second', name: 'Second', directory: '/tmp/second' }
+    const reorderFolders = vi.fn(async () => false)
+    useAppStore.setState({ folders: [makeFolder(), second], sessions: [], reorderFolders })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const source = host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
+    const target = host.querySelector('[data-testid="folder-row-second"]') as HTMLElement
+    stubRect(source, 0, 40)
+    stubRect(target, 40, 40)
+    const header = host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!
+
+    // Under the threshold the press stays a click and toggles the workspace.
+    const expanded = header.getAttribute('aria-expanded')
+    act(() => {
+      pointer(header, 'pointerdown', 10, 10)
+      pointer(document, 'pointermove', 12, 11)
+      pointer(document, 'pointerup', 12, 11)
+      header.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(header.getAttribute('aria-expanded')).not.toBe(expanded)
+
+    act(() => pointer(header, 'pointerdown', 10, 10))
+    act(() => pointer(document, 'pointermove', 10, 65))
+    await act(async () => { pointer(document, 'pointerup', 10, 65); await Promise.resolve() })
+    expect(reorderFolders).toHaveBeenCalledWith(['second', 'project'])
+    // The refused save leaves the order alone and hands the rows back to React.
+    expect([...host.querySelectorAll('[data-sort-id]')].map((row) => (row as HTMLElement).dataset.sortId)).toEqual(['project', 'second'])
+    expect(source.style.transform).toBe('')
+    expect(source.hasAttribute('data-sort-dragging')).toBe(false)
+    expect(target.style.transform).toBe('')
+    await releaseClickGuard()
+
+    // A later drag still starts.
+    act(() => pointer(header, 'pointerdown', 10, 10))
+    act(() => pointer(document, 'pointermove', 10, 65))
+    expect(source.hasAttribute('data-sort-dragging')).toBe(true)
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    act(() => pointer(document, 'pointerup', 10, 65))
+    await releaseClickGuard()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('drags a workspace from one collection into another', async () => {
+    useAppStore.setState({
+      sessions: [],
+      resourceCollections: [
+        { id: 'work', name: 'Work', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+        { id: 'home', name: 'Home', collapsed: false, references: [] },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const home = host.querySelector<HTMLElement>('[data-testid="collection-header-home"]')!
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => home })
+    try {
+      const header = host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!
+      act(() => pointer(header, 'pointerdown', 10, 10))
+      act(() => pointer(document, 'pointermove', 10, 80))
+      expect(host.querySelector('[data-testid="folder-collection-home"]')?.classList.contains('uam-sb-drop-target')).toBe(true)
+      expect(host.querySelector('[data-testid="folder-collection-work"]')?.classList.contains('uam-sb-drop-target')).toBe(false)
+      await act(async () => { pointer(document, 'pointerup', 10, 80); await Promise.resolve() })
+    } finally {
+      delete (document as { elementFromPoint?: unknown }).elementFromPoint
+    }
+    const collections = useAppStore.getState().resourceCollections
+    expect(collections.find((collection) => collection.id === 'work')?.references).toEqual([])
+    expect(collections.find((collection) => collection.id === 'home')?.references.map((reference) => reference.target)).toEqual(['project'])
+    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Project moved into Home')
+    await releaseClickGuard()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('cancels a workspace drag with Escape and saves nothing', async () => {
     const second = { ...makeFolder(), id: 'second', name: 'Second', directory: '/tmp/second' }
     const reorderFolders = vi.fn(async () => true)
@@ -1112,12 +1193,12 @@ describe('FolderTree', () => {
     const header = host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!
 
     act(() => pointer(header, 'pointerdown', 10, 10))
-    act(() => pointer(document, 'pointermove', 10, 55))
+    act(() => pointer(document, 'pointermove', 10, 65))
     expect(target.style.transform).toBe('translate3d(0, -40px, 0)')
     act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
     const expanded = header.getAttribute('aria-expanded')
     act(() => {
-      pointer(document, 'pointerup', 10, 55)
+      pointer(document, 'pointerup', 10, 65)
       header.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(header.getAttribute('aria-expanded')).toBe(expanded)
@@ -1134,7 +1215,13 @@ describe('FolderTree', () => {
   it('persists dragged workspace order inside a collection', async () => {
     const second = { ...makeFolder(), id: 'second', name: 'Second', directory: '/tmp/second' }
     const reorderFolders = vi.fn(async () => true)
-    const reorderResourceReferences = vi.fn(async () => true)
+    // Saves apply like the native acknowledgement does, so the drop settles and the keyboard path can follow.
+    const reorderResourceReferences = vi.fn(async (collectionId: string, ids: string[]) => {
+      useAppStore.setState((state) => ({ resourceCollections: state.resourceCollections.map((collection) => collection.id === collectionId
+        ? { ...collection, references: ids.flatMap((id) => collection.references.filter((reference) => reference.id === id)) }
+        : collection) }))
+      return true
+    })
     useAppStore.setState({
       folders: [makeFolder(), second],
       sessions: [],
@@ -1163,17 +1250,18 @@ describe('FolderTree', () => {
     stubRect(target, 40, 40)
 
     act(() => pointer(keyboardSource, 'pointerdown', 10, 10))
-    act(() => pointer(document, 'pointermove', 10, 55))
-    await act(async () => { pointer(document, 'pointerup', 10, 55); await Promise.resolve() })
+    act(() => pointer(document, 'pointermove', 10, 65))
+    await act(async () => { pointer(document, 'pointerup', 10, 65); await Promise.resolve() })
 
     expect(host.querySelector('[data-testid="folder-drag-handle-project"]')).toBeNull()
     expect(reorderResourceReferences).toHaveBeenCalledWith('work', ['second-ref', 'website-ref', 'project-ref'])
     expect(reorderFolders).not.toHaveBeenCalled()
 
     reorderResourceReferences.mockClear()
-    await act(async () => { keyboardSource.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); await Promise.resolve() })
-    expect(reorderResourceReferences).toHaveBeenCalledWith('work', ['second-ref', 'website-ref', 'project-ref'])
-    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Project moved to position 2 of 2')
+    const header = () => host.querySelector('[data-testid="folder-header-project"]') as HTMLElement
+    await act(async () => { header().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })); await Promise.resolve() })
+    expect(reorderResourceReferences).toHaveBeenCalledWith('work', ['project-ref', 'website-ref', 'second-ref'])
+    expect(host.querySelector('[data-testid="workspace-move-status"]')?.textContent).toBe('Project moved to position 1 of 2')
 
     await releaseClickGuard()
     act(() => root.unmount())
