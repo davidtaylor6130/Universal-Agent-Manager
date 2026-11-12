@@ -235,12 +235,14 @@ namespace uam
 	bool PrWatchService::Unwatch(std::string_view chat_id, const pr_watch::Reference& pr)
 	{
 		Link* link = FindLink(chat_id, pr);
-		if (link == nullptr || !link->watching) return false;
+		// A finished watch can still hold its final message; stopping drops that too.
+		if (link == nullptr || (!link->watching && link->pending_wake.empty())) return false;
+		const bool was_watching = link->watching;
 		link->watching = false;
 		link->pending_wake.clear();
 		m_dirty = true;
 		Save();
-		return true;
+		return was_watching;
 	}
 
 	bool PrWatchService::Unlink(std::string_view chat_id, const pr_watch::Reference& pr)
@@ -258,7 +260,8 @@ namespace uam
 		bool changed = false;
 		for (Link& link : m_links)
 		{
-			if (link.chat_id != chat_id || !link.watching) continue;
+			// Includes a finished watch whose final message is not delivered yet, so Stop and Done cancel it.
+			if (link.chat_id != chat_id || (!link.watching && link.pending_wake.empty())) continue;
 			link.watching = false;
 			link.pending_wake.clear();
 			changed = true;
@@ -580,17 +583,19 @@ namespace uam
 		}
 
 		// A deleted chat takes its links with it; a chat the user marks done keeps them but stops watching.
-		// ponytail: an empty chat list is treated as "not loaded yet" so startup can never wipe the watch list.
-		if (!app.chats.empty())
+		// ponytail: an empty chat list counts as "not loaded yet" until chats were seen once, so startup can never wipe the
+		// watch list; after that, deleting the last chat removes its links too.
+		m_chats_seen = m_chats_seen || !app.chats.empty();
+		if (m_chats_seen)
 		{
 			std::set<std::string> orphaned;
 			for (Link& link : m_links)
 			{
 				const ChatSession* chat = ChatDomainService().FindChatById(app, link.chat_id);
 				if (chat == nullptr) orphaned.insert(link.chat_id);
-				else if (link.watching && chat->settled_at != link.settled_seen && !chat->settled_at.empty())
+				else if ((link.watching || !link.pending_wake.empty()) && chat->settled_at != link.settled_seen && !chat->settled_at.empty())
 				{
-					// Marked done since the watch started.
+					// Marked done since the watch started: it ends, and news not yet delivered (such as a final merged message) is dropped.
 					link.watching = false;
 					link.pending_wake.clear();
 					m_dirty = true;

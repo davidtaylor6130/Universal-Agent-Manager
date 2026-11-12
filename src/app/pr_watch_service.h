@@ -76,11 +76,11 @@ namespace uam
 
 		/// Links the pull request to the chat and watches it. Watching again keeps what was already reported.
 		bool Watch(const AppState& app, std::string_view chat_id, const pr_watch::Reference& pr, std::int64_t now_ms, std::string* error_out = nullptr);
-		/// Stops watching and keeps the link and what was reported.
+		/// Stops watching and keeps the link and what was reported; drops any undelivered message. True when it was watching.
 		bool Unwatch(std::string_view chat_id, const pr_watch::Reference& pr);
 		/// Removes the link and forgets what was reported.
 		bool Unlink(std::string_view chat_id, const pr_watch::Reference& pr);
-		/// The user pressed Stop on the chat: every watch of that chat ends.
+		/// The user pressed Stop on the chat: every watch of that chat ends and no undelivered message is sent.
 		bool EndWatchesForChat(std::string_view chat_id);
 		bool IsWatching(std::string_view chat_id, const pr_watch::Reference& pr) const;
 
@@ -136,6 +136,7 @@ namespace uam
 		std::vector<Link> m_links;
 		std::map<std::string, Snapshot> m_snapshots;
 		std::string m_viewer;
+		bool m_chats_seen = false;
 		/// One counter for every link, so a re-linked pull request never reuses a serial the interface has seen.
 		int m_notice_serial = 0;
 		std::string m_saved;

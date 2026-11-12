@@ -614,6 +614,71 @@ UAM_TEST(PrWatchKeepsAnUndeliveredWakeAcrossRestartAndDeliversItOnce)
 	UAM_ASSERT(fixture.wakes->front().second.find("Checks failed") != std::string::npos);
 }
 
+UAM_TEST(PrWatchStopDoneAndUnwatchCancelAnUndeliveredFinalMessage)
+{
+	// The pull request merges while the chat is mid-turn and refuses the final message; the user then stops it.
+	const auto merged_while_busy = [](WatchFixture& fixture) {
+		fixture.Watch();
+		fixture.Sweep();
+		fixture.gh->Set(kRoot + "/pulls/12", PullBody(kSha, true));
+		*fixture.accept = false;
+		fixture.SweepAfter(2 * kMinute);
+		UAM_ASSERT(!fixture.service->IsWatching("chat-1", kPr));
+		UAM_ASSERT(fixture.wakes->empty());
+		*fixture.accept = true;
+	};
+	const auto nothing_arrives = [](WatchFixture& fixture) {
+		for (int minute = 0; minute < 5; ++minute) fixture.SweepAfter(kMinute);
+		fixture.Restart();
+		fixture.SweepAfter(kMinute);
+		UAM_ASSERT(fixture.wakes->empty());
+	};
+	{
+		WatchFixture fixture;
+		merged_while_busy(fixture);
+		UAM_ASSERT(fixture.service->EndWatchesForChat("chat-1"));
+		nothing_arrives(fixture);
+	}
+	{
+		WatchFixture fixture;
+		merged_while_busy(fixture);
+		fixture.app.chats[0].settled_at = "2026-11-12 09:00:00";
+		nothing_arrives(fixture);
+	}
+	{
+		WatchFixture fixture;
+		merged_while_busy(fixture);
+		UAM_ASSERT(!fixture.service->Unwatch("chat-1", kPr)); // It had already stopped watching.
+		nothing_arrives(fixture);
+	}
+	// Done in the same tick that applies the merged read: the final message is never sent.
+	{
+		WatchFixture fixture;
+		fixture.Watch();
+		fixture.Sweep();
+		fixture.gh->Set(kRoot + "/pulls/12", PullBody(kSha, true));
+		fixture.now += 2 * kMinute;
+		fixture.service->Poll(fixture.app, fixture.now);
+		fixture.service->WaitForWorkerForTests();
+		fixture.app.chats[0].settled_at = "2026-11-12 09:00:00";
+		fixture.service->Poll(fixture.app, fixture.now + 5000);
+		nothing_arrives(fixture);
+	}
+}
+
+UAM_TEST(PrWatchRemovesLinksWhenTheLastChatIsDeleted)
+{
+	WatchFixture fixture;
+	fixture.Watch();
+	fixture.Sweep();
+	UAM_ASSERT_EQ(fixture.service->SerializeForFrontend().size(), std::size_t{1});
+	fixture.app.chats.clear();
+	fixture.SweepAfter(kMinute);
+	UAM_ASSERT(fixture.service->SerializeForFrontend().empty());
+	fixture.Restart();
+	UAM_ASSERT(fixture.service->SerializeForFrontend().empty());
+}
+
 UAM_TEST(PrWatchEndsWhenTheChatKeepsRefusingItsWake)
 {
 	WatchFixture fixture;
