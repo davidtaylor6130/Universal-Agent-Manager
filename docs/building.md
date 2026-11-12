@@ -13,7 +13,7 @@ Requirements:
 - Node.js 20 and npm
 - Internet access during the first configure so CMake can fetch CEF and `nlohmann/json`
 - Xcode command-line tools on macOS, or MSVC Build Tools on Windows
-- macOS 13 or newer to run the app: the bundled CEF 156 framework requires it
+- macOS 13 or newer to run the app: the bundled CEF 156 framework requires it, and every bundle declares it as `LSMinimumSystemVersion`. No `CMAKE_OSX_DEPLOYMENT_TARGET` is set, so a build also requires the macOS version of the machine that built it
 - The provider CLIs you intend to run: `gemini`, `codex`, `claude`, `opencode`, `copilot`, or `agy`
 
 CMake requires build directories inside `Builds/`. CLion's default `cmake-build-*` directories are also accepted.

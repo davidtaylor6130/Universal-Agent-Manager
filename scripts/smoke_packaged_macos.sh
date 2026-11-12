@@ -47,7 +47,8 @@ remote_root="$app_root/Contents/Resources/remote"
 [[ -x "$cef_framework" ]]
 [[ -x "$cef_helper" ]]
 # The sandboxed helpers load the framework at runtime; a linked framework would load before the sandbox.
-if otool -L "$cef_helper" | grep -q "Chromium Embedded Framework"; then
+helper_links=$(otool -L "$cef_helper")
+if [[ "$helper_links" == *"Chromium Embedded Framework"* ]]; then
     echo "CEF helper links the CEF framework instead of loading it after entering the sandbox." >&2
     exit 1
 fi

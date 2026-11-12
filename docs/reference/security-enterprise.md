@@ -109,8 +109,9 @@ Before an enterprise release:
   `.exe` is CEF's renamed bootstrap. That changes every Windows entry point (crash supervisor, stdio MCP
   and control servers, discovery CLI) and can only be verified on Windows, so it is a separate change.
   The Windows build sets CEF's `USE_SANDBOX` option off until then, because that option compiles the
-  CEF wrapper for the bootstrap layout. Linux desktop builds are not shipped or built in CI; their
-  sandbox (SUID `chrome-sandbox` or user namespaces) is out of scope until a Linux desktop package is.
+  CEF wrapper for the bootstrap layout. Linux desktop builds are not shipped or built in CI, so the
+  CEF 156 Linux pin is unverified; their sandbox (SUID `chrome-sandbox` or user namespaces) is out of
+  scope until a Linux desktop package is.
 
 ## Repository publication
 

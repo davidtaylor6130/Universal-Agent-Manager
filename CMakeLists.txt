@@ -267,7 +267,7 @@ FetchContent_Declare(
 if(WIN32)
   # CEF's sandbox option builds the wrapper for a bootstrap.exe client DLL (versioned API, bootstrap entry points).
   # UAM still ships a plain executable on Windows; the bootstrap sandbox is a documented known gap.
-  set(USE_SANDBOX OFF CACHE BOOL "Windows CEF sandbox requires the bootstrap.exe client-DLL layout." FORCE)
+  set(USE_SANDBOX OFF)
 endif()
 set(_saved_bsl ${BUILD_SHARED_LIBS})
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
@@ -1003,7 +1003,7 @@ endif()
   <key>CFBundleShortVersionString</key><string>${UAM_PRODUCT_VERSION}</string>
   <key>CFBundleVersion</key><string>${PROJECT_VERSION}</string>
   <key>LSBackgroundOnly</key><true/>
-  <key>LSMinimumSystemVersion</key><string>10.15.0</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSMicrophoneUsageDescription</key><string>Universal Agent Manager uses the microphone when you choose to dictate a prompt.</string>${_uam_local_network_plist}
   <key>NSSpeechRecognitionUsageDescription</key><string>Universal Agent Manager converts your spoken prompt into text when dictation is active.</string>
 </dict>
@@ -1058,7 +1058,7 @@ sign_owned_code(\"\${UAM_BUNDLE_CONTENTS}/Frameworks/${_hname}.app\" \"${_jit_en
   <key>CFBundleShortVersionString</key><string>${UAM_PRODUCT_VERSION}</string>
   <key>CFBundleVersion</key><string>${PROJECT_VERSION}</string>
   <key>LSUIElement</key><true/>
-  <key>LSMinimumSystemVersion</key><string>10.15.0</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
 </dict>
 </plist>")
     string(APPEND _helper_script_content
