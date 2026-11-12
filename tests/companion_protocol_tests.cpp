@@ -756,6 +756,20 @@ namespace
 		    LooseningRequest("setChatUamControlEnabled", {{"enabled", true}}, &yolo).empty(), "Only enabling UAM Control needs confirmation");
 		Require(!LooseningRequest("setProviderChatDefaults", {{"defaults", Json::object()}}, nullptr).empty(), "Provider defaults always need confirmation");
 		Require(LooseningRequest("setChatCommandSafetyTier", {{"commandSafetyTier", "yolo"}}, nullptr).empty(), "An unknown chat fails in its handler instead");
+		// A new chat cannot start looser than Default/Plan with default safety without the desktop.
+		Require(gated("createSession", {{"providerId", "codex-cli"}, {"defaults", {{"commandSafetyTier", "yolo"}}}}) &&
+		    !LooseningRequest("createSession", {{"defaults", {{"commandSafetyTier", "aiReview"}}}}, nullptr).empty() &&
+		    !LooseningRequest("createSession", {{"defaults", {{"approvalMode", "acceptEdits"}}}}, nullptr).empty(), "Loose new-chat defaults need confirmation");
+		Require(LooseningRequest("createSession", {{"providerId", "codex-cli"}}, nullptr).empty() &&
+		    LooseningRequest("createSession", {{"defaults", {{"commandSafetyTier", "off"}, {"approvalMode", "plan"}, {"modelId", "m"}}}}, nullptr).empty(), "Default or Plan new chats apply directly");
+		// MCP servers add tools: only a plain disable applies directly.
+		Require(!LooseningRequest("setProviderMcpConfiguration", {{"serverId", "uam-mcp"}, {"enabled", true}}, nullptr).empty() &&
+		    !LooseningRequest("setProviderMcpConfiguration", {{"server", {{"id", "x"}}}}, nullptr).empty() &&
+		    LooseningRequest("setProviderMcpConfiguration", {{"serverId", "uam-mcp"}, {"enabled", false}}, nullptr).empty(), "Enabling or changing an MCP server needs confirmation");
+		// Provider-native options that carry permission or sandbox modes are confirmed; others are not.
+		for (const char* id : {"mode", "approval_policy", "permissionMode", "sandbox"})
+			Require(gated("setAcpConfigOption", {{"chatId", "c"}, {"configId", id}, {"value", "bypassPermissions"}}), "Mode-like provider options need confirmation");
+		Require(!gated("setAcpConfigOption", {{"chatId", "c"}, {"configId", "model"}, {"value", "fast"}}), "Other provider options apply directly");
 		for (const char* action : {"sendAcpPrompt", "setChatModel", "renameSession"})
 			Require(!gated(action, {{"commandSafetyTier", "yolo"}, {"enabled", true}}), "Other actions are not gated");
 	}

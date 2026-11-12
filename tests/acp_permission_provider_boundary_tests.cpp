@@ -263,6 +263,7 @@ UAM_TEST(ClaudeCapturedReadRecognizesNativeReadToolsAndRejectsMutationOrUnknownT
 	    {"WebFetch", {{"url", "https://example.invalid/private-fixture"}, {"prompt", "Inspect fixture"}}},
 	    {"WebSearch", {{"query", "private fixture"}}},
 	    {"Read", {{"file_path", "data/companion.json"}}},
+	    {"Read", {{"offset", 1}}}, // A read must name what it reads.
 	    {"Read", {{"file_path", "../private-outside.txt"}}},
 	    {"Grep", {{"pattern", "token"}, {"path", "/"}}},
 	    {"Write", {{"file_path", "private-output.txt"}, {"content", "Do not execute"}}},
@@ -298,7 +299,7 @@ UAM_TEST(ClaudeCapturedReadRecognizesNativeReadToolsAndRejectsMutationOrUnknownT
 		}
 	}
 	UAM_ASSERT_EQ(read_allowed.size(), std::size_t(6));
-	UAM_ASSERT_EQ(mutations_denied.size(), std::size_t(14));
+	UAM_ASSERT_EQ(mutations_denied.size(), std::size_t(16));
 	UAM_ASSERT(std::ranges::all_of(read_allowed, [](bool allowed) { return allowed; }));
 	UAM_ASSERT(std::ranges::all_of(mutations_denied, [](bool denied) { return denied; }));
 #endif

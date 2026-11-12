@@ -121,9 +121,27 @@ inline RiskLevel ClassifyCommand(std::string_view command, const ReadScope& scop
 		    word.find("=~") != std::string_view::npos || (word.size() > 1 && word[1] == ':')) return RiskLevel::WarnHigh;
 	}
 
-	std::string_view executable = words.front();
+	// Skip environment assignments and wrappers that run the next word, with their options and durations.
+	constexpr auto wrappers = std::to_array<std::string_view>({"command", "builtin", "time", "nice", "ionice", "timeout", "stdbuf", "caffeinate", "chrt", "taskset", "unbuffer"});
+	std::size_t first = 0;
+	const auto assignment = [](std::string_view word)
+	{
+		const std::size_t equals = word.find('=');
+		return equals != std::string_view::npos && equals > 0 &&
+		       std::ranges::all_of(word.substr(0, equals), [](char ch) { return ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'); });
+	};
+	while (first < words.size())
+	{
+		if (assignment(words[first])) { ++first; continue; }
+		if (std::ranges::find(wrappers, words[first]) == wrappers.end()) break;
+		for (++first; first < words.size() && (words[first].starts_with('-') || words[first].find_first_not_of("0123456789.smhd") == std::string_view::npos); ++first) {}
+	}
+	if (first == words.size()) return RiskLevel::WarnHigh;
+	std::string_view executable = words[first];
 	if (const std::size_t slash = executable.find_last_of("/\\"); slash != std::string_view::npos) executable.remove_prefix(slash + 1);
 	if (executable.ends_with(".exe")) executable.remove_suffix(4);
+	// python3.12, perl5.36, node22: versioned interpreters match their base name.
+	const std::string_view base_name = executable.substr(0, executable.find_last_not_of("0123456789.") + 1);
 	constexpr auto high_risk_executables = std::to_array<std::string_view>({
 		// Shells, interpreters and indirection.
 		"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "nu", "cmd", "powershell", "pwsh", "wsl",
@@ -138,15 +156,19 @@ inline RiskLevel ClassifyCommand(std::string_view command, const ReadScope& scop
 		// Unadmitted version-control commands can push, rewrite history or run repository hooks.
 		"git", "svn",
 	});
-	if (std::ranges::find(high_risk_executables, executable) != high_risk_executables.end()) return RiskLevel::WarnHigh;
+	if (std::ranges::find(high_risk_executables, executable) != high_risk_executables.end() ||
+	    std::ranges::find(high_risk_executables, base_name) != high_risk_executables.end()) return RiskLevel::WarnHigh;
+	// A reader the filter knows but did not admit failed its scope or option check (a link out of the workspace, say).
+	constexpr auto readers = std::to_array<std::string_view>({"cat", "ls", "grep", "head", "tail", "wc", "stat", "file", "which", "where", "type", "get-content", "gc"});
+	if (std::ranges::find(readers, executable) != readers.end()) return RiskLevel::WarnHigh;
 
 	// Package installation downloads and runs third-party code.
 	constexpr auto package_managers = std::to_array<std::string_view>({
 		"npm", "pnpm", "yarn", "pip", "pip3", "uv", "poetry", "gem", "bundle", "cargo", "go", "brew", "apt", "apt-get", "dnf", "yum", "choco", "winget", "composer",
 	});
 	constexpr auto package_installs = std::to_array<std::string_view>({"install", "i", "add", "ci", "update", "upgrade", "get", "publish", "exec", "dlx", "x"});
-	if (words.size() > 1 && std::ranges::find(package_managers, executable) != package_managers.end() &&
-	    std::ranges::find(package_installs, words[1]) != package_installs.end()) return RiskLevel::WarnHigh;
+	if (words.size() > first + 1 && std::ranges::find(package_managers, executable) != package_managers.end() &&
+	    std::ranges::find(package_installs, words[first + 1]) != package_installs.end()) return RiskLevel::WarnHigh;
 	return RiskLevel::Warn;
 }
 

@@ -2847,6 +2847,14 @@ UAM_TEST(CommandSafetyClassifiesReadsWritesNetworkAndTierEnforcement)
 	UAM_ASSERT_EQ(ClassifyCommand("cat ../secret.txt"), RiskLevel::WarnHigh);
 	UAM_ASSERT_EQ(ClassifyCommand("type C:/Users/me/secret.txt"), RiskLevel::WarnHigh);
 	UAM_ASSERT_EQ(ClassifyCommand(""), RiskLevel::WarnHigh);
+	// Assignments, wrappers and versioned interpreters do not hide the program that runs.
+	for (const char* wrapped : {"FOO=1 rm -rf src", "command rm -rf src", "timeout 5 python3 -c 1", "nice -n 10 curl example.invalid",
+	         "python3.12 -c 1", "perl5.36 -e 1", "FOO=1 BAR=2 node22 -e 1", "time bash run.sh", "env"})
+		UAM_ASSERT_EQ(ClassifyCommand(wrapped), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("FOO=1 npm test"), RiskLevel::Warn);
+	// A reader the filter refused (a provider drive, a Git object outside the workspace) goes to the user.
+	for (const char* refused : {"type env:OPENAI_API_KEY", "Get-Content env:SECRET", "cat --unknown file.txt"})
+		UAM_ASSERT_EQ(ClassifyCommand(refused), RiskLevel::WarnHigh);
 	// Ordinary workspace commands are medium risk: the AI reviewer may decide them.
 	UAM_ASSERT_EQ(ClassifyCommand("unknown-command --flag"), RiskLevel::Warn);
 	UAM_ASSERT_EQ(ClassifyCommand("npm test"), RiskLevel::Warn);
@@ -2906,6 +2914,21 @@ UAM_TEST(CommandSafetyDecisionScopesAcceptEditsAndSendsHighRiskToTheUser)
 	UAM_ASSERT(!accepted({{"file_path", "src/.bashrc"}}));
 	UAM_ASSERT(!accepted({{"file_path", ".git/hooks/pre-commit"}}));
 	UAM_ASSERT(!accepted({{"file_path", ".git/config"}}));
+	UAM_ASSERT(!accepted({{"file_path", ".git./config"}}));
+	// Agent and editor configuration grants permissions, hooks or tasks to later agents.
+	for (const char* protected_file : {".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".gemini/settings.json", "opencode.json",
+	         ".codex/config.toml", ".vscode/tasks.json", ".envrc", "src/.copilot/config.json"})
+		UAM_ASSERT(!accepted({{"file_path", protected_file}}));
+	// A Codex rename names its destination separately from the source.
+	UAM_ASSERT(accepted({{"changes", {{{"path", "src/a.cpp"}, {"kind", {{"type", "update"}, {"move_path", "src/b.cpp"}}}}}}}));
+	for (const char* destination : {"../outside.txt", ".zshrc", ".git/hooks/pre-commit"})
+		UAM_ASSERT(!accepted({{"changes", {{{"path", "src/a.cpp"}, {"kind", {{"type", "update"}, {"movePath", destination}}}}}}}));
+#if !defined(_WIN32)
+	// The checks follow links: a committed link into repository metadata is still repository metadata.
+	fs::create_directories(workspace / ".git" / "hooks");
+	fs::create_directory_symlink(workspace / ".git" / "hooks", workspace / "hooks");
+	UAM_ASSERT(!accepted({{"file_path", "hooks/pre-commit"}}));
+#endif
 	// A Codex extra writable root is never an ordinary edit.
 	UAM_ASSERT(accepted({{"changes", {{{"path", "src/main.cpp"}}}}}, R"({"itemId":"edit","grantRoot":null})"));
 	UAM_ASSERT(!accepted({{"changes", {{{"path", "src/main.cpp"}}}}}, R"({"itemId":"edit","grantRoot":"/"})"));

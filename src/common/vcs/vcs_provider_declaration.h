@@ -17,6 +17,8 @@ namespace uam::vcs
 		std::string_view required = {};
 		/// Value options (long names, or `-x` for a short letter) whose values are filesystem paths.
 		std::string_view path_values = {};
+		/// The first operand names something else (an SVN property), so only later operands are paths.
+		bool first_operand_is_name = false;
 	};
 
 	/// <summary>Subcommands (`|`-separated names) sharing one argument grammar.</summary>
@@ -39,14 +41,15 @@ namespace uam::vcs
 #define UAM_SVN_COMMON_READ_SWITCHES "--non-interactive|--quiet|--verbose|--xml|--incremental"
 	// Only literal working-copy reads: URL operands are rejected by the filter. Diffs must use the internal engine so no
 	// configured diff-cmd runs; --config-dir/--config-option and every write subcommand stay unrecognized.
-	inline constexpr std::array<ReadOnlyCommand, 8> kSvnReadOnlyCommands = {{
+	inline constexpr std::array<ReadOnlyCommand, 9> kSvnReadOnlyCommands = {{
 	    {"status|stat|st", {"qvRu", "rcl", UAM_SVN_COMMON_READ_SWITCHES "|--show-updates|--no-ignore|--ignore-externals", "--depth|--changelist|--cl"}},
 	    {"info", {"qvRu", "rcl", UAM_SVN_COMMON_READ_SWITCHES "|--no-newline|--recursive|--include-externals", "--show-item|--depth|--revision|--changelist|--cl"}},
 	    {"log", {"qvRu", "rcl", UAM_SVN_COMMON_READ_SWITCHES "|--stop-on-copy|--use-merge-history|--with-all-revprops|--with-no-revprops", "--limit|--revision|--search|--search-and|--depth|--with-revprop"}},
 	    {"list|ls", {"qvRu", "rcl", UAM_SVN_COMMON_READ_SWITCHES "|--recursive|--include-externals|--human-readable", "--depth|--revision"}},
 	    {"cat", {"qvRu", "rcl", UAM_SVN_COMMON_READ_SWITCHES "|--ignore-keywords", "--revision"}},
 	    {"blame|praise|annotate|ann", {"qvRu", "rcl", UAM_SVN_COMMON_READ_SWITCHES "|--use-merge-history|--force", "--revision"}},
-	    {"propget|pget|pg|proplist|plist|pl", {"qvRu", "rcl", UAM_SVN_COMMON_READ_SWITCHES "|--recursive|--revprop|--strict|--no-newline|--show-inherited-props", "--depth|--revision|--changelist|--cl"}},
+	    {"proplist|plist|pl", {"qvRu", "rcl", UAM_SVN_COMMON_READ_SWITCHES "|--recursive|--revprop|--strict|--no-newline|--show-inherited-props", "--depth|--revision|--changelist|--cl"}},
+	    {"propget|pget|pg", {"qvRu", "rcl", UAM_SVN_COMMON_READ_SWITCHES "|--recursive|--revprop|--strict|--no-newline|--show-inherited-props", "--depth|--revision|--changelist|--cl", {}, {}, true}},
 	    {"diff|di", {"qvRu", "rcl", UAM_SVN_COMMON_READ_SWITCHES "|--internal-diff|--summarize|--git|--ignore-properties|--properties-only|--show-copies-as-adds|--notice-ancestry|--patch-compatible|--force", "--revision|--change|--depth|--changelist|--cl|--old|--new", "--internal-diff", "--old|--new"}},
 	}};
 #undef UAM_SVN_COMMON_READ_SWITCHES

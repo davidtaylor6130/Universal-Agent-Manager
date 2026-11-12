@@ -143,6 +143,27 @@ UAM_TEST(ReadOnlyVcsCommandsRejectNetworkOperands)
 	}
 	UAM_ASSERT(ReadOnly("svn info"));
 	UAM_ASSERT(ReadOnly("svn log -l 5 src"));
+	UAM_ASSERT(ReadOnly("svn propget svn:ignore src"));
+	UAM_ASSERT(!ReadOnly("svn proplist svn:ignore"));
+}
+
+UAM_TEST(ReadOnlyCommandsRefuseProviderDrivesAndRepositoryObjects)
+{
+	// PowerShell provider drives and Git object names are not workspace files, even though they contain no separator.
+	for (const std::string_view command : {
+		"type env:OPENAI_API_KEY", "Get-Content env:SECRET", "Get-Content -Path env:SECRET", "cat HKCU:/Software/Private", "ls Cert:/CurrentUser",
+		"git show --no-ext-diff --no-textconv --no-show-signature HEAD:secrets/prod.env", "git log --no-ext-diff --no-textconv --no-show-signature -- :/secrets",
+		"git diff --no-ext-diff --no-textconv HEAD:a HEAD:b"})
+	{
+		UAM_ASSERT(!ReadOnly(command));
+	}
+	UAM_ASSERT(ReadOnly("git show --no-ext-diff --no-textconv --no-show-signature HEAD"));
+	// A remote Windows path cannot hide its separators from the lexical check.
+	const uam::command_safety::ReadScope remote{.workspace = "/srv/project", .local = false};
+	UAM_ASSERT(!uam::command_safety::IsInsideReadScope("..\\..\\Users\\me\\.bashrc", remote));
+	UAM_ASSERT(uam::command_safety::IsInsideReadScope("src\\main.cpp", remote));
+	const auto relative = uam::command_safety::ReadScopeRelativePath("src\\..\\.git\\hooks\\pre-commit", remote);
+	UAM_ASSERT(relative && *relative == fs::path(".git/hooks/pre-commit"));
 }
 
 UAM_TEST(ReadOnlyCommandsStayInsideTheWorkspaceAndOutOfTheDataRoot)

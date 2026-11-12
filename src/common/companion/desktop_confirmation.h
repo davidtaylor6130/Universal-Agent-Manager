@@ -28,7 +28,37 @@ namespace uam::companion
 	inline std::string LooseningRequest(std::string_view action, const nlohmann::json& payload, const ConfirmationChatState* chat)
 	{
 		if (action == "setProviderChatDefaults") return "Change provider chat defaults";
-		if (chat == nullptr || !payload.is_object()) return {};
+		if (!payload.is_object()) return {};
+		// A new chat may only start at Default or Plan with default safety; anything looser is the desktop's call.
+		if (action == "createSession")
+		{
+			const auto defaults = payload.find("defaults");
+			if (defaults == payload.end() || !defaults->is_object()) return {};
+			const auto field = [&](const char* key) { return defaults->contains(key) && (*defaults)[key].is_string() ? uam::strings::Trim((*defaults)[key].get<std::string>()) : std::string{}; };
+			const std::string tier = field("commandSafetyTier");
+			if (!tier.empty() && command_safety::ParseTier(tier) != command_safety::Tier::Off)
+				return "Create a chat with permission mode " + command_safety::TierDisplayName(tier);
+			const std::string mode = approval_modes::NormalizeIncomingApprovalModeId(field("approvalMode"));
+			if (!field("approvalMode").empty() && mode != approval_modes::kDefaultApprovalMode && mode != approval_modes::kPlanApprovalMode)
+				return "Create a chat with approval mode " + mode;
+			return {};
+		}
+		// MCP servers add tools every agent can call: only a plain disable applies directly.
+		if (action == "setProviderMcpConfiguration")
+		{
+			const bool disable_only = payload.contains("enabled") && payload["enabled"] == false && !payload.contains("server");
+			const std::string server = payload.contains("serverId") && payload["serverId"].is_string() ? payload["serverId"].get<std::string>() : std::string("an MCP server");
+			return disable_only ? std::string{} : "Turn on or change " + server;
+		}
+		// Provider-native config options can carry the session's permission or sandbox mode.
+		if (action == "setAcpConfigOption")
+		{
+			const std::string id = payload.contains("configId") && payload["configId"].is_string() ? uam::strings::ToLowerAscii(payload["configId"].get<std::string>()) : std::string{};
+			for (const char* sensitive : {"mode", "approval", "permission", "sandbox", "autonomy", "yolo"})
+				if (id.find(sensitive) != std::string::npos) return "Change the provider option " + id;
+			return {};
+		}
+		if (chat == nullptr) return {};
 		const auto text = [&](const char* key) { return payload.contains(key) && payload[key].is_string() ? uam::strings::Trim(payload[key].get<std::string>()) : std::string{}; };
 		if (action == "setChatCommandSafetyTier")
 		{

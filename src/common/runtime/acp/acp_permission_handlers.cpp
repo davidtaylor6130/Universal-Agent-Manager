@@ -48,8 +48,17 @@ namespace
 	{
 		constexpr auto keys = std::to_array<std::string_view>({
 		    "path", "paths", "file", "files", "file_path", "filePath", "filepath", "fileName", "filename", "notebook_path",
-		    "absolute_path", "dir_path", "directory", "old_path", "new_path", "oldPath", "newPath", "destination"});
+		    "absolute_path", "dir_path", "directory", "old_path", "new_path", "oldPath", "newPath", "destination",
+		    "movePath", "move_path", "glob", "patterns"});
 		return std::ranges::find(keys, key) != keys.end();
+	}
+
+	/// <summary>A search pattern is usually a regex or a relative glob; one that starts at the root, a home or a parent
+	/// directory names a location and is checked like a path.</summary>
+	bool PatternNamesLocation(std::string_view pattern)
+	{
+		return pattern.starts_with('/') || pattern.starts_with('~') || pattern.starts_with('\\') || pattern.find("..") != std::string_view::npos ||
+		       (pattern.size() > 1 && pattern[1] == ':');
 	}
 
 	void CollectPaths(const nlohmann::json& value, std::vector<std::string>& paths, int depth = 0)
@@ -70,6 +79,7 @@ namespace
 					for (const nlohmann::json& element : field)
 						if (element.is_string()) paths.push_back(element.get<std::string>());
 			}
+			else if (key == "pattern" && field.is_string() && PatternNamesLocation(field.get_ref<const std::string&>())) paths.push_back(field.get<std::string>());
 			if (field.is_object() || field.is_array()) CollectPaths(field, paths, depth + 1);
 		}
 	}
@@ -107,23 +117,32 @@ namespace
 		       NetworkValue(nlohmann::json::parse(pending.provider_input_json, nullptr, false));
 	}
 
-	bool PathHasGitComponent(const std::string& path)
+	/// <summary>Repository metadata, agent and editor configuration that grants permissions, hooks or tasks, and
+	/// shell startup files: writing one changes what later code or agents may do, so no automatic path approves it.</summary>
+	bool ProtectedWorkspacePath(const std::filesystem::path& relative)
 	{
-		for (const std::filesystem::path& part : uam::paths::PathFromUtf8(path))
-			if (uam::strings::ToLowerAscii(uam::paths::PortablePathString(part)) == ".git") return true;
-		return false;
+		constexpr auto directories = std::to_array<std::string_view>({".git", ".claude", ".gemini", ".codex", ".opencode", ".copilot", ".vscode", ".agents"});
+		constexpr auto files = std::to_array<std::string_view>({".mcp.json", "opencode.json", "opencode.jsonc", ".envrc", ".gitmodules", ".gitattributes"});
+		for (const std::filesystem::path& part : relative)
+		{
+			std::string name = uam::strings::ToLowerAscii(uam::paths::PortablePathString(part));
+			while (!name.empty() && (name.back() == '.' || name.back() == ' ')) name.pop_back(); // Windows ignores trailing dots and spaces.
+			if (std::ranges::find(directories, name) != directories.end() || std::ranges::find(files, name) != files.end()) return true;
+		}
+		return uam::command_safety::IsShellStartupFile(relative);
 	}
 
-	/// <summary>Accept Edits may approve only named workspace files outside repository metadata and shell startup files,
-	/// with no extra writable root.</summary>
+	/// <summary>Accept Edits may approve only named workspace files, checked on their resolved paths so a link cannot
+	/// reach protected files, with no extra writable root.</summary>
 	bool EditStaysInWorkspace(const AcpPendingPermissionState& pending)
 	{
 		const nlohmann::json codex = nlohmann::json::parse(pending.codex_approval_payload_json.empty() ? "{}" : pending.codex_approval_payload_json, nullptr, false);
 		if (!codex.is_object() || (codex.contains("grantRoot") && !codex["grantRoot"].is_null())) return false;
 		const std::vector<std::string> paths = PermissionTargetPaths(pending);
-		return !paths.empty() && PathsInReadScope(paths, pending) && std::ranges::none_of(paths, [](const std::string& path)
+		return !paths.empty() && std::ranges::all_of(paths, [&](const std::string& path)
 		{
-			return PathHasGitComponent(path) || uam::command_safety::IsShellStartupFile(uam::paths::PathFromUtf8(path));
+			const std::optional<std::filesystem::path> relative = uam::command_safety::ReadScopeRelativePath(path, pending.read_scope);
+			return relative && !ProtectedWorkspacePath(*relative) && !ProtectedWorkspacePath(uam::paths::PathFromUtf8(path));
 		});
 	}
 
@@ -252,7 +271,9 @@ namespace
 		const std::string kind = uam::strings::ToLowerAscii(uam::strings::Trim(pending.kind));
 		if (kind == "read" || kind == "search" || kind == "inspect" || kind == "list" || kind == "query" || kind == "find")
 		{
-			return !PermissionUsesNetwork(pending) && PathsInReadScope(PermissionTargetPaths(pending), pending);
+			// A read must name what it reads; searches and listings without a location work in the working directory.
+			const std::vector<std::string> paths = PermissionTargetPaths(pending);
+			return !PermissionUsesNetwork(pending) && (kind != "read" || !paths.empty()) && PathsInReadScope(paths, pending);
 		}
 		if (kind == "commandexecution" || kind == "execute")
 		{

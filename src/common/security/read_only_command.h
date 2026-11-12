@@ -179,15 +179,29 @@ inline std::filesystem::path BaseDirectory(const ReadScope& scope)
 }
 
 /// <summary>True when an operand resolves inside the workspace and outside UAM's data root.</summary>
-inline bool InsideScope(std::string_view operand, const ReadScope& scope)
+/// <summary>The operand's resolved path relative to the workspace when it stays inside the workspace and out of UAM's
+/// data root; nothing otherwise.</summary>
+inline std::optional<std::filesystem::path> ScopeRelative(std::string_view operand, const ReadScope& scope)
 {
-	if (Unscoped(operand) || ForeignDrivePath(operand)) return false;
+	if (Unscoped(operand) || ForeignDrivePath(operand)) return std::nullopt;
+	// A colon names a PowerShell provider drive (env:, HKCU:), a Git object (HEAD:path) or a URL; only a Windows drive letter may use one.
+	const auto colon = operand.find(':');
+	const bool drive = colon == 1 && ((operand[0] >= 'A' && operand[0] <= 'Z') || (operand[0] >= 'a' && operand[0] <= 'z')) && operand.find(':', 2) == std::string_view::npos;
+	if (colon != std::string_view::npos && !drive) return std::nullopt;
+	std::string text(operand);
+	if (!scope.local) std::replace(text.begin(), text.end(), '\\', '/'); // A remote Windows path must not hide its separators lexically.
 	const std::filesystem::path workspace = Resolved(scope.workspace, scope.local);
 	const std::filesystem::path base = BaseDirectory(scope);
-	const std::filesystem::path target = Resolved(operand.empty() ? base : base / paths::PathFromUtf8(operand), scope.local);
-	if (!Within(target, workspace)) return false;
+	const std::filesystem::path target = Resolved(text.empty() ? base : base / paths::PathFromUtf8(text), scope.local);
+	if (!Within(target, workspace)) return std::nullopt;
 	const std::filesystem::path data_root = Resolved(scope.data_root, scope.local);
-	return !Within(target, data_root) || Within(workspace, data_root);
+	if (Within(target, data_root) && !Within(workspace, data_root)) return std::nullopt;
+	return target.lexically_relative(workspace);
+}
+
+inline bool InsideScope(std::string_view operand, const ReadScope& scope)
+{
+	return ScopeRelative(operand, scope).has_value();
 }
 
 /// <summary>The program a shell would run for an admitted name must be a file outside the workspace, found through an
@@ -323,7 +337,7 @@ inline bool Arguments(const std::vector<std::string>& words, std::size_t first, 
 			break; // The rest of this token, or the next token, is this option's value.
 		}
 	}
-	for (std::size_t index = pattern_operand && !explicit_pattern ? 1 : 0; index < positional.size(); ++index)
+	for (std::size_t index = (pattern_operand && !explicit_pattern) || allowed.first_operand_is_name ? 1 : 0; index < positional.size(); ++index)
 		if (!InsideScope(positional[index], scope)) return false;
 	return Satisfied(allowed.required, seen) && (scope.cwd.empty() || InsideScope("", scope));
 }
@@ -333,6 +347,12 @@ inline bool Arguments(const std::vector<std::string>& words, std::size_t first, 
 inline bool IsInsideReadScope(std::string_view path, const ReadScope& scope)
 {
 	return read_only_detail::InsideScope(path, scope);
+}
+
+/// <summary>The resolved, case-folded path relative to the workspace (links followed locally) when it is inside the read scope.</summary>
+inline std::optional<std::filesystem::path> ReadScopeRelativePath(std::string_view path, const ReadScope& scope)
+{
+	return read_only_detail::ScopeRelative(path, scope);
 }
 
 /// <summary>Recognizes supported literal read commands whose every path operand stays inside <paramref name="scope"/>.</summary>
