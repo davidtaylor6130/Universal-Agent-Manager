@@ -431,6 +431,37 @@ namespace uam::remote
 	int RunRunnerBridge(std::string_view runner_version)
 	{
 		if (!EnableRunnerBinaryStdio()) return 2;
+		// The bridge waits on the service without reading stdin, and a service reply can stall indefinitely (a full
+		// disk, a hung request). Win32-OpenSSH keeps the session process alive while its child runs and does not end
+		// that child when the client drops, and such sessions have been seen spinning a core each for hours. So once
+		// the client's end of stdin is gone during such a wait, the bridge ends at once: the service owns every
+		// process, nothing is lost. A client that half-closes stdin and still expects its reply is not supported;
+		// no UAM client does. Between requests the bridge's own stdin read sees the closure itself, and the watcher
+		// never peeks then: beside a read on an overlapped handle, a peek could corrupt it.
+		struct ClientWatch
+		{
+			std::mutex mutex;
+			bool waiting = false;
+		};
+		const auto watch = std::make_shared<ClientWatch>();
+		std::thread([watch]
+		{
+			const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+			for (;; Sleep(250))
+			{
+				const std::scoped_lock lock(watch->mutex);
+				if (!watch->waiting || PeekNamedPipe(input, nullptr, 0, nullptr, nullptr, nullptr)) continue;
+				const DWORD error = GetLastError();
+				if (error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED)
+					TerminateProcess(GetCurrentProcess(), 0);
+				return; // Not a pipe (an interactive console): nothing to watch.
+			}
+		}).detach();
+		const auto set_waiting = [&watch](bool waiting)
+		{
+			const std::scoped_lock lock(watch->mutex);
+			watch->waiting = waiting;
+		};
 		Handle service = ConnectPipe(runner_version);
 		if (service.Get() == INVALID_HANDLE_VALUE)
 		{
@@ -449,6 +480,7 @@ namespace uam::remote
 				std::cerr << (error.empty() ? "Runner bridge input frame is invalid." : error) << '\n';
 				return 2;
 			}
+			set_waiting(true);
 			if (!WritePipeFrame(service.Get(), request))
 			{
 				std::cerr << "Runner bridge could not write to the service pipe (Windows error "
@@ -462,6 +494,7 @@ namespace uam::remote
 				          << GetLastError() << ").\n";
 				return 2;
 			}
+			set_waiting(false);
 			if (!WriteFrame(std::cout, response, &error))
 			{
 				std::cerr << (error.empty() ? "Runner bridge could not write its response." : error)

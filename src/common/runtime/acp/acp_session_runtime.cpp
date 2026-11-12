@@ -381,6 +381,17 @@ namespace uam
 			return error.empty() ? "Remote provider configuration failed before startup." : std::string(error);
 		}
 
+		/// The helper ends a process whose output it cannot save and reports why on every later poll. Recovery cannot
+		/// bring that turn back, so it settles with this reason instead of reattaching for as long as the record lasts.
+		std::optional<std::string> RemoteSpoolFailureMessage(const std::string& stderr_tail)
+		{
+			const std::string_view line = RemoteProxyExitLine(stderr_tail);
+			if (line.ends_with(uam::remote::kRemoteSpoolEndedSuffix)) return std::string(line);
+			if (uam::remote::IsLegacyRemoteSpoolFailure(line))
+				return std::string(line) + " The helper ended this process; if the host's disk is full, free space there, then resend.";
+			return std::nullopt;
+		}
+
 		bool RemoteProxyExitConfirmsMissingProcess(const std::string& stderr_tail)
 		{
 			const std::string_view line = RemoteProxyExitLine(stderr_tail);
@@ -388,7 +399,8 @@ namespace uam
 			return line == "The remote process does not exist." ||
 			       line == "The remote process is no longer available." ||
 			       line == "The remote process has exited." ||
-			       line == uam::remote::kRemoteHelperNotRunningLine;
+			       line == uam::remote::kRemoteHelperNotRunningLine ||
+			       RemoteSpoolFailureMessage(stderr_tail).has_value();
 		}
 
 		bool RemoteStopExitConfirmed(bool exited, int exit_code, const std::string& stderr_tail)
@@ -6478,6 +6490,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session->reconnect_pending = true;
 			session->reconnect_not_before_time_s = GetAppTimeSeconds();
 			chat->remote_stop_cleanup_pending = true;
+			// The stop's attach skips the workspace. A recovery check still running would hold the poll back and, when
+			// it fails, cancel this reconnect, leaving the stop unconfirmed for good.
+			if (session->worktree_launch_pending)
+			{
+				CancelWorktreeLaunchPreparation(app, chat_id, session->worktree_launch_cancellation);
+				session->worktree_launch_pending = false;
+				session->worktree_launch_cancellation.reset();
+			}
 			// The confirmed stop must not release queued input the user cancelled behind.
 			if (preserve_queued_prompts && hold_preserved_queue)
 			{
@@ -8568,6 +8588,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 						chat.remote_recovery_state = "blocked";
 						session.last_error = "The runner restarted, but this exact provider turn is gone. Chat recovery is blocked to avoid repeating a prompt or tool action. Review the chat before retrying; its goal is retained.";
 					}
+					if (const std::optional<std::string> spool_failure = RemoteSpoolFailureMessage(session.recent_stderr))
+						session.last_error = *spool_failure;
 					// Exit 70 confirms the helper-owned process is gone, so its
 					// write-ahead delivery and interaction queues can no longer be replayed.
 					chat.remote_turn_reconnect_pending = false;
