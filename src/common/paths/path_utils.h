@@ -391,7 +391,7 @@ namespace uam::paths
 		};
 		const std::vector<std::string> a = segments(left), b = segments(right);
 		if (a.empty() || b.empty()) return false;
-		const std::size_t shared = std::min(a.size(), b.size());
+		const std::size_t shared = (std::min)(a.size(), b.size());
 		for (std::size_t index = 0; index < shared; ++index)
 			if (a[index] != b[index]) return false;
 		return true;

@@ -22,7 +22,7 @@ namespace uam::svn_layout
 		if (value.empty() || value.size() > kMaxFieldBytes || value.front() == '/' || value.back() == '/') return false;
 		for (std::size_t start = 0; start <= value.size();)
 		{
-			const std::size_t end = std::min(value.find('/', start), value.size());
+			const std::size_t end = (std::min)(value.find('/', start), value.size());
 			const std::string_view segment = value.substr(start, end - start);
 			if (segment.empty() || segment == "." || segment == "..") return false;
 			start = end + 1;
