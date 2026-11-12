@@ -920,8 +920,20 @@ namespace uam::remote
 		return written;
 	}
 
+	void RunnerClient::NoteChannelDesktop(const nlohmann::json& response)
+	{
+		if (!response.contains("result") || !response["result"].is_object()) return;
+		const nlohmann::json& result = response["result"];
+		if (!result.contains("desktopIdleMs") || !result["desktopIdleMs"].is_number_integer() ||
+		    !result.contains("desktopEpoch") || !result["desktopEpoch"].is_string()) return;
+		m_channelDesktopReported = true;
+		m_channelDesktopIdleMs = result["desktopIdleMs"].get<std::int64_t>();
+		m_channelDesktopEpoch = result["desktopEpoch"].get<std::string>();
+	}
+
 	bool RunnerClient::OpenChannel(const std::string& channel_id, std::string* error_out,
-	                               bool attach_if_exists, std::int64_t lease_ms, std::stop_token stop_token)
+	                               bool attach_if_exists, std::int64_t lease_ms, std::stop_token stop_token,
+	                               const std::string& desktop_epoch, bool fence_desktop)
 	{
 		if (!Connect(error_out, stop_token)) return false;
 		if (lease_ms != 0 && !m_leasedChannelTake)
@@ -930,8 +942,11 @@ namespace uam::remote
 			return false;
 		}
 		nlohmann::json response;
-		if (!Request({{"type", "channel.open"}, {"channelId", channel_id},
-		              {"attachIfExists", attach_if_exists}, {"leaseMs", lease_ms}}, response, error_out, [stop_token] { return stop_token.stop_requested(); })) return false;
+		nlohmann::json open = {{"type", "channel.open"}, {"channelId", channel_id},
+		                       {"attachIfExists", attach_if_exists}, {"leaseMs", lease_ms}};
+		if (!desktop_epoch.empty()) open["desktopEpoch"] = desktop_epoch;
+		if (fence_desktop) open["fenceDesktop"] = true;
+		if (!Request(std::move(open), response, error_out, [stop_token] { return stop_token.stop_requested(); })) return false;
 		if (m_expectedProtocolVersion >= 3)
 		{
 			const nlohmann::json& result = response["result"];
@@ -988,6 +1003,7 @@ namespace uam::remote
 		if (!written && m_expectedProtocolVersion >= 3 && !m_connected && Connect(error_out, stop_token))
 			written = Request(std::move(request), response, error_out, [stop_token] { return stop_token.stop_requested(); });
 		if (written) m_channelWriteSequences[sequence_key] = sequence;
+		if (written) NoteChannelDesktop(response);
 		return written;
 	}
 
@@ -1016,6 +1032,7 @@ namespace uam::remote
 		    "cursor", m_channelCursors[cursor_key] + parsed.size());
 		if (cursor_out != nullptr) *cursor_out = cursor;
 		bytes = std::move(parsed);
+		NoteChannelDesktop(response);
 		return true;
 	}
 

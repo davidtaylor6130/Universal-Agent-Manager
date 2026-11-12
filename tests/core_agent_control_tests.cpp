@@ -1415,20 +1415,24 @@ UAM_TEST(UamControlComputerUseRequiresVisibleGuiApproval)
 	              std::string("computer_use_request"));
 	UAM_ASSERT_EQ(persisted_chat->uam_control_audit.back().result, std::string("ok"));
 
-	const nlohmann::json expired_request = {
-	    {"requestId", "computer-use-expired"}, {"method", "computer_use_request"},
-	    {"arguments", {{"reason", "This request should expire without a user answer."}}},
+	// An approval waits until it is answered: one asked long ago is still pending and still answerable.
+	const nlohmann::json old_request = {
+	    {"requestId", "computer-use-old"}, {"method", "computer_use_request"},
+	    {"arguments", {{"reason", "This request waits for the user for as long as it takes."}}},
 	};
 	app.chats.front().computer_use_enabled = false;
 	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(
-	    app, app.uam_control_capabilities.front().id, expired_request, now - 91000)
+	    app, app.uam_control_capabilities.front().id, old_request, now - 3600000)
 	               .value("pendingApproval", false));
-	UAM_ASSERT(uam::UamControlService::ProcessPendingRequests(app));
-	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, chat_id).has_value());
-	std::string expired_text;
-	UAM_ASSERT(uam::io::TryReadTextFile(
-	    allow_directory / "responses" / "computer-use-expired.json", expired_text));
-	UAM_ASSERT(nlohmann::json::parse(expired_text).value("error", "").find("timed out") != std::string::npos);
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	const auto old_question = uam::UamControlService::PendingApprovalForChat(app, chat_id);
+	UAM_ASSERT(old_question.has_value());
+	UAM_ASSERT(!fs::exists(allow_directory / "responses" / "computer-use-old.json"));
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(
+	    app, chat_id, old_question->request_id_json, {{"computerUse", {"Deny"}}}, &error));
+	std::string old_text;
+	UAM_ASSERT(uam::io::TryReadTextFile(allow_directory / "responses" / "computer-use-old.json", old_text));
+	UAM_ASSERT(nlohmann::json::parse(old_text).value("error", "").find("denied") != std::string::npos);
 
 	uam::AppState remote_app;
 	remote_app.data_root = temp.root / "remote";
@@ -1690,17 +1694,30 @@ UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
 	    app, child_id, child_pending->request_id_json,
 	    {{"userQuestion", {"Review the SSH runtime"}}}, &error));
 
-	const nlohmann::json expired_request = {
-	    {"requestId", "question-expired"}, {"method", "user_question"},
-	    {"arguments", {{"question", "This should expire."}}},
+	// A question has no deadline. Only its caller leaving ends it: the provider cancelling the call, or its tool
+	// connection closing or being replaced.
+	const auto ask = [&](const char* id)
+	{
+		UAM_ASSERT(uam::UamControlService::HandleRequestForTests(app, capability_id,
+		    {{"requestId", id}, {"method", "user_question"}, {"arguments", {{"question", "This waits for the user."}}}}, now).value("pendingApproval", false));
+		(void)uam::UamControlService::ProcessPendingRequests(app);
+		UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
 	};
-	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(
-	    app, capability_id, expired_request, now).value("pendingApproval", false));
-	const auto root_capability = std::ranges::find(app.uam_control_capabilities, capability_id,
-	                                                &uam::UamControlCapability::id);
-	UAM_ASSERT(root_capability != app.uam_control_capabilities.end());
-	root_capability->pending_approval->expires_at_epoch_ms = now - 1;
-	UAM_ASSERT(uam::UamControlService::ProcessPendingRequests(app));
+	const auto transport = [&](const char* id, const char* method, nlohmann::json arguments)
+	{
+		return uam::UamControlService::HandleRequestForTests(app, capability_id, {{"requestId", id}, {"method", method}, {"arguments", std::move(arguments)}}, now).value("ok", false);
+	};
+	UAM_ASSERT(transport("question-connect", "_mcp_initialized", {{"connectionId", "connection-a"}}));
+	ask("question-cancelled");
+	UAM_ASSERT(transport("question-cancel-other", "_mcp_cancel_request", {{"connectionId", "connection-a"}, {"requestId", "another-call"}}));
+	UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	UAM_ASSERT(transport("question-cancel", "_mcp_cancel_request", {{"connectionId", "connection-a"}, {"requestId", "question-cancelled"}}));
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	ask("question-replaced");
+	UAM_ASSERT(transport("question-reconnect", "_mcp_initialized", {{"connectionId", "connection-b"}}));
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	ask("question-closed");
+	UAM_ASSERT(transport("question-disconnect", "_mcp_disconnected", {{"connectionId", "connection-b"}}));
 	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
 
 	uam::UamControlService::Shutdown(app);

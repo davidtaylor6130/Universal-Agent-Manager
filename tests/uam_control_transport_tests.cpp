@@ -1411,6 +1411,56 @@ UAM_TEST(UamControlPublicDelegationInheritsPermissionWithoutCommandApproval)
 	}
 }
 
+UAM_TEST(UamControlRetriedDelegationWithAnUncollectedReplyStartsNoSecondChild)
+{
+	ControlDelegationPermissionFixture fixture("default", "yolo", false);
+	const nlohmann::json arguments{{"agentId", "policy-worker"}, {"task", "Inspect the private workspace."}};
+	const auto& capability = fixture.app.uam_control_capabilities.front();
+	const auto first = fixture.Call(fixture.capability_id, "delegate-first", "agent_delegate", arguments);
+	UAM_ASSERT(first.value("ok", false));
+	// The caller gave up before reading its reply, so the reply is still in the mailbox when it retries.
+	UAM_ASSERT(uam::io::WriteTextFile(capability.directory / "responses" / "delegate-first.json", first.dump()));
+	const auto retried = fixture.Call(fixture.capability_id, "delegate-retry", "agent_delegate", arguments);
+	UAM_ASSERT(retried.value("ok", false));
+	UAM_ASSERT_EQ(retried.at("result").at("runId"), first.at("result").at("runId"));
+	UAM_ASSERT_EQ(fixture.app.agent_runs.size(), std::size_t{1});
+	UAM_ASSERT(!fs::exists(capability.directory / "responses" / "delegate-first.json"));
+	// A reply that was collected proves the caller saw it: the same arguments again are a new delegation.
+	const auto second = fixture.Call(fixture.capability_id, "delegate-second", "agent_delegate", arguments);
+	UAM_ASSERT(second.value("ok", false));
+	UAM_ASSERT(second.at("result").at("runId") != first.at("result").at("runId"));
+	UAM_ASSERT_EQ(fixture.app.agent_runs.size(), std::size_t{2});
+}
+
+UAM_TEST(UamControlReattachLaunchMarksItsToolServerAsResumed)
+{
+	uam_test::TempDir temp("control-resumed-launch");
+	uam::AppState app; app.data_root = temp.root;
+	ChatSession chat; chat.id = "resumed-chat"; chat.provider_id = "opencode-cli"; chat.execution_host_id = "local"; chat.uam_control_enabled = true;
+	app.chats.push_back(chat);
+	UAM_ASSERT(uam::UamControlService::Initialize(app));
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back(); session.chat_id = chat.id; session.provider_id = chat.provider_id; session.running = true;
+	const auto resumed = [&]
+	{
+		nlohmann::json setup = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
+		UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, session, app.chats.front(), "session/new", setup));
+		return setup["params"]["mcpServers"][0]["env"].dump().find("UAM_CONTROL_RESUMED") != std::string::npos;
+	};
+	UAM_ASSERT(!resumed());
+	session.recovering_remote_process = true;
+	UAM_ASSERT(resumed());
+	session.recovering_remote_process = false;
+	session.recovering_remote_turn = true;
+	UAM_ASSERT(resumed());
+	// The resumed server's own receipt is what agent_wait and the connection status read.
+	const std::string capability_id = session.uam_control_capability_id;
+	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(app, capability_id,
+	    {{"requestId", "resumed-receipt"}, {"method", "_mcp_initialized"}, {"arguments", {{"connectionId", "resumed-connection"}}}}, uam::time::SystemEpochMillisecondsNow()).value("ok", false));
+	UAM_ASSERT(app.uam_control_capabilities.front().mcp_initialized);
+	uam::UamControlService::Shutdown(app);
+}
+
 UAM_TEST(UamControlPublicDelegationKeepsGoalCancelAndComputerUseGates)
 {
 	for (const bool captured_read : {false, true})

@@ -153,8 +153,15 @@ namespace uam::remote
 		bool StopProcess(const std::string& session_id, std::string* error_out = nullptr, bool graceful = false, std::string* outcome_out = nullptr);
 		bool RemoveProcess(const std::string& session_id, std::string* error_out = nullptr);
 		/// <summary>Leased handoffs require a fresh, never-reused UUID and attach_if_exists=false.</summary>
+		/// <remarks>The desktop relay names its tool server with <paramref name="desktop_epoch"/>; the provider-side
+		/// shim passes <paramref name="fence_desktop"/> after failing its waiting calls.</remarks>
 		bool OpenChannel(const std::string& channel_id, std::string* error_out = nullptr,
-		                 bool attach_if_exists = true, std::int64_t lease_ms = 0, std::stop_token stop_token = {});
+		                 bool attach_if_exists = true, std::int64_t lease_ms = 0, std::stop_token stop_token = {},
+		                 const std::string& desktop_epoch = {}, bool fence_desktop = false);
+		/// Desktop presence from the latest channel reply: -1 when unknown (older helper) or fenced.
+		std::int64_t ChannelDesktopIdleMs() const { return m_channelDesktopIdleMs; }
+		bool ChannelDesktopReported() const { return m_channelDesktopReported; }
+		const std::string& ChannelDesktopEpoch() const { return m_channelDesktopEpoch; }
 		bool TakeChannel(const std::string& channel_id, std::string_view direction,
 		                 std::string& bytes, std::string* error_out = nullptr);
 		bool WriteChannel(const std::string& channel_id, std::string_view direction,
@@ -220,6 +227,10 @@ namespace uam::remote
 		void Disconnect();
 
 	  private:
+		void NoteChannelDesktop(const nlohmann::json& response);
+		std::int64_t m_channelDesktopIdleMs = -1;
+		bool m_channelDesktopReported = false;
+		std::string m_channelDesktopEpoch;
 		bool Request(nlohmann::json request, nlohmann::json& response,
 		             std::string* error_out,
 		             const std::function<bool()>& interrupt = {},
