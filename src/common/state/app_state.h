@@ -841,6 +841,8 @@ namespace uam
 		std::string provider_protocol_instructions;
 		std::string pending_host_instructions_delivery; // Runtime-only: marker to record once this prompt is delivered.
 		std::string goal_host_instructions_delivery; // Runtime-only: private goal sessions share the chat, so their marker stays off it.
+		// Runtime-only: digest of the finished-goal state this provider process already received, so it is sent once per change.
+		std::string terminal_goal_delivery, pending_terminal_goal_delivery;
 		std::string uam_control_capability_id;
 		bool managed_launch_attempted = false;
 		bool managed_cancellation_pending = false;

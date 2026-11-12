@@ -1692,6 +1692,8 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.provider_protocol_instructions.clear();
 	session.pending_host_instructions_delivery.clear();
 	session.goal_host_instructions_delivery.clear();
+	session.terminal_goal_delivery.clear();
+	session.pending_terminal_goal_delivery.clear();
 	session.initialized = false;
 	session.session_ready = false;
 	session.load_session_supported = false;
@@ -4016,6 +4018,8 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 	if (session.remote_context_preparation != nullptr) session.remote_context_preparation->cancel.request_stop();
 	session.remote_context_preparation.reset();
 	session.claude_input_preparation.reset();
+	if (!session.pending_terminal_goal_delivery.empty())
+		session.terminal_goal_delivery = std::exchange(session.pending_terminal_goal_delivery, std::string{});
 	if (!session.pending_host_instructions_delivery.empty())
 	{
 		if (session.goal_internal_session) session.goal_host_instructions_delivery = std::move(session.pending_host_instructions_delivery);

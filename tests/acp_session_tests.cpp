@@ -11622,6 +11622,22 @@ UAM_TEST(AcpOrdinaryFollowupIncludesLatestTerminalGoalAsReadOnlyState)
 	UAM_ASSERT(raw_session->queued_prompt.find("goal_blocked_permission") != std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find("Remote process remained alive.") != std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find("What happened?") != std::string::npos);
+
+	// Once delivered, the same state is not sent again to this provider process.
+	UAM_ASSERT(!raw_session->pending_terminal_goal_delivery.empty());
+	raw_session->terminal_goal_delivery = raw_session->pending_terminal_goal_delivery;
+	raw_session->processing = true;
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-terminal-followup", "And now?", {}, {}, false, &error));
+	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
+	UAM_ASSERT(raw_session->queued_prompt.find("And now?") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("Persisted terminal goal state (read-only)") == std::string::npos);
+
+	// A changed goal state is sent once more.
+	app.chats.front().goals.front().last_blocker = "Approval was denied.";
+	raw_session->processing = true;
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-terminal-followup", "Any change?", {}, {}, false, &error));
+	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
+	UAM_ASSERT(raw_session->queued_prompt.find("Approval was denied.") != std::string::npos);
 }
 
 UAM_TEST(AcpPromptRejectsOversizedCombinedSkillContent)

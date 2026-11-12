@@ -621,8 +621,10 @@ namespace uam::provider_setup
 		const std::string root = uam::paths::Utf8PathString(directory);
 		instructions = ReplaceRoot(instructions, root);
 		std::error_code workspace_error;
-		// Codex loads workspace AGENTS.md natively; copying it into -c duplicates context and can exceed Windows argv limits.
-		if (!mcp_only && !host_instructions_only && provider != uam::provider_ids::kCodexCli && std::filesystem::exists(workspace / "AGENTS.md", workspace_error))
+		// Codex, OpenCode and Copilot load workspace AGENTS.md natively; a second copy only repeats context on every
+		// request (and can exceed Windows argv limits for Codex's -c).
+		const bool loads_agents_natively = provider == uam::provider_ids::kCodexCli || provider == uam::provider_ids::kOpenCodeCli || provider == uam::provider_ids::kCopilotCli;
+		if (!mcp_only && !host_instructions_only && !loads_agents_natively && std::filesystem::exists(workspace / "AGENTS.md", workspace_error))
 		{
 			std::string workspace_instructions;
 			if (!ReadWorkspaceFile(workspace / "AGENTS.md", workspace, workspace_instructions, error)) return false;
