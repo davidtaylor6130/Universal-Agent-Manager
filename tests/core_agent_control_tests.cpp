@@ -1582,6 +1582,69 @@ UAM_TEST(UamControlGoalApprovalAndChildComputerUseScope)
 	uam::UamControlService::Shutdown(app);
 }
 
+UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
+{
+	TempDir temp("uam-control-tool-gating");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession root = ChatDomainService().CreateNewChat("", "opencode-cli");
+	root.id = "chat-tool-gating";
+	root.uam_control_enabled = true;
+	root.execution_host_id = "local";
+	app.chats.push_back(std::move(root));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = "opencode-cli";
+	session->running = true;
+	uam::AcpSessionState& raw = *session;
+	app.acp_sessions.push_back(std::move(session));
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+	const auto hidden_for = [&](uam::AcpSessionState& target) {
+		nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+		UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, target, app.chats.front(), "session/new", setup, &error));
+		return uam::UamControlService::HiddenToolsForTests(setup["params"]["mcpServers"].back());
+	};
+	const auto names = [](const nlohmann::json& tools) {
+		std::vector<std::string> out;
+		for (const nlohmann::json& tool : tools) out.push_back(tool.value("name", ""));
+		return out;
+	};
+
+	// Every listed tool explains itself; the old placeholder is gone.
+	for (const nlohmann::json& tool : uam::UamControlService::ToolDefinitionsForTests())
+		UAM_ASSERT(!tool.value("description", "").empty() && tool.value("description", "") != "Bounded UAM control operation.");
+
+	// A local root build chat keeps every tool.
+	UAM_ASSERT_EQ(hidden_for(raw), std::string(UAM_ENABLE_COMPUTER_USE ? "" : "computer_use_request"));
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests("").size(), std::size_t{14});
+
+	// A chat started by another chat cannot start chats, so chat_create is not offered.
+	app.chats.front().created_by_chat_id = "creator";
+	std::string hidden = hidden_for(raw);
+	UAM_ASSERT(hidden.find("chat_create") != std::string::npos && hidden.find("agent_") == std::string::npos);
+	UAM_ASSERT(!uam::ranges::Contains(names(uam::UamControlService::ToolDefinitionsForTests(hidden)), "chat_create"));
+	app.chats.front().created_by_chat_id.clear();
+
+	// A read-only agent loses mutations and Computer Use; Plan-mode switching stays a server-side check.
+	raw.active_uam_agent_workspace_access = "read";
+	hidden = hidden_for(raw);
+	for (const std::string name : {"agent_cancel", "goal_create", "chat_create", "computer_use_request"})
+		UAM_ASSERT(hidden.find(name) != std::string::npos);
+	UAM_ASSERT(hidden.find("agent_delegate") == std::string::npos);
+	raw.active_uam_agent_workspace_access.clear();
+
+	// CLI View cannot show HTML views or hold an agent wait.
+	app.cli_terminals.push_back(std::make_unique<uam::CliTerminalState>());
+	nlohmann::json server;
+	UAM_ASSERT(uam::UamControlService::PrepareTerminalMcpServer(app, *app.cli_terminals.back(), app.chats.front(), server, error));
+	const std::vector<std::string> cli_tools = names(uam::UamControlService::ToolDefinitionsForTests(uam::UamControlService::HiddenToolsForTests(server)));
+	for (const std::string name : {"agent_wait", "html_view_preview", "html_view_publish"})
+		UAM_ASSERT(!uam::ranges::Contains(cli_tools, name));
+	UAM_ASSERT(uam::ranges::Contains(cli_tools, "user_question"));
+	uam::UamControlService::Shutdown(app);
+}
+
 UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
 {
 	TempDir temp("uam-control-user-question");
@@ -3145,8 +3208,8 @@ UAM_TEST(UamControlDelegationUsesCapabilityAndRunSnapshotsAcrossProviders)
 	const nlohmann::json listed = uam::UamControlService::HandleRequestForTests(
 	    app, capability.id, {{"requestId", "list-1"}, {"method", "agent_list"}, {"arguments", nlohmann::json::object()}}, 1000);
 	UAM_ASSERT(listed.value("ok", false));
-	UAM_ASSERT_EQ(listed["result"].size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(listed["result"][0].value("id", ""), std::string("worker"));
+	UAM_ASSERT_EQ(listed["result"]["agents"].size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(listed["result"]["agents"][0].value("id", ""), std::string("worker"));
 
 	const std::string child_provider = app.provider_profiles.back().id;
 	const nlohmann::json rejected_delegate = uam::UamControlService::HandleRequestForTests(

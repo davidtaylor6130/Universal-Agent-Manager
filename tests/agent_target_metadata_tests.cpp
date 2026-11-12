@@ -74,9 +74,12 @@ namespace
 			const nlohmann::json listed = uam::UamControlService::HandleRequestForTests(app, "target-capability",
 			    {{"requestId", "list-" + std::to_string(app.uam_control_capabilities.front().seen_request_ids.size())}, {"method", "agent_list"}, {"arguments", nlohmann::json::object()}}, 1000);
 			UAM_ASSERT(listed.value("ok", false));
-			const auto worker = std::ranges::find_if(listed["result"], [](const nlohmann::json& agent) { return agent.value("id", "") == "worker"; });
-			UAM_ASSERT(worker != listed["result"].end());
-			return worker->at("providerTargets");
+			const nlohmann::json& agents = listed["result"]["agents"];
+			const auto worker = std::ranges::find_if(agents, [](const nlohmann::json& agent) { return agent.value("id", "") == "worker"; });
+			UAM_ASSERT(worker != agents.end());
+			// Targets are listed once for all agents, not repeated per agent.
+			UAM_ASSERT(!worker->contains("providerTargets"));
+			return listed["result"].at("providerTargets");
 		}
 	};
 }
@@ -95,11 +98,12 @@ UAM_TEST(BuiltinAgentsListAndDelegateWithoutCustomDefinitionsAcrossProviders)
 		const auto listed = uam::UamControlService::HandleRequestForTests(app, "target-capability",
 		    {{"requestId", "defaults"}, {"method", "agent_list"}, {"arguments", nlohmann::json::object()}}, 1000);
 		UAM_ASSERT(listed.value("ok", false));
-		UAM_ASSERT_EQ(listed["result"].size(), std::size_t{2});
+		const nlohmann::json& agents = listed["result"]["agents"];
+		UAM_ASSERT_EQ(agents.size(), std::size_t{2});
 		for (const std::string& id : {"build", "plan"})
 		{
-			const auto found = std::ranges::find_if(listed["result"], [&](const nlohmann::json& agent) { return agent.value("id", "") == id; });
-			UAM_ASSERT(found != listed["result"].end());
+			const auto found = std::ranges::find_if(agents, [&](const nlohmann::json& agent) { return agent.value("id", "") == id; });
+			UAM_ASSERT(found != agents.end());
 			UAM_ASSERT_EQ(found->at("workspaceAccess").get<std::string>(), std::string(id == "plan" ? "read" : "write"));
 			const auto delegated = uam::UamControlService::HandleRequestForTests(app, "target-capability",
 			    {{"requestId", "delegate-" + id}, {"method", "agent_delegate"},
