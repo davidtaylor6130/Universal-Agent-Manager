@@ -49,6 +49,7 @@ import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonit
 import { FILE_MANAGER_NAME, matchShortcut, shortcutLabel } from '../../utils/shortcuts'
 import { focusActiveInput } from '../../utils/activeInputFocus'
 import { APP_FAILURE_EVENT, reportAppFailure, type AppFailure } from '../../utils/appFailure'
+import { reportPullRequestWatchNotices } from '../../utils/prWatchNotices'
 import { useNotificationClock, useNotificationTimes } from '../../hooks/useNotificationTimes'
 import { notificationTimeGroup } from '../../utils/notificationTime'
 import { useRowLeave } from './useRowLeave'
@@ -888,6 +889,12 @@ export function AppShell() {
     window.addEventListener(APP_FAILURE_EVENT, onFailure)
     return () => window.removeEventListener(APP_FAILURE_EVENT, onFailure)
   }, [showTransientAlert])
+
+  // Pull request watch news goes to the same panel; declared after the listener above so the first notices are heard.
+  const prWatches = useAppStore((s) => s.prWatches)
+  useEffect(() => {
+    reportPullRequestWatchNotices(prWatches, (chatId) => useAppStore.getState().sessions.find((candidate) => candidate.id === chatId)?.name)
+  }, [prWatches])
 
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)

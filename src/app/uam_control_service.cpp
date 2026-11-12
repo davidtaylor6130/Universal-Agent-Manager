@@ -5,6 +5,8 @@
 #include <condition_variable>
 #include <mutex>
 #include "app/uam_control_service.h"
+
+#include "app/pr_watch_service.h"
 #include "app/data_folder_transition.h"
 #include "common/platform/data_folder_writer_lease.h"
 
@@ -350,6 +352,14 @@ namespace uam
 				return HasOnlyStringArguments(arguments, {"objective", "idempotencyKey"});
 			if (method == "chat_create")
 				return HasOnlyStringArguments(arguments, {"task"}, {"providerId", "modelId", "title"});
+			if (method == "pr_watch" || method == "pr_unwatch")
+			{
+				// Either {url} or {repository, number}; the reference itself is parsed by the tool.
+				if (!arguments.is_object()) return false;
+				if (arguments.size() == 1) return arguments.contains("url") && arguments["url"].is_string() && SafeText(arguments["url"].get_ref<const std::string&>(), 512);
+				return arguments.size() == 2 && arguments.contains("repository") && arguments["repository"].is_string() &&
+				    SafeText(arguments["repository"].get_ref<const std::string&>(), 256) && arguments.contains("number") && arguments["number"].is_number_integer();
+			}
 			if (IsHtmlViewMethod(method))
 				return HasOnlyStringArguments(arguments, {"title", "html"});
 			if (method == "computer_use_request")
@@ -1233,6 +1243,32 @@ namespace uam
 			        .reason = "Published HTML view."};
 		}
 
+		/// <summary>pr_watch and pr_unwatch act on the calling chat only, so they need no approval and wake no other chat.</summary>
+		ToolResult PullRequestWatch(AppState& app, const UamControlCapability& capability, const ChatSession& chat, bool watch, const nlohmann::json& arguments)
+		{
+			// A subagent's turn ends with its run; the chat that delegated to it is the one that can be woken.
+			if (!capability.agent_run_id.empty() || !chat.temporary_parent_chat_id.empty())
+				return {.error = "Subagents and temporary side chats cannot watch pull requests. Ask the chat that delegated to you to watch it."};
+			if (app.pr_watch_service == nullptr) return {.error = "Pull request watching is unavailable."};
+			const std::int64_t number = arguments.contains("number") ? arguments["number"].get<std::int64_t>() : 0;
+			const std::optional<pr_watch::Reference> pr = arguments.contains("url")
+			    ? pr_watch::ParseReference(arguments["url"].get_ref<const std::string&>())
+			    : pr_watch::ParseReference(arguments["repository"].get_ref<const std::string&>(), number > 0 && number <= 2000000000 ? static_cast<int>(number) : 0);
+			if (!pr.has_value()) return {.error = "Give a github.com pull request url, or repository as owner/name with its number."};
+			if (!watch)
+			{
+				const bool was_watching = app.pr_watch_service->Unwatch(chat.id, *pr);
+				return {.ok = true, .result = {{"watching", false}, {"wasWatching", was_watching}, {"pullRequest", pr_watch::Url(*pr)}},
+				        .reason = "Stopped watching one pull request for this chat."};
+			}
+			std::string error;
+			if (!app.pr_watch_service->Watch(app, chat.id, *pr, uam::time::SystemEpochMillisecondsNow(), &error)) return {.error = std::move(error)};
+			uam::diagnostics::Write("UAM pr_watch: chat " + chat.id + " started watching a pull request.");
+			return {.ok = true, .result = {{"watching", true}, {"pullRequest", pr_watch::Url(*pr)},
+			                              {"next", "End your turn. UAM sends this chat a message when the pull request changes; do not poll it."}},
+			        .reason = "Watching one pull request for this chat."};
+		}
+
 		ToolResult ExecuteTool(AppState& app, UamControlCapability& capability,
 		                       std::string_view method, const nlohmann::json& arguments)
 		{
@@ -1249,6 +1285,7 @@ namespace uam
 			if (method == "agent_cancel") return AgentCancel(app, capability, arguments);
 			if (method == "goal_get") return GoalGet(app, capability);
 			if (method == "goal_create") return GoalCreate(app, capability, arguments);
+			if (method == "pr_watch" || method == "pr_unwatch") return PullRequestWatch(app, capability, *chat, method == "pr_watch", arguments);
 			return {.error = "Unknown UAM control method."};
 		}
 
@@ -1869,6 +1906,14 @@ namespace uam
 			nlohmann::json chat_create = MutationToolSchema("chat_create", {{"task", {{"type", "string"}, {"description", "First prompt for the new chat."}}},
 			    {"providerId", {{"type", "string"}}}, {"modelId", {{"type", "string"}}}, {"title", {{"type", "string"}}}}, {"task"});
 			chat_create["description"] = "Start one separate top-level UAM chat in this chat's workspace and execution host and send task as its first prompt. Optional providerId and modelId come from agent_list providerTargets; omitted values inherit this chat's provider and model. The new chat copies this chat's permission modes, so it is never more permissive, and always gets its own Git worktree; UAM refuses when Git automatic worktrees are off or the workspace cannot be isolated. In YOLO it starts immediately; otherwise it waits for the user's approval in UAM. Unavailable in Plan mode, to read-only agents and to subagents. At most 2 per turn and 8 per chat; a chat started this way cannot start others. Retrying identical arguments returns the same chat. The reply arrives after the first prompt is sent; if it cannot be sent the empty chat is removed and an error is returned.";
+			const nlohmann::json pull_request_properties = {
+			    {"url", {{"type", "string"}, {"description", "github.com pull request link. Use this, or repository with number."}}},
+			    {"repository", {{"type", "string"}, {"description", "owner/name on github.com."}}},
+			    {"number", {{"type", "integer"}, {"minimum", 1}}}};
+			nlohmann::json pr_watch = ToolSchema("pr_watch", pull_request_properties);
+			pr_watch["description"] = "Watch a GitHub pull request for this chat. UAM reads it about every 2 minutes through the user's signed-in gh and sends this chat a message when a check fails or waits for a maintainer's approval, the required checks pass, no check reports within 15 minutes, someone else comments or reviews, or the branch starts to conflict. After calling it, end your turn instead of polling. Watching ends when the pull request merges or closes (one last message says so), after 10 comment-only messages in a row, after 8 failed reads in a row, when the user presses Stop or marks the chat done, or on pr_unwatch. Unavailable to subagents.";
+			nlohmann::json pr_unwatch = ToolSchema("pr_unwatch", pull_request_properties);
+			pr_unwatch["description"] = "Stop watching a GitHub pull request for this chat. Call it when you hand the work back to the user. The pull request stays linked to the chat.";
 			nlohmann::json agent_wait = ToolSchema("agent_wait", {{"runId", {{"type", "string"}}}}, {"runId"});
 			agent_wait["description"] = "Wait in this active turn for one owned child for up to 80 seconds. Returns its exact status/result and timedOut. If still running, another explicit agent_wait on the same run is allowed; do not redelegate. This read never cancels the child or starts a new turn.";
 			const nlohmann::json html_view_properties = {
@@ -1891,6 +1936,8 @@ namespace uam
 			    MutationToolSchema("agent_cancel", {{"runId", {{"type", "string"}}}}, {"runId"}),
 			    std::move(goal_create),
 			    std::move(chat_create),
+			    std::move(pr_watch),
+			    std::move(pr_unwatch),
 			    std::move(user_question),
 			    { {"name", "computer_use_request"},
 			      {"description", "Ask the user in UAM to enable Computer Use for this local chat. The tool waits for an explicit Allow or Deny decision; it never approves itself. Do not retry after denial or timeout."},

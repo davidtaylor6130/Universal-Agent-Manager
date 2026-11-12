@@ -1,5 +1,6 @@
 import { browserDictationAvailable } from '../../ipc/companionPlatform'
 import { AutomationStartQuestion } from '../chat/AutomationStartQuestion'
+import { LinkedPullRequests, WatchPullRequestDialog } from '../chat/LinkedPullRequests'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
@@ -52,7 +53,7 @@ import { MenuItem, Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { CustomIcon } from '../shared/CustomIcon'
 import { ChatBranchPicker } from '../chat/ChatBranchPicker'
 import { composerWorkspaceName } from '../../utils/workspacePresentation'
-import { AlertTriangle, ArrowDown, AtSign, CircleAlert, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquare, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Square, Target, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, AtSign, CircleAlert, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, Eye, FileText, LoaderCircle, MessageSquare, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Square, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, ConfirmDialog, IconButton, Overlay, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
 import { messageMotionPhase, type MessageMotionPhase } from '../chat/messageMotion'
@@ -470,6 +471,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [selectedToolCallRef, setSelectedToolCallRef] = useState<SelectedToolCallRef | null>(null)
   const [modelOpen, setModelOpen] = useState(false)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
+  const [watchPullRequestOpen, setWatchPullRequestOpen] = useState(false)
   const [remoteMoveFolderId, setRemoteMoveFolderId] = useState('')
   const [remoteBrowseKey, setRemoteBrowseKey] = useState('')
   const [claudePlanPrompt, setClaudePlanPrompt] = useState<PendingClaudePlanPrompt | null>(null)
@@ -3678,6 +3680,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
             ? <Button type="button" size="sm" variant="ghost" leadingIcon={<CornerUpLeft size={14} aria-hidden />} onClick={() => showChatInPane(startedBy.id)}>Started by {startedBy.name}</Button>
             : <span style={{ color: 'var(--text-3)' }}>Started by a chat that is no longer available</span>}
         </nav>}
+        {!isCompanionContext() && <LinkedPullRequests chatId={session.id} />}
+        {!isCompanionContext() && <WatchPullRequestDialog chatId={session.id} open={watchPullRequestOpen} onClose={() => setWatchPullRequestOpen(false)} />}
         <div className="uam-chat-viewport relative flex-1 min-h-0" data-message-navigation={messageNavigationVisible || undefined}>
           <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
             <div ref={transcriptContentRef} className="uam-chat-content w-full py-4" style={{ paddingBottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
@@ -4129,6 +4133,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                           )}
                         </>
                       )}
+                      {!isCompanionContext() && <>
+                        <div className="my-1 border-t" style={{ borderColor: 'var(--border)' }} />
+                        <MenuItem icon={<Eye size={14} aria-hidden />} label="Watch pull request…" onSelect={() => { setWorkspaceMenuOpen(false); setWatchPullRequestOpen(true) }} />
+                      </>}
                     </ViewportMenu>
                   )}
                 </div>
