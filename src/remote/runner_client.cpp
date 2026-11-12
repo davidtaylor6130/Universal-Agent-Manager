@@ -747,7 +747,8 @@ namespace uam::remote
 	ProcessExecutionResult RunnerClient::ExecuteCommand(const std::string& session_id,
 	    const std::filesystem::path& working_directory, const std::vector<std::string>& argv,
 	    int timeout_ms, std::stop_token stop_token, std::string_view standard_input,
-	    std::string retained_control_token, bool* start_request_attempted_out)
+	    std::string retained_control_token, bool* start_request_attempted_out,
+	    const std::function<std::string(std::string_view, int&)>& output_failure)
 	{
 		if (start_request_attempted_out) *start_request_attempted_out = false;
 		ProcessExecutionResult result;
@@ -799,6 +800,9 @@ namespace uam::remote
 			started = have_poll;
 		}
 		bool exited = false;
+		std::string early_failure;
+		std::string unscanned_error_output;
+		int failure_reports = 0;
 		if (started)
 		{
 			result.error.clear();
@@ -835,6 +839,15 @@ namespace uam::remote
 						exited = true;
 						break;
 					}
+					if (output_failure && !poll.standard_error.empty())
+					{
+						// Only stderr carries provider logs; scanning it alone keeps reply text from matching.
+						unscanned_error_output.append(poll.standard_error);
+						early_failure = output_failure(unscanned_error_output, failure_reports);
+						unscanned_error_output.erase(0, unscanned_error_output.rfind('\n') + 1);
+						// Still running after a reported failure: stop it below instead of waiting out the deadline.
+						if (!early_failure.empty()) break;
+					}
 					if (!acknowledged) break;
 					std::this_thread::sleep_for(std::chrono::milliseconds(10));
 				}
@@ -842,7 +855,8 @@ namespace uam::remote
 		}
 		if (exited) result.canceled = result.timed_out = false;
 		else (void)interrupted();
-		if (result.canceled) result.error = "Remote command canceled.";
+		if (!early_failure.empty()) result.error = std::move(early_failure);
+		else if (result.canceled) result.error = "Remote command canceled.";
 		else if (result.timed_out) result.error = "Remote command timed out.";
 		else if (result.output_truncated)
 			result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);

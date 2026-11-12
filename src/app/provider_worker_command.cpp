@@ -180,9 +180,18 @@ namespace
 		const auto deadline = timeout_ms >= 0 ? std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms) : std::chrono::steady_clock::time_point::max();
 
 		int exit_code = -1;
+		std::size_t failure_scan_from = 0;
+		int failure_reports = 0;
+		std::string early_failure;
 		for (;;)
 		{
 			const ProviderWorkerReadStatus read_status = ReadProviderWorkerOutput(process_service, process, result, false, invocation.output_sink);
+			if (read_status == ProviderWorkerReadStatus::Data && invocation.output_failure && !invocation.output_sink && early_failure.empty())
+			{
+				early_failure = invocation.output_failure(std::string_view(result.output).substr(failure_scan_from), failure_reports);
+				const std::size_t line_end = result.output.rfind('\n');
+				if (line_end != std::string::npos) failure_scan_from = line_end + 1;
+			}
 			const ProviderWorkerReadStatus diagnostic_status = invocation.structured_stdout
 			    ? DrainStructuredWorkerDiagnostic(process_service, process, result) : ProviderWorkerReadStatus::Closed;
 			if (read_status == ProviderWorkerReadStatus::Error || diagnostic_status == ProviderWorkerReadStatus::Error)
@@ -196,6 +205,15 @@ namespace
 			if (process_service.PollStdioProcessExited(process, &exit_code))
 			{
 				break;
+			}
+			if (!early_failure.empty())
+			{
+				// A worker still running after a reported failure is waiting on provider retries, not finishing.
+				result.error = std::move(early_failure);
+				process_service.TerminateStdioProcess(process, false);
+				DrainProviderWorkerTail(process_service, process, result, true);
+				process_service.CloseStdioProcessHandles(process);
+				return result;
 			}
 			if (stop_token.stop_requested())
 			{
@@ -343,6 +361,8 @@ namespace uam
 		                                        worker_environment.begin(), worker_environment.end());
 		invocation.command_preview = BuildProviderWorkerShellCommand(invocation.argv, path_mode) + " <prompt via stdin>";
 		invocation.isolated_working_directory = isolation_directory;
+		if (!private_isolation && IsProvider(profile, uam::provider_ids::kOpenCodeCli))
+			invocation.output_failure = uam::provider_workers::OpenCodeWorkerProviderError;
 		return invocation;
 	}
 
@@ -384,7 +404,7 @@ namespace uam
 		if (!client.PrepareTextWorker(id, provider_id, directory, &result.error, stop_token)) return result;
 		std::vector<std::string> argv = invocation.argv;
 		uam::provider_workers::RemapWorkerPaths(argv, invocation.isolated_working_directory ? *invocation.isolated_working_directory : std::filesystem::path{}, directory, remote_host->platform);
-		try { result = client.ExecuteCommand(id, directory, argv, timeout_ms, stop_token, invocation.standard_input); }
+		try { result = client.ExecuteCommand(id, directory, argv, timeout_ms, stop_token, invocation.standard_input, {}, nullptr, invocation.output_failure); }
 		catch (...) { (void)client.RemoveTextWorker(id); throw; }
 		std::string cleanup_error;
 		if (!client.RemoveTextWorker(id, &cleanup_error) && result.ok) { result.ok = false; result.error = cleanup_error; }

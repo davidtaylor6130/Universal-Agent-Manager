@@ -1,5 +1,6 @@
 #include "common/companion/protocol.h"
 #include "common/provider/copilot_native_history.h"
+#include "common/provider/provider_text_worker.h"
 #include "core/chat_import_utils.h"
 #include "cef/uam_bridge_request.h"
 #include "common/platform/platform_speech_output.h"
@@ -1214,6 +1215,50 @@ UAM_TEST(MacWritingToClosedStdioPipeDoesNotTerminateCaller)
 	UAM_ASSERT_EQ(WEXITSTATUS(status), 0);
 }
 #endif
+
+UAM_TEST(OpenCodeWorkerProviderErrorStopsWorkerAtOnce)
+{
+	// OpenCode 1.19.5 `run --print-logs --log-level ERROR` line, printed once per attempt of a request it retries indefinitely.
+	const std::string line = "timestamp=2026-11-12T00:27:39.580Z level=ERROR run=e97ca953 message=\"stream error\" providerID=fake modelID=m agent=uam-text-worker mode=primary error.error=\"AI_APICallError: Free usage limit reached\"\n";
+	const std::string expected = "OpenCode stopped after repeated provider errors instead of waiting for its retries: AI_APICallError: Free usage limit reached.";
+	int reports = 0;
+	// One report is tolerated: OpenCode's own retry gets past a one-off 429.
+	UAM_ASSERT(uam::provider_workers::OpenCodeWorkerProviderError("> uam-text-worker · m\n" + line, reports).empty());
+	UAM_ASSERT_EQ(reports, 1);
+	// An unfinished line is not counted; the caller rescans it once complete.
+	UAM_ASSERT(uam::provider_workers::OpenCodeWorkerProviderError(line.substr(0, 60), reports).empty());
+	UAM_ASSERT_EQ(uam::provider_workers::OpenCodeWorkerProviderError(line, reports), expected);
+	reports = 0;
+	UAM_ASSERT_EQ(uam::provider_workers::OpenCodeWorkerProviderError(line + line, reports), expected);
+	// Reply text quoting the log, or other log levels, never counts.
+	reports = 0;
+	UAM_ASSERT(uam::provider_workers::OpenCodeWorkerProviderError("The log said level=ERROR message=\"stream error\"\n{\"memories\":[]}\n" + std::string("timestamp=x level=WARN message=\"stream error\"\n"), reports).empty());
+	UAM_ASSERT_EQ(reports, 0);
+	// Completed output drops log lines so strict parsers (titles) see only the reply.
+	UAM_ASSERT_EQ(*uam::provider_workers::CompletedTextWorkerOutput(uam::provider_ids::kOpenCodeCli, line + "{\"title\":\"Fix\"}\n", 65536), std::string("{\"title\":\"Fix\"}\n"));
+
+	TempDir temp("uam-provider-worker-early-failure");
+	uam::ProviderWorkerInvocation invocation;
+	invocation.direct_process = true;
+	invocation.output_failure = uam::provider_workers::OpenCodeWorkerProviderError;
+	const std::string log_line = "timestamp=t level=ERROR message=\"stream error\" error.error=\"AI_APICallError: Free usage limit reached\"";
+#if defined(_WIN32)
+	const fs::path shim_path = temp.root / "uam-retrying-worker.cmd";
+	UAM_ASSERT(uam::io::WriteTextFile(shim_path, "@echo off\r\necho " + log_line + " 1>&2\r\nping -n 2 127.0.0.1 >NUL\r\necho " + log_line + " 1>&2\r\nping -n 30 127.0.0.1 >NUL\r\n"));
+	invocation.argv = {uam::paths::Utf8PathString(shim_path)};
+#else
+	const std::string print = "printf '%s\\n' '" + log_line + "' >&2";
+	invocation.argv = {"/bin/sh", "-c", print + "; sleep 1; " + print + "; sleep 30"};
+#endif
+	invocation.standard_input = "prompt";
+	const auto started = std::chrono::steady_clock::now();
+	const ProcessExecutionResult result = uam::ExecuteProviderWorkerInvocation(invocation, temp.root, 25000);
+	UAM_ASSERT(std::chrono::steady_clock::now() - started < std::chrono::seconds(10));
+	UAM_ASSERT(!result.ok);
+	UAM_ASSERT(!result.timed_out);
+	UAM_ASSERT(!result.canceled);
+	UAM_ASSERT_EQ(result.error, expected);
+}
 
 UAM_TEST(ProviderWorkerDirectExecutionHonorsTimeoutAndCancellation)
 {
