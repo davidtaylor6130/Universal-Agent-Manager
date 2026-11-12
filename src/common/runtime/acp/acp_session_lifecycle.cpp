@@ -2190,9 +2190,16 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			*error_out = session.last_error;
 		return false;
 	}
-	const WorktreeLaunchPreparationState workspace = PrepareAcpWorkspaceForLaunch(app, session, chat, error_out);
-	if (workspace != WorktreeLaunchPreparationState::Ready)
-		return workspace == WorktreeLaunchPreparationState::Pending;
+	// Stop always works: attaching only to stop a helper-owned process runs nothing in the workspace, so a workspace that
+	// no longer validates (an agent switched its worktree's branch) must not keep the stop from reaching the host.
+	const bool attach_only_to_stop = session.remote_stop_unconfirmed && chat.remote_stop_cleanup_pending;
+	if (!(attach_only_to_stop && chat.execution_host_id != execution_hosts::kLocalHostId &&
+	      (session.recovering_remote_turn || session.recovering_remote_process)))
+	{
+		const WorktreeLaunchPreparationState workspace = PrepareAcpWorkspaceForLaunch(app, session, chat, error_out);
+		if (workspace != WorktreeLaunchPreparationState::Ready)
+			return workspace == WorktreeLaunchPreparationState::Pending;
+	}
 	// Preparation can clear a pending worktree and still report Ready.
 	if (const char* refusal = chat.AutomationLaunchRefusal())
 	{
@@ -2294,7 +2301,6 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		return false;
 	}
 	// Attaching only to stop the old helper launches nothing, so routing admission and the new provider's launch gates do not apply.
-	const bool attach_only_to_stop = session.remote_stop_unconfirmed && chat.remote_stop_cleanup_pending;
 	if (!attach_only_to_stop && !session.model_discovery_only && chat.routing_mode == "automatic")
 	{
 		if (!ExecutionRoutingOwnsWork(app, chat) && chat.routing_assigned_connection_identity.empty())
