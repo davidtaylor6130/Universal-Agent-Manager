@@ -484,7 +484,8 @@ namespace uam
 			// The nested repository's config is source content, so a filesystem monitor it names must not run.
 			const auto listed = ec ? ProcessExecutionResult{} : RunCommand("git --no-optional-locks -c core.fsmonitor=false -C " + shell::EscapeArg(paths::Utf8PathString(directory)) +
 			    " ls-files --others --ignored --exclude-standard --directory -z");
-			if (listed.ok && !listed.timed_out && !listed.canceled && listed.exit_code != 0 && listed.error.empty())
+			// ok is false for any non-zero exit; a launch, timeout or capture failure sets error and still fails closed.
+			if (!ec && !listed.timed_out && !listed.canceled && !listed.output_truncated && listed.error.empty() && listed.exit_code > 0)
 			{ unreadable.push_back(relative); return true; }
 			if (!CommandSucceeded(listed) || listed.output_truncated || !listed.error.empty() || (!listed.output.empty() && listed.output.back() != '\0'))
 			{
