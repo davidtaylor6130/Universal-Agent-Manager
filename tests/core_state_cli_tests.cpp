@@ -1593,6 +1593,41 @@ UAM_TEST(RemoteCliRowsRejectOldConnectionsAndForeignMaintenanceObservations)
 	UAM_ASSERT(uam::StateSerializer::Serialize(app)["cliVersionManager"]["remoteProviders"].empty());
 }
 
+UAM_TEST(RemoteCliLastOutputHidesInternalMarkersWithoutChangingStoredProbe)
+{
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ExecutionHost remote;
+	remote.id = "remote-build";
+	remote.transport = "ssh";
+	remote.ssh_alias = "private-build";
+	remote.platform = "linux";
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost(), remote};
+	uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(uam::provider_ids::kCodexCli, remote.id)];
+	state.provider_id = uam::provider_ids::kCodexCli;
+	state.execution_host = remote;
+	state.checked = true;
+	state.installed_version = "0.149.0";
+	const auto last_output = [&app]() -> std::string
+	{
+		const nlohmann::json rows = uam::StateSerializer::Serialize(app)["cliVersionManager"]["remoteProviders"];
+		for (const nlohmann::json& row : rows)
+			if (row["providerId"] == uam::provider_ids::kCodexCli) return row["lastOutput"].get<std::string>();
+		return "missing row";
+	};
+	for (const std::string maintenance : {"completed 0123abcd 0", "busy", "idle", "unknown"})
+	{
+		state.raw_output = "[UAM NPM MAINTENANCE] " + maintenance + "\n[UAM CLI PATH] /usr/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n[UAM CLI RUNNING] 0\n[UAM CLI PIDS] 412\ncodex-cli 0.149.0\n";
+		UAM_ASSERT_EQ(last_output(), std::string("codex-cli 0.149.0\n"));
+		UAM_ASSERT(state.raw_output.starts_with("[UAM NPM MAINTENANCE] " + maintenance + "\n[UAM CLI PATH] "));
+	}
+	state.install_output = "[UAM INTERACTIVE NPM UPDATE] 0123abcd\nComplete the update in the terminal, then check this host's CLI version.";
+	UAM_ASSERT_EQ(last_output(), std::string("Complete the update in the terminal, then check this host's CLI version."));
+	UAM_ASSERT(state.install_output.starts_with("[UAM INTERACTIVE NPM UPDATE] 0123abcd\n"));
+	state.install_output = "Explicit interactive npm elevation allowed";
+	UAM_ASSERT(last_output().empty());
+}
+
 UAM_TEST(CliProviderVersionCommandsUseCuratedPackages)
 {
 	const ProviderCliCompatibilityService service;
