@@ -306,6 +306,7 @@ namespace
 		commands["commit"] = service.commands.at("commit");
 		commands["retire"] = service.commands.at("retire");
 		if (platform == "windows") commands["spools"] = service.commands.at("spools");
+		commands["versions"] = service.commands.at("versions");
 		return commands;
 	}
 

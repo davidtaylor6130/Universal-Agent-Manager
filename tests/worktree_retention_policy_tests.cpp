@@ -148,6 +148,9 @@ namespace
 		snapshot.folder = base / (id + "-folder");
 		fs::create_directories(snapshot.folder);
 		UAM_ASSERT(uam::io::WriteTextFile(snapshot.folder / "notes.txt", "plain folder\n"));
+		// Ignored content (dependencies, build output) is copied into the snapshot but never committed.
+		UAM_ASSERT(uam::io::WriteTextFile(snapshot.folder / ".gitignore", "build/\n"));
+		UAM_ASSERT(uam::io::WriteTextFile(snapshot.folder / "build" / "output.bin", "built\n"));
 		snapshot.chat.id = id;
 		snapshot.chat.workspace_directory = snapshot.folder.string();
 		const uam::GitWorktreeOperationResult created = uam::GitWorktreeService().CreateForChat(app, snapshot.chat);
@@ -210,9 +213,11 @@ UAM_TEST(WorktreeRetentionRemovesOrphanedPlainFolderSnapshotsOnlyWhenNothingIsLo
 
 	// A live chat keeps its worktree and snapshot.
 	UAM_ASSERT(fs::exists(live.worktree / ".git") && fs::exists(live.repository / ".git"));
-	// An orphan with nothing beyond its snapshot loses its worktree, then its repository.
+	// An orphan with nothing beyond its snapshot loses its worktree, then its repository, even with ignored copies inside.
 	UAM_ASSERT(!fs::exists(orphan.worktree));
 	UAM_ASSERT(!fs::exists(orphan.repository));
+	for (const fs::directory_entry& entry : fs::directory_iterator(orphan.repository.parent_path()))
+		UAM_ASSERT(!uam::paths::Utf8PathString(entry.path().filename()).starts_with(uam::kManagedSnapshotTombstonePrefix));
 	// Committed agent work keeps the repository and its branch once the clean worktree is gone.
 	UAM_ASSERT(!fs::exists(committed.worktree));
 	UAM_ASSERT(fs::exists(committed.repository / ".git"));

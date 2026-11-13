@@ -6,6 +6,7 @@
 #include <functional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 
 namespace uam
 {
@@ -58,6 +59,9 @@ namespace uam
 		std::string diff;
 		std::string message;
 	};
+
+	/// A plain-folder snapshot being deleted is first renamed to `<bucket>/<prefix><id hash>`; retention finishes any it finds.
+	inline constexpr std::string_view kManagedSnapshotTombstonePrefix = "removing-managed-repository-";
 
 	struct GitWorktreeRetentionCandidate
 	{

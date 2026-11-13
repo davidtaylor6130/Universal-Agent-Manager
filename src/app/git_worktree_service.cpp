@@ -2507,32 +2507,8 @@ namespace uam
 		const std::filesystem::path git = absolute / ".git";
 		std::error_code error;
 		if (!std::filesystem::is_directory(std::filesystem::symlink_status(git, error)) || error || uam::paths::IsLinkOrReparsePointNoThrow(git)) return false;
-		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-		const auto query = [&](const std::string& arguments, std::string& output)
-		{
-			const int remaining_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
-			if (remaining_ms <= 0 || stop_token.stop_requested()) return false;
-			const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(absolute, "--no-optional-locks " + arguments), std::min(2000, remaining_ms), stop_token);
-			if (!CommandSucceeded(result) || result.output_truncated) return false;
-			output = uam::strings::Trim(result.output);
-			return true;
-		};
-		std::string top, common, worktrees, unmerged, status;
+		// File times first: a snapshot kept for its commits costs no Git process on later scans.
 		GitWorktreeRetentionCandidate inspected;
-		if (!query("rev-parse --show-toplevel", top) || !query("rev-parse --path-format=absolute --git-common-dir", common)) return false;
-		const std::filesystem::path canonical = std::filesystem::canonical(absolute, error);
-		if (error || std::filesystem::canonical(uam::paths::PathFromUtf8(top), error) != canonical || error ||
-		    std::filesystem::canonical(uam::paths::PathFromUtf8(common), error) != std::filesystem::canonical(git, error) || error) return false;
-		// The snapshot is the only checkout left: any linked worktree, even a stale one, keeps it until that worktree is resolved.
-		if (!query("worktree list --porcelain -z", worktrees)) return false;
-		std::size_t checkouts = 0;
-		for (std::size_t at = 0; (at = worktrees.find("worktree ", at)) != std::string::npos; at += 9)
-			if (at == 0 || worktrees[at - 1] == '\0') ++checkouts;
-		if (checkouts != 1) return false;
-		// Branches and commits are kept, so any ref with commits beyond the snapshot (agent checkpoints, a stash) keeps it.
-		if (!query("for-each-ref --no-merged=HEAD", unmerged) || !unmerged.empty()) return false;
-		if (!query("status --porcelain --untracked-files=normal --ignored=matching", status) || !status.empty()) return false;
-		if (!query("rev-parse HEAD", inspected.head_sha) || !IsCommitId(inspected.head_sha)) return false;
 		const std::filesystem::file_time_type cutoff = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * retention_days);
 		inspected.activity_at = std::filesystem::file_time_type::min();
 		for (const std::filesystem::path& path : {absolute, git, git / "HEAD", git / "index", git / "logs" / "HEAD", git / "refs" / "heads", git / "packed-refs", git / "worktrees"})
@@ -2544,7 +2520,36 @@ namespace uam
 			if (error || modified >= cutoff) return false;
 			inspected.activity_at = std::max(inspected.activity_at, modified);
 		}
-		if (stop_token.stop_requested()) return false;
+		// A snapshot holds a whole folder copy, so its status gets a longer budget than a linked worktree's.
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+		const auto query = [&](const std::string& arguments, std::string& output)
+		{
+			const int remaining_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
+			if (remaining_ms <= 0 || stop_token.stop_requested()) return false;
+			const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(absolute, "--no-optional-locks " + arguments), std::min(10000, remaining_ms), stop_token);
+			if (!CommandSucceeded(result) || result.output_truncated) return false;
+			output = uam::strings::Trim(result.output);
+			return true;
+		};
+		std::string top, common, worktrees, unmerged, status, commits;
+		if (!query("rev-parse --show-toplevel", top) || !query("rev-parse --path-format=absolute --git-common-dir", common)) return false;
+		const std::filesystem::path canonical = std::filesystem::canonical(absolute, error);
+		if (error || std::filesystem::canonical(uam::paths::PathFromUtf8(top), error) != canonical || error ||
+		    std::filesystem::canonical(uam::paths::PathFromUtf8(common), error) != std::filesystem::canonical(git, error) || error) return false;
+		// The snapshot is the only checkout left: any linked worktree, even a stale one, keeps it until that worktree is resolved.
+		if (!query("worktree list --porcelain -z", worktrees)) return false;
+		std::size_t checkouts = 0;
+		for (std::size_t at = 0; (at = worktrees.find("worktree ", at)) != std::string::npos; at += 9)
+			if (at == 0 || worktrees[at - 1] == '\0') ++checkouts;
+		if (checkouts != 1) return false;
+		// Branches and commits are kept: the checkout must still be at its single snapshot commit, and no ref
+		// (an agent branch with checkpoints, a stash) may hold commits beyond it.
+		if (!query("rev-list --count HEAD", commits) || commits != "1") return false;
+		if (!query("for-each-ref --no-merged=HEAD", unmerged) || !unmerged.empty()) return false;
+		// Ignored files in the snapshot are copies of the source folder's own (dependencies, build output): agents work in the
+		// linked worktree, so only tracked changes and new untracked files count as unsaved work here.
+		if (!query("status --porcelain --untracked-files=normal", status) || !status.empty()) return false;
+		if (!query("rev-parse HEAD", inspected.head_sha) || !IsCommitId(inspected.head_sha) || stop_token.stop_requested()) return false;
 		inspected.directory = absolute;
 		inspected.administrative_directory = git;
 		candidate = std::move(inspected);
@@ -2559,7 +2564,15 @@ namespace uam
 		GitWorktreeRetentionCandidate current;
 		if (!InspectManagedSnapshotRetentionCandidate(data_root, candidate.directory, protected_paths, current, stop_token, retention_days) ||
 		    current.directory != candidate.directory || current.head_sha != candidate.head_sha || current.activity_at != candidate.activity_at) return false;
-		return uam::paths::RemoveAllNoThrow(candidate.directory);
+		// Renamed out of the snapshot name first, so a file held open mid-delete leaves a tombstone that a later scan finishes,
+		// never a half-deleted folder that still looks like a snapshot.
+		const std::filesystem::path tombstone = candidate.directory.parent_path() / (std::string(kManagedSnapshotTombstonePrefix) +
+		    uam::paths::Utf8PathString(candidate.directory.filename()).substr(std::string_view("managed-repository-").size()));
+		std::error_code error;
+		std::filesystem::rename(candidate.directory, tombstone, error);
+		if (error) return false;
+		(void)uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(tombstone);
+		return true;
 	}
 
 	bool GitWorktreeService::RemoveUnusedBranchWorktree(const AppState& app, const ChatSession& branch, std::string* error_out) const

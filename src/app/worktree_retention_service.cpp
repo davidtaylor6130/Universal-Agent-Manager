@@ -192,6 +192,12 @@ namespace uam
 					const std::filesystem::path path = iterator->path();
 					if (paths::IsLinkOrReparsePointNoThrow(path) || !paths::IsDirectoryNoThrow(path)) continue;
 					const std::string name = paths::Utf8PathString(path.filename());
+					if (directory.second == 0 && name.starts_with(kManagedSnapshotTombstonePrefix))
+					{
+						// A snapshot whose deletion was interrupted; nothing uses it once renamed.
+						(void)paths::RemoveTreeWithoutFollowingLinksNoThrow(path);
+						continue;
+					}
 					if (directory.second == 0 && IsManagedSnapshotName(name))
 					{
 						// A plain-folder snapshot of a chat that no longer exists, once its last linked worktree is gone.
@@ -296,9 +302,14 @@ namespace uam
 					std::unordered_set<std::string> protected_snapshot_names = snapshot.protected_snapshot_names;
 					if (ProtectProcessWorkspace(snapshot.data_root, snapshot.protected_paths) && ProtectStoredWorkspaces(snapshot, snapshot.protected_paths, protected_snapshot_names, stop))
 					{
-						if (!candidate.managed_snapshot)
+						// A snapshot (or a snapshot's worktree) whose chat reappeared since discovery is kept.
+						const std::filesystem::path& snapshot_path = candidate.managed_snapshot ? candidate.worktree.directory : candidate.source;
+						const std::string snapshot_name = paths::Utf8PathString(snapshot_path.filename());
+						if (IsManagedSnapshotName(snapshot_name) && protected_snapshot_names.contains(snapshot_name))
+							result.removed = false;
+						else if (!candidate.managed_snapshot)
 							result.removed = GitWorktreeService().RemoveRetentionCandidate(snapshot.data_root, candidate.source, candidate.worktree, snapshot.protected_paths, *active, stop, snapshot.retention_days);
-						else if (!protected_snapshot_names.contains(paths::Utf8PathString(candidate.worktree.directory.filename())))
+						else
 							result.removed = GitWorktreeService().RemoveManagedSnapshotRetentionCandidate(snapshot.data_root, candidate.worktree, snapshot.protected_paths, *active, stop, snapshot.retention_days);
 					}
 					if (candidate.managed_snapshot)

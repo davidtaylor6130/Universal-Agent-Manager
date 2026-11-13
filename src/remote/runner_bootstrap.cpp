@@ -579,14 +579,18 @@ test -z "$uam_reload" || systemctl --user daemon-reload >/dev/null 2>&1
 		// with a file still open is kept whole; [IO.Directory]::Delete removes links inside without following them.
 		return R"PS(try { $ErrorActionPreference='Stop'; $uamSelf=[IO.Path]::GetFullPath($uamCurrent); $uamSelfDir=Split-Path $uamSelf; $uamSelfRoot=Split-Path $uamSelfDir; $uamUsed=@(); $uamKnown=$true; )PS"
 		    R"PS(foreach ($process in @(Get-CimInstance Win32_Process)) { if ($process.ExecutablePath) { $uamUsed+=[IO.Path]::GetFullPath($process.ExecutablePath) } elseif ($process.Name -ieq 'uam-runner.exe') { $uamKnown=$false } }; )PS"
+		    // A start-at-login entry that retirement kept (an unchecked helper) still names its folder.
+		    R"PS(if ($uamRunKey) { $uamRun=Get-Item -LiteralPath $uamRunKey -ErrorAction SilentlyContinue; if ($uamRun) { foreach ($name in $uamRun.GetValueNames()) { )PS"
+		    R"PS(if ($name -like 'uam-runner-*' -and [string]$uamRun.GetValue($name) -match '^"([^"]+)"') { try { $uamUsed+=[IO.Path]::GetFullPath($Matches[1]) } catch { $uamKnown=$false } } } } }; )PS"
 		    R"PS($uamFolders=@(Get-ChildItem -LiteralPath $uamSelfRoot -Directory -ErrorAction SilentlyContinue | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } | Sort-Object LastWriteTimeUtc -Descending); )PS"
 		    R"PS(foreach ($folder in $uamFolders) { foreach ($file in @(Get-ChildItem -LiteralPath $folder.FullName -File -Filter 'uam-runner.tmp-*' -ErrorAction SilentlyContinue)) { )PS"
 		    R"PS(if ($file.Name -like ('uam-runner.tmp-'+$uamNonce+'*') -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }; try { [IO.File]::Delete($file.FullName); 'UAM_HELPER_UPLOAD_REMOVED' } catch {} } }; )PS"
 		    R"PS(if (-not $uamKnown) { 'UAM_HELPER_VERSIONS_KEPT' } else { $uamKept=0; foreach ($folder in $uamFolders) { )PS"
-		    R"PS(if ($folder.Name -like '*.uam-removing') { try { [IO.Directory]::Delete($folder.FullName,$true) } catch {}; continue }; )PS"
+		    R"PS($prefix=$folder.FullName.TrimEnd('\')+'\'; $inUse=@($uamUsed | Where-Object { $_.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) }).Count -gt 0; )PS"
+		    R"PS(if ($folder.Name -like '*.uam-removing') { if (-not $inUse) { try { [IO.Directory]::Delete($folder.FullName,$true) } catch {} }; continue }; )PS"
 		    R"PS(if ($folder.FullName -ieq $uamSelfDir -or -not (Test-Path -LiteralPath (Join-Path $folder.FullName 'uam-runner.exe') -PathType Leaf)) { continue }; )PS"
 		    R"PS(if (@(Get-ChildItem -LiteralPath $folder.FullName -File -Filter 'uam-runner.*' -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'uam-runner.activation-*' -or $_.Name -like 'uam-runner.rollback-*' }).Count -gt 0) { 'UAM_HELPER_VERSION_KEPT_PENDING:'+$folder.Name; continue }; )PS"
-		    R"PS($prefix=$folder.FullName.TrimEnd('\')+'\'; if (@($uamUsed | Where-Object { $_.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { 'UAM_HELPER_VERSION_KEPT_LIVE:'+$folder.Name; continue }; )PS"
+		    R"PS(if ($inUse) { 'UAM_HELPER_VERSION_KEPT_LIVE:'+$folder.Name; continue }; )PS"
 		    R"PS($uamKept++; if ($uamKept -le $uamKeepVersions) { continue }; $gone=$folder.FullName+'.uam-removing'; )PS"
 		    R"PS(try { [IO.Directory]::Move($folder.FullName,$gone) } catch { 'UAM_HELPER_VERSION_KEPT_LIVE:'+$folder.Name; continue }; try { [IO.Directory]::Delete($gone,$true) } catch {}; 'UAM_HELPER_VERSION_REMOVED:'+$folder.Name } } )PS"
 		    R"PS(} catch { 'UAM_HELPER_PRUNE_FAILED:'+$_.Exception.Message }; $ErrorActionPreference='Continue'; )PS";
@@ -595,7 +599,7 @@ test -z "$uam_reload" || systemctl --user daemon-reload >/dev/null 2>&1
 	std::string LinuxHelperVersionPruneScript()
 	{
 		// A folder is in use when any readable process runs an executable from it or has its working directory inside it.
-		// Names are runner version tokens, so the mtime-ordered listing splits safely; anything else is skipped.
+		// Names are read one per line from the mtime-ordered listing; anything but a runner version token is skipped.
 		// Windows captures folder times before it deletes temporaries; Linux deletes them last for the same reason.
 		return R"SH(uam_real=$(cd "$uam_root" 2>/dev/null && pwd -P) || { echo 'UAM_HELPER_PRUNE_FAILED:root'; exit 0; }
 test -r /proc/self/stat || { echo 'UAM_HELPER_PRUNE_FAILED:proc'; exit 0; }
@@ -609,8 +613,15 @@ for uam_path in /proc/[0-9]*; do
 "
 	done
 done
+# A start-at-login unit that retirement could not repoint still names its folder.
+for uam_unit in "$HOME"/.config/systemd/user/uam-runner-*.service; do
+	test -f "$uam_unit" || continue
+	uam_target=$(sed -n 's/^ExecStart="\(.*\)" start --socket .*/\1/p' "$uam_unit")
+	test -z "$uam_target" || uam_used="$uam_used$uam_target/
+"
+done
 uam_kept=0
-for uam_name in $(ls -1dt -- */ 2>/dev/null); do
+ls -1dt -- */ 2>/dev/null | while IFS= read -r uam_name; do
 	uam_name=${uam_name%/}
 	case "$uam_name" in *[!A-Za-z0-9._-]*|''|.|..) continue;; esac
 	test "$uam_name" != "$uam_version" && test -d "$uam_name" && test ! -L "$uam_name" && test -f "$uam_name/uam-runner" && test ! -L "$uam_name/uam-runner" || continue
@@ -1314,7 +1325,7 @@ done
 			{
 				std::string step_output;
 				if (!lease->Run(step, step_output, error, stop_token))
-					uam::diagnostics::Write("Remote helper activation committed, but retiring older helpers failed.");
+					uam::diagnostics::Write("Remote helper activation committed, but the \"" + step.label + "\" step failed.");
 				output += step_output;
 			}
 			// Counts only: helper paths can contain private folder names.

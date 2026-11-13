@@ -646,6 +646,7 @@ UAM_TEST(WindowsHelperVersionPruneRemovesOnlyOldUnusedVersions)
 	struct Cleanup { std::function<void()> run; ~Cleanup() { run(); } } cleanup{[&] { service.TerminateStdioProcess(live, true); service.CloseStdioProcessHandles(live); }};
 	const fs::path file = temp.root / "prune.ps1";
 	UAM_ASSERT(uam::io::WriteTextFile(file, "$uamCurrent='" + (fixture.root / "5.1.0" / "uam-runner.exe").string() + "'; $uamNonce='current-nonce'; $uamKeepVersions=2; " +
+	    "$uamRunKey='HKCU:\\Software\\UAM-Tests\\" + service.GenerateUuid() + "\\Run'; " +
 	    uam::remote::WindowsHelperVersionPruneScript()));
 	const ProcessExecutionResult result = service.ExecuteCommand("powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + file.string() + "\"", 180000);
 	UAM_ASSERT_EQ(result.exit_code, 0);
