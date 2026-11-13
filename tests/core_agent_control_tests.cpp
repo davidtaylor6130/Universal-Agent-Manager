@@ -3761,6 +3761,54 @@ UAM_TEST(HtmlViewFrameHostIsIsolatedFromTheUiBridge)
 	UAM_ASSERT(!uam::cef::ShouldBindUiBridge(false, "about:srcdoc", index));
 }
 
+UAM_TEST(HtmlViewToolsReachEveryProviderLocallyAndOverSsh)
+{
+	// Every structured provider gets the same UAM tool connection, so each can publish a view on this computer and over SSH.
+	for (const char* provider_id : uam::provider_ids::kAllCliProviderIds)
+		for (const std::string host_id : {"local", "ssh-build"})
+		{
+			TempDir temp("uam-control-html-view-provider");
+			uam::AppState app;
+			app.data_root = temp.root;
+			ExecutionHost remote;
+			remote.id = "ssh-build";
+			remote.transport = "ssh";
+			remote.ssh_alias = "build";
+			app.settings.execution_hosts.push_back(remote);
+			ChatSession chat = ChatDomainService().CreateNewChat("", provider_id);
+			chat.id = "chat-html-view-provider";
+			chat.uam_control_enabled = true;
+			chat.execution_host_id = host_id;
+			Message user;
+			user.role = MessageRole::User;
+			user.content = "Chart the results.";
+			chat.messages.push_back(user);
+			app.chats.push_back(std::move(chat));
+			auto owned_session = std::make_unique<uam::AcpSessionState>();
+			owned_session->chat_id = "chat-html-view-provider";
+			owned_session->provider_id = provider_id;
+			owned_session->running = true;
+			owned_session->processing = true;
+			owned_session->turn_user_message_index = 0;
+			uam::AcpSessionState* session = owned_session.get();
+			app.acp_sessions.push_back(std::move(owned_session));
+			std::string error;
+			UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+			nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+			UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, *session, app.chats.front(), "session/new", setup, &error));
+			UAM_ASSERT(std::ranges::any_of(setup["params"]["mcpServers"], [](const nlohmann::json& server) { return server.value("name", "") == "uam-control"; }));
+			for (const std::string tool : {"html_view_preview", "html_view_publish"})
+				UAM_ASSERT(uam::UamControlService::HiddenToolsForTests(setup["params"]["mcpServers"].back()).find(tool) == std::string::npos);
+			const std::string capability = app.uam_control_capabilities.front().id;
+			const nlohmann::json published = uam::UamControlService::HandleRequestForTests(app, capability,
+			    {{"requestId", "publish"}, {"method", "html_view_publish"}, {"arguments", {{"title", "Results"}, {"html", "<!doctype html><p>ok</p>"}}}},
+			    uam::time::SystemEpochMillisecondsNow());
+			UAM_ASSERT(published.value("ok", false));
+			UAM_ASSERT_EQ(app.chats.front().messages.back().blocks.front().type, std::string("html_view"));
+			uam::UamControlService::Shutdown(app);
+		}
+}
+
 UAM_TEST(HtmlViewPublishAddsAPersistentBlockToTheLiveTurn)
 {
 	TempDir temp("uam-control-html-view");
