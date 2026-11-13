@@ -224,6 +224,11 @@ void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, c
 		if (!std::exchange(logged, true)) uam::diagnostics::Write("[getInitialState] State contained invalid UTF-8; replaced it with U+FFFD.");
 		body = state.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
+	// Once per launch: the desktop's first full state, the UI's bootstrap pull.
+	static bool first_state_logged = false;
+	if (!m_dispatchingCompanion && !std::exchange(first_state_logged, true))
+		uam::diagnostics::Write("[performance] startup first state reply at " + std::to_string(static_cast<long long>(uam::GetAppTimeSeconds() * 1000.0)) +
+		    " ms since launch; " + std::to_string(body.size()) + " bytes.");
 	cb->Success(body);
 }
 

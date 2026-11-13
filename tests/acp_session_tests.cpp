@@ -11,6 +11,8 @@
 #include "app/agent_definition_service.h"
 #include "app/memory_service.h"
 #include "app/runtime_activity.h"
+#include "common/runtime/app_time.h"
+#include <functional>
 #include "app/uam_control_service.h"
 #include "common/config/mcp_server_config.h"
 #include "common/runtime/acp/acp_goal_loop.h"
@@ -3422,6 +3424,144 @@ UAM_TEST(KeepAwakeCoversLiveWorkButReleasesStaleStructuredWaits)
 	app.acp_sessions.front()->wait_is_stale = true;
 	UAM_ASSERT(!uam::RuntimeShouldKeepSystemAwake(app));
 	UAM_ASSERT(app.acp_sessions.front()->waiting_for_user_input);
+}
+
+namespace
+{
+	/// One live chat whose provider finished its turn and stays up for the idle timeout.
+	struct IdlePollCadenceFixture
+	{
+		uam::AppState app;
+		IdlePollCadenceFixture()
+		{
+			ChatSession chat;
+			chat.id = "idle-chat";
+			app.chats.push_back(chat);
+			auto session = std::make_unique<uam::AcpSessionState>();
+			session->chat_id = chat.id;
+			session->running = true;
+			session->session_ready = true;
+			session->lifecycle_state = "ready";
+			app.acp_sessions.push_back(std::move(session));
+		}
+		uam::AcpSessionState& Session() { return *app.acp_sessions.front(); }
+		ChatSession& Chat() { return app.chats.front(); }
+		int Delay(bool terminal_ui_visible = true) const { return uam::NextPollDelayMs(app, false, terminal_ui_visible); }
+	};
+}
+
+UAM_TEST(PollCadenceIdlesWhileAProviderIsOnlyAlive)
+{
+	uam::AppState empty;
+	UAM_ASSERT_EQ(uam::NextPollDelayMs(empty, false, true), 1000);
+	UAM_ASSERT_EQ(uam::NextPollDelayMs(empty, true, true), 50);
+
+	// The regression: an idle provider kept the poll at 250 ms for the whole idle timeout after every turn.
+	IdlePollCadenceFixture idle;
+	UAM_ASSERT_EQ(idle.Delay(), 1000);
+	// Selecting it changes nothing while it has no work.
+	idle.app.selected_chat_index = 0;
+	UAM_ASSERT_EQ(idle.Delay(), 1000);
+	// A selected chat with a turn keeps the 16 ms stream cadence.
+	idle.Session().processing = true;
+	UAM_ASSERT_EQ(idle.Delay(), 16);
+
+	// Every reason a running session is not idle keeps the 250 ms cadence for a chat that is not selected.
+	const std::vector<std::pair<const char*, std::function<void(IdlePollCadenceFixture&)>>> busy_states = {
+	    {"turn", [](IdlePollCadenceFixture& f) { f.Session().processing = true; }},
+	    {"permission", [](IdlePollCadenceFixture& f) { f.Session().waiting_for_permission = true; }},
+	    {"question", [](IdlePollCadenceFixture& f) { f.Session().waiting_for_user_input = true; }},
+	    {"session queue", [](IdlePollCadenceFixture& f) { f.Session().queued_user_prompts.emplace_back(); }},
+	    {"chat queue", [](IdlePollCadenceFixture& f) { f.Chat().acp_queued_prompts.emplace_back(); }},
+	    {"prompt request", [](IdlePollCadenceFixture& f) { f.Session().prompt_request_id = 7; }},
+	    {"cancel", [](IdlePollCadenceFixture& f) { f.Session().cancel_request_id = 8; }},
+	    {"starting", [](IdlePollCadenceFixture& f) { f.Session().session_ready = false; f.Session().lifecycle_state = "starting"; }},
+	    {"local stop", [](IdlePollCadenceFixture& f) { f.Session().local_stop_pending = true; }},
+	    {"remote stop", [](IdlePollCadenceFixture& f) { f.Session().remote_stop_pending = true; }},
+	    {"restart", [](IdlePollCadenceFixture& f) { f.Chat().remote_restart_pending = true; }},
+	    {"remote cleanup", [](IdlePollCadenceFixture& f) { f.Chat().remote_stop_cleanup_pending = true; }},
+	    {"reconnect", [](IdlePollCadenceFixture& f) { f.Session().reconnect_pending = true; }},
+	    {"agent run", [](IdlePollCadenceFixture& f) { f.Session().managed_agent_run_id = "run-1"; }},
+	    {"queued agent run", [](IdlePollCadenceFixture& f) { f.app.queued_agent_run_ids.push_back("run-2"); }},
+	    {"goal review", [](IdlePollCadenceFixture& f) { f.Session().goal_review_scheduled = true; }},
+	    {"active goal", [](IdlePollCadenceFixture& f) { f.Chat().active_goal_id = "goal-1"; }},
+	    {"background task", [](IdlePollCadenceFixture& f) { f.Session().claude_live_background_task_ids.insert("task-1"); }},
+	    {"unread bytes", [](IdlePollCadenceFixture& f) { f.Session().stdout_poll_pending = true; }},
+	    {"unread stderr", [](IdlePollCadenceFixture& f) { f.Session().stderr_poll_pending = true; }},
+	    {"unhandled line", [](IdlePollCadenceFixture& f) { f.Session().stdout_buffer = "{}\n"; }},
+	    {"worktree", [](IdlePollCadenceFixture& f) { f.app.worktree_operation_chat_ids.insert("idle-chat"); }},
+	    {"memory", [](IdlePollCadenceFixture& f) { f.app.memory_extraction_queue.emplace_back(); }},
+	};
+	for (const auto& [name, apply] : busy_states)
+	{
+		IdlePollCadenceFixture fixture;
+		apply(fixture);
+		if (fixture.Delay() != 250) std::cerr << "Poll cadence for " << name << ": " << fixture.Delay() << " ms\n";
+		UAM_ASSERT_EQ(fixture.Delay(), 250);
+	}
+
+	// A partial line waits for the rest of it, which arrives through a read, so it is not unhandled work.
+	IdlePollCadenceFixture partial;
+	partial.Session().stdout_buffer = "{\"partial\":";
+	UAM_ASSERT_EQ(partial.Delay(), 1000);
+	// A stop still draining output keeps the fast cadence after its process ended.
+	partial.Session().running = false;
+	partial.Session().local_stop_pending = true;
+	UAM_ASSERT_EQ(partial.Delay(), 250);
+}
+
+UAM_TEST(PollCadenceIdlesWhileATerminalWaitsAtItsPrompt)
+{
+	const double now = uam::GetAppTimeSeconds();
+	const auto make = [now](uam::AppState& app)
+	{
+		auto terminal = std::make_unique<uam::CliTerminalState>();
+		terminal->running = true;
+		terminal->lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+		terminal->turn_state = uam::CliTerminalTurnState::Idle;
+		terminal->last_activity_time_s = now - 30.0;
+		app.cli_terminals.push_back(std::move(terminal));
+		return app.cli_terminals.back().get();
+	};
+	uam::AppState app;
+	uam::CliTerminalState* terminal = make(app);
+	UAM_ASSERT_EQ(uam::NextPollDelayMs(app, false, true), 1000);
+	// A visible attached terminal keeps typing responsive; a hidden window does not need it.
+	terminal->ui_attached = true;
+	UAM_ASSERT_EQ(uam::NextPollDelayMs(app, false, true), 16);
+	UAM_ASSERT_EQ(uam::NextPollDelayMs(app, false, false), 1000);
+	terminal->ui_attached = false;
+	// Recent input or output, a turn or a starting provider keep the 250 ms cadence.
+	terminal->last_activity_time_s = uam::GetAppTimeSeconds();
+	UAM_ASSERT_EQ(uam::NextPollDelayMs(app, false, true), 250);
+	terminal->last_activity_time_s = now - 30.0;
+	terminal->lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	UAM_ASSERT_EQ(uam::NextPollDelayMs(app, false, true), 250);
+	terminal->lifecycle_state = uam::CliTerminalLifecycleState::Unknown;
+	UAM_ASSERT_EQ(uam::NextPollDelayMs(app, false, true), 250);
+	terminal->lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+	terminal->generation_in_progress = true;
+	UAM_ASSERT_EQ(uam::NextPollDelayMs(app, false, true), 250);
+	terminal->generation_in_progress = false;
+	terminal->running = false;
+	UAM_ASSERT_EQ(uam::NextPollDelayMs(app, false, true), 1000);
+}
+
+UAM_TEST(PollCadenceDrainsOutputBufferedOnAnIdleSessionPromptly)
+{
+	IdlePollCadenceFixture fixture;
+	uam::AcpSessionState& session = fixture.Session();
+	session.remote_output_delivery_token = "delivery-token";
+	const std::string marker = std::string(uam::remote::kRemoteOutputMarkerPrefix) + session.remote_output_delivery_token;
+	session.stdout_buffer = marker + " 10 0\n" + marker + " 20 0\n";
+	// A poll that handled part of an idle session's output comes back at the fast cadence for the rest.
+	UAM_ASSERT_EQ(uam::acp_detail::ProcessBufferedAcpStdoutForTests(fixture.app, session, fixture.Chat(), nullptr, 1), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.Delay(), 250);
+	UAM_ASSERT_EQ(uam::acp_detail::ProcessBufferedAcpStdoutForTests(fixture.app, session, fixture.Chat(), nullptr, 1), std::size_t{1});
+	UAM_ASSERT(session.stdout_buffer.empty());
+	UAM_ASSERT_EQ(session.pending_remote_stdout_cursor, std::uintmax_t{20});
+	// Once it is drained the session is idle again.
+	UAM_ASSERT_EQ(fixture.Delay(), 1000);
 }
 
 UAM_TEST(KeepAwakeHoldsStaleWaitsOnRemoteHosts)
