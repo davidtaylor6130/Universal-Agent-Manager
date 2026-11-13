@@ -136,12 +136,97 @@ UAM_TEST(BuiltinBuildDelegationRetainsReadOnlyCeilingsAndRemoteHost)
 		if (active_read_only) app.acp_sessions.front()->active_uam_agent_workspace_access = "read";
 		else app.chats.front().approval_mode = "plan";
 		std::string run_id, error;
-		UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, "root", "", "build", "Implement the task.", &run_id, &error,
+		// A read-only caller keeps its own provider's enforcement; another provider is refused.
+		UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(app, "root", "", "build", "Implement the task.", &run_id, &error,
 		    "opencode-cli", "opencode/glm-5.3-flash-free"));
+		UAM_ASSERT(error.find("own provider") != std::string::npos);
+		UAM_ASSERT(app.agent_runs.empty());
+		UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, "root", "", "build", "Implement the task.", &run_id, &error, "codex-cli"));
+		UAM_ASSERT_EQ(app.agent_runs.back().provider_id, std::string("codex-cli"));
 		UAM_ASSERT_EQ(app.agent_runs.back().effective_workspace_access, std::string("read"));
 		UAM_ASSERT_EQ(app.chats.back().approval_mode, std::string("plan"));
 		UAM_ASSERT_EQ(app.chats.back().execution_host_id, std::string("ssh-windows"));
 	}
+}
+
+UAM_TEST(GoalReviewerControlCannotMutateOrStartBroaderChildren)
+{
+	for (const bool captured_at_launch : {false, true})
+	{
+		TargetMetadataFixture fixture;
+		uam::AppState& app = fixture.app;
+		app.chats.front().command_safety_tier = "yolo";
+		// Either the live review turn or a reviewer capability whose turn already settled.
+		if (captured_at_launch) app.uam_control_capabilities.front().read_only_at_launch = true;
+		else app.acp_sessions.front()->goal_review_turn = true;
+		const auto call = [&](const std::string& id, const std::string& method, nlohmann::json arguments)
+		{
+			return uam::UamControlService::HandleRequestForTests(app, "target-capability",
+			    {{"requestId", id}, {"method", method}, {"arguments", std::move(arguments)}}, 1001);
+		};
+		for (const auto& [method, arguments] : std::vector<std::pair<std::string, nlohmann::json>>{
+		         {"goal_create", {{"objective", "Ship it."}, {"idempotencyKey", "reviewer-goal"}}},
+		         {"chat_create", {{"task", "Do work."}}},
+		         {"agent_cancel", {{"runId", "missing"}}}})
+		{
+			const nlohmann::json refused = call("reviewer-" + method, method, arguments);
+			UAM_ASSERT(!refused.value("ok", true));
+			UAM_ASSERT(refused.value("error", "").find("read-only") != std::string::npos);
+		}
+		UAM_ASSERT(app.chats.front().goals.empty());
+		UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+		// A pull request wake would run under the chat's own, broader agent.
+		const nlohmann::json watch = call("reviewer-watch", "pr_watch", {{"url", "https://github.com/owner/repo/pull/1"}});
+		UAM_ASSERT(watch.value("error", "").find("goal reviewer") != std::string::npos);
+		// The listing advertises what delegation will actually allow.
+		const nlohmann::json listed = call("reviewer-list", "agent_list", nlohmann::json::object());
+		const auto worker = std::ranges::find_if(listed["result"], [](const nlohmann::json& agent) { return agent.value("id", "") == "worker"; });
+		UAM_ASSERT(worker != listed["result"].end());
+		UAM_ASSERT_EQ(worker->value("workspaceAccess", ""), std::string("read"));
+		for (const nlohmann::json& target : worker->at("providerTargets"))
+			UAM_ASSERT_EQ(target.value("providerId", ""), std::string("codex-cli"));
+		// A write agent requested by the reviewer still runs under the read ceiling, on the reviewer's provider.
+		UAM_ASSERT(!call("reviewer-cross", "agent_delegate", {{"agentId", "worker"}, {"task", "Edit files."}, {"providerId", "claude-cli"}}).value("ok", true));
+		const nlohmann::json delegated = call("reviewer-delegate", "agent_delegate", {{"agentId", "worker"}, {"task", "Edit files."}});
+		UAM_ASSERT(delegated.value("ok", false));
+		UAM_ASSERT_EQ(app.agent_runs.size(), std::size_t{1});
+		UAM_ASSERT_EQ(app.agent_runs.back().effective_workspace_access, std::string("read"));
+		UAM_ASSERT_EQ(app.chats.back().approval_mode, std::string("plan"));
+		const nlohmann::json goal = call("reviewer-goal-get", "goal_get", nlohmann::json::object());
+		UAM_ASSERT(goal.value("ok", false));
+		UAM_ASSERT(!goal["result"].value("mutationToolsEnabled", true));
+		UAM_ASSERT(!goal["result"].value("agentGoalManagementEnabled", true));
+	}
+}
+
+UAM_TEST(DelegationTreatsUnknownWorkspaceAccessAsReadOnly)
+{
+	TargetMetadataFixture fixture;
+	uam::AppState& app = fixture.app;
+	// Only an exact "write" grants write; an unrecognised value narrows delegation to read.
+	app.acp_sessions.front()->active_uam_agent_workspace_access = "Write";
+	std::string run_id, error;
+	UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, "root", "", "worker", "Edit files.", &run_id, &error));
+	UAM_ASSERT_EQ(app.agent_runs.back().effective_workspace_access, std::string("read"));
+	UAM_ASSERT_EQ(app.chats.back().approval_mode, std::string("plan"));
+}
+
+UAM_TEST(WriteCallersAndGoalWorkersKeepTheirPermissions)
+{
+	TargetMetadataFixture fixture;
+	uam::AppState& app = fixture.app;
+	app.chats.front().command_safety_tier = "yolo";
+	// A goal worker runs in an internal session but is not a reviewer: its chat's permissions apply.
+	app.acp_sessions.front()->goal_internal_session = true;
+	const nlohmann::json goal = uam::UamControlService::HandleRequestForTests(app, "target-capability",
+	    {{"requestId", "worker-goal-get"}, {"method", "goal_get"}, {"arguments", nlohmann::json::object()}}, 1001);
+	UAM_ASSERT(goal["result"].value("mutationToolsEnabled", false));
+	// A write caller may still delegate a write child to another provider.
+	const nlohmann::json delegated = uam::UamControlService::HandleRequestForTests(app, "target-capability",
+	    {{"requestId", "worker-delegate"}, {"method", "agent_delegate"}, {"arguments", {{"agentId", "worker"}, {"task", "Edit files."}, {"providerId", "claude-cli"}}}}, 1001);
+	UAM_ASSERT(delegated.value("ok", false));
+	UAM_ASSERT_EQ(app.agent_runs.back().provider_id, std::string("claude-cli"));
+	UAM_ASSERT_EQ(app.agent_runs.back().effective_workspace_access, std::string("write"));
 }
 
 UAM_TEST(BuiltinCapturedDefinitionsRoundTripWithoutPromotingLegacySnapshots)
@@ -280,6 +365,11 @@ UAM_TEST(ManagedAntigravityDelegationPreservesParentPlanAndPermissionCeilings)
 	fixture.app.chats.front().approval_mode = "plan";
 	fixture.app.chats.front().command_safety_tier = "aiReview";
 	std::string run_id, error;
+	// A Plan parent keeps its own provider's enforcement, so the managed Antigravity child needs an Antigravity parent.
+	UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(fixture.app, "root", {}, "worker", "Inspect only.",
+	    &run_id, &error, "antigravity-cli"));
+	UAM_ASSERT(error.find("own provider") != std::string::npos);
+	fixture.app.chats.front().provider_id = "antigravity-cli";
 	UAM_ASSERT(uam::AgentRunScheduler::Enqueue(fixture.app, "root", {}, "worker", "Inspect only.",
 	    &run_id, &error, "antigravity-cli"));
 	UAM_ASSERT_EQ(fixture.app.agent_runs.size(), std::size_t{1});

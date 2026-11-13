@@ -518,6 +518,10 @@ namespace uam
 		std::string agent_run_id;
 		std::vector<std::string> agent_skills;
 		std::vector<std::string> agent_delegates;
+		/// Captured from a goal review launch; the capability can never mutate or start broader children.
+		bool read_only_at_launch = false;
+		/// Signing key held only by this capability's MCP server process; a request without its signature is refused.
+		std::string request_key;
 		int64_t expires_at_epoch_ms = 0;
 		std::deque<int64_t> request_times_epoch_ms;
 		std::unordered_set<std::string> seen_request_ids;
@@ -931,7 +935,7 @@ namespace uam
 		std::string goal_review_user_prompt;
 		std::string goal_review_assistant_text;
 		int goal_review_repair_attempts = 0;
-		// Runtime receipt from validated provider usage, never reconstructed from review text.
+		// Runtime receipt from validated provider usage for the current goal worker or review turn, never reconstructed from turn text.
 		struct GoalReviewUsage
 		{
 			int turn_serial = -1;

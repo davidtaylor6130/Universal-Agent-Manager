@@ -381,6 +381,17 @@ namespace uam
 			return error.empty() ? "Remote provider configuration failed before startup." : std::string(error);
 		}
 
+		/// The helper ends a process whose output it cannot save and reports why on every later poll. Recovery cannot
+		/// bring that turn back, so it settles with this reason instead of reattaching for as long as the record lasts.
+		std::optional<std::string> RemoteSpoolFailureMessage(const std::string& stderr_tail)
+		{
+			const std::string_view line = RemoteProxyExitLine(stderr_tail);
+			if (line.ends_with(uam::remote::kRemoteSpoolEndedSuffix)) return std::string(line);
+			if (uam::remote::IsLegacyRemoteSpoolFailure(line))
+				return std::string(line) + " The helper ended this process; if the host's disk is full, free space there, then resend.";
+			return std::nullopt;
+		}
+
 		bool RemoteProxyExitConfirmsMissingProcess(const std::string& stderr_tail)
 		{
 			const std::string_view line = RemoteProxyExitLine(stderr_tail);
@@ -388,7 +399,8 @@ namespace uam
 			return line == "The remote process does not exist." ||
 			       line == "The remote process is no longer available." ||
 			       line == "The remote process has exited." ||
-			       line == uam::remote::kRemoteHelperNotRunningLine;
+			       line == uam::remote::kRemoteHelperNotRunningLine ||
+			       RemoteSpoolFailureMessage(stderr_tail).has_value();
 		}
 
 		bool RemoteStopExitConfirmed(bool exited, int exit_code, const std::string& stderr_tail)
@@ -645,7 +657,7 @@ namespace uam
 			{
 				if (existing->response_json == response_json) return true;
 				bool replacement_allowed = false;
-				if (session.goal_review_turn || session.active_uam_agent_workspace_access == "read")
+				if (session.goal_review_turn || session.active_uam_agent_workspace_access != "write")
 				{
 					if (purpose == RemoteInteractionResponsePurpose::Permission && session.pending_permission.request_id_json == request_id_json)
 					{
@@ -843,7 +855,7 @@ namespace uam
 			session.active_uam_agent_definition_snapshot = first.uam_agent_definition_snapshot;
 			session.active_uam_agent_skills = first.uam_agent_skills;
 			session.active_uam_agent_delegates = first.uam_agent_delegates;
-			session.active_uam_agent_workspace_access = first.uam_agent_workspace_access;
+			session.active_uam_agent_workspace_access = first.uam_agent_workspace_access == "write" ? "write" : "read";
 			session.active_uam_agent_instructions = first.uam_agent_instructions;
 			session.active_uam_agent_execution_capability = first.uam_agent_execution_capability;
 		}
@@ -1478,7 +1490,7 @@ namespace uam
 			session.goal_review_scheduled = session.goal_review_turn;
 			session.goal_review_goal_id = chat.goal_iteration_goal_id;
 			session.goal_review_repair_attempts = chat.goal_iteration_repair_attempts;
-			if (session.goal_review_turn) acp_detail::BeginGoalReviewUsage(session, false);
+			if (!session.goal_turn_kind.empty()) acp_detail::BeginGoalReviewUsage(session, false);
 			RestoreRemoteAcpTranscript(session, chat);
 			if (chat.remote_source_exit_pending)
 			{
@@ -1712,6 +1724,8 @@ namespace uam
 			const bool initial_managed = managed != app.agent_runs.end() && managed->managed_continuation.has_value();
 			if (!initial_managed && uam::provider_chat_defaults::ForProvider(app.settings, chat.provider_id, chat.execution_host_id).feature_preference == "provider")
 			{
+				// Provider features replace UAM's agent instructions, never its read ceiling.
+				std::string access = chat.uam_agent_id == "plan" ? "read" : "write";
 				if (!chat.agent_run_id.empty())
 				{
 					const auto run = std::ranges::find(app.agent_runs, chat.agent_run_id, &AgentRun::id);
@@ -1722,6 +1736,7 @@ namespace uam
 					}
 					if (!ValidateCapturedAcpAgentPolicy(app, chat,
 					        run->agent_id, run->definition_snapshot, "provider-native", error_out)) return false;
+					access = run->effective_workspace_access;
 				}
 				else if (!chat.uam_agent_id.empty() && chat.uam_agent_id != "build" && chat.uam_agent_id != "plan")
 				{
@@ -1735,8 +1750,10 @@ namespace uam
 					}
 					if (!ValidateCapturedAcpAgentPolicy(app, chat, snapshot.definition.id,
 					        snapshot.definition.markdown_snapshot, "provider-native", error_out)) return false;
+					access = snapshot.definition.workspace_access;
 				}
 				queued.uam_agent_id = "build";
+				queued.uam_agent_workspace_access = access == "write" ? "write" : "read";
 				queued.uam_agent_execution_capability = "provider-native";
 				return true;
 			}
@@ -2693,7 +2710,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    ? GoalService::ReviewerModelId(chat, *goal, &session)
 			    : goal != nullptr ? GoalService::WorkerModelId(chat, *goal) : chat.model_id;
 			const std::string desired_mode = uam::approval_modes::EffectiveProviderMode(
-			    first.uam_agent_workspace_access == "read" ? uam::approval_modes::kPlanApprovalMode : chat.approval_mode,
+			    first.uam_agent_workspace_access != "write" ? uam::approval_modes::kPlanApprovalMode : chat.approval_mode,
 			    chat.command_safety_tier);
 			const bool must_leave_hidden_autopilot = session.current_mode_id == uam::approval_modes::kAcpAutopilotMode;
 			const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
@@ -2720,7 +2737,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			const bool turn_timeout_changed = session.launch_turn_timeout_setting_seconds > 0 &&
 			    opencode_receives(session.launch_turn_timeout_setting_seconds) != opencode_receives(app.settings.active_turn_inactivity_timeout_seconds) &&
 			    !session.processing && session.prompt_request_id == 0;
-			const bool settings_require_restart = session.running && session.session_ready && (model_requires_restart || turn_timeout_changed || (!chat.reasoning_effort.empty() && runtime.AcpLaunchOptionsNeedModelRestart(session, turn_model_id)) || (first.uam_agent_execution_capability != "opencode-native-agent-config" && (first.uam_agent_workspace_access == "read" || !uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) && !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier) && runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::RestartSession));
+			const bool settings_require_restart = session.running && session.session_ready && (model_requires_restart || turn_timeout_changed || (!chat.reasoning_effort.empty() && runtime.AcpLaunchOptionsNeedModelRestart(session, turn_model_id)) || (first.uam_agent_execution_capability != "opencode-native-agent-config" && (first.uam_agent_workspace_access != "write" || !uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) && !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier) && runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::RestartSession));
 			const auto provider_native = [](std::string_view capability)
 			{
 				return capability == "uam-central-native-setup" ||
@@ -2862,7 +2879,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 			if (!runtime.IsGenericAcpSession() && session.active_uam_agent_execution_capability != "opencode-native-agent-config" &&
-			    session.session_ready && (first.uam_agent_workspace_access == "read" || !uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) &&
+			    session.session_ready && (first.uam_agent_workspace_access != "write" || !uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) &&
 			    !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier))
 			{
 				if (runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::ApplyLocally)
@@ -2917,6 +2934,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session.turn_assistant_message_index = -1;
 			session.delivered_prompt_recoveries.clear();
 			session.turn_serial += 1;
+			// A goal's first worker turn is an ordinary send; open its usage receipt like a goal-internal turn's.
+			acp_detail::BeginGoalReviewUsage(session, false);
 			chat.last_stop_reason.clear(); // A new turn must not inherit the previous turn's stop reason.
 			if (saved_retry)
 			{
@@ -6482,6 +6501,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session->reconnect_pending = true;
 			session->reconnect_not_before_time_s = GetAppTimeSeconds();
 			chat->remote_stop_cleanup_pending = true;
+			// The stop's attach skips the workspace. A recovery check still running would hold the poll back and, when
+			// it fails, cancel this reconnect, leaving the stop unconfirmed for good.
+			if (session->worktree_launch_pending)
+			{
+				CancelWorktreeLaunchPreparation(app, chat_id, session->worktree_launch_cancellation);
+				session->worktree_launch_pending = false;
+				session->worktree_launch_cancellation.reset();
+			}
 			// The confirmed stop must not release queued input the user cancelled behind.
 			if (preserve_queued_prompts && hold_preserved_queue)
 			{
@@ -8572,6 +8599,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 						chat.remote_recovery_state = "blocked";
 						session.last_error = "The runner restarted, but this exact provider turn is gone. Chat recovery is blocked to avoid repeating a prompt or tool action. Review the chat before retrying; its goal is retained.";
 					}
+					if (const std::optional<std::string> spool_failure = RemoteSpoolFailureMessage(session.recent_stderr))
+						session.last_error = *spool_failure;
 					// Exit 70 confirms the helper-owned process is gone, so its
 					// write-ahead delivery and interaction queues can no longer be replayed.
 					chat.remote_turn_reconnect_pending = false;
@@ -8644,7 +8673,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					session.goal_review_user_prompt = goal_review_user_prompt;
 					session.goal_review_assistant_text = goal_review_assistant_text;
 					// A replacement process can resume native history; do not infer a zero cumulative baseline.
-					if (session.goal_review_turn) BeginGoalReviewUsage(session, false);
+					if (!session.goal_turn_kind.empty()) BeginGoalReviewUsage(session, false);
 					session.last_error.clear();
 					AppendGoalLoopDiagnostic(session, "auto_restart_after_startup_crash", goal_review_goal_id, pending_prompt);
 				}

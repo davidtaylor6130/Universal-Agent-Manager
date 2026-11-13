@@ -6,6 +6,6 @@ A scan must prepare its complete selected input before starting extraction; it m
 
 Background extraction, including the step that records a chat's new messages as needing no extraction, waits while that chat has a turn in progress. A turn whose provider is still being started counts: memory must not record progress for a message the provider has not received, and its bookkeeping must not make the launch give the message back as unsent.
 
-A worker failure pauses background extraction for 30 seconds to five minutes only for that execution host and worker provider. Chats on another host or provider keep extracting. A manual scan clears the pause for the host and provider of each chat it selects, so other chats sharing that pair can retry too.
+A worker that keeps running after repeated provider failures, such as OpenCode retrying a usage or rate limit, is stopped at once and counted as that failure rather than waiting out the worker timeout. A worker failure pauses background extraction for 30 seconds to five minutes only for that execution host and worker provider. Chats on another host or provider keep extracting. A manual scan clears the pause for the host and provider of each chat it selects, so other chats sharing that pair can retry too.
 
 [Memory policies](../settings/memory-policies.md) · [Memory store](store.md) · [Settings](../settings/memory.md).

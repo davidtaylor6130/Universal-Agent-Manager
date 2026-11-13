@@ -156,7 +156,7 @@ constexpr std::string_view kApproveImplementation = "Approve plan and implement 
 
 bool ReadOnlyPlan(const AcpSessionState& session)
 {
-	return session.goal_review_turn || session.active_uam_agent_workspace_access == "read";
+	return session.goal_review_turn || session.active_uam_agent_workspace_access != "write";
 }
 
 void RecordPlanDecision(AcpSessionState& session, const std::string& stable_id,
@@ -1377,7 +1377,7 @@ nlohmann::json CopilotCliProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState&
 	session.copilot_native_state["turnObserved"] = false;
 	session.copilot_native_state["messages"] = nlohmann::json::object();
 	session.copilot_native_state["reasoning"] = nlohmann::json::object();
-	const bool read_only = session.goal_review_turn || session.active_uam_agent_workspace_access == "read";
+	const bool read_only = session.goal_review_turn || session.active_uam_agent_workspace_access != "write";
 	const std::string mode = read_only || chat.approval_mode == uam::approval_modes::kPlanApprovalMode ? "plan" : "interactive";
 	return uam::acp_json_rpc::Request(request_id, method,
 	    {{"sessionId", session.session_id}, {"prompt", prompt}, {"mode", "enqueue"}, {"agentMode", mode}});

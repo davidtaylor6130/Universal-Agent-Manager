@@ -31,7 +31,8 @@ namespace uam::remote
 			command = "powershell.exe -NoLogo -NoProfile -NoExit -EncodedCommand " + uam::base64::Encode(utf16);
 		}
 		else return {};
-		return {"ssh", "-tt", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=10", host.ssh_alias, command};
+		return {"ssh", "-tt", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=10",
+		        "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", host.ssh_alias, command};
 	}
 
 	/// <summary>Encode native argv for a new Windows PowerShell window without cmd.exe interpolation.</summary>

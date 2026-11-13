@@ -78,6 +78,7 @@ The source patch uses a shared captured submission, refuses a changed target cha
 | Notifications and undo | Shared notification system and organization-undo removal are implemented; review and user testing remain pending | [Recorded decisions](architecture/decisions.md), Single Notification System and Remove Organization Undo |
 | Account usage | Independent local reads exist for four providers; Gemini eligibility, OpenCode acquisition, custom commands, remote feeds and platform acceptance remain limited | [Allowances](usage/allowances.md), Independent Account Allowance Snapshots |
 | Cross-platform/SSH | Source routes and fixture receipts do not prove every real CLI, OS or SSH combination | [Provider checklists](providers/providers.md#provider-checklists) |
+| CEF process sandbox | Enabled for macOS app bundles only; Windows needs CEF's `bootstrap.exe` client-DLL layout and Linux desktop builds are not shipped | [Security reference](reference/security-enterprise.md#known-gaps) |
 
 Do not treat these items as fixed from this documentation trial. Statuses are conservative source-level assessments, not a replacement for running a provider implementation audit.
 
@@ -99,7 +100,7 @@ The trial merges `uam/v5-improvements` at `e28ba717`, including empty native-cha
 
 ## Remaining scope and source mismatches
 
-- [Existing VCS panel](architecture/decisions.md#existing-vcs-panel): resolved 2026-10-25; David keeps the existing Git/SVN commit panel in V5. New panel features still need approval, and the `AGENTS.md` Release Slice exclusion still needs a matching update.
+- [Existing VCS panel](architecture/decisions.md#existing-vcs-panel): resolved 2026-10-25; David keeps the existing Git/SVN commit panel in V5. On 2026-11-11 he asked for SVN history, update and further SVN actions in it; history and update are implemented and await his acceptance. Other new panel features still need approval. The `AGENTS.md` Release Slice now records both exceptions.
 - Antigravity availability copy now follows the agreed structured Chat and CLI View scope after removing the stale terminal-only description; the [checklist](providers/antigravity/antigravity.md) and the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md) retain broader capability and acceptance gaps.
 
 ## System-wide native import

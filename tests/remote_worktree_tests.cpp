@@ -552,6 +552,40 @@ UAM_TEST(RemoteWorktreeRestartRecoversOriginalArtifactsWithoutRecreating)
 #endif
 }
 
+UAM_TEST(RemoteWorktreeSwitchedOffItsBranchFailsVisiblyAndReleasesTheChat)
+{
+#if !defined(_WIN32) && UAM_ENABLE_SSH
+	if (!GitAvailableForTests()) return;
+	RemoteWorktreeFixture fixture;
+	UAM_ASSERT(fixture.Settle(fixture.Start()));
+	const ChatSession prepared = fixture.app.chats.front();
+	UAM_ASSERT(uam::paths::IsGitWorktreeIsolated(prepared));
+	// The agent in the chat switched its own worktree to another branch.
+	UAM_ASSERT(RunGitForTest(prepared.workspace_worktree_directory, "checkout -q -b private-foreign"));
+	// Restart: the saved chat revalidates its worktree from scratch.
+	fixture.app.worktree_launch_preparations.clear();
+	fixture.app.pending_chat_save_at_by_chat_id.clear();
+	fixture.app.pending_chat_save_tasks.clear();
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, prepared.id);
+	UAM_ASSERT(saved && saved->workspace_worktree_directory == prepared.workspace_worktree_directory);
+	fixture.app.chats.front() = *saved;
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = fixture.Start();
+	UAM_ASSERT(!fixture.Settle(task));
+	// The chat is told how to recover instead of waiting on a workspace operation forever.
+	UAM_ASSERT(task->error.find("is on private-foreign instead of its own branch " + prepared.workspace_branch_name) != std::string::npos);
+	UAM_ASSERT(task->error.find("git switch " + prepared.workspace_branch_name) != std::string::npos);
+	UAM_ASSERT(!fixture.app.worktree_operation_chat_ids.contains(prepared.id));
+	const uam::WorktreeLaunchPreparationResult result = uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front());
+	UAM_ASSERT_EQ(result.state, uam::WorktreeLaunchPreparationState::Failed);
+	UAM_ASSERT(result.error.find("git switch") != std::string::npos);
+	UAM_ASSERT(!fixture.app.worktree_operation_chat_ids.contains(prepared.id));
+	// The foreign branch is never adopted, and switching back makes the worktree valid again.
+	UAM_ASSERT(RunGitForTest(prepared.workspace_worktree_directory, "switch -q " + prepared.workspace_branch_name));
+	UAM_ASSERT(fixture.Settle(fixture.Start()));
+	UAM_ASSERT_EQ(fixture.app.chats.front().workspace_branch_name, prepared.workspace_branch_name);
+#endif
+}
+
 UAM_TEST(RemoteWorktreeInitializingCheckoutNeverRecoversReady)
 {
 #if !defined(_WIN32) && UAM_ENABLE_SSH

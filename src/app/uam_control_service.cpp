@@ -9,6 +9,7 @@
 #include "app/pr_watch_service.h"
 #include "app/data_folder_transition.h"
 #include "common/platform/data_folder_writer_lease.h"
+#include "common/platform/platform_incremental_sha256.h"
 
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
@@ -139,6 +140,8 @@ namespace uam
 		constexpr std::string_view kServerFlag = "--uam-control-mcp";
 		constexpr const char* kCapabilityDirectoryEnvironment = "UAM_CONTROL_CAPABILITY_DIR";
 		constexpr const char* kHiddenToolsEnvironment = "UAM_CONTROL_HIDDEN_TOOLS";
+		/// Per-capability signing key, delivered only in the MCP server's launch environment, never in the capability directory.
+		constexpr const char* kRequestKeyEnvironment = "UAM_CONTROL_REQUEST_KEY";
 
 		enum class WaitAbortReason { None, Cancelled, InputClosed, InputError, Deadline };
 
@@ -283,6 +286,52 @@ namespace uam
 			return out.str();
 		}
 
+		std::string Sha256Hex(std::string_view first, std::string_view second)
+		{
+			platform::IncrementalSha256 hash;
+			return hash.Add(first) && hash.Add(second) ? hash.Finish() : std::string{};
+		}
+
+		/// <summary>HMAC-SHA256 of a request body; the key is the 64-character hex capability key.</summary>
+		std::string RequestMac(std::string_view key, std::string_view body)
+		{
+			if (key.size() != 64) return {};
+			std::string inner_pad(64, '\x36'), outer_pad(64, '\x5c');
+			for (std::size_t index = 0; index < key.size(); ++index)
+			{
+				inner_pad[index] = static_cast<char>(inner_pad[index] ^ key[index]);
+				outer_pad[index] = static_cast<char>(outer_pad[index] ^ key[index]);
+			}
+			const std::string inner = Sha256Hex(inner_pad, body);
+			if (inner.size() != 64) return {};
+			std::string inner_bytes;
+			for (std::size_t index = 0; index < inner.size(); index += 2)
+				inner_bytes.push_back(static_cast<char>(std::stoi(inner.substr(index, 2), nullptr, 16)));
+			return Sha256Hex(outer_pad, inner_bytes);
+		}
+
+		/// <summary>Adds the session's request signature, so the manager can tell which provider session filed it.</summary>
+		nlohmann::json SignRequest(nlohmann::json request, std::string_view key)
+		{
+			const std::string mac = RequestMac(key, request.dump());
+			if (!mac.empty()) request["mac"] = mac;
+			return request;
+		}
+
+		/// <summary>Verifies and strips the signature; a missing, foreign or malformed one proves nothing.</summary>
+		bool VerifyRequest(nlohmann::json& request, std::string_view key)
+		{
+			if (!request.is_object() || !request.contains("mac") || !request["mac"].is_string()) return false;
+			const std::string mac = request["mac"].get<std::string>();
+			request.erase("mac");
+			const std::string expected = RequestMac(key, request.dump());
+			if (expected.empty() || mac.size() != expected.size()) return false;
+			unsigned char difference = 0;
+			for (std::size_t index = 0; index < mac.size(); ++index)
+				difference |= static_cast<unsigned char>(mac[index] ^ expected[index]);
+			return difference == 0;
+		}
+
 		bool SafeRequestId(std::string_view value)
 		{
 			return !value.empty() && value.size() <= 80 &&
@@ -407,16 +456,27 @@ namespace uam
 			return method == "agent_delegate" || method == "agent_cancel" || method == "goal_create" || method == "chat_create";
 		}
 
+		/// <summary>The caller's read ceiling: a Plan or read agent, a goal reviewer, or a capability with no live session.</summary>
 		bool ReadOnlyAgent(const AppState& app, const UamControlCapability& capability)
 		{
-			if (capability.agent_id == "plan") return true;
+			if (capability.agent_id == "plan" || capability.read_only_at_launch) return true;
+			const auto read_only = [](const AcpSessionState& session)
+			{ return session.goal_review_turn || session.active_uam_agent_workspace_access != "write"; };
 			for (const auto& session : app.acp_sessions)
 				if (session != nullptr && session->uam_control_capability_id == capability.id)
-					return session->active_uam_agent_workspace_access == "read";
+					return read_only(*session);
 			for (const auto& terminal : app.cli_terminals)
 				if (terminal != nullptr && terminal->uam_control_session != nullptr && terminal->uam_control_session->uam_control_capability_id == capability.id)
-					return terminal->uam_control_session->active_uam_agent_workspace_access == "read";
-			return false;
+					return read_only(*terminal->uam_control_session);
+			return true;
+		}
+
+		/// <summary>A goal reviewer's capability, during or after its review turn; its ceiling is narrower than its chat's.</summary>
+		bool GoalReviewer(const AppState& app, const UamControlCapability& capability)
+		{
+			if (capability.read_only_at_launch) return true;
+			return std::ranges::any_of(app.acp_sessions, [&](const auto& session)
+			{ return session != nullptr && session->uam_control_capability_id == capability.id && session->goal_review_turn; });
 		}
 
 		bool MutationsAllowed(const ChatSession& chat)
@@ -706,13 +766,21 @@ namespace uam
 			ToolResult out{.ok = true, .result = {{"agents", nlohmann::json::array()}, {"providerTargets", AgentProviderTargets(app, chat)}}, .reason = "Listed bounded delegate metadata."};
 			nlohmann::json& agents = out.result["agents"];
 			const AgentDefinitionCatalog catalog = AgentCatalog(app, chat);
+			// A read-only caller's children stay read-only and on its own provider, so list only what delegation allows.
+			const AgentRun* caller_run = capability.agent_run_id.empty() ? nullptr : FindRun(app, capability.agent_run_id);
+			const bool caller_read = ReadOnlyAgent(app, capability) || (caller_run != nullptr && caller_run->effective_workspace_access != "write") ||
+			                         uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode;
+			nlohmann::json& targets = out.result["providerTargets"];
+			if (caller_read)
+			{
+				const std::string own = provider_ids::NormalizeCliProviderAliasOrSelf(caller_run != nullptr ? caller_run->provider_id : chat.provider_id);
+				targets.erase(std::remove_if(targets.begin(), targets.end(), [&](const nlohmann::json& target) { return target.value("providerId", "") != own; }), targets.end());
+			}
 			for (const AgentDefinition& definition : catalog.definitions)
 			{
 				if (definition.mode != "subagent" && definition.mode != "both") continue;
 				if (!capability.agent_run_id.empty() && !Contains(capability.agent_delegates, definition.id)) continue;
-				const bool forced_read = definition.workspace_access == "read" ||
-				                         (!capability.agent_run_id.empty() && FindRun(app, capability.agent_run_id) != nullptr &&
-				                          FindRun(app, capability.agent_run_id)->effective_workspace_access == "read");
+				const bool forced_read = caller_read || definition.workspace_access != "write";
 				agents.push_back({{"id", definition.id}, {"description", definition.description},
 				                  {"workspaceAccess", forced_read ? "read" : "write"}, {"providerNeutral", true}});
 				// The stdio reply carries this list as an escaped string, so bound the escaped size.
@@ -1250,6 +1318,8 @@ namespace uam
 			// A subagent's turn ends with its run; the chat that delegated to it is the one that can be woken.
 			if (!capability.agent_run_id.empty() || !chat.temporary_parent_chat_id.empty())
 				return {.error = "Subagents and temporary side chats cannot watch pull requests. Ask the chat that delegated to you to watch it."};
+			// A later wake runs under the chat's own agent, which may write; a reviewer's ceiling is narrower than that.
+			if (GoalReviewer(app, capability)) return {.error = "A goal reviewer cannot watch pull requests."};
 			if (app.pr_watch_service == nullptr) return {.error = "Pull request watching is unavailable."};
 			const std::int64_t number = arguments.contains("number") ? arguments["number"].get<std::int64_t>() : 0;
 			const std::optional<pr_watch::Reference> pr = arguments.contains("url")
@@ -2003,13 +2073,15 @@ namespace uam
 		std::vector<std::string> UnusableTools(const UamControlCapability& capability, const ChatSession& chat, const AcpSessionState& session)
 		{
 			std::vector<std::string> hidden;
-			// A goal reviewer only reads the workspace and answers in JSON; it gets no UAM tools at all.
-			if (session.goal_review_turn)
+			// A goal reviewer only reads the workspace and answers in JSON; it gets no UAM tools at all. Its capability
+			// stays read-only for life (read_only_at_launch), so the list matches what the server would allow.
+			if (session.goal_review_turn || capability.read_only_at_launch)
 			{
 				for (const nlohmann::json& tool : Tools()) hidden.push_back(tool.value("name", ""));
 				return hidden;
 			}
-			const bool read_only = capability.agent_id == "plan" || session.active_uam_agent_workspace_access == "read";
+			// Same rule as ReadOnlyAgent: a missing or unknown workspace access is read-only.
+			const bool read_only = capability.agent_id == "plan" || session.active_uam_agent_workspace_access != "write";
 			const bool subagent = !capability.agent_run_id.empty();
 			// A child may delegate only to its listed agents; with none, the agent tools have nothing to act on.
 			if (subagent && capability.agent_delegates.empty())
@@ -2063,7 +2135,8 @@ namespace uam
 			const std::string id = RandomRequestId();
 			if (request_id_out != nullptr) *request_id_out = id;
 			if (aborted()) return std::nullopt;
-			const nlohmann::json request{{"requestId", id}, {"method", method}, {"arguments", arguments}};
+			const nlohmann::json request = SignRequest({{"requestId", id}, {"method", method}, {"arguments", arguments}},
+			    uam::env::GetNonEmptyString(kRequestKeyEnvironment).value_or(""));
 			const std::string request_text = request.dump();
 			const std::filesystem::path request_path = capability / "requests" / (id + ".json");
 			if (request_text.size() > RequestLimit(method) || !uam::io::WriteTextFile(request_path, request_text)) return std::nullopt;
@@ -2300,7 +2373,8 @@ namespace uam
 			// Do not delay provider shutdown waiting for the GUI to process the receipt.
 			const std::string id = RandomRequestId();
 			(void)uam::io::WriteTextFile(*capability / "requests" / (id + ".json"),
-			    nlohmann::json{{"requestId", id}, {"method", "_mcp_disconnected"}, {"arguments", {{"connectionId", connection_id}}}}.dump());
+			    SignRequest({{"requestId", id}, {"method", "_mcp_disconnected"}, {"arguments", {{"connectionId", connection_id}}}},
+			        uam::env::GetNonEmptyString(kRequestKeyEnvironment).value_or("")).dump());
 		}
 		return input.Failed() ? 2 : exit_code;
 	}
@@ -2403,8 +2477,11 @@ namespace uam
 		capability.provider_configuration_directory = session.provider_configuration_directory;
 		capability.central_skills_enabled = central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "shared-setup", app.settings.central_provider_configuration.enabled) && (capability.agent_id == "build" || capability.agent_id == "plan");
 		capability.agent_delegates = session.active_uam_agent_delegates;
+		// A goal reviewer's capability stays read-only for its whole life, even after its review turn settles.
+		capability.read_only_at_launch = session.goal_review_turn;
 		capability.expires_at_epoch_ms = uam::time::SystemEpochMillisecondsNow() + kCapabilityLifetimeMs;
-		if (capability.id.empty() || !uam::paths::CreateDirectoriesNoThrow(capability.directory / "requests") ||
+		capability.request_key = RandomRequestId() + RandomRequestId();
+		if (capability.id.empty() || capability.request_key.size() != 64 || !uam::paths::CreateDirectoriesNoThrow(capability.directory / "requests") ||
 		    !uam::paths::CreateDirectoriesNoThrow(capability.directory / "responses"))
 		{
 			if (error_out != nullptr) *error_out = "UAM control capability could not be created.";
@@ -2427,7 +2504,8 @@ namespace uam
 			return false;
 		}
 		nlohmann::json environment = nlohmann::json::array({{{"name", kCapabilityDirectoryEnvironment},
-		                                                      {"value", uam::paths::Utf8PathString(capability.directory)}}});
+		                                                      {"value", uam::paths::Utf8PathString(capability.directory)}},
+		                                                     {{"name", kRequestKeyEnvironment}, {"value", capability.request_key}}});
 		// The provider on the host is still running and already connected: see RunStdioServerFromEnvironment.
 		if (session.recovering_remote_turn || session.recovering_remote_process)
 			environment.push_back({{"name", uam::remote::kUamControlResumedEnvironment}, {"value", "1"}});
@@ -2805,14 +2883,19 @@ namespace uam
 					// FIFO cannot block this poll and a growing file cannot exceed the request limit.
 					if (provider_mcp_settings::ReadConfigFile(file, text, html_view::kMaxRequestBytes))
 					{
-						const nlohmann::json request = nlohmann::json::parse(text, nullptr, false);
+						nlohmann::json request = nlohmann::json::parse(text, nullptr, false);
 						if (request.is_object() && request.contains("requestId") &&
 						    request["requestId"].is_string() && request["requestId"] == request_id)
 						{
 							// Claim before running. A caller that gave up withdraws its request by removing this file, and only
 							// one removal can succeed, so a withdrawn request is never run (a failed removal is retried next tick).
 							if (!uam::paths::RemoveFileNoThrow(file)) { ++processed; continue; }
-							response = HandleRequest(app, capability_id, request, now);
+							// The key goes only to this session's tool server, so a writer that knows just the folder is refused.
+							// ponytail: same-user processes that can read the provider's env or MCP config can still sign; process-lineage checks would close that.
+							if (owner == nullptr || !VerifyRequest(request, owner->request_key))
+								response = {{"ok", false}, {"error", "Control request is not signed by this chat session's tool connection."}};
+							else
+								response = HandleRequest(app, capability_id, request, now);
 						}
 					}
 					else unreadable = true;
@@ -2857,6 +2940,11 @@ namespace uam
 	                                                        int64_t now_epoch_ms)
 	{
 		return HandleRequest(app, capability_id, request, now_epoch_ms);
+	}
+
+	nlohmann::json UamControlService::SignRequestForTests(const nlohmann::json& request, std::string_view key)
+	{
+		return SignRequest(request, key);
 	}
 
 	bool UamControlService::ValidStdioToolCallForTests(const nlohmann::json& request)

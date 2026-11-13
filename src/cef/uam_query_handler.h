@@ -78,6 +78,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	CefRefPtr<CefThread> m_usageQueries;
 	std::shared_ptr<uam::usage::HistoryTransport> m_usageTransport;
 	CefRefPtr<CefThread> m_titleQueries;
+	CefRefPtr<CefThread> m_vcsUpdates;
 	CefRefPtr<CefThread> m_snoozeQueries;
 	CefRefPtr<CefThread> m_instructionQueries;
 	// Subprocess and network workers run here, off CEF's shared file lanes. One key always maps to one thread, so a chat's or host's work stays in order.
@@ -90,6 +91,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	std::size_t m_pendingCentralInstructionFiles = 0;
 	std::shared_ptr<std::atomic<unsigned>> m_pendingWorkspaceVcsContexts = std::make_shared<std::atomic<unsigned>>(0);
 	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_titleRequests;
+	// History, revision-diff and update requests in flight, by the caller's requestId, so cancelVcsRequest can stop their VCS client.
+	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_vcsRequestStops;
 #if UAM_ENABLE_MOBILE_COMPANION
 	std::shared_ptr<UamCompanionService> m_companion;
 #endif
@@ -424,6 +427,11 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleCaptureChatReferenceContext(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetWorkspaceFilePreview(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetVcsFileDiff(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleGetVcsHistory(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleGetVcsRevisionDiff(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleUpdateVcsWorkspace(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleGetVcsOrigin(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleCancelVcsRequest(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGenerateVcsCommitMessage(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleListMemoryScanCandidates(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

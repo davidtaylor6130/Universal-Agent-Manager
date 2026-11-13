@@ -108,8 +108,8 @@ struct PermissionCeilingFixture
 		session->turn_serial = 1;
 		session->turn_user_message_index = session->turn_first_user_message_index = 0;
 		session->interaction_at = app.chats.front().interaction_at;
-		session->active_uam_agent_workspace_access = !unrestricted && !goal_review ? "read" : "";
-		session->active_uam_agent_id = session->active_uam_agent_workspace_access.empty() ? "" : "private-read-reviewer";
+		session->active_uam_agent_workspace_access = !unrestricted && !goal_review ? "read" : "write";
+		session->active_uam_agent_id = session->active_uam_agent_workspace_access == "write" ? "" : "private-read-reviewer";
 		session->goal_review_turn = !unrestricted && goal_review;
 		session->copilot_native_state["protocolVersion"] = 3;
 		app.acp_sessions.push_back(std::move(owned));
@@ -399,7 +399,7 @@ UAM_TEST(AcpPersistedPermissionReplayCannotOverrideCurrentCapturedReadCeiling)
 		fixture.sink = std::make_unique<PrivatePermissionSink>(*fixture.session, fixture.temp.root);
 		fixture.session->running = fixture.session->processing = fixture.session->initialized = fixture.session->session_ready = true;
 		fixture.session->goal_review_turn = goal_review;
-		fixture.session->active_uam_agent_workspace_access = goal_review ? "" : "read";
+		fixture.session->active_uam_agent_workspace_access = goal_review ? "write" : "read";
 		fixture.session->active_uam_agent_id = goal_review ? "" : "private-read-reviewer";
 		uam::acp_detail::ResetAcpPendingInteractionState(*fixture.session);
 		// Replay the exact original request bodies/IDs. This does not manufacture a

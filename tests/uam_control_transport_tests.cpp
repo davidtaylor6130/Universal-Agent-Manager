@@ -1632,11 +1632,20 @@ namespace
 #endif
 	}
 
-	fs::path PublishRequest(const fs::path& capability, const std::string& id, const std::string& method = "goal_get",
+	/// The signing key the capability's MCP server received at launch.
+	std::string RequestKey(const uam::AppState& app, const fs::path& capability)
+	{
+		const auto found = std::ranges::find(app.uam_control_capabilities, capability, &uam::UamControlCapability::directory);
+		UAM_ASSERT(found != app.uam_control_capabilities.end());
+		return found->request_key;
+	}
+
+	fs::path PublishRequest(const uam::AppState& app, const fs::path& capability, const std::string& id, const std::string& method = "goal_get",
 	    const nlohmann::json& arguments = nlohmann::json::object())
 	{
 		const fs::path path = capability / "requests" / (id + ".json");
-		UAM_ASSERT(uam::io::WriteTextFile(path, nlohmann::json{{"requestId", id}, {"method", method}, {"arguments", arguments}}.dump()));
+		UAM_ASSERT(uam::io::WriteTextFile(path, uam::UamControlService::SignRequestForTests(
+		    {{"requestId", id}, {"method", method}, {"arguments", arguments}}, RequestKey(app, capability)).dump()));
 		return path;
 	}
 
@@ -1648,6 +1657,60 @@ namespace
 	}
 }
 
+UAM_TEST(UamControlRequestsMustProveTheirSession)
+{
+	ControlAgentWaitFixture fixture;
+	const uam::UamControlCapability& capability = fixture.app.uam_control_capabilities.front();
+	const std::string key = capability.request_key;
+	UAM_ASSERT_EQ(key.size(), std::size_t{64});
+	// The key reaches only the launched MCP server's environment, never the capability directory.
+	nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+	for (const auto& entry : fs::recursive_directory_iterator(fixture.capability_directory))
+	{
+		std::string text;
+		if (entry.is_regular_file() && uam::io::TryReadTextFile(entry.path(), text)) UAM_ASSERT(text.find(key) == std::string::npos);
+	}
+	const fs::path responses = fixture.capability_directory / "responses";
+	const auto write = [&](const std::string& id, const nlohmann::json& request)
+	{
+		UAM_ASSERT(uam::io::WriteTextFile(fixture.capability_directory / "requests" / (id + ".json"), request.dump()));
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		return ReadPublishedReply(responses / (id + ".json"));
+	};
+	const auto body = [](const std::string& id) { return nlohmann::json{{"requestId", id}, {"method", "goal_get"}, {"arguments", nlohmann::json::object()}}; };
+	const nlohmann::json refusal{{"ok", false}, {"error", "Control request is not signed by this chat session's tool connection."}};
+	// Another same-user process that knows only the directory: no signature, a guessed key, a tampered body.
+	UAM_ASSERT_EQ(write("unsigned", body("unsigned")), refusal);
+	UAM_ASSERT_EQ(write("foreign", uam::UamControlService::SignRequestForTests(body("foreign"), std::string(64, 'a'))), refusal);
+	nlohmann::json tampered = uam::UamControlService::SignRequestForTests(body("tampered"), key);
+	tampered["method"] = "agent_list";
+	UAM_ASSERT_EQ(write("tampered", tampered), refusal);
+	nlohmann::json malformed = body("malformed");
+	malformed["mac"] = 7;
+	UAM_ASSERT_EQ(write("malformed", malformed), refusal);
+	// Standard HMAC-SHA256 over the compact body, so external tooling can sign the same way.
+	UAM_ASSERT_EQ(uam::UamControlService::SignRequestForTests({{"requestId", "x"}, {"method", "goal_get"}, {"arguments", nlohmann::json::object()}}, std::string(64, 'k')).value("mac", ""),
+	    std::string("6d3f37b33755a3c20aada11237146eb0e15b22c3f95600a06a372c907d35d970"));
+	// The session's own server signs with its launch key.
+	UAM_ASSERT(write("signed", uam::UamControlService::SignRequestForTests(body("signed"), key)).value("ok", false));
+	// A second session's key does not authorise the first session's capability.
+	ChatSession other = ChatDomainService().CreateNewChat("", "codex-cli");
+	other.uam_control_enabled = true;
+	fixture.app.chats.push_back(other);
+	fixture.app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	auto& second = *fixture.app.acp_sessions.back();
+	second.chat_id = other.id;
+	second.provider_id = other.provider_id;
+	second.running = true;
+	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(fixture.app, second, fixture.app.chats.back(), "session/new", setup));
+	const nlohmann::json& server = setup["params"]["mcpServers"].back();
+	const auto second_key = std::ranges::find_if(server["env"], [](const nlohmann::json& entry) { return entry.value("name", "") == "UAM_CONTROL_REQUEST_KEY"; });
+	UAM_ASSERT(second_key != server["env"].end());
+	UAM_ASSERT_EQ(second_key->value("value", ""), fixture.app.uam_control_capabilities.back().request_key);
+	UAM_ASSERT(second_key->value("value", "") != key);
+	UAM_ASSERT_EQ(write("cross-session", uam::UamControlService::SignRequestForTests(body("cross-session"), second_key->value("value", ""))), refusal);
+}
+
 UAM_TEST(UamControlListedButUnreadableRequestRetriesInsteadOfAnsweringMalformed)
 {
 	if (ReadsThroughPermissions()) return;
@@ -1655,7 +1718,7 @@ UAM_TEST(UamControlListedButUnreadableRequestRetriesInsteadOfAnsweringMalformed)
 	const fs::path responses = fixture.capability_directory / "responses";
 	const fs::path ready_reply = responses / "unreadable-then-ready.json";
 	{
-		UnreadableFile held(PublishRequest(fixture.capability_directory, "unreadable-then-ready"));
+		UnreadableFile held(PublishRequest(fixture.app, fixture.capability_directory, "unreadable-then-ready"));
 		for (int poll = 0; poll < 5; ++poll)
 		{
 			(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
@@ -1667,7 +1730,7 @@ UAM_TEST(UamControlListedButUnreadableRequestRetriesInsteadOfAnsweringMalformed)
 	}
 	UAM_ASSERT(ReadPublishedReply(ready_reply).value("ok", false));
 	// A file that never becomes readable is rejected after the wall-clock grace, whatever the poll rate.
-	UnreadableFile stuck(PublishRequest(fixture.capability_directory, "never-readable"));
+	UnreadableFile stuck(PublishRequest(fixture.app, fixture.capability_directory, "never-readable"));
 	const fs::path stuck_reply = responses / "never-readable.json";
 	const auto started = std::chrono::steady_clock::now();
 	while (!fs::exists(stuck_reply) && std::chrono::steady_clock::now() - started < std::chrono::seconds(6))
@@ -1687,19 +1750,19 @@ UAM_TEST(UamControlLeftoverRequestNeverOverwritesAnsweredOrWaitingReply)
 	ControlAgentWaitFixture fixture;
 	const fs::path capability = fixture.capability_directory;
 	const fs::path reply = capability / "responses" / "answered.json";
-	PublishRequest(capability, "answered");
+	PublishRequest(fixture.app, capability, "answered");
 	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
 	const nlohmann::json delivered = ReadPublishedReply(reply);
 	UAM_ASSERT(delivered.value("ok", false));
 	const auto settle = [&] { for (int poll = 0; poll < 5; ++poll) (void)uam::UamControlService::ProcessPendingRequests(fixture.app); };
 	// (a) Removal failed but the file stays readable: a replay must not answer over the delivered reply.
-	const fs::path replay = PublishRequest(capability, "answered");
+	const fs::path replay = PublishRequest(fixture.app, capability, "answered");
 	settle();
 	UAM_ASSERT_EQ(ReadPublishedReply(reply), delivered);
 	UAM_ASSERT(!fs::exists(replay));
 	// (b) The same leftover is unreadable (Windows delete-pending): still never answered, even past the grace.
 	{
-		UnreadableFile held(PublishRequest(capability, "answered"));
+		UnreadableFile held(PublishRequest(fixture.app, capability, "answered"));
 		const auto started = std::chrono::steady_clock::now();
 		while (std::chrono::steady_clock::now() - started < std::chrono::milliseconds(2500))
 		{
@@ -1722,7 +1785,7 @@ UAM_TEST(UamControlLeftoverRequestNeverOverwritesAnsweredOrWaitingReply)
 	child.status = "running";
 	UAM_ASSERT(uam::AgentRunLedger::Save(fixture.app.data_root, child));
 	UAM_ASSERT(fixture.Call("live-wait", "agent_wait", {{"runId", child_id}}).value("pendingAgentWait", false));
-	const fs::path wait_replay = PublishRequest(capability, "live-wait", "agent_wait", {{"runId", child_id}});
+	const fs::path wait_replay = PublishRequest(fixture.app, capability, "live-wait", "agent_wait", {{"runId", child_id}});
 	settle();
 	UAM_ASSERT(!fs::exists(wait_replay));
 	UAM_ASSERT(!fs::exists(capability / "responses" / "live-wait.json"));
@@ -1757,9 +1820,9 @@ UAM_TEST(UamControlBadRequestFilesNeverDelayAnotherCapability)
 	}
 	std::vector<std::unique_ptr<UnreadableFile>> locked;
 	for (int index = 0; index < 10; ++index)
-		locked.push_back(std::make_unique<UnreadableFile>(PublishRequest(noisy, "1-locked-" + std::to_string(index))));
-	PublishRequest(noisy, "9-noisy-valid");
-	PublishRequest(quiet, "9-quiet-valid");
+		locked.push_back(std::make_unique<UnreadableFile>(PublishRequest(fixture.app, noisy, "1-locked-" + std::to_string(index))));
+	PublishRequest(fixture.app, noisy, "9-noisy-valid");
+	PublishRequest(fixture.app, quiet, "9-quiet-valid");
 	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
 	// The other capability is answered on the first tick; links are rejected and removed at once.
 	UAM_ASSERT(fs::exists(quiet / "responses" / "9-quiet-valid.json"));
@@ -1808,7 +1871,8 @@ UAM_TEST(UamControlRequestSwappedForFifoNeverBlocksThePoll)
 	const fs::path target = requests / "swapped.json";
 	const fs::path regular = fixture.temp.root / "regular-stage";
 	const fs::path fifo = fixture.temp.root / "fifo-stage";
-	const std::string body = nlohmann::json{{"requestId", "swapped"}, {"method", "goal_get"}, {"arguments", nlohmann::json::object()}}.dump();
+	const std::string body = uam::UamControlService::SignRequestForTests({{"requestId", "swapped"}, {"method", "goal_get"}, {"arguments", nlohmann::json::object()}},
+	    fixture.app.uam_control_capabilities.front().request_key).dump();
 	std::atomic<bool> stop{false};
 	// Swap a regular request and a FIFO under the same name as fast as possible, so the size and link checks
 	// see a regular file and the open meets the FIFO. A blocking open would hang the poll until a writer appears.
