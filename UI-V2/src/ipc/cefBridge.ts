@@ -207,8 +207,10 @@ export async function boundedRead<T = unknown>(reply: Promise<CEFResponse<T>>, t
       reply,
       new Promise<CEFResponse<T>>((resolve) => { deadline = setTimeout(() => resolve({ ok: false, error: timeoutError }), timeoutMs) }),
     ])
-  } catch {
-    return { ok: false, error: timeoutError }
+  } catch (error) {
+    // Only the deadline reports the timeout; a rejected reply keeps its own reason, or none so the caller's fallback shows.
+    const reason = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+    return reason ? { ok: false, error: reason } : { ok: false }
   } finally {
     clearTimeout(deadline)
   }

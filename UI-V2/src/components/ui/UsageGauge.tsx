@@ -20,8 +20,8 @@ export const USAGE_GAUGE_BANDS = [[0, 100 / 3, 'var(--success)'], [100 / 3, 200 
 const BAND_GAP = 3
 /** Index of the third that holds the used percentage. */
 export const usageGaugeBand = (usedPercent: number) => Number.isFinite(usedPercent) ? Math.min(2, Math.floor(Math.min(100, Math.max(0, usedPercent)) / (100 / 3))) : 0
-/** Needle rotation in degrees from straight up: 0% → -90, 50% → 0, 100% → 90. */
-export const usageGaugeRotation = (usedPercent: number) => (Math.min(100, Math.max(0, usedPercent)) - 50) * 1.8
+/** Needle rotation in degrees from straight up: 0% → -90, 50% → 0, 100% → 90; non-finite input rests at 0% like usageGaugeBand. */
+export const usageGaugeRotation = (usedPercent: number) => Number.isFinite(usedPercent) ? (Math.min(100, Math.max(0, usedPercent)) - 50) * 1.8 : -90
 
 /** Half-dial usage meter drawn like a line icon: three segments, the current one in its semantic colour, and a needle at the used percentage; unknown shows a neutral arc without a needle. */
 export function UsageGauge({ usedPercent, size = 20, decorative = false }: UsageGaugeProps) {
