@@ -8,7 +8,138 @@
       "python scripts\\perf_suite.py --out perf.json native Builds\\tests\\Release\\uam_core_tests.exe",
       "python scripts\\perf_suite.py --out perf.json ui"
     ],
-    "not_in_baseline": "Packaged-app figures (cold start, relaunch, RAM at rest, idle CPU, slow polls): the box runs the app in Windows session 0 without an interactive desktop, so they need an interactive-desktop run before they become a baseline."
+    "packaged_app": {
+      "production_revision": "0420d8e73",
+      "machine": "Windows build box (same machine), Release app build, run in David's signed-in RDP session (session 2, RDP-Tcp#0, Active throughout) through a one-shot /IT scheduled task, with the box's build and test locks held so no compile or other test ran; no other UAM process was running",
+      "render": "one GPU process, no software rendering; RDP presents at about 32 frames per second (idle frame interval 31.3 ms); viewport 1400 x 900 at scale 1",
+      "date": "2026-11-13",
+      "commands": [
+        "python scripts\\perf_suite.py --out app-N.json app Builds\\tests\\Release\\universal_agent_manager.exe  (three times; median of the three)",
+        "python scripts\\perf_suite.py --out driven.json driven Builds\\tests\\Release\\universal_agent_manager.exe --runs 3"
+      ],
+      "per_run": {
+        "cold_start_ms": [
+          32493,
+          18616,
+          19029
+        ],
+        "relaunch_ms": [
+          7868,
+          7898,
+          7945
+        ],
+        "ram_at_rest_mb": [
+          458.9,
+          443.9,
+          414.7
+        ],
+        "idle_cpu_percent": [
+          13.65,
+          10.13,
+          8.15
+        ],
+        "new_thread_ms": [
+          154.55,
+          164.95,
+          159.6
+        ],
+        "new_thread_dialog_ms": [
+          32.45,
+          33.85,
+          32.95
+        ],
+        "first_word_ms": [
+          1993.65,
+          1895.9,
+          1994.5
+        ],
+        "first_word_request_ms": [
+          1883.82,
+          1793.7,
+          1894.96
+        ],
+        "long_thread_ms": [
+          125.5,
+          126.5,
+          111.9
+        ],
+        "long_thread_scroll_gaps": [
+          0,
+          0,
+          0
+        ],
+        "long_thread_scroll_max_gap_ms": [
+          31.7,
+          31.8,
+          31.8
+        ],
+        "long_thread_frame_ms": [
+          31.3,
+          31.3,
+          31.3
+        ],
+        "long_thread_refresh_ms": [
+          31.25,
+          31.2,
+          31.3
+        ],
+        "typing_lag_p95_ms": [
+          45.8,
+          44.1,
+          58.1
+        ],
+        "typing_lag_p50_ms": [
+          28.05,
+          24.75,
+          27.5
+        ],
+        "typing_lag_max_ms": [
+          52.3,
+          47.3,
+          76.4
+        ],
+        "typing_missed": [
+          0,
+          0,
+          0
+        ],
+        "ram_under_load_mb": [
+          1656.55,
+          1566.52,
+          1567.71
+        ],
+        "ram_under_load_peak_mb": [
+          1699.76,
+          1791.13,
+          1727.61
+        ],
+        "ram_under_load_samples": [
+          498,
+          499,
+          497
+        ],
+        "per_thread_mb": [
+          8.95,
+          11.31,
+          11.31
+        ],
+        "ram_rest_5_threads_mb": [
+          396.03,
+          410.15,
+          388.65
+        ],
+        "ram_rest_20_threads_mb": [
+          530.23,
+          579.77,
+          558.37
+        ],
+        "per_thread_live_agents": [
+          20,
+          20,
+          20
+        ]
+      }
+    }
   },
   "metrics": {
     "push_2000_slices_ms": 24.67,
@@ -32,6 +163,30 @@
     "ui_proxy_long_thread_ms": 54.01,
     "ui_send_feedback_ms": 10.76,
     "ui_stream_delta_p95_ms": 9.3,
-    "ui_sidebar_selection_ms": 42.41
+    "ui_sidebar_selection_ms": 42.41,
+    "cold_start_ms": 19029,
+    "relaunch_ms": 7898,
+    "ram_at_rest_mb": 443.9,
+    "idle_cpu_percent": 10.13,
+    "new_thread_ms": 159.6,
+    "new_thread_dialog_ms": 32.95,
+    "first_word_ms": 1993.65,
+    "first_word_request_ms": 1883.82,
+    "long_thread_ms": 125.5,
+    "long_thread_scroll_gaps": 0,
+    "long_thread_scroll_max_gap_ms": 31.8,
+    "long_thread_frame_ms": 31.3,
+    "long_thread_refresh_ms": 31.25,
+    "typing_lag_p95_ms": 45.8,
+    "typing_lag_p50_ms": 27.5,
+    "typing_lag_max_ms": 52.3,
+    "typing_missed": 0,
+    "ram_under_load_mb": 1567.71,
+    "ram_under_load_peak_mb": 1727.61,
+    "ram_under_load_samples": 498,
+    "per_thread_mb": 11.31,
+    "ram_rest_5_threads_mb": 396.03,
+    "ram_rest_20_threads_mb": 558.37,
+    "per_thread_live_agents": 20
   }
 }

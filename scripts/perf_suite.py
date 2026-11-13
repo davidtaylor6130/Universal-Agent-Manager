@@ -5,6 +5,7 @@ Pieces run separately and merge into one JSON file (--out), so a change can reru
   python3 scripts/perf_suite.py --out R.json native BIN          timed native cases and request-overhead sizes (uam_core_tests)
   python3 scripts/perf_suite.py --out R.json ui                  frontend performance suite timings (fails when it fails)
   python3 scripts/perf_suite.py --out R.json app APP             packaged app on the fixture: cold start, relaunch, RAM, idle CPU, slow polls
+  python3 scripts/perf_suite.py --out R.json driven APP          packaged app driven through a fake provider (scripts/perf_driven.py)
   python3 scripts/perf_suite.py report R.json [MORE.json ...]    markdown table against the baseline and reference figures
 Report-only: figures are evidence for before/after comparisons, never a pass/fail gate (budgets stay in the tests).
 """
@@ -33,19 +34,20 @@ BRIDGE_MARKER = '[frontend] [UI startup] Initial state loaded through the native
 # Reference figures are the published ADEmark results (github.com/zqkra/ademark), used only for comparison.
 METRICS = [
     ('cold_start_ms', 'Cold start', 'ms', 2740, 1800),
-    ('relaunch_ms', 'Relaunch', 'ms', None, None),
-    ('new_thread_ms', 'New thread', 'ms', None, None),
+    ('relaunch_ms', 'Relaunch', 'ms', 1490, None),
+    ('new_thread_ms', 'New thread', 'ms', 202, 183),
     ('first_word_ms', 'First word', 'ms', 1148, 256),
     ('typing_lag_p95_ms', 'Typing lag p95 (5 agents streaming)', 'ms', 48, 50),
-    ('long_thread_ms', 'Long thread (~2,000 messages)', 'ms', None, None),
+    ('long_thread_ms', 'Long thread (~2,000 messages)', 'ms', 94, 77),
     ('ram_at_rest_mb', 'RAM at rest', 'MB', 1356, 134),
     ('idle_cpu_percent', 'Idle CPU', '% of one core', 2.7, 0.2),
-    ('ram_under_load_mb', 'RAM under load', 'MB', None, None),
-    ('per_thread_mb', 'Per-thread memory', 'MB', None, None),
+    ('ram_under_load_mb', 'RAM under load', 'MB', 2289, 969),
+    ('per_thread_mb', 'Per-thread memory', 'MB', 5.3, 2.1),
     ('hello_tokens', '"hello" tokens', 'tokens', 38200, None),
     ('real_prompt_tokens', 'Real-prompt tokens', 'tokens', 168300, None),
 ]
 REFERENCE_NOTE = ('References: published ADEmark figures for T3 Code 2.74 and the leading apps; token references are the bare Claude Code CLI. '
+                  'The RAM-at-rest references have five threads open: compare them with `ram_rest_5_threads_mb`. '
                   'Rows marked * are in-process component figures (no CEF, IPC or paint), not the end-to-end measurement; '
                   '† is only what UAM adds to the request (UAM-Control tool schemas and prompt text, bytes / 4), not the provider total.')
 
@@ -215,7 +217,9 @@ def hermetic_environment(data_root):
     home.mkdir(exist_ok=True)
     keep = {'LANG', 'LC_ALL', 'TMPDIR', 'TEMP', 'TMP', 'SystemRoot', 'windir', 'SystemDrive', 'ComSpec', 'PATHEXT', 'OS',
             'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData', 'CommonProgramFiles'}
-    environment = {name: value for name, value in os.environ.items() if name in keep}
+    # Windows environment names are case-insensitive and Python upper-cases them; without SystemRoot, Winsock cannot load.
+    keep = {name.upper() for name in keep}
+    environment = {name: value for name, value in os.environ.items() if name.upper() in keep}
     environment.update(UAM_DATA_DIR=str(data_root), HOME=str(home), USER='uam-perf', LOGNAME='uam-perf',
                        CLAUDE_CONFIG_DIR=str(home / '.claude'), CODEX_HOME=str(home / '.codex'), XDG_CONFIG_HOME=str(home / '.config'))
     if os.name == 'nt':
@@ -324,9 +328,70 @@ def windows_session():
     interactive desktop, so CEF window, GPU and compositing timings there do not represent a user's machine."""
     if os.name != 'nt':
         return None
-    output = subprocess.run(['powershell', '-NoProfile', '-Command', '(Get-Process -Id ' + str(os.getpid()) + ').SessionId'],
-                            capture_output=True, text=True).stdout.strip()
-    return int(output) if output.isdigit() else None
+    import ctypes  # noqa: PLC0415 (Windows only)
+    session = ctypes.c_uint32()
+    return session.value if ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(session)) else None
+
+
+def windows_session_info(info_class):
+    """WTSQuerySessionInformationW for the current session: 6 = station name (console, rdp-tcp#N), 8 = connect state
+    (0 = Active). The API is language independent, unlike the text of `query session`. None when it fails."""
+    import ctypes  # noqa: PLC0415 (Windows only)
+    wtsapi = ctypes.windll.wtsapi32
+    buffer, size = ctypes.c_void_p(), ctypes.c_uint32()
+    if not wtsapi.WTSQuerySessionInformationW(None, ctypes.c_uint32(0xFFFFFFFF), info_class, ctypes.byref(buffer), ctypes.byref(size)):
+        return None
+    try:
+        return ctypes.wstring_at(buffer.value) if info_class == 6 else ctypes.c_int.from_address(buffer.value).value
+    finally:
+        wtsapi.WTSFreeMemory(buffer)
+
+
+def desktop():
+    """The desktop the app gets. Windows: this process's session id, name (console, rdp-tcp#N) and state; only an Active
+    session other than 0 is interactive, and an RDP session may use another render path and stops painting when minimised
+    or disconnected. macOS: the launchd manager, Aqua for a logged-in GUI session."""
+    if os.name == 'nt':
+        session, name, state = windows_session(), windows_session_info(6) or '', windows_session_info(8)
+        states = ['Active', 'Connected', 'ConnectQuery', 'Shadow', 'Disconnected', 'Idle', 'Listen', 'Reset', 'Down', 'Init']
+        state = states[state] if state in range(len(states)) else 'unknown'
+        return {'windows_session': session, 'session_name': name, 'session_state': state, 'rdp': name.lower().startswith('rdp'),
+                # A failed lookup is recorded as unknown, not treated as a disconnected session.
+                'interactive': session not in (None, 0) and state in ('Active', 'unknown')}
+    if sys.platform == 'darwin':
+        manager = subprocess.run(['launchctl', 'managername'], capture_output=True, text=True).stdout.strip()
+        return {'macos_session': manager, 'interactive': manager == 'Aqua'}
+    return {'interactive': bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))}
+
+
+def wait_for_desktop(limit_s=7200):
+    """Pauses while a Windows session that was interactive is not Active (an RDP session disconnected), so no figure is
+    taken without painting; returns the desktop as it is now."""
+    info = desktop()
+    if os.name != 'nt' or info['windows_session'] in (None, 0) or info['interactive']:
+        return info
+    print(f'PAUSED: Windows session {info["windows_session"]} is {info["session_state"] or "not active"}; waiting for it to be Active.',
+          file=sys.stderr, flush=True)
+    deadline = time.time() + limit_s
+    while time.time() < deadline and not info['interactive']:
+        time.sleep(15)
+        info = desktop()
+    if not info['interactive']:
+        raise RuntimeError('The Windows session did not become Active again.')
+    print(f'RESUMED: Windows session {info["windows_session"]} is Active.', file=sys.stderr, flush=True)
+    return info
+
+
+def gpu_state(pids):
+    """The app's GPU process: how many, and whether Chromium fell back to software rendering (SwiftShader or GPU disabled)."""
+    if os.name == 'nt':
+        script = ('Get-CimInstance Win32_Process | Where-Object { @(' + ','.join(map(str, pids or [0])) +
+                  ') -contains $_.ProcessId } | ForEach-Object { $_.CommandLine }')
+        lines = subprocess.run(['powershell', '-NoProfile', '-Command', script], capture_output=True, text=True).stdout.splitlines()
+    else:
+        lines = subprocess.run(['ps', '-o', 'command=', '-p', ','.join(map(str, pids or [0]))], capture_output=True, text=True).stdout.splitlines()
+    gpu = [line for line in lines if '--type=gpu-process' in line]
+    return {'gpu_processes': len(gpu), 'gpu_software': any('swiftshader' in line.lower() or '--disable-gpu' in line for line in gpu)}
 
 
 def slow_poll_metrics(log_text):
@@ -352,6 +417,7 @@ def run_app(app, out, settle, idle, relaunches, timeout, keep):
     log = data_root / 'uam.log'
     try:
         # Cold: the first launch on this data root, which builds its summary caches.
+        session = wait_for_desktop()
         process, cold = launch(executable, environment, log, timeout)
         try:
             time.sleep(settle)
@@ -361,14 +427,17 @@ def run_app(app, out, settle, idle, relaunches, timeout, keep):
             pids = tree(process.pid, after)
             cpu = sum(after[pid][1] - before.get(pid, (0, 0.0))[1] for pid in pids)
             ram = memory_mb(pids)
+            gpu = gpu_state(pids)
+            ended = desktop()
         finally:
             stop(process)
         # Kept before relaunching, so a failed relaunch does not lose them.
         merge_out(out, {'windows_session': windows_session(), 'cold_start_ms': round(cold), 'ram_at_rest_mb': round(ram, 1), 'idle_cpu_percent': round(cpu / idle * 100, 2),
                         'app_processes': len(pids), **slow_poll_metrics(log.read_text(errors='replace'))},
-                  meta_extra={'app': {'settle_s': settle, 'idle_window_s': idle}})
+                  meta_extra={'app': {'settle_s': settle, 'idle_window_s': idle, 'desktop': session, 'desktop_at_end': ended, **gpu}})
         relaunch = []
         for _ in range(relaunches):
+            wait_for_desktop()
             process, elapsed = launch(executable, environment, log, timeout)
             try:
                 relaunch.append(elapsed)
@@ -415,13 +484,20 @@ def report(files, baseline_path):
             continue
         data = json.loads(Path(file).read_text())
         metrics.update(data.get('metrics', {}))
+        if data.get('meta', {}).get('driven', {}).get('interactive') is False:
+            notes.append(f'The driven app in `{file}` had no interactive desktop; its paint, typing and memory figures do not '
+                         'represent a user\'s machine.')
         for key, value in data.get('meta', {}).items():
             meta.setdefault(key, value)  # the first file names the machine
     baseline = json.loads(baseline_path.read_text()) if baseline_path and baseline_path.exists() else {}
     base = baseline.get('metrics', {})
     if base:
+        app_revision = baseline.get('meta', {}).get('packaged_app', {}).get('production_revision')
         notes.append(f'Baseline: {baseline.get("meta", {}).get("machine", "unknown machine")}, revision '
-                     f'{baseline.get("meta", {}).get("production_revision", "?")}. Δ across different machines is only indicative.')
+                     f'{baseline.get("meta", {}).get("production_revision", "?")}'
+                     f'{f" (packaged app {app_revision})" if app_revision else ""}. Δ across different machines is only indicative.')
+    if meta.get('app', {}).get('desktop', {}).get('rdp') or meta.get('driven', {}).get('rdp'):
+        notes.append('The packaged app ran in a Windows RDP session, whose render path can differ from a local console.')
     if metrics.get('windows_session') == 0:
         notes.append('The packaged app ran in Windows session 0 (no interactive desktop); its startup, memory and CPU figures '
                      'do not represent a user\'s machine.')
@@ -438,7 +514,7 @@ def report(files, baseline_path):
         lines.append(f'| {label}{mark} | {unit} | {fmt(value)} | {fmt(base_value)} | {delta(value, base_value)} | {fmt(t3)} | {fmt(leaders)} |')
     lines += ['', REFERENCE_NOTE, '', '| Component metric | This run | Baseline | Δ |', '|---|---:|---:|---:|']
     row_keys = {key for key, *_ in METRICS} | {f'ui_proxy_{key}' for key in UI_PROXIES}
-    for key in sorted(set(metrics) - row_keys):
+    for key in sorted(key for key in set(metrics) - row_keys if metrics[key] is not None):
         lines.append(f'| `{key}` | {fmt(metrics[key])} | {fmt(base.get(key))} | {delta(metrics[key], base.get(key))} |')
     lines += ['', 'Units: `_ms` milliseconds, `_mb` MiB, `_bytes` bytes (~4 bytes per token), `_ms_per_s` UI-thread ms per second. '
               'Report-only: shared runners vary by tens of percent between runs, so compare repeated runs on one machine.']
@@ -463,6 +539,16 @@ def main():
     app.add_argument('--relaunches', type=int, default=3)
     app.add_argument('--timeout', type=float, default=120)
     app.add_argument('--keep', action='store_true', help='keep the fixture data root and log for inspection')
+    driven = pieces.add_parser('driven', help='packaged app driven through a fake provider and DevTools')
+    driven.add_argument('app', type=Path, help='.app bundle (macOS) or universal_agent_manager.exe (Windows)')
+    driven.add_argument('--only', nargs='+', choices=('new_thread', 'first_word', 'long_thread', 'typing', 'per_thread'),
+                        help='scenarios to run (default: all)')
+    driven.add_argument('--runs', type=int, default=3, help='fresh launches per scenario; a metric is the median across them')
+    driven.add_argument('--samples', type=int, default=6, help='new chats or prompts timed per run (long thread: at most 5)')
+    driven.add_argument('--load', type=float, default=180, help='seconds the five streams are sampled for RAM under load')
+    driven.add_argument('--rest', type=float, default=60, help='rest window in seconds for per-thread memory')
+    driven.add_argument('--timeout', type=float, default=180)
+    driven.add_argument('--keep', action='store_true', help='keep each run folder (data root, logs, fake provider log)')
     reporter = pieces.add_parser('report')
     reporter.add_argument('files', nargs='+', type=Path)
     reporter.add_argument('--baseline', type=Path, default=BASELINE)
@@ -476,6 +562,9 @@ def main():
         return run_ui(args.out)
     if args.piece == 'app':
         return run_app(args.app, args.out, args.settle, args.idle, args.relaunches, args.timeout, args.keep)
+    if args.piece == 'driven':
+        import perf_driven  # noqa: PLC0415 (only this piece needs it)
+        return perf_driven.run_driven(args.app, args.out, args)
     sys.stdout.write(report(args.files, args.baseline))
     return 0
 

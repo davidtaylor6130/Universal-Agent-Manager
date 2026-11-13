@@ -24,6 +24,7 @@ jobs:
       native: ${{ steps.scope.outputs.native }}
       windows: ${{ steps.scope.outputs.windows }}
       rows: ${{ steps.scope.outputs.rows }}
+      perf: ${{ steps.scope.outputs.perf }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,6 +39,8 @@ jobs:
             # The pull-request merge commit's first parent is the base branch it merges into.
             git diff --no-renames --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed.txt"
             python3 scripts/select_native_tests.py classify --base HEAD^1 --changed "$RUNNER_TEMP/changed.txt" | tee scope.txt
+            # The performance report only for changes that can move a figure: not documentation, notes or the iOS app.
+            if grep -v -E '^docs/|\.md$|^LICENSE$|^\.UAM/|^Mobile/' "$RUNNER_TEMP/changed.txt" | grep -q .; then echo perf=true; else echo perf=false; fi | tee -a scope.txt
             wanted='["macOS ARM"]'
           else
             printf 'native=true\nwindows=true\n' | tee scope.txt
@@ -347,12 +350,13 @@ jobs:
 
   # Report-only performance figures for pull requests into the V5.2 performance branch (docs/engineering/testing.md):
   # timed native cases, the packaged app on the synthetic fixture and the frontend timings, against the committed baseline.
-  # It runs whatever its inputs allow even when an upstream job failed or was skipped, and every measuring step may fail
+  # It runs only when a change can move a figure (not documentation, notes or the iOS app), with whatever its inputs allow
+  # even when an upstream job failed or was skipped, and every measuring step may fail
   # without failing the job, so the check stays green and never blocks a merge.
   performance:
     name: Performance report
     needs: [changes, core-build, test, frontend]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.base_ref == 'uam/v5.2-performance' }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.base_ref == 'uam/v5.2-performance' && needs.changes.outputs.perf == 'true' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4

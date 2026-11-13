@@ -55,4 +55,19 @@ with tempfile.TemporaryDirectory() as folder:
     environment = perf_suite.hermetic_environment(root)
     assert 'GH_TOKEN' not in environment and 'ANTHROPIC_API_KEY' not in environment and environment['UAM_DATA_DIR'] == str(root)
     assert environment['HOME'] != os.path.expanduser('~') and 'CLAUDE_CODE_OAUTH_TOKEN' not in environment
+    os.environ['SYSTEMROOT'] = 'C:\\Windows'  # how Python on Windows spells it
+    assert perf_suite.hermetic_environment(root).get('SYSTEMROOT') == 'C:\\Windows'
+    # Empty rows (no Windows session on macOS) are hidden; a driven run without a desktop is flagged.
+    run.write_text(json.dumps({'meta': {'driven': {'interactive': False}}, 'metrics': {'windows_session': None, 'first_word_ms': 300}}))
+    table = perf_suite.report([run], baseline)
+    assert 'windows_session' not in table and '| First word | ms | 300 |' in table and 'no interactive desktop' in table, table
+    # The driven fixture turns on only OpenCode, whose executable (like every provider's) is the fake, and pins its two chats.
+    import perf_driven
+    root = perf_driven.driven_fixture(Path(folder) / 'driven', chats=3, long_messages=5)
+    settings = (root / 'settings.txt').read_text()
+    assert settings.count('"enabled":true') == 1 and '"providerId":"opencode-cli","executionHostId":"local","enabled":true' in settings
+    assert all(json.loads((root / 'chats' / f'{chat}.json').read_text())['pinned'] for chat in (perf_driven.LONG_CHAT, perf_driven.SHORT_CHAT))
+    shims = perf_driven.write_shims(Path(folder) / 'bin')
+    assert all(any(shims.glob(name + '*')) for name in ('claude', 'codex', 'opencode')) and str(perf_driven.FAKE) in next(shims.iterdir()).read_text()
+    assert perf_driven.percentile([5, 1, 3, 2, 4], 0.95) == 5 and perf_driven.percentile([], 0.95) is None
 print('perf suite checks: ok')
