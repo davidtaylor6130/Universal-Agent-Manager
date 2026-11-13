@@ -328,16 +328,17 @@ UAM_TEST(RemoteRetirementCommandsStayUnderTheWindowsLimitOrAreSkipped)
 	plan.version = "5.1.0";
 	plan.nonce = std::string(64, 'n');
 	const std::vector<uam::remote::BootstrapStep> defaults = uam::remote::BuildBootstrapRetirementSteps(plan, "windows");
-	UAM_ASSERT_EQ(defaults.size(), std::size_t{2});
+	UAM_ASSERT_EQ(defaults.size(), std::size_t{3});
 	for (const uam::remote::BootstrapStep& step : defaults) UAM_ASSERT(step.argv.back().size() < 8000);
 	for (const std::size_t length : {std::size_t{120}, std::size_t{240}})
 	{
 		plan.runner_directory = std::string(length, 'd');
 		const std::vector<uam::remote::BootstrapStep> steps = uam::remote::BuildBootstrapRetirementSteps(plan, "windows");
-		UAM_ASSERT(steps.empty() || steps.size() == 2);
+		UAM_ASSERT(steps.empty() || steps.size() == 3);
 		for (const uam::remote::BootstrapStep& step : steps) UAM_ASSERT(step.argv.back().size() < 8000);
 	}
-	UAM_ASSERT_EQ(uam::remote::BuildBootstrapRetirementSteps(plan, "linux").size(), std::size_t{1});
+	UAM_ASSERT_EQ(uam::remote::BuildBootstrapRetirementSteps(plan, "linux").size(), std::size_t{2});
+	UAM_ASSERT(uam::remote::BuildBootstrapRetirementSteps(plan, "linux").back().argv.back().find("uam_nonce='" + plan.nonce + "'; uam_keep_versions=2;") != std::string::npos);
 	UAM_ASSERT(uam::remote::BuildBootstrapRetirementSteps(plan, "linux").front().argv.back().find("uam_assume_pre_fix=;") != std::string::npos);
 }
 
@@ -531,6 +532,126 @@ UAM_TEST(WindowsRetirementHonoursOwedRefusalsAndKeepsSpoolsWhileForeignHelpersRu
 	if (swept.output.find("UAM_HELPER_SPOOLS_KEPT") == std::string::npos) // Another test's helper may run elsewhere on this machine.
 		for (const fs::path& spool : spools) UAM_ASSERT(!fs::exists(spool));
 	UAM_ASSERT(fs::exists(held / ".owner-lock"));
+}
+#endif
+
+namespace
+{
+	/// One helper root: the current version, older versions by age, a pending install, a live folder and things that are not ours.
+	struct HelperVersionFixture
+	{
+		fs::path root;
+		fs::path outside;
+		std::string executable;
+		explicit HelperVersionFixture(const fs::path& base, std::string name) : root(base / "helpers"), outside(base / "outside"), executable(std::move(name))
+		{
+			for (const char* version : {"5.1.0", "5.0.3", "5.0.2", "5.0.1", "5.0.0", "4.9.0", "4.8.0"})
+				Write(root / version / executable);
+			// Windows renames a folder before deleting it; a leftover from an interrupted pass is finished off.
+			if (Windows()) Write(root / "5.0.4.uam-removing" / executable);
+			Write(root / "5.1.0" / ("uam-runner.tmp-stale" + Suffix()));
+			Write(root / "5.1.0" / ("uam-runner.tmp-current-nonce" + Suffix()));
+			Write(root / "5.0.0" / ("uam-runner.tmp-old" + Suffix()));
+			Write(root / "4.9.0" / "uam-runner.activation-pending");
+			Write(root / "notes" / "keep.txt");
+			Write(root / "uam-5.1.0-p3.sock");
+			Write(outside / executable);
+			Write(outside / "keep.txt");
+			int age = 0;
+			for (const char* version : {"5.1.0", "5.0.3", "5.0.2", "5.0.1", "5.0.0", "4.9.0", "4.8.0"})
+				fs::last_write_time(root / version, fs::file_time_type::clock::now() - std::chrono::hours(24 * ++age));
+		}
+		bool Windows() const { return executable.ends_with(".exe"); }
+		std::string Suffix() const { return Windows() ? ".exe" : ""; }
+		static void Write(const fs::path& path)
+		{
+			fs::create_directories(path.parent_path());
+			std::ofstream(path) << "x";
+		}
+		void Verify(const std::string& output) const
+		{
+			UAM_ASSERT(output.find("UAM_HELPER_PRUNE_FAILED") == std::string::npos);
+			// Current, the two newest others, the live and pending folders, and everything not shaped like a helper version stay.
+			for (const char* version : {"5.1.0", "5.0.3", "5.0.2", "4.9.0", "4.8.0"}) UAM_ASSERT(fs::exists(root / version / executable));
+			UAM_ASSERT(output.find("UAM_HELPER_VERSION_KEPT_PENDING:4.9.0") != std::string::npos);
+			UAM_ASSERT(output.find("UAM_HELPER_VERSION_KEPT_LIVE:4.8.0") != std::string::npos);
+			UAM_ASSERT(fs::exists(root / "notes" / "keep.txt"));
+			UAM_ASSERT(fs::exists(root / "uam-5.1.0-p3.sock"));
+			UAM_ASSERT(fs::exists(outside / executable) && fs::exists(outside / "keep.txt"));
+			// The oldest unused versions, an interrupted removal and abandoned uploads go; the current install's upload stays.
+			UAM_ASSERT(!fs::exists(root / "5.0.1") && !fs::exists(root / "5.0.0"));
+			if (Windows()) UAM_ASSERT(!fs::exists(root / "5.0.4.uam-removing"));
+			UAM_ASSERT(output.find("UAM_HELPER_VERSION_REMOVED:5.0.1") != std::string::npos);
+			UAM_ASSERT(!fs::exists(root / "5.1.0" / ("uam-runner.tmp-stale" + Suffix())));
+			UAM_ASSERT(fs::exists(root / "5.1.0" / ("uam-runner.tmp-current-nonce" + Suffix())));
+		}
+	};
+}
+
+UAM_TEST(RemoteHelperVersionPruneScriptsKeepCurrentLiveAndPendingVersions)
+{
+	const std::string windows = uam::remote::WindowsHelperVersionPruneScript();
+	UAM_ASSERT(windows.find("elseif ($process.Name -ieq 'uam-runner.exe') { $uamKnown=$false }") != std::string::npos);
+	UAM_ASSERT(windows.find("[IO.Directory]::Move($folder.FullName,$gone)") < windows.find("[IO.Directory]::Delete($gone,$true)"));
+	UAM_ASSERT(windows.find("Remove-Item") == std::string::npos); // Directory.Delete does not follow junctions inside a removed folder.
+	const std::string linux_script = uam::remote::LinuxHelperVersionPruneScript();
+	UAM_ASSERT(linux_script.find("for uam_link in exe cwd") != std::string::npos);
+	UAM_ASSERT(linux_script.find("test ! -L \"$uam_name\"") != std::string::npos);
+	UAM_ASSERT(linux_script.find("pkill") == std::string::npos && linux_script.find("kill ") == std::string::npos);
+#if !defined(_WIN32)
+	TempDir temp("uam-version-prune-syntax");
+	const fs::path script = temp.root / "prune.sh";
+	UAM_ASSERT(uam::io::WriteTextFile(script, "uam_root=/none; uam_version=1; uam_nonce=n; uam_keep_versions=2\n" + linux_script));
+	const ProcessExecutionResult syntax = PlatformServicesFactory::Instance().process_service.ExecuteCommand("/bin/sh -n \"" + script.string() + "\" 2>&1", 10000);
+	UAM_ASSERT_EQ(syntax.exit_code, 0);
+#endif
+}
+
+#if defined(__linux__)
+UAM_TEST(LinuxHelperVersionPruneRemovesOnlyOldUnusedVersions)
+{
+	TempDir temp("uam-version-prune-linux");
+	const HelperVersionFixture fixture(fs::canonical(temp.root), "uam-runner");
+	fs::create_directory_symlink(fixture.outside, fixture.root / "4.0.0");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields live;
+	std::string error;
+	// A process working inside 4.8.0 keeps that version even though it is old.
+	UAM_ASSERT(service.StartStdioProcess(live, fixture.root / "4.8.0", {"/bin/sleep", "60"}, &error));
+	struct Cleanup { std::function<void()> run; ~Cleanup() { run(); } } cleanup{[&] { service.TerminateStdioProcess(live, true); service.CloseStdioProcessHandles(live); }};
+	const std::string script = "uam_root='" + fixture.root.string() + "'; uam_version=5.1.0; uam_nonce=current-nonce; uam_keep_versions=2\n" + uam::remote::LinuxHelperVersionPruneScript();
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "prune.sh", script));
+	const ProcessExecutionResult result = service.ExecuteCommand("/bin/sh \"" + (temp.root / "prune.sh").string() + "\"", 60000);
+	UAM_ASSERT_EQ(result.exit_code, 0);
+	fixture.Verify(result.output);
+	UAM_ASSERT(fs::is_symlink(fixture.root / "4.0.0"));
+	UAM_ASSERT(!fs::exists(fixture.root / "5.0.0" / "uam-runner.tmp-old"));
+}
+#endif
+
+#if defined(_WIN32)
+UAM_TEST(WindowsHelperVersionPruneRemovesOnlyOldUnusedVersions)
+{
+	TempDir temp("uam-version-prune-windows");
+	const HelperVersionFixture fixture(fs::canonical(temp.root), "uam-runner.exe");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	// A process started from inside 4.8.0 keeps that version even though it is old.
+	const fs::path system = fs::path(uam::env::GetNonEmptyString("SystemRoot").value_or("C:\\Windows")) / "System32";
+	fs::copy_file(system / "ping.exe", fixture.root / "4.8.0" / "uam-live.exe");
+	const ProcessExecutionResult junction = service.ExecuteCommand("cmd.exe /d /c mklink /J \"" + (fixture.root / "4.0.0").string() + "\" \"" + fixture.outside.string() + "\"", 30000);
+	UAM_ASSERT_EQ(junction.exit_code, 0);
+	uam::platform::StdioProcessPlatformFields live;
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcess(live, temp.root, {(fixture.root / "4.8.0" / "uam-live.exe").string(), "-n", "60", "127.0.0.1"}, &error));
+	struct Cleanup { std::function<void()> run; ~Cleanup() { run(); } } cleanup{[&] { service.TerminateStdioProcess(live, true); service.CloseStdioProcessHandles(live); }};
+	const fs::path file = temp.root / "prune.ps1";
+	UAM_ASSERT(uam::io::WriteTextFile(file, "$uamCurrent='" + (fixture.root / "5.1.0" / "uam-runner.exe").string() + "'; $uamNonce='current-nonce'; $uamKeepVersions=2; " +
+	    uam::remote::WindowsHelperVersionPruneScript()));
+	const ProcessExecutionResult result = service.ExecuteCommand("powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + file.string() + "\"", 180000);
+	UAM_ASSERT_EQ(result.exit_code, 0);
+	if (result.output.find("UAM_HELPER_VERSIONS_KEPT") != std::string::npos) return; // Another unreadable helper runs on this machine: nothing may be removed.
+	fixture.Verify(result.output);
+	UAM_ASSERT(fs::exists(fixture.root / "4.0.0"));
 }
 #endif
 

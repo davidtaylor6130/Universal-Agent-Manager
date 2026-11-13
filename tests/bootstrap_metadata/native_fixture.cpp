@@ -100,6 +100,7 @@ namespace
 			}
 			else if (command.find("UAM_HELPER_RETIRED:") != std::string::npos) phase = "retire";
 			else if (command.find("'UAM_HELPER_SPOOLS_KEPT'") != std::string::npos) phase = "spools";
+			else if (command.find("UAM_HELPER_VERSION_REMOVED:") != std::string::npos) phase = "versions";
 			else if (command.find("install.release-") != std::string::npos) phase = "release";
 			else if (command.ends_with(" --version")) { phase = "version"; output = "4.5.7\n"; }
 			else if (command.ends_with(" --protocol-version")) { phase = "protocol"; output = std::to_string(uam::remote::kRunnerProtocolVersion) + "\n"; }
@@ -339,6 +340,8 @@ namespace
 			Require(index("guard") < index("copy") && index("copy") < index("activate") && index("activate") < index("commit"), "Native lease/activation order");
 			Require(index("commit") < index("retire") && index("retire") < index("release"), "Native retirement must follow the commit inside the lease");
 			if (platform == std::string("windows")) Require(index("retire") < index("spools") && index("spools") < index("release"), "Native spool cleanup must follow retirement inside the lease");
+			Require(index("retire") < index("versions") && index("versions") < index("release"), "Native version cleanup must follow retirement inside the lease");
+			if (platform == std::string("windows")) Require(index("spools") < index("versions"), "Native version cleanup must follow spool cleanup");
 			Require(std::ranges::count(service.phases, std::string("retire")) == 1, "Native retirement must run exactly once");
 			if (platform == std::string("windows")) Require(index("prepare") < index("activate") && index("activate") < index("publish") && index("publish") < index("version"), "Native publication order");
 			Require(!service.held && service.releases == 1, "Native finalization did not release lease exactly once");

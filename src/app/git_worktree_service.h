@@ -128,6 +128,16 @@ namespace uam
 		bool RemoveRetentionCandidate(const std::filesystem::path& data_root, const std::filesystem::path& source_root,
 		    const GitWorktreeRetentionCandidate& candidate, const std::vector<std::filesystem::path>& protected_paths,
 		    const WorkspaceLeaseGate::Lease& lease, std::stop_token stop_token = {}, int retention_days = 14) const;
+		/// Background-only inspection of a plain-folder snapshot repository (`worktrees/<key>/managed-repository-<id>`) that has no
+		/// linked worktree, no uncommitted or ignored files, no ref with commits beyond its snapshot and no activity within the retention period.
+		/// The caller also refuses snapshots that belong to a known chat.
+		bool InspectManagedSnapshotRetentionCandidate(const std::filesystem::path& data_root, const std::filesystem::path& repository,
+		    const std::vector<std::filesystem::path>& protected_paths, GitWorktreeRetentionCandidate& candidate,
+		    std::stop_token stop_token = {}, int retention_days = 14) const;
+		/// Requires the exclusive lease; re-inspects and removes the snapshot repository only when nothing changed.
+		bool RemoveManagedSnapshotRetentionCandidate(const std::filesystem::path& data_root, const GitWorktreeRetentionCandidate& candidate,
+		    const std::vector<std::filesystem::path>& protected_paths, const WorkspaceLeaseGate::Lease& lease,
+		    std::stop_token stop_token = {}, int retention_days = 14) const;
 		/// Selects only a settled, clean, unshared local linked worktree and preserves its cwd and history.
 		bool ListChatBranches(const AppState& app, const ChatSession& chat, std::vector<GitChatBranch>& branches, bool& svn, std::string& error) const;
 		bool ValidateChatBranchSelection(const AppState& app, const ChatSession& chat, const std::string& branch, bool create, std::string& error) const;

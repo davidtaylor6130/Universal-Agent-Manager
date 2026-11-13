@@ -435,6 +435,56 @@ namespace uam
 			return true;
 		}
 
+		/// `<data root>/worktrees/<16 hex>/managed-repository-<16 hex>`: a plain-folder snapshot that UAM owns.
+		bool IsManagedSnapshotRepository(const std::filesystem::path& data_root, const std::filesystem::path& repository)
+		{
+			const auto is_key = [](const std::string& value) { return value.size() == 16 && value.find_first_not_of("0123456789abcdef") == std::string::npos; };
+			const std::string name = uam::paths::Utf8PathString(repository.filename());
+			constexpr std::string_view prefix = "managed-repository-";
+			std::error_code error;
+			return name.starts_with(prefix) && is_key(name.substr(prefix.size())) && is_key(uam::paths::Utf8PathString(repository.parent_path().filename())) &&
+			    std::filesystem::equivalent(repository.parent_path().parent_path(), data_root / "worktrees", error) && !error;
+		}
+
+		/// Every directory from `path` up to the data root is real; canonical containment alone would accept an internal link.
+		bool OwnedAncestorsAreRealDirectories(const std::filesystem::path& path, const std::filesystem::path& data_root)
+		{
+			const std::filesystem::path root = uam::paths::AbsolutePathNoThrow(data_root).lexically_normal();
+			for (std::filesystem::path current = path; ; current = current.parent_path())
+			{
+				if (!uam::paths::IsDirectoryNoThrow(current) || uam::paths::IsLinkOrReparsePointNoThrow(current)) return false;
+				if (current == root) return true;
+				if (current == current.parent_path()) return false;
+			}
+		}
+
+		/// True when `path` contains, is inside or is the same file as any protected path, or that cannot be verified.
+		bool OverlapsProtectedPath(const std::filesystem::path& path, const std::vector<std::filesystem::path>& protected_paths)
+		{
+			for (const std::filesystem::path& protected_path : protected_paths)
+			{
+				if (protected_path.empty()) continue;
+				std::error_code reference_error;
+				const std::filesystem::path reference = std::filesystem::weakly_canonical(protected_path, reference_error);
+				if (reference_error) return true;
+				const std::filesystem::path resolved = std::filesystem::canonical(path, reference_error);
+				if (reference_error || PathIsWithin(reference, resolved) || PathIsWithin(resolved, reference)) return true;
+				// File identity also protects alternate casing on case-insensitive volumes.
+				for (const std::pair<std::filesystem::path, std::filesystem::path>& pair :
+				    {std::make_pair(reference, resolved), std::make_pair(resolved, reference)})
+				{
+					for (std::filesystem::path parent = pair.first; ; parent = parent.parent_path())
+					{
+						if (std::filesystem::equivalent(parent, pair.second, reference_error)) return true;
+						if (reference_error && reference_error != std::errc::no_such_file_or_directory) return true;
+						reference_error.clear();
+						if (parent == parent.parent_path()) break;
+					}
+				}
+			}
+			return false;
+		}
+
 		bool IsExcludedSnapshotPath(const std::filesystem::path& relative)
 		{
 			for (const std::filesystem::path& part : relative)
@@ -2371,39 +2421,14 @@ namespace uam
 		};
 		std::string repository_root;
 		if (!query(source_root, "rev-parse --show-toplevel", repository_root)) return false;
-		const std::filesystem::path bucket = data_root / "worktrees" /
-		    uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(uam::paths::PathFromUtf8(repository_root))));
+		// A plain-folder snapshot's worktrees share the bucket of the folder it copied, which holds the snapshot repository itself.
+		const std::filesystem::path repository_path = uam::paths::PathFromUtf8(repository_root);
+		const std::filesystem::path bucket = IsManagedSnapshotRepository(data_root, repository_path) ? data_root / "worktrees" / repository_path.parent_path().filename() : data_root / "worktrees" /
+		    uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(repository_path)));
 		const std::filesystem::path absolute = uam::paths::AbsolutePathNoThrow(worktree).lexically_normal();
 		const std::filesystem::path owned_root = uam::paths::AbsolutePathNoThrow(bucket).lexically_normal();
 		if (absolute == owned_root || !PathIsWithin(absolute, owned_root)) return false;
-		// Walk every owned ancestor: canonical containment alone would accept an internal directory link.
-		for (std::filesystem::path path = absolute; ; path = path.parent_path())
-		{
-			if (!uam::paths::IsDirectoryNoThrow(path) || uam::paths::IsLinkOrReparsePointNoThrow(path)) return false;
-			if (path == uam::paths::AbsolutePathNoThrow(data_root).lexically_normal()) break;
-			if (path == path.parent_path()) return false;
-		}
-		for (const std::filesystem::path& protected_path : protected_paths)
-		{
-			if (protected_path.empty()) continue;
-			std::error_code reference_error;
-			const std::filesystem::path reference = std::filesystem::weakly_canonical(protected_path, reference_error);
-			if (reference_error) return false;
-			const std::filesystem::path resolved = std::filesystem::canonical(absolute, reference_error);
-			if (reference_error || PathIsWithin(reference, resolved) || PathIsWithin(resolved, reference)) return false;
-			// File identity also protects alternate casing on case-insensitive volumes.
-			for (const std::pair<std::filesystem::path, std::filesystem::path>& pair :
-			    {std::make_pair(reference, resolved), std::make_pair(resolved, reference)})
-			{
-				for (std::filesystem::path parent = pair.first; ; parent = parent.parent_path())
-				{
-					if (std::filesystem::equivalent(parent, pair.second, reference_error)) return false;
-					if (reference_error && reference_error != std::errc::no_such_file_or_directory) return false;
-					reference_error.clear();
-					if (parent == parent.parent_path()) break;
-				}
-			}
-		}
+		if (!OwnedAncestorsAreRealDirectories(absolute, data_root) || OverlapsProtectedPath(absolute, protected_paths)) return false;
 		std::error_code error;
 		const std::filesystem::file_status marker_status = std::filesystem::symlink_status(absolute / ".git", error);
 		if (error || !std::filesystem::is_regular_file(marker_status) || uam::paths::IsLinkOrReparsePointNoThrow(absolute / ".git")) return false;
@@ -2468,6 +2493,73 @@ namespace uam
 		const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(source_root,
 		    "worktree remove " + uam::shell::EscapeArg(uam::paths::Utf8PathString(candidate.directory))), 2000, stop_token);
 		return CommandSucceeded(result);
+	}
+
+	bool GitWorktreeService::InspectManagedSnapshotRetentionCandidate(const std::filesystem::path& data_root,
+	    const std::filesystem::path& repository, const std::vector<std::filesystem::path>& protected_paths,
+	    GitWorktreeRetentionCandidate& candidate, std::stop_token stop_token, int retention_days) const
+	{
+		candidate = {};
+		if (stop_token.stop_requested() || retention_days < 1 || retention_days > 3650 || data_root.empty() || repository.empty()) return false;
+		const std::filesystem::path absolute = uam::paths::AbsolutePathNoThrow(repository).lexically_normal();
+		if (!IsManagedSnapshotRepository(data_root, absolute) || !OwnedAncestorsAreRealDirectories(absolute, data_root) ||
+		    OverlapsProtectedPath(absolute, protected_paths)) return false;
+		const std::filesystem::path git = absolute / ".git";
+		std::error_code error;
+		if (!std::filesystem::is_directory(std::filesystem::symlink_status(git, error)) || error || uam::paths::IsLinkOrReparsePointNoThrow(git)) return false;
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		const auto query = [&](const std::string& arguments, std::string& output)
+		{
+			const int remaining_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
+			if (remaining_ms <= 0 || stop_token.stop_requested()) return false;
+			const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(absolute, "--no-optional-locks " + arguments), std::min(2000, remaining_ms), stop_token);
+			if (!CommandSucceeded(result) || result.output_truncated) return false;
+			output = uam::strings::Trim(result.output);
+			return true;
+		};
+		std::string top, common, worktrees, unmerged, status;
+		GitWorktreeRetentionCandidate inspected;
+		if (!query("rev-parse --show-toplevel", top) || !query("rev-parse --path-format=absolute --git-common-dir", common)) return false;
+		const std::filesystem::path canonical = std::filesystem::canonical(absolute, error);
+		if (error || std::filesystem::canonical(uam::paths::PathFromUtf8(top), error) != canonical || error ||
+		    std::filesystem::canonical(uam::paths::PathFromUtf8(common), error) != std::filesystem::canonical(git, error) || error) return false;
+		// The snapshot is the only checkout left: any linked worktree, even a stale one, keeps it until that worktree is resolved.
+		if (!query("worktree list --porcelain -z", worktrees)) return false;
+		std::size_t checkouts = 0;
+		for (std::size_t at = 0; (at = worktrees.find("worktree ", at)) != std::string::npos; at += 9)
+			if (at == 0 || worktrees[at - 1] == '\0') ++checkouts;
+		if (checkouts != 1) return false;
+		// Branches and commits are kept, so any ref with commits beyond the snapshot (agent checkpoints, a stash) keeps it.
+		if (!query("for-each-ref --no-merged=HEAD", unmerged) || !unmerged.empty()) return false;
+		if (!query("status --porcelain --untracked-files=normal --ignored=matching", status) || !status.empty()) return false;
+		if (!query("rev-parse HEAD", inspected.head_sha) || !IsCommitId(inspected.head_sha)) return false;
+		const std::filesystem::file_time_type cutoff = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * retention_days);
+		inspected.activity_at = std::filesystem::file_time_type::min();
+		for (const std::filesystem::path& path : {absolute, git, git / "HEAD", git / "index", git / "logs" / "HEAD", git / "refs" / "heads", git / "packed-refs", git / "worktrees"})
+		{
+			const std::filesystem::file_status path_status = std::filesystem::symlink_status(path, error);
+			if (error == std::errc::no_such_file_or_directory || (!error && !std::filesystem::exists(path_status))) { error.clear(); continue; }
+			if (error || uam::paths::IsLinkOrReparsePointNoThrow(path)) return false;
+			const std::filesystem::file_time_type modified = std::filesystem::last_write_time(path, error);
+			if (error || modified >= cutoff) return false;
+			inspected.activity_at = std::max(inspected.activity_at, modified);
+		}
+		if (stop_token.stop_requested()) return false;
+		inspected.directory = absolute;
+		inspected.administrative_directory = git;
+		candidate = std::move(inspected);
+		return true;
+	}
+
+	bool GitWorktreeService::RemoveManagedSnapshotRetentionCandidate(const std::filesystem::path& data_root,
+	    const GitWorktreeRetentionCandidate& candidate, const std::vector<std::filesystem::path>& protected_paths,
+	    const WorkspaceLeaseGate::Lease& lease, std::stop_token stop_token, int retention_days) const
+	{
+		if (!lease.IsExclusive() || stop_token.stop_requested()) return false;
+		GitWorktreeRetentionCandidate current;
+		if (!InspectManagedSnapshotRetentionCandidate(data_root, candidate.directory, protected_paths, current, stop_token, retention_days) ||
+		    current.directory != candidate.directory || current.head_sha != candidate.head_sha || current.activity_at != candidate.activity_at) return false;
+		return uam::paths::RemoveAllNoThrow(candidate.directory);
 	}
 
 	bool GitWorktreeService::RemoveUnusedBranchWorktree(const AppState& app, const ChatSession& branch, std::string* error_out) const

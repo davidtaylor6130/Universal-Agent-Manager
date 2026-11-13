@@ -573,20 +573,84 @@ test -z "$uam_reload" || systemctl --user daemon-reload >/dev/null 2>&1
 )SH";
 	}
 
+	std::string WindowsHelperVersionPruneScript()
+	{
+		// Fail closed like the spool pass: every running uam-runner.exe must have a readable path. A folder is renamed before deletion, so a folder
+		// with a file still open is kept whole; [IO.Directory]::Delete removes links inside without following them.
+		return R"PS(try { $ErrorActionPreference='Stop'; $uamSelf=[IO.Path]::GetFullPath($uamCurrent); $uamSelfDir=Split-Path $uamSelf; $uamSelfRoot=Split-Path $uamSelfDir; $uamUsed=@(); $uamKnown=$true; )PS"
+		    R"PS(foreach ($process in @(Get-CimInstance Win32_Process)) { if ($process.ExecutablePath) { $uamUsed+=[IO.Path]::GetFullPath($process.ExecutablePath) } elseif ($process.Name -ieq 'uam-runner.exe') { $uamKnown=$false } }; )PS"
+		    R"PS($uamFolders=@(Get-ChildItem -LiteralPath $uamSelfRoot -Directory -ErrorAction SilentlyContinue | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } | Sort-Object LastWriteTimeUtc -Descending); )PS"
+		    R"PS(foreach ($folder in $uamFolders) { foreach ($file in @(Get-ChildItem -LiteralPath $folder.FullName -File -Filter 'uam-runner.tmp-*' -ErrorAction SilentlyContinue)) { )PS"
+		    R"PS(if ($file.Name -like ('uam-runner.tmp-'+$uamNonce+'*') -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }; try { [IO.File]::Delete($file.FullName); 'UAM_HELPER_UPLOAD_REMOVED' } catch {} } }; )PS"
+		    R"PS(if (-not $uamKnown) { 'UAM_HELPER_VERSIONS_KEPT' } else { $uamKept=0; foreach ($folder in $uamFolders) { )PS"
+		    R"PS(if ($folder.Name -like '*.uam-removing') { try { [IO.Directory]::Delete($folder.FullName,$true) } catch {}; continue }; )PS"
+		    R"PS(if ($folder.FullName -ieq $uamSelfDir -or -not (Test-Path -LiteralPath (Join-Path $folder.FullName 'uam-runner.exe') -PathType Leaf)) { continue }; )PS"
+		    R"PS(if (@(Get-ChildItem -LiteralPath $folder.FullName -File -Filter 'uam-runner.*' -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'uam-runner.activation-*' -or $_.Name -like 'uam-runner.rollback-*' }).Count -gt 0) { 'UAM_HELPER_VERSION_KEPT_PENDING:'+$folder.Name; continue }; )PS"
+		    R"PS($prefix=$folder.FullName.TrimEnd('\')+'\'; if (@($uamUsed | Where-Object { $_.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { 'UAM_HELPER_VERSION_KEPT_LIVE:'+$folder.Name; continue }; )PS"
+		    R"PS($uamKept++; if ($uamKept -le $uamKeepVersions) { continue }; $gone=$folder.FullName+'.uam-removing'; )PS"
+		    R"PS(try { [IO.Directory]::Move($folder.FullName,$gone) } catch { 'UAM_HELPER_VERSION_KEPT_LIVE:'+$folder.Name; continue }; try { [IO.Directory]::Delete($gone,$true) } catch {}; 'UAM_HELPER_VERSION_REMOVED:'+$folder.Name } } )PS"
+		    R"PS(} catch { 'UAM_HELPER_PRUNE_FAILED:'+$_.Exception.Message }; $ErrorActionPreference='Continue'; )PS";
+	}
+
+	std::string LinuxHelperVersionPruneScript()
+	{
+		// A folder is in use when any readable process runs an executable from it or has its working directory inside it.
+		// Names are runner version tokens, so the mtime-ordered listing splits safely; anything else is skipped.
+		// Windows captures folder times before it deletes temporaries; Linux deletes them last for the same reason.
+		return R"SH(uam_real=$(cd "$uam_root" 2>/dev/null && pwd -P) || { echo 'UAM_HELPER_PRUNE_FAILED:root'; exit 0; }
+test -r /proc/self/stat || { echo 'UAM_HELPER_PRUNE_FAILED:proc'; exit 0; }
+cd "$uam_real" || exit 0
+uam_used='
+'
+for uam_path in /proc/[0-9]*; do
+	for uam_link in exe cwd; do
+		uam_target=$(readlink "$uam_path/$uam_link" 2>/dev/null) || continue
+		uam_used="$uam_used${uam_target% (deleted)}/
+"
+	done
+done
+uam_kept=0
+for uam_name in $(ls -1dt -- */ 2>/dev/null); do
+	uam_name=${uam_name%/}
+	case "$uam_name" in *[!A-Za-z0-9._-]*|''|.|..) continue;; esac
+	test "$uam_name" != "$uam_version" && test -d "$uam_name" && test ! -L "$uam_name" && test -f "$uam_name/uam-runner" && test ! -L "$uam_name/uam-runner" || continue
+	uam_pending=''
+	for uam_file in "$uam_name"/uam-runner.activation-* "$uam_name"/uam-runner.rollback-*; do test -e "$uam_file" || test -L "$uam_file" && uam_pending=1; done
+	test -z "$uam_pending" || { echo "UAM_HELPER_VERSION_KEPT_PENDING:$uam_name"; continue; }
+	case "$uam_used" in *"
+$uam_real/$uam_name/"*) echo "UAM_HELPER_VERSION_KEPT_LIVE:$uam_name"; continue;; esac
+	uam_kept=$((uam_kept + 1))
+	test "$uam_kept" -gt "$uam_keep_versions" || continue
+	rm -rf -- "$uam_name" && echo "UAM_HELPER_VERSION_REMOVED:$uam_name"
+done
+# After the versions: removing a file refreshes its folder's time, which orders the versions above.
+for uam_file in */uam-runner.tmp-*; do
+	case "$uam_file" in *"/uam-runner.tmp-$uam_nonce"*) continue;; esac
+	test -f "$uam_file" && test ! -L "$uam_file" && test ! -L "${uam_file%/*}" && rm -f -- "$uam_file" && echo 'UAM_HELPER_UPLOAD_REMOVED'
+done
+)SH";
+	}
+
 	std::vector<BootstrapStep> BuildBootstrapRetirementSteps(const BootstrapPlan& plan, std::string_view platform)
 	{
 		const std::string root = uam::execution_hosts::RunnerDirectory(platform, plan.runner_directory);
+		const std::string keep = std::to_string(kKeptHelperVersions);
 		if (platform == "linux")
 			return {{"Retire older helpers", SshCommand(plan.ssh_alias, "uam_root=\"$HOME/" + root + "\"; uam_version='" + plan.version + "'; uam_endpoint='" +
-			    RunnerEndpointName(plan.version) + "'; uam_assume_pre_fix=; " + LinuxHelperRetirementScript()), ""}};
+			    RunnerEndpointName(plan.version) + "'; uam_assume_pre_fix=; " + LinuxHelperRetirementScript()), ""},
+			    {"Remove older helper versions", SshCommand(plan.ssh_alias, "uam_root=\"$HOME/" + root + "\"; uam_version='" + plan.version + "'; uam_nonce='" +
+			    plan.nonce + "'; uam_keep_versions=" + keep + "; " + LinuxHelperVersionPruneScript()), ""}};
 		// Each pass is its own SSH command: together they would pass cmd.exe's 8191-character limit, and a long helper folder skips retirement rather than send a truncated command.
 		const std::string variables = "$uamHelperRoot=$HOME; $uamRunKey='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'; "
 		    "$uamCurrent=(Join-Path $HOME '" + root + "/" + plan.version + "')+'/uam-runner.exe'; $uamAssumePreFix=$false; ";
 		// Named single expressions so scripts/test_bootstrap_metadata.py can re-derive both commands from this source.
 		const std::string retire = PowerShellUtf8Command(WindowsRunnerOwnedScript(root, plan.nonce, variables + WindowsHelperRetirementScript()));
 		const std::string spools = PowerShellUtf8Command(WindowsRunnerOwnedScript(root, plan.nonce, variables + WindowsHelperSpoolCleanupScript()));
-		if (retire.size() >= 8000 || spools.size() >= 8000) return {};
-		return {{"Retire older helpers", SshCommand(plan.ssh_alias, retire), ""}, {"Remove retired helper spools", SshCommand(plan.ssh_alias, spools), ""}};
+		const std::string versions = PowerShellUtf8Command(WindowsRunnerOwnedScript(root, plan.nonce, variables + "$uamNonce='" + plan.nonce +
+		    "'; $uamKeepVersions=" + keep + "; " + WindowsHelperVersionPruneScript()));
+		if (retire.size() >= 8000 || spools.size() >= 8000 || versions.size() >= 8000) return {};
+		return {{"Retire older helpers", SshCommand(plan.ssh_alias, retire), ""}, {"Remove retired helper spools", SshCommand(plan.ssh_alias, spools), ""},
+		    {"Remove older helper versions", SshCommand(plan.ssh_alias, versions), ""}};
 	}
 
 	static std::string BootstrapFinalizationCommand(const BootstrapPlan& plan, std::string_view platform, bool keep_new_runner, bool wrap_powershell = true)
@@ -1264,6 +1328,12 @@ test -z "$uam_reload" || systemctl --user daemon-reload >/dev/null 2>&1
 			if (retired + kept + failed > 0)
 				uam::diagnostics::Write("Remote helper activation retired " + std::to_string(retired) + " older helper(s); kept " +
 				                        std::to_string(kept) + " busy or unchecked; " + std::to_string(failed) + " retirement failure(s).");
+			const std::size_t removed = count("UAM_HELPER_VERSION_REMOVED:"), uploads = count("UAM_HELPER_UPLOAD_REMOVED"),
+			                  in_use = count("UAM_HELPER_VERSION_KEPT_") + count("UAM_HELPER_VERSIONS_KEPT"), prune_failed = count("UAM_HELPER_PRUNE_FAILED:");
+			if (removed + uploads + in_use + prune_failed > 0)
+				uam::diagnostics::Write("Remote helper activation removed " + std::to_string(removed) + " older helper version(s) and " +
+				                        std::to_string(uploads) + " abandoned upload(s); kept " + std::to_string(in_use) + " in use or pending; " +
+				                        std::to_string(prune_failed) + " cleanup failure(s).");
 		}
 		lease->Release();
 		return true;

@@ -93,6 +93,13 @@ namespace uam::remote
 	std::string WindowsHelperSpoolCleanupScript();
 	/// <summary>POSIX shell with the same contract for Linux hosts; the caller sets $uam_root, $uam_version, $uam_endpoint and $uam_assume_pre_fix.</summary>
 	std::string LinuxHelperRetirementScript();
+	/// <summary>Removes abandoned upload temporaries and older helper version folders under the current root, keeping the
+	/// current version, any folder a running process uses or a pending install marks, and the newest kKeptHelperVersions others.
+	/// The caller sets $uamCurrent and $uamNonce (Windows) or $uam_root, $uam_version and $uam_nonce (Linux); runs under the install lease.</summary>
+	std::string WindowsHelperVersionPruneScript();
+	std::string LinuxHelperVersionPruneScript();
+	/// Older helper versions kept besides the current one, so controllers of recent builds can reconnect without reinstalling.
+	inline constexpr int kKeptHelperVersions = 2;
 	/// <summary>The post-commit retirement SSH commands; empty when a Windows command would exceed cmd.exe's limit.</summary>
 	std::vector<BootstrapStep> BuildBootstrapRetirementSteps(const BootstrapPlan& plan, std::string_view platform);
 	bool FinalizeBootstrapPlan(const BootstrapPlan& plan,
