@@ -828,7 +828,7 @@ namespace
 {
 nlohmann::json CapturedV2Policy(const uam::AcpSessionState& session, const ChatSession& chat)
 {
-	return {{"readOnly", session.goal_review_turn || session.active_uam_agent_workspace_access == "read" || chat.approval_mode == "plan"}, {"approvalMode", chat.approval_mode}, {"commandSafetyTier", chat.command_safety_tier}, {"agentDefinition", session.active_uam_agent_definition_hash}, {"agent", session.active_uam_agent_id}};
+	return {{"readOnly", session.goal_review_turn || session.active_uam_agent_workspace_access != "write" || chat.approval_mode == "plan"}, {"approvalMode", chat.approval_mode}, {"commandSafetyTier", chat.command_safety_tier}, {"agentDefinition", session.active_uam_agent_definition_hash}, {"agent", session.active_uam_agent_id}};
 }
 std::vector<std::string> LocalHistoryCommand(const ProviderProfile& profile, const std::string& operation, const std::string& id)
 {

@@ -2698,7 +2698,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		launch_chat.native_session_id.clear();
 	launch_chat.computer_use_globally_enabled = app.settings.computer_use_globally_enabled;
 	if (session.active_uam_agent_execution_capability == "uam-central-native-setup") launch_chat.uam_agent_id = session.active_uam_agent_id;
-	if (session.goal_review_turn || session.active_uam_agent_workspace_access == "read") launch_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
+	if (session.goal_review_turn || session.active_uam_agent_workspace_access != "write") launch_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
 	if (!session.goal_turn_model_id.empty()) launch_chat.model_id = session.goal_turn_model_id;
 	if (runtime.ModelOptionsRequireRestart() && launch_chat.model_id != chat.model_id)
 		launch_chat.reasoning_effort.clear();
@@ -3333,7 +3333,7 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	if (session.provider_id == uam::provider_ids::kCodexCli)
 	{
 		session.codex_approvals_reviewer.clear();
-		if (session.goal_review_turn || session.active_uam_agent_workspace_access == "read") resume_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
+		if (session.goal_review_turn || session.active_uam_agent_workspace_access != "write") resume_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
 	}
 	if (!session.goal_turn_model_id.empty()) resume_chat.model_id = session.goal_turn_model_id;
 
@@ -3484,7 +3484,7 @@ bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat)
 		return false;
 	}
 
-	const bool requires_plan = session.goal_review_turn || session.active_uam_agent_workspace_access == "read";
+	const bool requires_plan = session.goal_review_turn || session.active_uam_agent_workspace_access != "write";
 	const std::string desired_mode = requires_plan
 	                                   ? std::string(uam::approval_modes::kPlanApprovalMode)
 	                                   : uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);

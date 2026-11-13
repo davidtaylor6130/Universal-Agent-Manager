@@ -192,7 +192,7 @@ std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const
 	{
 		const AgentDefinitionCatalog catalog = AgentDefinitionService::Load(app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(app, chat));
 		const auto selected = std::ranges::find_if(catalog.definitions, [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
-		if (selected != catalog.definitions.end() && selected->workspace_access == "read") effective_chat.approval_mode = "plan";
+		if (selected != catalog.definitions.end() && selected->workspace_access != "write") effective_chat.approval_mode = "plan";
 	}
 
 	return ProviderRuntime::BuildInteractiveArgv(provider, effective_chat, app.settings);
