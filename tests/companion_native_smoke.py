@@ -19,33 +19,63 @@ import subprocess
 import struct
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
 import zlib
 
-# macOS keeps a ~0.5 GB code_sign_clone copy of each launched bundle (#684).
-atexit.register(subprocess.run, [sys.executable, str(Path(__file__).resolve().parents[1] / 'scripts/prune_code_sign_clones.py')])
+# macOS keeps a ~0.5 GB code_sign_clone copy of each launched bundle (#684). Not in the fake provider, whose stdout is
+# parsed (version, model list) and which launches no bundle.
+if sys.argv[1:2] != ['--fake-provider']:
+    atexit.register(subprocess.run, [sys.executable, str(Path(__file__).resolve().parents[1] / 'scripts/prune_code_sign_clones.py')])
 
 
 def fake_provider():
-    """Minimal deterministic JSON-RPC ACP peer; no networking or external commands."""
+    """Minimal deterministic JSON-RPC ACP peer; no networking or external commands.
+
+    UAM_FAKE_STREAM=<chunk ms>,<chunks> (the performance suite) gives each process its own session id, reports an ACP
+    version without native compaction metadata, and makes a prompt containing 'stream check' stream that many fixed text
+    deltas at that interval, like a model reply."""
     args = sys.argv[2:]
     if os.environ.get('UAM_FAKE_PROVIDER_LOG'):
         with open(os.environ['UAM_FAKE_PROVIDER_LOG'], 'a') as log:
-            log.write(json.dumps({'started': time.time(), 'operation': args[0] if args else ''}) + '\n')
+            log.write(json.dumps({'started': time.time(), 'pid': os.getpid(), 'operation': args[0] if args else ''}) + '\n')
     if '--version' in args:
         print('1.18.36'); return
     if 'models' in args:
         print('fixture/model-one\nfixture/model-two'); return
     if 'acp' not in args and '--acp' not in args:
         print('[]' if 'list' in args else '{}'); return
-    session_id = 'ses_companion_fixture'
+    stream = [int(value) for value in os.environ.get('UAM_FAKE_STREAM', '').split(',') if value]
+    session_id = f'ses_perf_{os.getpid()}' if stream else 'ses_companion_fixture'
     held = None
     waiting_permission = None
+    output = threading.Lock()
+    streams = {}
 
     def emit(value):
-        print(json.dumps(value), flush=True)
+        with output:
+            print(json.dumps(value), flush=True)
+
+    def stream_reply(identity, stop):
+        # Prose, a code block and a diff, two words per delta (about 80 tokens/s at 25 ms), like a model reply. Each step is
+        # numbered so no text repeats (UAM stops a turn that repeats the same text).
+        template = ('{word} fixture reply, step {n}. The agent reads the file, checks the `build` and **reports** what changed in '
+                    'module {n} before it moves on.\n\n```python\ndef total_{n}(values):\n    return sum(v for v in values if v > {n})\n```\n\n'
+                    '```diff\n- old_line = compute(a, {n})\n+ new_line = compute(a, b, {n})\n```\n\n')
+        words = []
+        for index in range(stream[1]):
+            if stop.wait(stream[0] / 1000 if index else 0):
+                break
+            while len(words) < 2:
+                words += template.format(word='Streaming' if index == 0 else 'Next', n=index).replace('\n', '\n ').split(' ')
+            text = ' '.join(words[:2]) + ' '
+            del words[:2]
+            emit({'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': session_id, 'update': {
+                'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': text}}}})
+        if streams.pop(identity, None) is not None:
+            result(identity, {'stopReason': 'cancelled' if stop.is_set() else 'end_turn'})
 
     def result(identity, value):
         emit({'jsonrpc': '2.0', 'id': identity, 'result': value})
@@ -67,7 +97,9 @@ def fake_provider():
                 waiting_permission = None
             continue
         if method == 'initialize':
-            result(identity, {'protocolVersion': 1, 'agentInfo': {'name': 'isolated-fixture', 'version': '1.18.36'},
+            # In stream mode the ACP version predates OpenCode's native compaction metadata (1.17.20), so UAM skips the
+            # per-send query of OpenCode's database, which this fake cannot answer.
+            result(identity, {'protocolVersion': 1, 'agentInfo': {'name': 'isolated-fixture', 'version': '1.17.0' if stream else '1.18.36'},
                               'agentCapabilities': {'loadSession': True, 'promptCapabilities': {'image': True, 'embeddedContext': True}}})
         elif method in ('session/new', 'session/load', 'session/resume'):
             session_id = params.get('sessionId', session_id)
@@ -82,18 +114,23 @@ def fake_provider():
             text = '\n'.join(item.get('text', '') for item in params.get('prompt', []) if isinstance(item, dict))
             # Log only disposable fixture input, never inherited environment or host credentials.
             with open(os.environ['UAM_FAKE_PROVIDER_LOG'], 'a') as log:
-                log.write(json.dumps({'method': method, 'text': text, 'sessionId': session_id}) + '\n')
+                log.write(json.dumps({'method': method, 'text': text, 'sessionId': session_id, 'pid': os.getpid(), 'time': time.time()}) + '\n')
             if 'permission check' in text:
                 waiting_permission = identity
                 emit({'jsonrpc': '2.0', 'id': 9001, 'method': 'session/request_permission', 'params': {
                     'sessionId': session_id, 'toolCall': {'toolCallId': 'fixture-permission', 'title': 'doom_loop', 'kind': 'other', 'status': 'pending'},
                     'options': [{'optionId': 'allow-once', 'name': 'Allow once', 'kind': 'allow_once'}, {'optionId': 'deny', 'name': 'Deny', 'kind': 'reject_once'}]}})
+            elif stream and 'stream check' in text:
+                streams[identity] = threading.Event()
+                threading.Thread(target=stream_reply, args=(identity, streams[identity]), daemon=True).start()
             elif 'hold check' in text:
                 held = identity
                 emit({'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': session_id, 'update': {'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'Holding fixture turn.'}}}})
             else:
                 answer(identity, 'Companion round trip.')
         elif method == 'session/cancel':
+            for stop in list(streams.values()):
+                stop.set()
             if held is not None:
                 answer(held, '', 'cancelled'); held = None
             if identity is not None: result(identity, {})
