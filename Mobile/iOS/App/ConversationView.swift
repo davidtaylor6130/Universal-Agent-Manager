@@ -79,6 +79,8 @@ struct ConversationView: View
                                  modelName: chat.runtime.text("currentModelId", chat.modelID),
                                  contextID: model.draftContextID, isContextCurrent: { $0 == model.draftContextID },
                                  processing: chat.processing, sending: model.isSending, readOnly: chat.readOnly || model.draftUnavailable,
+                                 activeTurn: model.activeTurnSend(for: chat),
+                                 onSendAlternate: { Task { if model.draftContextID == composerContext { await model.sendDraft(alternate: true) } } },
                                  onSend: { Task { if model.draftContextID == composerContext { await model.sendDraft() } } },
                                  onStop: { Task { if model.draftContextID == composerContext { await model.perform("cancelAcpTurn", ["chatId": chat.id]) } } },
                                  onModels: { settingsOpen = true }, onDraftChanged: { model.draftChanged() },

@@ -12,4 +12,4 @@ Model-catalogue visibility and provider-native versus UAM feature preference aff
 
 ## Send during a running turn
 
-This All environments row chooses what composer Send does while a chat's turn is running: **Queue for next turn** (default) or **Steer active turn**; providers without native steering stop the running turn before sending the steer. It is saved in `settings.txt` with the other app settings, so it survives restarts and data-folder moves, and the phone browser companion follows it; the native iPhone client does not yet read it. [Sending](../chat/sending.md) owns the resulting behaviour.
+This All environments row chooses what composer Send does while a chat's turn is running: **Queue for next turn** (default) or **Steer active turn**; providers without native steering stop the running turn before sending the steer. It is saved in `settings.txt` with the other app settings, so it survives restarts and data-folder moves, and the phone browser companion and the native iPhone client follow it. [Sending](../chat/sending.md) owns the resulting behaviour.
