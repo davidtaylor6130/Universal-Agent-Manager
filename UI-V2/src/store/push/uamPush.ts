@@ -1,6 +1,7 @@
 // Push message parsing and revision helpers. Extracted from useAppStore.ts (MO-1).
 // parseUamPushPayload is the sole entry point for all C++ → frontend pushes.
 
+import { MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { isRecord, isString, sanitizeCppAppState, sanitizeCppStatePatch } from '../cpp/sanitizers'
 import type { CompanionConfirmation, CppCliDebugState, ParsedPushResult } from '../cpp/types'
 
@@ -90,7 +91,8 @@ export function parseUamPushPayload(payload: unknown): ParsedPushResult {
     return { ok: true, message: { type, chatId: raw.chatId, attachmentId: raw.attachmentId, copiedBytes: raw.copiedBytes, totalBytes: raw.totalBytes } }
   }
 
-  if (type === 'companionConfirmations') {
+  // Phone-access builds only: the constant lets builds without it drop this parser and its names.
+  if (MOBILE_COMPANION_ENABLED && type === 'companionConfirmations') {
     const items: unknown = raw.items
     if (!Array.isArray(items) || items.length > 64 || !items.every(isCompanionConfirmation)) {
       return { ok: false, status: 'invalid-message', error: 'companionConfirmations requires a list of requests.' }
