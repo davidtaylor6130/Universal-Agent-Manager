@@ -42,7 +42,7 @@ Import from `components/settings/SettingsPrimitives`:
 - `SettingRow`: title and concise consequence on the left, control on the right; observed state uses its status line and expanded details appear below. The row links its description and status to the control (or its radio/button group) with `aria-describedby`.
 - `SaveButton`: the settings save action; while `saving` it shows the pending label, sets `aria-busy` and announces the label in a polite live region.
 - `SettingsField`: label above a wide input for paths, multiline text or multi-field forms.
-- `SettingsLoading`: the shared loading skeleton.
+- `SettingsLoading`: the shared loading skeleton with a visible, accessible loading label, including when motion is disabled.
 - Text inputs use the themed `uam-field` class (theme-token background, text and border), which dims and shows a not-allowed cursor while disabled.
 - Legacy `SectionCard` already uses the shared language; prefer the row and field primitives when extending it.
 
