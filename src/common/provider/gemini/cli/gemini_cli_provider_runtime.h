@@ -47,6 +47,7 @@ class GeminiCliProviderRuntime final : public IProviderRuntime
 	bool UsesLocalHistory(const ProviderProfile& profile) const override;
 	bool UsesCliOutput(const ProviderProfile& profile) const override;
 	bool UsesGeminiPathBootstrap(const ProviderProfile& profile) const override;
+	std::string_view DefaultTextWorkerModel() const override { return "flash-lite"; }
 	std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const override;
 	std::vector<std::string> BuildStructuredLaunchArgv(const ProviderProfile& profile, const ChatSession& chat) const override;
 	bool PrepareStructuredLaunch(uam::AcpSessionState& session, const ProviderProfile&, std::string_view, bool remote,

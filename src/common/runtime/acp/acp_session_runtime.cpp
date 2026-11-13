@@ -2123,7 +2123,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 
-		bool BuildAcpBatchPrompt(AppState& app, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string& effective_prompt, std::string* error_out, std::optional<std::size_t>* recall_position = nullptr, std::vector<attached_skills::Span>* skill_spans = nullptr)
+		bool BuildAcpBatchPrompt(AppState& app, AcpSessionState& session, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string& effective_prompt, std::string* error_out, std::optional<std::size_t>* recall_position = nullptr, std::vector<attached_skills::Span>* skill_spans = nullptr)
 		{
 			if (!ValidateAcpReplayContext(app, chat, batch, error_out)) return false;
 			if (skill_spans != nullptr) skill_spans->clear();
@@ -2212,8 +2212,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 				if (terminal_goal != nullptr)
 				{
 					const std::string terminal_prompt = GoalService::BuildReadOnlyTerminalPrompt(*terminal_goal);
-					if (!terminal_prompt.empty())
+					// The provider keeps this text in its history, so send it once per goal state and provider process.
+					const std::string delivery = terminal_prompt.empty() ? std::string{} : session.session_id + ":" + provider_setup::Digest(terminal_prompt);
+					session.pending_terminal_goal_delivery.clear();
+					if (!terminal_prompt.empty() && session.terminal_goal_delivery != delivery)
 					{
+						session.pending_terminal_goal_delivery = delivery;
 						if (recall_position != nullptr && recall_position->has_value()) **recall_position += terminal_prompt.size() + 2;
 						if (skill_spans != nullptr) attached_skills::Shift(*skill_spans, terminal_prompt.size() + 2);
 						effective_prompt = terminal_prompt + "\n\n" + effective_prompt;
@@ -2707,7 +2711,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			                       ? GoalService::FindActiveGoal(app, chat.id)
 			                       : GoalService::FindGoalById(app, chat.id, first.goal_id);
 			const std::string turn_model_id = goal != nullptr && chat.small_model_mode && goal->loop_count == 0
-			    ? GoalService::ReviewerModelId(chat, *goal)
+			    ? GoalService::ReviewerModelId(chat, *goal, &session)
 			    : goal != nullptr ? GoalService::WorkerModelId(chat, *goal) : chat.model_id;
 			const std::string desired_mode = uam::approval_modes::EffectiveProviderMode(
 			    first.uam_agent_workspace_access != "write" ? uam::approval_modes::kPlanApprovalMode : chat.approval_mode,
@@ -2842,7 +2846,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			std::string effective_prompt;
 			std::optional<std::size_t> recall_position;
 			std::vector<attached_skills::Span> skill_spans;
-			if (!BuildAcpBatchPrompt(app, chat, batch, effective_prompt, error_out, &recall_position, &skill_spans) ||
+			if (!BuildAcpBatchPrompt(app, session, chat, batch, effective_prompt, error_out, &recall_position, &skill_spans) ||
 			    !PersistTrustedComputerUseTask(app, chat, batch, error_out))
 			{
 				session.goal_turn_model_id = previous_turn_model;
@@ -3088,7 +3092,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			prompt.priority_steer = true;
 			prompt.append_user_message = true;
 			std::string effective_prompt;
-			if (!BuildAcpBatchPrompt(app, chat, {prompt}, effective_prompt, error_out)) return false;
+			if (!BuildAcpBatchPrompt(app, session, chat, {prompt}, effective_prompt, error_out)) return false;
 			if (prompt.computer_use_mode && uam::computer_use::UsesUamBackend(chat) &&
 			    !ComputerUseService::PersistTrustedTask(app, chat.id, prompt.text, error_out))
 				return false;

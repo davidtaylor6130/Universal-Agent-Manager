@@ -11557,7 +11557,7 @@ UAM_TEST(AcpRecallPrefaceIsSentOncePerChatBeforeFollowup)
 	fs::create_directories(memory_category);
 	const std::string memory_sentinel = "UAM_RECALL_ONCE_SENTINEL";
 	UAM_ASSERT(uam::io::WriteTextFile(memory_category / "recall-once.md",
-	    "## Memory\nRemember " + memory_sentinel + "\n"));
+	    "## Memory\nRemember " + memory_sentinel + " for every queued prompt.\n")); // must match the prompt to be recalled
 
 	std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
 	session->chat_id = stored_chat.id;
@@ -11760,6 +11760,24 @@ UAM_TEST(AcpOrdinaryFollowupIncludesLatestTerminalGoalAsReadOnlyState)
 	UAM_ASSERT(raw_session->queued_prompt.find("goal_blocked_permission") != std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find("Remote process remained alive.") != std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find("What happened?") != std::string::npos);
+
+	// Once delivered, the same state is not sent again to this provider process.
+	UAM_ASSERT(!raw_session->pending_terminal_goal_delivery.empty());
+	raw_session->terminal_goal_delivery = raw_session->pending_terminal_goal_delivery;
+	raw_session->queued_prompt.clear(); // the first prompt was delivered
+	raw_session->processing = true;
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-terminal-followup", "And now?", {}, {}, false, &error));
+	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
+	UAM_ASSERT(raw_session->queued_prompt.find("And now?") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("Persisted terminal goal state (read-only)") == std::string::npos);
+
+	// A changed goal state is sent once more.
+	app.chats.front().goals.front().last_blocker = "Approval was denied.";
+	raw_session->queued_prompt.clear();
+	raw_session->processing = true;
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-terminal-followup", "Any change?", {}, {}, false, &error));
+	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
+	UAM_ASSERT(raw_session->queued_prompt.find("Approval was denied.") != std::string::npos);
 }
 
 UAM_TEST(AcpPromptRejectsOversizedCombinedSkillContent)

@@ -3,9 +3,6 @@
 #include "common/provider/provider_runtime.h"
 #include <stop_token>
 
-/// <summary>Read-ceiling --settings JSON: auth/routing keys and deny/ask rules of the user settings.json text.</summary>
-std::string ClaudeReadCeilingSettingsJson(std::string_view user_settings_text);
-
 class ClaudeCliProviderRuntime final : public IProviderRuntime
 {
   public:
@@ -15,7 +12,10 @@ class ClaudeCliProviderRuntime final : public IProviderRuntime
 	MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const override;
 	std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override;
 	bool SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat) const override;
+	std::string_view DefaultTextWorkerModel() const override { return "haiku"; }
 	std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const override;
+	bool PrepareLocalWorkerLaunch(const uam::AppState&, const ProviderProfile&, std::vector<std::string>& argv, std::string&, bool* private_isolation = nullptr,
+	    std::vector<std::pair<std::string, std::string>>* environment = nullptr) const override;
 	std::vector<std::string> BuildStructuredLaunchArgv(const ProviderProfile& profile, const ChatSession& chat) const override;
 	bool PrepareStructuredLaunch(uam::AcpSessionState&, const ProviderProfile&, std::string_view, bool remote,
 	    std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>& environment, std::string&) const override;

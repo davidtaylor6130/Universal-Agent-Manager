@@ -2518,6 +2518,42 @@ UAM_TEST(EnabledProviderRuntimesSatisfyLaunchContract)
 	}
 }
 
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+UAM_TEST(ClaudeWorkerArgvKeepsUserAuthWithoutHooksPluginsOrMcp)
+{
+	// Remote launches cannot read the host's settings, so they keep the user source with hooks forced off.
+	const ProviderProfile profile = ProviderProfileStore::DefaultClaudeProfile();
+	const std::vector<std::string> argv = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kClaudeCli).BuildWorkerArgv(profile, AppSettings{}, "prompt", "haiku");
+	const auto sources = std::ranges::find(argv, "--setting-sources");
+	UAM_ASSERT(sources != argv.end() && *std::next(sources) == "user");
+	const auto settings = std::ranges::find(argv, "--settings");
+	UAM_ASSERT(settings != argv.end() && nlohmann::json::parse(*std::next(settings))["disableAllHooks"].get<bool>());
+	UAM_ASSERT(uam::ranges::Contains(argv, "--strict-mcp-config"));
+	UAM_ASSERT(uam::ranges::Contains(argv, "--disable-slash-commands"));
+	// A local launch replaces them with only the auth/routing keys of settings.json; broken files carry none.
+	TempDir config("uam-claude-worker-settings");
+	uam_test::ScopedEnvVar config_dir("CLAUDE_CONFIG_DIR", config.root.string());
+	uam::AppState app;
+	const auto local_settings = [&]() {
+		std::string error;
+		const uam::ProviderWorkerInvocation invocation = uam::BuildProviderWorkerInvocation(app, profile, AppSettings{}, "prompt", "", uam::ProviderWorkerPathMode::BasePath, &error);
+		UAM_ASSERT(!invocation.Empty());
+		const auto found = std::ranges::find(invocation.argv, "--settings");
+		UAM_ASSERT(found != invocation.argv.end() && std::next(found) != invocation.argv.end());
+		return nlohmann::json::parse(*std::next(found));
+	};
+	UAM_ASSERT(uam::io::WriteTextFile(config.root / "settings.json", R"({"awsAuthRefresh":"aws sso login","forceLoginMethod":"console","permissions":{"allow":["Bash"]},"statusLine":{}})"));
+	UAM_ASSERT_EQ(local_settings(), (nlohmann::json{{"disableAllHooks", true}, {"awsAuthRefresh", "aws sso login"}, {"forceLoginMethod", "console"}}));
+	for (const std::string broken : {"{broken", "[]"})
+	{
+		UAM_ASSERT(uam::io::WriteTextFile(config.root / "settings.json", broken));
+		UAM_ASSERT_EQ(local_settings(), (nlohmann::json{{"disableAllHooks", true}}));
+	}
+	fs::remove(config.root / "settings.json");
+	UAM_ASSERT_EQ(local_settings(), (nlohmann::json{{"disableAllHooks", true}}));
+}
+#endif
+
 UAM_TEST(ProviderTextWorkersAreIsolatedAndIgnoreUnsafeExtraFlags)
 {
 	uam::AppState app;
@@ -2529,6 +2565,10 @@ UAM_TEST(ProviderTextWorkersAreIsolatedAndIgnoreUnsafeExtraFlags)
 	opencode_version.checked = true;
 	opencode_version.supported = true;
 	opencode_version.installed_version = "1.19.4";
+	// A Claude user settings file whose auth keys must reach the worker while its hooks and plugins do not.
+	TempDir claude_config("uam-claude-worker-config");
+	UAM_ASSERT(uam::io::WriteTextFile(claude_config.root / "settings.json", R"({"env":{"ANTHROPIC_BASE_URL":"https://proxy.example","CLAUDE_CODE_USE_BEDROCK":"1"},"apiKeyHelper":"/bin/key-helper","hooks":{"Stop":[]},"enabledPlugins":{"x@y":true}})"));
+	uam_test::ScopedEnvVar claude_config_dir("CLAUDE_CONFIG_DIR", claude_config.root.string());
 	AppSettings settings;
 	settings.provider_extra_flags = "--dangerously-skip-permissions --yolo --allow-all --ask-for-approval never --agent unsafe --plugin-dir injected";
 
@@ -2562,11 +2602,29 @@ UAM_TEST(ProviderTextWorkersAreIsolatedAndIgnoreUnsafeExtraFlags)
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--ignore-user-config"));
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "features.shell_tool=false"));
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "web_search=\"disabled\""));
+				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "gpt-5.4-mini"));
 			}
 			else if (profile.id == uam::provider_ids::kClaudeCli)
 			{
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--tools"));
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--no-session-persistence"));
+				// Local: no settings files at all, plus a generated --settings carrying only auth/routing keys.
+				const auto sources = std::ranges::find(invocation.argv, "--setting-sources");
+				UAM_ASSERT(sources != invocation.argv.end() && std::next(sources) != invocation.argv.end() && std::next(sources)->empty());
+				const auto inline_settings = std::ranges::find(invocation.argv, "--settings");
+				UAM_ASSERT(inline_settings != invocation.argv.end() && std::next(inline_settings) != invocation.argv.end());
+				const nlohmann::json worker_settings = nlohmann::json::parse(*std::next(inline_settings));
+				UAM_ASSERT(worker_settings["disableAllHooks"].get<bool>());
+				// Settings env reaches the worker's environment, never its command line.
+				UAM_ASSERT(!worker_settings.contains("env"));
+				UAM_ASSERT(uam::ranges::Contains(invocation.environment_overrides, std::pair<std::string, std::string>{"ANTHROPIC_BASE_URL", "https://proxy.example"}));
+				UAM_ASSERT(uam::ranges::Contains(invocation.environment_overrides, std::pair<std::string, std::string>{"CLAUDE_CODE_USE_BEDROCK", "1"}));
+				UAM_ASSERT_EQ(worker_settings["apiKeyHelper"], nlohmann::json("/bin/key-helper"));
+				UAM_ASSERT(!worker_settings.contains("hooks") && !worker_settings.contains("enabledPlugins"));
+				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--strict-mcp-config"));
+				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--disable-slash-commands"));
+				const auto model = std::ranges::find(invocation.argv, "--model");
+				UAM_ASSERT(model != invocation.argv.end() && std::next(model) != invocation.argv.end() && *std::next(model) == "haiku");
 			}
 			else if (profile.id == uam::provider_ids::kOpenCodeCli)
 			{
@@ -2596,6 +2654,10 @@ UAM_TEST(ProviderTextWorkersAreIsolatedAndIgnoreUnsafeExtraFlags)
 			{
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--admin-policy"));
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "plan"));
+				const auto extensions = std::ranges::find(invocation.argv, "--extensions");
+				UAM_ASSERT(extensions != invocation.argv.end() && std::next(extensions) != invocation.argv.end() && *std::next(extensions) == "none");
+				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--allowed-mcp-server-names"));
+				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "flash-lite"));
 				const std::string policy = uam::io::ReadTextFile(isolation_directory / "deny-all-tools.toml");
 				UAM_ASSERT(uam::strings::Contains(policy, "decision = \"deny\""));
 			}

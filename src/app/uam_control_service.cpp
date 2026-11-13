@@ -140,6 +140,7 @@ namespace uam
 		constexpr int64_t kModelGoalTokenBudget = 200000;
 		constexpr std::string_view kServerFlag = "--uam-control-mcp";
 		constexpr const char* kCapabilityDirectoryEnvironment = "UAM_CONTROL_CAPABILITY_DIR";
+		constexpr const char* kHiddenToolsEnvironment = "UAM_CONTROL_HIDDEN_TOOLS";
 		/// Per-capability signing key, delivered only in the MCP server's launch environment, never in the capability directory.
 		constexpr const char* kRequestKeyEnvironment = "UAM_CONTROL_REQUEST_KEY";
 
@@ -763,13 +764,15 @@ namespace uam
 		ToolResult AgentList(const AppState& app, const UamControlCapability& capability,
 		                     const ChatSession& chat)
 		{
-			ToolResult out{.ok = true, .result = nlohmann::json::array(), .reason = "Listed bounded delegate metadata."};
+			// Provider targets are the same for every agent, so they are listed once beside the agents.
+			ToolResult out{.ok = true, .result = {{"agents", nlohmann::json::array()}, {"providerTargets", AgentProviderTargets(app, chat)}}, .reason = "Listed bounded delegate metadata."};
+			nlohmann::json& agents = out.result["agents"];
 			const AgentDefinitionCatalog catalog = AgentCatalog(app, chat);
 			// A read-only caller's children stay read-only and on its own provider, so list only what delegation allows.
 			const AgentRun* caller_run = capability.agent_run_id.empty() ? nullptr : FindRun(app, capability.agent_run_id);
 			const bool caller_read = ReadOnlyAgent(app, capability) || (caller_run != nullptr && caller_run->effective_workspace_access != "write") ||
 			                         uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode;
-			nlohmann::json targets = AgentProviderTargets(app, chat);
+			nlohmann::json& targets = out.result["providerTargets"];
 			if (caller_read)
 			{
 				const std::string own = provider_ids::NormalizeCliProviderAliasOrSelf(caller_run != nullptr ? caller_run->provider_id : chat.provider_id);
@@ -780,16 +783,15 @@ namespace uam
 				if (definition.mode != "subagent" && definition.mode != "both") continue;
 				if (!capability.agent_run_id.empty() && !Contains(capability.agent_delegates, definition.id)) continue;
 				const bool forced_read = caller_read || definition.workspace_access != "write";
-				out.result.push_back({{"id", definition.id}, {"description", definition.description},
-				                      {"workspaceAccess", forced_read ? "read" : "write"},
-				                      {"providerNeutral", true}, {"providerTargets", targets}});
+				agents.push_back({{"id", definition.id}, {"description", definition.description},
+				                  {"workspaceAccess", forced_read ? "read" : "write"}, {"providerNeutral", true}});
 				// The stdio reply carries this list as an escaped string, so bound the escaped size.
 				if (nlohmann::json(out.result.dump()).dump().size() > kMaxResponseBytes - 1024)
 				{
-					out.result.erase(out.result.end() - 1);
+					agents.erase(agents.end() - 1);
 					break;
 				}
-				if (out.result.size() == 64) break;
+				if (agents.size() == 64) break;
 			}
 			return out;
 		}
@@ -1958,7 +1960,7 @@ namespace uam
 		nlohmann::json ToolSchema(std::string name, nlohmann::json properties = nlohmann::json::object(),
 		                          nlohmann::json required = nlohmann::json::array())
 		{
-			return {{"name", std::move(name)}, {"description", "Bounded UAM control operation."},
+			return {{"name", std::move(name)}, {"description", ""},
 			        {"inputSchema", {{"type", "object"}, {"properties", std::move(properties)},
 			                         {"required", std::move(required)}, {"additionalProperties", false}}}};
 		}
@@ -1992,7 +1994,17 @@ namespace uam
 			    {"label", "reason"});
 			secret_request["description"] = "Ask the user for one secret (API key, token, password, PIN, sudo password, pairing code) in a masked UAM card. Never ask for secrets in chat text. You receive only a path on this chat's computer, never the value: read it inside the one command that uses it, e.g. cmd --token \"$(cat PATH)\" or sudo -S -p '' cmd < PATH (PowerShell: $t = Get-Content -Raw PATH). Never print, echo, cat on its own or copy it. On macOS and Linux the path is a pipe that can be read once and expires after 10 minutes; on Windows it is a private file deleted after 60 seconds. Waits until the user answers; do not retry after cancellation.";
 			nlohmann::json agent_list = ToolSchema("agent_list");
-			agent_list["description"] = "List permitted agents and providerTargets on this chat's execution host. Only eligible targets have an installed compatible worker CLI; authentication remains unverified. Same-provider defaultModelId inherits the parent; an empty cross-provider default uses that provider's default.";
+			agent_list["description"] = "List the agents this chat may delegate to, plus one shared providerTargets list for this chat's execution host. Only eligible targets have an installed compatible worker CLI; authentication remains unverified. Same-provider defaultModelId inherits the parent; an empty cross-provider default uses that provider's default.";
+			nlohmann::json skill_list = ToolSchema("skill_list");
+			skill_list["description"] = "List the skills approved for this agent: id, name, description and version. Read one with skill_read.";
+			nlohmann::json skill_read = ToolSchema("skill_read", {{"id", {{"type", "string"}}}, {"path", {{"type", "string"}, {"description", "Relative asset path inside the installed skill; defaults to SKILL.md."}}}}, {"id"});
+			skill_read["description"] = "Read one approved skill's SKILL.md, or one of its installed asset files, by id from skill_list.";
+			nlohmann::json agent_status = ToolSchema("agent_status", {{"runId", {{"type", "string"}}}}, {"runId"});
+			agent_status["description"] = "Read the current status and, once finished, the bounded result of one child run this chat started. Returns at once; use agent_wait to wait.";
+			nlohmann::json agent_cancel = MutationToolSchema("agent_cancel", {{"runId", {{"type", "string"}}}}, {"runId"});
+			agent_cancel["description"] = "Cancel one child run this chat started. Requires this chat's YOLO permission mode; refused in Plan mode.";
+			nlohmann::json goal_get = ToolSchema("goal_get");
+			goal_get["description"] = "Read this chat's current goal: objective, status, progress, budget, and whether goal creation is allowed.";
 			nlohmann::json agent_delegate = MutationToolSchema("agent_delegate", {{"agentId", {{"type", "string"}}}, {"task", {{"type", "string"}}},
 			    {"providerId", {{"type", "string"}}}, {"modelId", {{"type", "string"}}}}, {"agentId", "task"});
 			agent_delegate["description"] = "Start one permitted agent using optional providerId and modelId from agent_list providerTargets. Omitting providerId inherits the parent provider; switching provider without modelId uses the target provider's default. CLI availability does not verify login. resultDelivery reports cooperative-only, automatic-pending or held. An accepted direct-root delegation may deliver bounded child results after a normal turn end on the SAME still-live local Codex session; it never restarts a parent or replays uncertain input.";
@@ -2020,13 +2032,13 @@ namespace uam
 			    std::move(html_view_preview),
 			    std::move(html_view_publish),
 			    std::move(agent_wait),
-			    ToolSchema("skill_list"),
-			    ToolSchema("skill_read", {{"id", {{"type", "string"}}}, {"path", {{"type", "string"}, {"description", "Relative asset path inside the installed skill; defaults to SKILL.md."}}}}, {"id"}),
+			    std::move(skill_list),
+			    std::move(skill_read),
 			    std::move(agent_list),
-			    ToolSchema("agent_status", {{"runId", {{"type", "string"}}}}, {"runId"}),
-			    ToolSchema("goal_get"),
+			    std::move(agent_status),
+			    std::move(goal_get),
 			    std::move(agent_delegate),
-			    MutationToolSchema("agent_cancel", {{"runId", {{"type", "string"}}}}, {"runId"}),
+			    std::move(agent_cancel),
 			    std::move(goal_create),
 			    std::move(chat_create),
 			    std::move(pr_watch),
@@ -2050,6 +2062,69 @@ namespace uam
 					tool["annotations"] = {{"readOnlyHint", true}};
 			}
 			return tools;
+		}
+
+		bool ToolHidden(std::string_view hidden, std::string_view name)
+		{
+			return ("," + std::string(hidden) + ",").find("," + std::string(name) + ",") != std::string::npos;
+		}
+
+		/// <summary>The tool list minus the comma-separated names this session cannot use, fixed for the session.</summary>
+		nlohmann::json VisibleTools(std::string_view hidden)
+		{
+			nlohmann::json tools = nlohmann::json::array();
+			for (nlohmann::json& tool : Tools())
+				if (!ToolHidden(hidden, tool.value("name", ""))) tools.push_back(std::move(tool));
+			return tools;
+		}
+
+		/// <summary>Adds names to the session's hidden-tool list; the server still refuses calls it cannot serve.</summary>
+		void HideTools(nlohmann::json& server, const std::vector<std::string>& names)
+		{
+			if (names.empty()) return;
+			nlohmann::json& env = server["env"];
+			auto entry = std::ranges::find_if(env, [](const nlohmann::json& item) { return item.value("name", "") == kHiddenToolsEnvironment; });
+			if (entry == env.end())
+			{
+				env.push_back(nlohmann::json{{"name", kHiddenToolsEnvironment}, {"value", ""}});
+				entry = std::prev(env.end());
+			}
+			std::string value = (*entry)["value"].get<std::string>();
+			for (const std::string& name : names) value += (value.empty() ? "" : ",") + name;
+			(*entry)["value"] = value;
+		}
+
+		/// <summary>Tools this session can never use, known at launch; runtime-changeable gates (Plan mode, global switches) stay server-side.</summary>
+		std::vector<std::string> UnusableTools(const UamControlCapability& capability, const ChatSession& chat, const ChatSession& root_chat, const AcpSessionState& session)
+		{
+			std::vector<std::string> hidden;
+			// A goal reviewer only reads the workspace and answers in JSON; it gets no UAM tools at all. Its capability
+			// stays read-only for life (read_only_at_launch), so the list matches what the server would allow.
+			if (session.goal_review_turn || capability.read_only_at_launch)
+			{
+				for (const nlohmann::json& tool : Tools()) hidden.push_back(tool.value("name", ""));
+				return hidden;
+			}
+			// Same rule as ReadOnlyAgent: a missing or unknown workspace access is read-only.
+			const bool read_only = capability.agent_id == "plan" || session.active_uam_agent_workspace_access != "write";
+			const bool subagent = !capability.agent_run_id.empty();
+			// A child may delegate only to its listed agents; with none, the agent tools have nothing to act on.
+			if (subagent && capability.agent_delegates.empty())
+				hidden.insert(hidden.end(), {"agent_list", "agent_delegate", "agent_status", "agent_wait", "agent_cancel"});
+			if (read_only) hidden.insert(hidden.end(), {"agent_cancel", "goal_create"});
+			// Only a chat that outlives its turn can be woken by a pull request watch.
+			if (subagent || !chat.temporary_parent_chat_id.empty()) hidden.insert(hidden.end(), {"pr_watch", "pr_unwatch"});
+			if (read_only || subagent || chat.imported_read_only || !chat.temporary_parent_chat_id.empty() ||
+			    !chat.goal_owner_chat_id.empty() || !chat.created_by_chat_id.empty())
+				hidden.push_back("chat_create");
+			if (read_only || !UAM_ENABLE_COMPUTER_USE || !(chat.execution_host_id.empty() || chat.execution_host_id == uam::execution_hosts::kLocalHostId))
+				hidden.push_back("computer_use_request");
+			// Mirrors SecretRequestService::Refusal and the read-only check: Plan mode keeps it (one-time Allow).
+			if (read_only || !chat.temporary_parent_chat_id.empty() || !root_chat.temporary_parent_chat_id.empty() || !root_chat.automation_token_id.empty())
+				hidden.push_back("secret_request");
+			std::ranges::sort(hidden);
+			hidden.erase(std::ranges::unique(hidden).begin(), hidden.end());
+			return hidden;
 		}
 
 		std::optional<nlohmann::json> SubmitToManager(const std::filesystem::path& capability,
@@ -2256,7 +2331,7 @@ namespace uam
 			}
 			else if (method == "tools/list")
 			{
-				response["result"] = {{"tools", Tools()}};
+				response["result"] = {{"tools", VisibleTools(uam::env::GetNonEmptyString(kHiddenToolsEnvironment).value_or(""))}};
 			}
 			else if (method == "tools/call")
 			{
@@ -2267,6 +2342,12 @@ namespace uam
 				else
 				{
 					const std::string name = request["params"]["name"].get<std::string>();
+					if (ToolHidden(uam::env::GetNonEmptyString(kHiddenToolsEnvironment).value_or(""), name))
+					{
+						response["error"] = {{"code", -32602}, {"message", "This UAM tool is not available in this session."}};
+						std::cout << response.dump() << '\n' << std::flush;
+						continue;
+					}
 					// Waits and cards can outlast the provider's interest: both watch the input for a cancellation or its end.
 					const bool wait_call = name == "agent_wait" || IsCardMethod(name);
 					if (resumed && !connection_recorded) record_connection();
@@ -2461,6 +2542,7 @@ namespace uam
 		    {"args", nlohmann::json::array({std::string(kServerFlag)})},
 		    {"env", std::move(environment)},
 		});
+		HideTools(request["params"]["mcpServers"].back(), UnusableTools(capability, chat, *root_chat, session));
 		session.uam_control_capability_id = capability.id;
 		app.uam_control_capabilities.push_back(std::move(capability));
 		return true;
@@ -2486,6 +2568,8 @@ namespace uam
 		nlohmann::json request = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
 		if (!AppendSessionMcpServer(app, session, chat, uam::acp_methods::kSessionNew, request, &error)) return false;
 		server = request["params"]["mcpServers"].back();
+		// CLI View has no structured turn to show HTML views in or to hold an agent wait.
+		HideTools(server, {"agent_wait", "html_view_preview", "html_view_publish"});
 		return true;
 	}
 
@@ -2997,8 +3081,15 @@ namespace uam
 		FlushChatCreateLaunches(app, send);
 	}
 
-	nlohmann::json UamControlService::ToolDefinitionsForTests()
+	nlohmann::json UamControlService::ToolDefinitionsForTests(std::string_view hidden)
 	{
-		return Tools();
+		return VisibleTools(hidden);
+	}
+
+	std::string UamControlService::HiddenToolsForTests(const nlohmann::json& server)
+	{
+		for (const nlohmann::json& entry : server.value("env", nlohmann::json::array()))
+			if (entry.value("name", "") == kHiddenToolsEnvironment) return entry.value("value", "");
+		return {};
 	}
 } // namespace uam
