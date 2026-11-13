@@ -314,6 +314,9 @@ namespace uam::acp_detail
 		{
 			BufferedStdoutResult result;
 			std::size_t consumed = 0;
+			// A line that ends the process stops this batch. Output drained after a stop starts with the process already
+			// ended, so it keeps going to the line and time limits instead of handling one line per poll.
+			const bool was_running = session.running;
 			while (session.transport_ownership_error.empty() && result.lines < max_lines && PollClock::now() < deadline)
 			{
 				if (session.protocol_kind == uam::provider_profile_constants::kProtocolCopilotSdk && consumed < session.stdout_buffer.size() && session.stdout_buffer[consumed] != '\x1e')
@@ -332,7 +335,7 @@ namespace uam::acp_detail
 					consumed += frame.consumed_bytes;
 					++result.lines;
 					result.changed = ProcessAcpLine(app, session, chat, body, browser) || result.changed;
-					if (!session.running)
+					if (was_running && !session.running)
 						break;
 					continue;
 				}
@@ -394,7 +397,7 @@ namespace uam::acp_detail
 					continue;
 				}
 				result.changed = ProcessAcpLine(app, session, chat, line, browser) || result.changed;
-				if (!session.running)
+				if (was_running && !session.running)
 				{
 					break;
 				}
