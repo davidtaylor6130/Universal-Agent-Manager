@@ -510,7 +510,7 @@ const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   ...(SSH_ENABLED ? { 'remote-hosts': 'computers ssh connections hosts runners servers install', routing: 'routing ssh automatic remote folders mapping' } : {}),
   ...(MOBILE_COMPANION_ENABLED ? { phone: 'phone mobile companion token url remote access', automation: 'automation api token n8n workflow webhook revoke' } : {}),
   'voice-input': 'microphone dictation transcription speech whisper',
-  'memory-settings': 'memory workers recall budgets idle models tokens processing',
+  'memory-settings': 'memory workers recall budgets idle models tokens processing scan backfill',
   'memory-store': 'memory library lessons entries search delete',
   'markdown-store': 'skills markdown library import folder file create pin',
   'goal-loops': 'goals loops tokens budgets auto continue review',
@@ -823,6 +823,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const computerUseAllowedApplications = useAppStore(useShallow((s) => s.computerUseAllowedApplications))
   const activeUamAgents = useAppStore(useShallow((s) => activeSessionId ? s.uamAgentsBySessionId[activeSessionId] ?? [] : []))
   const setMemorySettings = useAppStore((s) => s.setMemorySettings)
+  const openMemoryScanModal = useAppStore((s) => s.openMemoryScanModal)
   const setProviderChatDefaults = useAppStore((s) => s.setProviderChatDefaults)
   const setEditorSettings = useAppStore((s) => s.setEditorSettings)
   const setSessionComputerUseBackend = useAppStore((s) => s.setSessionComputerUseBackend)
@@ -2736,6 +2737,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 <NumberField label="Recall budget (bytes)" value={memoryRecallBudgetBytes} min={MIN_MEMORY_RECALL_BUDGET_BYTES} max={MAX_MEMORY_RECALL_BUDGET_BYTES} step={256} unit="bytes"
                   onCommit={(value) => void setMemorySettings({ memoryRecallBudgetBytes: value })} />
               }
+            />
+            <SettingRow
+              title="Scan current chats"
+              description="Choose chats to extract memories from older history."
+              control={<Button size="sm" variant="secondary" leadingIcon={<Search size={14} />} onClick={() => void openMemoryScanModal()}>Scan chats</Button>}
             />
           </SettingsSection>
 
