@@ -1863,6 +1863,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       theme: 'focus',
       showProviderIconsInSidebar: true,
       showWorktreePathInSidebar: true,
+      sidebarPinnedChatOrder: [],
+      sidebarActiveChatOrder: [],
       steerActiveTurnOnSend: false,
       gitEnabled: true,
       svnEnabled: true,
@@ -1960,6 +1962,10 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         .filter((id) => id !== 'build' && id !== 'plan' && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(id))))
         .slice(0, 64)
     : []
+  // Native keeps at most 2,000 ids per list (settings_normalization.h).
+  const sidebarChatOrder = (raw: unknown) => Array.isArray(raw)
+    ? Array.from(new Set(raw.filter((id): id is string => typeof id === 'string').map((id) => id.trim()).filter((id) => id && id.length <= 256))).slice(0, 2000)
+    : []
   const importRules = (raw: unknown) => Array.isArray(raw)
     ? Array.from(new Set(raw.filter((rule): rule is string => typeof rule === 'string').map((rule) => rule.trim())
         .filter((rule) => rule && rule.length <= 4096))).slice(0, 100)
@@ -2031,6 +2037,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     theme,
     showProviderIconsInSidebar: booleanOr(value.showProviderIconsInSidebar, true),
     showWorktreePathInSidebar: booleanOr(value.showWorktreePathInSidebar, true),
+    sidebarPinnedChatOrder: sidebarChatOrder(value.sidebarPinnedChatOrder),
+    sidebarActiveChatOrder: sidebarChatOrder(value.sidebarActiveChatOrder),
     steerActiveTurnOnSend: booleanOr(value.steerActiveTurnOnSend, false),
     gitEnabled: booleanOr(value.gitEnabled, true),
     svnEnabled: booleanOr(value.svnEnabled, true),

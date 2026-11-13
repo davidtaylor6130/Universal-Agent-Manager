@@ -703,6 +703,32 @@ void UamQueryHandler::HandleSetSidebarSettings(CefRefPtr<CefBrowser> browser, co
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleSetSidebarChatOrder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string_view list = uam::nlohmann_json::StringViewOrEmpty(payload, "list");
+	const nlohmann::json* order = uam::nlohmann_json::FindArrayField(payload, "order");
+	if ((list != "pinned" && list != "active") || order == nullptr ||
+	    std::any_of(order->begin(), order->end(), [](const nlohmann::json& id) { return !id.is_string(); }))
+	{
+		cb->Failure(400, "Sidebar chat order must name the pinned or active list and give chat ids as text.");
+		return;
+	}
+
+	const AppSettings previous = m_app.settings;
+	std::vector<std::string>& target = list == "pinned" ? m_app.settings.sidebar_pinned_chat_order : m_app.settings.sidebar_active_chat_order;
+	target = uam::nlohmann_json::TrimmedStringArrayField(payload, "order");
+	uam::settings::NormalizeUamAgentPreferences(m_app.settings);
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to save the sidebar order."));
+		return;
+	}
+
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
 void UamQueryHandler::HandleSetComposerSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::optional<bool> steer = uam::nlohmann_json::BoolFieldStrict(payload, "steerActiveTurnOnSend");
