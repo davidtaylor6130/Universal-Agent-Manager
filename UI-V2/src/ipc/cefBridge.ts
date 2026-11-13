@@ -81,7 +81,10 @@ export async function sendToCEF<T = unknown>(
         cache: 'no-store',
       })
       if (!response.ok) {
-        const error = (await response.json().catch(() => null))?.error ?? `Request failed (${response.status}).`
+        // A rotated token (new pairing code or Regenerate token on the computer) ends this browser's pairing.
+        const error = response.status === 401
+          ? 'UAM no longer accepts this connection token. Log out in Settings, then connect with the current token from the computer.'
+          : (await response.json().catch(() => null))?.error ?? `Request failed (${response.status}).`
         if (logFailures) console.error(`[CEF] ${request.action}: ${error}`)
         return { ok: false, error, requestId }
       }

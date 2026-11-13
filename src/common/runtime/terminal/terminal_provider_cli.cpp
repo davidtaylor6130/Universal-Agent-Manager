@@ -1,3 +1,4 @@
+#include "common/config/approval_modes.h"
 #include "common/config/host_scoped_settings.h"
 #include "common/config/provider_availability.h"
 #include "app/uam_control_service.h"
@@ -183,17 +184,33 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 	return true;
 }
 
+namespace
+{
+	/// A read-only agent always opens CLI View in Plan, whatever central configuration or UAM control says.
+	bool InteractiveChatHasReadCeiling(const AppState& app, const ChatSession& chat)
+	{
+		if (uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode) return true;
+		if (chat.uam_agent_id.empty()) return false;
+		const AgentDefinitionCatalog catalog = AgentDefinitionService::Load(app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(app, chat));
+		const auto selected = std::ranges::find_if(catalog.definitions, [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
+		// Anything other than write access (read, or a missing or unknown value) is capped, as in structured launches.
+		return selected != catalog.definitions.end() && selected->workspace_access != "write";
+	}
+}
+
+std::string ProviderInteractiveCeilingError(const AppState& app, const ChatSession& chat)
+{
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	if (!uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kOpenCodeCli) || !InteractiveChatHasReadCeiling(app, chat)) return {};
+	return "OpenCode CLI View cannot be held to Plan or a read-only agent: its terminal has no Plan option UAM can enforce. Use Chat, or switch this chat to Default first.";
+}
+
 std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat)
 {
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	ChatSession effective_chat = chat;
 	effective_chat.native_session_id = ResolveProviderInteractiveResumeId(app, chat, provider);
-	if (app.settings.central_provider_configuration.enabled || chat.uam_control_enabled)
-	{
-		const AgentDefinitionCatalog catalog = AgentDefinitionService::Load(app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(app, chat));
-		const auto selected = std::ranges::find_if(catalog.definitions, [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
-		if (selected != catalog.definitions.end() && selected->workspace_access != "write") effective_chat.approval_mode = "plan";
-	}
+	if (InteractiveChatHasReadCeiling(app, chat)) effective_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
 
 	return ProviderRuntime::BuildInteractiveArgv(provider, effective_chat, app.settings);
 }

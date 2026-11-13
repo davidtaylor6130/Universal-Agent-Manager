@@ -19,6 +19,7 @@
 #include "common/utils/shell_escape.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "common/vcs/git_command.h"
 #include "remote/runner_client.h"
 
 #include <atomic>
@@ -164,7 +165,7 @@ namespace uam
 
 		std::string BuildGitCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
 		{
-			return "git -C " + uam::shell::EscapeArg(uam::paths::Utf8PathString(cwd)) + " " + args;
+			return uam::vcs::HardenedGitShellCommandInDirectory(cwd, args);
 		}
 
 		bool CommandSucceeded(const ProcessExecutionResult& result)
@@ -640,8 +641,8 @@ namespace uam
 			if (source_is_git)
 			{
 				// Git owns ignore rules, including ignored dependency caches. Preserve staged paths too.
-				const auto listed = RunCommand("git --no-optional-locks -C " + shell::EscapeArg(paths::Utf8PathString(source_root)) +
-				    " ls-files --cached --others --exclude-standard --full-name -z -- .");
+				const auto listed = RunCommand(BuildGitCommandInDirectory(source_root,
+				    "--no-optional-locks ls-files --cached --others --exclude-standard --full-name -z -- ."));
 				if (!CommandSucceeded(listed) || listed.output_truncated || !listed.error.empty())
 				{ error = "Could not enumerate source files for the isolation baseline."; return false; }
 				std::set<std::filesystem::path> seen;
@@ -1206,9 +1207,7 @@ namespace uam
 		    int expected_exit = 0, const std::string& operation_id = {}, int* observed_exit_out = nullptr, const std::string& retained_control_token = {}, bool* start_request_attempted_out = nullptr)
 		{
 			if (observed_exit_out) *observed_exit_out = -1;
-			std::vector<std::string> argv{"git", "--no-pager", "-c", "core.fsmonitor=false", "-c",
-			    host.platform == "windows" || host.platform == "Windows" ? "core.hooksPath=NUL" : "core.hooksPath=/dev/null"};
-			argv.insert(argv.end(), arguments.begin(), arguments.end());
+			const std::vector<std::string> argv = vcs::HardenedGitArgv(arguments, vcs::IsWindowsHostPlatform(host.platform));
 			const ProcessExecutionResult result = client.ExecuteCommand(
 			    operation_id.empty() ? "worktree-read-" + RemoteOperationToken() : operation_id,
 			    paths::PathFromUtf8(directory), argv, 120000, stop, {}, retained_control_token, start_request_attempted_out);
@@ -2383,9 +2382,9 @@ namespace uam
 		}
 		if (managed_repository)
 		{
-			const ProcessExecutionResult clone = RunCommand("git clone --no-hardlinks --quiet " +
+			const ProcessExecutionResult clone = RunCommand(uam::vcs::HardenedGitShellCommand("clone --no-hardlinks --quiet " +
 			    uam::shell::EscapeArg(uam::paths::Utf8PathString(parent_repository)) + " " +
-			    uam::shell::EscapeArg(uam::paths::Utf8PathString(repository)));
+			    uam::shell::EscapeArg(uam::paths::Utf8PathString(repository))));
 			if (!CommandSucceeded(clone) ||
 			    !GitCommand(repository, "remote remove origin", &result.message) ||
 			    !GitCommand(repository, "config core.autocrlf false", &result.message))
@@ -2430,8 +2429,7 @@ namespace uam
 		{
 			const int remaining_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
 			if (remaining_ms <= 0 || stop_token.stop_requested()) return false;
-			const ProcessExecutionResult result = RunCommand("git --no-optional-locks -C " +
-			    uam::shell::EscapeArg(uam::paths::Utf8PathString(directory)) + " " + arguments, std::min(2000, remaining_ms), stop_token);
+			const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(directory, "--no-optional-locks " + arguments), std::min(2000, remaining_ms), stop_token);
 			if (!CommandSucceeded(result) || result.output_truncated) return false;
 			output = uam::strings::Trim(result.output);
 			return true;

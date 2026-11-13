@@ -141,6 +141,9 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   runnerProtocolVersion: number
   showProviderIconsInSidebar: boolean
   showWorktreePathInSidebar: boolean
+  /** Manual order of the Pinned and Active chat lists; ids not listed keep the default order above them. */
+  sidebarPinnedChatOrder: string[]
+  sidebarActiveChatOrder: string[]
   steerActiveTurnOnSend: boolean
   gitEnabled: boolean
   svnEnabled: boolean
@@ -435,6 +438,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setProviderAvailability: (settings: ProviderAvailabilityRequest) => Promise<boolean>
   setVoiceInputSettings: (settings: VoiceInputSettingsRequest) => Promise<boolean>
   setStorageSettings: (settings: StorageSettingsRequest) => Promise<boolean>
+  setSidebarChatOrder: (list: 'pinned' | 'active', order: string[]) => Promise<boolean>
   setSidebarSettings: (settings: Pick<AppState, 'showProviderIconsInSidebar' | 'showWorktreePathInSidebar'>) => Promise<boolean>
   /** Saves what composer Send does while a turn runs: steer it (true) or queue for the next turn (false). */
   setSteerActiveTurnOnSend: (steer: boolean) => Promise<boolean>

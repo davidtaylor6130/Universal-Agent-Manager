@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, X } from 'lucide-react'
+import { Plus, RefreshCw, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
@@ -15,6 +15,9 @@ export interface AutomationToken {
   workspaces: string[]
   maxGitPermission: string
   createdAt: string
+  lifetimeDays?: number
+  /** Epoch seconds. */
+  expiresAt?: number
 }
 
 const GIT_OPTIONS = [
@@ -22,8 +25,20 @@ const GIT_OPTIONS = [
   { value: 'pr', label: 'Open a pull request' },
 ]
 
+const LIFETIME_OPTIONS = [
+  { value: '30', label: '30 days' },
+  { value: '90', label: '90 days' },
+  { value: '365', label: '1 year' },
+]
+
+const describeExpiry = (expiresAt?: number) => {
+  if (expiresAt === undefined) return ''
+  if (expiresAt * 1000 <= Date.now()) return ' · Expired, regenerate to use'
+  return ` · Expires ${new Date(expiresAt * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}`
+}
+
 const describeToken = (token: AutomationToken) =>
-  `${token.trusted ? 'Starts straight away' : 'Waits for approval'} · ${token.maxGitPermission === 'pr' ? 'Pull requests allowed' : 'Commit only'} · ${token.workspaces.length} ${token.workspaces.length === 1 ? 'workspace' : 'workspaces'}`
+  `${token.trusted ? 'Starts straight away' : 'Waits for approval'} · ${token.maxGitPermission === 'pr' ? 'Pull requests allowed' : 'Commit only'} · ${token.workspaces.length} ${token.workspaces.length === 1 ? 'workspace' : 'workspaces'}${describeExpiry(token.expiresAt)}`
 
 /** Tokens are listed as metadata only; the secret exists solely in the create response shown once here. */
 export function AutomationSettings() {
@@ -35,11 +50,13 @@ export function AutomationSettings() {
   const [trusted, setTrusted] = useState(false)
   const [git, setGit] = useState('commit')
   const [workspaces, setWorkspaces] = useState<string[]>([])
+  const [lifetime, setLifetime] = useState('90')
   const [secret, setSecret] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
   const [revoking, setRevoking] = useState<AutomationToken | null>(null)
+  const [regenerating, setRegenerating] = useState<AutomationToken | null>(null)
 
   useEffect(() => {
     let current = true
@@ -59,10 +76,10 @@ export function AutomationSettings() {
     if (busy) return
     setEditing(false); setSecret(''); setError(''); setCopied(false)
   }
-  const open = () => { setName(''); setTrusted(false); setGit('commit'); setWorkspaces([]); setError(''); setSecret(''); setCopied(false); setEditing(true) }
+  const open = () => { setName(''); setTrusted(false); setGit('commit'); setWorkspaces([]); setLifetime('90'); setError(''); setSecret(''); setCopied(false); setEditing(true) }
   const create = async () => {
     setBusy(true); setError('')
-    const response = await sendToCEF<{ secret: string; token: AutomationToken }>({ action: 'createAutomationToken', payload: { name, trusted, maxGitPermission: git, workspaces } })
+    const response = await sendToCEF<{ secret: string; token: AutomationToken }>({ action: 'createAutomationToken', payload: { name, trusted, maxGitPermission: git, workspaces, lifetimeDays: Number(lifetime) } })
     setBusy(false)
     if (!response.ok || !response.data) { setError(response.error || 'Could not create the token.'); return }
     setTokens(current => [...(current ?? []), response.data!.token])
@@ -74,6 +91,14 @@ export function AutomationSettings() {
     if (!response.ok) { reportAppFailure(response.error || 'Could not revoke the token.', 'Try again.'); return }
     setTokens(current => current?.filter(value => value.id !== token.id) ?? [])
   }
+  const regenerate = async (token: AutomationToken) => {
+    setRegenerating(null)
+    const response = await sendToCEF<{ secret: string; token: AutomationToken }>({ action: 'regenerateAutomationToken', payload: { id: token.id } })
+    if (!response.ok || !response.data) { reportAppFailure(response.error || 'Could not regenerate the token.', 'Try again.'); return }
+    const next = response.data.token
+    setTokens(current => current?.map(value => value.id === next.id ? next : value) ?? [next])
+    setError(''); setCopied(false); setSecret(response.data.secret); setEditing(true)
+  }
   const copy = async () => setCopied(await copyTextToClipboard(secret, document))
 
   return <div className="grid gap-0">
@@ -82,7 +107,10 @@ export function AutomationSettings() {
       {tokens === null && <SettingsLoading label="Loading automation tokens" rows={2} />}
       {tokens !== null && tokens.length === 0 && <SettingRow title={<span style={{ color: 'var(--text-3)' }}>No automation tokens.</span>} />}
       {tokens?.map(token => <SettingRow key={token.id} title={token.name} description={describeToken(token)} status={`workspaceId: ${token.workspaces.join(', ')}`}
-        control={<IconButton size="sm" icon={<X size={14} />} label={`Revoke ${token.name}`} onClick={() => setRevoking(token)} />} />)}
+        control={<div className="flex gap-1">
+          <IconButton size="sm" icon={<RefreshCw size={14} />} label={`Regenerate ${token.name}`} onClick={() => setRegenerating(token)} />
+          <IconButton size="sm" icon={<X size={14} />} label={`Revoke ${token.name}`} onClick={() => setRevoking(token)} />
+        </div>} />)}
     </SettingsSection>
 
     <Presence open={editing}>
@@ -113,6 +141,9 @@ export function AutomationSettings() {
               <SettingsField label="Most Git access a request can ask for">
                 <MenuSelect label="Most Git access a request can ask for" value={git} options={GIT_OPTIONS} onChange={setGit} />
               </SettingsField>
+              <SettingsField label="Expires after">
+                <MenuSelect label="Expires after" value={lifetime} options={LIFETIME_OPTIONS} onChange={setLifetime} />
+              </SettingsField>
               <SettingsField label="Allowed workspaces">
                 <div className="grid gap-1">
                   {folders.map(folder => <SettingRow key={folder.id} title={folder.name} description={`${folder.directory} · ${folder.id}`}
@@ -133,6 +164,11 @@ export function AutomationSettings() {
     <ConfirmDialog open={revoking !== null} tone="danger" title="Revoke this token?" label="Revoke automation token" confirmLabel="Revoke token"
       onCancel={() => setRevoking(null)} onConfirm={() => { if (revoking) void revoke(revoking) }}>
       Requests using {revoking?.name} are refused immediately. Chats it already created are kept.
+    </ConfirmDialog>
+
+    <ConfirmDialog open={regenerating !== null} tone="danger" title="Regenerate this token?" label="Regenerate automation token" confirmLabel="Regenerate token"
+      onCancel={() => setRegenerating(null)} onConfirm={() => { if (regenerating) void regenerate(regenerating) }}>
+      The current {regenerating?.name} token stops working immediately. Update anything that uses it with the new token. Its settings and chats are kept.
     </ConfirmDialog>
   </div>
 }

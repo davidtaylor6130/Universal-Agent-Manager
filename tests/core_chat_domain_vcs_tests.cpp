@@ -32,6 +32,7 @@
 #include "common/utils/diagnostic_log.h"
 #include "common/utils/time_utils.h"
 #include "common/utils/uuid.h"
+#include "common/vcs/git_command.h"
 
 #include <cstdio>
 #include <fstream>
@@ -3361,3 +3362,101 @@ UAM_TEST(ChatRepositoryDoesNotSynthesizeInvalidCodexNativeIds)
 		UAM_ASSERT_EQ(found->native_session_id, std::string(value.expected));
 	}
 }
+
+UAM_TEST(GitCommandBuildersNeutraliseRepositoryConfiguredPrograms)
+{
+	const std::vector<std::string> safety{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.pager=cat"};
+	std::vector<std::string> expected{"git"};
+	expected.insert(expected.end(), safety.begin(), safety.end());
+	auto with = [&](std::vector<std::string> tail)
+	{
+		std::vector<std::string> argv = expected;
+		argv.insert(argv.end(), tail.begin(), tail.end());
+		return argv;
+	};
+	UAM_ASSERT(uam::vcs::HardenedGitArgv({"--literal-pathspecs", "-C", "/w s", "diff", "--numstat", "--", "show"}, false) ==
+	           with({"--literal-pathspecs", "-C", "/w s", "diff", "--no-ext-diff", "--no-textconv", "--numstat", "--", "show"}));
+	UAM_ASSERT(uam::vcs::HardenedGitArgv({"show", "HEAD"}, false) == with({"show", "--no-ext-diff", "--no-textconv", "HEAD"}));
+	UAM_ASSERT(uam::vcs::HardenedGitArgv({"-c", "user.name=UAM", "show-ref", "diff"}, false) == with({"-c", "user.name=UAM", "show-ref", "diff"}));
+	UAM_ASSERT(uam::vcs::HardenedGitArgv({"status"}, true)[4] == std::string("core.hooksPath=NUL"));
+	UAM_ASSERT(uam::vcs::IsWindowsHostPlatform("Windows") && !uam::vcs::IsWindowsHostPlatform("linux"));
+
+	const std::string null_device = uam::vcs::kLocalHostIsWindows ? "NUL" : "/dev/null";
+	const std::string prefix = "git -c core.fsmonitor=false -c core.hooksPath=" + null_device + " -c diff.external= -c core.pager=cat";
+	const fs::path workspace = uam::paths::PathFromUtf8("/repo dir");
+	const std::string cwd = " -C " + uam::shell::EscapeArg(uam::paths::Utf8PathString(workspace)) + " ";
+	UAM_ASSERT_EQ(uam::vcs::HardenedGitShellCommandInDirectory(workspace, "--literal-pathspecs diff HEAD -- 'a b'"),
+	              prefix + cwd + "--literal-pathspecs diff --no-ext-diff --no-textconv HEAD -- 'a b'");
+	UAM_ASSERT_EQ(uam::vcs::HardenedGitShellCommandInDirectory(workspace, "-c core.autocrlf=false apply --check p"),
+	              prefix + cwd + "-c core.autocrlf=false apply --check p");
+	UAM_ASSERT_EQ(uam::vcs::HardenedGitShellCommand("clone --quiet a b"), prefix + " clone --quiet a b");
+	// A quoted option value before the subcommand is one word, even when it contains spaces or the word diff.
+	UAM_ASSERT_EQ(uam::vcs::HardenedGitShellCommand("--work-tree='/a diff b' diff --name-status"),
+	              prefix + " --work-tree='/a diff b' diff --no-ext-diff --no-textconv --name-status");
+	UAM_ASSERT_EQ(uam::vcs::HardenedGitShellCommand("--work-tree=\"C:\\a diff\\\\\" diff -z"),
+	              prefix + " --work-tree=\"C:\\a diff\\\\\" diff --no-ext-diff --no-textconv -z");
+	UAM_ASSERT_EQ(uam::vcs::HardenedGitShellCommandInDirectory(workspace, "status --porcelain=v1 -z"), prefix + cwd + "status --porcelain=v1 -z");
+}
+
+UAM_TEST(GitCommandsAreOnlyBuiltThroughTheHardenedBuilders)
+{
+	// A raw `git -C ...` or `git clone ...` command string would skip the safety options; build every one through git_command.h.
+	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path() / "src";
+	std::vector<std::string> offenders;
+	for (const fs::directory_entry& entry : fs::recursive_directory_iterator(source_root))
+	{
+		const std::string extension = entry.path().extension().string();
+		if (!entry.is_regular_file() || (extension != ".cpp" && extension != ".h" && extension != ".mm") || entry.path().filename() == "git_command.h") continue;
+		std::string text;
+		UAM_ASSERT(uam::io::TryReadTextFile(entry.path(), text, 16 * 1024 * 1024));
+		for (const std::string_view needle : {"\"git -", "\"git clone", "{\"git\", \"-C\""})
+			if (text.find(needle) != std::string::npos) offenders.push_back(entry.path().filename().string() + ": " + std::string(needle));
+	}
+	if (!offenders.empty()) uam_test::Fail(("raw git command: " + offenders.front()).c_str(), __FILE__, __LINE__);
+}
+
+#ifndef _WIN32
+UAM_TEST(VcsCommitServiceIgnoresRepositoryConfiguredProgramsDuringStatusDiffAndCommit)
+{
+	if (!GitAvailableForTests()) return;
+
+	TempDir temp("uam-vcs-repo-config");
+	const fs::path workspace = temp.root / "repo";
+	const fs::path marker = temp.root / "ran";
+	if (uam::paths::Utf8PathString(temp.root).find_first_of(" '\"\\") != std::string::npos) return; // The config below is unquoted.
+	fs::create_directories(workspace / "hooks");
+	UAM_ASSERT(RunTestCommand("git init -q " + ShellQuoteForTest(uam::paths::Utf8PathString(workspace))));
+	UAM_ASSERT(RunGitForTest(workspace, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(workspace, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / "app.txt", "initial\n"));
+	UAM_ASSERT(RunGitForTest(workspace, "add app.txt"));
+	UAM_ASSERT(RunGitForTest(workspace, "commit -q -m initial"));
+
+	const std::string touch = "touch " + uam::paths::Utf8PathString(marker);
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / "hooks" / "pre-commit", "#!/bin/sh\n" + touch + "-hook\n"));
+	fs::permissions(workspace / "hooks" / "pre-commit", fs::perms::owner_all);
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / ".gitattributes", "*.txt diff=probe\n"));
+	std::string config;
+	UAM_ASSERT(uam::io::TryReadTextFile(workspace / ".git" / "config", config));
+	config += "[core]\n\tfsmonitor = " + touch + "-fsmonitor;:\n\thooksPath = " + uam::paths::Utf8PathString(workspace / "hooks") +
+	          "\n[diff]\n\texternal = " + touch + "-external;:\n[diff \"probe\"]\n\ttextconv = " + touch + "-textconv;cat\n";
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / ".git" / "config", config));
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / "app.txt", "changed\n"));
+
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "chat-repo-config";
+	chat.workspace_directory = uam::paths::Utf8PathString(workspace);
+	uam::VcsCommitService service;
+	UAM_ASSERT(service.Status(app, chat).available);
+	std::string error;
+	UAM_ASSERT(service.Diff(app, chat, "app.txt", uam::VcsType::Git, &error).find("+changed") != std::string::npos);
+	UAM_ASSERT(service.Commit(app, chat, uam::VcsType::Git, "change", {"app.txt"}).ok);
+	for (const char* program : {"-hook", "-fsmonitor", "-external", "-textconv"})
+		UAM_ASSERT(!fs::exists(uam::paths::PathFromUtf8(uam::paths::Utf8PathString(marker) + program)));
+	// The same configuration does run through plain Git, so the absent markers prove UAM's options worked.
+	UAM_ASSERT(RunGitForTest(workspace, "diff HEAD~1 -- app.txt > " + ShellQuoteForTest(uam::paths::Utf8PathString(temp.root / "plain.diff"))));
+	UAM_ASSERT(fs::exists(uam::paths::PathFromUtf8(uam::paths::Utf8PathString(marker) + "-external")));
+}
+#endif

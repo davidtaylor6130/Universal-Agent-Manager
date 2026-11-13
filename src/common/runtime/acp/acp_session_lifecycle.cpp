@@ -196,7 +196,8 @@ namespace
 		struct RestoreTranscript
 		{
 			ChatSession& owner;
-			std::vector<Message> messages;
+			// Revisioned, so restoring the transcript keeps its stamp.
+			uam::RevisionedVector<Message> messages;
 			std::vector<AcpQueuedUserPromptState> queued;
 			std::string handoff;
 			std::vector<Goal> goals;
@@ -3008,6 +3009,10 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	if (!defer_cold_launch && !session.managed_agent_run_id.empty()) session.managed_launch_attempted = true;
 	std::filesystem::path process_working_directory = workspace_root;
 	std::vector<std::string> process_argv = launch_argv;
+	{
+		const auto read_environment = uam::command_safety::ReadCommandEnvironment(execution_host->id == uam::execution_hosts::kLocalHostId);
+		launch_environment.insert(launch_environment.end(), read_environment.begin(), read_environment.end());
+	}
 	std::vector<std::pair<std::string, std::string>> process_environment = launch_environment;
 	session.remote_output_delivery_token.clear();
 	session.pending_remote_output_ack_line.clear();
@@ -3330,11 +3335,9 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	ChatSession resume_chat = chat;
 	resume_chat.computer_use_globally_enabled = app.settings.computer_use_globally_enabled;
 	resume_chat.native_session_id = resume_id.empty() ? resolved_resume_id : resume_id;
-	if (session.provider_id == uam::provider_ids::kCodexCli)
-	{
-		session.codex_approvals_reviewer.clear();
-		if (session.goal_review_turn || session.active_uam_agent_workspace_access != "write") resume_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
-	}
+	if (session.provider_id == uam::provider_ids::kCodexCli) session.codex_approvals_reviewer.clear();
+	// Setup-time attachments (such as Computer Use servers) follow the captured read ceiling, as launch arguments do.
+	if (session.goal_review_turn || session.active_uam_agent_workspace_access != "write") resume_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
 	if (!session.goal_turn_model_id.empty()) resume_chat.model_id = session.goal_turn_model_id;
 
 	std::string setup_error;

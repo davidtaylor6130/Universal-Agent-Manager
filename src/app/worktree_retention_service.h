@@ -2,6 +2,7 @@
 
 #include "app/git_worktree_service.h"
 
+#include <array>
 #include <chrono>
 #include <future>
 #include <stop_token>
@@ -56,5 +57,9 @@ namespace uam
 		std::uint64_t m_workerRevision = 0;
 		bool m_removing = false;
 		std::chrono::steady_clock::time_point m_nextScan = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+		// Capture walks every chat on the UI thread. A refused one (an orphaned session, a live import) is not
+		// repeated on every poll: it waits until the counts it checks change or the retry interval ends.
+		std::chrono::steady_clock::time_point m_nextCapture{};
+		std::array<std::size_t, 5> m_refusedCaptureShape{};
 	};
 }

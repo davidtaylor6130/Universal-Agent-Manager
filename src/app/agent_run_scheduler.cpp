@@ -782,42 +782,61 @@ namespace uam
 		}
 	} // namespace
 
+	namespace
+	{
+		bool AnyManagedInitialWork(const AppState& app)
+		{
+			return !app.managed_initial_mentions.empty() || !app.managed_followups.empty() || !app.managed_initial_runtime_owners.empty();
+		}
+
+		bool PendingInitialMentionFor(const AppState& app, const ChatSession* current, std::string_view chat_id)
+		{
+			if (current && AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, *current))
+				return true;
+			if (std::ranges::any_of(app.managed_initial_mentions,
+			                        [&](const auto& entry)
+			                        {
+				                        const auto& task = entry.second;
+				                        if (!task || task->root != app.data_root || (task->root_id != chat_id && task->transcript_id != chat_id))
+					                        return false;
+				                        const auto* root = ChatDomainService().FindChatById(app, task->root_id);
+				                        if (!root || root->metadata_incarnation != task->incarnation || root->created_at != task->root_created || root->managed_followup_incarnation != task->root_birth)
+					                        return false;
+				                        if (task->transcript_id == chat_id)
+				                        {
+					                        const auto* child = ChatDomainService().FindChatById(app, task->transcript_id);
+					                        if (child && !task->accepted)
+						                        return false;
+					                        if (child && (child->agent_run_id != task->accepted_run_id || child->metadata_incarnation != task->accepted_transcript_incarnation || child->created_at != task->accepted_transcript_created || child->managed_followup_incarnation != task->accepted_transcript_birth))
+						                        return false;
+				                        }
+				                        return true; // Includes the real unresolved publication ticket after shutdown worker retirement.
+			                        }))
+				return true;
+			if (std::ranges::any_of(app.managed_followups, [&](const auto& entry)
+			{
+				const auto& task = entry.second;
+				return task && !task->replay && (task->root_id == chat_id || task->transcript_id == chat_id) && FollowupTaskScope(app, *task);
+			})) return true;
+			return std::ranges::any_of(app.managed_initial_runtime_owners,
+			                           [&](const auto& entry)
+			                           {
+				                           const auto& owner = entry.second;
+				                           return owner && (owner->root_id == chat_id || owner->transcript_id == chat_id) && InitialRuntimeOwned(app, *owner, false) && (owner->transition || (owner->retired && !owner->retired->load(std::memory_order_acquire)));
+			                           });
+		}
+	} // namespace
+
 	bool AgentRunScheduler::HasPendingInitialMention(const AppState& app, std::string_view chat_id)
 	{
-		const auto* current = ChatDomainService().FindChatById(app, std::string(chat_id));
-		if (current && HasUnconfirmedInitialRootPublication(app, *current))
-			return true;
-		if (std::ranges::any_of(app.managed_initial_mentions,
-		                        [&](const auto& entry)
-		                        {
-			                        const auto& task = entry.second;
-			                        if (!task || task->root != app.data_root || (task->root_id != chat_id && task->transcript_id != chat_id))
-				                        return false;
-			                        const auto* root = ChatDomainService().FindChatById(app, task->root_id);
-			                        if (!root || root->metadata_incarnation != task->incarnation || root->created_at != task->root_created || root->managed_followup_incarnation != task->root_birth)
-				                        return false;
-			                        if (task->transcript_id == chat_id)
-			                        {
-				                        const auto* child = ChatDomainService().FindChatById(app, task->transcript_id);
-				                        if (child && !task->accepted)
-					                        return false;
-				                        if (child && (child->agent_run_id != task->accepted_run_id || child->metadata_incarnation != task->accepted_transcript_incarnation || child->created_at != task->accepted_transcript_created || child->managed_followup_incarnation != task->accepted_transcript_birth))
-					                        return false;
-			                        }
-			                        return true; // Includes the real unresolved publication ticket after shutdown worker retirement.
-		                        }))
-			return true;
-		if (std::ranges::any_of(app.managed_followups, [&](const auto& entry)
-		{
-			const auto& task = entry.second;
-			return task && !task->replay && (task->root_id == chat_id || task->transcript_id == chat_id) && FollowupTaskScope(app, *task);
-		})) return true;
-		return std::ranges::any_of(app.managed_initial_runtime_owners,
-		                           [&](const auto& entry)
-		                           {
-			                           const auto& owner = entry.second;
-			                           return owner && (owner->root_id == chat_id || owner->transcript_id == chat_id) && InitialRuntimeOwned(app, *owner, false) && (owner->transition || (owner->retired && !owner->retired->load(std::memory_order_acquire)));
-		                           });
+		// Every answer needs managed work; idle memory scans ask for every chat on every poll.
+		if (!AnyManagedInitialWork(app)) return false;
+		return PendingInitialMentionFor(app, ChatDomainService().FindChatById(app, std::string(chat_id)), chat_id);
+	}
+
+	bool AgentRunScheduler::HasPendingInitialMention(const AppState& app, const ChatSession& chat)
+	{
+		return AnyManagedInitialWork(app) && PendingInitialMentionFor(app, &chat, chat.id);
 	}
 
 	bool AgentRunScheduler::HasUnconfirmedInitialRootPublication(const AppState& app, const ChatSession& chat)

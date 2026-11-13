@@ -23,6 +23,8 @@
 #include "common/paths/path_utils.h"
 #include "common/platform/async_byte_writer.h"
 #include "common/utils/nlohmann_json_utils.h"
+#include "common/utils/env_utils.h"
+#include "common/utils/io_utils.h"
 #include "app/attachment_preview_service.h"
 
 #include <algorithm>
@@ -135,7 +137,7 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const Pr
 	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, chat.native_session_id);
 
 	AppendClaudeModeArgs(argv, chat, provider_settings);
-	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings));
+	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings, uam::provider_runtime_internal::LaunchHasReadCeiling(chat)));
 	AppendClaudeTerminalFastMode(argv, chat);
 	return argv;
 }
@@ -184,7 +186,46 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildStructuredLaunchArgv(con
 		uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--effort", effort);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--resume", chat.native_session_id);
 	uam::computer_use::AppendClaudeMcpLaunchArguments(argv, chat);
+	// User, project and local settings (allow rules, hooks, plugins) and unlisted MCP servers can pre-approve
+	// tools without asking UAM; a read ceiling loads none of them. Local auth keys return in PrepareStructuredLaunch.
+	if (uam::provider_runtime_internal::LaunchHasReadCeiling(chat))
+		uam::provider_runtime_internal::AppendLiteralArgs(argv, {"--setting-sources", "", "--strict-mcp-config"});
 	return argv;
+}
+
+std::string ClaudeReadCeilingSettingsJson(std::string_view user_settings_text)
+{
+	// Auth/routing keys and the user's restrictive deny/ask rules only; never allow rules, hooks, plugins or MCP.
+	// `env` travels in the process environment instead, so its secrets stay off the command line.
+	static constexpr std::array<std::string_view, 5> kAuthKeys = {"apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "forceLoginMethod", "forceLoginOrgUUID"};
+	nlohmann::json settings = nlohmann::json::object();
+	const nlohmann::json user = nlohmann::json::parse(user_settings_text, nullptr, false);
+	if (!user.is_object()) return settings.dump();
+	for (const std::string_view key : kAuthKeys)
+		if (const auto found = user.find(std::string(key)); found != user.end()) settings[std::string(key)] = *found;
+	if (const auto permissions = user.find("permissions"); permissions != user.end() && permissions->is_object())
+		for (const char* key : {"deny", "ask"})
+			if (const auto rules = permissions->find(key); rules != permissions->end() && rules->is_array()) settings["permissions"][key] = *rules;
+	return settings.dump();
+}
+
+bool ClaudeCliProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState&, const ProviderProfile&, std::string_view, bool remote,
+    std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>& environment, std::string&) const
+{
+	const auto sources = std::ranges::find(argv, "--setting-sources");
+	// ponytail: SSH cannot read the remote settings first, so a remote read ceiling keeps only standard sign-in.
+	if (remote || sources == argv.end() || std::next(sources) == argv.end() || !std::next(sources)->empty()) return true;
+	const std::filesystem::path root = uam::env::GetTrimmedPath("CLAUDE_CONFIG_DIR").value_or(uam::env::GetUserHomePath().value_or(std::filesystem::path{}) / ".claude");
+	std::string text;
+	// ponytail: missing, oversized or malformed user settings just mean no auth keys to carry.
+	if (!uam::io::TryReadTextFile(root / "settings.json", text, 1024 * 1024)) text.clear();
+	const std::string settings = ClaudeReadCeilingSettingsJson(text);
+	if (settings != "{}") argv.insert(std::next(sources, 2), {"--settings", settings});
+	const nlohmann::json user = nlohmann::json::parse(text, nullptr, false);
+	if (user.is_object() && user.contains("env") && user["env"].is_object())
+		for (const auto& [name, value] : user["env"].items())
+			if (value.is_string()) environment.emplace_back(name, value.get<std::string>());
+	return true;
 }
 
 nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionState& session, int request_id) const

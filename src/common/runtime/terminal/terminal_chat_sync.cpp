@@ -231,10 +231,31 @@ bool CliTerminalHasActiveTurn(const CliTerminalState& terminal)
 	       uam::CliTerminalLifecycleStateIsProcessing(terminal.lifecycle_state) || terminal.turn_state == uam::CliTerminalTurnState::Busy;
 }
 
+namespace
+{
+	bool AnyCliTerminalBusy(const AppState& app)
+	{
+		return std::ranges::any_of(app.cli_terminals, [](const auto& terminal) { return terminal != nullptr && terminal->running && CliTerminalHasActiveTurn(*terminal); });
+	}
+
+	bool ResolvedChatHasBusyCliTerminal(const AppState& app, const ChatSession* target_chat, const std::string& target_id)
+	{
+		if (target_chat != nullptr)
+		{
+			if (const CliTerminalState* terminal = FindCliTerminalForChat(app, *target_chat); terminal != nullptr)
+			{
+				return terminal->running && CliTerminalHasActiveTurn(*terminal);
+			}
+		}
+
+		return std::ranges::any_of(app.cli_terminals, [&target_id](const auto& terminal) { return terminal != nullptr && terminal->running && uam::CliTerminalMatchesChatId(*terminal, target_id) && CliTerminalHasActiveTurn(*terminal); });
+	}
+}
+
 bool ChatHasBusyCliTerminal(const AppState& app, std::string_view chat_id)
 {
-	// Idle memory scans must not search the chat catalog when no terminal can be busy.
-	if (app.cli_terminals.empty()) return false;
+	// Idle memory scans ask this for every chat on every poll: without a busy terminal, skip the catalogue search.
+	if (!AnyCliTerminalBusy(app)) return false;
 	const std::string target_id = NormalizeChatSyncTargetId(chat_id);
 	if (target_id.empty())
 	{
@@ -248,16 +269,14 @@ bool ChatHasBusyCliTerminal(const AppState& app, std::string_view chat_id)
 		target_terminal.attached_session_id = target_id;
 		target_chat = FindChatForCliTerminal(app, target_terminal);
 	}
+	return ResolvedChatHasBusyCliTerminal(app, target_chat, target_id);
+}
 
-	if (target_chat != nullptr)
-	{
-		if (const CliTerminalState* terminal = FindCliTerminalForChat(app, *target_chat); terminal != nullptr)
-		{
-			return terminal->running && CliTerminalHasActiveTurn(*terminal);
-		}
-	}
-
-	return std::ranges::any_of(app.cli_terminals, [&target_id](const auto& terminal) { return terminal != nullptr && terminal->running && uam::CliTerminalMatchesChatId(*terminal, target_id) && CliTerminalHasActiveTurn(*terminal); });
+bool ChatHasBusyCliTerminal(const AppState& app, const ChatSession& chat)
+{
+	if (!AnyCliTerminalBusy(app)) return false;
+	const std::string target_id = NormalizeChatSyncTargetId(chat.id);
+	return !target_id.empty() && ResolvedChatHasBusyCliTerminal(app, &chat, target_id);
 }
 
 bool ChatHasRunningRuntime(const AppState& app, std::string_view chat_id)

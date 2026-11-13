@@ -78,6 +78,8 @@ namespace uam
 		static bool OwnsInitialRoutingPreparation(const AppState&, const ChatSession&);
 		static void CancelPendingInitialMention(AppState&, std::string_view chat_id);
 		static bool HasPendingInitialMention(const AppState&, std::string_view chat_id);
+		/// <summary>Same answer for a chat already in hand, without searching the chat catalogue for it.</summary>
+		static bool HasPendingInitialMention(const AppState&, const ChatSession& chat);
 		/// A possible committed private ROOT prefix, not ordinary preparation or a confirmed live ACK.
 		static bool HasUnconfirmedInitialRootPublication(const AppState&, const ChatSession&);
 		static bool InitialSendAllowed(const AppState&, const ChatSession&, const std::string& text);

@@ -39,6 +39,7 @@
 #include "common/platform/platform_services.h"
 #include "common/platform/published_directory_confirmation.h"
 #include "common/utils/time_utils.h"
+#include "common/vcs/git_command.h"
 #include "common/utils/shell_escape.h"
 #include "common/utils/io_utils.h"
 #include <chrono>
@@ -203,6 +204,14 @@ void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, c
 	}
 	nlohmann::json state = uam::StateSerializer::Serialize(m_app, payload.value("summaryOnly", true));
 	state["bootId"] = CompanionBootId();
+#if UAM_ENABLE_MOBILE_COMPANION
+	// Desktop only: a reloaded or new desktop window still shows phone requests waiting for confirmation.
+	if (!m_dispatchingCompanion)
+	{
+		m_companionConfirmations.Expire(uam::companion::DesktopConfirmations::Clock::now());
+		state["companionConfirmations"] = m_companionConfirmations.ToJson();
+	}
+#endif
 	std::string body;
 	try
 	{
@@ -1715,7 +1724,7 @@ namespace
 			const int remaining = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
 			if (remaining <= 0) return false;
 			const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
-			    "git --no-optional-locks -C " + uam::shell::EscapeArg(uam::paths::Utf8PathString(directory)) + " " + args,
+			    uam::vcs::HardenedGitShellCommandInDirectory(directory, "--no-optional-locks " + args),
 			    std::min(1500, remaining));
 			if (!result.ok || result.timed_out || result.canceled || result.exit_code != 0 || result.output_truncated || result.output.size() > 8192) return false;
 			output = uam::strings::Trim(result.output);

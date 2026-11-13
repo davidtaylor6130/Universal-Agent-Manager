@@ -52,6 +52,8 @@ namespace uam
 		/// <summary>Creates a token. The result's "secret" is the only time the plaintext exists outside the caller.</summary>
 		static std::optional<nlohmann::json> CreateToken(const AppState& app, const nlohmann::json& spec, std::string* error_out);
 		static bool RevokeToken(const AppState& app, std::string_view token_id, std::string* error_out);
+		/// <summary>Replaces one token's secret, keeping its settings and restarting its expiry. The old secret stops working at once.</summary>
+		static std::optional<nlohmann::json> RegenerateToken(const AppState& app, std::string_view token_id, std::string* error_out);
 
 		/// <summary>Creates the capped goal and releases the approval hold. Only an awaiting chat can launch.</summary>
 		static std::optional<AutomationChatLaunch> BeginLaunch(AppState& app, const std::string& chat_id, std::string* error_out);
