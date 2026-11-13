@@ -6394,6 +6394,11 @@ void ChatHistorySyncService::LoadSidebarChats(uam::AppState& app) const
 {
 	std::string warning;
 	std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(app.data_root, &warning);
+	LoadSidebarChats(app, std::move(chats), std::move(warning));
+}
+
+void ChatHistorySyncService::LoadSidebarChats(uam::AppState& app, std::vector<ChatSession> chats, std::string warning) const
+{
 	RetainHiddenAgentChats(app, chats);
 	NormalizeLegacyOpenCodeChatsForSidebar(app, chats);
 	app.excluded_provider_chats.clear(); // A full reload, possibly of another data folder.

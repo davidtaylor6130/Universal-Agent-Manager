@@ -14,6 +14,7 @@
 #include "app/worktree_retention_service.h"
 
 #include <future>
+#include <thread>
 #include <chrono>
 #include <cstdint>
 
@@ -79,6 +80,11 @@ class Application
 	std::filesystem::path m_pendingBundledMarkdownRoot;
 	std::string m_pendingMarkdownStoreDirectory;
 	std::vector<std::string> m_launchArguments;
+	// Desktop startup: the saved chat list loading off the app thread, and the runs it must stop once loaded.
+	std::future<std::pair<std::vector<ChatSession>, std::string>> m_startupChats;
+	std::thread m_startupChatLoader;
+	std::vector<std::string> m_startupInterruptedRunIds;
+	void FinishStartupState(std::vector<ChatSession> chats, std::string warning);
 	int m_exitCode = 0;
 	bool PollHistoryDiscovery();
 

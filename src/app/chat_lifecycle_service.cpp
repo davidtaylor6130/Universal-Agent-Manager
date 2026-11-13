@@ -1307,6 +1307,9 @@ bool uam::MigrateWorkspaceFolderOwnership(AppState& app)
 	const std::size_t original_folder_count = app.folders.size();
 	std::size_t split_count = 0;
 	bool changed = false;
+	// Owner resolution canonicalizes paths and probes VCS markers; thousands of chats share a few directories, so
+	// resolve each host and directory once. Cleared whenever the folder list changes, which can change owners.
+	std::unordered_map<std::string, std::pair<std::string, std::string>> owner_by_location;
 
 	for (std::size_t folder_index = 0; folder_index < original_folder_count; ++folder_index)
 	{
@@ -1321,15 +1324,22 @@ bool uam::MigrateWorkspaceFolderOwnership(AppState& app)
 			if (!ChatBelongsToFolder(chat, folder_id)) continue;
 			const std::string host = uam::strings::NonEmptyOrFallback(
 			    uam::strings::Trim(chat.execution_host_id), "local");
-			std::string directory = uam::strings::NonEmptyOrFallback(
+			const std::string location = uam::strings::NonEmptyOrFallback(
 			    uam::strings::Trim(chat.workspace_directory), folder.directory);
-			// Use the same validated nested/worktree owner as native import, retaining the chat's cwd.
-			if (host == "local")
+			auto resolved = owner_by_location.find(host + "\n" + location);
+			if (resolved == owner_by_location.end())
 			{
-				const ChatFolder* owner = uam::FindImportedWorkspaceFolder(app.folders, uam::paths::ExpandTrimmedWorkspacePath(directory));
-				if (owner != nullptr) directory = owner->directory;
+				std::string directory = location;
+				// Use the same validated nested/worktree owner as native import, retaining the chat's cwd.
+				if (host == "local")
+				{
+					const ChatFolder* owner = uam::FindImportedWorkspaceFolder(app.folders, uam::paths::ExpandTrimmedWorkspacePath(directory));
+					if (owner != nullptr) directory = owner->directory;
+				}
+				std::string key = WorkspaceOwnershipKey(app, host, directory);
+				resolved = owner_by_location.emplace(host + "\n" + location, std::pair{std::move(directory), std::move(key)}).first;
 			}
-			const std::string key = WorkspaceOwnershipKey(app, host, directory);
+			const auto& [directory, key] = resolved->second;
 			chat_indices_by_owner[key].push_back(chat_index);
 			owner_values.try_emplace(key, host, directory);
 		}
@@ -1352,6 +1362,7 @@ bool uam::MigrateWorkspaceFolderOwnership(AppState& app)
 				folder.execution_host_id = owner_values.at(primary_key).first;
 				folder.directory = owner_values.at(primary_key).second;
 			}
+			owner_by_location.clear();
 			changed = true;
 		}
 		else
@@ -1383,6 +1394,7 @@ bool uam::MigrateWorkspaceFolderOwnership(AppState& app)
 				created.execution_host_id = host;
 				app.folders.push_back(std::move(created));
 				destination = std::prev(app.folders.end());
+				owner_by_location.clear();
 			}
 			for (const std::size_t chat_index : chat_indices)
 			{

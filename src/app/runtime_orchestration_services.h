@@ -245,6 +245,8 @@ class ChatHistorySyncService
 	std::optional<std::filesystem::path> ResolveNativeHistoryChatsDirForWorkspace(const std::filesystem::path& workspace_root) const;
 	std::filesystem::path ResolveNativeHistoryChatsDirForChat(const uam::AppState& app, const ChatSession& chat) const;
 	void LoadSidebarChats(uam::AppState& app) const;
+	/// Same, for summaries already read by ChatRepository::LoadLocalChatSummaries (for example off the app thread).
+	void LoadSidebarChats(uam::AppState& app, std::vector<ChatSession> chats, std::string warning) const;
 	/// <summary>Retains hidden agent identity without transcript bodies or additional storage reads.</summary>
 	void RetainHiddenAgentChatOwnership(uam::AppState& app, const ChatSession& chat) const;
 	/// Keep current rows except explicitly published IDs whose saved history should be adopted.

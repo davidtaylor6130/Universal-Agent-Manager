@@ -245,6 +245,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   pushChannelError: string
   bootstrapStateError: string
   bootstrapStateLoading: boolean
+  /** True until the first startup state loads or fails; native answers it once the saved chat list has loaded. */
+  bootstrapPending: boolean
   retryBootstrapState: () => void
   lastPushAtMs: number | null
   uiBuildId: string
