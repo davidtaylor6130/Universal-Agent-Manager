@@ -810,7 +810,9 @@ bool ShellActionService::QueueLaunchRequest(const std::filesystem::path& data_ro
 	nlohmann::json paths = nlohmann::json::array();
 	for (auto it = flag + 2; it != args.end(); ++it)
 	{
-		if (!it->empty()) paths.push_back(*it);
+		// Explorer and Finder pass absolute paths. Options after them are UAM's own, such as the
+		// --uam-supervised-gui and --uam-supervisor-pid the crash supervisor appends to every GUI launch.
+		if (!it->empty() && !it->starts_with("--")) paths.push_back(*it);
 	}
 	if (paths.empty())
 	{

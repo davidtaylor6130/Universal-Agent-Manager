@@ -490,15 +490,14 @@ void Application::PollTick()
 	const std::chrono::steady_clock::time_point controls_finished = std::chrono::steady_clock::now();
 	if (shell_actions_changed && m_browser && m_browser->GetHost())
 	{
-		m_browser->GetHost()->SetFocus(true);
-#if defined(_WIN32)
-		const HWND window = m_browser->GetHost()->GetWindowHandle();
-		if (window != nullptr)
+		// Raise the top-level Views window; the browser's own HWND is a child that cannot be restored or activated.
+		const CefRefPtr<CefBrowserView> view = CefBrowserView::GetForBrowser(m_browser);
+		if (const CefRefPtr<CefWindow> window = view != nullptr ? view->GetWindow() : nullptr)
 		{
-			ShowWindow(window, SW_RESTORE);
-			SetForegroundWindow(window);
+			if (window->IsMinimized()) window->Restore();
+			window->Activate();
 		}
-#endif
+		m_browser->GetHost()->SetFocus(true);
 	}
 	ProviderCliCompatibilityService().Poll(m_app);
 	const bool remote_recovery_changed = uam::PollRemoteHostRecovery(m_app);
