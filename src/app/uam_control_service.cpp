@@ -2799,12 +2799,7 @@ namespace uam
 				return fail("This secret request is no longer active in this chat.");
 			if (!drop.ok) return fail(drop.error.empty() ? "The secret could not be delivered." : drop.error);
 			const SecretDeliveryTarget target = SecretRequestService::Target(app, capability);
-#ifdef _WIN32
-			const bool local_windows = true;
-#else
-			const bool local_windows = false;
-#endif
-			const bool windows = target.remote_host.has_value() ? uam::strings::ToLowerAscii(target.remote_host->platform) == "windows" : local_windows;
+			const bool windows = target.remote_host.has_value() ? uam::strings::ToLowerAscii(target.remote_host->platform) == "windows" : !secrets::LocalDrop().read_once;
 			ToolResult result;
 			result.ok = true;
 			result.reason = "The user provided the secret as a read-once path.";

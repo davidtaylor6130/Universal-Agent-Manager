@@ -126,4 +126,9 @@ namespace uam::secrets
 	{
 		StopAllWriters();
 	}
+	LocalDropKind LocalDrop()
+	{
+		// The desktop runs on macOS; Linux builds this file only for the SSH helper, which never shows a card.
+		return {kDropTtl, true, "macos"};
+	}
 }

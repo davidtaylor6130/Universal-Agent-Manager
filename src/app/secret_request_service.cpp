@@ -127,12 +127,7 @@ namespace uam
 			host = {{"name", target.remote_host->label.empty() ? target.remote_host->ssh_alias : target.remote_host->label},
 			        {"platform", target.remote_host->platform}};
 		const bool keychain = secrets::keychain::Available() && !target.remote_host.has_value();
-#ifdef _WIN32
-		constexpr const char* kLocalPlatform = "windows";
-#else
-		constexpr const char* kLocalPlatform = "macos";
-#endif
-		input.secret_request = {{"label", label}, {"reason", metadata.value("reason", "")}, {"localPlatform", kLocalPlatform},
+		input.secret_request = {{"label", label}, {"reason", metadata.value("reason", "")}, {"localPlatform", std::string(secrets::LocalDrop().platform)},
 		                        {"placeholder", metadata.value("placeholder", "")}, {"url", metadata.value("url", "")},
 		                        {"provider", provider}, {"host", std::move(host)},
 		                        {"planOptIn", metadata.value("planOptIn", false)},
@@ -171,11 +166,7 @@ namespace uam
 			// Drop creates only its own folder; its parent is made here on first use.
 			std::error_code ignored;
 			std::filesystem::create_directories(target.local_directory.parent_path(), ignored);
-#ifdef _WIN32
-			return secrets::Drop(target.local_directory, value, secrets::kWindowsDropTtl);
-#else
-			return secrets::Drop(target.local_directory, value, secrets::kDropTtl);
-#endif
+			return secrets::Drop(target.local_directory, value, secrets::LocalDrop().ttl);
 		}
 		secrets::DropResult result;
 		if (!remote::CanAttemptRunnerConnection(*target.remote_host))

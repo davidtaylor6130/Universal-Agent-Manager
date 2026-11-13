@@ -120,4 +120,8 @@ namespace uam::secrets
 	{
 		StopAllWriters();
 	}
+	LocalDropKind LocalDrop()
+	{
+		return {kWindowsDropTtl, false, "windows"};
+	}
 }
