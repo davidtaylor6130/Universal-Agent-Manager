@@ -299,10 +299,14 @@ class IProviderRuntime
 		return false;
 	}
 
+	/// <summary>Cheap model side workers (memory, titles, commit messages, permission review) use when the user chose none; empty keeps the provider default.</summary>
+	virtual std::string_view DefaultTextWorkerModel() const { return {}; }
 	/// <summary>Builds the argv for a provider worker command (batch mode, no terminal).</summary>
 	virtual std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const = 0;
 	/// Selects the checked local route before writing generation-specific isolation.
-	virtual bool PrepareLocalWorkerLaunch(const uam::AppState&, const ProviderProfile&, std::vector<std::string>&, std::string&, bool* private_isolation = nullptr) const
+	/// `environment` receives extra process variables for this worker only (e.g. settings env kept off its argv).
+	virtual bool PrepareLocalWorkerLaunch(const uam::AppState&, const ProviderProfile&, std::vector<std::string>&, std::string&, bool* private_isolation = nullptr,
+	    std::vector<std::pair<std::string, std::string>>* /*environment*/ = nullptr) const
 	{
 		if (private_isolation) *private_isolation = false;
 		return true;

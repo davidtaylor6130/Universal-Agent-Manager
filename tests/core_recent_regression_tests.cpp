@@ -18,6 +18,7 @@
 #include "app/persistence_coordinator.h"
 #include "app/transcript_retention_service.h"
 #include "app/startup_native_import_service.h"
+#include "app/runtime_activity.h"
 #include "app/runtime_orchestration_internal.h"
 #include "app/uam_control_service.h"
 #include "cef/state_serializer.h"
@@ -848,6 +849,8 @@ UAM_TEST(AcpStopAtItsDeadlineWithBufferedOutputIsStillFinalisedExactlyOnce)
 		int polls = 0;
 		while (fixture.session->local_stop_pending && std::chrono::steady_clock::now() < deadline)
 		{
+			// The app keeps polling quickly while the stop drains, even after the process ended.
+			UAM_ASSERT(uam::NextPollDelayMs(fixture.app, false, true) <= 250);
 			(void)uam::PollCompletedAcpProcessStops(fixture.app, nullptr);
 			++polls;
 			std::this_thread::sleep_for(std::chrono::milliseconds(5));

@@ -1624,8 +1624,6 @@ namespace
 		       lhs.remote_process_exists == rhs.remote_process_exists &&
 		       lhs.remote_prompt_image_supported == rhs.remote_prompt_image_supported &&
 		       lhs.remote_structured_protocol == rhs.remote_structured_protocol &&
-		       lhs.remote_opencode_native_port == rhs.remote_opencode_native_port &&
-		       lhs.remote_opencode_native_token == rhs.remote_opencode_native_token &&
 		       lhs.remote_manual_compaction_pending == rhs.remote_manual_compaction_pending &&
 		       lhs.remote_manual_compaction_boundary_json == rhs.remote_manual_compaction_boundary_json &&
 		       lhs.remote_stop_cleanup_pending == rhs.remote_stop_cleanup_pending &&
@@ -1699,7 +1697,23 @@ namespace
 		std::string error;
 		// Retain recognized primary ownership even when unrelated validation rejects the chat.
 		bool managed_followup_input_unavailable = false;
+		// The document still holds a remote OpenCode server password written by an older build.
+		bool legacy_opencode_native_secret = false;
 	};
+
+	// Older builds saved the remote OpenCode server password and its port in chat files. Both now stay in memory only.
+	constexpr std::string_view kLegacyOpenCodeNativeTokenField = "remote_opencode_native_token";
+	constexpr std::string_view kLegacyOpenCodeNativePortField = "remote_opencode_native_port";
+
+	/// <summary>Drops the legacy endpoint fields from a parsed chat document; true when a password was present.</summary>
+	bool EraseLegacyOpenCodeNativeSecret(JsonValue& root)
+	{
+		const JsonValue* token = root.Find(kLegacyOpenCodeNativeTokenField);
+		const bool secret = token != nullptr && token->type == JsonValue::Type::String && !token->string_value.empty();
+		root.object_value.erase(std::string(kLegacyOpenCodeNativeTokenField));
+		root.object_value.erase(std::string(kLegacyOpenCodeNativePortField));
+		return secret;
+	}
 
 	void ApplyChatTimestampFallbacks(ChatSession& chat, bool legacy_interaction = true);
 
@@ -1983,6 +1997,9 @@ namespace
 		}
 
 		JsonValue& root = *root_opt;
+		// Read-only imports are never scrubbed (their archive layout has its own writer) and export already redacts them.
+		const bool legacy_opencode_native_secret = EraseLegacyOpenCodeNativeSecret(root) &&
+		    !JsonBoolOrDefault(root.Find(kChatImportedReadOnlyField), false);
 		if (recognized_managed_input)
 		{
 			const std::string id = JsonStringOrEmpty(root.Find(kChatIdField));
@@ -2073,15 +2090,6 @@ namespace
 		chat.remote_prompt_image_supported = chat.remote_process_exists && JsonBoolOrDefault(root.Find("remote_prompt_image_supported"), false);
 		chat.remote_structured_protocol = chat.remote_process_exists ? JsonStringOrEmpty(root.Find("remote_structured_protocol")) : "";
 		if (chat.remote_structured_protocol.size() > 64) return {std::nullopt, "contains invalid remote protocol identity"};
-		const double native_port = JsonNumberOrDefault(root.Find("remote_opencode_native_port"), 0);
-		chat.remote_opencode_native_port = native_port >= 1 && native_port <= 65535 && std::floor(native_port) == native_port ? static_cast<int>(native_port) : 0;
-		chat.remote_opencode_native_token = JsonStringOrEmpty(root.Find("remote_opencode_native_token"));
-		if (!chat.remote_process_exists || chat.remote_opencode_native_port == 0 || chat.remote_opencode_native_token.size() < 16 ||
-		    chat.remote_opencode_native_token.size() > 256 || std::ranges::any_of(chat.remote_opencode_native_token, [](unsigned char ch) { return ch < 33 || ch > 126; }))
-		{
-			chat.remote_opencode_native_port = 0;
-			chat.remote_opencode_native_token.clear();
-		}
 		chat.remote_manual_compaction_pending = chat.remote_process_exists && JsonBoolOrDefault(root.Find("remote_manual_compaction_pending"), false);
 		chat.remote_manual_compaction_boundary_json = JsonStringOrEmpty(root.Find("remote_manual_compaction_boundary_json"));
 		if (chat.remote_manual_compaction_boundary_json.size() > 2 * 1024 * 1024) return {std::nullopt, "contains oversized remote compaction evidence"};
@@ -2307,8 +2315,6 @@ namespace
 			chat.remote_process_exists = false;
 			chat.remote_structured_protocol.clear();
 			chat.remote_prompt_image_supported = false;
-			chat.remote_opencode_native_port = 0;
-			chat.remote_opencode_native_token.clear();
 			chat.remote_manual_compaction_pending = false;
 			chat.remote_manual_compaction_boundary_json.clear();
 			chat.remote_stop_cleanup_pending = false;
@@ -2723,7 +2729,9 @@ namespace
 		}
 		HoldManagedQueue(chat);
 		if (!ChatAttachmentsPersistable(chat)) return {std::nullopt, "contains invalid attachment ownership"};
-		return {std::move(chat), ""};
+		LoadChatResult loaded{std::move(chat), ""};
+		loaded.legacy_opencode_native_secret = legacy_opencode_native_secret;
+		return loaded;
 	}
 	catch (const std::length_error&)
 	{
@@ -4098,8 +4106,6 @@ try
 	                   chat.remote_process_exists);
 	uam::json::SetBool(root, "remote_prompt_image_supported", chat.remote_process_exists && chat.remote_prompt_image_supported);
 	uam::json::SetString(root, "remote_structured_protocol", chat.remote_process_exists ? chat.remote_structured_protocol : "");
-	uam::json::SetNumber(root, "remote_opencode_native_port", chat.remote_process_exists ? chat.remote_opencode_native_port : 0);
-	uam::json::SetString(root, "remote_opencode_native_token", chat.remote_process_exists ? chat.remote_opencode_native_token : "");
 	uam::json::SetBool(root, "remote_manual_compaction_pending", chat.remote_process_exists && chat.remote_manual_compaction_pending);
 	uam::json::SetString(root, "remote_manual_compaction_boundary_json",
 	    chat.remote_manual_compaction_pending || HasOwnedClaudeMaintenanceTerminalReceipt(chat) ? chat.remote_manual_compaction_boundary_json : "");
@@ -5722,6 +5728,46 @@ namespace
 		chats.push_back(recovered);
 	}
 
+	/// <summary>One-time migration: removes a legacy remote OpenCode password from a chat's primary and backup files.</summary>
+	/// <remarks>Runs before the chat enters memory. The stale summary cache is deleted and rebuilds from the primary,
+	/// and a queue journal bound to the old primary is rebound to the rewritten one so its input is not held.</remarks>
+	void ScrubLegacyOpenCodeNativeSecret(const fs::path& data_root, const std::string& chat_id)
+	{
+		std::lock_guard<std::mutex> lock(ChatSaveMutex());
+		const fs::path primary_path = AppPaths::UamChatFilePath(data_root, chat_id);
+		const auto scrub = [](const fs::path& path)
+		{
+			std::string text;
+			if (uam::paths::IsLinkOrReparsePointNoThrow(path) || !uam::io::TryReadTextFile(path, text, kMaxChatJsonBytes)) return false;
+			std::optional<JsonValue> root = ParseJson(text);
+			if (!root || root->type != JsonValue::Type::Object || JsonBoolOrDefault(root->Find(kChatImportedReadOnlyField), false) ||
+			    !EraseLegacyOpenCodeNativeSecret(*root)) return false;
+			bool written = false;
+			try { written = uam::io::WriteTextFile(path, SerializeJson(*root, kMaxChatJsonBytes)); }
+			catch (const std::exception&) {}
+			if (!written) uam::diagnostics::Write("[chat-storage] Could not remove a legacy OpenCode server password from " + path.filename().string() + ".");
+			return written;
+		};
+		const std::optional<std::string> old_revision = StorageRevision(primary_path);
+		if (scrub(primary_path) && old_revision)
+		{
+			const fs::path journal_path = QueueJournalPath(data_root, chat_id);
+			std::string text;
+			std::optional<JsonValue> journal = !uam::paths::IsLinkOrReparsePointNoThrow(journal_path) &&
+			    uam::io::TryReadTextFile(journal_path, text, kMaxQueueJournalBytes) ? ParseJson(text) : std::nullopt;
+			const std::optional<std::string> new_revision = StorageRevision(primary_path);
+			if (journal && journal->type == JsonValue::Type::Object && new_revision &&
+			    JsonStringOrEmpty(journal->Find("base_revision")) == *old_revision)
+			{
+				uam::json::SetString(*journal, "base_revision", *new_revision);
+				(void)uam::io::WriteTextFile(journal_path, SerializeJson(*journal));
+			}
+		}
+		(void)scrub(uam::io::MakeBackupPath(primary_path));
+		std::error_code ignored;
+		fs::remove(AppPaths::UamChatSummaryFilePath(data_root, chat_id), ignored);
+	}
+
 	std::vector<ChatSession> LoadLocalChatsImpl(const std::filesystem::path& data_root, bool include_messages, std::string* warning_out)
 	{
 		std::vector<ChatSession> chats;
@@ -5778,9 +5824,19 @@ namespace
 					primary_chat = ParseLocalChatFile(summary_path, false, source_size);
 				}
 			}
+			if (primary_chat.legacy_opencode_native_secret)
+			{
+				ScrubLegacyOpenCodeNativeSecret(data_root, entry.path().stem().string());
+				primary_chat = {};
+			}
 			if (!primary_chat.chat)
 			{
 				primary_chat = ParseLocalChatFile(entry.path(), include_messages);
+				if (primary_chat.legacy_opencode_native_secret)
+				{
+					ScrubLegacyOpenCodeNativeSecret(data_root, entry.path().stem().string());
+					primary_chat = ParseLocalChatFile(entry.path(), include_messages);
+				}
 				if (include_messages && primary_chat.chat)
 					ApplySummaryOpenedAtToFullChat(entry.path(), *primary_chat.chat);
 			}

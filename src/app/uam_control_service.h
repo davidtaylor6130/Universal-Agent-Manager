@@ -66,7 +66,9 @@ namespace uam
 		/// <summary>Adds the session signature a capability's MCP server attaches to each filed request.</summary>
 		static nlohmann::json SignRequestForTests(const nlohmann::json& request, std::string_view key);
 		static bool ValidStdioToolCallForTests(const nlohmann::json& request);
-		static nlohmann::json ToolDefinitionsForTests();
+		static nlohmann::json ToolDefinitionsForTests(std::string_view hidden = {});
+		/// <summary>The comma-separated hidden-tool list a prepared uam-control server entry carries.</summary>
+		static std::string HiddenToolsForTests(const nlohmann::json& server);
 		/// <summary>Sends a chat_create first prompt; production uses the ordinary structured send.</summary>
 		using ChatCreateSender = std::function<bool(AppState&, const std::string&, const std::string&, std::string*)>;
 		static void FlushChatCreateLaunchesForTests(AppState& app, const ChatCreateSender& send);

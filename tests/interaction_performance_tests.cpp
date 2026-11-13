@@ -608,9 +608,11 @@ UAM_TEST(DeferredStatePushThatComesDueInsideARebuildWindowDoesNotBusyPoll)
 	UAM_ASSERT_EQ(WakeUpsUntilDeferredPushPublishes(clock, app), 1);
 	UAM_ASSERT(!uam::HasDeferredStatePush());
 	UAM_ASSERT_EQ(uam::CapPollDelayForDeferredStatePush(1000), 1000);
-	// PollTick needs CEF to run, so this checks that it schedules through the capped delay.
+	// PollTick needs CEF to run, so this checks that every schedule (each tick and a bridge action's reschedule) goes through the capped delay.
 	const std::string application = ReadFile(fs::path(__FILE__).parent_path().parent_path() / "src/app/application.cpp");
-	UAM_ASSERT(application.find("ScheduleNextUpdate(uam::CapPollDelayForDeferredStatePush(next_poll_delay_ms));") != std::string::npos);
+	UAM_ASSERT(application.find("return uam::CapPollDelayForDeferredStatePush(delay_ms);") != std::string::npos);
+	UAM_ASSERT(application.find("ScheduleNextUpdate(NextPollDelay());") != std::string::npos);
+	UAM_ASSERT(application.find("const int delay_ms = NextPollDelay();") != std::string::npos);
 
 	// A bridge push's per-chat window can end inside a later rebuild window: bridge at t=0, rebuild at t=62, due at t=100,
 	// rebuild window until t=162, so the summary publishes 162 ms after the previous publish.

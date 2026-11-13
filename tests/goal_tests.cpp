@@ -4,6 +4,7 @@
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/provider/provider_runtime.h"
+#include "common/security/read_only_command.h"
 #include <functional>
 #include <limits>
 #include <source_location>
@@ -889,7 +890,7 @@ UAM_TEST(GoalServiceRejectsBlankObjectivesAndUpdatesOnlyEditableUamGoals)
 	UAM_ASSERT_EQ(error, std::string("Only non-complete UAM-managed goals can be edited."));
 }
 
-UAM_TEST(GoalServiceUsesTheNormalChatModelWhenArchitectModeIsOff)
+UAM_TEST(GoalServiceReviewsWithTheGoalReviewerModelInEveryMode)
 {
 	ChatSession chat;
 	chat.model_id = "normal-model";
@@ -897,11 +898,69 @@ UAM_TEST(GoalServiceUsesTheNormalChatModelWhenArchitectModeIsOff)
 	goal.worker_model_id = "fast-worker";
 	goal.reviewer_model_id = "smart-reviewer";
 
+	// The worker uses the chat model unless Architect + worker is on; the reviewer model always applies.
 	UAM_ASSERT_EQ(uam::GoalService::WorkerModelId(chat, goal), std::string("normal-model"));
-	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal), std::string("normal-model"));
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal), std::string("smart-reviewer"));
 	chat.small_model_mode = true;
 	UAM_ASSERT_EQ(uam::GoalService::WorkerModelId(chat, goal), std::string("fast-worker"));
 	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal), std::string("smart-reviewer"));
+	chat.small_model_mode = false;
+	goal.reviewer_model_id.clear();
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal), std::string("normal-model"));
+}
+
+UAM_TEST(GoalReviewerModelFallsBackToTheChatModelWhenTheSessionDoesNotOfferIt)
+{
+	ChatSession chat;
+	chat.model_id = "opus";
+	Goal goal;
+	goal.reviewer_model_id = "haiku";
+	uam::AcpSessionState session;
+	// No advertised model list: the configured reviewer is used as-is.
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal, &session), std::string("haiku"));
+	uam::AcpConfigOptionState option;
+	option.id = "model";
+	option.category = "model";
+	uam::AcpConfigOptionChoiceState choice;
+	choice.value = "opus";
+	option.choices.push_back(choice);
+	session.available_config_options.push_back(option);
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal, &session), std::string("opus"));
+	choice.value = "haiku";
+	session.available_config_options.front().choices.push_back(choice);
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal, &session), std::string("haiku"));
+}
+
+UAM_TEST(GoalReviewPromptCarriesCappedWorkspaceChangesAndAcceptedGitReads)
+{
+	std::vector<std::tuple<std::string, std::string, int, int>> files;
+	for (int index = 0; index < 200; ++index) files.emplace_back("src/file_" + std::to_string(index) + ".cpp", "M", index, 1);
+	const std::string summary = uam::GoalService::SummarizeWorkspaceChanges(files);
+	UAM_ASSERT(summary.size() <= 2048 + 64);
+	UAM_ASSERT(summary.find("M src/file_0.cpp +0 -1\n") != std::string::npos);
+	UAM_ASSERT(uam::GoalService::SummarizeWorkspaceChanges({{"a.txt", "A", 0, 0}}) == "A a.txt\n"); // no counts without line stats
+	UAM_ASSERT(summary.find("more changed files") != std::string::npos);
+	UAM_ASSERT(uam::GoalService::SummarizeWorkspaceChanges({}).empty());
+	Goal goal;
+	goal.objective = "Add the parser.";
+	const std::string review = uam::GoalService::BuildReviewPrompt(goal, goal.objective, "Done.", 0, false, summary);
+	UAM_ASSERT(review.find("<workspaceChanges>\nM src/file_0.cpp") != std::string::npos);
+	UAM_ASSERT(uam::GoalService::BuildReviewPrompt(goal, goal.objective, "Done.").find("<workspaceChanges>") == std::string::npos);
+	// The commands the prompt names pass the reviewer's read-only ceiling; compound forms do not.
+	// Every command the prompt names passes the reviewer's read-only ceiling exactly as written; compound or
+	// unsafe forms do not.
+	const uam::command_safety::ReadScope scope{.workspace = fs::temp_directory_path() / "uam-goal-review-scope", .resolve_executables = false};
+	const auto read = [&](std::string_view command) { return uam::command_safety::IsReadOnlyCommand(command, scope); };
+	for (const std::string command : {"git status --short --ignore-submodules", "git diff --no-ext-diff --no-textconv"})
+	{
+		UAM_ASSERT(review.find("`" + command + "`") != std::string::npos);
+		UAM_ASSERT(read(command));
+	}
+	UAM_ASSERT(read("git diff --no-ext-diff --no-textconv --stat"));
+	UAM_ASSERT(read("git diff --no-ext-diff --no-textconv -- src/parser.cpp"));
+	for (const std::string_view refused : {"git status --short", "git diff", "git status --short --ignore-submodules; git diff --no-ext-diff --no-textconv",
+	         "git status --short --ignore-submodules && git diff --no-ext-diff --no-textconv", "git diff --no-ext-diff --no-textconv | head"})
+		UAM_ASSERT(!read(refused));
 }
 
 UAM_TEST(GoalServiceMaintainsOnlyOneActiveGoalPerChat)

@@ -1,6 +1,7 @@
 #include "common/platform/data_root_lock.h"
 #include "platform_services_macos_impl_internal.h"
 #include "common/platform/platform_application_macos.h"
+#include "common/utils/uuid.h"
 
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <Security/Security.h>
@@ -476,23 +477,7 @@ class MacProcessService final : public IPlatformProcessService
 		{
 			return "";
 		}
-		randomBytes[6] = (randomBytes[6] & 0x0f) | 0x40;
-		randomBytes[8] = (randomBytes[8] & 0x3f) | 0x80;
-		const char* hexDigits = "0123456789abcdef";
-		char uuid[37];
-		int output_index = 0;
-		for (int i = 0; i < 16; ++i)
-		{
-			if (i == 4 || i == 6 || i == 8 || i == 10)
-			{
-				uuid[output_index++] = '-';
-			}
-			const int byte = randomBytes[i];
-			uuid[output_index++] = hexDigits[(byte >> 4) & 0x0f];
-			uuid[output_index++] = hexDigits[byte & 0x0f];
-		}
-		uuid[36] = '\0';
-		return std::string(uuid);
+		return uam::uuid::FormatUuidV4(std::to_array(randomBytes));
 #else
 		return "";
 #endif

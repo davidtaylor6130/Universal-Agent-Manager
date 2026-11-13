@@ -1095,6 +1095,16 @@ UAM_TEST(CentralSshClientTransfersRealAssetsAndPreservesHostContext)
 	UAM_ASSERT(installed.find("Host instruction") != std::string::npos);
 	UAM_ASSERT(installed.find("Workspace instruction") != std::string::npos);
 	UAM_ASSERT(installed.find(target.string()) != std::string::npos);
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	// OpenCode reads the workspace AGENTS.md itself, so the launch file must not repeat it.
+	std::vector<std::string> opencode_argv{"opencode"};
+	uam::provider_setup::Environment opencode_environment;
+	UAM_ASSERT(uam::provider_setup::Apply(uam::provider_ids::kOpenCodeCli, target, temp.root, opencode_argv, opencode_environment, error));
+	const nlohmann::json opencode_config = nlohmann::json::parse(uam::provider_setup::EnvironmentValue(opencode_environment, "OPENCODE_CONFIG_CONTENT"));
+	const std::string opencode_installed = ReadFile(uam::paths::PathFromUtf8(opencode_config["instructions"].back().get<std::string>()));
+	UAM_ASSERT(opencode_installed.find("Host instruction") != std::string::npos);
+	UAM_ASSERT(opencode_installed.find("Workspace instruction") == std::string::npos);
+#endif
 	client.Disconnect();
 }
 
