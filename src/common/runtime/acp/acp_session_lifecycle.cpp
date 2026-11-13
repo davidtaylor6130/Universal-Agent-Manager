@@ -1757,6 +1757,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.launch_model_options_captured = false;
 	session.goal_internal_session = false;
 	session.goal_review_turn = false;
+	session.goal_review_ceiling_turn_serial = -1; // turn_serial restarts with the runtime.
 	session.goal_review_scheduled = false;
 	session.goal_review_goal_id.clear();
 	session.goal_review_user_prompt.clear();
@@ -4292,6 +4293,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			session.memory_recall_preparation.reset();
 			session.claude_input_preparation.reset();
 			session.goal_turn_kind.clear();
+			if (session.goal_review_turn) session.goal_review_ceiling_turn_serial = session.turn_serial;
 			session.goal_review_turn = false;
 			session.processing = false;
 			session.manual_compaction_pending = false;
@@ -5307,6 +5309,7 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 
 void ClearGoalReviewState(AcpSessionState& session)
 {
+	if (session.goal_review_turn) session.goal_review_ceiling_turn_serial = session.turn_serial;
 	session.goal_review_turn = false;
 	session.goal_review_scheduled = false;
 	session.goal_review_goal_id.clear();

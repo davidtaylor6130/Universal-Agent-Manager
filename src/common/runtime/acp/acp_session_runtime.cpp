@@ -657,7 +657,7 @@ namespace uam
 			{
 				if (existing->response_json == response_json) return true;
 				bool replacement_allowed = false;
-				if (session.goal_review_turn || session.active_uam_agent_workspace_access != "write")
+				if (acp_detail::CapturedReadTurn(session))
 				{
 					if (purpose == RemoteInteractionResponsePurpose::Permission && session.pending_permission.request_id_json == request_id_json)
 					{
@@ -674,7 +674,10 @@ namespace uam
 				}
 				if (!replacement_allowed)
 				{
-					if (error_out != nullptr) *error_out = "The provider reused an unresolved interaction request id.";
+					// Usually an earlier answer whose delivery failed: its recovery copy is resent when the provider asks again.
+					if (error_out != nullptr)
+						*error_out = std::string("An earlier answer to this ") + (purpose == RemoteInteractionResponsePurpose::Permission ? "permission request" : "question") +
+						             " is saved for delivery to the remote computer, so a different answer cannot be sent. Choose the same answer to send it again, or stop the turn.";
 					return false;
 				}
 			}

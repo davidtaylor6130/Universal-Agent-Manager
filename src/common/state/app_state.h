@@ -939,6 +939,8 @@ namespace uam
 		// Provider-switch context was written before this stream reported its native identity.
 		bool provider_handoff_identity_pending = false;
 		bool goal_review_turn = false;
+		// The turn_serial of the last goal review: its read-only limit also covers requests arriving after it ended, until a new turn starts.
+		int goal_review_ceiling_turn_serial = -1;
 		bool goal_review_scheduled = false;
 		std::string goal_review_goal_id;
 		std::string goal_review_user_prompt;

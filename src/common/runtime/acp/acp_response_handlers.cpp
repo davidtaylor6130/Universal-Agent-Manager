@@ -179,7 +179,7 @@ bool ReplayPersistedInteractionResponseIfMatched(
 {
 	const std::string request_id =
 	    JsonRpcIdToStableString(JsonRpcIdOrNull(request));
-	const bool captured_read = session.goal_review_turn || session.active_uam_agent_workspace_access != "write";
+	const bool captured_read = CapturedReadTurn(session);
 	// Early request-ID matching is insufficient authority for a captured read turn.
 	// Questions and unknown/malformed requests continue through their normal decoder.
 	if (captured_read && (pending == nullptr || pending->request_id_json.empty() || pending->request_id_json != request_id)) return false;

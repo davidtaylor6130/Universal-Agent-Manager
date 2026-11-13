@@ -149,6 +149,13 @@ void SendJsonRpcError(AcpSessionState& session, const nlohmann::json& id, int co
 nlohmann::json BuildGenericPermissionOutcomeResult(const std::string& option_id, bool cancelled);
 void RecordAcpPermissionDecision(AcpSessionState& session, const std::string& option_id, bool cancelled);
 bool SendPermissionResponse(AcpSessionState& session, const std::string& request_id_json, const std::string& option_id, bool cancelled, std::string* error_out = nullptr);
+/// <summary>True for a captured read-only agent or goal-review turn, and from a goal review's end until the next turn starts
+/// (every turn start increments turn_serial). A late request waiting for the user still counts: waiting sets processing.</summary>
+inline bool CapturedReadTurn(const AcpSessionState& session)
+{
+	return session.goal_review_turn || session.active_uam_agent_workspace_access != "write" ||
+	       session.goal_review_ceiling_turn_serial == session.turn_serial;
+}
 bool CapturedReadCeilingAllowsPermissionResponse(const AcpSessionState& session, const AcpPendingPermissionState& pending, const std::string& option_id, bool cancelled, std::string* error_out);
 bool CapturedReadCeilingAllowsSavedPermissionResponse(const AcpSessionState& session, const AcpPendingPermissionState& pending, const nlohmann::json& response);
 bool IsRejectPermissionOption(const std::string& id, const std::string& name, const std::string& kind);
