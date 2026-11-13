@@ -856,6 +856,8 @@ namespace uam
 		std::string provider_protocol_instructions;
 		std::string pending_host_instructions_delivery; // Runtime-only: marker to record once this prompt is delivered.
 		std::string goal_host_instructions_delivery; // Runtime-only: private goal sessions share the chat, so their marker stays off it.
+		// Runtime-only: digest of the finished-goal state this provider process already received, so it is sent once per change.
+		std::string terminal_goal_delivery, pending_terminal_goal_delivery;
 		std::string uam_control_capability_id;
 		bool managed_launch_attempted = false;
 		bool managed_cancellation_pending = false;
@@ -1581,6 +1583,8 @@ namespace uam
 		/// Application-owned hooks keep native compaction queries outside runtime and transport state.
 		std::function<void(AcpSessionState&, const ChatSession&)> opencode_compaction_before_turn_reset;
 		std::function<OpenCodeCompactionGateState(AcpSessionState&, ChatSession&, std::string&)> opencode_compaction_before_dispatch;
+		/// Brings the next poll forward when a bridge action started work; unset outside the desktop app.
+		std::function<void()> poll_after_action;
 		std::vector<std::unique_ptr<PendingAcpRemoteStop>> pending_acp_remote_stops;
 		std::vector<AsyncAcpProcessStopTask> acp_process_stop_tasks;
 		std::vector<CliContextPreparationTask> cli_context_preparation_tasks;

@@ -490,7 +490,7 @@ std::vector<std::string> OpenCodeCliProviderRuntime::BuildStructuredLaunchArgv(c
 }
 
 bool OpenCodeCliProviderRuntime::PrepareLocalWorkerLaunch(const uam::AppState& app, const ProviderProfile& profile,
-	std::vector<std::string>& argv, std::string& error, bool* private_isolation) const
+	std::vector<std::string>& argv, std::string& error, bool* private_isolation, std::vector<std::pair<std::string, std::string>>*) const
 {
 	if (private_isolation) *private_isolation = false;
 	if (!RequiresStructuredCliVersion(profile)) return true;

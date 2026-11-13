@@ -579,6 +579,8 @@ std::vector<std::string> GeminiCliProviderRuntime::BuildWorkerArgv(const Provide
 	const std::vector<std::string> flags = uam::provider_runtime_internal::ProviderWorkerFlags(profile, settings);
 	uam::provider_runtime_internal::AppendArgs(argv, flags);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", model_id);
+	// No extensions or MCP servers; the sentinel name matches no configured server.
+	uam::provider_runtime_internal::AppendArgs(argv, {"--extensions", "none", "--allowed-mcp-server-names", "__uam_text_worker_no_mcp__"});
 	argv.push_back("-p");
 	argv.push_back(std::string(prompt));
 	return argv;

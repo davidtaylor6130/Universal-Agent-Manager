@@ -114,7 +114,7 @@ UAM_TEST(ClaudeImageDeliveryIncludesWorkerRecallAtOriginalPromptPosition)
 	chat.messages.push_back(user);
 	const fs::path category = MemoryService::CategoryPath(MemoryService::LocalMemoryRoot(workspace), "Lessons/User_Lessons");
 	fs::create_directories(category);
-	UAM_ASSERT(uam::io::WriteTextFile(category / "preference.md", "## Memory\nUse the saved convention.\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(category / "preference.md", "## Memory\nInspect each image at full resolution.\n"));
 	const std::string expected_recall = MemoryService::BuildRecallPreface(app, chat, "Inspect image");
 	UAM_ASSERT(!expected_recall.empty());
 	uam::AcpSessionState session;

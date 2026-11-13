@@ -15,6 +15,7 @@
 
 #include <future>
 #include <chrono>
+#include <cstdint>
 
 #include <atomic>
 #include <filesystem>
@@ -49,6 +50,8 @@ class Application
 	/// Polls runtime state and pushes updates to the React frontend.
 	/// </summary>
 	void PollTick();
+	/// Runs the posted poll only when no later reschedule replaced it, so one poll chain runs at a time.
+	void RunScheduledPoll(std::uint64_t generation);
 	void ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, std::vector<ShellAction> shell_actions, const std::string& destination_directory);
 
   private:
@@ -87,6 +90,11 @@ class Application
 	// ---- periodic work (posted to CEF UI thread) --------------------------
 	void Update();
 	void ScheduleNextUpdate(int delay_ms = 1000);
+	int NextPollDelay();
+	/// A bridge action (a send, steer or permission reply) can start work while the next poll is up to 1 s away.
+	void PollSoonerIfWorkPending();
+	std::uint64_t m_pollGeneration = 0;
+	std::chrono::steady_clock::time_point m_nextPollAt{};
 
 	// ---- CEF ready callback -----------------------------------------------
 	void OnRuntimeReady(CefRefPtr<CefBrowser> browser);

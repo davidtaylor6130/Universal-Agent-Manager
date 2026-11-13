@@ -4,6 +4,7 @@
 #include "common/state/app_state.h"
 
 #include <optional>
+#include <tuple>
 #include <string>
 #include <vector>
 
@@ -47,7 +48,9 @@ class GoalService
 	/// <summary>The stricter of the goal's own ceiling and the Settings cap.</summary>
 	static int IterationLimit(const Goal& goal, AppSettings settings);
 	static std::string WorkerModelId(const ChatSession& chat, const Goal& goal);
-	static std::string ReviewerModelId(const ChatSession& chat, const Goal& goal);
+	/// <summary>The goal's reviewer model (provider "Goal reviewer model"), else the chat model; a model the session
+	/// does not offer falls back to the chat model rather than failing the review.</summary>
+	static std::string ReviewerModelId(const ChatSession& chat, const Goal& goal, const AcpSessionState* session = nullptr);
 	static std::size_t PauseActiveGoalsAfterRestart(AppState& app,
 	                                                std::size_t* failed_out = nullptr);
 	static bool CancelGoalWork(AppState& app, const std::string& chat_id,
@@ -138,7 +141,9 @@ class GoalService
 	static std::string BuildReadOnlyTerminalPrompt(const Goal& goal);
 	static std::string BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt,
 	                                     const std::string& recent_assistant_text, int repeated_output_count = 0,
-	                                     bool small_model_mode = false);
+	                                     bool small_model_mode = false, const std::string& workspace_changes = {});
+	/// <summary>A capped `status path +added -deleted` list of changed files for the reviewer; empty when there are none.</summary>
+	static std::string SummarizeWorkspaceChanges(const std::vector<std::tuple<std::string, std::string, int, int>>& files);
 	static std::optional<ReviewDecision> ParseReviewDecision(const std::string& text);
 
 	/// <summary>

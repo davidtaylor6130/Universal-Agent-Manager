@@ -2205,7 +2205,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                               ],
                               (featurePreference) => updateProviderDefaults(provider.id, { ...defaults, featurePreference: featurePreference === 'provider' ? 'provider' : 'uam' })
                             )} />
-                            <SettingRow title="Goal reviewer model" description="Used for architecture and read-only review." control={renderDefaultsMenu(
+                            <SettingRow title="Goal reviewer model" description="Reviews every goal and plans Architect + worker goals." control={renderDefaultsMenu(
                               `${provider.id}:goal-reviewer`,
                               defaults.reviewerModelId || defaults.modelId,
                               `${providerName} goal reviewer model`,

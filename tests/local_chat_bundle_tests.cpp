@@ -283,6 +283,9 @@ UAM_TEST(LocalChatBundleExportRedactsRawAuthorityAfterPassiveNormalization)
 		UAM_ASSERT(uam::io::WriteTextFile(file, raw.dump()));
 		const auto loaded = ChatRepository::LoadLocalChat(source, chat.id);
 		UAM_ASSERT(loaded.has_value() && loaded->remote_opencode_native_token.empty());
+		// The first full chat-list load migrates a legacy OpenCode password out of the file; export then leaves it untouched.
+		(void)ChatRepository::LoadLocalChatSummaries(source);
+		if (!read_only) UAM_ASSERT(ReadFile(file).find("stale-private-native-token") == std::string::npos);
 		const auto before = ReadFile(file);
 		const auto bundle = temp.root / ("bundle-" + chat.id);
 		UAM_ASSERT(uam::LocalChatBundleService::Export(source, bundle).ok);

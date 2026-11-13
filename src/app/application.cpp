@@ -239,77 +239,26 @@ namespace
 		return window == nullptr || (window->IsVisible() && !window->IsMinimized());
 	}
 
-	/// Keep terminal input responsive while a visible provider is waiting at its prompt.
-	bool NeedsInteractiveRuntimePolling(const uam::AppState& app, bool terminal_ui_visible)
-	{
-		for (const std::unique_ptr<uam::CliTerminalState>& terminal : app.cli_terminals)
-		{
-			if (terminal_ui_visible && terminal != nullptr && terminal->running && terminal->ui_attached) return true;
-		}
-		const ChatSession* selected_chat = ChatDomainService().SelectedChat(app);
-		if (selected_chat == nullptr)
-		{
-			return false;
-		}
-
-		const uam::AcpSessionState* acp = FindAcpSessionForChat(app, selected_chat->id);
-		return acp != nullptr && acp->running && uam::AcpSessionHasBlockingRuntimeWork(*acp);
-	}
-
-	bool IsAnyRuntimeActive(const uam::AppState& app)
-	{
-		if (uam::HasAnyActiveCliTerminal(app))
-		{
-			return true;
-		}
-
-		for (const auto& session : app.acp_sessions)
-		{
-			if (session != nullptr && session->running)
-			{
-				return true;
-			}
-		}
-
-		return !app.memory_extraction_tasks.empty() || !app.memory_extraction_queue.empty();
-	}
-
-	int GetNextPollDelayMs(const uam::AppState& app, bool dictation_running, bool terminal_ui_visible)
-	{
-		if (ChatHistorySyncService().TerminalNativeMediaPending(app) || NeedsInteractiveRuntimePolling(app, terminal_ui_visible))
-		{
-			return 16;
-		}
-		if (dictation_running)
-		{
-			return 50;
-		}
-		if (IsAnyRuntimeActive(app))
-		{
-			return 250;
-		}
-		return 1000;
-	}
-
 	// ---- Periodic poll task ---------------------------------------------------
 
 	/// CefTask that calls Application::PollTick() on the CEF UI thread.
 	class AppPollTask : public CefTask
 	{
 	  public:
-		explicit AppPollTask(Application* app) : m_app(app)
+		AppPollTask(Application* app, std::uint64_t generation) : m_app(app), m_generation(generation)
 		{
 		}
 		void Execute() override
 		{
 			if (m_app)
 			{
-				m_app->PollTick();
+				m_app->RunScheduledPoll(m_generation);
 			}
 		}
 
 	  private:
 		Application* m_app;
+		std::uint64_t m_generation;
 		IMPLEMENT_REFCOUNTING(AppPollTask);
 	};
 
@@ -398,6 +347,7 @@ int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_argu
 		return 1;
 	}
 
+	(void)uam::GetAppTimeSeconds(); // Starts the app clock, so startup lines below read as time since launch.
 	if (!InitializeState())
 	{
 		if (m_shellActionInvocation && m_exitCode == 0)
@@ -407,10 +357,12 @@ int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_argu
 		return m_exitCode != 0 ? m_exitCode : 1;
 	}
 
+	const std::chrono::steady_clock::time_point cef_started = std::chrono::steady_clock::now();
 	if (!InitializeCef(main_args))
 	{
 		return m_exitCode != 0 ? m_exitCode : 1;
 	}
+	uam::diagnostics::Write("[performance] startup CefInitialize took " + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - cef_started).count()) + " ms.");
 
 	void (*const previous_interrupt)(int) = m_managementNode ? std::signal(SIGINT, RequestManagementStop) : SIG_ERR;
 	void (*const previous_terminate)(int) = m_managementNode ? std::signal(SIGTERM, RequestManagementStop) : SIG_ERR;
@@ -627,16 +579,36 @@ void Application::PollTick()
 		last_slow_poll_report = poll_finished;
 	}
 
-	int next_poll_delay_ms = m_app.startup_native_import_service != nullptr && m_app.startup_native_import_service->ImportPending() ? 16 : GetNextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning(), TerminalUiVisible(m_browser));
+	ScheduleNextUpdate(NextPollDelay());
+}
+
+int Application::NextPollDelay()
+{
+	const int delay_ms = m_app.startup_native_import_service != nullptr && m_app.startup_native_import_service->ImportPending() ? 16 : uam::NextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning(), TerminalUiVisible(m_browser));
 	// A throttled summary must flush when its 100 ms window ends, not on the next idle 250/1000 ms tick.
-	ScheduleNextUpdate(uam::CapPollDelayForDeferredStatePush(next_poll_delay_ms));
+	return uam::CapPollDelayForDeferredStatePush(delay_ms);
+}
+
+void Application::RunScheduledPoll(std::uint64_t generation)
+{
+	if (generation == m_pollGeneration) PollTick();
+}
+
+void Application::PollSoonerIfWorkPending()
+{
+	// Nothing is scheduled before the browser is ready; the first poll starts the chain.
+	if (m_done || m_pollGeneration == 0) return;
+	const int delay_ms = NextPollDelay();
+	if (std::chrono::steady_clock::now() + std::chrono::milliseconds(delay_ms) < m_nextPollAt) ScheduleNextUpdate(delay_ms);
 }
 
 void Application::ScheduleNextUpdate(int delay_ms)
 {
 	if (!m_done)
 	{
-		CefPostDelayedTask(TID_UI, new AppPollTask(this), delay_ms);
+		// A newer schedule replaces the pending one: its task still runs, but finds its generation stale and returns.
+		m_nextPollAt = std::chrono::steady_clock::now() + std::chrono::milliseconds(delay_ms);
+		CefPostDelayedTask(TID_UI, new AppPollTask(this, ++m_pollGeneration), delay_ms);
 	}
 }
 
@@ -647,6 +619,9 @@ void Application::ScheduleNextUpdate(int delay_ms)
 void Application::OnRuntimeReady(CefRefPtr<CefBrowser> browser)
 {
 	m_browser = browser;
+	static bool browser_logged = false;
+	if (!std::exchange(browser_logged, true))
+		uam::diagnostics::Write("[performance] startup browser created at " + std::to_string(static_cast<long long>(uam::GetAppTimeSeconds() * 1000.0)) + " ms since launch.");
 	if (!m_pendingBundledMarkdownRoot.empty())
 	{
 		// A consent-blocked seed must not occupy the shared foreground file worker.
@@ -736,6 +711,7 @@ void Application::ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, 
 
 bool Application::InitializeState()
 {
+	const std::chrono::steady_clock::time_point state_started = std::chrono::steady_clock::now();
 	const fs::path executable_path = m_platformServices->process_service.ResolveCurrentExecutablePath();
 	const std::optional<fs::path> data_root_env = uam::env::GetTrimmedPath("UAM_DATA_DIR");
 	// Retain the original override: exporting the effective root below must not change its provenance.
@@ -812,6 +788,7 @@ bool Application::InitializeState()
 	}
 	// Secret drops hold no data on disk, but a crash can leave their empty pipes or expired Windows files behind.
 	(void)uam::secrets::SweepStale(uam::SecretRequestService::LocalDropDirectory(m_app.data_root));
+	const std::chrono::steady_clock::time_point storage_finished = std::chrono::steady_clock::now();
 	uam::AgentRunLoadResult agent_runs = uam::AgentRunLedger::LoadAll(m_app.data_root);
 #if !UAM_ALL_PROVIDERS_INCLUDED
 	{
@@ -837,6 +814,7 @@ bool Application::InitializeState()
 	{
 		uam::diagnostics::Write("[agent-runs] " + error);
 	}
+	const std::chrono::steady_clock::time_point agent_runs_finished = std::chrono::steady_clock::now();
 
 	if (!PersistenceCoordinator().LoadSettings(m_app))
 	{
@@ -874,7 +852,9 @@ bool Application::InitializeState()
 		m_exitCode = 1;
 		return false;
 	}
+	const std::chrono::steady_clock::time_point settings_finished = std::chrono::steady_clock::now();
 	ProviderCliCompatibilityService().StartVersionCheck(m_app, false);
+	const std::chrono::steady_clock::time_point compatibility_finished = std::chrono::steady_clock::now();
 	if (ProviderResolutionService().ActiveProvider(m_app) == nullptr && !m_app.provider_profiles.empty())
 	{
 		m_app.settings.active_provider_id = m_app.provider_profiles.front().id;
@@ -898,11 +878,13 @@ bool Application::InitializeState()
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
 	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {});
 
+	const std::chrono::steady_clock::time_point folders_finished = std::chrono::steady_clock::now();
 	// Initialize the provider model catalog service (async refresh for OpenCode Zen models).
 	m_app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 	m_app.provider_model_catalog->Initialize(m_app.data_root, m_app.provider_profiles, m_app.settings.provider_extra_flags);
 	m_app.provider_model_catalog->SetExecutionHostContext(m_app.settings.execution_hosts);
 	m_app.provider_model_catalog->MaybeStartRefresh();
+	const std::chrono::steady_clock::time_point model_catalogue_finished = std::chrono::steady_clock::now();
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	m_openCodeCompactionSync = std::make_shared<uam::OpenCodeCompactionSyncService>();
 	m_app.opencode_native_activity = std::make_shared<uam::OpenCodeNativeActivityService>();
@@ -921,6 +903,7 @@ bool Application::InitializeState()
 #endif
 
 	ChatHistorySyncService().LoadSidebarChats(m_app);
+	const std::chrono::steady_clock::time_point sidebar_chats_finished = std::chrono::steady_clock::now();
 	// Before the remote restore below: a child a previous process left running on a remote host is attached only to be stopped.
 	(void)uam::AgentRunScheduler::RequestStartupStops(m_app, startup_interrupted_run_ids);
 	for (const ChatSession& chat : std::vector<ChatSession>(m_app.chats))
@@ -952,8 +935,10 @@ bool Application::InitializeState()
 		                    " after the manager restarted.";
 	}
 	m_app.resource_collections = uam::ResourceCollectionService::Load(m_app.data_root);
+	const std::chrono::steady_clock::time_point restore_finished = std::chrono::steady_clock::now();
 	m_app.startup_native_import_service = std::make_shared<uam::StartupNativeImportService>();
 	m_app.startup_native_import_service->Initialize(m_app);
+	const std::chrono::steady_clock::time_point native_import_finished = std::chrono::steady_clock::now();
 	MemoryService::RefreshMemoryActivity(m_app);
 
 	if (!m_app.chats.empty())
@@ -972,7 +957,25 @@ bool Application::InitializeState()
 
 	// Make AppState accessible to CEF app/client via global pointer.
 	uam_cef_globals::g_app_state = &m_app;
+	m_app.poll_after_action = [this] { PollSoonerIfWorkPending(); };
 
+	const std::chrono::steady_clock::time_point state_finished = std::chrono::steady_clock::now();
+	const auto milliseconds = [](std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)
+	{
+		return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
+	};
+	// Background work these stages start (native import, catalogue refresh, version checks) is not included.
+	uam::diagnostics::Write("[performance] startup InitializeState took " + milliseconds(state_started, state_finished) + " ms; stages=" +
+	    "storage:" + milliseconds(state_started, storage_finished) +
+	    ",agent_runs:" + milliseconds(storage_finished, agent_runs_finished) +
+	    ",settings:" + milliseconds(agent_runs_finished, settings_finished) +
+	    ",compatibility:" + milliseconds(settings_finished, compatibility_finished) +
+	    ",folders:" + milliseconds(compatibility_finished, folders_finished) +
+	    ",model_catalogue:" + milliseconds(folders_finished, model_catalogue_finished) +
+	    ",sidebar_chats:" + milliseconds(model_catalogue_finished, sidebar_chats_finished) +
+	    ",restore:" + milliseconds(sidebar_chats_finished, restore_finished) +
+	    ",native_import:" + milliseconds(restore_finished, native_import_finished) +
+	    ",rest:" + milliseconds(native_import_finished, state_finished) + "; chats=" + std::to_string(m_app.chats.size()) + ".");
 	return true;
 }
 

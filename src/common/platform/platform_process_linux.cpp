@@ -1,5 +1,6 @@
 #include "common/platform/platform_services.h"
 #include "common/platform/platform_state_fields.h"
+#include "common/utils/uuid.h"
 
 #include <array>
 #include <cerrno>
@@ -8,7 +9,6 @@
 #include <cstring>
 #include <fcntl.h>
 #include <poll.h>
-#include <random>
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -383,9 +383,33 @@ namespace uam::platform_linux_impl
 			std::size_t NativeGeminiSessionMaxMessages() const override { return 0; }
 			std::string GenerateUuid() const override
 			{
-				std::random_device random;
-				return std::to_string(static_cast<unsigned long long>(random())) + "-" +
-				       std::to_string(static_cast<unsigned long long>(random()));
+				// Raw syscall: the runner must still load on remote hosts whose glibc predates getrandom().
+				std::array<std::uint8_t, 16> bytes{};
+				std::size_t filled = 0;
+				while (filled < bytes.size())
+				{
+					const long read = syscall(SYS_getrandom, bytes.data() + filled, bytes.size() - filled, 0);
+					if (read > 0) filled += static_cast<std::size_t>(read);
+					else if (read < 0 && errno == EINTR) continue;
+					else break;
+				}
+				if (filled < bytes.size())
+				{
+					// Kernels before 3.17 lack getrandom; /dev/urandom is the equivalent source there.
+					const int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+					filled = 0;
+					while (fd >= 0 && filled < bytes.size())
+					{
+						const ssize_t read = ::read(fd, bytes.data() + filled, bytes.size() - filled);
+						if (read > 0) filled += static_cast<std::size_t>(read);
+						else if (read < 0 && errno == EINTR) continue;
+						else break;
+					}
+					if (fd >= 0) close(fd);
+					// Same failure contract as macOS and Windows: no identifier rather than a weak one.
+					if (filled < bytes.size()) return {};
+				}
+				return uam::uuid::FormatUuidV4(bytes);
 			}
 			bool LaunchShellAt(const std::filesystem::path&, std::string* error_out) const override
 			{
