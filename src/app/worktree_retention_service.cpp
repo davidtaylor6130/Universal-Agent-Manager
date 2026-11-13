@@ -199,6 +199,7 @@ namespace uam
 			m_policyGitEnabled = app.settings.git_enabled;
 			++m_policyRevision;
 			if (m_policyRevision > 1) m_nextScan = now;
+			m_nextCapture = {};
 		}
 		if (m_worker.valid())
 		{
@@ -214,13 +215,21 @@ namespace uam
 		if (!app.settings.git_enabled || !app.settings.worktree_cleanup_enabled) return;
 		Snapshot snapshot;
 		if (m_candidates.empty() && now < m_nextScan) return;
+		const std::array<std::size_t, 5> capture_shape{app.chats.size(), app.acp_sessions.size(), app.cli_terminals.size(),
+		    app.agent_runs.size(), app.worktree_operation_chat_ids.size()};
+		if (now < m_nextCapture && capture_shape == m_refusedCaptureShape) return;
 		std::shared_ptr<WorkspaceLeaseGate::Lease> lease;
 		if (!m_candidates.empty())
 		{
 			lease = app.worktree_retention_gate.TryAcquireCleanup();
 			if (!lease) return;
 		}
-		if (!Capture(app, snapshot)) return;
+		if (!Capture(app, snapshot))
+		{
+			m_nextCapture = now + std::chrono::seconds(30);
+			m_refusedCaptureShape = capture_shape;
+			return;
+		}
 		try
 		{
 			m_policyStop = std::stop_source();

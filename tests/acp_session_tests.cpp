@@ -9313,6 +9313,34 @@ UAM_TEST(AcpForcedChatSaveFlushPersistsBeforeTheDebounceDeadline)
 	UAM_ASSERT_EQ(reloaded.front().messages.back().content, std::string("Newest streamed text"));
 }
 
+// A background save copies the chat's metadata by moving the transcript aside and back. Moving it back must keep its
+// revision stamp: a fresh stamp made the next state push rehash the whole unchanged transcript after every save.
+UAM_TEST(AcpBackgroundChatSaveKeepsTheTranscriptStamp)
+{
+	TempDir temp("uam-acp-save-stamp");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-save-stamp";
+	chat.messages.push_back(Message{MessageRole::User, "Question"});
+	chat.messages.push_back(Message{MessageRole::Assistant, "Answer"});
+	app.chats.push_back(std::move(chat));
+	const std::uint64_t stamp = std::as_const(app.chats.front().messages).revision();
+	UAM_ASSERT(stamp != 0);
+	uam::acp_detail::ScheduleChatSave(app, app.chats.front(), 0.0);
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	while (!app.pending_chat_save_at_by_chat_id.empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::FlushPendingChatSaves(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+	UAM_ASSERT_EQ(std::as_const(app.chats.front().messages).revision(), stamp);
+	const std::vector<ChatSession> reloaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(reloaded.size(), std::size_t{1});
+	UAM_ASSERT_EQ(reloaded.front().messages.back().content, std::string("Answer"));
+}
+
 UAM_TEST(AcpDeferredChatSaveKeepsEarliestDueTimeAndBoundsStreamDebounce)
 {
 	uam::AppState app;
