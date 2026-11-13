@@ -81,8 +81,16 @@ let busy = false
 /** True while a drag runs or its drop is still settling; other reorder paths wait for it. */
 export const isSorting = () => busy
 
-const sortId = (element: Element) => (element as HTMLElement).dataset.sortId ?? ''
-const siblingsOf = (row: HTMLElement) => Array.from(row.parentElement?.children ?? []).filter((element): element is HTMLElement => element instanceof HTMLElement && element.dataset.sortId !== undefined)
+const sortId = (element: Element) => element.getAttribute('data-sort-id') ?? ''
+/** Sortable children of `parent`, walked sibling by sibling: indexing a live `children` list can cost O(n) per item. */
+function sortRows(parent: Element | null | undefined): HTMLElement[] {
+  const found: HTMLElement[] = []
+  for (let element = parent?.firstElementChild; element; element = element.nextElementSibling) {
+    if (element instanceof HTMLElement && element.hasAttribute('data-sort-id')) found.push(element)
+  }
+  return found
+}
+const siblingsOf = (row: HTMLElement) => sortRows(row.parentElement)
 
 function scrollParent(element: HTMLElement): HTMLElement | null {
   for (let node = element.parentElement; node; node = node.parentElement) {
@@ -103,7 +111,7 @@ function clearStyles(rows: readonly HTMLElement[]) {
     row.style.background = ''
     row.style.borderRadius = ''
     row.style.opacity = ''
-    delete row.dataset.sortDragging
+    row.removeAttribute('data-sort-dragging')
   }
 }
 
@@ -233,7 +241,7 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
     // One attribute gives every sibling its glide (sidebar.css) instead of a style write per row.
     list = row.parentElement
     list?.setAttribute('data-sorting', '')
-    row.dataset.sortDragging = ''
+    row.setAttribute('data-sort-dragging', '')
     row.style.position = 'relative'
     row.style.zIndex = '20'
     row.style.pointerEvents = 'none'
@@ -328,7 +336,7 @@ export function startSortableDrag(down: ReactPointerEvent<HTMLElement>, options:
     // An optimistic save re-renders the list in its new order before it answers. Drop the held offsets the moment
     // the DOM shows that order (before the next paint), so rows are never shifted twice.
     const shown = () => {
-      const live = Array.from(list?.children ?? []).filter((element) => (element as HTMLElement).dataset.sortId !== undefined).map(sortId)
+      const live = sortRows(list).map(sortId)
       return order.every((entry, index) => live[index] === entry)
     }
     const observer = list && dropTarget === null && typeof MutationObserver === 'function'
@@ -375,7 +383,7 @@ export function glideAfter(row: HTMLElement | undefined, commit: () => Promise<b
   return commit().then((saved) => {
     if (!saved || !parent || !motionAllowed() || typeof HTMLElement.prototype.animate !== 'function') return saved
     requestAnimationFrame(() => {
-      for (const element of parent.children as HTMLCollectionOf<HTMLElement>) {
+      for (const element of sortRows(parent)) {
         const top = before.get(sortId(element))
         const dy = top === undefined ? 0 : top - element.getBoundingClientRect().top
         // Web Animations cannot read CSS variables; these mirror --dur-base and --ease-out-soft.

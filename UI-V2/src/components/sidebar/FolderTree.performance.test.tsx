@@ -2,6 +2,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { expect, it, vi } from 'vitest'
 import { FolderTree } from './FolderTree'
+import { isSorting } from './sortableDrag'
 import { useAppStore } from '../../store/useAppStore'
 import { expectWithinBudget, INPUT_BUDGET_MS, INTERACTION_BUDGET_MS } from '../../test/interactionBudgets'
 import type { Folder, Session } from '../../types/session'
@@ -64,33 +65,43 @@ it('follows the pointer within the input budget while dragging a workspace or an
   const root = createRoot(host)
   const move = (type: string, y: number, target: EventTarget = document) =>
     target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 10, clientY: y, button: 0, buttons: type === 'pointerup' ? 0 : 1 }))
+  // Escape then release ends any drag, even one a failed budget left mid-way, so a CI retry starts clean.
+  const endDrag = () => {
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    act(() => move('pointerup', 10))
+  }
   try {
     act(() => root.render(<FolderTree searchQuery="" />))
     const rows = [...host.querySelectorAll<HTMLElement>('[data-testid^="folder-row-"]')]
     expect(rows).toHaveLength(120)
     rows.forEach((row, index) => vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({ top: index * 150, bottom: index * 150 + 150, height: 150, left: 0, right: 200, width: 200, x: 0, y: index * 150, toJSON: () => ({}) }))
+    expect(isSorting()).toBe(false)
     act(() => move('pointerdown', 10, host.querySelector('[data-testid="folder-header-drag-perf-0"]')!))
     for (let step = 1; step <= 60; step++) {
       expectWithinBudget('workspace drag pointer move', INPUT_BUDGET_MS, () => act(() => move('pointermove', 10 + step * 250)))
     }
+    // Sibling transforms are written synchronously by each pointer move, not on a later frame.
     expect(rows[1].style.transform).toBe('translate3d(0, -150px, 0)')
-    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
-    act(() => move('pointerup', 10))
+    endDrag()
 
     // The same 600 recent chats fill Active chats; dragging one stays within the input budget too.
     const activeRows = [...host.querySelectorAll<HTMLElement>('#active-chat-list [data-sort-id]')]
     expect(activeRows).toHaveLength(600)
     activeRows.forEach((row, index) => vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({ top: index * 40, bottom: index * 40 + 40, height: 40, left: 0, right: 200, width: 200, x: 0, y: index * 40, toJSON: () => ({}) }))
+    expect(isSorting()).toBe(false)
     act(() => move('pointerdown', 10, activeRows[0].querySelector('[data-session-id]')!))
     for (let step = 1; step <= 30; step++) {
       expectWithinBudget('active chat drag pointer move', INPUT_BUDGET_MS, () => act(() => move('pointermove', 10 + step * 400)))
     }
     expect(activeRows[1].style.transform).toBe('translate3d(0, -40px, 0)')
-    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
-    act(() => move('pointerup', 10))
+    endDrag()
   } finally {
-    act(() => root.unmount())
-    host.remove()
-    useAppStore.setState(initial, true)
+    try {
+      endDrag()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState(initial, true)
+    }
   }
 }, 30_000)
