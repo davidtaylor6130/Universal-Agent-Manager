@@ -69,7 +69,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 scripts/check_docs.py
+      # A non-UTF-8 default encoding, as on Windows, must not break the docs check.
+      - run: LC_ALL=C PYTHONCOERCECLOCALE=0 python3 -X utf8=0 scripts/check_docs.py
       - run: python3 Mobile/Checks/start_desktop_cleanup.py
       - run: python3 tests/select_native_tests_test.py
       - run: python3 tests/native_test_runner_test.py
@@ -94,7 +95,10 @@ jobs:
           cache: npm
           cache-dependency-path: UI-V2/package-lock.json
       - run: npm --prefix UI-V2 ci
+      # A non-US default locale proves the test locale pin in UI-V2/src/test/setup.ts still holds.
       - run: npm --prefix UI-V2 run test
+        env:
+          LC_ALL: en_GB.UTF-8
       - run: npm --prefix UI-V2 run build
 
   # Native jobs wait for all three rows (scripts/wait_for_remote_runners.py 3); keep that count in step with this matrix.

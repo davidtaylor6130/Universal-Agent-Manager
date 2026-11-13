@@ -10,6 +10,7 @@ import argparse
 from collections import Counter, deque
 from pathlib import Path
 import re
+import sys
 from urllib.parse import unquote, urlsplit
 
 PROVIDERS = ('gemini', 'codex', 'claude-code', 'opencode', 'copilot', 'antigravity')
@@ -74,7 +75,7 @@ def check(root: Path) -> tuple[list[str], dict[str, int]]:
                     errors.append(f'{label}: missing heading #{split.fragment} in {target}')
 
     catalog_path = docs / 'providers/providers.md'
-    catalog = CAPABILITY.findall(catalog_path.read_text()) if catalog_path.is_file() else []
+    catalog = CAPABILITY.findall(catalog_path.read_text(encoding='utf-8')) if catalog_path.is_file() else []
     if not catalog:
         errors.append('Provider capability catalogue is missing or empty.')
     if len(set(catalog)) != len(catalog):
@@ -86,7 +87,7 @@ def check(root: Path) -> tuple[list[str], dict[str, int]]:
             errors.append(f'Missing provider checklist: {provider}')
             continue
         rows = []
-        for line in path.read_text().splitlines():
+        for line in path.read_text(encoding='utf-8').splitlines():
             if not re.match(r'^\| `[^`]+` \|', line):
                 continue
             fields = [value.strip() for value in line.strip('|').split('|')]
@@ -128,6 +129,8 @@ def check(root: Path) -> tuple[list[str], dict[str, int]]:
 
 
 def main() -> int:
+    # Docs and messages are UTF-8 (`×`, curly quotes); a Windows pipe would otherwise use its code page.
+    sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1],
                         help='Repository root (defaults to this script’s repository).')
