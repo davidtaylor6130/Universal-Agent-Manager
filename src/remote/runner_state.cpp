@@ -1237,6 +1237,30 @@ namespace uam::remote
 			return ProcessSuccess(request, {{"dataBase64", uam::base64::Encode(chunk)}, {"path", file.path},
 			    {"offset", offset}, {"totalBytes", file.text.size()}, {"fingerprint", fingerprint}});
 		}
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+		if (type == "provider.history.children")
+		{
+			const std::string provider = native_history::String(request, "providerId");
+			const std::string session = native_history::String(request, "sessionId");
+			const std::string workspace = native_history::String(request, "workspace");
+			if (provider == uam::provider_ids::kExcludedCliProviderId || provider != uam::provider_ids::kGeminiCli || !native_history::SafeId(session) || !IsBoundedText(workspace, kMaxWorkingDirectoryBytes) ||
+			    !execution_hosts::IsAbsoluteRemotePath(native_history::Platform(), workspace))
+				return ProcessError(request, "invalid_request", "The native child listing request is invalid.");
+			state_lock.unlock();
+			native_history::GeminiChildListing listing;
+			std::string list_error;
+			bool ok = false;
+			try { ok = native_history::ListGeminiChildren(session, workspace, listing, list_error, {}, native_history::kMaxSnapshotBytes); }
+			catch (const std::exception&) { list_error = "The native child journals could not be read safely."; }
+			if (!ok) return ProcessError(request, "history_unavailable", list_error);
+			nlohmann::json children = nlohmann::json::array();
+			for (const auto& child : listing.children)
+				children.push_back({{"agentId", child.agent_id}, {"preview", child.preview}, {"startedAt", child.started_at}, {"updatedAt", child.updated_at}, {"messages", child.messages}});
+			return ProcessSuccess(request, {{"providerId", provider}, {"sessionId", session}, {"workspace", workspace}, {"children", std::move(children)},
+			    {"unreadable", listing.unreadable}, {"truncated", listing.truncated}});
+		}
+#endif
+
 		if (type == "provider.history.read" || type == "provider.history.release")
 		{
 			const std::string provider = native_history::String(request, "providerId");

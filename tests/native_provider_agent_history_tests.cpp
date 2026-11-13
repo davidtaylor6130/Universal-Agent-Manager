@@ -261,3 +261,182 @@ UAM_TEST(RemoteNativeChildClientUsesExactReadOnlyAgentSelector)
 		UAM_ASSERT(snapshot["text"].get_ref<const std::string&>().find("Native child") != std::string::npos);
 	}
 }
+
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+namespace
+{
+	using Json = nlohmann::json;
+	struct GeminiChildListingFixture : NativeProviderAgentFixture
+	{
+		fs::path children = gemini_child.parent_path();
+		Json Child(const std::string& id, const std::string& question) const
+		{
+			return Json{{"sessionId", id}, {"kind", "subagent"}, {"directories", Json::array({workspace})}, {"startTime", "2026-10-16T12:00:00Z"}, {"lastUpdated", "2026-10-16T12:05:00Z"},
+			    {"messages", Json::array({{{"type", "user"}, {"content", question}}, {{"type", "gemini"}, {"content", "Answer"}}})}};
+		}
+		void Write(const std::string& filename, const Json& document) const { UAM_ASSERT(uam::io::WriteTextFile(children / filename, document.dump())); }
+		ChatSession Source(const std::string& host = {}) const
+		{
+			ChatSession source; source.id = "source"; source.provider_id = "gemini-cli"; source.native_session_id = parent; source.workspace_directory = workspace; source.execution_host_id = host;
+			return source;
+		}
+	};
+}
+
+// Only a journal filed under the attested parent, naming itself, kind subagent and this workspace is offered.
+UAM_TEST(GeminiChildListingReturnsOnlyAttestedJournalsOfExactParent)
+{
+	GeminiChildListingFixture fixture;
+	fixture.Write("named-other.json", fixture.Child("not-this-file", "Mismatched filename"));
+	auto wrong_kind = fixture.Child("wrong-kind", "Main session"); wrong_kind["kind"] = "main";
+	fixture.Write("wrong-kind.json", wrong_kind);
+	auto foreign_workspace = fixture.Child("foreign-workspace", "Another project"); foreign_workspace["directories"] = Json::array({"/somewhere/else"});
+	fixture.Write("foreign-workspace.json", foreign_workspace);
+	auto foreign_parent = fixture.Child("foreign-parent", "Claims another parent"); foreign_parent["parentSessionId"] = "55555555-5555-4555-8555-555555555555";
+	fixture.Write("foreign-parent.json", foreign_parent);
+	UAM_ASSERT(uam::io::WriteTextFile(fixture.children / "corrupt.jsonl", "{not json\n{still not\n"));
+	// Same preview, workspace and times under a different parent directory: never offered.
+	const fs::path other_parent = fixture.children.parent_path() / "55555555-5555-4555-8555-555555555555";
+	UAM_ASSERT(uam::io::WriteTextFile(other_parent / "decoy.json", fixture.Child("decoy", "Native child question").dump()));
+#if !defined(_WIN32)
+	fs::create_symlink(other_parent / "decoy.json", fixture.children / "linked.json");
+#endif
+	auto preamble = fixture.Child("with-preamble", "Real task");
+	preamble["messages"].insert(preamble["messages"].begin(), Json{{"id", std::string(uam::gemini::kSessionContextRowId)}, {"type", "user"},
+	    {"content", Json::array({{{"text", std::string(uam::gemini::kSessionContextOpening) + "context" + std::string(uam::gemini::kSessionContextClosing)}}})}});
+	fixture.Write("with-preamble.json", preamble);
+	auto placeholder = preamble; placeholder["sessionId"] = "only-preamble"; placeholder["messages"] = Json::array({placeholder["messages"][0]});
+	fixture.Write("only-preamble.json", placeholder);
+
+	uam::remote::native_history::GeminiChildListing listing;
+	std::string error;
+	UAM_ASSERT(uam::remote::native_history::ListGeminiChildren(fixture.parent, fixture.workspace, listing, error));
+	UAM_ASSERT_EQ(listing.children.size(), std::size_t{2});
+	std::map<std::string, uam::remote::native_history::GeminiChild> by_id;
+	for (const auto& child : listing.children) by_id[child.agent_id] = child;
+	UAM_ASSERT_EQ(by_id.at(fixture.gemini_agent).preview, std::string("Native child question"));
+	UAM_ASSERT_EQ(by_id.at(fixture.gemini_agent).messages, std::size_t{2});
+	UAM_ASSERT_EQ(by_id.at("with-preamble").preview, std::string("Real task"));
+	UAM_ASSERT_EQ(by_id.at("with-preamble").messages, std::size_t{2});
+	UAM_ASSERT_EQ(by_id.at("with-preamble").updated_at, std::string("2026-10-16T12:05:00Z"));
+	UAM_ASSERT_EQ(listing.unreadable, std::size_t{5}); // mismatched name, kind, workspace, parent, corrupt
+	UAM_ASSERT(!listing.truncated);
+
+	UAM_ASSERT(!uam::remote::native_history::ListGeminiChildren(fixture.parent, "/different/workspace", listing, error));
+	UAM_ASSERT(!uam::remote::native_history::ListGeminiChildren("66666666-6666-4666-8666-666666666666", fixture.workspace, listing, error));
+	const fs::path empty_parent_file = fixture.children.parent_path() / "77777777-7777-4777-8777-777777777777.json";
+	UAM_ASSERT(uam::io::WriteTextFile(empty_parent_file, Json{{"sessionId", "77777777-7777-4777-8777-777777777777"}, {"messages", Json::array()}}.dump()));
+	UAM_ASSERT(uam::remote::native_history::ListGeminiChildren("77777777-7777-4777-8777-777777777777", fixture.workspace, listing, error));
+	UAM_ASSERT(listing.children.empty() && listing.unreadable == 0);
+}
+
+UAM_TEST(GeminiChildListingBoundsCountAndBytesNewestFirst)
+{
+	GeminiChildListingFixture fixture;
+	std::error_code removed;
+	fs::remove(fixture.gemini_child, removed);
+	const auto base = fs::file_time_type::clock::now() - std::chrono::hours(1000);
+	for (std::size_t index = 0; index < uam::remote::native_history::kMaxGeminiChildren + 2; ++index)
+	{
+		const std::string id = "child-" + std::to_string(index);
+		fixture.Write(id + ".json", fixture.Child(id, "Task " + std::to_string(index)));
+		fs::last_write_time(fixture.children / (id + ".json"), base + std::chrono::minutes(index));
+	}
+	uam::remote::native_history::GeminiChildListing listing;
+	std::string error;
+	UAM_ASSERT(uam::remote::native_history::ListGeminiChildren(fixture.parent, fixture.workspace, listing, error));
+	UAM_ASSERT_EQ(listing.children.size(), uam::remote::native_history::kMaxGeminiChildren);
+	UAM_ASSERT(listing.truncated);
+	UAM_ASSERT_EQ(listing.children.front().agent_id, std::string("child-201"));
+
+	fs::remove(fixture.children / "child-0.json");
+	fs::resize_file(fixture.children / "child-201.json", uam::remote::native_history::kMaxSnapshotBytes + 1);
+	UAM_ASSERT(uam::remote::native_history::ListGeminiChildren(fixture.parent, fixture.workspace, listing, error));
+	UAM_ASSERT(!listing.truncated); // Exactly 200 remain; the oversized newest one is reported, not hidden as "not recent".
+	UAM_ASSERT_EQ(listing.unreadable, std::size_t{1});
+	UAM_ASSERT_EQ(listing.children.front().agent_id, std::string("child-200"));
+
+	// The shared byte budget ends the list at that point: an older small journal never fills a gap.
+	fs::resize_file(fixture.children / "child-200.json", uam::remote::native_history::kMaxSnapshotBytes - 16);
+	fs::resize_file(fixture.children / "child-199.json", 32);
+	UAM_ASSERT(uam::remote::native_history::ListGeminiChildren(fixture.parent, fixture.workspace, listing, error));
+	UAM_ASSERT(listing.truncated);
+	UAM_ASSERT(listing.children.empty());
+}
+
+// The listed reference is the exact reader's own identity, and only a writable Gemini parent can list.
+UAM_TEST(GeminiChildListingReferenceOpensExactReader)
+{
+	GeminiChildListingFixture fixture;
+	const auto source = fixture.Source();
+	std::string error;
+	auto listing = uam::native_agents::ListGeminiChildren(source, std::nullopt, &error);
+	UAM_ASSERT(listing.has_value());
+	UAM_ASSERT_EQ(listing->children.size(), std::size_t{1});
+	const auto expected = uam::native_agents::BuildHistoryId("gemini-cli", fixture.parent, fixture.gemini_agent, "local");
+	UAM_ASSERT_EQ(listing->children.front().reference, expected);
+	const auto opened = uam::native_agents::LoadHistory(source, listing->children.front().reference, std::nullopt, &error);
+	UAM_ASSERT(opened.has_value());
+	UAM_ASSERT_EQ(opened->id, expected);
+	UAM_ASSERT(opened->imported_read_only && opened->native_session_id.empty());
+
+	auto not_gemini = source; not_gemini.provider_id = "claude-cli";
+	UAM_ASSERT(!uam::native_agents::ListGeminiChildren(not_gemini, std::nullopt, &error));
+	auto child_chat = source; child_chat.imported_read_only = true;
+	UAM_ASSERT(!uam::native_agents::ListGeminiChildren(child_chat, std::nullopt, &error));
+}
+
+UAM_TEST(RemoteGeminiChildListingBindsParentWorkspaceAndHost)
+{
+	GeminiChildListingFixture fixture;
+	uam::remote::RunnerState state;
+	const nlohmann::json request{{"id", "children"}, {"type", "provider.history.children"}, {"providerId", "gemini-cli"}, {"sessionId", fixture.parent}, {"workspace", fixture.workspace}};
+	const auto response = state.HandleProcessRequest(request);
+	UAM_ASSERT(response.value("ok", false));
+	const auto listing = response["result"];
+	ExecutionHost host; host.id = "fixture-ssh"; host.transport = "ssh"; host.platform = uam::remote::native_history::Platform();
+	const auto source = fixture.Source(host.id);
+	std::string error;
+	const auto parsed = uam::native_agents::ParseGeminiChildListing(host, source, listing, &error);
+	UAM_ASSERT(parsed.has_value());
+	UAM_ASSERT_EQ(parsed->children.size(), std::size_t{1});
+	UAM_ASSERT_EQ(parsed->children.front().reference, uam::native_agents::BuildHistoryId("gemini-cli", fixture.parent, fixture.gemini_agent, host.id));
+	for (const char* field : {"providerId", "sessionId", "workspace"})
+	{
+		auto foreign = listing; foreign[field] = "foreign";
+		UAM_ASSERT(!uam::native_agents::ParseGeminiChildListing(host, source, foreign, &error));
+	}
+	for (const char* identifier : {"../escape", ""})
+	{
+		auto unsafe = listing; unsafe["children"][0]["agentId"] = identifier;
+		UAM_ASSERT(!uam::native_agents::ParseGeminiChildListing(host, source, unsafe, &error));
+	}
+	auto duplicate = listing; duplicate["children"].push_back(duplicate["children"][0]);
+	UAM_ASSERT(!uam::native_agents::ParseGeminiChildListing(host, source, duplicate, &error));
+	auto wrong_host = host; wrong_host.id = "different-host";
+	UAM_ASSERT(!uam::native_agents::ParseGeminiChildListing(wrong_host, source, listing, &error));
+	for (const char* field : {"providerId", "sessionId", "workspace"})
+	{
+		auto invalid = request; invalid[field] = "../foreign";
+		UAM_ASSERT(!state.HandleProcessRequest(invalid).value("ok", true));
+	}
+}
+
+UAM_TEST(RemoteGeminiChildListingClientUsesActualHelperAndCapability)
+{
+	GeminiChildListingFixture fixture;
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() /
+#if defined(_WIN32)
+	    "uam-runner.exe";
+#else
+	    "uam-runner";
+#endif
+	uam::remote::RunnerClient client(service, {uam::paths::Utf8PathString(runner), "bridge-direct"});
+	nlohmann::json listing;
+	std::string error;
+	UAM_ASSERT(client.ListGeminiChildren(fixture.parent, fixture.workspace, listing, &error));
+	UAM_ASSERT_EQ(listing["children"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(listing["children"][0].value("agentId", ""), fixture.gemini_agent);
+}
+#endif

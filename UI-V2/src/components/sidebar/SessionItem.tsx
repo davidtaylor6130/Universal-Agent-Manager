@@ -16,7 +16,7 @@ import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import type { Session } from '../../types/session'
-import { IconButton, MenuItem, Tooltip, ViewportMenu } from '../ui'
+import { IconButton, MenuItem, Presence, Tooltip, ViewportMenu } from '../ui'
 import { DeleteConfirmDialog, chatDeleteFailure, relatedBranchContents } from './DeleteConfirmDialog'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import {
@@ -26,9 +26,11 @@ import {
   readChatGridLayout,
   subscribeChatGridLayout,
 } from '../../utils/chatGridStorage'
-import { providerShortName } from '../../utils/providerMetadata'
+import { GEMINI_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { preferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { CollectionMenuItems } from './CollectionMenuItems'
+import { GeminiChildBrowser } from './GeminiChildBrowser'
+import { GEMINI_ENABLED } from '../../config/buildFeatures'
 import { ChatSelectionContext, CopyDetailItems, MenuDivider, SingleOnlyMenuItem, markChatsDone, setChatsPinned, wakeChats, type CopyDetail } from './bulkActions'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import { displayedChatStatus, type DisplayedChatStatus } from './chatSearch'
@@ -244,6 +246,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         sourceDirectory: session.workspaceSourceDirectory ?? '',
         branchName: session.workspaceBranchName ?? '',
         executionHostId: session.executionHostId || 'local',
+        importedReadOnly: session.importedReadOnly === true,
       }
     }
 
@@ -263,6 +266,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       sourceDirectory: storeSession?.workspaceSourceDirectory ?? '',
       branchName: storeSession?.workspaceBranchName ?? '',
       executionHostId: storeSession?.executionHostId || 'local',
+      importedReadOnly: storeSession?.importedReadOnly === true,
     }
   }))
   const sourceFolderName = useAppStore((s) => sessionSummary.sourceDirectory
@@ -443,6 +447,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const snoozedUntilMs = sessionSummary.snoozedUntilMs
   const isSnoozed = snoozedUntilMs > Date.now()
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [childBrowserOpen, setChildBrowserOpen] = useState(false)
+  const canBrowseGeminiChildren = GEMINI_ENABLED && sessionSummary.providerId === GEMINI_CLI_PROVIDER_ID && !sessionSummary.importedReadOnly && !isSubagentRow && !isCompanionContext() && isCefContext()
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
   const iconPicker = useCustomIconPicker()
@@ -1030,6 +1036,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             onSelect={() => { setMenuPos(null); void setSessionPinned(sessionId, !isPinned) }} />
           <MenuItem className="uam-sb-menu-item" icon={<SmilePlus size={13} aria-hidden />} label="Icon…"
             onSelect={() => { setMenuPos(null); iconPicker.open('chat', sessionId, sessionName) }} />
+          {canBrowseGeminiChildren && <MenuItem className="uam-sb-menu-item" icon={<Bot size={13} aria-hidden />} label="Subagent conversations…"
+            onSelect={() => { setMenuPos(null); setChildBrowserOpen(true) }} />}
           <MenuDivider />
           <RowSubmenu label="Copy" ariaLabel="Copy" icon={<Copy size={13} aria-hidden />}>
             <CopyDetailItems items={copyItems} />
@@ -1045,6 +1053,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         </ViewportMenu>
       )}
       {iconPicker.dialog}
+      {GEMINI_ENABLED && <Presence open={childBrowserOpen}><GeminiChildBrowser chatId={sessionId} returnFocusTo={() => rowRef.current} onClose={() => setChildBrowserOpen(false)} /></Presence>}
       <DeleteConfirmDialog
         open={confirmDelete}
         kind="chat"

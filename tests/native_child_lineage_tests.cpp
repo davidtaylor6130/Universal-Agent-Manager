@@ -112,6 +112,22 @@ UAM_TEST(NativeChildLineageRequiresActualToolEvidence)
 	}
 }
 
+UAM_TEST(NativeChildLineageAttestedGeminiListingReplacesToolEvidence)
+{
+	NativeLineageFixture fixture("gemini-cli");
+	fixture.Tool().sub_agent_id.clear();
+	fixture.Tool().sub_agent_children.clear();
+	fixture.parent.messages_loaded = false;
+	UAM_ASSERT(!fixture.Apply());
+	UAM_ASSERT(ChatRepository::ApplyNativeChildDisplayLineage(fixture.parent, fixture.child, fixture.native_child_id, true));
+	fixture.AssertReceipt(fixture.child);
+
+	NativeLineageFixture claude("claude-cli");
+	claude.Tool().sub_agent_id.clear();
+	claude.Tool().sub_agent_children.clear();
+	UAM_ASSERT(!ChatRepository::ApplyNativeChildDisplayLineage(claude.parent, claude.child, claude.native_child_id, true));
+}
+
 UAM_TEST(NativeChildLineageCodexRequiresNormalizedReceiver)
 {
 	NativeLineageFixture fixture;

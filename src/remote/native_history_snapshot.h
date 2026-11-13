@@ -191,6 +191,131 @@ namespace uam::remote::native_history
 	{
 		return gemini::HistoryFileInProject(root, relative);
 	}
+
+	inline constexpr std::size_t kMaxGeminiChildren = 200;
+	inline constexpr std::size_t kMaxGeminiChildScan = 4096;
+	inline constexpr std::size_t kMaxGeminiChildPreviewBytes = 200;
+	struct GeminiChild
+	{
+		std::string agent_id;
+		std::string preview;
+		std::string started_at;
+		std::string updated_at;
+		std::size_t messages = 0;
+	};
+	struct GeminiChildListing
+	{
+		std::vector<GeminiChild> children;
+		std::size_t unreadable = 0;
+		bool truncated = false;
+	};
+	inline bool IsGeminiSessionContextRow(const nlohmann::json& row, std::size_t ordinal)
+	{
+		if (ordinal != 0 || String(row, "id") != gemini::kSessionContextRowId || String(row, "type") != "user") return false;
+		const auto content = row.find("content");
+		if (content == row.end() || !content->is_array() || content->size() != 1) return false;
+		const auto& part = content->front();
+		if (!part.is_object() || part.size() != 1 || !part.contains("text") || !part["text"].is_string()) return false;
+		const auto& value = part["text"].get_ref<const std::string&>();
+		return value.starts_with(gemini::kSessionContextOpening) && value.ends_with(gemini::kSessionContextClosing);
+	}
+	inline std::string GeminiRowText(const nlohmann::json& row)
+	{
+		const auto content = row.find("content");
+		if (content == row.end()) return {};
+		if (content->is_string()) return content->get<std::string>();
+		std::string text;
+		if (content->is_array())
+			for (const auto& part : *content)
+				if (part.is_object() && part.contains("text") && part["text"].is_string())
+				{
+					if (!text.empty()) text += ' ';
+					text += part["text"].get_ref<const std::string&>();
+				}
+		return text;
+	}
+	// The preview helps the user choose a row; it never selects or correlates a child.
+	inline bool SummarizeGeminiChild(const nlohmann::json& document, GeminiChild& child)
+	{
+		const auto messages = document.find("messages");
+		if (messages == document.end() || !messages->is_array()) return false;
+		std::size_t ordinal = 0;
+		for (const auto& row : *messages)
+		{
+			const std::size_t position = ordinal++;
+			if (!row.is_object() || IsGeminiSessionContextRow(row, position)) continue;
+			const std::string type = String(row, "type");
+			if (type != "user" && type != "gemini") continue;
+			++child.messages;
+			if (type == "user" && child.preview.empty()) child.preview = std::string(strings::Utf8Prefix(strings::Trim(GeminiRowText(row)), kMaxGeminiChildPreviewBytes));
+		}
+		child.started_at = std::string(strings::Utf8Prefix(String(document, "startTime"), 64));
+		child.updated_at = std::string(strings::Utf8Prefix(String(document, "lastUpdated"), 64));
+		return child.messages > 0;
+	}
+	// Gemini CLI files a subagent as chats/<parent id>/<child id>.jsonl and records no parent in
+	// its header, so ownership is this directory under the attested parent plus each journal
+	// naming itself, kind subagent and this workspace. Titles and times never select a child.
+	inline bool ListGeminiChildren(const std::string& parent, const std::string& workspace, GeminiChildListing& result, std::string& error, std::stop_token stop_token = {}, std::uintmax_t parent_max_bytes = 0)
+	{
+		result = {};
+		error = "The exact native history is unavailable or its workspace identity does not match.";
+		bool claimed = false;
+		const bool visited = VisitGeminiParentFiles(parent, workspace, [&](const auto& root, const auto& parent_file)
+		{
+			const auto parent_path = GeminiFileInsideRoot(root, parent_file);
+			if (!parent_path) return false;
+			std::error_code size_error;
+			if (parent_max_bytes > 0 && std::filesystem::file_size(*parent_path, size_error) > parent_max_bytes && !size_error) { error = kSnapshotTooLargeError; return false; }
+			const auto metadata = gemini::ReadHistoryDocumentFile(*parent_path, parent_max_bytes, false, stop_token);
+			if (!metadata || String(*metadata, "sessionId") != parent) return true;
+			if (claimed) { error = "More than one native Gemini transcript claims this exact identity."; return false; }
+			claimed = true;
+			const auto directory_relative = parent_file.parent_path() / parent;
+			const auto directory = gemini::HistoryDirectoryInProject(root, directory_relative);
+			if (!directory) return true;
+			struct Candidate { std::filesystem::path name; std::filesystem::file_time_type changed; std::uintmax_t bytes; };
+			std::vector<Candidate> candidates;
+			std::error_code scan_error;
+			std::size_t scanned = 0;
+			for (std::filesystem::directory_iterator file(*directory, scan_error), end; !scan_error && file != end; file.increment(scan_error))
+			{
+				if (stop_token.stop_requested()) return false;
+				if (++scanned > kMaxGeminiChildScan) { result.truncated = true; break; }
+				std::error_code entry_error;
+				const auto extension = file->path().extension();
+				if ((extension != ".json" && extension != ".jsonl") || !file->is_regular_file(entry_error) || file->is_symlink(entry_error)) continue;
+				if (!SafeId(paths::Utf8PathString(file->path().stem()))) continue;
+				auto current_sibling = file->path(); current_sibling += "l";
+				if (extension == ".json" && std::filesystem::exists(current_sibling, entry_error)) continue;
+				const auto bytes = file->file_size(entry_error);
+				if (entry_error) { ++result.unreadable; continue; }
+				candidates.push_back({file->path().filename(), file->last_write_time(entry_error), bytes});
+			}
+			if (scan_error) return false;
+			std::ranges::sort(candidates, [](const Candidate& left, const Candidate& right) { return left.changed != right.changed ? left.changed > right.changed : left.name < right.name; });
+			std::size_t total = 0;
+			for (const auto& candidate : candidates)
+			{
+				if (stop_token.stop_requested()) return false;
+				if (result.children.size() >= kMaxGeminiChildren) { result.truncated = true; break; }
+				if (candidate.bytes > kMaxSnapshotBytes) { ++result.unreadable; continue; }
+				if (candidate.bytes > kMaxSnapshotBytes - total) { result.truncated = true; break; }
+				total += static_cast<std::size_t>(candidate.bytes);
+				GeminiChild child;
+				child.agent_id = paths::Utf8PathString(candidate.name.stem());
+				const auto child_path = GeminiFileInsideRoot(root, directory_relative / candidate.name);
+				auto document = child_path ? gemini::ReadHistoryDocumentFile(*child_path, kMaxSnapshotBytes, true, stop_token) : std::nullopt;
+				if (stop_token.stop_requested()) return false;
+				if (!document || !GeminiChildDocumentIdentity(*document, parent, child.agent_id, workspace)) { ++result.unreadable; continue; }
+				if (SummarizeGeminiChild(*document, child)) result.children.push_back(std::move(child));
+			}
+			return true;
+		}, stop_token);
+		if (!visited || !claimed) return false;
+		error.clear();
+		return true;
+	}
 	inline bool Load(const std::string& provider, const std::string& id, const std::string& workspace, Snapshot& result, std::string& error, const std::string& agent_id = {})
 	{
 		result = {};

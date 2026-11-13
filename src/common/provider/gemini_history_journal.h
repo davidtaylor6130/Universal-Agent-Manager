@@ -17,6 +17,12 @@
 
 namespace uam::gemini
 {
+	// Gemini CLI records this generated environment preamble as the first user row, with a
+	// fixed id from deriveStableId(["environment-context"]). It is model context, not a user turn.
+	inline constexpr std::string_view kSessionContextRowId = "d04923d38bb0f6017037e74183378ef4";
+	inline constexpr std::string_view kSessionContextOpening = "<session_context>\nThis is the Gemini CLI. We are setting up the context for our chat.\n";
+	inline constexpr std::string_view kSessionContextClosing = "\n</session_context>";
+
 	// Gemini 0.64.0 ChatRecordingService's append-only record grammar. Retain the
 	// current conversation, not every obsolete version of every appended record.
 	class HistoryJournal
