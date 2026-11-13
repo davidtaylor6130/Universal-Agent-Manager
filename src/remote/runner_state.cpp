@@ -19,6 +19,8 @@
 #include "common/utils/string_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/base64.h"
+#include "common/secrets/secret_drop.h"
+#include "common/secrets/secret_redactor.h"
 #include "common/utils/env_utils.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/io_utils.h"
@@ -948,6 +950,32 @@ namespace uam::remote
 			if (!InspectNativePath(request["path"].get<std::string>(), request["allowMissingLeaf"].get<bool>(), proof, error))
 				return ProcessError(request, "unsafe_path", error);
 			return ProcessSuccess(request, std::move(proof));
+		}
+		if (type == "secret.drop")
+		{
+			state_lock.unlock();
+			// Never echo or log this request: its payload is a user secret.
+			if (!request.contains("dataBase64") || !request["dataBase64"].is_string())
+				return ProcessError(request, "invalid_request", "A base64 secret is required.");
+			std::string value;
+			struct WipeOnExit
+			{
+				std::string& value;
+				~WipeOnExit() { volatile char* bytes = value.data(); for (std::size_t index = 0; index < value.size(); ++index) bytes[index] = '\0'; }
+			} wipe{value};
+			if (!uam::base64::Decode(request["dataBase64"].get_ref<const std::string&>(), value) || value.empty() ||
+			    value.size() > uam::secrets::kMaxSecretBytes || value.find_first_of(std::string_view("\0\n\r", 3)) != std::string::npos)
+				return ProcessError(request, "invalid_request", "The secret must be 1 to 8192 bytes without NUL or line breaks.");
+			if (m_spoolDirectory.empty()) return ProcessError(request, "secret_unavailable", "The helper's private folder is unavailable.");
+#if defined(_WIN32)
+			constexpr std::chrono::seconds ttl = uam::secrets::kWindowsDropTtl;
+#else
+			constexpr std::chrono::seconds ttl = uam::secrets::kDropTtl;
+#endif
+			// The per-helper spool is owner-only and removed with this state, so earlier helpers' drops go with their spools.
+			const uam::secrets::DropResult drop = uam::secrets::Drop(m_spoolDirectory / "secrets", value, ttl);
+			if (!drop.ok) return ProcessError(request, "secret_unavailable", drop.error);
+			return ProcessSuccess(request, {{"path", drop.path}});
 		}
 		if (type == "usage.accounting")
 		{
