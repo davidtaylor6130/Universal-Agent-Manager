@@ -1,6 +1,15 @@
 #include "test_harness.h"
 #include "app/uam_control_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "computer_use/computer_use_install_staging.h"
+
+#include <stdexcept>
+
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace uam_test;
 
@@ -1044,3 +1053,119 @@ UAM_TEST(ComputerUseBackgroundScanIsNotScheduledWhileGloballyDisabled)
 	UAM_ASSERT(!service.PollInBackground(app));
 	UAM_ASSERT(!service.ScanPendingForTests());
 }
+
+#if UAM_ENABLE_COMPUTER_USE && (defined(_WIN32) || defined(__APPLE__))
+namespace
+{
+	long CurrentPidForComputerUseTests()
+	{
+#if defined(_WIN32)
+		return static_cast<long>(_getpid());
+#else
+		return static_cast<long>(getpid());
+#endif
+	}
+}
+
+UAM_TEST(ComputerUseInstallSweepRemovesOnlyAbandonedStagingCopies)
+{
+	TempDir temp("uam-computer-use-sweep");
+	const fs::path root = temp.root / "Computer Use";
+	const auto make_copy = [](const fs::path& path)
+	{
+		fs::create_directories(path / "Contents" / "MacOS");
+		std::ofstream(path / "Contents" / "MacOS" / "UAM Computer Use") << "binary";
+	};
+	UAM_ASSERT(!uam::computer_use::HasInstallStaging(temp.root / "missing"));
+	make_copy(root / "UAM Computer Use.app");
+	std::ofstream(root / ".receipt") << "a\nb\n";
+	std::ofstream(root / ".install.lock");
+	fs::create_directories(root / ".staging-not-a-pid");
+	fs::create_directories(root / ".staging-");
+	std::ofstream(root / ".staging-12345678") << "not a directory";
+	UAM_ASSERT(!uam::computer_use::HasInstallStaging(root));
+	// Copies are made only under the install lock, so a copy whose PID was reused by a live process is still abandoned.
+	make_copy(uam::computer_use::InstallStagingPath(root, 1));
+	make_copy(uam::computer_use::InstallStagingPath(root, 999999999));
+	make_copy(uam::computer_use::InstallStagingPath(root, CurrentPidForComputerUseTests()));
+	UAM_ASSERT(uam::computer_use::HasInstallStaging(root));
+#if !defined(_WIN32)
+	// A link named like a copy is never followed into its target or removed.
+	const fs::path outside = temp.root / "outside";
+	fs::create_directories(outside);
+	std::ofstream(outside / "keep.txt") << "keep";
+	fs::create_directory_symlink(outside, root / ".staging-424242");
+	// A link inside a copy is removed without deleting what it points at.
+	fs::create_directory_symlink(outside, uam::computer_use::InstallStagingPath(root, 1) / "Contents" / "Frameworks");
+#endif
+
+	UAM_ASSERT_EQ(uam::computer_use::SweepInstallStaging(root), std::size_t{3});
+
+	UAM_ASSERT(!fs::exists(uam::computer_use::InstallStagingPath(root, 1)));
+	UAM_ASSERT(!fs::exists(uam::computer_use::InstallStagingPath(root, 999999999)));
+	UAM_ASSERT(!fs::exists(uam::computer_use::InstallStagingPath(root, CurrentPidForComputerUseTests())));
+	UAM_ASSERT(fs::is_regular_file(root / "UAM Computer Use.app" / "Contents" / "MacOS" / "UAM Computer Use"));
+	UAM_ASSERT(fs::is_directory(root / ".staging-not-a-pid"));
+	UAM_ASSERT(fs::is_directory(root / ".staging-"));
+	UAM_ASSERT(fs::is_regular_file(root / ".staging-12345678"));
+	UAM_ASSERT(fs::is_regular_file(root / ".receipt"));
+	UAM_ASSERT(fs::exists(root / ".install.lock"));
+#if !defined(_WIN32)
+	UAM_ASSERT(fs::is_symlink(root / ".staging-424242"));
+	UAM_ASSERT(fs::is_regular_file(outside / "keep.txt"));
+#endif
+	UAM_ASSERT(!uam::computer_use::HasInstallStaging(root));
+	UAM_ASSERT_EQ(uam::computer_use::SweepInstallStaging(root), std::size_t{0});
+	UAM_ASSERT_EQ(uam::computer_use::SweepInstallStaging(temp.root / "missing"), std::size_t{0});
+}
+
+UAM_TEST(ComputerUseInstallStagingGuardRemovesCopyOnEveryExit)
+{
+	TempDir temp("uam-computer-use-guard");
+	const fs::path staging = uam::computer_use::InstallStagingPath(temp.root, CurrentPidForComputerUseTests());
+	const auto failed_install = [&]() -> bool
+	{
+		uam::computer_use::InstallStagingGuard guard(staging);
+		fs::create_directories(staging / "Contents" / "Frameworks");
+		std::ofstream(staging / "Contents" / "Info.plist") << "plist";
+		return false; // early return or failure after copying
+	};
+	UAM_ASSERT(!failed_install());
+	UAM_ASSERT(!fs::exists(staging));
+
+	bool thrown = false;
+	try
+	{
+		uam::computer_use::InstallStagingGuard guard(staging);
+		fs::create_directories(staging / "Contents");
+		throw std::runtime_error("copy failed");
+	}
+	catch (const std::runtime_error&) { thrown = true; }
+	UAM_ASSERT(thrown);
+	UAM_ASSERT(!fs::exists(staging));
+
+	// A successful swap renames the copy away, so the guard leaves the installed helper alone.
+	const fs::path installed = temp.root / "UAM Computer Use.app";
+	{
+		uam::computer_use::InstallStagingGuard guard(staging);
+		fs::create_directories(staging / "Contents");
+		fs::rename(staging, installed);
+	}
+	UAM_ASSERT(fs::is_directory(installed / "Contents"));
+	UAM_ASSERT(!fs::exists(staging));
+}
+
+UAM_TEST(ComputerUseInstallReceiptMatchSkipsReinstall)
+{
+	TempDir temp("uam-computer-use-receipt");
+	const fs::path root = temp.root;
+	UAM_ASSERT(!uam::computer_use::InstallReceiptMatches(root, "bin", "plist"));
+	std::ofstream(root / ".receipt") << "bin\nplist\n";
+	UAM_ASSERT(!uam::computer_use::InstallReceiptMatches(root, "bin", "plist")); // no installed app
+	fs::create_directories(root / "UAM Computer Use.app");
+	UAM_ASSERT(uam::computer_use::InstallReceiptMatches(root, "bin", "plist"));
+	UAM_ASSERT(!uam::computer_use::InstallReceiptMatches(root, "other", "plist"));
+	UAM_ASSERT(!uam::computer_use::InstallReceiptMatches(root, "bin", "other"));
+	UAM_ASSERT(!uam::computer_use::InstallReceiptMatches(root, "", ""));
+}
+#endif

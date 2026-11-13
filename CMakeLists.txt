@@ -419,6 +419,7 @@ if(WIN32)
   )
   list(APPEND UAM_COMPUTER_USE_PLATFORM_SOURCES
     src/computer_use/computer_use_platform_windows.cpp
+    src/computer_use/computer_use_install_staging.cpp
   )
 elseif(APPLE)
   set(UAM_PTY_SOURCES src/common/platform/platform_pty_macos.cpp)
@@ -438,6 +439,7 @@ elseif(APPLE)
     src/computer_use/computer_use_platform_macos.mm
     src/computer_use/computer_use_launch_macos.mm
     src/computer_use/computer_use_install_macos.mm
+    src/computer_use/computer_use_install_staging.cpp
   )
   set_source_files_properties(
     src/common/platform/platform_dictation_macos.mm
