@@ -17,7 +17,7 @@ import type {
 import type { Message } from '../../types/message'
 import { Button, Chip, EXIT_MS, IconButton, Overlay, RowButton, Tab, Tabs, Tooltip, motionAllowed, usePresence } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
-import { formatReadableToolOutput } from './toolOutputFormat'
+import { formatReadableToolOutput, redactSecretRequestTool } from './toolOutputFormat'
 import {
   CopyTextButton,
   roleAccent,
@@ -373,7 +373,7 @@ type ToolCallModalProps = {
 }
 
 export function ToolCallModal(props: ToolCallModalProps) {
-  return <ToolCallDetails key={`${props.chatId ?? ''}:${props.messageIndex ?? 'live'}:${props.tool.id}:${props.tool.historyDigest ?? ''}`} {...props} />
+  return <ToolCallDetails key={`${props.chatId ?? ''}:${props.messageIndex ?? 'live'}:${props.tool.id}:${props.tool.historyDigest ?? ''}`} {...props} tool={redactSecretRequestTool(props.tool)} />
 }
 
 function ToolCallDetails({

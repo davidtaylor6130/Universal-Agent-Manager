@@ -387,7 +387,28 @@ export interface AcpPendingUserInput {
   status: string
   attentionKind?: AcpAttentionKind
   questions: AcpUserInputQuestion[]
+  /** UAM-control `secret_request`: the value is typed into the card and goes straight to native, never into this state. */
+  secretRequest?: AcpSecretRequest
 }
+
+export interface AcpSecretRequest {
+  label: string
+  reason: string
+  placeholder: string
+  /** Empty or an https sign-in page, opened in the system browser. */
+  url: string
+  /** Provider display name, e.g. "Codex". */
+  provider: string
+  /** Null: the chat runs on this computer. */
+  host: { name: string; platform: string } | null
+  /** This computer's platform, for the local wording: "macos" or "windows". */
+  localPlatform: string
+  /** The chat is in Plan mode: the user allows this one request before the field appears. */
+  planOptIn: boolean
+  keychain: { available: boolean; saved: boolean }
+}
+
+export type SecretSubmission = { value?: string; useSaved?: boolean; save?: boolean }
 
 export type AcpUserInputAnswers = Record<string, string[]>
 

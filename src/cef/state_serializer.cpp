@@ -1713,6 +1713,7 @@ namespace uam
 				questions.push_back(SerializeAcpUserInputQuestion(question));
 			}
 			input_json["questions"] = std::move(questions);
+			if (!input.secret_request.is_null()) input_json["secretRequest"] = input.secret_request;
 			return input_json;
 		}
 

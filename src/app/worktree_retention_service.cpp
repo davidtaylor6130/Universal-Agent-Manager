@@ -17,6 +17,22 @@
 
 namespace uam
 {
+	namespace
+	{
+		constexpr std::string_view kManagedSnapshotPrefix = "managed-repository-";
+
+		std::string ManagedSnapshotName(const std::string& chat_id)
+		{
+			return std::string(kManagedSnapshotPrefix) + hashing::Hex64(hashing::Fnv1a64(chat_id));
+		}
+
+		bool IsManagedSnapshotName(const std::string& name)
+		{
+			return name.size() == kManagedSnapshotPrefix.size() + 16 && name.starts_with(kManagedSnapshotPrefix) &&
+			    name.find_first_not_of("0123456789abcdef", kManagedSnapshotPrefix.size()) == std::string::npos;
+		}
+	}
+
 	WorktreeRetentionService::~WorktreeRetentionService() { Stop(); }
 
 	void WorktreeRetentionService::Stop()
@@ -76,12 +92,14 @@ namespace uam
 		for (const ResourceCollection& collection : app.resource_collections)
 			for (const ResourceReference& reference : collection.references)
 				if (reference.type == "file" || reference.type == "desktop-app") snapshot.protected_paths.push_back(paths::PathFromUtf8(reference.target));
+		for (const std::string& id : chat_ids) snapshot.protected_snapshot_names.insert(ManagedSnapshotName(id));
+		for (const std::string& id : snapshot.agent_transcript_ids) snapshot.protected_snapshot_names.insert(ManagedSnapshotName(id));
 		snapshot.known_chat_ids = std::move(chat_ids);
 		return true;
 	}
 
 	bool WorktreeRetentionService::ProtectStoredWorkspaces(const Snapshot& snapshot,
-	    std::vector<std::filesystem::path>& protected_paths, std::stop_token stop)
+	    std::vector<std::filesystem::path>& protected_paths, std::unordered_set<std::string>& protected_snapshot_names, std::stop_token stop)
 	{
 		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
 		const std::filesystem::path root = AppPaths::UamChatsRootPath(snapshot.data_root);
@@ -97,6 +115,7 @@ namespace uam
 			if (iterator->path().extension() != ".json") continue;
 			if (paths::IsLinkOrReparsePointNoThrow(iterator->path()) || !iterator->is_regular_file(error) || error) return false;
 			const std::string id = paths::Utf8PathString(iterator->path().stem());
+			protected_snapshot_names.insert(ManagedSnapshotName(id));
 			if (snapshot.known_chat_ids.contains(id)) continue;
 			const std::optional<ChatSession> chat = ChatRepository::LoadLocalChatSummaryReadOnly(snapshot.data_root, id);
 			if (!chat) return false;
@@ -121,13 +140,35 @@ namespace uam
 		return true;
 	}
 
+	std::size_t WorktreeRetentionService::PrunePortPatches(const Snapshot& snapshot, std::stop_token stop)
+	{
+		// A patch is written for every port; after a failed apply its path is shown so it can be applied by hand within the retention period.
+		const std::filesystem::path patches = snapshot.data_root / "worktrees" / "patches";
+		if (paths::IsLinkOrReparsePointNoThrow(snapshot.data_root / "worktrees") || paths::IsLinkOrReparsePointNoThrow(patches)) return 0;
+		const std::filesystem::file_time_type cutoff = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * snapshot.retention_days);
+		std::size_t removed = 0, visited = 0;
+		std::error_code error;
+		for (std::filesystem::directory_iterator it(patches, error), end; !error && it != end && ++visited <= 4096 && !stop.stop_requested(); it.increment(error))
+		{
+			std::error_code entry_error;
+			if (it->path().extension() != ".patch" || !std::filesystem::is_regular_file(it->symlink_status(entry_error)) || entry_error) continue;
+			const std::filesystem::file_time_type modified = std::filesystem::last_write_time(it->path(), entry_error);
+			if (entry_error || modified >= cutoff) continue;
+			if (std::filesystem::remove(it->path(), entry_error)) ++removed;
+		}
+		return removed;
+	}
+
 	WorktreeRetentionService::Result WorktreeRetentionService::Discover(const Snapshot& snapshot, std::stop_token stop)
 	{
 		Result result;
 		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
 		std::size_t visited = 0;
 		std::vector<std::filesystem::path> protected_paths = snapshot.protected_paths;
-		if (!ProtectProcessWorkspace(snapshot.data_root, protected_paths) || !ProtectStoredWorkspaces(snapshot, protected_paths, stop)) return result;
+		std::unordered_set<std::string> protected_snapshot_names = snapshot.protected_snapshot_names;
+		if (!ProtectProcessWorkspace(snapshot.data_root, protected_paths) || !ProtectStoredWorkspaces(snapshot, protected_paths, protected_snapshot_names, stop)) return result;
+		if (const std::size_t patches = PrunePortPatches(snapshot, stop); patches > 0)
+			diagnostics::Write("[retention] Removed " + std::to_string(patches) + " port patch file(s) older than the retention period.");
 		const GitWorktreeService worktrees;
 		const std::filesystem::path storage = snapshot.data_root / "worktrees";
 		if (paths::IsLinkOrReparsePointNoThrow(storage) || paths::IsLinkOrReparsePointNoThrow(snapshot.data_root)) return result;
@@ -150,6 +191,22 @@ namespace uam
 					if (++visited >= 4096 || stop.stop_requested() || std::chrono::steady_clock::now() >= deadline || result.candidates.size() >= 32) break;
 					const std::filesystem::path path = iterator->path();
 					if (paths::IsLinkOrReparsePointNoThrow(path) || !paths::IsDirectoryNoThrow(path)) continue;
+					const std::string name = paths::Utf8PathString(path.filename());
+					if (directory.second == 0 && name.starts_with(kManagedSnapshotTombstonePrefix))
+					{
+						// A snapshot whose deletion was interrupted; nothing uses it once renamed.
+						(void)paths::RemoveTreeWithoutFollowingLinksNoThrow(path);
+						continue;
+					}
+					if (directory.second == 0 && IsManagedSnapshotName(name))
+					{
+						// A plain-folder snapshot of a chat that no longer exists, once its last linked worktree is gone.
+						GitWorktreeRetentionCandidate candidate;
+						if (!protected_snapshot_names.contains(name) &&
+						    worktrees.InspectManagedSnapshotRetentionCandidate(snapshot.data_root, path, protected_paths, candidate, stop, snapshot.retention_days))
+							result.candidates.push_back({path, std::move(candidate), true});
+						continue;
+					}
 					if (!paths::PathExistsNoThrow(path / ".git"))
 					{
 						if (directory.second < 2) directories.emplace_back(path, directory.second + 1);
@@ -172,7 +229,10 @@ namespace uam
 						offset = record_end + 1;
 						if (!record.starts_with("worktree ")) continue;
 						const std::filesystem::path source = paths::PathFromUtf8(std::string(record.substr(9)));
-						if (hashing::Hex64(hashing::Fnv1a64(paths::NormalizedPortablePathString(source))) != key ||
+						// A plain-folder snapshot's repository lives in this bucket; its worktrees follow the same rules.
+						const std::string source_name = paths::Utf8PathString(source.filename());
+						const bool managed_source = IsManagedSnapshotName(source_name) && paths::Utf8PathString(source.parent_path().filename()) == key;
+						if ((managed_source ? protected_snapshot_names.contains(source_name) : hashing::Hex64(hashing::Fnv1a64(paths::NormalizedPortablePathString(source))) != key) ||
 						    paths::IsSameOrInsideRoot(path, source)) continue;
 						GitWorktreeRetentionCandidate candidate;
 						if (worktrees.InspectRetentionCandidate(snapshot.data_root, source, path, protected_paths, candidate, stop, snapshot.retention_days))
@@ -248,11 +308,26 @@ namespace uam
 				{
 					std::shared_ptr<WorkspaceLeaseGate::Lease> active = std::move(lease);
 					Result result;
-					if (ProtectProcessWorkspace(snapshot.data_root, snapshot.protected_paths) && ProtectStoredWorkspaces(snapshot, snapshot.protected_paths, stop))
-						result.removed = GitWorktreeService().RemoveRetentionCandidate(snapshot.data_root, candidate.source, candidate.worktree, snapshot.protected_paths, *active, stop, snapshot.retention_days);
-					diagnostics::Write(std::string("[retention] ") + (result.removed ? "Removed " : "Preserved ") +
-					    paths::Utf8PathString(candidate.worktree.directory) + "; branch " + candidate.worktree.branch_name +
-					    (result.removed ? " remains." : " remains after validation or removal failed."));
+					std::unordered_set<std::string> protected_snapshot_names = snapshot.protected_snapshot_names;
+					if (ProtectProcessWorkspace(snapshot.data_root, snapshot.protected_paths) && ProtectStoredWorkspaces(snapshot, snapshot.protected_paths, protected_snapshot_names, stop))
+					{
+						// A snapshot (or a snapshot's worktree) whose chat reappeared since discovery is kept.
+						const std::filesystem::path& snapshot_path = candidate.managed_snapshot ? candidate.worktree.directory : candidate.source;
+						const std::string snapshot_name = paths::Utf8PathString(snapshot_path.filename());
+						if (IsManagedSnapshotName(snapshot_name) && protected_snapshot_names.contains(snapshot_name))
+							result.removed = false;
+						else if (!candidate.managed_snapshot)
+							result.removed = GitWorktreeService().RemoveRetentionCandidate(snapshot.data_root, candidate.source, candidate.worktree, snapshot.protected_paths, *active, stop, snapshot.retention_days);
+						else
+							result.removed = GitWorktreeService().RemoveManagedSnapshotRetentionCandidate(snapshot.data_root, candidate.worktree, snapshot.protected_paths, *active, stop, snapshot.retention_days);
+					}
+					if (candidate.managed_snapshot)
+						diagnostics::Write(std::string("[retention] ") + (result.removed ? "Removed plain-folder snapshot " : "Preserved plain-folder snapshot ") +
+						    paths::Utf8PathString(candidate.worktree.directory) + (result.removed ? "." : " after validation or removal failed."));
+					else
+						diagnostics::Write(std::string("[retention] ") + (result.removed ? "Removed " : "Preserved ") +
+						    paths::Utf8PathString(candidate.worktree.directory) + "; branch " + candidate.worktree.branch_name +
+						    (result.removed ? " remains." : " remains after validation or removal failed."));
 					return result;
 				});
 			}

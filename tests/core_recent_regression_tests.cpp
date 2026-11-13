@@ -845,13 +845,18 @@ UAM_TEST(AcpStopAtItsDeadlineWithBufferedOutputIsStillFinalisedExactlyOnce)
 			PlatformServicesFactory::Instance().process_service.TerminateStdioProcess(*fixture.Task().owned_process, true);
 		}
 		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+		int polls = 0;
 		while (fixture.session->local_stop_pending && std::chrono::steady_clock::now() < deadline)
 		{
 			(void)uam::PollCompletedAcpProcessStops(fixture.app, nullptr);
+			++polls;
 			std::this_thread::sleep_for(std::chrono::milliseconds(5));
 		}
 		// The stop is finalised by a later poll instead of staying "stopping" with no owner.
 		UAM_ASSERT(!fixture.session->local_stop_pending);
+		// Output left after a stop drains in batches, not one line per poll (which took 900 polls here and ran past
+		// the deadline on slow runners). The bound allows for batches cut short by the per-poll time limit.
+		UAM_ASSERT(polls < 100);
 		UAM_ASSERT(fixture.session->stdout_buffer.find('\n') == std::string::npos);
 		UAM_ASSERT_EQ(fixture.Chat().messages[1].content, std::string("Answer before the stop."));
 		// Processing the buffered output may itself end the process; either way the task is settled once and reaped.
