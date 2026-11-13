@@ -387,7 +387,28 @@ export interface AcpPendingUserInput {
   status: string
   attentionKind?: AcpAttentionKind
   questions: AcpUserInputQuestion[]
+  /** UAM-control `secret_request`: the value is typed into the card and goes straight to native, never into this state. */
+  secretRequest?: AcpSecretRequest
 }
+
+export interface AcpSecretRequest {
+  label: string
+  reason: string
+  placeholder: string
+  /** Empty or an https sign-in page, opened in the system browser. */
+  url: string
+  /** Provider display name, e.g. "Codex". */
+  provider: string
+  /** Null: the chat runs on this computer. */
+  host: { name: string; platform: string } | null
+  /** This computer's platform, for the local wording: "macos" or "windows". */
+  localPlatform: string
+  /** The chat is in Plan mode: the user allows this one request before the field appears. */
+  planOptIn: boolean
+  keychain: { available: boolean; saved: boolean }
+}
+
+export type SecretSubmission = { value?: string; useSaved?: boolean; save?: boolean }
 
 export type AcpUserInputAnswers = Record<string, string[]>
 
@@ -1076,6 +1097,8 @@ export interface VcsCommitMessageSuggestion {
 
 export interface CppAppState {
   startupNativeImports?: StartupNativeImportStatus
+  /** Desktop bootstrap only: phone requests still waiting for confirmation; read raw, never stored in app state. */
+  companionConfirmations?: unknown
   unchanged?: false
   stateRevision?: number
   bootId?: string
@@ -1225,6 +1248,16 @@ export interface CliTranscript {
 
 export type PushChannelStatus = 'no-push-yet' | 'connected' | 'parse-error' | 'invalid-message'
 
+/** A phone request held until the desktop user allows or denies it; the stored request itself stays native. */
+export interface CompanionConfirmation {
+  id: string
+  chatId: string
+  chatTitle: string
+  description: string
+  /** Epoch milliseconds. */
+  expiresAt: number
+}
+
 export type DictationPushMessage =
   | { type: 'dictation'; dictationId: string; event: 'interim' | 'final'; text: string }
   | { type: 'dictation'; dictationId: string; event: 'error'; message: string }
@@ -1245,6 +1278,7 @@ export type ParsedPushMessage =
   | { type: 'streamDone'; chatId: string }
   | DictationPushMessage
   | { type: 'attachmentProgress'; chatId: string; attachmentId: string; copiedBytes: number; totalBytes: number }
+  | { type: 'companionConfirmations'; items: CompanionConfirmation[] }
 
 export type ParsedPushResult =
   | { ok: true; message: ParsedPushMessage }

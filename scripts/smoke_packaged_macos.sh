@@ -68,6 +68,12 @@ for remote_file in \
 do
     [[ -f "$remote_file" ]]
 done
+# Gemini Plan and goal-review launches refuse to start without UAM's policy beside the app resources.
+gemini_policy="$app_root/Contents/Resources/gemini-plan-ceiling.toml"
+if ! cmp -s "$gemini_policy" "$(cd "$(dirname "$0")/.." && pwd -P)/assets/providers/gemini-plan-ceiling.toml"; then
+    echo "Packaged macOS app is missing the current Gemini Plan policy: $gemini_policy" >&2
+    exit 1
+fi
 for remote_runner in \
     "$remote_root/uam-runner" \
     "$remote_root/linux-arm64/uam-runner" \

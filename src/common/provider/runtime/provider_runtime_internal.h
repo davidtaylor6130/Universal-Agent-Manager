@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/chat/chat_repository.h"
+#include "common/config/approval_modes.h"
 #include "common/models/app_models.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_profile_constants.h"
@@ -12,6 +13,7 @@
 #include "common/utils/shell_escape.h"
 #include "common/utils/string_utils.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <filesystem>
@@ -182,60 +184,159 @@ namespace uam::provider_runtime_internal
 		}
 	}
 
-	inline std::size_t PermissionBypassFlagSpan(const std::vector<std::string>& args, std::size_t index)
+	/// <summary>True when a launch carries Plan or a captured read ceiling; read and goal-review launches are mapped to Plan first.</summary>
+	inline bool LaunchHasReadCeiling(const ChatSession& chat)
 	{
-		if (index >= args.size()) return 0;
-		const std::string option = uam::strings::ToLowerAscii(uam::strings::Trim(args[index]));
-		constexpr auto standalone = std::to_array<std::string_view>({
-		    "--allow-all", "--allow-all-paths", "--allow-all-tools", "--dangerously-disable-sandbox",
-		    "--dangerously-skip-permissions", "--full-auto", "--yolo", "--auto",
-		});
-		if (uam::ranges::Contains(standalone, std::string_view(option))) return 1;
-		constexpr auto assignments = std::to_array<std::string_view>({
-		    "--approval-mode=yolo", "--ask-for-approval=never", "--permission-mode=bypasspermissions",
-		    "--sandbox=danger-full-access",
-		});
-		if (uam::ranges::Contains(assignments, std::string_view(option))) return 1;
-		if (index + 1 >= args.size()) return 0;
-		const std::string value = uam::strings::ToLowerAscii(uam::strings::Trim(args[index + 1]));
-		if ((option == "--approval-mode" && value == "yolo") ||
-		    ((option == "--ask-for-approval" || option == "-a") && value == "never") ||
-		    (option == "--permission-mode" && value == "bypasspermissions") ||
-		    (option == "--sandbox" && value == "danger-full-access") ||
-		    (option == "-c" && ((value.find("approval_policy") != std::string::npos && value.find("never") != std::string::npos) ||
-		                        (value.find("sandbox_mode") != std::string::npos && value.find("danger-full-access") != std::string::npos))))
+		return uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode;
+	}
+
+	/// <summary>Bypass flags (YOLO equivalents) are always removed; grant flags widen what runs without asking and are removed under a read ceiling.</summary>
+	enum class PermissionFlagClass { None, Grant, Bypass };
+	struct PermissionFlag
+	{
+		PermissionFlagClass kind = PermissionFlagClass::None;
+		std::size_t span = 0;
+	};
+
+	/// <summary>Classifies one provider option across the six CLIs, including --flag=value, split values, short forms and single-dash long forms.</summary>
+	inline PermissionFlag ClassifyPermissionFlag(const std::vector<std::string>& args, std::size_t index)
+	{
+		if (index >= args.size()) return {};
+		std::string option = uam::strings::ToLowerAscii(uam::strings::Trim(args[index]));
+		if (option.size() < 2 || option[0] != '-' || option == "--") return {};
+		std::string inline_value;
+		bool has_inline = false;
+		// Codex also accepts an attached config value (-csandbox_mode=danger-full-access).
+		if (option.size() > 2 && option.starts_with("-c") && option[2] != '-' && option[2] != '=' && option.find('=') != std::string::npos)
 		{
-			return 2;
+			inline_value = option.substr(2);
+			option.resize(2);
+			has_inline = true;
 		}
-		return 0;
+		else if (const std::size_t equals = option.find('='); equals != std::string::npos)
+		{
+			inline_value = option.substr(equals + 1);
+			option.resize(equals);
+			has_inline = true;
+		}
+		// Short codex options can carry their value attached (-sdanger-full-access, -anever).
+		if (!has_inline && option.size() > 2 && option[1] != '-' && (option[1] == 's' || option[1] == 'a') &&
+		    option != "-sandbox" && option != "-ask-for-approval")
+		{
+			const std::string value = option.substr(2);
+			if (value == "read-only" || value == "workspace-write" || value == "danger-full-access" ||
+			    value == "untrusted" || value == "on-failure" || value == "on-request" || value == "never")
+			{
+				inline_value = value;
+				option.resize(2);
+				has_inline = true;
+			}
+		}
+		// Go-style single-dash long flags (Antigravity) mean the same as their double-dash spelling.
+		if (option.size() > 2 && option[1] != '-') option.insert(0, "-");
+		const bool next_is_value = index + 1 < args.size() && !uam::strings::Trim(args[index + 1]).starts_with('-');
+		const std::string value = has_inline ? inline_value : next_is_value ? uam::strings::ToLowerAscii(uam::strings::Trim(args[index + 1])) : std::string{};
+		const std::size_t valued_span = has_inline ? 1 : next_is_value ? 2 : 1;
+		const auto variadic_span = [&]() -> std::size_t
+		{
+			if (has_inline) return 1;
+			std::size_t end = index + 1;
+			while (end < args.size() && !uam::strings::Trim(args[end]).starts_with('-')) ++end;
+			return end - index;
+		};
+
+		constexpr auto bypass = std::to_array<std::string_view>({
+		    "--allow-all", "--allow-all-paths", "--allow-all-tools", "--allow-all-urls", "--dangerously-disable-sandbox",
+		    "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--dangerously-bypass-approvals-and-sandbox",
+		    "--full-auto", "--yolo", "-y", "--auto",
+		});
+		if (uam::ranges::Contains(bypass, std::string_view(option))) return {PermissionFlagClass::Bypass, 1};
+
+		if (option == "--approval-mode")
+			return {value == "yolo" ? PermissionFlagClass::Bypass : PermissionFlagClass::Grant, valued_span};
+		if (option == "--permission-mode")
+			return {value == "bypasspermissions" ? PermissionFlagClass::Bypass : PermissionFlagClass::Grant, valued_span};
+		if (option == "--ask-for-approval" || option == "-a")
+		{
+			if (value == "never") return {PermissionFlagClass::Bypass, valued_span};
+			if (value == "untrusted" || value == "on-failure" || value == "on-request") return {PermissionFlagClass::Grant, valued_span};
+			return {};
+		}
+		if (option == "--sandbox" || option == "-s")
+		{
+			// Gemini's boolean --sandbox/-s and Codex read-only only restrict, so they stay.
+			if (value == "danger-full-access") return {PermissionFlagClass::Bypass, valued_span};
+			if (value == "workspace-write") return {PermissionFlagClass::Grant, valued_span};
+			return {};
+		}
+		if (option == "-c" || option == "--config")
+		{
+			const bool approval = value.find("approval") != std::string::npos;
+			const bool sandbox = value.find("sandbox") != std::string::npos;
+			if ((approval && value.find("never") != std::string::npos) || (sandbox && value.find("danger-full-access") != std::string::npos))
+				return {PermissionFlagClass::Bypass, valued_span};
+			if (approval || sandbox || value.find("permission") != std::string::npos) return {PermissionFlagClass::Grant, valued_span};
+			return {};
+		}
+		constexpr auto valued_grants = std::to_array<std::string_view>({
+		    "--settings", "--setting-sources", "--policy", "--admin-policy", "--mode", "--profile",
+		});
+		if (uam::ranges::Contains(valued_grants, std::string_view(option))) return {PermissionFlagClass::Grant, valued_span};
+		constexpr auto variadic_grants = std::to_array<std::string_view>({
+		    "--allowedtools", "--allowed-tools", "--allow-tool", "--allow-url",
+		});
+		if (uam::ranges::Contains(variadic_grants, std::string_view(option))) return {PermissionFlagClass::Grant, variadic_span()};
+		// Copilot autopilot approves and implements a plan; assisted approval and hook trust also approve without UAM.
+		constexpr auto standalone_grants = std::to_array<std::string_view>({"--autopilot", "--assisted-approval", "--dangerously-bypass-hook-trust"});
+		if (uam::ranges::Contains(standalone_grants, std::string_view(option))) return {PermissionFlagClass::Grant, 1};
+		return {};
+	}
+
+	/// <summary>Inserts launch options before any bare "--", so positional provider data cannot swallow them.</summary>
+	inline void InsertBeforePositional(std::vector<std::string>& argv, std::initializer_list<std::string_view> args)
+	{
+		const auto positional = std::find(argv.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(1, argv.size())), argv.end(), "--");
+		std::vector<std::string> values;
+		for (std::string_view arg : args) values.emplace_back(arg);
+		argv.insert(positional, values.begin(), values.end());
 	}
 
 	inline bool HasPermissionBypassExtraFlags(const AppSettings& settings)
 	{
 		const std::vector<std::string> args = uam::command_line::SplitWords(settings.provider_extra_flags);
-		for (std::size_t i = 0; i < args.size(); ++i)
+		for (std::size_t i = 0; i < args.size() && args[i] != "--"; ++i)
 		{
-			if (PermissionBypassFlagSpan(args, i) != 0) return true;
+			if (ClassifyPermissionFlag(args, i).kind == PermissionFlagClass::Bypass) return true;
 		}
 		return false;
 	}
 
-	inline std::vector<std::string> BuildProviderFlagsArgv(const AppSettings& settings)
+	/// <summary>Removes permission-class options before any bare "--"; arguments after it are positional provider data.</summary>
+	inline std::vector<std::string> FilterPermissionFlags(const std::vector<std::string>& args, bool read_ceiling)
 	{
-		const std::vector<std::string> extra_flags = uam::command_line::SplitWords(settings.provider_extra_flags);
 		std::vector<std::string> flags;
-		flags.reserve(extra_flags.size());
-		for (std::size_t i = 0; i < extra_flags.size();)
+		flags.reserve(args.size());
+		for (std::size_t i = 0; i < args.size();)
 		{
-			const std::size_t rejected_span = PermissionBypassFlagSpan(extra_flags, i);
-			if (rejected_span != 0)
+			if (args[i] == "--")
 			{
-				i += rejected_span;
+				flags.insert(flags.end(), args.begin() + static_cast<std::ptrdiff_t>(i), args.end());
+				break;
+			}
+			const PermissionFlag flag = ClassifyPermissionFlag(args, i);
+			if (flag.kind == PermissionFlagClass::Bypass || (read_ceiling && flag.kind == PermissionFlagClass::Grant))
+			{
+				i += flag.span;
 				continue;
 			}
-			flags.push_back(extra_flags[i++]);
+			flags.push_back(args[i++]);
 		}
 		return flags;
+	}
+
+	inline std::vector<std::string> BuildProviderFlagsArgv(const AppSettings& settings, bool read_ceiling = false)
+	{
+		return FilterPermissionFlags(uam::command_line::SplitWords(settings.provider_extra_flags), read_ceiling);
 	}
 
 	inline std::vector<std::string> ProviderWorkerFlags(const ProviderProfile& profile, const AppSettings& settings)
@@ -309,10 +410,6 @@ namespace uam::provider_runtime_internal
 		return argv;
 	}
 
-	inline std::vector<std::string> BuildFlagsArgv(const AppSettings& settings)
-	{
-		return BuildProviderFlagsArgv(settings);
-	}
 
 	inline std::string BuildPrompt(std::string_view user_prompt, const std::vector<std::string>& files)
 	{
@@ -351,13 +448,15 @@ namespace uam::provider_runtime_internal
 		const std::string default_command = uam::strings::NonEmptyOrFallback(profile.id, "provider-cli");
 		std::vector<std::string> argv = SplitInteractiveCommandOrDefault(profile, default_command);
 
-		AppendArgs(argv, BuildFlagsArgv(settings));
+		const bool read_ceiling = LaunchHasReadCeiling(chat);
+		AppendArgs(argv, BuildProviderFlagsArgv(settings, read_ceiling));
 
 		AppendResumeArgs(argv, profile, chat.native_session_id);
 
 		// Gemini is the only runtime using this generic helper; honor a per-chat model id
 		// so interactive CLI launches match the structured path (gemini supports --model/-m).
 		AppendTrimmedOptionValue(argv, "--model", chat.model_id);
+		if (read_ceiling) InsertBeforePositional(argv, {"--approval-mode", "plan"});
 
 		return argv;
 	}

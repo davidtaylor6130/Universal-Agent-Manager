@@ -591,7 +591,36 @@ std::vector<std::string> GeminiCliProviderRuntime::BuildStructuredLaunchArgv(con
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--approval-mode", approval_mode);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 	uam::computer_use::AppendGeminiMcpLaunchArguments(argv, chat);
+	// Plan-only admin rules outrank workspace, user, settings and saved approvals. Only ceiling launches pass it,
+	// because --admin-policy replaces any adminPolicyPaths from settings. PrepareStructuredLaunch refuses it where unavailable.
+	if (uam::provider_runtime_internal::LaunchHasReadCeiling(chat))
+		uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--admin-policy", uam::paths::Utf8PathString(GeminiPlanCeilingPolicyPath()));
 	return argv;
+}
+
+std::filesystem::path GeminiPlanCeilingPolicyPath()
+{
+	const std::filesystem::path executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath();
+#if defined(__APPLE__)
+	if (executable.parent_path().filename() == "MacOS")
+		return executable.parent_path().parent_path() / "Resources" / "gemini-plan-ceiling.toml";
+#endif
+	return executable.parent_path() / "gemini-plan-ceiling.toml";
+}
+
+bool GeminiCliProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState& session, const ProviderProfile&, std::string_view, bool remote,
+    std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>&, std::string& error) const
+{
+	const auto policy = std::ranges::find(argv, "--admin-policy");
+	const bool read_ceiling = session.goal_review_turn || session.active_uam_agent_workspace_access != "write" || policy != argv.end();
+	if (!read_ceiling) return true;
+	std::error_code ec;
+	if (!remote && policy != argv.end() && std::next(policy) != argv.end() &&
+	    std::filesystem::is_regular_file(uam::paths::PathFromUtf8(*std::next(policy)), ec)) return true;
+	error = remote
+	    ? "Gemini Plan and read-only turns cannot start on an SSH host: UAM cannot install its Plan policy there, so project or user Gemini settings could approve edits or commands. Use a local workspace or Default mode."
+	    : "Gemini Plan and read-only turns need UAM's Gemini Plan policy file, which is missing from this installation. Reinstall UAM.";
+	return false;
 }
 
 std::string GeminiCliProviderRuntime::OnAcpMapApprovalModeId(const std::string& mode_id) const

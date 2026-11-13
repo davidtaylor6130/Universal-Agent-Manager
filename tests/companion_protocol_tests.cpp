@@ -1,4 +1,5 @@
 #include "common/companion/protocol.h"
+#include "common/companion/desktop_confirmation.h"
 #include "common/utils/base64.h"
 #include "cef/uam_bridge_request.h"
 
@@ -196,7 +197,7 @@ namespace
 		Require(capabilities["restrictions"]["settingsReadOnly"] == false && capabilities["restrictions"]["configurationDefinitionsReadOnly"] == true && capabilities["restrictions"]["connectionAdministrationReadOnly"] == true && capabilities["restrictions"]["desktopSelectionReadOnly"] == true && capabilities["restrictions"]["automaticReplay"] == false, "Capabilities must explicitly declare restricted ownership and no replay");
 		for (const auto& entry : capabilities["actions"])
 			Require(FindAction(entry["action"].get<std::string>()) || IsRequestTransferAction(entry["action"].get<std::string>()), "Every advertised action must exist in the companion policy");
-		for (const char* action : {"getCompanionToken", "setCompanionEnabled", "setCompanionKeychainPrompts", "setMcpServers", "setCentralProviderConfiguration", "writeClipboardText", "selectSession", "setVisibleChatIds", "releaseChatMessages", "deleteSessions", "applyOrganizationAction", "startCli", "saveAgentDefinition", "automationHttpRequest", "approveAutomationChat", "getAutomationTokens", "createAutomationToken", "revokeAutomationToken", "notAnAction"})
+		for (const char* action : {"getCompanionToken", "setCompanionEnabled", "setCompanionKeychainPrompts", "setMcpServers", "setCentralProviderConfiguration", "writeClipboardText", "selectSession", "setVisibleChatIds", "releaseChatMessages", "deleteSessions", "applyOrganizationAction", "startCli", "saveAgentDefinition", "automationHttpRequest", "approveAutomationChat", "getAutomationTokens", "createAutomationToken", "revokeAutomationToken", "regenerateAutomationToken", "resolveCompanionConfirmation", "regenerateCompanionToken", "notAnAction"})
 		{
 			Json payload = {{"chatId", "chat-one"}};
 			Require(PrepareRequest(action, payload).status == 403, "Dangerous/global/selection actions must remain unavailable");
@@ -383,6 +384,7 @@ namespace
 		const Json state = {{"unchanged", true}, {"bootId", "instance"}, {"stateRevision", 2}};
 		Require(MobileState(state) == state, "Revision-polling unchanged responses must stay intact");
 		const Json settings = {{"theme", "dark"}, {"mcpServers", "secret"}, {"centralProviderConfiguration", "secret"}, {"unknownFutureSecret", "secret"}, {"voiceInputServerBaseUrl", "private"}, {"executionHosts", Json::array({{{"id", "remote"}, {"label", "Remote"}, {"transport", "ssh"}, {"sshAlias", "private"}, {"instructionText", "secret"}, {"runnerDirectory", "private"}}})}, {"hostScopedSettingsValues", {{"remote", {{"defaultNewChatProviderId", "codex-cli"}, {"mcpServers", "secret"}}}}}};
+		Require(!MobileState({{"chats", Json::array()}, {"companionConfirmations", Json::array({{{"id", "confirm-1"}, {"description", "Change permission mode to YOLO"}}})}}).contains("companionConfirmations"), "The phone's initial state must never carry held desktop confirmations");
 		Json raw_state = {{"memoryActivity", {{"entryCount", 3}, {"runningCount", 0}, {"lastWorkerHasExitCode", true}, {"lastWorkerExitCode", 0}, {"lastStatus", "secret status"}, {"lastWorkerStatus", "secret status"}, {"lastWorkerOutput", "secret memory"}, {"lastWorkerError", "secret error"}}}};
 		const auto projected_state = MobileState(raw_state);
 		Require(projected_state.dump().find("secret") == std::string::npos && projected_state["memoryActivity"]["entryCount"] == 3 && projected_state["memoryActivity"]["status"] == "completed", "Initial-state memory activity must retain structured facts without raw extraction logs");
@@ -735,6 +737,63 @@ namespace
 			Require(transfers.Commit(transfer.id, kNow).status == 404, "Rejected envelopes must still consume the transfer");
 		}
 	}
+
+	void DesktopConfirmationGatesOnlyLoosening()
+	{
+		const ConfirmationChatState chat{"off", "plan", "build", false};
+		const auto gated = [&](const char* action, const Json& payload) { return !LooseningRequest(action, payload, &chat).empty(); };
+		for (const char* tier : {"yolo", "YOLO", "acceptEdits", "aiReview"})
+			Require(gated("setChatCommandSafetyTier", {{"chatId", "c"}, {"commandSafetyTier", tier}}), "Raising the permission mode needs desktop confirmation");
+		Require(LooseningRequest("setChatCommandSafetyTier", {{"commandSafetyTier", "yolo"}}, &chat) == "Change permission mode to YOLO", "The desktop names the requested mode");
+		for (const char* tier : {"off", "", "bogus"})
+			Require(!gated("setChatCommandSafetyTier", {{"commandSafetyTier", tier}}), "Default, missing and invalid tiers apply or fail without confirmation");
+		const ConfirmationChatState yolo{"yolo", "default", "build", true};
+		Require(LooseningRequest("setChatCommandSafetyTier", {{"commandSafetyTier", "yolo"}}, &yolo).empty(), "An unchanged tier is not a raise");
+		Require(!LooseningRequest("setChatCommandSafetyTier", {{"commandSafetyTier", "aiReview"}}, &yolo).empty(), "Any non-default change is confirmed, including from YOLO");
+		Require(gated("setChatApprovalMode", {{"modeId", "default"}}) && gated("setChatApprovalMode", {{"modeId", "yolo"}}), "Leaving Plan needs confirmation, including the legacy YOLO alias");
+		Require(!gated("setChatApprovalMode", {{"modeId", "plan"}}) && LooseningRequest("setChatApprovalMode", {{"modeId", "plan"}}, &yolo).empty() &&
+		    LooseningRequest("setChatApprovalMode", {{"modeId", "default"}}, &yolo).empty(), "Entering Plan or keeping the mode applies directly");
+		Require(gated("setChatUamAgent", {{"agentId", "release"}}) && !gated("setChatUamAgent", {{"agentId", "build"}}) && !gated("setChatUamAgent", {{"agentId", ""}}), "Only a different agent needs confirmation");
+		Require(gated("setChatUamControlEnabled", {{"enabled", true}}) && !gated("setChatUamControlEnabled", {{"enabled", false}}) &&
+		    LooseningRequest("setChatUamControlEnabled", {{"enabled", true}}, &yolo).empty(), "Only enabling UAM Control needs confirmation");
+		Require(!LooseningRequest("setProviderChatDefaults", {{"defaults", Json::object()}}, nullptr).empty(), "Provider defaults always need confirmation");
+		Require(LooseningRequest("setChatCommandSafetyTier", {{"commandSafetyTier", "yolo"}}, nullptr).empty(), "An unknown chat fails in its handler instead");
+		// A new chat cannot start looser than Default/Plan with default safety without the desktop.
+		Require(gated("createSession", {{"providerId", "codex-cli"}, {"defaults", {{"commandSafetyTier", "yolo"}}}}) &&
+		    !LooseningRequest("createSession", {{"defaults", {{"commandSafetyTier", "aiReview"}}}}, nullptr).empty() &&
+		    !LooseningRequest("createSession", {{"defaults", {{"approvalMode", "acceptEdits"}}}}, nullptr).empty(), "Loose new-chat defaults need confirmation");
+		Require(LooseningRequest("createSession", {{"providerId", "codex-cli"}}, nullptr).empty() &&
+		    LooseningRequest("createSession", {{"defaults", {{"commandSafetyTier", "off"}, {"approvalMode", "plan"}, {"modelId", "m"}}}}, nullptr).empty(), "Default or Plan new chats apply directly");
+		// MCP servers add tools: only a plain disable applies directly.
+		Require(!LooseningRequest("setProviderMcpConfiguration", {{"serverId", "uam-mcp"}, {"enabled", true}}, nullptr).empty() &&
+		    !LooseningRequest("setProviderMcpConfiguration", {{"server", {{"id", "x"}}}}, nullptr).empty() &&
+		    LooseningRequest("setProviderMcpConfiguration", {{"serverId", "uam-mcp"}, {"enabled", false}}, nullptr).empty(), "Enabling or changing an MCP server needs confirmation");
+		// Provider-native options that carry permission or sandbox modes are confirmed; others are not.
+		for (const char* id : {"mode", "approval_policy", "permissionMode", "sandbox"})
+			Require(gated("setAcpConfigOption", {{"chatId", "c"}, {"configId", id}, {"value", "bypassPermissions"}}), "Mode-like provider options need confirmation");
+		Require(!gated("setAcpConfigOption", {{"chatId", "c"}, {"configId", "model"}, {"value", "fast"}}) &&
+		    !gated("setAcpConfigOption", {{"chatId", "c"}, {"configId", "reasoning_effort"}, {"value", "high"}}), "Other provider options apply directly");
+		Require(gated("setAcpConfigOption", {{"chatId", "c"}, {"configId", "model_mode"}, {"value", "auto"}}), "A mode named after the model is still a mode");
+		for (const char* action : {"sendAcpPrompt", "setChatModel", "renameSession"})
+			Require(!gated(action, {{"commandSafetyTier", "yolo"}, {"enabled", true}}), "Other actions are not gated");
+	}
+
+	void DesktopConfirmationQueueBoundsAndExpiry()
+	{
+		using Clock = DesktopConfirmations::Clock;
+		DesktopConfirmations queue;
+		const Clock::time_point start{std::chrono::hours(1000)};
+		for (std::size_t index = 0; index < DesktopConfirmations::kMaxPending; ++index)
+			Require(queue.Add({"", "setChatUamAgent", "c", "Chat", "Change", {{"agentId", "x"}}, {}}, start), "Queue accepts its bound");
+		Require(!queue.Add({"", "setChatUamAgent", "c", "Chat", "Change", Json::object(), {}}, start), "Queue refuses beyond its bound");
+		const Json listed = queue.ToJson();
+		Require(listed.size() == DesktopConfirmations::kMaxPending && !listed[0].contains("payload") && listed[0]["chatTitle"] == "Chat", "Desktop list omits stored payloads");
+		const std::string first = listed[0]["id"].get<std::string>();
+		const auto taken = queue.Take(first, start);
+		Require(taken && taken->payload["agentId"] == "x" && !queue.Take(first, start), "An answer consumes its request once");
+		Require(!queue.Take(listed[1]["id"].get<std::string>(), start + DesktopConfirmations::kLifetime), "Expired requests cannot be allowed");
+		Require(queue.ToJson().empty() && queue.Add({"", "a", "", "", "d", Json::object(), {}}, start + DesktopConfirmations::kLifetime), "Expiry frees the queue");
+	}
 } // namespace
 
 int main(int argc, char** argv)
@@ -771,6 +830,8 @@ int main(int argc, char** argv)
 	    {"PolicyProviderActionsRejectMalformedOrPrivilegedFields", PolicyProviderActionsRejectMalformedOrPrivilegedFields},
 	    {"PolicyProviderTransferredActionsUseFinalPolicy", PolicyProviderTransferredActionsUseFinalPolicy},
 	    {"TransferredEnvelopeFinalAllowlist", TransferredEnvelopeFinalAllowlist},
+	    {"DesktopConfirmationGatesOnlyLoosening", DesktopConfirmationGatesOnlyLoosening},
+	    {"DesktopConfirmationQueueBoundsAndExpiry", DesktopConfirmationQueueBoundsAndExpiry},
 	};
 	// clang-format on
 	int run = 0;

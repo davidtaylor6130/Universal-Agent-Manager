@@ -22,6 +22,7 @@ import type {
   AcpModel,
   AcpPendingPermission,
   AcpPendingUserInput,
+  AcpSecretRequest,
   AcpPermissionOption,
   AcpPlanEntry,
   AcpProviderUsage,
@@ -672,12 +673,33 @@ export function sanitizeUserInputQuestion(value: unknown): AcpUserInputQuestion 
   }
 }
 
+/** Every field must be present and well typed; anything else drops the whole request. */
+export function sanitizeSecretRequest(value: unknown): AcpSecretRequest | undefined {
+  if (!isRecord(value)) return undefined
+  const { label, reason, placeholder, url, provider, host, planOptIn, keychain, localPlatform } = value
+  if (!isString(label) || !label.trim() || !isString(reason) || !isString(placeholder) || !isString(provider) || !provider.trim()
+    || !isString(url) || typeof planOptIn !== 'boolean') return undefined
+  if (url) {
+    try { if (new URL(url).protocol !== 'https:') return undefined } catch { return undefined }
+  }
+  if (host !== null && !(isRecord(host) && isString(host.name) && host.name.trim() && isString(host.platform))) return undefined
+  if (!isRecord(keychain) || typeof keychain.available !== 'boolean' || typeof keychain.saved !== 'boolean') return undefined
+  return {
+    label, reason, placeholder, url, provider, planOptIn,
+    localPlatform: localPlatform === 'windows' ? 'windows' : 'macos',
+    host: host === null ? null : { name: host.name as string, platform: host.platform as string },
+    keychain: { available: keychain.available, saved: keychain.saved },
+  }
+}
+
 export function sanitizePendingUserInput(value: unknown): AcpPendingUserInput | null {
   if (value == null) return null
   if (!isRecord(value)) return null
   const requestId = stringOr(value.requestId)
   if (!requestId) return null
+  const secretRequest = sanitizeSecretRequest(value.secretRequest)
   return {
+    ...(secretRequest ? { secretRequest } : {}),
     requestId,
     itemId: stringOr(value.itemId),
     status: stringOr(value.status),

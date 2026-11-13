@@ -1,5 +1,6 @@
 #include "app/agent_run_scheduler.h"
 #include "common/runtime/acp/acp_polling.h"
+#include "common/secrets/secret_redactor.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_update_handler.h"
@@ -313,6 +314,9 @@ namespace uam::acp_detail
 		{
 			BufferedStdoutResult result;
 			std::size_t consumed = 0;
+			// A line that ends the process stops this batch. Output drained after a stop starts with the process already
+			// ended, so it keeps going to the line and time limits instead of handling one line per poll.
+			const bool was_running = session.running;
 			while (session.transport_ownership_error.empty() && result.lines < max_lines && PollClock::now() < deadline)
 			{
 				if (session.protocol_kind == uam::provider_profile_constants::kProtocolCopilotSdk && consumed < session.stdout_buffer.size() && session.stdout_buffer[consumed] != '\x1e')
@@ -331,7 +335,7 @@ namespace uam::acp_detail
 					consumed += frame.consumed_bytes;
 					++result.lines;
 					result.changed = ProcessAcpLine(app, session, chat, body, browser) || result.changed;
-					if (!session.running)
+					if (was_running && !session.running)
 						break;
 					continue;
 				}
@@ -393,7 +397,7 @@ namespace uam::acp_detail
 					continue;
 				}
 				result.changed = ProcessAcpLine(app, session, chat, line, browser) || result.changed;
-				if (!session.running)
+				if (was_running && !session.running)
 				{
 					break;
 				}
@@ -465,9 +469,60 @@ std::size_t ProcessBufferedAcpStdoutAfterStop(AppState& app, AcpSessionState& se
 	return ProcessBufferedAcpStdout(app, session, chat, browser, max_lines, PollClock::now() + kAcpStdoutTimePerPoll).lines;
 }
 
+namespace
+{
+	/// A secret the provider echoed in pieces (streamed deltas) only becomes whole in the accumulated transcript,
+	/// so the newest entries are scrubbed again after every line, before anything reads or saves them. Only the
+	/// tail can complete a match: this line's bytes plus the longest pattern.
+	struct SecretTranscriptScrub
+	{
+		AcpSessionState& session;
+		ChatSession& chat;
+		std::size_t line_bytes;
+		~SecretTranscriptScrub()
+		{
+			if (!uam::secrets::Active()) return;
+			const std::size_t window = line_bytes + uam::secrets::MaxPatternBytes();
+			const auto tail = [window](std::string& text) { (void)uam::secrets::ScrubTail(text, window); };
+			// ponytail: the newest few entries are the only ones a delta can extend; older ones were scrubbed when newest.
+			const auto newest = [](auto& items, std::size_t count) { return items.size() > count ? items.size() - count : 0; };
+			for (std::size_t index = newest(session.turn_events, 4); index < session.turn_events.size(); ++index)
+			{
+				tail(session.turn_events[index].text);
+				tail(session.turn_events[index].title);
+			}
+			for (std::size_t index = newest(session.tool_calls, 8); index < session.tool_calls.size(); ++index)
+			{
+				tail(session.tool_calls[index].title);
+				tail(session.tool_calls[index].content);
+				tail(session.tool_calls[index].args_json);
+			}
+			tail(session.pending_assistant_thoughts);
+			for (std::size_t index = newest(chat.messages, 3); index < chat.messages.size(); ++index)
+			{
+				Message& message = chat.messages[index];
+				tail(message.content);
+				tail(message.thoughts);
+				tail(message.plan_summary);
+				for (std::size_t block = newest(message.blocks, 4); block < message.blocks.size(); ++block)
+				{
+					tail(message.blocks[block].text);
+					tail(message.blocks[block].title);
+				}
+				for (std::size_t tool = newest(message.tool_calls, 8); tool < message.tool_calls.size(); ++tool)
+				{
+					tail(message.tool_calls[tool].args_json);
+					tail(message.tool_calls[tool].result_text);
+				}
+			}
+		}
+	};
+}
+
 bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line, CefRefPtr<CefBrowser> browser)
 {
 	const std::string trimmed = uam::strings::Trim(line);
+	const SecretTranscriptScrub scrub_after_line{session, chat, line.size()};
 	if (trimmed.empty())
 	{
 		return false;
@@ -515,10 +570,12 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 		const std::string error_message = observed_decode_failure ? "Invalid structured data during native process observation." :
 		    std::string("Invalid JSON from ") + RuntimeDisplayName(session) + ": " + ex.what();
 		AppendAcpDiagnostic(session, "parse", "invalid_json", "", "", false, 0, error_message,
-		    observed_decode_failure ? std::string{} : CapDiagnosticString(trimmed, kMaxAcpDiagnosticDetailBytes));
+		    observed_decode_failure ? std::string{} : CapDiagnosticString(uam::secrets::Scrub(trimmed), kMaxAcpDiagnosticDetailBytes));
 		InvalidateAcpTransport(app, session, chat, error_message);
 		return true;
 	}
+	// Secrets typed into UAM are removed from every string value before any handler, transcript, push or log sees it.
+	(void)uam::secrets::ScrubJsonStrings(message);
 	// The guard belongs to the captured process adapter, not mutable chat/provider
 	// metadata. It must precede reconnect, usage and every other shared projection.
 	if (const IProviderRuntime* guard = session.native_pre_dispatch_runtime;

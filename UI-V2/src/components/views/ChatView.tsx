@@ -4039,6 +4039,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 key={questionKey}
                 memory={questionMemory}
                 input={pendingUserInput}
+                sessionId={session.id}
                 onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
                 waitIsStale={acp?.waitIsStale}
                 waitStaleReason={acp?.waitStaleReason}
@@ -4214,6 +4215,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               memory={questionMemory}
               variant="composer"
               input={pendingUserInput}
+              sessionId={session.id}
               onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
               submitRef={questionSubmitRef}
               onSubmitStateChange={setQuestionSubmitState}

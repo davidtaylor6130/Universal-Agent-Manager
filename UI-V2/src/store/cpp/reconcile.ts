@@ -552,6 +552,7 @@ function pendingUserInputEquivalent(existing: AcpPendingUserInput | null, next: 
     existing.itemId === next.itemId &&
     existing.status === next.status &&
     existing.attentionKind === next.attentionKind &&
+    JSON.stringify(existing.secretRequest) === JSON.stringify(next.secretRequest) &&
     existing.questions.length === next.questions.length &&
     existing.questions.every((question, index) => {
       const other = next.questions[index]

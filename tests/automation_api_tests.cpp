@@ -11,6 +11,7 @@
 #include "common/runtime/terminal/terminal_launch.h"
 #include "common/utils/diagnostic_log.h"
 #include "common/utils/io_utils.h"
+#include "common/utils/time_utils.h"
 
 using namespace uam_test;
 using uam::AutomationApiService;
@@ -199,6 +200,95 @@ UAM_TEST(AutomationApiRevocationTakesEffectImmediately)
 	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{1});
 	// The waiting chat stays visible with its label, for the user to delete or start.
 	UAM_ASSERT_EQ(fixture.Chat(chat_id)->automation_token_name, std::string("n8n"));
+}
+
+UAM_TEST(AutomationApiRegenerationRetiresTheOldSecretAndKeepsTheToken)
+{
+	AutomationFixture fixture;
+	const Issued token = fixture.Token(false, "pr");
+	const auto created = fixture.Post(token.secret, AutomationFixture::Body());
+	UAM_ASSERT_EQ(created.status, 200);
+	const std::string chat_id = created.body.at("chatId").get<std::string>();
+	std::string error;
+	const auto before = AutomationApiService::ListTokens(fixture.app, &error);
+	const auto regenerated = AutomationApiService::RegenerateToken(fixture.app, token.id, &error);
+	UAM_ASSERT(regenerated.has_value());
+	const std::string fresh = regenerated->at("secret").get<std::string>();
+	UAM_ASSERT(fresh != token.secret);
+	UAM_ASSERT(AutomationApiService::TokenHashFromAuthorization("Bearer " + fresh).has_value());
+	// The old secret stops at once, including for status polls of chats it created.
+	UAM_ASSERT_EQ(fixture.Post(token.secret, AutomationFixture::Body()).status, 401);
+	UAM_ASSERT_EQ(fixture.Status(token.secret, chat_id).status, 401);
+	// The same token keeps its name, trust, workspaces, Git ceiling and its chats.
+	UAM_ASSERT_EQ(fixture.Status(fresh, chat_id).status, 200);
+	const auto after = AutomationApiService::ListTokens(fixture.app, &error);
+	UAM_ASSERT(before.has_value() && after.has_value() && after->size() == 1);
+	for (const char* key : {"id", "name", "trusted", "workspaces", "maxGitPermission", "createdAt", "lifetimeDays"})
+		UAM_ASSERT_EQ((*after)[0][key], (*before)[0][key]);
+	UAM_ASSERT_EQ(regenerated->at("token"), (*after)[0]);
+	std::string file;
+	UAM_ASSERT(uam::io::TryReadTextFile(fixture.app.data_root / "automation_tokens.json", file));
+	UAM_ASSERT(file.find(fresh) == std::string::npos);
+	UAM_ASSERT(!AutomationApiService::RegenerateToken(fixture.app, "at_missing", &error).has_value());
+}
+
+UAM_TEST(AutomationApiRefusesAnExpiredToken)
+{
+	AutomationFixture fixture;
+	const Issued token = fixture.Token();
+	const fs::path path = fixture.app.data_root / "automation_tokens.json";
+	std::string text;
+	UAM_ASSERT(uam::io::TryReadTextFile(path, text));
+	nlohmann::json store = nlohmann::json::parse(text);
+	const std::int64_t expires = store["tokens"][0]["expiresAt"].get<std::int64_t>();
+	const std::int64_t now = uam::time::TimestampNowSec();
+	UAM_ASSERT(expires > now + 89 * 24 * 60 * 60 && expires <= now + 90 * 24 * 60 * 60);
+	store["tokens"][0]["expiresAt"] = now - 1;
+	UAM_ASSERT(uam::io::WriteTextFile(path, store.dump()));
+	const auto refused = fixture.Post(token.secret, AutomationFixture::Body());
+	UAM_ASSERT_EQ(refused.status, 401);
+	UAM_ASSERT(refused.body.at("error").get<std::string>().find("expired") != std::string::npos);
+	fixture.RequireNoChat();
+	// Regenerating restarts the token's own lifetime.
+	std::string error;
+	const auto regenerated = AutomationApiService::RegenerateToken(fixture.app, token.id, &error);
+	UAM_ASSERT(regenerated.has_value());
+	UAM_ASSERT_EQ(fixture.Post(regenerated->at("secret").get<std::string>(), AutomationFixture::Body()).status, 200);
+	// A chosen lifetime is kept; out-of-range choices are refused.
+	const auto short_lived = AutomationApiService::CreateToken(fixture.app, {{"name", "short"}, {"workspaces", {"folder-a"}}, {"lifetimeDays", 30}}, &error);
+	UAM_ASSERT(short_lived.has_value() && short_lived->at("token").at("lifetimeDays") == 30);
+	for (const nlohmann::json& lifetime : {nlohmann::json(0), nlohmann::json(366), nlohmann::json("90")})
+		UAM_ASSERT(!AutomationApiService::CreateToken(fixture.app, {{"name", "bad"}, {"workspaces", {"folder-a"}}, {"lifetimeDays", lifetime}}, &error).has_value());
+}
+
+UAM_TEST(AutomationApiGivesTokensFromBeforeExpiryAFullLifetime)
+{
+	AutomationFixture fixture;
+	const Issued token = fixture.Token();
+	const fs::path path = fixture.app.data_root / "automation_tokens.json";
+	std::string text;
+	UAM_ASSERT(uam::io::TryReadTextFile(path, text));
+	nlohmann::json store = nlohmann::json::parse(text);
+	store["tokens"][0].erase("expiresAt");
+	store["tokens"][0].erase("lifetimeDays");
+	UAM_ASSERT(uam::io::WriteTextFile(path, store.dump()));
+	UAM_ASSERT_EQ(fixture.Post(token.secret, AutomationFixture::Body()).status, 200);
+	UAM_ASSERT(uam::io::TryReadTextFile(path, text));
+	const nlohmann::json migrated = nlohmann::json::parse(text)["tokens"][0];
+	UAM_ASSERT_EQ(migrated["lifetimeDays"], nlohmann::json(90));
+	UAM_ASSERT(migrated["expiresAt"].get<std::int64_t>() > uam::time::TimestampNowSec() + 89 * 24 * 60 * 60);
+}
+
+UAM_TEST(AutomationApiCannotManageTokensThroughItsOwnEndpoint)
+{
+	AutomationFixture fixture;
+	const Issued token = fixture.Token();
+	const auto hash = AutomationApiService::TokenHashFromAuthorization("Bearer " + token.secret);
+	for (const std::string path : {std::string("/automation/tokens"), std::string("/automation/chats/regenerate"), "/automation/tokens/" + token.id + "/regenerate"})
+		for (const std::string method : {"POST", "PUT", "DELETE"})
+			UAM_ASSERT(AutomationApiService::Handle(fixture.app, {.method = method, .path = path, .token_hash = hash.value_or(""), .body = "{}"}).status == 404);
+	// The old secret still works: nothing above regenerated or revoked it.
+	UAM_ASSERT_EQ(fixture.Post(token.secret, AutomationFixture::Body()).status, 200);
 }
 
 UAM_TEST(AutomationApiStoresOnlyTheTokenHash)

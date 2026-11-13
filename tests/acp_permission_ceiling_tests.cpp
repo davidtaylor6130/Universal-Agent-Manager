@@ -90,6 +90,7 @@ struct PermissionCeilingFixture
 		chat.id = "private-permission-ceiling";
 		chat.provider_id = "copilot-cli";
 		chat.execution_host_id = "local";
+		chat.workspace_directory = temp.root.string();
 		chat.approval_mode = ordinary_plan ? "plan" : "default";
 		chat.command_safety_tier = "yolo";
 		chat.native_session_id = "11111111-1111-4111-8111-111111111111";
@@ -236,7 +237,7 @@ UAM_TEST(AcpCapturedReadManualDecisionsPreserveAllowedOperations)
 {
 	for (bool goal_review : {false, true})
 	{
-		for (const std::string command : {"", "pwd", "git status"})
+		for (const std::string command : {"", "pwd", "git status --ignore-submodules"})
 		{
 			PermissionCeilingFixture fixture(goal_review);
 			fixture.Request(7, command.empty() ? "read" : "shell", command);

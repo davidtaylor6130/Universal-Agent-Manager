@@ -16,6 +16,7 @@
 #include <chrono>
 #include <optional>
 #include <atomic>
+#include <cstdint>
 
 /// <summary>Opt-in loopback transport for the React companion; dispatch remains on the CEF UI thread.</summary>
 class UamCompanionServer final : public CefServerHandler
@@ -24,6 +25,8 @@ public:
 	using Callback = CefMessageRouterBrowserSide::Callback;
 	using Dispatch = std::function<void(const nlohmann::json&, CefRefPtr<Callback>)>;
 	static CefRefPtr<UamCompanionServer> StartFromEnvironment(Dispatch dispatch, const std::filesystem::path& data_root = {});
+	/// Test fixtures whose HTTP clients are their own child processes; production never sets it.
+	static void AllowDescendantClientsForTests(bool allowed);
 	void Stop();
 	bool StopAndWait(std::chrono::milliseconds timeout);
 	uam::companion::ConnectionObservation ObserveConnection();
@@ -37,8 +40,10 @@ public:
 	void OnWebSocketConnected(CefRefPtr<CefServer>, int) override {}
 	void OnWebSocketMessage(CefRefPtr<CefServer>, int, const void*, size_t) override {}
 private:
-	UamCompanionServer(std::string token, std::string origin, Dispatch dispatch, std::filesystem::path proxy_executable = {}, std::filesystem::path proxy_config = {})
-		: m_token(std::move(token)), m_origin(std::move(origin)), m_dispatch(std::move(dispatch)), m_proxy_executable(std::move(proxy_executable)), m_proxy_config(std::move(proxy_config)) {}
+	UamCompanionServer(std::string token, std::filesystem::path data_root, std::string origin, Dispatch dispatch, int port, std::filesystem::path proxy_executable = {}, std::filesystem::path proxy_config = {})
+		: m_token(std::move(token)), m_data_root(std::move(data_root)), m_origin(std::move(origin)), m_dispatch(std::move(dispatch)), m_port(port), m_proxy_executable(std::move(proxy_executable)), m_proxy_config(std::move(proxy_config)) {}
+	std::string CurrentToken();
+	bool ClientLaunchedByUam(const CefString& client_address);
 	void StartProxy();
 	void DrainProxy(std::stop_token stop_token);
 	void ProcessApiRequest(std::string body, CefRefPtr<Callback> reply, bool transferred = false);
@@ -47,9 +52,12 @@ private:
 	void ScheduleTransferExpiry(CefRefPtr<CefServer> server);
 	std::optional<std::string> StoreTransfer(std::string body);
 	std::optional<nlohmann::json> ReadTransferChunk(const std::string& id, std::size_t offset);
-	std::string m_token;
+	std::string m_token; // Guarded by m_mutex; a rotation replaces it before the next request is checked.
+	std::uint64_t m_token_revision = 0;
+	std::filesystem::path m_data_root;
 	std::string m_origin;
 	Dispatch m_dispatch;
+	int m_port;
 	std::filesystem::path m_proxy_executable;
 	std::filesystem::path m_proxy_config;
 	uam::platform::StdioProcessPlatformFields m_proxy_process;
@@ -81,6 +89,14 @@ public:
 	static void BeginShutdownAll();
 	static bool AllStopped();
 	static nlohmann::json ConfigurationStatus(const std::filesystem::path& data_root);
+	/// The connection token from the OS credential store, when the configuration keeps it there.
+	static std::optional<std::string> ReadStoredToken(const std::filesystem::path& data_root);
+	/// Once per data root per process: moves a legacy plaintext token file into the credential store.
+	/// Call only from the UI thread, which owns companion.json writes.
+	static bool MigrateLegacyToken(const std::filesystem::path& data_root);
+	/// Desktop only: issues a fresh token, saves it where the configuration keeps it, and makes running
+	/// servers for this data root refuse the old one from their next request. Nullopt with a user-facing error otherwise.
+	static std::optional<std::string> RotateToken(const std::filesystem::path& data_root, std::string* error);
 	void Reload(std::optional<bool> enabled_override = std::nullopt);
 	void Apply(bool configured, bool enabled, std::string desired_url) { m_lifecycle.Request(configured, enabled, std::move(desired_url)); }
 	void Stop() { m_lifecycle.Close(); }

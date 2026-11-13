@@ -9,6 +9,7 @@ import { SaveButton, SettingRow, SettingsField, SettingsSection, StatusMark } fr
 import { localBuildLabel } from '../../services/updateCatalog'
 import { SettingsScopeBar } from './SettingsScopeBar'
 import { PhonePairingPanel } from './PhonePairingPanel'
+import { PhoneTokenRegenerateRow } from './PhoneTokenRegenerateRow'
 import { AutomationSettings } from './AutomationSettings'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { ProviderConnections } from './ProviderConnections'
@@ -1716,8 +1717,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           control={<Switch hideLabel label="Allow Keychain prompts from phone" checked={companionSettings?.allowKeychainPrompts === true}
             disabled={!companionSettings?.configured || companionBusy} onChange={(event) => void changeCompanion('setCompanionKeychainPrompts', { allowed: event.target.checked })} />}
         /></Reveal>
-        <SettingRow title="Access token" description="For manual entry in the iPhone app. QR pairing also sets up certificate trust."
+        <SettingRow title="Access token" description="For manual entry in the iPhone app or browser. Copying keeps the current token, so paired devices stay connected. QR pairing also sets up certificate trust."
           control={<Button size="sm" variant="secondary" leadingIcon={copyIcon('token')} aria-label="Copy token" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanion('token')}>{copyLabel('token', 'Copy token')}</Button>} />
+        <PhoneTokenRegenerateRow configured={Boolean(companionSettings?.configured)} disabled={companionBusy} />
         <Reveal open={Boolean(address)}><PhonePairingPanel url={companionSettings?.effectiveUrl || address} enabled={Boolean(ready)} /></Reveal>
       </div>
     </div>

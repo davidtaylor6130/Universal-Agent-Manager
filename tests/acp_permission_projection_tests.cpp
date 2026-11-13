@@ -59,6 +59,8 @@ struct PermissionProjectionFixture
 		    {"persistent", "Allow always", "allow_always"},
 		    {"allow-looking-rejection", "Deny", "reject_once"},
 		    {"cancelled", "Cancel", "reject_once"}};
+		// As on arrival: capture the read scope the ceiling checks paths against.
+		uam::acp_detail::ApplyCommandSafetyDecision(app, app.chats.front(), pending);
 	}
 };
 

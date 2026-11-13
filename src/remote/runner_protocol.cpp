@@ -180,6 +180,7 @@ namespace uam::remote
 			                          {"usageAccountingStream", state != nullptr},
 		                          {"projectMemory", state != nullptr},
 		                          {"isolatedTextWorkers", state != nullptr},
+		                          {"secretDrop", state != nullptr},
 			                          {"runnerStartup", state != nullptr && (PlatformName() == "linux" || PlatformName() == "windows")},
 			                          {"runnerStartupObservation", state != nullptr && (PlatformName() == "linux" || PlatformName() == "windows")},
 			                          {"fileCopy", state != nullptr},

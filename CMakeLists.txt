@@ -377,6 +377,7 @@ if(UAM_ENABLE_MOBILE_COMPANION)
     src/cef/companion_server.cpp
     src/cef/automation_handlers.cpp
     src/common/platform/companion_network_platform.cpp
+    src/common/platform/app_secret_store.cpp
   )
 endif()
 if(UAM_ENABLE_COMPUTER_USE)
@@ -409,6 +410,8 @@ if(WIN32)
     src/common/platform/platform_services_windows_impl.cpp
     src/common/platform/platform_process_windows.cpp
     src/common/platform/credential_store_windows.cpp
+    src/common/secrets/secret_drop_windows.cpp
+    src/common/secrets/secret_keychain_windows.cpp
     src/common/platform/platform_dialogs_windows.cpp
     src/common/platform/platform_paths_windows.cpp
     src/common/platform/platform_dictation_windows.cpp
@@ -424,6 +427,8 @@ elseif(APPLE)
     src/common/platform/platform_parent_watchdog_macos.cpp
     src/common/platform/platform_services_macos_impl.cpp
     src/common/platform/platform_process_macos.cpp
+    src/common/secrets/secret_drop.cpp
+    src/common/secrets/secret_keychain.cpp
     src/common/platform/platform_dialogs_macos.cpp
     src/common/platform/platform_paths_macos.cpp
     src/common/platform/platform_dictation_macos.mm
@@ -502,6 +507,7 @@ if(APPLE)
   target_sources(uam_runner PRIVATE
     src/common/platform/platform_parent_watchdog_macos.cpp
     src/common/platform/platform_process_macos.cpp
+    src/common/secrets/secret_drop.cpp
     src/remote/runner_service_posix.cpp
   )
   target_link_libraries(uam_runner PRIVATE
@@ -517,6 +523,7 @@ if(APPLE)
 elseif(WIN32)
   target_sources(uam_runner PRIVATE
     src/common/platform/platform_process_windows.cpp
+    src/common/secrets/secret_drop_windows.cpp
     src/remote/runner_service_windows.cpp
     src/uam_long_paths.manifest
   )
@@ -525,6 +532,7 @@ elseif(UNIX)
   find_package(Threads REQUIRED)
   target_sources(uam_runner PRIVATE
     src/common/platform/platform_process_linux.cpp
+    src/common/secrets/secret_drop.cpp
     src/remote/runner_service_posix.cpp
   )
   target_link_libraries(uam_runner PRIVATE Threads::Threads)
@@ -584,8 +592,10 @@ add_library(uam_core_objects OBJECT
   src/app/managed_subagent_control_service.cpp
   src/app/managed_subagent_followup_service.cpp
   src/app/uam_control_service.cpp
+  src/app/secret_request_service.cpp
   src/app/automation_api_service.cpp
   src/common/utils/diagnostic_log.cpp
+  src/common/secrets/secret_redactor.cpp
   src/app/chat_domain_service.cpp
   src/app/chat_lifecycle_service.cpp
   src/app/computer_use_service.cpp
@@ -728,6 +738,7 @@ add_library(uam_app_objects OBJECT
   src/cef/theme_handlers.cpp
   src/cef/shell_action_handlers.cpp
   src/cef/pr_watch_handlers.cpp
+  src/cef/secret_handlers.cpp
   src/cef/markdown_handlers.cpp
   src/cef/folder_handlers.cpp
   src/cef/chat_branch_handlers.cpp
@@ -1229,6 +1240,19 @@ add_custom_command(TARGET universal_agent_manager POST_BUILD
   COMMENT "Copying UI-V2 and bundled Markdown Store entries"
   VERBATIM
 )
+if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
+  # Gemini structured launches load this admin-tier Plan ceiling with --admin-policy.
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/providers/gemini-plan-ceiling.toml" "${UAM_RESOURCE_DEST}/gemini-plan-ceiling.toml"
+    VERBATIM
+  )
+else()
+  # A reused build folder must not keep a Gemini resource after Gemini is switched off.
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E rm -f "${UAM_RESOURCE_DEST}/gemini-plan-ceiling.toml"
+    VERBATIM
+  )
+endif()
 if(UAM_ENABLE_COMPUTER_USE)
   if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
     set(_uam_gemini_policy_command COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/gemini-policy.toml" "${UAM_RESOURCE_DEST}/gemini-policy.toml")
@@ -1451,7 +1475,8 @@ if(UAM_BUILD_TESTS)
       PolicyQueueStableIdentityAndHeldState PolicyQueueAdmissionTransitionAndStaleIdentity
       PolicyQueueRequiresBoundedIdentity PolicyQueueExistingEditAndReorderOwnership
       SettingsProviderDefaultsPartialAndScoped SettingsMemoryAndWorkerPartialUpdates SettingsMemoryFenceAndOutcomeProjection SettingsPreferencesStorageAndAvailability
-      SettingsRejectPrivilegedAndMalformedUpdates SettingsMcpAndNestedProjectionRedaction SettingsTransferredEnvelopeUsesFinalPolicy)
+      SettingsRejectPrivilegedAndMalformedUpdates SettingsMcpAndNestedProjectionRedaction SettingsTransferredEnvelopeUsesFinalPolicy
+      DesktopConfirmationGatesOnlyLoosening DesktopConfirmationQueueBoundsAndExpiry)
     add_test(NAME uam_companion_${companion_case} COMMAND uam_companion_protocol_tests ${companion_case})
   endforeach()
   add_executable(uam_ui_asset_snapshot_tests tests/ui_asset_snapshot_tests.cpp)
@@ -1522,10 +1547,13 @@ if(UAM_BUILD_TESTS)
         ENVIRONMENT "UAM_NLOHMANN_INCLUDE=${nlohmann_json_SOURCE_DIR}/include")
     endforeach()
   endif()
-  add_executable(uam_companion_connection_tests tests/companion_connection_lifecycle_tests.cpp)
+  add_executable(uam_companion_connection_tests tests/companion_connection_lifecycle_tests.cpp src/common/platform/companion_network_platform.cpp)
   add_subdirectory(tests/svn-branch)
   target_include_directories(uam_companion_connection_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
   target_link_libraries(uam_companion_connection_tests PRIVATE nlohmann_json::nlohmann_json)
+  if(WIN32)
+    target_link_libraries(uam_companion_connection_tests PRIVATE ws2_32 iphlpapi)
+  endif()
   add_test(NAME uam_companion_connection_lifecycle COMMAND uam_companion_connection_tests)
 
   # Provider files whose build flag is OFF are not in the shared objects, so core tests compile them.
@@ -1696,10 +1724,13 @@ if(UAM_BUILD_TESTS)
     tests/attached_skill_discovery_tests.cpp
     tests/uam_control_transport_tests.cpp
     tests/uam_control_mailbox_response_tests.cpp
+    tests/secret_request_tests.cpp
     tests/attachment_preview_tests.cpp
 	    tests/computer_use_tests.cpp
     tests/computer_use_global_policy_tests.cpp
+    tests/provider_permission_launch_tests.cpp
     tests/remote_runner_tests.cpp
+    tests/secret_platform_tests.cpp
     tests/process_exit_drain_tests.cpp
     tests/runner_startup_rollback_tests.cpp
     tests/remote_cli_elevation_tests.cpp
@@ -1809,6 +1840,13 @@ if(UAM_BUILD_TESTS)
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll"
         "$<TARGET_FILE_DIR:uam_core_tests>/chrome_elf.dll"
+    )
+  endif()
+  if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
+    # Gemini Plan and goal-review launches resolve their admin policy beside the executable, as in the app.
+    add_custom_command(TARGET uam_core_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/assets/providers/gemini-plan-ceiling.toml" "$<TARGET_FILE_DIR:uam_core_tests>/gemini-plan-ceiling.toml"
+      VERBATIM
     )
   endif()
   # Source scans in this file must not depend on the test working directory.
