@@ -1,3 +1,4 @@
+import { MOBILE_COMPANION_ENABLED } from '../config/buildFeatures'
 import { EMPTY_STARTUP_NATIVE_IMPORT_STATUS } from '../types/startupNativeImports'
 import { createExecutionRoutingSlice } from './slices/executionRoutingSlice'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './cpp/types'
@@ -26,6 +27,7 @@ import {
   fallbackProviderForId,
 } from '../utils/providerMetadata'
 import {
+  isRecord,
   sanitizeCppAppState,
   sanitizeMemoryActivity,
   defaultEditorFileAssociations,
@@ -118,6 +120,8 @@ function deserializeState(
     runnerProtocolVersion: number
     showProviderIconsInSidebar: boolean
     showWorktreePathInSidebar: boolean
+    sidebarPinnedChatOrder: string[]
+    sidebarActiveChatOrder: string[]
     steerActiveTurnOnSend: boolean
     gitEnabled?: boolean
     svnEnabled?: boolean
@@ -340,6 +344,8 @@ function deserializeState(
     runnerProtocolVersion: cpp.runnerProtocolVersion || existing.runnerProtocolVersion,
     showProviderIconsInSidebar: cpp.settings.showProviderIconsInSidebar ?? true,
     showWorktreePathInSidebar: cpp.settings.showWorktreePathInSidebar ?? true,
+    sidebarPinnedChatOrder: cpp.settings.sidebarPinnedChatOrder ?? [],
+    sidebarActiveChatOrder: cpp.settings.sidebarActiveChatOrder ?? [],
     steerActiveTurnOnSend: cpp.settings.steerActiveTurnOnSend ?? false,
     gitEnabled: typeof cpp.settings.gitEnabled === 'boolean' ? cpp.settings.gitEnabled : true,
     svnEnabled: typeof cpp.settings.svnEnabled === 'boolean' ? cpp.settings.svnEnabled : true,
@@ -373,6 +379,7 @@ function deserializeState(
     gitDefaultBaseBranch: cpp.settings.gitDefaultBaseBranch ?? existing.gitDefaultBaseBranch,
     gitPullBeforeChat: cpp.settings.gitPullBeforeChat ?? existing.gitPullBeforeChat,
     svnUpdateBeforeChat: cpp.settings.svnUpdateBeforeChat ?? existing.svnUpdateBeforeChat,
+    svnRepositoryLayouts: cpp.settings.svnRepositoryLayouts ?? existing.svnRepositoryLayouts,
     gitPortMethod: cpp.settings.gitPortMethod ?? existing.gitPortMethod,
     worktreeCleanupEnabled: cpp.settings.worktreeCleanupEnabled ?? existing.worktreeCleanupEnabled,
     worktreeRetentionDays: cpp.settings.worktreeRetentionDays ?? existing.worktreeRetentionDays,
@@ -585,6 +592,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     acpTurnOutputLimitMiB: patch.settings?.acpTurnOutputLimitMiB ?? current.acpTurnOutputLimitMiB,
     showProviderIconsInSidebar: patch.settings?.showProviderIconsInSidebar ?? current.showProviderIconsInSidebar,
     showWorktreePathInSidebar: patch.settings?.showWorktreePathInSidebar ?? current.showWorktreePathInSidebar,
+    sidebarPinnedChatOrder: patch.settings?.sidebarPinnedChatOrder ?? current.sidebarPinnedChatOrder,
+    sidebarActiveChatOrder: patch.settings?.sidebarActiveChatOrder ?? current.sidebarActiveChatOrder,
     steerActiveTurnOnSend: patch.settings?.steerActiveTurnOnSend ?? current.steerActiveTurnOnSend,
     gitEnabled: typeof patch.settings?.gitEnabled === 'boolean' ? patch.settings.gitEnabled : current.gitEnabled,
     svnEnabled: typeof patch.settings?.svnEnabled === 'boolean' ? patch.settings.svnEnabled : current.svnEnabled,
@@ -618,6 +627,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     gitDefaultBaseBranch: patch.settings?.gitDefaultBaseBranch ?? current.gitDefaultBaseBranch,
     gitPullBeforeChat: patch.settings?.gitPullBeforeChat ?? current.gitPullBeforeChat,
     svnUpdateBeforeChat: patch.settings?.svnUpdateBeforeChat ?? current.svnUpdateBeforeChat,
+    svnRepositoryLayouts: patch.settings?.svnRepositoryLayouts ?? current.svnRepositoryLayouts,
     gitPortMethod: patch.settings?.gitPortMethod ?? current.gitPortMethod,
     worktreeCleanupEnabled: patch.settings?.worktreeCleanupEnabled ?? current.worktreeCleanupEnabled,
     worktreeRetentionDays: patch.settings?.worktreeRetentionDays ?? current.worktreeRetentionDays,
@@ -808,6 +818,10 @@ export const useAppStore = create<AppState>((set, get) => {
     if (isCompanionContext()) return
     bootstrapPulls += 1
     sendToCEF<CppAppState>({ action: 'getInitialState', payload: { summaryOnly: true } }).then((resp) => {
+      // A reloaded or new desktop window still shows phone requests waiting for confirmation.
+      const confirmations = MOBILE_COMPANION_ENABLED && resp.ok && isRecord(resp.data) && resp.data.companionConfirmations !== undefined
+        ? parseUamPushPayload({ type: 'companionConfirmations', items: resp.data.companionConfirmations }) : null
+      if (confirmations?.ok) window.dispatchEvent(new CustomEvent('uam-companion-confirmations', { detail: confirmations.message }))
       // resp.data is the raw CppAppState object. Sanitize before deserializing.
       const sanitized = resp.ok ? sanitizeCppAppState(resp.data) : null
       if (!sanitized) {
@@ -851,6 +865,8 @@ export const useAppStore = create<AppState>((set, get) => {
           runnerProtocolVersion: current.runnerProtocolVersion,
           showProviderIconsInSidebar: current.showProviderIconsInSidebar,
           showWorktreePathInSidebar: current.showWorktreePathInSidebar,
+          sidebarPinnedChatOrder: current.sidebarPinnedChatOrder,
+          sidebarActiveChatOrder: current.sidebarActiveChatOrder,
           steerActiveTurnOnSend: current.steerActiveTurnOnSend,
         gitEnabled: current.gitEnabled,
         svnEnabled: current.svnEnabled,
@@ -880,6 +896,7 @@ export const useAppStore = create<AppState>((set, get) => {
           gitDefaultBaseBranch: current.gitDefaultBaseBranch,
           gitPullBeforeChat: current.gitPullBeforeChat,
           svnUpdateBeforeChat: current.svnUpdateBeforeChat,
+          svnRepositoryLayouts: current.svnRepositoryLayouts,
           gitPortMethod: current.gitPortMethod,
           worktreeCleanupEnabled: current.worktreeCleanupEnabled,
           worktreeRetentionDays: current.worktreeRetentionDays,
@@ -915,6 +932,8 @@ export const useAppStore = create<AppState>((set, get) => {
         set({ ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), bootstrapStateError: '', bootstrapStateLoading: false })
         // Only after the state applied: a throw above must still reach failBootstrap.
         bootstrapHydrated = true
+        // Native writes "[UI startup]" console lines to the diagnostic log; the packaged smoke tests wait for this one.
+        console.info('[UI startup] Initial state loaded through the native bridge.')
         if (bootstrapRetryTimer !== null) clearTimeout(bootstrapRetryTimer)
         bootstrapRetryTimer = null
         // Sync theme to DOM
@@ -1197,6 +1216,11 @@ export const useAppStore = create<AppState>((set, get) => {
 
       const store = get()
       const msg = parsed.message
+      // Outside the switch so builds without phone access drop the branch and its names.
+      if (MOBILE_COMPANION_ENABLED && msg.type === 'companionConfirmations') {
+        window.dispatchEvent(new CustomEvent('uam-companion-confirmations', { detail: msg }))
+        return
+      }
 
       switch (msg.type) {
         case 'stateUpdate':
@@ -1364,6 +1388,8 @@ export const useAppStore = create<AppState>((set, get) => {
       runnerProtocolVersion: current.runnerProtocolVersion,
       showProviderIconsInSidebar: current.showProviderIconsInSidebar,
       showWorktreePathInSidebar: current.showWorktreePathInSidebar,
+      sidebarPinnedChatOrder: current.sidebarPinnedChatOrder,
+      sidebarActiveChatOrder: current.sidebarActiveChatOrder,
       steerActiveTurnOnSend: current.steerActiveTurnOnSend,
       gitEnabled: current.gitEnabled,
       svnEnabled: current.svnEnabled,
@@ -1393,6 +1419,7 @@ export const useAppStore = create<AppState>((set, get) => {
       gitDefaultBaseBranch: current.gitDefaultBaseBranch,
       gitPullBeforeChat: current.gitPullBeforeChat,
       svnUpdateBeforeChat: current.svnUpdateBeforeChat,
+      svnRepositoryLayouts: current.svnRepositoryLayouts,
       gitPortMethod: current.gitPortMethod,
       worktreeCleanupEnabled: current.worktreeCleanupEnabled,
       worktreeRetentionDays: current.worktreeRetentionDays,

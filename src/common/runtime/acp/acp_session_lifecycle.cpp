@@ -196,7 +196,8 @@ namespace
 		struct RestoreTranscript
 		{
 			ChatSession& owner;
-			std::vector<Message> messages;
+			// Revisioned, so restoring the transcript keeps its stamp.
+			uam::RevisionedVector<Message> messages;
 			std::vector<AcpQueuedUserPromptState> queued;
 			std::string handoff;
 			std::vector<Goal> goals;
@@ -2190,9 +2191,16 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			*error_out = session.last_error;
 		return false;
 	}
-	const WorktreeLaunchPreparationState workspace = PrepareAcpWorkspaceForLaunch(app, session, chat, error_out);
-	if (workspace != WorktreeLaunchPreparationState::Ready)
-		return workspace == WorktreeLaunchPreparationState::Pending;
+	// Stop always works: attaching only to stop a helper-owned process runs nothing in the workspace, so a workspace that
+	// no longer validates (an agent switched its worktree's branch) must not keep the stop from reaching the host.
+	const bool attach_only_to_stop = session.remote_stop_unconfirmed && chat.remote_stop_cleanup_pending;
+	if (!(attach_only_to_stop && chat.execution_host_id != execution_hosts::kLocalHostId &&
+	      (session.recovering_remote_turn || session.recovering_remote_process)))
+	{
+		const WorktreeLaunchPreparationState workspace = PrepareAcpWorkspaceForLaunch(app, session, chat, error_out);
+		if (workspace != WorktreeLaunchPreparationState::Ready)
+			return workspace == WorktreeLaunchPreparationState::Pending;
+	}
 	// Preparation can clear a pending worktree and still report Ready.
 	if (const char* refusal = chat.AutomationLaunchRefusal())
 	{
@@ -2294,7 +2302,6 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		return false;
 	}
 	// Attaching only to stop the old helper launches nothing, so routing admission and the new provider's launch gates do not apply.
-	const bool attach_only_to_stop = session.remote_stop_unconfirmed && chat.remote_stop_cleanup_pending;
 	if (!attach_only_to_stop && !session.model_discovery_only && chat.routing_mode == "automatic")
 	{
 		if (!ExecutionRoutingOwnsWork(app, chat) && chat.routing_assigned_connection_identity.empty())
@@ -2692,7 +2699,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		launch_chat.native_session_id.clear();
 	launch_chat.computer_use_globally_enabled = app.settings.computer_use_globally_enabled;
 	if (session.active_uam_agent_execution_capability == "uam-central-native-setup") launch_chat.uam_agent_id = session.active_uam_agent_id;
-	if (session.goal_review_turn || session.active_uam_agent_workspace_access == "read") launch_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
+	if (session.goal_review_turn || session.active_uam_agent_workspace_access != "write") launch_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
 	if (!session.goal_turn_model_id.empty()) launch_chat.model_id = session.goal_turn_model_id;
 	if (runtime.ModelOptionsRequireRestart() && launch_chat.model_id != chat.model_id)
 		launch_chat.reasoning_effort.clear();
@@ -3002,6 +3009,10 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	if (!defer_cold_launch && !session.managed_agent_run_id.empty()) session.managed_launch_attempted = true;
 	std::filesystem::path process_working_directory = workspace_root;
 	std::vector<std::string> process_argv = launch_argv;
+	{
+		const auto read_environment = uam::command_safety::ReadCommandEnvironment(execution_host->id == uam::execution_hosts::kLocalHostId);
+		launch_environment.insert(launch_environment.end(), read_environment.begin(), read_environment.end());
+	}
 	std::vector<std::pair<std::string, std::string>> process_environment = launch_environment;
 	session.remote_output_delivery_token.clear();
 	session.pending_remote_output_ack_line.clear();
@@ -3324,11 +3335,9 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	ChatSession resume_chat = chat;
 	resume_chat.computer_use_globally_enabled = app.settings.computer_use_globally_enabled;
 	resume_chat.native_session_id = resume_id.empty() ? resolved_resume_id : resume_id;
-	if (session.provider_id == uam::provider_ids::kCodexCli)
-	{
-		session.codex_approvals_reviewer.clear();
-		if (session.goal_review_turn || session.active_uam_agent_workspace_access == "read") resume_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
-	}
+	if (session.provider_id == uam::provider_ids::kCodexCli) session.codex_approvals_reviewer.clear();
+	// Setup-time attachments (such as Computer Use servers) follow the captured read ceiling, as launch arguments do.
+	if (session.goal_review_turn || session.active_uam_agent_workspace_access != "write") resume_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
 	if (!session.goal_turn_model_id.empty()) resume_chat.model_id = session.goal_turn_model_id;
 
 	std::string setup_error;
@@ -3478,7 +3487,7 @@ bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat)
 		return false;
 	}
 
-	const bool requires_plan = session.goal_review_turn || session.active_uam_agent_workspace_access == "read";
+	const bool requires_plan = session.goal_review_turn || session.active_uam_agent_workspace_access != "write";
 	const std::string desired_mode = requires_plan
 	                                   ? std::string(uam::approval_modes::kPlanApprovalMode)
 	                                   : uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);
@@ -5201,7 +5210,7 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 	session.turn_serial += 1;
 	chat.last_stop_reason.clear(); // A new turn must not inherit the previous turn's stop reason.
 	const ChatSession* goal_owner = ChatDomainService().FindChatById(app, uam::strings::NonEmptyOrFallback(chat.goal_owner_chat_id, chat.id));
-	if (review_turn) BeginGoalReviewUsage(session, fresh_session);
+	BeginGoalReviewUsage(session, fresh_session);
 	session.goal_command_revision = goal_owner != nullptr ? goal_owner->goal_command_revision : "";
 	ResetAcpTurnStreamState(session);
 	ResetAcpPendingInteractionState(session);

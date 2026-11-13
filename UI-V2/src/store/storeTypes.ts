@@ -17,6 +17,7 @@ import type {
   AcpBinding,
   ChatFileChangeReceiptsResponse,
   AcpUserInputAnswers,
+  SecretSubmission,
   ChatAttachmentInput,
   CliBinding,
   CliTranscript,
@@ -55,6 +56,10 @@ import type {
   VcsCommitMessageSuggestion,
   VcsCommitResult,
   VcsCommitStatus,
+  VcsHistoryPage,
+  VcsOriginReply,
+  VcsOriginView,
+  VcsUpdateResult,
   VcsType,
   ComputerUseAllowedApplication,
   WindowsPowerShellPreference,
@@ -137,6 +142,9 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   runnerProtocolVersion: number
   showProviderIconsInSidebar: boolean
   showWorktreePathInSidebar: boolean
+  /** Manual order of the Pinned and Active chat lists; ids not listed keep the default order above them. */
+  sidebarPinnedChatOrder: string[]
+  sidebarActiveChatOrder: string[]
   steerActiveTurnOnSend: boolean
   gitEnabled: boolean
   svnEnabled: boolean
@@ -330,6 +338,16 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   getWorkspaceFilePreview: (id: string, path: string) => Promise<WorkspaceFilePreview>
   getVcsFileDiff: (id: string, path: string, vcsType: VcsType, comparisonRef?: string) => Promise<string>
   commitVcsChanges: (id: string, vcsType: VcsType, message: string, files: string[]) => Promise<VcsCommitResult>
+  /** One page of the workspace's revision history, newest first. Throws with the system's own error. */
+  getVcsHistory: (id: string, vcsType: VcsType, options?: { before?: string; limit?: number; search?: string; requestId?: string }) => Promise<VcsHistoryPage>
+  /** The patch one listed revision applied to one of its changed paths. */
+  getVcsRevisionDiff: (id: string, vcsType: VcsType, revision: string, path: string, requestId?: string) => Promise<string>
+  /** One part of how the workspace's branch or tag relates to the path it was copied from. Throws with the system's own error. */
+  getVcsOrigin: (id: string, vcsType: VcsType, view: VcsOriginView, options?: { before?: string; limit?: number; revisions?: string[]; requestId?: string }) => Promise<VcsOriginReply>
+  /** `requestId` lets cancelVcsRequest stop it; a stopped update may leave the working copy needing cleanup. */
+  updateVcsWorkspace: (id: string, vcsType: VcsType, requestId?: string) => Promise<VcsUpdateResult>
+  /** Stops a history or revision-diff request that is still running. */
+  cancelVcsRequest: (requestId: string) => void
   generateVcsCommitMessage: (id: string, vcsType: VcsType, files: string[]) => Promise<VcsCommitMessageSuggestion | null>
   deleteSession: (id: string) => Promise<boolean>
   deleteSessions: (ids: string[]) => Promise<boolean>
@@ -405,6 +423,9 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   cancelAcpTurn: (sessionId: string) => Promise<boolean>
   resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean>
   resolveAcpUserInput: (sessionId: string, requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
+  /** Sends a typed secret (or the saved one) straight to native; nothing is stored here. Plan opt-in, Deny and Cancel use resolveAcpUserInput. */
+  submitSecretRequest: (sessionId: string, requestId: string, submission: SecretSubmission) => Promise<{ ok: boolean; error?: string }>
+  forgetSavedSecret: (sessionId: string, requestId: string) => Promise<{ ok: boolean; error?: string }>
   stopAcpSession: (sessionId: string, purpose?: 'interrupt' | 'timeout') => Promise<boolean>
   /** The user's override of a remote stop the host never confirmed; a process may still be running there. */
   treatRemoteStopAsStopped: (sessionId: string) => Promise<boolean>
@@ -421,6 +442,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setProviderAvailability: (settings: ProviderAvailabilityRequest) => Promise<boolean>
   setVoiceInputSettings: (settings: VoiceInputSettingsRequest) => Promise<boolean>
   setStorageSettings: (settings: StorageSettingsRequest) => Promise<boolean>
+  setSidebarChatOrder: (list: 'pinned' | 'active', order: string[]) => Promise<boolean>
   setSidebarSettings: (settings: Pick<AppState, 'showProviderIconsInSidebar' | 'showWorktreePathInSidebar'>) => Promise<boolean>
   /** Saves what composer Send does while a turn runs: steer it (true) or queue for the next turn (false). */
   setSteerActiveTurnOnSend: (steer: boolean) => Promise<boolean>

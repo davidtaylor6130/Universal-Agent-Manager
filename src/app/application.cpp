@@ -6,6 +6,7 @@
 #include "app/local_chat_bundle_service.h"
 #include "app/storage_retention_service.h"
 #include "app/pr_watch_service.h"
+#include "app/secret_request_service.h"
 #include "app/data_folder_settings_service.h"
 #include "app/data_folder_transition.h"
 #include "include/cef_request_context.h"
@@ -809,6 +810,8 @@ bool Application::InitializeState()
 		m_exitCode = 1;
 		return false;
 	}
+	// Secret drops hold no data on disk, but a crash can leave their empty pipes or expired Windows files behind.
+	(void)uam::secrets::SweepStale(uam::SecretRequestService::LocalDropDirectory(m_app.data_root));
 	uam::AgentRunLoadResult agent_runs = uam::AgentRunLedger::LoadAll(m_app.data_root);
 #if !UAM_ALL_PROVIDERS_INCLUDED
 	{
@@ -976,7 +979,12 @@ bool Application::InitializeState()
 bool Application::InitializeCef(CefMainArgs main_args)
 {
 	CefSettings settings;
+#if defined(UAM_CEF_SANDBOX)
+	settings.no_sandbox = false;
+#else
+	// Known gap on Windows (CEF's bootstrap.exe client-DLL layout) and Linux; see docs/reference/security-enterprise.md.
 	settings.no_sandbox = true;
+#endif
 	const fs::path cef_cache_path = m_app.data_root / "cef";
 	CefString(&settings.root_cache_path) = uam::paths::NormalizedNativePathString(cef_cache_path);
 	CefString(&settings.cache_path) = uam::paths::NormalizedNativePathString(cef_cache_path);
@@ -1036,7 +1044,8 @@ bool Application::InitializeCef(CefMainArgs main_args)
 	if (!m_managementNode)
 	{
 		settings.windowless_rendering_enabled = true;
-		m_app.html_view_render_checker = uam::cef::CreateHtmlViewRenderChecker();
+		// ponytail: the hidden HTML view runtime check stays off, so agent pages run only after the user chooses Run.
+		// Turning it back on is m_app.html_view_render_checker = uam::cef::CreateHtmlViewRenderChecker().
 	}
 
 	if (!CefInitialize(main_args, settings, cef_app.get(), nullptr))
@@ -1117,6 +1126,7 @@ void Application::Shutdown()
 		uam::FlushPendingChatSaves(m_app, true);
 	}
 	uam::UamControlService::Shutdown(m_app);
+	uam::secrets::StopAllDrops();
 	uam::FastStopCliTerminalsForExit(m_app);
 	// PollTick has stopped; settle authenticated final history before app/CEF teardown.
 	ChatHistorySyncService().SettleTerminalNativeMediaForExit(m_app);

@@ -2601,6 +2601,12 @@ UAM_TEST(ProviderTextWorkersAreIsolatedAndIgnoreUnsafeExtraFlags)
 				UAM_ASSERT(directory != invocation.argv.end() && std::next(directory) != invocation.argv.end());
 				UAM_ASSERT_EQ(*std::next(directory), uam::paths::Utf8PathString(isolation_directory));
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--pure"));
+				// OpenCode retries usage-limit errors silently; its error log lets the worker fail fast.
+				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--print-logs"));
+				const std::vector<std::string>::const_iterator level = std::ranges::find(invocation.argv, "--log-level");
+				UAM_ASSERT(level != invocation.argv.end() && std::next(level) != invocation.argv.end());
+				UAM_ASSERT_EQ(*std::next(level), std::string("ERROR"));
+				UAM_ASSERT(static_cast<bool>(invocation.output_failure));
 				const std::string config = uam::io::ReadTextFile(isolation_directory / "opencode.json");
 				UAM_ASSERT(uam::strings::Contains(config, R"("*":"deny")"));
 				const nlohmann::json agent_config = nlohmann::json::parse(config)["agent"]["uam-text-worker"];

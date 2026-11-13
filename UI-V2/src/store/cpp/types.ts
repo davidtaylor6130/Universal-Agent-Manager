@@ -387,7 +387,28 @@ export interface AcpPendingUserInput {
   status: string
   attentionKind?: AcpAttentionKind
   questions: AcpUserInputQuestion[]
+  /** UAM-control `secret_request`: the value is typed into the card and goes straight to native, never into this state. */
+  secretRequest?: AcpSecretRequest
 }
+
+export interface AcpSecretRequest {
+  label: string
+  reason: string
+  placeholder: string
+  /** Empty or an https sign-in page, opened in the system browser. */
+  url: string
+  /** Provider display name, e.g. "Codex". */
+  provider: string
+  /** Null: the chat runs on this computer. */
+  host: { name: string; platform: string } | null
+  /** This computer's platform, for the local wording: "macos" or "windows". */
+  localPlatform: string
+  /** The chat is in Plan mode: the user allows this one request before the field appears. */
+  planOptIn: boolean
+  keychain: { available: boolean; saved: boolean }
+}
+
+export type SecretSubmission = { value?: string; useSaved?: boolean; save?: boolean }
 
 export type AcpUserInputAnswers = Record<string, string[]>
 
@@ -803,6 +824,8 @@ export interface VcsStorageSettings {
   gitDefaultBaseBranch: string
   gitPullBeforeChat: boolean
   svnUpdateBeforeChat: boolean
+  /** Repositories that do not use trunk/branches/tags; display only. */
+  svnRepositoryLayouts: SvnRepositoryLayout[]
   gitPortMethod: 'patch' | 'merge' | 'squash'
   worktreeCleanupEnabled: boolean
   worktreeRetentionDays: number
@@ -818,6 +841,8 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   theme: StoredTheme
   showProviderIconsInSidebar?: boolean
   showWorktreePathInSidebar?: boolean
+  sidebarPinnedChatOrder?: string[]
+  sidebarActiveChatOrder?: string[]
   steerActiveTurnOnSend?: boolean
   gitEnabled?: boolean
   svnEnabled?: boolean
@@ -960,7 +985,77 @@ export interface VcsCommitStatus {
   lineStatsReady: boolean
   /** The chat comparison has no usable baseline, so Retry cannot help. */
   baselineUnavailable?: boolean
+  /** What the active system offers beyond status, diff and commit, such as `history` and `update`. */
+  capabilities?: string[]
   warning: string
+  error: string
+}
+
+/** Where one SVN repository keeps its main line, branches and tags, as repository-relative folders. */
+export interface SvnRepositoryLayout {
+  /** Repository root URL or repository UUID. */
+  repository: string
+  trunk: string
+  branches: string
+  tags: string
+}
+
+export interface VcsHistoryPath {
+  action: string
+  /** Repository path as the system reports it (SVN: `/trunk/a.txt`). */
+  path: string
+  kind: string
+  copyFromPath: string
+  copyFromRevision: string
+}
+
+export interface VcsHistoryEntry {
+  revision: string
+  author: string
+  date: string
+  message: string
+  paths: VcsHistoryPath[]
+  /** Changed paths left out to keep the reply bounded. */
+  pathsOmitted: number
+}
+
+export interface VcsHistoryPage {
+  entries: VcsHistoryEntry[]
+  /** Cursor for the next older page; empty at the start of history. */
+  next: string
+  /** Newest page only. */
+  workingRevision: string
+  location: string
+  /** Newest page only: identify the repository for its layout setting. */
+  repositoryRoot: string
+  repositoryUuid: string
+}
+
+/** How a branch or tag relates to the path it was copied from; an empty `originPath` means a main line. */
+export interface VcsOriginSummary {
+  branchPath: string
+  originPath: string
+  copyRevision: string
+  originRevision: string
+  /** Origin revisions SVN's merge tracking would still merge, newest first; with no merge recorded, every origin revision since the copy. */
+  behindRevisions: string[]
+  /** A merge from the origin is recorded, so `behindRevisions` leaves out what was merged. */
+  mergesRecorded: boolean
+  /** Merge tracking could not be read; `behindRevisions` is every origin revision since the copy. */
+  behindFromLog: boolean
+}
+
+export type VcsOriginView = 'summary' | 'ahead' | 'behind'
+
+export interface VcsOriginReply extends VcsOriginSummary {
+  page: VcsHistoryPage
+}
+
+export interface VcsUpdateResult {
+  ok: boolean
+  conflicts: boolean
+  revision: string
+  output: string
   error: string
 }
 
@@ -1002,6 +1097,8 @@ export interface VcsCommitMessageSuggestion {
 
 export interface CppAppState {
   startupNativeImports?: StartupNativeImportStatus
+  /** Desktop bootstrap only: phone requests still waiting for confirmation; read raw, never stored in app state. */
+  companionConfirmations?: unknown
   unchanged?: false
   stateRevision?: number
   bootId?: string
@@ -1151,6 +1248,16 @@ export interface CliTranscript {
 
 export type PushChannelStatus = 'no-push-yet' | 'connected' | 'parse-error' | 'invalid-message'
 
+/** A phone request held until the desktop user allows or denies it; the stored request itself stays native. */
+export interface CompanionConfirmation {
+  id: string
+  chatId: string
+  chatTitle: string
+  description: string
+  /** Epoch milliseconds. */
+  expiresAt: number
+}
+
 export type DictationPushMessage =
   | { type: 'dictation'; dictationId: string; event: 'interim' | 'final'; text: string }
   | { type: 'dictation'; dictationId: string; event: 'error'; message: string }
@@ -1171,6 +1278,7 @@ export type ParsedPushMessage =
   | { type: 'streamDone'; chatId: string }
   | DictationPushMessage
   | { type: 'attachmentProgress'; chatId: string; attachmentId: string; copiedBytes: number; totalBytes: number }
+  | { type: 'companionConfirmations'; items: CompanionConfirmation[] }
 
 export type ParsedPushResult =
   | { ok: true; message: ParsedPushMessage }

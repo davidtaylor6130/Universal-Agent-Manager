@@ -13,6 +13,7 @@
 #include "common/config/build_features.h"
 #if UAM_ENABLE_MOBILE_COMPANION
 #include "cef/companion_server.h"
+#include "common/companion/desktop_confirmation.h"
 #endif
 #include "cef/send_idempotency_window.h"
 #include "common/security/permission_change_log.h"
@@ -78,6 +79,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	CefRefPtr<CefThread> m_usageQueries;
 	std::shared_ptr<uam::usage::HistoryTransport> m_usageTransport;
 	CefRefPtr<CefThread> m_titleQueries;
+	CefRefPtr<CefThread> m_vcsUpdates;
 	CefRefPtr<CefThread> m_snoozeQueries;
 	CefRefPtr<CefThread> m_instructionQueries;
 	// Subprocess and network workers run here, off CEF's shared file lanes. One key always maps to one thread, so a chat's or host's work stays in order.
@@ -90,8 +92,14 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	std::size_t m_pendingCentralInstructionFiles = 0;
 	std::shared_ptr<std::atomic<unsigned>> m_pendingWorkspaceVcsContexts = std::make_shared<std::atomic<unsigned>>(0);
 	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_titleRequests;
+	// History, revision-diff and update requests in flight, by the caller's requestId, so cancelVcsRequest can stop their VCS client.
+	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_vcsRequestStops;
 #if UAM_ENABLE_MOBILE_COMPANION
 	std::shared_ptr<UamCompanionService> m_companion;
+	// Phone requests that would loosen an agent's permissions, held until the user answers on the desktop.
+	uam::companion::DesktopConfirmations m_companionConfirmations;
+	/// True when the request was held for desktop confirmation; the companion reply has already failed.
+	bool HoldCompanionLoosening(CefRefPtr<CefBrowser> browser, std::string_view action, const nlohmann::json& payload, CefRefPtr<Callback> callback);
 #endif
 	// Workers hold weak references so queued callbacks cannot outlive this handler.
 	std::shared_ptr<void> m_asyncLifetime = std::make_shared<char>();
@@ -302,12 +310,15 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	nlohmann::json CompanionTransportStatus(const nlohmann::json& config) const;
 	bool CompanionAllowsKeychainPrompts() const;
 	void HandleGetCompanionToken(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleRegenerateCompanionToken(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleResolveCompanionConfirmation(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void LaunchAutomationChat(CefRefPtr<CefBrowser> browser, const std::string& chat_id, std::string response, CefRefPtr<Callback> cb, const std::string& origin_request_id = {});
 	void HandleAutomationHttpRequest(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleApproveAutomationChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetAutomationTokens(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleCreateAutomationToken(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleRevokeAutomationToken(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleRegenerateAutomationToken(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetAppPermissions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleRequestAppPermission(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleOpenAppPermissionSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
@@ -334,6 +345,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetProviderAvailability(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetSidebarSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleSetSidebarChatOrder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetComposerSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetNativeImportFilters(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
@@ -424,6 +436,11 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleCaptureChatReferenceContext(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetWorkspaceFilePreview(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetVcsFileDiff(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleGetVcsHistory(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleGetVcsRevisionDiff(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleUpdateVcsWorkspace(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleGetVcsOrigin(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleCancelVcsRequest(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGenerateVcsCommitMessage(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleListMemoryScanCandidates(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
@@ -460,6 +477,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleResolveAcpPermission(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleResolveAcpUserInput(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleSubmitSecretRequest(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleForgetSavedSecret(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleStopAcpSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleTreatRemoteStopAsStopped(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleWriteClipboardText(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

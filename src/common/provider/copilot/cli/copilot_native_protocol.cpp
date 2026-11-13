@@ -130,6 +130,7 @@ void RequestPermission(AppState& app, AcpSessionState& session, ChatSession& cha
 	if (pending.content.empty()) pending.content = request.dump(2);
 	pending.status = uam::acp_statuses::kPending;
 	pending.options = {{"allow_once", "Allow once", "allow_once"}, {"reject_once", "Deny", "reject_once"}};
+	ApplyCommandSafetyDecision(app, chat, pending); // Before replay: saved responses are checked against the captured scope.
 	if (!session.remote_source_exit_reported && ReplayPersistedInteractionResponseIfMatched(app, session, chat, {{"id", id}}, &pending))
 	{
 		if (std::ranges::any_of(chat.remote_interaction_responses, [&](const auto& saved) { return saved.request_id_json == stable_id; }))
@@ -146,7 +147,6 @@ void RequestPermission(AppState& app, AcpSessionState& session, ChatSession& cha
 	for (const AcpPendingPermissionState& queued : session.queued_permissions)
 		if (queued.request_id_json == pending.request_id_json && queued.provider_request_method == method) return;
 	AppendPermissionTurnEventIfNeeded(session, pending.request_id_json, pending.tool_call_id);
-	ApplyCommandSafetyDecision(app, chat, pending);
 	QueueAcpPermission(app, session, chat, std::move(pending));
 }
 
@@ -156,7 +156,7 @@ constexpr std::string_view kApproveImplementation = "Approve plan and implement 
 
 bool ReadOnlyPlan(const AcpSessionState& session)
 {
-	return session.goal_review_turn || session.active_uam_agent_workspace_access == "read";
+	return session.goal_review_turn || session.active_uam_agent_workspace_access != "write";
 }
 
 void RecordPlanDecision(AcpSessionState& session, const std::string& stable_id,
@@ -1377,7 +1377,7 @@ nlohmann::json CopilotCliProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState&
 	session.copilot_native_state["turnObserved"] = false;
 	session.copilot_native_state["messages"] = nlohmann::json::object();
 	session.copilot_native_state["reasoning"] = nlohmann::json::object();
-	const bool read_only = session.goal_review_turn || session.active_uam_agent_workspace_access == "read";
+	const bool read_only = session.goal_review_turn || session.active_uam_agent_workspace_access != "write";
 	const std::string mode = read_only || chat.approval_mode == uam::approval_modes::kPlanApprovalMode ? "plan" : "interactive";
 	return uam::acp_json_rpc::Request(request_id, method,
 	    {{"sessionId", session.session_id}, {"prompt", prompt}, {"mode", "enqueue"}, {"agentMode", mode}});

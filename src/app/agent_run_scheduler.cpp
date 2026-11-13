@@ -645,7 +645,7 @@ namespace uam
 			if (value.owner.delegation_grant || !value.execution || value.turns.empty() || value.turns.size() > 33 || value.current_turn_id != value.turns.back().turn_id || value.current_turn_number != value.turns.size() || !uuid::IsCanonicalUuid(value.owner.root_birth_id) || !uuid::IsCanonicalUuid(value.owner.transcript_birth_id)) return false;
 			const auto& binding = *value.execution;
 			if (binding.execution_host_id != "local" || binding.routing_mode != "explicit" || !uuid::IsCanonicalUuid(binding.native_session_id) || binding.effective_model_id.empty() || strings::ToLowerAscii(binding.effective_model_id) == "auto" || strings::ToLowerAscii(binding.effective_model_id) == "default" || binding.effective_model_id != run.model_id || binding.model_identity_source != "exact-requested" || binding.connection_configuration_json.empty() || binding.provider_configuration_json.empty()) return false;
-			if ((run.provider_id == uam::provider_ids::kCodexCli || run.provider_id == uam::provider_ids::kCopilotCli) && (run.effective_workspace_access != "read" || binding.approval_mode != approval_modes::kPlanApprovalMode)) return false;
+			if ((run.provider_id == uam::provider_ids::kCodexCli || run.provider_id == uam::provider_ids::kCopilotCli) && (run.effective_workspace_access == "write" || binding.approval_mode != approval_modes::kPlanApprovalMode)) return false;
 			return std::ranges::all_of(value.turns, [&](const auto& turn) { return turn.principal.kind == ManagedRunPrincipalKind::UserRoot && turn.principal.root_chat_id == run.root_chat_id && turn.principal.root_birth_id == value.owner.root_birth_id && turn.principal.parent_run_id.empty() && turn.principal.parent_transcript_birth_id.empty(); });
 		}
 		bool ReadPolicyResumeEvidenceMatches(const ManagedInitialRuntimeOwner& owner)
@@ -782,42 +782,61 @@ namespace uam
 		}
 	} // namespace
 
+	namespace
+	{
+		bool AnyManagedInitialWork(const AppState& app)
+		{
+			return !app.managed_initial_mentions.empty() || !app.managed_followups.empty() || !app.managed_initial_runtime_owners.empty();
+		}
+
+		bool PendingInitialMentionFor(const AppState& app, const ChatSession* current, std::string_view chat_id)
+		{
+			if (current && AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, *current))
+				return true;
+			if (std::ranges::any_of(app.managed_initial_mentions,
+			                        [&](const auto& entry)
+			                        {
+				                        const auto& task = entry.second;
+				                        if (!task || task->root != app.data_root || (task->root_id != chat_id && task->transcript_id != chat_id))
+					                        return false;
+				                        const auto* root = ChatDomainService().FindChatById(app, task->root_id);
+				                        if (!root || root->metadata_incarnation != task->incarnation || root->created_at != task->root_created || root->managed_followup_incarnation != task->root_birth)
+					                        return false;
+				                        if (task->transcript_id == chat_id)
+				                        {
+					                        const auto* child = ChatDomainService().FindChatById(app, task->transcript_id);
+					                        if (child && !task->accepted)
+						                        return false;
+					                        if (child && (child->agent_run_id != task->accepted_run_id || child->metadata_incarnation != task->accepted_transcript_incarnation || child->created_at != task->accepted_transcript_created || child->managed_followup_incarnation != task->accepted_transcript_birth))
+						                        return false;
+				                        }
+				                        return true; // Includes the real unresolved publication ticket after shutdown worker retirement.
+			                        }))
+				return true;
+			if (std::ranges::any_of(app.managed_followups, [&](const auto& entry)
+			{
+				const auto& task = entry.second;
+				return task && !task->replay && (task->root_id == chat_id || task->transcript_id == chat_id) && FollowupTaskScope(app, *task);
+			})) return true;
+			return std::ranges::any_of(app.managed_initial_runtime_owners,
+			                           [&](const auto& entry)
+			                           {
+				                           const auto& owner = entry.second;
+				                           return owner && (owner->root_id == chat_id || owner->transcript_id == chat_id) && InitialRuntimeOwned(app, *owner, false) && (owner->transition || (owner->retired && !owner->retired->load(std::memory_order_acquire)));
+			                           });
+		}
+	} // namespace
+
 	bool AgentRunScheduler::HasPendingInitialMention(const AppState& app, std::string_view chat_id)
 	{
-		const auto* current = ChatDomainService().FindChatById(app, std::string(chat_id));
-		if (current && HasUnconfirmedInitialRootPublication(app, *current))
-			return true;
-		if (std::ranges::any_of(app.managed_initial_mentions,
-		                        [&](const auto& entry)
-		                        {
-			                        const auto& task = entry.second;
-			                        if (!task || task->root != app.data_root || (task->root_id != chat_id && task->transcript_id != chat_id))
-				                        return false;
-			                        const auto* root = ChatDomainService().FindChatById(app, task->root_id);
-			                        if (!root || root->metadata_incarnation != task->incarnation || root->created_at != task->root_created || root->managed_followup_incarnation != task->root_birth)
-				                        return false;
-			                        if (task->transcript_id == chat_id)
-			                        {
-				                        const auto* child = ChatDomainService().FindChatById(app, task->transcript_id);
-				                        if (child && !task->accepted)
-					                        return false;
-				                        if (child && (child->agent_run_id != task->accepted_run_id || child->metadata_incarnation != task->accepted_transcript_incarnation || child->created_at != task->accepted_transcript_created || child->managed_followup_incarnation != task->accepted_transcript_birth))
-					                        return false;
-			                        }
-			                        return true; // Includes the real unresolved publication ticket after shutdown worker retirement.
-		                        }))
-			return true;
-		if (std::ranges::any_of(app.managed_followups, [&](const auto& entry)
-		{
-			const auto& task = entry.second;
-			return task && !task->replay && (task->root_id == chat_id || task->transcript_id == chat_id) && FollowupTaskScope(app, *task);
-		})) return true;
-		return std::ranges::any_of(app.managed_initial_runtime_owners,
-		                           [&](const auto& entry)
-		                           {
-			                           const auto& owner = entry.second;
-			                           return owner && (owner->root_id == chat_id || owner->transcript_id == chat_id) && InitialRuntimeOwned(app, *owner, false) && (owner->transition || (owner->retired && !owner->retired->load(std::memory_order_acquire)));
-		                           });
+		// Every answer needs managed work; idle memory scans ask for every chat on every poll.
+		if (!AnyManagedInitialWork(app)) return false;
+		return PendingInitialMentionFor(app, ChatDomainService().FindChatById(app, std::string(chat_id)), chat_id);
+	}
+
+	bool AgentRunScheduler::HasPendingInitialMention(const AppState& app, const ChatSession& chat)
+	{
+		return AnyManagedInitialWork(app) && PendingInitialMentionFor(app, &chat, chat.id);
 	}
 
 	bool AgentRunScheduler::HasUnconfirmedInitialRootPublication(const AppState& app, const ChatSession& chat)
@@ -977,7 +996,7 @@ namespace uam
 		transcript.service_tier_explicit = root->service_tier_explicit;
 		const auto* root_session = FindAcpSessionForChat(app, root_id);
 		const auto* root_agent = FindAgent(catalog, root->uam_agent_id);
-		const bool read_only = definition->workspace_access == "read" || (root_session ? root_session->active_uam_agent_workspace_access == "read" : root_agent && root_agent->workspace_access == "read") || approval_modes::AppApprovalModeOrEmpty(root->approval_mode) == approval_modes::kPlanApprovalMode;
+		const bool read_only = definition->workspace_access != "write" || (root_session ? root_session->active_uam_agent_workspace_access != "write" : root_agent && root_agent->workspace_access != "write") || approval_modes::AppApprovalModeOrEmpty(root->approval_mode) == approval_modes::kPlanApprovalMode;
 		transcript.approval_mode = read_only ? approval_modes::kPlanApprovalMode : root->approval_mode;
 		transcript.command_safety_tier = root->command_safety_tier;
 		transcript.uam_agent_id = definition->id;
@@ -1445,7 +1464,7 @@ namespace uam
 		const auto* root = ChatDomainService().FindChatById(app, owner->root_id);
 		const auto* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 		const auto* provider = ProviderResolutionService().ProviderForChat(app, chat);
-		if (!managed || managed->turns.empty() || managed->turns.size() > 33 || managed->current_turn_id != managed->turns.back().turn_id || managed->current_turn_number != managed->turns.size() || managed->owner.delegation_grant || run.provider_id != uam::provider_ids::kCopilotCli || run.depth != 1 || !run.parent_run_id.empty() || !run.resumed_from_run_id.empty() || !run.goal_id.empty() || run.effective_workspace_access != "read" || !root || !root->active_goal_id.empty() || !root->goal_owner_chat_id.empty() || !root->temporary_parent_chat_id.empty() || !host || host->id != "local" || host->transport != "local" || !provider || provider->id != run.provider_id || provider->structured_protocol != "copilot-sdk" || !provider->supports_structured || !provider->supports_resume || !ProviderResolutionService().ChatProviderIsAvailable(app, chat) || chat.execution_host_id != "local" || chat.routing_mode != "explicit" || !paths::IsControllerLocalWorkspace(chat) || chat.small_model_mode || !chat.active_goal_id.empty() || !chat.goal_owner_chat_id.empty() || !chat.temporary_parent_chat_id.empty() || chat.approval_mode != approval_modes::kPlanApprovalMode || chat.model_id.empty() || chat.model_id.size() > 160 || chat.model_id.find('\0') != std::string::npos || strings::ToLowerAscii(chat.model_id) == "auto" || strings::ToLowerAscii(chat.model_id) == "default" || chat.model_id != run.model_id || chat.workspace_directory.empty() || chat.workspace_directory.size() > 4096 || chat.workspace_directory.find('\0') != std::string::npos || !std::filesystem::path(chat.workspace_directory).is_absolute()) return std::nullopt;
+		if (!managed || managed->turns.empty() || managed->turns.size() > 33 || managed->current_turn_id != managed->turns.back().turn_id || managed->current_turn_number != managed->turns.size() || managed->owner.delegation_grant || run.provider_id != uam::provider_ids::kCopilotCli || run.depth != 1 || !run.parent_run_id.empty() || !run.resumed_from_run_id.empty() || !run.goal_id.empty() || run.effective_workspace_access == "write" || !root || !root->active_goal_id.empty() || !root->goal_owner_chat_id.empty() || !root->temporary_parent_chat_id.empty() || !host || host->id != "local" || host->transport != "local" || !provider || provider->id != run.provider_id || provider->structured_protocol != "copilot-sdk" || !provider->supports_structured || !provider->supports_resume || !ProviderResolutionService().ChatProviderIsAvailable(app, chat) || chat.execution_host_id != "local" || chat.routing_mode != "explicit" || !paths::IsControllerLocalWorkspace(chat) || chat.small_model_mode || !chat.active_goal_id.empty() || !chat.goal_owner_chat_id.empty() || !chat.temporary_parent_chat_id.empty() || chat.approval_mode != approval_modes::kPlanApprovalMode || chat.model_id.empty() || chat.model_id.size() > 160 || chat.model_id.find('\0') != std::string::npos || strings::ToLowerAscii(chat.model_id) == "auto" || strings::ToLowerAscii(chat.model_id) == "default" || chat.model_id != run.model_id || chat.workspace_directory.empty() || chat.workspace_directory.size() > 4096 || chat.workspace_directory.find('\0') != std::string::npos || !std::filesystem::path(chat.workspace_directory).is_absolute()) return std::nullopt;
 		if (!std::ranges::all_of(managed->turns, [&](const auto& turn) { return turn.principal.kind == ManagedRunPrincipalKind::UserRoot && turn.principal.root_chat_id == run.root_chat_id && turn.principal.root_birth_id == managed->owner.root_birth_id && turn.principal.parent_run_id.empty() && turn.principal.parent_transcript_birth_id.empty(); })) return std::nullopt;
 		if ((owner->resume_only && (!FollowupShape(run) || !managed->execution)) || (!owner->resume_only && (managed->turns.size() != 1 || managed->execution))) return std::nullopt;
 		ManagedNativeReadScope scope;
@@ -1564,7 +1583,7 @@ namespace uam
 		const auto owner = session.managed_initial_owner;
 		if (!owner || owner->resume_only || owner->binding_withheld || session.provider_id != uam::provider_ids::kCodexCli || session.protocol_kind != "codex-app-server") return;
 		const bool owned = owner->session == &session && InitialOwner(app, chat) == owner && FindAcpSessionForChat(app, chat.id) == &session && InitialRuntimeOwned(app, *owner) && session.running && session.managed_launch_attempted && session.managed_agent_run_id == owner->expected.id && session.process_execution_host_id == "local" && !owner->process.empty() && session.last_process_id == owner->process && session.session_id.empty() && chat.native_session_id.empty() && session.session_setup_request_id > 0 && request_id == std::to_string(session.session_setup_request_id) && !owner->input_attempted && !owner->input_written && !owner->settled && !owner->input_forbidden && owner->completion_acked && owner->expected.status == "running" && (owner->phase == ManagedInitialRuntimeOwner::Phase::Starting || owner->phase == ManagedInitialRuntimeOwner::Phase::Row || owner->phase == ManagedInitialRuntimeOwner::Phase::Input);
-		if (!owned || !read_only_openai_policy_confirmed || !uuid::IsCanonicalUuid(native) || model.empty() || model.size() > 160 || strings::ToLowerAscii(std::string(model)) == "auto" || strings::ToLowerAscii(std::string(model)) == "default" || model != owner->expected.model_id || workspace.empty() || workspace.size() > 4096 || !std::filesystem::path(std::string(workspace)).is_absolute() || workspace != chat.workspace_directory || chat.execution_host_id != "local" || chat.routing_mode != "explicit" || owner->expected.provider_id != uam::provider_ids::kCodexCli || owner->expected.depth != 1 || !owner->expected.parent_run_id.empty() || owner->expected.effective_workspace_access != "read" || !owner->expected.managed_continuation || owner->expected.managed_continuation->owner.delegation_grant || owner->expected.managed_continuation->turns.size() != 1 || owner->expected.managed_continuation->turns.front().principal.kind != ManagedRunPrincipalKind::UserRoot || (owner->setup_execution_observed && (native != owner->observed_native || model != owner->observed_model || workspace != owner->observed_workspace)))
+		if (!owned || !read_only_openai_policy_confirmed || !uuid::IsCanonicalUuid(native) || model.empty() || model.size() > 160 || strings::ToLowerAscii(std::string(model)) == "auto" || strings::ToLowerAscii(std::string(model)) == "default" || model != owner->expected.model_id || workspace.empty() || workspace.size() > 4096 || !std::filesystem::path(std::string(workspace)).is_absolute() || workspace != chat.workspace_directory || chat.execution_host_id != "local" || chat.routing_mode != "explicit" || owner->expected.provider_id != uam::provider_ids::kCodexCli || owner->expected.depth != 1 || !owner->expected.parent_run_id.empty() || owner->expected.effective_workspace_access == "write" || !owner->expected.managed_continuation || owner->expected.managed_continuation->owner.delegation_grant || owner->expected.managed_continuation->turns.size() != 1 || owner->expected.managed_continuation->turns.front().principal.kind != ManagedRunPrincipalKind::UserRoot || (owner->setup_execution_observed && (native != owner->observed_native || model != owner->observed_model || workspace != owner->observed_workspace)))
 		{
 			owner->binding_withheld = true;
 			return;
@@ -1584,7 +1603,7 @@ namespace uam
 		const auto& managed = run.managed_continuation;
 		const auto* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 		const bool owned = InitialOwner(app, chat) == owner && FindAcpSessionForChat(app, chat.id) == &session && InitialRuntimeOwned(app, *owner) && session.provider_id == run.provider_id && session.protocol_kind == "gemini-acp" && session.running && session.initialized && session.managed_launch_attempted && session.managed_agent_run_id == run.id && session.process_execution_host_id == "local" && host && host->id == "local" && host->transport == "local" && !owner->process.empty() && session.last_process_id == owner->process && session.session_id.empty() && chat.native_session_id.empty() && session.session_setup_request_id > 0 && request_id == std::to_string(session.session_setup_request_id) && owner->completion_acked && !owner->input_attempted && !owner->input_written && !owner->input_forbidden && !owner->settled && run.status == "running";
-		const bool shape = managed && !managed->execution && !managed->owner.delegation_grant && managed->turns.size() == 1 && managed->current_turn_id == run.id && managed->current_turn_number == 1 && managed->turns.front().dispatch_attempted && managed->turns.front().principal.kind == ManagedRunPrincipalKind::UserRoot && managed->turns.front().principal.root_chat_id == owner->root_id && managed->turns.front().principal.root_birth_id == owner->root_birth && managed->turns.front().principal.parent_run_id.empty() && managed->turns.front().principal.parent_transcript_birth_id.empty() && run.depth == 1 && run.parent_run_id.empty() && run.resumed_from_run_id.empty() && run.goal_id.empty() && run.effective_workspace_access == "read";
+		const bool shape = managed && !managed->execution && !managed->owner.delegation_grant && managed->turns.size() == 1 && managed->current_turn_id == run.id && managed->current_turn_number == 1 && managed->turns.front().dispatch_attempted && managed->turns.front().principal.kind == ManagedRunPrincipalKind::UserRoot && managed->turns.front().principal.root_chat_id == owner->root_id && managed->turns.front().principal.root_birth_id == owner->root_birth && managed->turns.front().principal.parent_run_id.empty() && managed->turns.front().principal.parent_transcript_birth_id.empty() && run.depth == 1 && run.parent_run_id.empty() && run.resumed_from_run_id.empty() && run.goal_id.empty() && run.effective_workspace_access != "write";
 		const bool exact = uuid::IsCanonicalUuid(native) && !model.empty() && model.size() <= 160 && strings::TrimAsciiView(model) == model && std::ranges::none_of(model, [](unsigned char ch) { return ch < 32 || ch == 127; }) && strings::ToLowerAscii(std::string(model)) != "auto" && strings::ToLowerAscii(std::string(model)) != "default" && model == run.model_id && model == chat.model_id && mode == approval_modes::kPlanApprovalMode && chat.approval_mode == approval_modes::kPlanApprovalMode && chat.routing_mode == "explicit" && !chat.small_model_mode && paths::IsControllerLocalWorkspace(chat) && !chat.workspace_directory.empty() && chat.workspace_directory.size() <= 4096 && chat.workspace_directory.find('\0') == std::string::npos && std::filesystem::path(chat.workspace_directory).is_absolute();
 		if (!owned || !shape || !exact || owner->setup_execution_observed)
 		{
@@ -1779,9 +1798,9 @@ namespace uam
 				const auto* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 				const auto* provider = ProviderResolutionService().ProviderForChat(app, chat);
 				const bool claude = provider && provider->id == uam::provider_ids::kClaudeCli && session.protocol_kind == "claude-code-stream-json";
-				const bool codex = provider && provider->id == uam::provider_ids::kCodexCli && session.protocol_kind == "codex-app-server" && owner->setup_execution_observed && !owner->binding_withheld && owner->observed_native == session.session_id && owner->observed_native == chat.native_session_id && owner->observed_model == chat.model_id && owner->observed_workspace == chat.workspace_directory && owner->expected.effective_workspace_access == "read" && chat.approval_mode == approval_modes::kPlanApprovalMode;
+				const bool codex = provider && provider->id == uam::provider_ids::kCodexCli && session.protocol_kind == "codex-app-server" && owner->setup_execution_observed && !owner->binding_withheld && owner->observed_native == session.session_id && owner->observed_native == chat.native_session_id && owner->observed_model == chat.model_id && owner->observed_workspace == chat.workspace_directory && owner->expected.effective_workspace_access != "write" && chat.approval_mode == approval_modes::kPlanApprovalMode;
 				const bool copilot = ManagedReadOnlyNativeScope(app, session, chat).has_value();
-				const bool gemini = provider && provider->id == "gemini-cli" && session.protocol_kind == "gemini-acp" && owner->setup_execution_observed && !owner->binding_withheld && session.agent_name == "gemini-cli" && !owner->observed_provider_version.empty() && session.agent_version == owner->observed_provider_version && owner->observed_native == session.session_id && owner->observed_native == chat.native_session_id && owner->observed_model == chat.model_id && owner->observed_model == session.current_model_id && owner->observed_workspace == chat.workspace_directory && owner->observed_mode == approval_modes::kPlanApprovalMode && session.current_mode_id == owner->observed_mode && owner->expected.effective_workspace_access == "read" && chat.approval_mode == approval_modes::kPlanApprovalMode;
+				const bool gemini = provider && provider->id == "gemini-cli" && session.protocol_kind == "gemini-acp" && owner->setup_execution_observed && !owner->binding_withheld && session.agent_name == "gemini-cli" && !owner->observed_provider_version.empty() && session.agent_version == owner->observed_provider_version && owner->observed_native == session.session_id && owner->observed_native == chat.native_session_id && owner->observed_model == chat.model_id && owner->observed_model == session.current_model_id && owner->observed_workspace == chat.workspace_directory && owner->observed_mode == approval_modes::kPlanApprovalMode && session.current_mode_id == owner->observed_mode && owner->expected.effective_workspace_access != "write" && chat.approval_mode == approval_modes::kPlanApprovalMode;
 				if (host && provider && host->id == "local" && host->transport == "local" && chat.routing_mode == "explicit" && (claude || codex || copilot || gemini) && !chat.model_id.empty() && chat.model_id == owner->expected.model_id && owner->expected.depth == 1 && owner->expected.parent_run_id.empty() && owner->expected.managed_continuation->turns.size() == 1 && !owner->expected.managed_continuation->owner.delegation_grant && owner->expected.managed_continuation->turns.front().principal.kind == ManagedRunPrincipalKind::UserRoot)
 				{
 					ManagedRunExecutionBinding value;
@@ -3330,22 +3349,30 @@ namespace uam
 			}
 		}
 
+		const AcpSessionState* root_session = FindAcpSessionForChat(app, root_chat->id);
+		const AgentDefinition* root_definition = FindAgent(agents, root_chat->uam_agent_id);
+		const bool root_agent_read_only = root_session != nullptr
+		                                      ? root_session->active_uam_agent_workspace_access != "write"
+		                                      : root_definition != nullptr && root_definition->workspace_access != "write";
+		// A validated caller's captured restriction can only narrow the current root/definition policy.
+		const bool caller_read_only = additional_read_only_ceiling || root_agent_read_only ||
+		                              approval_modes::AppApprovalModeOrEmpty(root_chat->approval_mode) == approval_modes::kPlanApprovalMode ||
+		                              (parent != nullptr && parent->effective_workspace_access != "write");
+		const bool read_only = caller_read_only || definition->workspace_access != "write";
+		const std::string caller_provider = provider_ids::NormalizeCliProviderAliasOrSelf(parent != nullptr ? parent->provider_id : root_chat->provider_id);
 		const std::string selected_provider = provider_ids::NormalizeCliProviderAliasOrSelf(
-		    uam::strings::NonEmptyOrFallback(uam::strings::Trim(provider_id), root_chat->provider_id));
+		    uam::strings::NonEmptyOrFallback(uam::strings::Trim(provider_id), caller_read_only ? caller_provider : root_chat->provider_id));
+		// Providers enforce a read ceiling differently, so a read-only caller keeps its own provider's enforcement.
+		if (caller_read_only && selected_provider != caller_provider)
+		{
+			if (error_out != nullptr) *error_out = "A read-only agent can delegate only to its own provider.";
+			return false;
+		}
 		if (!ProviderExists(app, selected_provider))
 		{
 			if (error_out != nullptr) *error_out = "Requested provider is unavailable.";
 			return false;
 		}
-		const AcpSessionState* root_session = FindAcpSessionForChat(app, root_chat->id);
-		const AgentDefinition* root_definition = FindAgent(agents, root_chat->uam_agent_id);
-		const bool root_agent_read_only = root_session != nullptr
-		                                      ? root_session->active_uam_agent_workspace_access == "read"
-		                                      : root_definition != nullptr && root_definition->workspace_access == "read";
-		// A validated caller's captured restriction can only narrow the current root/definition policy.
-		const bool read_only = additional_read_only_ceiling || definition->workspace_access == "read" || root_agent_read_only ||
-		                       approval_modes::AppApprovalModeOrEmpty(root_chat->approval_mode) == approval_modes::kPlanApprovalMode ||
-		                       (parent != nullptr && parent->effective_workspace_access == "read");
 
 		ChatSession transcript = ChatDomainService().CreateNewChat(root_chat->folder_id, selected_provider);
 		transcript.title = "Agent: " + requested_agent;

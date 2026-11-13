@@ -9,6 +9,7 @@
 #include "app/pr_watch_service.h"
 #include "app/data_folder_transition.h"
 #include "common/platform/data_folder_writer_lease.h"
+#include "common/platform/platform_incremental_sha256.h"
 
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
@@ -27,6 +28,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/chat/html_view.h"
 #include "common/chat/html_view_render_check.h"
+#include "app/secret_request_service.h"
 #include "common/config/approval_modes.h"
 #include "common/config/central_provider_configuration.h"
 #include "common/config/settings_normalization.h"
@@ -138,6 +140,8 @@ namespace uam
 		constexpr int64_t kModelGoalTokenBudget = 200000;
 		constexpr std::string_view kServerFlag = "--uam-control-mcp";
 		constexpr const char* kCapabilityDirectoryEnvironment = "UAM_CONTROL_CAPABILITY_DIR";
+		/// Per-capability signing key, delivered only in the MCP server's launch environment, never in the capability directory.
+		constexpr const char* kRequestKeyEnvironment = "UAM_CONTROL_REQUEST_KEY";
 
 		enum class WaitAbortReason { None, Cancelled, InputClosed, InputError, Deadline };
 
@@ -282,6 +286,52 @@ namespace uam
 			return out.str();
 		}
 
+		std::string Sha256Hex(std::string_view first, std::string_view second)
+		{
+			platform::IncrementalSha256 hash;
+			return hash.Add(first) && hash.Add(second) ? hash.Finish() : std::string{};
+		}
+
+		/// <summary>HMAC-SHA256 of a request body; the key is the 64-character hex capability key.</summary>
+		std::string RequestMac(std::string_view key, std::string_view body)
+		{
+			if (key.size() != 64) return {};
+			std::string inner_pad(64, '\x36'), outer_pad(64, '\x5c');
+			for (std::size_t index = 0; index < key.size(); ++index)
+			{
+				inner_pad[index] = static_cast<char>(inner_pad[index] ^ key[index]);
+				outer_pad[index] = static_cast<char>(outer_pad[index] ^ key[index]);
+			}
+			const std::string inner = Sha256Hex(inner_pad, body);
+			if (inner.size() != 64) return {};
+			std::string inner_bytes;
+			for (std::size_t index = 0; index < inner.size(); index += 2)
+				inner_bytes.push_back(static_cast<char>(std::stoi(inner.substr(index, 2), nullptr, 16)));
+			return Sha256Hex(outer_pad, inner_bytes);
+		}
+
+		/// <summary>Adds the session's request signature, so the manager can tell which provider session filed it.</summary>
+		nlohmann::json SignRequest(nlohmann::json request, std::string_view key)
+		{
+			const std::string mac = RequestMac(key, request.dump());
+			if (!mac.empty()) request["mac"] = mac;
+			return request;
+		}
+
+		/// <summary>Verifies and strips the signature; a missing, foreign or malformed one proves nothing.</summary>
+		bool VerifyRequest(nlohmann::json& request, std::string_view key)
+		{
+			if (!request.is_object() || !request.contains("mac") || !request["mac"].is_string()) return false;
+			const std::string mac = request["mac"].get<std::string>();
+			request.erase("mac");
+			const std::string expected = RequestMac(key, request.dump());
+			if (expected.empty() || mac.size() != expected.size()) return false;
+			unsigned char difference = 0;
+			for (std::size_t index = 0; index < mac.size(); ++index)
+				difference |= static_cast<unsigned char>(mac[index] ^ expected[index]);
+			return difference == 0;
+		}
+
 		bool SafeRequestId(std::string_view value)
 		{
 			return !value.empty() && value.size() <= 80 &&
@@ -325,7 +375,7 @@ namespace uam
 		/// Requests that show a card and wait for the user: they are answered, declined or cancelled, never timed out.
 		bool IsCardMethod(std::string_view method)
 		{
-			return method == "user_question" || method == "goal_create" || method == "chat_create" || method == "computer_use_request";
+			return method == "user_question" || method == "goal_create" || method == "chat_create" || method == "computer_use_request" || method == "secret_request";
 		}
 
 		std::size_t RequestLimit(std::string_view method)
@@ -364,6 +414,7 @@ namespace uam
 				return HasOnlyStringArguments(arguments, {"title", "html"});
 			if (method == "computer_use_request")
 				return HasOnlyStringArguments(arguments, {"reason"});
+			if (method == "secret_request") return SecretRequestService::ValidArguments(arguments);
 			if (method == "user_question")
 			{
 				if (!arguments.is_object() || !arguments.contains("question") ||
@@ -406,16 +457,27 @@ namespace uam
 			return method == "agent_delegate" || method == "agent_cancel" || method == "goal_create" || method == "chat_create";
 		}
 
+		/// <summary>The caller's read ceiling: a Plan or read agent, a goal reviewer, or a capability with no live session.</summary>
 		bool ReadOnlyAgent(const AppState& app, const UamControlCapability& capability)
 		{
-			if (capability.agent_id == "plan") return true;
+			if (capability.agent_id == "plan" || capability.read_only_at_launch) return true;
+			const auto read_only = [](const AcpSessionState& session)
+			{ return session.goal_review_turn || session.active_uam_agent_workspace_access != "write"; };
 			for (const auto& session : app.acp_sessions)
 				if (session != nullptr && session->uam_control_capability_id == capability.id)
-					return session->active_uam_agent_workspace_access == "read";
+					return read_only(*session);
 			for (const auto& terminal : app.cli_terminals)
 				if (terminal != nullptr && terminal->uam_control_session != nullptr && terminal->uam_control_session->uam_control_capability_id == capability.id)
-					return terminal->uam_control_session->active_uam_agent_workspace_access == "read";
-			return false;
+					return read_only(*terminal->uam_control_session);
+			return true;
+		}
+
+		/// <summary>A goal reviewer's capability, during or after its review turn; its ceiling is narrower than its chat's.</summary>
+		bool GoalReviewer(const AppState& app, const UamControlCapability& capability)
+		{
+			if (capability.read_only_at_launch) return true;
+			return std::ranges::any_of(app.acp_sessions, [&](const auto& session)
+			{ return session != nullptr && session->uam_control_capability_id == capability.id && session->goal_review_turn; });
 		}
 
 		bool MutationsAllowed(const ChatSession& chat)
@@ -703,14 +765,21 @@ namespace uam
 		{
 			ToolResult out{.ok = true, .result = nlohmann::json::array(), .reason = "Listed bounded delegate metadata."};
 			const AgentDefinitionCatalog catalog = AgentCatalog(app, chat);
-			const nlohmann::json targets = AgentProviderTargets(app, chat);
+			// A read-only caller's children stay read-only and on its own provider, so list only what delegation allows.
+			const AgentRun* caller_run = capability.agent_run_id.empty() ? nullptr : FindRun(app, capability.agent_run_id);
+			const bool caller_read = ReadOnlyAgent(app, capability) || (caller_run != nullptr && caller_run->effective_workspace_access != "write") ||
+			                         uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode;
+			nlohmann::json targets = AgentProviderTargets(app, chat);
+			if (caller_read)
+			{
+				const std::string own = provider_ids::NormalizeCliProviderAliasOrSelf(caller_run != nullptr ? caller_run->provider_id : chat.provider_id);
+				targets.erase(std::remove_if(targets.begin(), targets.end(), [&](const nlohmann::json& target) { return target.value("providerId", "") != own; }), targets.end());
+			}
 			for (const AgentDefinition& definition : catalog.definitions)
 			{
 				if (definition.mode != "subagent" && definition.mode != "both") continue;
 				if (!capability.agent_run_id.empty() && !Contains(capability.agent_delegates, definition.id)) continue;
-				const bool forced_read = definition.workspace_access == "read" ||
-				                         (!capability.agent_run_id.empty() && FindRun(app, capability.agent_run_id) != nullptr &&
-				                          FindRun(app, capability.agent_run_id)->effective_workspace_access == "read");
+				const bool forced_read = caller_read || definition.workspace_access != "write";
 				out.result.push_back({{"id", definition.id}, {"description", definition.description},
 				                      {"workspaceAccess", forced_read ? "read" : "write"},
 				                      {"providerNeutral", true}, {"providerTargets", targets}});
@@ -1034,7 +1103,7 @@ namespace uam
 			    (!(*session)->pending_user_input.request_id_json.empty() ||
 			     !(*session)->pending_permission.request_id_json.empty()))
 				return {.error = "Finish the current provider question or permission request first."};
-			const std::string_view target_chat_id = pending.method == "goal_create" || pending.method == "chat_create"
+			const std::string_view target_chat_id = pending.method == "goal_create" || pending.method == "chat_create" || pending.method == "secret_request"
 			    ? std::string_view(capability.chat_id) : std::string_view(capability.session_chat_id);
 			if (std::ranges::any_of(app.uam_control_capabilities, [&](const UamControlCapability& value) {
 				    return value.pending_approval.has_value() && ApprovalChatId(value) == target_chat_id;
@@ -1192,6 +1261,18 @@ namespace uam
 			                                     .question_options = std::move(options)});
 		}
 
+		/// A subagent's request shows in its root chat, so the user answers where they are; delivery still goes to the child's host.
+		ToolResult SecretRequest(AppState& app, UamControlCapability& capability, std::string_view request_id, const nlohmann::json& arguments)
+		{
+			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
+			const ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
+			if (!ControlEnabled(chat, capability, false) || !ControlEnabled(root_chat, capability, true))
+				return {.error = "UAM Control is disabled or the owning chat is unavailable."};
+			if (std::string refusal = SecretRequestService::Refusal(app, capability); !refusal.empty()) return {.error = std::move(refusal)};
+			return QueueApproval(app, capability, {.request_id = std::string(request_id), .method = "secret_request",
+			                                     .secret_request = SecretRequestService::PendingMetadata(app, capability, arguments)});
+		}
+
 		ToolResult HtmlViewPreview(const nlohmann::json& arguments)
 		{
 			const std::string& html = arguments.at("html").get_ref<const std::string&>();
@@ -1249,6 +1330,8 @@ namespace uam
 			// A subagent's turn ends with its run; the chat that delegated to it is the one that can be woken.
 			if (!capability.agent_run_id.empty() || !chat.temporary_parent_chat_id.empty())
 				return {.error = "Subagents and temporary side chats cannot watch pull requests. Ask the chat that delegated to you to watch it."};
+			// A later wake runs under the chat's own agent, which may write; a reviewer's ceiling is narrower than that.
+			if (GoalReviewer(app, capability)) return {.error = "A goal reviewer cannot watch pull requests."};
 			if (app.pr_watch_service == nullptr) return {.error = "Pull request watching is unavailable."};
 			const std::int64_t number = arguments.contains("number") ? arguments["number"].get<std::int64_t>() : 0;
 			const std::optional<pr_watch::Reference> pr = arguments.contains("url")
@@ -1703,7 +1786,7 @@ namespace uam
 			if (!SafeRequestId(request_id) || method.empty() || method.size() > 64 ||
 			    !ValidToolArguments(method, arguments))
 				return reject("Control request has an unknown method or invalid arguments.");
-			if (method != "agent_delegate" && ReadOnlyAgent(app, *capability) && (IsMutation(method) || method == "computer_use_request"))
+			if (method != "agent_delegate" && ReadOnlyAgent(app, *capability) && (IsMutation(method) || method == "computer_use_request" || method == "secret_request"))
 				return reject("This UAM agent has read-only access. Mutation tools are unavailable.");
 			if (!capability->seen_request_ids.insert(request_id).second)
 				return reject("Control request replay was rejected.");
@@ -1794,6 +1877,8 @@ namespace uam
 			                        ? ComputerUseRequest(app, *capability, request_id, arguments, now_epoch_ms)
 			                        : method == "user_question"
 			                            ? UserQuestionRequest(app, *capability, request_id, arguments, now_epoch_ms)
+			                        : method == "secret_request"
+			                            ? SecretRequest(app, *capability, request_id, arguments)
 			                        : needs_approval
 			                            ? (method == "goal_create" ? GoalCreateRequest(app, *capability, request_id, arguments, now_epoch_ms)
 			                                                       : ChatCreateRequest(app, *capability, request_id, arguments, now_epoch_ms))
@@ -1849,7 +1934,7 @@ namespace uam
 					return {{"pendingRenderCheck", true}};
 				}
 				html_view::RenderCheckResult unavailable;
-				unavailable.not_run_reason = "no renderer is available.";
+				unavailable.not_run_reason = method == "html_view_publish" ? "pages run only after the user chooses Run on the card in the chat." : "pages are not run before the user chooses Run on a published card.";
 				result.result["runtimeCheck"] = html_view::RenderCheckJson(unavailable);
 			}
 			if (result.ok && method == "agent_delegate")
@@ -1898,6 +1983,14 @@ namespace uam
 			                       {"options", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 3}}} },
 			    {"question"});
 			user_question["description"] = "Ask the user one bounded question in UAM. The request is shown in the chat and waits for an explicit answer; free text is always available. Do not retry after timeout.";
+			nlohmann::json secret_request = ToolSchema(
+			    "secret_request", {{"label", {{"type", "string"}, {"description", "What the secret is, e.g. GitHub personal access token (at most 80 bytes)."}}},
+			                       {"reason", {{"type", "string"}, {"description", "Why you need it, shown to the user (at most 300 bytes)."}}},
+			                       {"placeholder", {{"type", "string"}}},
+			                       {"url", {{"type", "string"}, {"description", "Optional https page where the user can create or find the secret."}}},
+			                       {"delivery", {{"type", "string"}, {"enum", {"file"}}}}},
+			    {"label", "reason"});
+			secret_request["description"] = "Ask the user for one secret (API key, token, password, PIN, sudo password, pairing code) in a masked UAM card. Never ask for secrets in chat text. You receive only a path on this chat's computer, never the value: read it inside the one command that uses it, e.g. cmd --token \"$(cat PATH)\" or sudo -S -p '' cmd < PATH (PowerShell: $t = Get-Content -Raw PATH). Never print, echo, cat on its own or copy it. On macOS and Linux the path is a pipe that can be read once and expires after 10 minutes; on Windows it is a private file deleted after 60 seconds. Waits until the user answers; do not retry after cancellation.";
 			nlohmann::json agent_list = ToolSchema("agent_list");
 			agent_list["description"] = "List permitted agents and providerTargets on this chat's execution host. Only eligible targets have an installed compatible worker CLI; authentication remains unverified. Same-provider defaultModelId inherits the parent; an empty cross-provider default uses that provider's default.";
 			nlohmann::json agent_delegate = MutationToolSchema("agent_delegate", {{"agentId", {{"type", "string"}}}, {"task", {{"type", "string"}}},
@@ -1920,9 +2013,9 @@ namespace uam
 			    {"title", {{"type", "string"}, {"description", "Short single-line title shown on the card (at most 120 bytes)."}}},
 			    {"html", {{"type", "string"}, {"description", "Complete self-contained HTML document (at most 131072 bytes). Inline all CSS, scripts, images (data: URLs) and data."}}}};
 			nlohmann::json html_view_preview = ToolSchema("html_view_preview", html_view_properties, {"title", "html"});
-			html_view_preview["description"] = "Check an HTML view before publishing. Returns publishable, size, validation errors, warnings about content the sandbox blocks (remote resources, network APIs, storage, frames, pop-ups) and runtimeCheck: the console errors and uncaught exceptions from rendering the page in a hidden sandbox. runtimeCheck.completed is false when the check timed out or could not run. Publishes nothing; no screenshot is produced.";
+			html_view_preview["description"] = "Check an HTML view before publishing. Returns publishable, size, validation errors and warnings about content the sandbox blocks (remote resources, network APIs, storage, frames, pop-ups). The page is not run, so runtimeCheck reports not_run. Publishes nothing; no screenshot is produced.";
 			nlohmann::json html_view_publish = ToolSchema("html_view_publish", html_view_properties, {"title", "html"});
-			html_view_publish["description"] = "Show a self-contained HTML page (chart, table, diagram, mockup, small interactive view) as a sandboxed card in this chat's current turn, above your text reply. Scripts run only inside the sandbox; network, storage, cookies, pop-ups and the UAM app are unreachable. Rejected when over 131072 bytes, empty, in CLI View or outside an active turn. The result's runtimeCheck lists console errors and uncaught exceptions from a hidden render so you can fix the page; runtimeCheck.completed is false when that check timed out or could not run, and the view is still published. Call html_view_preview first to check a page without publishing it.";
+			html_view_publish["description"] = "Show a self-contained HTML page (chart, table, diagram, mockup, small interactive view) as a sandboxed card in this chat's current turn, above your text reply. The page loads only after the user chooses Run on its card, and its scripts run only inside the sandbox; network, storage, cookies, pop-ups and the UAM app are unreachable. Rejected when over 131072 bytes, empty, in CLI View or outside an active turn. The page is not run on publish, so runtimeCheck reports not_run. Call html_view_preview first to check a page's size and blocked content without publishing it.";
 			nlohmann::json tools = nlohmann::json::array({
 			    std::move(html_view_preview),
 			    std::move(html_view_publish),
@@ -1939,6 +2032,7 @@ namespace uam
 			    std::move(pr_watch),
 			    std::move(pr_unwatch),
 			    std::move(user_question),
+			    std::move(secret_request),
 			    { {"name", "computer_use_request"},
 			      {"description", "Ask the user in UAM to enable Computer Use for this local chat. The tool waits for an explicit Allow or Deny decision; it never approves itself. Do not retry after denial or timeout."},
 			      {"inputSchema", {{"type", "object"}, {"properties", {{"reason", {{"type", "string"}}}}},
@@ -1994,7 +2088,8 @@ namespace uam
 			const std::string id = RandomRequestId();
 			if (request_id_out != nullptr) *request_id_out = id;
 			if (aborted()) return std::nullopt;
-			const nlohmann::json request{{"requestId", id}, {"method", method}, {"arguments", arguments}};
+			const nlohmann::json request = SignRequest({{"requestId", id}, {"method", method}, {"arguments", arguments}},
+			    uam::env::GetNonEmptyString(kRequestKeyEnvironment).value_or(""));
 			const std::string request_text = request.dump();
 			const std::filesystem::path request_path = capability / "requests" / (id + ".json");
 			if (request_text.size() > RequestLimit(method) || !uam::io::WriteTextFile(request_path, request_text)) return std::nullopt;
@@ -2225,7 +2320,8 @@ namespace uam
 			// Do not delay provider shutdown waiting for the GUI to process the receipt.
 			const std::string id = RandomRequestId();
 			(void)uam::io::WriteTextFile(*capability / "requests" / (id + ".json"),
-			    nlohmann::json{{"requestId", id}, {"method", "_mcp_disconnected"}, {"arguments", {{"connectionId", connection_id}}}}.dump());
+			    SignRequest({{"requestId", id}, {"method", "_mcp_disconnected"}, {"arguments", {{"connectionId", connection_id}}}},
+			        uam::env::GetNonEmptyString(kRequestKeyEnvironment).value_or("")).dump());
 		}
 		return input.Failed() ? 2 : exit_code;
 	}
@@ -2328,8 +2424,11 @@ namespace uam
 		capability.provider_configuration_directory = session.provider_configuration_directory;
 		capability.central_skills_enabled = central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "shared-setup", app.settings.central_provider_configuration.enabled) && (capability.agent_id == "build" || capability.agent_id == "plan");
 		capability.agent_delegates = session.active_uam_agent_delegates;
+		// A goal reviewer's capability stays read-only for its whole life, even after its review turn settles.
+		capability.read_only_at_launch = session.goal_review_turn;
 		capability.expires_at_epoch_ms = uam::time::SystemEpochMillisecondsNow() + kCapabilityLifetimeMs;
-		if (capability.id.empty() || !uam::paths::CreateDirectoriesNoThrow(capability.directory / "requests") ||
+		capability.request_key = RandomRequestId() + RandomRequestId();
+		if (capability.id.empty() || capability.request_key.size() != 64 || !uam::paths::CreateDirectoriesNoThrow(capability.directory / "requests") ||
 		    !uam::paths::CreateDirectoriesNoThrow(capability.directory / "responses"))
 		{
 			if (error_out != nullptr) *error_out = "UAM control capability could not be created.";
@@ -2352,7 +2451,8 @@ namespace uam
 			return false;
 		}
 		nlohmann::json environment = nlohmann::json::array({{{"name", kCapabilityDirectoryEnvironment},
-		                                                      {"value", uam::paths::Utf8PathString(capability.directory)}}});
+		                                                      {"value", uam::paths::Utf8PathString(capability.directory)}},
+		                                                     {{"name", kRequestKeyEnvironment}, {"value", capability.request_key}}});
 		// The provider on the host is still running and already connected: see RunStdioServerFromEnvironment.
 		if (session.recovering_remote_turn || session.recovering_remote_process)
 			environment.push_back({{"name", uam::remote::kUamControlResumedEnvironment}, {"value", "1"}});
@@ -2447,6 +2547,8 @@ namespace uam
 			    !HasAuthority(app, capability, now) || !ComputerUseApprovalCurrent(app, capability)) continue;
 			const ChatSession* chat = ChatDomainService().FindChatById(app, std::string(chat_id));
 			if (chat == nullptr) continue;
+			if (capability.pending_approval->method == "secret_request")
+				return SecretRequestService::Projection(app, capability, ApprovalRequestId(capability));
 			AcpPendingUserInputState input;
 			input.request_id_json = ApprovalRequestId(capability);
 			input.status = "pending";
@@ -2523,6 +2625,28 @@ namespace uam
 				return fail("This computer-use approval no longer belongs to the active user turn.");
 			}
 			if (!authority_current) return fail("This UAM request is no longer active in this chat.");
+			if (capability.pending_approval->method == "secret_request")
+			{
+				// Only the Plan-mode Allow once and Deny travel this generic path; the value has its own route.
+				const auto answer = answers.find("secretRequest");
+				if (answers.size() != 1 || answer == answers.end() || answer->second.size() != 1 ||
+				    (answer->second.front() != "Allow" && answer->second.front() != "Deny"))
+					return fail("Enter this secret in its card on the computer.");
+				nlohmann::json& metadata = capability.pending_approval->secret_request;
+				if (answer->second.front() == "Allow")
+				{
+					if (!metadata.value("planOptIn", false)) return fail("This secret request is already allowed.");
+					metadata["planOptIn"] = false;
+					return true;
+				}
+				if (metadata.value("delivering", false)) return fail("The secret is already being delivered.");
+				const ToolResult cancelled{.error = "The user cancelled the secret request. Do not ask again unless the user asks you to."};
+				(void)AppendAuditAndSave(app, capability, capability.pending_approval->request_id, "secret_request", cancelled);
+				if (!WriteResponse(capability.directory, capability.pending_approval->request_id, {{"ok", false}, {"error", cancelled.error}}))
+					return fail("The cancellation could not be delivered. Try again.");
+				capability.pending_approval.reset();
+				return true;
+			}
 			const bool computer_use = capability.pending_approval->method == "computer_use_request";
 			const bool user_question = capability.pending_approval->method == "user_question";
 			const bool chat_create = capability.pending_approval->method == "chat_create";
@@ -2626,6 +2750,73 @@ namespace uam
 		return fail("This UAM request is no longer pending.");
 	}
 
+	bool UamControlService::BeginSecretDelivery(AppState& app, std::string_view chat_id, std::string_view request_id,
+	                                            SecretDeliveryTarget& target, std::string* error_out)
+	{
+		auto fail = [&](std::string message) {
+			if (error_out != nullptr) *error_out = std::move(message);
+			return false;
+		};
+		const int64_t now = uam::time::SystemEpochMillisecondsNow();
+		for (UamControlCapability& capability : app.uam_control_capabilities)
+		{
+			if (!capability.pending_approval.has_value() || capability.pending_approval->method != "secret_request" ||
+			    ApprovalRequestId(capability) != request_id) continue;
+			if (ApprovalChatId(capability) != chat_id || !HasAuthority(app, capability, now))
+				return fail("This secret request is no longer active in this chat.");
+			nlohmann::json& metadata = capability.pending_approval->secret_request;
+			if (metadata.value("planOptIn", false)) return fail("Allow this request first.");
+			if (metadata.value("delivering", false)) return fail("The secret is already being delivered.");
+			metadata["delivering"] = true;
+			target = SecretRequestService::Target(app, capability);
+			return true;
+		}
+		return fail("This secret request is no longer pending.");
+	}
+
+	std::optional<std::string> UamControlService::SecretKeychainAccount(const AppState& app, std::string_view chat_id, std::string_view request_id)
+	{
+		for (const UamControlCapability& capability : app.uam_control_capabilities)
+			if (capability.pending_approval.has_value() && capability.pending_approval->method == "secret_request" &&
+			    ApprovalRequestId(capability) == request_id && ApprovalChatId(capability) == chat_id)
+				return SecretRequestService::Target(app, capability).keychain_account;
+		return std::nullopt;
+	}
+
+	bool UamControlService::FinishSecretDelivery(AppState& app, std::string_view chat_id, std::string_view request_id,
+	                                             const secrets::DropResult& drop, std::string* error_out)
+	{
+		auto fail = [&](std::string message) {
+			if (error_out != nullptr) *error_out = std::move(message);
+			return false;
+		};
+		for (UamControlCapability& capability : app.uam_control_capabilities)
+		{
+			if (!capability.pending_approval.has_value() || capability.pending_approval->method != "secret_request" ||
+			    ApprovalRequestId(capability) != request_id) continue;
+			capability.pending_approval->secret_request["delivering"] = false;
+			if (ApprovalChatId(capability) != chat_id || !HasAuthority(app, capability, uam::time::SystemEpochMillisecondsNow()))
+				return fail("This secret request is no longer active in this chat.");
+			if (!drop.ok) return fail(drop.error.empty() ? "The secret could not be delivered." : drop.error);
+			const SecretDeliveryTarget target = SecretRequestService::Target(app, capability);
+			const bool windows = target.remote_host.has_value() ? uam::strings::ToLowerAscii(target.remote_host->platform) == "windows" : !secrets::LocalDrop().read_once;
+			ToolResult result;
+			result.ok = true;
+			result.reason = "The user provided the secret as a read-once path.";
+			result.result = {{"status", "provided"}, {"delivery", "file"}, {"path", drop.path}, {"readOnce", !windows},
+			                 {"expiresInSeconds", windows ? secrets::kWindowsDropTtl.count() : secrets::kDropTtl.count()},
+			                 {"usage", windows ? "Read it inside the command that uses it: $t = Get-Content -Raw '" + drop.path + "'; <command> $t; Remove-Variable t. Never print it."
+			                                   : "Read it inside the command that uses it, e.g. <command> --token \"$(cat '" + drop.path + "')\" or sudo -S -p '' <command> < '" + drop.path + "'. It can be read once. Never print it."}};
+			if (!AppendAuditAndSave(app, capability, capability.pending_approval->request_id, "secret_request", result) ||
+			    !WriteResponse(capability.directory, capability.pending_approval->request_id, {{"ok", true}, {"result", result.result}}))
+				return fail("The secret was delivered but the reply to the agent could not be written. Try again.");
+			capability.pending_approval.reset();
+			return true;
+		}
+		// ponytail: a drop made for a request that ended meanwhile is never handed out and expires with its TTL.
+		return fail("This secret request ended before the secret was delivered.");
+	}
+
 	bool UamControlService::ProcessPendingRequests(AppState& app)
 	{
 		return ProcessPendingRequests(app, {});
@@ -2727,14 +2918,19 @@ namespace uam
 					// FIFO cannot block this poll and a growing file cannot exceed the request limit.
 					if (provider_mcp_settings::ReadConfigFile(file, text, html_view::kMaxRequestBytes))
 					{
-						const nlohmann::json request = nlohmann::json::parse(text, nullptr, false);
+						nlohmann::json request = nlohmann::json::parse(text, nullptr, false);
 						if (request.is_object() && request.contains("requestId") &&
 						    request["requestId"].is_string() && request["requestId"] == request_id)
 						{
 							// Claim before running. A caller that gave up withdraws its request by removing this file, and only
 							// one removal can succeed, so a withdrawn request is never run (a failed removal is retried next tick).
 							if (!uam::paths::RemoveFileNoThrow(file)) { ++processed; continue; }
-							response = HandleRequest(app, capability_id, request, now);
+							// The key goes only to this session's tool server, so a writer that knows just the folder is refused.
+							// ponytail: same-user processes that can read the provider's env or MCP config can still sign; process-lineage checks would close that.
+							if (owner == nullptr || !VerifyRequest(request, owner->request_key))
+								response = {{"ok", false}, {"error", "Control request is not signed by this chat session's tool connection."}};
+							else
+								response = HandleRequest(app, capability_id, request, now);
 						}
 					}
 					else unreadable = true;
@@ -2779,6 +2975,11 @@ namespace uam
 	                                                        int64_t now_epoch_ms)
 	{
 		return HandleRequest(app, capability_id, request, now_epoch_ms);
+	}
+
+	nlohmann::json UamControlService::SignRequestForTests(const nlohmann::json& request, std::string_view key)
+	{
+		return SignRequest(request, key);
 	}
 
 	bool UamControlService::ValidStdioToolCallForTests(const nlohmann::json& request)

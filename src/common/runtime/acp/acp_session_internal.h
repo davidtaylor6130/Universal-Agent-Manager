@@ -152,7 +152,6 @@ bool SendPermissionResponse(AcpSessionState& session, const std::string& request
 bool CapturedReadCeilingAllowsPermissionResponse(const AcpSessionState& session, const AcpPendingPermissionState& pending, const std::string& option_id, bool cancelled, std::string* error_out);
 bool CapturedReadCeilingAllowsSavedPermissionResponse(const AcpSessionState& session, const AcpPendingPermissionState& pending, const nlohmann::json& response);
 bool IsRejectPermissionOption(const std::string& id, const std::string& name, const std::string& kind);
-bool IsAcceptPermissionOption(const std::string& id, const std::string& name, const std::string& kind);
 std::string AutoApproveOptionId(const AcpPendingPermissionState& pending);
 std::string RejectPermissionOptionId(const AcpPendingPermissionState& pending);
 struct PermissionReviewDecision

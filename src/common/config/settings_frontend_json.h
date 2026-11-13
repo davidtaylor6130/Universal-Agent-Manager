@@ -16,6 +16,7 @@
 #include "common/config/provider_availability.h"
 #include "common/config/settings_normalization.h"
 #include "common/config/settings_store.h"
+#include "common/config/svn_repository_layout.h"
 #include "common/models/app_models.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/excluded_provider_data.h"
@@ -111,6 +112,8 @@ namespace uam::settings_frontend_json
 		settings_json["theme"] = uam::settings::NormalizeThemeId(settings.ui_theme);
 		settings_json["showProviderIconsInSidebar"] = settings.show_provider_icons_in_sidebar;
 		settings_json["showWorktreePathInSidebar"] = settings.show_worktree_path_in_sidebar;
+		settings_json["sidebarPinnedChatOrder"] = settings.sidebar_pinned_chat_order;
+		settings_json["sidebarActiveChatOrder"] = settings.sidebar_active_chat_order;
 		settings_json["steerActiveTurnOnSend"] = settings.steer_active_turn_on_send;
 		settings_json["gitEnabled"] = settings.git_enabled;
 		settings_json["gitAutoWorktree"] = settings.git_auto_worktree;
@@ -125,6 +128,7 @@ namespace uam::settings_frontend_json
 		settings_json["httpCacheClearIntervalDays"] = settings.http_cache_clear_interval_days;
 		settings_json["svnEnabled"] = settings.svn_enabled;
 		settings_json["svnUpdateBeforeChat"] = settings.svn_update_before_chat;
+		settings_json["svnRepositoryLayouts"] = uam::svn_layout::ToJson(settings.svn_repository_layouts);
 		settings_json["voiceInputMode"] = uam::voice_input::NormalizeMode(settings.voice_input_mode);
 		settings_json["voiceInputServerBaseUrl"] = uam::strings::Trim(settings.voice_input_server_base_url);
 		settings_json["voiceInputServerEndpoint"] = uam::strings::Trim(settings.voice_input_server_endpoint);

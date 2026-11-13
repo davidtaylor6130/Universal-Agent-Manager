@@ -420,6 +420,7 @@ namespace uam::remote
 		m_usageAccountingStream = response["capabilities"].value("usageAccountingStream", false);
 		m_projectMemory = response["capabilities"].value("projectMemory", false);
 		m_isolatedTextWorkers = response["capabilities"].value("isolatedTextWorkers", false);
+		m_secretDrop = response["capabilities"].value("secretDrop", false);
 		m_runnerStartup = response["capabilities"].value("runnerStartup", false);
 		m_runnerStartupObservation = response["capabilities"].value("runnerStartupObservation", false);
 		m_leasedChannelTake = response["capabilities"].value("leasedChannelTake", false);
@@ -749,7 +750,8 @@ namespace uam::remote
 	ProcessExecutionResult RunnerClient::ExecuteCommand(const std::string& session_id,
 	    const std::filesystem::path& working_directory, const std::vector<std::string>& argv,
 	    int timeout_ms, std::stop_token stop_token, std::string_view standard_input,
-	    std::string retained_control_token, bool* start_request_attempted_out)
+	    std::string retained_control_token, bool* start_request_attempted_out,
+	    const std::function<std::string(std::string_view, int&)>& output_failure)
 	{
 		if (start_request_attempted_out) *start_request_attempted_out = false;
 		ProcessExecutionResult result;
@@ -801,6 +803,9 @@ namespace uam::remote
 			started = have_poll;
 		}
 		bool exited = false;
+		std::string early_failure;
+		std::string unscanned_error_output;
+		int failure_reports = 0;
 		if (started)
 		{
 			result.error.clear();
@@ -837,6 +842,15 @@ namespace uam::remote
 						exited = true;
 						break;
 					}
+					if (output_failure && !poll.standard_error.empty())
+					{
+						// Only stderr carries provider logs; scanning it alone keeps reply text from matching.
+						unscanned_error_output.append(poll.standard_error);
+						early_failure = output_failure(unscanned_error_output, failure_reports);
+						unscanned_error_output.erase(0, unscanned_error_output.rfind('\n') + 1);
+						// Still running after a reported failure: stop it below instead of waiting out the deadline.
+						if (!early_failure.empty()) break;
+					}
 					if (!acknowledged) break;
 					std::this_thread::sleep_for(std::chrono::milliseconds(10));
 				}
@@ -844,7 +858,8 @@ namespace uam::remote
 		}
 		if (exited) result.canceled = result.timed_out = false;
 		else (void)interrupted();
-		if (result.canceled) result.error = "Remote command canceled.";
+		if (!early_failure.empty()) result.error = std::move(early_failure);
+		else if (result.canceled) result.error = "Remote command canceled.";
 		else if (result.timed_out) result.error = "Remote command timed out.";
 		else if (result.output_truncated)
 			result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
@@ -1304,6 +1319,25 @@ namespace uam::remote
 	{
 		nlohmann::json response;
 		return Request({{"type", "worker.remove"}, {"workerId", id}}, response, error_out);
+	}
+
+	bool RunnerClient::DropSecret(std::string_view value, std::string& remote_path, std::string* error_out, std::stop_token stop_token)
+	{
+		remote_path.clear();
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		constexpr const char* kHelperTooOld = "The UAM helper on this host is too old to receive secrets. Update it in Settings > Remote hosts.";
+		if (!m_secretDrop) { if (error_out != nullptr) *error_out = kHelperTooOld; return false; }
+		nlohmann::json response;
+		// Older helpers do not advertise secretDrop, so they never receive this request.
+		if (!Request({{"type", "secret.drop"}, {"dataBase64", uam::base64::Encode(value)}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+		const auto path = response["result"].find("path");
+		if (path == response["result"].end() || !path->is_string() || path->get_ref<const std::string&>().empty())
+		{
+			if (error_out != nullptr) *error_out = "The UAM helper returned an invalid secret path.";
+			return false;
+		}
+		remote_path = path->get<std::string>();
+		return true;
 	}
 
 	bool RunnerClient::ListMemoryEntries(const std::filesystem::path& workspace, std::vector<MemoryLibraryStore::Entry>& entries, std::string* error_out)
@@ -1997,6 +2031,7 @@ namespace uam::remote
 		m_usageAccounting = false; m_usageAccountingStream = false;
 		m_projectMemory = false;
 		m_isolatedTextWorkers = false;
+		m_secretDrop = false;
 		m_runnerStartup = false;
 		m_runnerStartupObservation = false;
 		m_leasedChannelTake = false;

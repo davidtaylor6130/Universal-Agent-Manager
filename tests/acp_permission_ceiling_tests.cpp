@@ -90,6 +90,7 @@ struct PermissionCeilingFixture
 		chat.id = "private-permission-ceiling";
 		chat.provider_id = "copilot-cli";
 		chat.execution_host_id = "local";
+		chat.workspace_directory = temp.root.string();
 		chat.approval_mode = ordinary_plan ? "plan" : "default";
 		chat.command_safety_tier = "yolo";
 		chat.native_session_id = "11111111-1111-4111-8111-111111111111";
@@ -108,8 +109,8 @@ struct PermissionCeilingFixture
 		session->turn_serial = 1;
 		session->turn_user_message_index = session->turn_first_user_message_index = 0;
 		session->interaction_at = app.chats.front().interaction_at;
-		session->active_uam_agent_workspace_access = !unrestricted && !goal_review ? "read" : "";
-		session->active_uam_agent_id = session->active_uam_agent_workspace_access.empty() ? "" : "private-read-reviewer";
+		session->active_uam_agent_workspace_access = !unrestricted && !goal_review ? "read" : "write";
+		session->active_uam_agent_id = session->active_uam_agent_workspace_access == "write" ? "" : "private-read-reviewer";
 		session->goal_review_turn = !unrestricted && goal_review;
 		session->copilot_native_state["protocolVersion"] = 3;
 		app.acp_sessions.push_back(std::move(owned));
@@ -236,7 +237,7 @@ UAM_TEST(AcpCapturedReadManualDecisionsPreserveAllowedOperations)
 {
 	for (bool goal_review : {false, true})
 	{
-		for (const std::string command : {"", "pwd", "git status"})
+		for (const std::string command : {"", "pwd", "git status --ignore-submodules"})
 		{
 			PermissionCeilingFixture fixture(goal_review);
 			fixture.Request(7, command.empty() ? "read" : "shell", command);
@@ -399,7 +400,7 @@ UAM_TEST(AcpPersistedPermissionReplayCannotOverrideCurrentCapturedReadCeiling)
 		fixture.sink = std::make_unique<PrivatePermissionSink>(*fixture.session, fixture.temp.root);
 		fixture.session->running = fixture.session->processing = fixture.session->initialized = fixture.session->session_ready = true;
 		fixture.session->goal_review_turn = goal_review;
-		fixture.session->active_uam_agent_workspace_access = goal_review ? "" : "read";
+		fixture.session->active_uam_agent_workspace_access = goal_review ? "write" : "read";
 		fixture.session->active_uam_agent_id = goal_review ? "" : "private-read-reviewer";
 		uam::acp_detail::ResetAcpPendingInteractionState(*fixture.session);
 		// Replay the exact original request bodies/IDs. This does not manufacture a

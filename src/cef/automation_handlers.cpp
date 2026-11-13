@@ -104,3 +104,11 @@ void UamQueryHandler::HandleRevokeAutomationToken(CefRefPtr<CefBrowser>, const n
 	if (uam::AutomationApiService::RevokeToken(m_app, payload.value("id", ""), &error)) cb->Success("{}");
 	else cb->Failure(409, error);
 }
+
+void UamQueryHandler::HandleRegenerateAutomationToken(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	std::string error;
+	const std::optional<nlohmann::json> regenerated = uam::AutomationApiService::RegenerateToken(m_app, payload.value("id", ""), &error);
+	if (regenerated) cb->Success(regenerated->dump());
+	else cb->Failure(409, error);
+}

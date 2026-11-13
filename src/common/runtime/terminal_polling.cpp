@@ -1,4 +1,5 @@
 #include "common/runtime/terminal_polling.h"
+#include "common/secrets/secret_redactor.h"
 
 #include "app/chat_domain_service.h"
 #include "app/native_session_link_service.h"
@@ -542,6 +543,13 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 		break;
 	}
 
+	if (uam::secrets::Active() && !output_for_frontend.empty())
+	{
+		// Scrubbed before the replay buffer, the live push and the phone's terminal see it. ponytail: one filter per
+		// terminal for the app's life; a held secret prefix appears with that terminal's next output.
+		static std::unordered_map<std::string, uam::secrets::StreamFilter> secret_filters;
+		output_for_frontend = secret_filters[terminal.terminal_id].Push(output_for_frontend);
+	}
 	if (!output_for_frontend.empty())
 	{
 		terminal.recent_output_bytes.append(output_for_frontend);

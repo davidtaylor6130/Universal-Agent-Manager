@@ -49,6 +49,13 @@ namespace uam
 		/// <summary>Publishes the selected paths. On false, `error` is set and the system's own staging state has been restored or the failure reported in it.</summary>
 		virtual bool LocalCommit(const std::filesystem::path& workspace, const std::string& message, const std::vector<std::string>& files, const VcsCommitStatus& status, ProcessExecutionResult& committed, std::string& error) const = 0;
 		virtual bool RemoteCommit(RemoteVcsContext& context, std::string cwd, const std::string& message, std::vector<std::string> selected_files, const VcsCommitStatus& status, ProcessExecutionResult& committed, std::string& error) const = 0;
+
+		/// <summary>History and Update run through `run`, which already targets the local or remote workspace, so one
+		/// implementation serves both. VcsCommitService calls these only for a system that declares the matching capability.</summary>
+		virtual VcsHistoryPage History(const VcsCommandRunner& run, const VcsHistoryRequest& request) const;
+		virtual std::string RevisionDiff(const VcsCommandRunner& run, const std::string& revision, const std::string& path, std::string& error) const;
+		virtual VcsUpdateResult Update(const VcsCommandRunner& run) const;
+		virtual VcsOriginReply Origin(const VcsCommandRunner& run, const VcsOriginRequest& request) const;
 	};
 
 	/// <summary>Registered providers in detection order; the first is the default selection.</summary>

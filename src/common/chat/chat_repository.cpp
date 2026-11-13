@@ -524,6 +524,7 @@ namespace
 			if (!string("uam_agent_definition_snapshot", value.uam_agent_definition_snapshot, 256U * 1024U)) return invalid();
 			if (!string("uam_agent_instructions", value.uam_agent_instructions, 192U * 1024U)) return invalid();
 			if (!string("uam_agent_workspace_access", value.uam_agent_workspace_access, 256)) return invalid();
+			if (value.uam_agent_workspace_access != "write") value.uam_agent_workspace_access = "read";
 			if (!string("uam_agent_execution_capability", value.uam_agent_execution_capability, 256)) return invalid();
 			if (!ids("uam_agent_skills", value.uam_agent_skills)) return invalid();
 			if (!ids("uam_agent_delegates", value.uam_agent_delegates)) return invalid();
@@ -707,8 +708,8 @@ namespace
 		prompt.uam_agent_instructions = JsonStringOrEmpty(obj.Find("uam_agent_instructions"));
 		prompt.uam_agent_skills = JsonStringArrayOrEmpty(obj.Find("uam_agent_skills"));
 		prompt.uam_agent_delegates = JsonStringArrayOrEmpty(obj.Find("uam_agent_delegates"));
-		prompt.uam_agent_workspace_access = uam::strings::NonEmptyOrFallback(
-		    JsonStringOrEmpty(obj.Find("uam_agent_workspace_access")), "write");
+		// Fail closed: only an explicit "write" grants write access; missing or unknown values are read-only.
+		prompt.uam_agent_workspace_access = JsonStringOrEmpty(obj.Find("uam_agent_workspace_access")) == "write" ? "write" : "read";
 		prompt.uam_agent_execution_capability = uam::strings::NonEmptyOrFallback(
 		    JsonStringOrEmpty(obj.Find("uam_agent_execution_capability")), "uam-prompt-injected");
 		prompt.markdown_store_files = JsonStringArrayOrEmpty(obj.Find("markdown_store_files"));

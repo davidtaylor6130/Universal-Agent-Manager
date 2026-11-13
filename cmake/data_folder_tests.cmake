@@ -19,7 +19,8 @@ add_executable(uam_data_folder_tests
   src/common/models/app_models.cpp
   src/common/runtime/json_runtime.cpp
   src/common/paths/app_paths.cpp
-  src/common/utils/diagnostic_log.cpp)
+  src/common/utils/diagnostic_log.cpp
+  src/common/secrets/secret_redactor.cpp)
 target_include_directories(uam_data_folder_tests PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/tests")
 target_compile_definitions(uam_data_folder_tests PRIVATE UAM_DATA_FOLDER_STANDALONE=1 UAM_SOURCE_ROOT="${CMAKE_SOURCE_DIR}" NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(uam_data_folder_tests PRIVATE nlohmann_json::nlohmann_json)

@@ -35,7 +35,7 @@ import {
   providerCapabilities,
   providerMetadataForId,
 } from '../../utils/providerMetadata'
-import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_TOOL_CALL_TIMEOUT_SECONDS, DEFAULT_STREAM_LOOP_REPEAT_LIMIT, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeCppMessage, sanitizeManagedOriginRunId, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeWindowsPowerShell, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
+import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_TOOL_CALL_TIMEOUT_SECONDS, DEFAULT_STREAM_LOOP_REPEAT_LIMIT, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeCppMessage, sanitizeManagedOriginRunId, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeWindowsPowerShell, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, sanitizeVcsHistoryPage, sanitizeVcsOriginReply, stringOr } from '../cpp/sanitizers'
 import {
   acpBindingsEquivalent,
   attachmentsEquivalent,
@@ -54,6 +54,7 @@ import type {
   AcpBinding,
   AcpLifecycleState,
   AcpUserInputAnswers,
+  SecretSubmission,
   ChatAttachmentInput,
   ChatMessagesResponse,
   CliBinding,
@@ -77,6 +78,10 @@ import type {
   VcsCommitResult,
   VcsCommitStatus,
   VcsFileDiffResponse,
+  VcsHistoryPage,
+  VcsOriginReply,
+  VcsOriginView,
+  VcsUpdateResult,
   VcsType,
 } from '../cpp/types'
 import type { AppState, AcceptedHistoryPage, AcpPromptPresentationObserver, ZustandSet, ZustandGet } from '../storeTypes'
@@ -596,6 +601,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     gitDefaultBaseBranch: '',
     gitPullBeforeChat: false,
     svnUpdateBeforeChat: false,
+    svnRepositoryLayouts: [],
     gitPortMethod: 'patch' as VcsStorageSettings['gitPortMethod'],
     worktreeCleanupEnabled: true,
     worktreeRetentionDays: 14,
@@ -1577,6 +1583,55 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }
 
       return `diff -- ${path}\n`
+    },
+
+    getVcsHistory: async (id: string, vcsType: VcsType, options?: { before?: string; limit?: number; search?: string; requestId?: string }): Promise<VcsHistoryPage> => {
+      if (!isCefContext()) {
+        // Browser preview only: a short sample so the view can be developed without the desktop app.
+        const newest = options?.before ? Number(options.before) : 42
+        const entries = Array.from({ length: Math.max(0, Math.min(options?.limit ?? 50, newest, 6)) }, (_, index) => ({
+          revision: String(newest - index), author: 'sample', date: new Date(Date.UTC(2026, 0, 20 - index)).toISOString(), message: `Sample revision ${newest - index}`,
+          paths: [{ action: 'M', path: '/trunk/src/example.ts', kind: 'file', copyFromPath: '', copyFromRevision: '' }], pathsOmitted: 0,
+        }))
+        return { entries, next: newest - entries.length > 0 ? String(newest - entries.length) : '', workingRevision: options?.before ? '' : '41', location: options?.before ? '' : '^/trunk', repositoryRoot: '', repositoryUuid: '' }
+      }
+      // A stopped request fails by design, so failures are reported by the caller instead of the console.
+      const response = await sendToCEF({ action: 'getVcsHistory', payload: { chatId: id, vcsType, ...options } }, false)
+      if (!response.ok) throw new Error(response.error || 'Failed to load history.')
+      const page = sanitizeVcsHistoryPage(cefPayloadOrRawResponse(response))
+      if (!page) throw new Error('The history reply was not understood.')
+      return page
+    },
+
+    getVcsRevisionDiff: async (id: string, vcsType: VcsType, revision: string, path: string, requestId?: string): Promise<string> => {
+      if (!isCefContext()) return `Index: ${path}\n--- ${path}\t(revision ${Number(revision) - 1})\n+++ ${path}\t(revision ${revision})\n@@ -1 +1,2 @@\n sample\n+changed in r${revision}\n`
+      const response = await sendToCEF<VcsFileDiffResponse>({ action: 'getVcsRevisionDiff', payload: { chatId: id, vcsType, revision, path, requestId } }, false)
+      if (!response.ok) throw new Error(response.error || 'Failed to load this change.')
+      return typeof response.data?.diff === 'string' ? response.data.diff : ''
+    },
+
+    getVcsOrigin: async (id: string, vcsType: VcsType, view: VcsOriginView, options?: { before?: string; limit?: number; revisions?: string[]; requestId?: string }): Promise<VcsOriginReply> => {
+      // Browser preview only: a main line, which has no origin to compare with.
+      if (!isCefContext()) return sanitizeVcsOriginReply({})!
+      const response = await sendToCEF({ action: 'getVcsOrigin', payload: { chatId: id, vcsType, view, ...options } }, false)
+      if (!response.ok) throw new Error(response.error || 'Failed to read where this line was copied from.')
+      const reply = sanitizeVcsOriginReply(cefPayloadOrRawResponse(response))
+      if (!reply) throw new Error('The branch origin reply was not understood.')
+      return reply
+    },
+
+    updateVcsWorkspace: async (id: string, vcsType: VcsType, requestId?: string): Promise<VcsUpdateResult> => {
+      if (!isCefContext()) return { ok: true, conflicts: false, revision: '42', output: '', error: '' }
+      const response = await sendToCEF({ action: 'updateVcsWorkspace', payload: { chatId: id, vcsType, requestId } }, false)
+      if (!response.ok) return { ok: false, conflicts: false, revision: '', output: '', error: response.error || 'Failed to update the working copy.' }
+      const data = cefPayloadOrRawResponse(response)
+      return isRecord(data)
+        ? { ok: true, conflicts: data.conflicts === true, revision: stringOr(data.revision), output: stringOr(data.output), error: '' }
+        : { ok: true, conflicts: false, revision: '', output: '', error: '' }
+    },
+
+    cancelVcsRequest: (requestId: string) => {
+      if (isCefContext() && requestId) void sendToCEF({ action: 'cancelVcsRequest', payload: { requestId } }).catch(() => undefined)
     },
 
     commitVcsChanges: async (id: string, vcsType: VcsType, message: string, files: string[]): Promise<VcsCommitResult> => {
@@ -3483,6 +3538,17 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         },
       }))
       return true
+    },
+
+    // Always through the bridge: its dev stub redacts the value. The value is never written to state.
+    submitSecretRequest: async (sessionId: string, requestId: string, submission: SecretSubmission) => {
+      const response = await sendToCEF({ action: 'submitSecretRequest', payload: { chatId: sessionId, requestId, ...submission } }, false)
+      return response.ok ? { ok: true } : { ok: false, error: response.error || 'The secret was not delivered.' }
+    },
+
+    forgetSavedSecret: async (sessionId: string, requestId: string) => {
+      const response = await sendToCEF({ action: 'forgetSavedSecret', payload: { chatId: sessionId, requestId } }, false)
+      return response.ok ? { ok: true } : { ok: false, error: response.error || 'The saved secret was not forgotten.' }
     },
 
     treatRemoteStopAsStopped: async (sessionId: string): Promise<boolean> => {

@@ -705,7 +705,16 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 	}
 
 	if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpAccountsGoalUsage())
-		GoalService::RecordTurnCompletion(app, owner_chat_id, active_goal->id, EstimateGoalTurnTokens(chat, session));
+	{
+		// Count the provider-reported usage of the worker turn, as reviews do; the text estimate is only a labelled fallback.
+		auto& receipt = session.goal_review_usage;
+		const bool reported = !receipt.consumed && receipt.turn_serial == session.turn_serial && receipt.tokens &&
+		    !receipt.session_id.empty() && receipt.session_id == session.session_id;
+		const int64_t worker_tokens = reported ? *receipt.tokens : EstimateGoalTurnTokens(chat, session);
+		if (!reported) AppendGoalLoopDiagnostic(session, "goal_worker_usage_estimated", active_goal->id);
+		receipt.turn_serial = -1; // Charged once; a late usage report for this turn is ignored.
+		GoalService::RecordTurnCompletion(app, owner_chat_id, active_goal->id, worker_tokens);
+	}
 	active_goal = GoalService::FindActiveGoal(app, owner_chat_id);
 	if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
 	if (active_goal == nullptr)
@@ -1038,7 +1047,7 @@ bool PollPendingGoalIterations(AppState& app)
 		if (session == nullptr || session->provider_id != uam::provider_ids::kCodexCli || chat.active_goal_id.empty()) continue;
 		if ((!session->codex_goal_owner.goal_id.empty() || !session->codex_goal_pending_requests.empty()) &&
 			(chat.imported_read_only || chat.approval_mode == "plan" || session->current_mode_id == "plan" ||
-			 session->active_uam_agent_workspace_access == "read" || session->goal_review_turn))
+			 session->active_uam_agent_workspace_access != "write" || session->goal_review_turn))
 		{
 			const std::string id = chat.active_goal_id;
 			(void)GoalService::UpdateGoalStatus(app, chat.id, id, GoalStatus::Paused);

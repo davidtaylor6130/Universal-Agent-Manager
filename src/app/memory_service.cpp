@@ -53,6 +53,8 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace fs = std::filesystem;
@@ -1041,10 +1043,10 @@ namespace
 		return prepared;
 	}
 
-	bool ChatIsBusy(const uam::AppState& app, const std::string& chat_id)
+	bool ChatIsBusy(const uam::AppState& app, const ChatSession& chat)
 	{
-		return uam::AgentRunScheduler::HasPendingInitialMention(app, chat_id) || uam::ChatHasActiveAcpSession(app, chat_id) ||
-		       ChatHasUnstartedProviderTurn(app, chat_id) || uam::ChatHasBusyCliTerminal(app, chat_id);
+		return uam::AgentRunScheduler::HasPendingInitialMention(app, chat) || uam::ChatHasActiveAcpSession(app, chat.id) ||
+		       ChatHasUnstartedProviderTurn(app, chat.id) || uam::ChatHasBusyCliTerminal(app, chat);
 	}
 
 	bool ManualScanCandidateOrderLess(const MemoryService::ManualScanCandidate& lhs, const MemoryService::ManualScanCandidate& rhs)
@@ -1114,23 +1116,19 @@ namespace
 		return !MemoryRetryScheduledForFuture(app, chat_id, now);
 	}
 
-	bool MemoryScanHasActiveWork(const uam::AppState& app, const std::string& chat_id)
+	// Pure checks, cheapest first: a chat waiting out a failed scan's retry must not pay for the busy check.
+	// Every poll asks this for each chat, so queued ids come from a set built once per sweep, not a queue scan.
+	bool AutomaticMemoryScanBlocked(const uam::AppState& app, const ChatSession& chat, double now, const std::unordered_set<std::string_view>& queued_ids)
 	{
-		return ChatIsBusy(app, chat_id) || HasRunningTaskForChat(app, chat_id) || HasQueuedTaskForChat(app, chat_id);
-	}
-
-	bool AutomaticMemoryScanBlocked(const uam::AppState& app, const ChatSession& chat, double now)
-	{
-		return !MemoryScanEligible(app, chat) || !MemoryHostAvailable(app, chat) ||
-		       !HasUnprocessedMessages(chat) || app.pending_chat_save_at_by_chat_id.contains(chat.id) ||
-		       MemoryScanHasActiveWork(app, chat.id) ||
-		       !MemoryRetryDue(app, chat.id, now);
+		return !HasUnprocessedMessages(chat) || app.pending_chat_save_at_by_chat_id.contains(chat.id) ||
+		       !MemoryRetryDue(app, chat.id, now) || !MemoryScanEligible(app, chat) || !MemoryHostAvailable(app, chat) ||
+		       HasRunningTaskForChat(app, chat.id) || queued_ids.contains(chat.id) || ChatIsBusy(app, chat);
 	}
 
 	bool QueuedMemoryWorkTemporarilyBlocked(const uam::AppState& app, const ChatSession& chat)
 	{
-		return app.pending_chat_save_at_by_chat_id.contains(chat.id) || ChatIsBusy(app, chat.id) ||
-		       HasRunningTaskForChat(app, chat.id) || !MemoryRetryDue(app, chat.id, uam::GetAppTimeSeconds());
+		return app.pending_chat_save_at_by_chat_id.contains(chat.id) || HasRunningTaskForChat(app, chat.id) ||
+		       !MemoryRetryDue(app, chat.id, uam::GetAppTimeSeconds()) || ChatIsBusy(app, chat);
 	}
 
 	bool CopilotWorkerVersionCheckPending(const uam::AppState& app, const ChatSession& chat)
@@ -1534,7 +1532,7 @@ namespace
 		fs::path directory;
 		if (!client.PrepareTextWorker(id, provider_id, directory, &result.error, stop_token)) return result;
 		uam::provider_workers::RemapWorkerPaths(invocation.argv, invocation.isolated_working_directory ? *invocation.isolated_working_directory : fs::path{}, directory, host.platform);
-		result = client.ExecuteCommand(id, directory, invocation.argv, kMemoryWorkerTimeoutMs, stop_token, invocation.standard_input);
+		result = client.ExecuteCommand(id, directory, invocation.argv, kMemoryWorkerTimeoutMs, stop_token, invocation.standard_input, {}, nullptr, invocation.output_failure);
 		std::string cleanup_error;
 		if (!client.RemoveTextWorker(id, &cleanup_error) && result.ok) { result.ok = false; result.error = cleanup_error; }
 		if (!result.ok) return result;
@@ -2252,7 +2250,7 @@ std::vector<MemoryService::ManualScanCandidate> MemoryService::ListManualScanCan
 
 	for (const ChatSession& chat : app.chats)
 	{
-		if (!MemoryScanEligible(app, chat) || !MemoryHostAvailable(app, chat) || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id) ||
+		if (!MemoryScanEligible(app, chat) || !MemoryHostAvailable(app, chat) || ChatIsBusy(app, chat) || HasRunningTaskForChat(app, chat.id) ||
 		    HasQueuedTaskForChat(app, chat.id))
 		{
 			continue;
@@ -2297,7 +2295,7 @@ bool MemoryService::QueueManualScan(uam::AppState& app, const std::vector<std::s
 		}
 
 		ChatSession& chat = *chat_ptr;
-		if (!MemoryScanEligible(app, chat) || !MemoryHostAvailable(app, chat) || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id))
+		if (!MemoryScanEligible(app, chat) || !MemoryHostAvailable(app, chat) || ChatIsBusy(app, chat) || HasRunningTaskForChat(app, chat.id))
 		{
 			continue;
 		}
@@ -2472,6 +2470,16 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 		changed = true;
 	}
 
+	// A blocked queue is revisited on every poll; one lookup table keeps that linear in chats rather than queue x chats.
+	std::unordered_map<std::string_view, ChatSession*> chats_by_id;
+	const auto find_queued_chat = [&app, &chats_by_id](const std::string& chat_id) -> ChatSession*
+	{
+		if (chats_by_id.empty())
+			for (ChatSession& chat : app.chats) chats_by_id.emplace(chat.id, &chat);
+		const auto found = chats_by_id.find(chat_id);
+		// A padded or missing id takes the ordinary trimmed search.
+		return found != chats_by_id.end() ? found->second : ChatDomainService().FindChatById(app, chat_id);
+	};
 	while (RunningMemoryTaskCount(app) < kMaxConcurrentMemoryWorkers && !app.memory_extraction_queue.empty())
 	{
 		const std::size_t attempts = app.memory_extraction_queue.size();
@@ -2481,7 +2489,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			uam::QueuedMemoryExtractionTask queued = std::move(app.memory_extraction_queue.front());
 			app.memory_extraction_queue.pop_front();
 
-			ChatSession* chat_ptr = ChatDomainService().FindChatById(app, queued.chat_id);
+			ChatSession* chat_ptr = find_queued_chat(queued.chat_id);
 			if (chat_ptr == nullptr)
 			{
 				changed = true;
@@ -2578,9 +2586,12 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 	}
 
 	const double now = uam::GetAppTimeSeconds();
+	// Views stay valid: the sweep only appends to the queue, and a deque append moves no element.
+	std::unordered_set<std::string_view> queued_ids;
+	for (const uam::QueuedMemoryExtractionTask& task : app.memory_extraction_queue) queued_ids.insert(task.chat_id);
 	for (ChatSession& chat : app.chats)
 	{
-		if (AutomaticMemoryScanBlocked(app, chat, now))
+		if (AutomaticMemoryScanBlocked(app, chat, now, queued_ids))
 		{
 			app.memory_idle_started_at_by_chat_id.erase(chat.id);
 			continue;

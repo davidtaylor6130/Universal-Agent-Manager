@@ -641,7 +641,7 @@ UAM_TEST(OpenCodeNativeCompanionCapturedReadKeepsDoomLoopQuestionManualAndDelive
 		NativeCompanionFixture fixture("doom_loop");
 		fixture.app.chats.front().command_safety_tier = "off";
 		fixture.Session().goal_review_turn = goal_review;
-		fixture.Session().active_uam_agent_workspace_access = goal_review ? "" : "read";
+		fixture.Session().active_uam_agent_workspace_access = goal_review ? "write" : "read";
 		fixture.Until([&] { return fixture.Session().waiting_for_permission || fixture.replies->load() != 0; });
 		UAM_ASSERT(fixture.Session().waiting_for_permission);
 		UAM_ASSERT_EQ(fixture.replies->load(), 0);
@@ -679,7 +679,7 @@ UAM_TEST(OpenCodeNativeCompanionCapturedReadRejectsMcpDoomLoopAction)
 		NativeCompanionFixture fixture("doom_loop", true);
 		fixture.app.chats.front().command_safety_tier = "off";
 		fixture.Session().goal_review_turn = goal_review;
-		fixture.Session().active_uam_agent_workspace_access = goal_review ? "" : "read";
+		fixture.Session().active_uam_agent_workspace_access = goal_review ? "write" : "read";
 		fixture.Until([&] { return fixture.Session().waiting_for_permission || fixture.replies->load() != 0; });
 		UAM_ASSERT(fixture.Session().waiting_for_permission);
 		UAM_ASSERT_EQ(fixture.replies->load(), 0);

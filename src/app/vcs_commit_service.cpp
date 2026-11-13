@@ -1,6 +1,7 @@
 #include "app/vcs_commit_service.h"
 
 #include "app/vcs_provider.h"
+#include "app/svn_history.h"
 #include "app/provider_resolution_service.h"
 #include "app/chat_domain_service.h"
 #include "app/provider_worker_command.h"
@@ -18,6 +19,7 @@
 #include "common/utils/range_utils.h"
 #include "common/utils/shell_escape.h"
 #include "common/utils/string_utils.h"
+#include "common/vcs/git_command.h"
 #include "remote/runner_client.h"
 
 #include <nlohmann/json.hpp>
@@ -158,8 +160,12 @@ namespace uam
 			if (cancellation.stop_requested() || argv.empty() || !Ready(&result.error)) return result;
 			const std::string session_id = "vcs-" +
 			    PlatformServicesFactory::Instance().process_service.GenerateUuid();
+			// Every remote Git command passes through here, so it always carries the shared Git safety options.
+			const std::vector<std::string> command = argv.front() == "git"
+			    ? uam::vcs::HardenedGitArgv({argv.begin() + 1, argv.end()}, uam::vcs::IsWindowsHostPlatform(Platform()))
+			    : argv;
 			if (!m_client->StartProcess(session_id, std::filesystem::path(working_directory),
-			                            argv, environment, &result.error)) return result;
+			                            command, environment, &result.error)) return result;
 			if (!standard_input.empty() &&
 			    !m_client->WriteProcess(session_id, standard_input, &result.error))
 			{
@@ -266,7 +272,7 @@ namespace uam
 
 		std::string BuildGitCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
 		{
-			return "git -C " + uam::shell::EscapeArg(uam::paths::Utf8PathString(cwd)) + " " + args;
+			return uam::vcs::HardenedGitShellCommandInDirectory(cwd, args);
 		}
 
 		std::string BuildLiteralGitCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
@@ -533,10 +539,14 @@ namespace uam
 				}
 				ProviderWorkerInvocation invocation;
 				invocation.direct_process = true;
-				invocation.argv = {"git", "-C", uam::paths::Utf8PathString(m_root)};
-				invocation.argv.insert(invocation.argv.end(), args.begin(), args.end());
+				args.insert(args.begin(), {"-C", uam::paths::Utf8PathString(m_root)});
 				if (use_index) invocation.environment_overrides = {{"GIT_INDEX_FILE", m_remote ? m_remoteIndex : uam::paths::Utf8PathString(m_index)}};
-				if (m_remote) return m_remote->Run(uam::paths::Utf8PathString(m_root), invocation.argv, invocation.environment_overrides, {}, kDefaultCommandTimeoutMs, m_cancellation);
+				if (m_remote)
+				{
+					args.insert(args.begin(), "git"); // RemoteVcsContext::Run adds the safety options for the host's platform.
+					return m_remote->Run(uam::paths::Utf8PathString(m_root), args, invocation.environment_overrides, {}, kDefaultCommandTimeoutMs, m_cancellation);
+				}
+				invocation.argv = uam::vcs::HardenedGitArgv(args, uam::vcs::kLocalHostIsWindows);
 				return ExecuteProviderWorkerInvocation(invocation, m_root, kDefaultCommandTimeoutMs, m_cancellation);
 			}
 		  private:
@@ -2038,6 +2048,11 @@ namespace uam
 				return CommitSvnSelection(LocalSvnRunner(workspace), &workspace, message, files, SvnExternalRoots(status), committed, error);
 			}
 
+			VcsHistoryPage History(const VcsCommandRunner& run, const VcsHistoryRequest& request) const override { return svn_history::Log(run, request); }
+			std::string RevisionDiff(const VcsCommandRunner& run, const std::string& revision, const std::string& path, std::string& error) const override { return svn_history::RevisionDiff(run, revision, path, error); }
+			VcsUpdateResult Update(const VcsCommandRunner& run) const override { return svn_history::Update(run); }
+			VcsOriginReply Origin(const VcsCommandRunner& run, const VcsOriginRequest& request) const override { return svn_history::Origin(run, request); }
+
 			bool RemoteCommit(RemoteVcsContext& context, std::string cwd, const std::string& message, std::vector<std::string> selected_files, const VcsCommitStatus& status, ProcessExecutionResult& committed, std::string& error) const override
 			{
 				// A Windows host reports `\` separators that a POSIX controller would read as one path component;
@@ -2168,6 +2183,103 @@ namespace uam
 		return found == providers.end() ? *providers.front() : **found;
 	}
 
+	VcsHistoryPage VcsProvider::History(const VcsCommandRunner&, const VcsHistoryRequest&) const
+	{
+		VcsHistoryPage page;
+		page.error = std::string(Declaration().display_name) + " history is not available here yet.";
+		return page;
+	}
+
+	std::string VcsProvider::RevisionDiff(const VcsCommandRunner&, const std::string&, const std::string&, std::string& error) const
+	{
+		error = std::string(Declaration().display_name) + " history is not available here yet.";
+		return {};
+	}
+
+	VcsUpdateResult VcsProvider::Update(const VcsCommandRunner&) const
+	{
+		VcsUpdateResult update;
+		update.error = std::string(Declaration().display_name) + " update is not available here yet.";
+		return update;
+	}
+
+	VcsOriginReply VcsProvider::Origin(const VcsCommandRunner&, const VcsOriginRequest&) const
+	{
+		VcsOriginReply reply;
+		reply.error = std::string(Declaration().display_name) + " origin comparison is not available here yet.";
+		return reply;
+	}
+
+	namespace
+	{
+		/// Gate shared by History, RevisionDiff, Update and Origin: the system's switch, then its declared capability.
+		std::string HistoryGateError(const VcsProvider& provider, const AppSettings& settings, const vcs::VcsCapability capability)
+		{
+			if (!provider.Enabled(settings)) return "This version control system is disabled in Settings.";
+			if (!uam::ranges::Contains(provider.Declaration().capabilities, capability))
+				return std::string(provider.Declaration().display_name) + (capability == vcs::VcsCapability::Update ? " update" : capability == vcs::VcsCapability::OriginComparison ? " origin comparison" : " history") + " is not available here yet.";
+			return {};
+		}
+
+		/// Runs `operation` with a runner bound to the chat's workspace: the local client, or the SSH host's through its runner.
+		// ponytail: only SVN declares History and Update, so the runner is SVN's; a second system adds its own client here.
+		template <typename Operation>
+		auto WithWorkspaceRunner(const AppState& app, const ChatSession& chat, const std::stop_token stop, const Operation& operation)
+		{
+			if (uam::paths::IsControllerLocalWorkspace(chat))
+			{
+				const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
+				return operation([&](const std::vector<std::string>& args, const int timeout_ms) { return RunSvn(workspace, args, timeout_ms, stop); });
+			}
+			RemoteVcsContext context(app, chat);
+			return operation([&](const std::vector<std::string>& args, const int timeout_ms)
+			{
+				std::vector<std::string> argv = {"svn"};
+				argv.insert(argv.end(), args.begin(), args.end());
+				ProcessExecutionResult result = context.Run(context.WorkspaceDirectory(), argv, SvnEnvironment(context.Platform()), {}, timeout_ms, stop);
+				result.canceled = result.canceled || stop.stop_requested();
+				return result;
+			});
+		}
+	} // namespace
+
+	VcsHistoryPage VcsCommitService::History(const AppState& app, const ChatSession& chat, const VcsType type, const VcsHistoryRequest& request, const std::stop_token stop) const
+	{
+		const VcsProvider& provider = VcsProviderFor(type);
+		VcsHistoryPage gated;
+		gated.error = HistoryGateError(provider, app.settings, vcs::VcsCapability::History);
+		if (!gated.error.empty()) return gated;
+		return WithWorkspaceRunner(app, chat, stop, [&](const VcsCommandRunner& run) { return provider.History(run, request); });
+	}
+
+	std::string VcsCommitService::RevisionDiff(const AppState& app, const ChatSession& chat, const VcsType type, const std::string& revision, const std::string& path, std::string* error_out, const std::stop_token stop) const
+	{
+		const VcsProvider& provider = VcsProviderFor(type);
+		std::string error = HistoryGateError(provider, app.settings, vcs::VcsCapability::History);
+		std::string patch;
+		if (error.empty()) patch = WithWorkspaceRunner(app, chat, stop, [&](const VcsCommandRunner& run) { return provider.RevisionDiff(run, revision, path, error); });
+		if (error_out != nullptr) *error_out = error;
+		return patch;
+	}
+
+	VcsOriginReply VcsCommitService::Origin(const AppState& app, const ChatSession& chat, const VcsType type, const VcsOriginRequest& request, const std::stop_token stop) const
+	{
+		const VcsProvider& provider = VcsProviderFor(type);
+		VcsOriginReply gated;
+		gated.error = HistoryGateError(provider, app.settings, vcs::VcsCapability::OriginComparison);
+		if (!gated.error.empty()) return gated;
+		return WithWorkspaceRunner(app, chat, stop, [&](const VcsCommandRunner& run) { return provider.Origin(run, request); });
+	}
+
+	VcsUpdateResult VcsCommitService::Update(const AppState& app, const ChatSession& chat, const VcsType type, const std::stop_token stop) const
+	{
+		const VcsProvider& provider = VcsProviderFor(type);
+		VcsUpdateResult gated;
+		gated.error = HistoryGateError(provider, app.settings, vcs::VcsCapability::Update);
+		if (!gated.error.empty()) return gated;
+		return WithWorkspaceRunner(app, chat, stop, [&](const VcsCommandRunner& run) { return provider.Update(run); });
+	}
+
 	std::string VcsTypeToString(const VcsType type)
 	{
 		return std::string(VcsProviderFor(type).Declaration().id);
@@ -2264,7 +2376,16 @@ namespace uam
 	void CancelChatRepositoryBaseline(AppState& app, const std::string& chat_id)
 	{
 		const auto found = app.repository_baseline_preparations.find(chat_id);
-		if (found != app.repository_baseline_preparations.end()) found->second->cancellation->request_stop();
+		if (found == app.repository_baseline_preparations.end()) return;
+		// Only a capture still running is cancelled. Stopping a finished one would make the next launch
+		// (for example a goal's fresh worker or reviewer context, started right after this stop) reload the
+		// saved baseline and see Pending, which a launch treats as not ready.
+		bool pending = false;
+		{
+			std::scoped_lock lock(found->second->mutex);
+			pending = found->second->result == ChatBaselineReadiness::Pending;
+		}
+		if (pending) found->second->cancellation->request_stop();
 	}
 
 	ChatBaselineReadiness WaitForChatRepositoryBaseline(const std::shared_ptr<ChatBaselinePreparation>& task, std::stop_token cancellation, std::string* error_out)
