@@ -1,7 +1,11 @@
 #pragma once
 
+#include "app/chat_domain_service.h"
+#include "app/runtime_orchestration_services.h"
 #include "common/config/execution_host_config.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/runtime/app_time.h"
 #include "common/state/app_state.h"
 
 namespace uam
@@ -65,6 +69,90 @@ inline bool RuntimeShouldKeepSystemAwake(const AppState& app)
 	}
 
 	return false;
+}
+
+/// A running terminal that is idle at its prompt with no input or output for a few seconds has nothing for a poll to do.
+inline bool CliTerminalHasPendingWork(const CliTerminalState& terminal, double now_s)
+{
+	constexpr double kRecentActivitySeconds = 5.0;
+	return terminal.running &&
+	    (terminal.lifecycle_state != CliTerminalLifecycleState::Idle || terminal.turn_state != CliTerminalTurnState::Idle ||
+	        terminal.generation_in_progress || terminal.prompt_settle_required || !terminal.pending_steer_prompt.empty() ||
+	        terminal.repository_baseline_pending || terminal.worktree_launch_pending || terminal.context_preparation != nullptr ||
+	        terminal.native_identity_query_phase != 0 || !terminal.native_identity_deferred_input.empty() ||
+	        now_s - terminal.last_activity_time_s < kRecentActivitySeconds);
+}
+
+/// Output a poll left unread: bytes over its per-poll budget, or complete lines it had no time to handle.
+inline bool AcpSessionHasUnreadOutput(const AcpSessionState& session)
+{
+	return session.stdout_poll_pending || session.stderr_poll_pending || session.stdout_buffer.find('\n') != std::string::npos;
+}
+
+/// <summary>
+/// Work that needs the 250 ms poll. A process that is only alive is not work: an idle provider stays up for
+/// `cli_idle_timeout_seconds` after each turn, and polling four times a second for that long was most of UAM's idle CPU.
+/// A running session counts once it could not enter its idle grace period (a turn, permission or question, queued
+/// prompt, stop or restart cleanup, agent run, goal review or background task), or when a poll left output unread.
+/// A stop still draining output, agent input preparation or a local launch counts whether or not the process
+/// is running. Bytes an idle provider writes unprompted wait for the 1 s idle poll; a bridge action that starts work
+/// brings the next poll forward (`AppState::poll_after_action`).
+/// </summary>
+inline bool RuntimeHasPendingWork(const AppState& app)
+{
+	if (!app.memory_extraction_tasks.empty() || !app.memory_extraction_queue.empty() || !app.worktree_operation_chat_ids.empty() ||
+	    !app.queued_agent_run_ids.empty() || !app.pending_agent_run_cancellation_ids.empty())
+	{
+		return true;
+	}
+
+	const double now_s = GetAppTimeSeconds();
+	for (const std::unique_ptr<CliTerminalState>& terminal : app.cli_terminals)
+	{
+		if (terminal != nullptr && CliTerminalHasPendingWork(*terminal, now_s)) return true;
+	}
+
+	for (const std::unique_ptr<AcpSessionState>& session : app.acp_sessions)
+	{
+		if (session == nullptr) continue;
+		if (session->local_stop_pending || session->remote_stop_pending || session->pending_agent_input != nullptr ||
+		    session->pending_local_launch != nullptr || AcpSessionHasUnreadOutput(*session))
+			return true;
+		if (!session->running) continue;
+		const ChatSession* chat = ChatDomainService().FindChatById(app, session->chat_id);
+		if (chat == nullptr || !chat->active_goal_id.empty() || !AcpSessionCanIdleShutdown(*session, *chat)) return true;
+	}
+	return false;
+}
+
+/// Keep terminal input responsive while a visible provider is waiting at its prompt.
+inline bool NeedsInteractiveRuntimePolling(const AppState& app, bool terminal_ui_visible)
+{
+	for (const std::unique_ptr<CliTerminalState>& terminal : app.cli_terminals)
+	{
+		if (terminal_ui_visible && terminal != nullptr && terminal->running && terminal->ui_attached) return true;
+	}
+	const ChatSession* selected_chat = ChatDomainService().SelectedChat(app);
+	if (selected_chat == nullptr)
+	{
+		return false;
+	}
+
+	const AcpSessionState* acp = FindAcpSessionForChat(app, selected_chat->id);
+	return acp != nullptr && acp->running && AcpSessionHasBlockingRuntimeWork(*acp);
+}
+
+inline int NextPollDelayMs(const AppState& app, bool dictation_running, bool terminal_ui_visible)
+{
+	if (ChatHistorySyncService().TerminalNativeMediaPending(app) || NeedsInteractiveRuntimePolling(app, terminal_ui_visible))
+	{
+		return 16;
+	}
+	if (dictation_running)
+	{
+		return 50;
+	}
+	return RuntimeHasPendingWork(app) ? 250 : 1000;
 }
 
 } // namespace uam
