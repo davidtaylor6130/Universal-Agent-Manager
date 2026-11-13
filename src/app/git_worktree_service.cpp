@@ -521,6 +521,44 @@ namespace uam
 			return true;
 		}
 
+		/// A nested Git repository's ignored items (.venv, node_modules, build output) inside a plain-folder snapshot.
+		/// Git owns its ignore rules. A nested folder Git cannot read as a repository (broken or foreign-owned) is
+		/// copied whole as before and listed in unreadable; an incomplete listing fails closed.
+		bool AddNestedGitIgnoredPaths(const std::filesystem::path& directory, const std::filesystem::path& relative, std::set<std::filesystem::path>& ignored,
+		    std::vector<std::filesystem::path>& unreadable, std::string& error)
+		{
+			std::error_code ec;
+			const auto marker = std::filesystem::symlink_status(directory / ".git", ec);
+			if (marker.type() == std::filesystem::file_type::not_found || ec == std::errc::no_such_file_or_directory || ec == std::errc::not_a_directory) return true;
+			// Git ignores an empty .git folder, as the source classifier does.
+			if (!ec && std::filesystem::is_directory(marker) && std::filesystem::is_empty(directory / ".git", ec) && !ec) return true;
+			// The nested repository's config is source content; the hardened builder keeps its monitor, hooks and pager off.
+			const auto listed = ec ? ProcessExecutionResult{} : RunCommand(BuildGitCommandInDirectory(directory,
+			    "--no-optional-locks ls-files --others --ignored --exclude-standard --directory -z"));
+			// ok is false for any non-zero exit; a launch, timeout or capture failure sets error and still fails closed.
+			if (!ec && !listed.timed_out && !listed.canceled && !listed.output_truncated && listed.error.empty() && listed.exit_code > 0)
+			{ unreadable.push_back(relative); return true; }
+			if (!CommandSucceeded(listed) || listed.output_truncated || !listed.error.empty() || (!listed.output.empty() && listed.output.back() != '\0'))
+			{
+				error = "Could not read the Git ignore rules of nested repository " + paths::PortablePathString(relative) + ", so no managed snapshot was created.";
+				return false;
+			}
+			for (std::size_t start = 0; start < listed.output.size();)
+			{
+				const std::size_t end = listed.output.find('\0', start);
+				std::string entry = listed.output.substr(start, end - start);
+				start = end + 1;
+				if (entry.ends_with('/')) entry.pop_back();
+				const std::filesystem::path item = paths::PathFromUtf8(entry);
+				std::error_code item_error;
+				// Only prune what exists; a stray diagnostic line can never name a real path.
+				if (entry.empty() || std::filesystem::symlink_status(directory / item, item_error).type() == std::filesystem::file_type::not_found) continue;
+				if (HasUnsafeSnapshotName(item)) { error = "Source workspace contains an unsafe path."; return false; }
+				ignored.insert((relative / item).lexically_normal());
+			}
+			return true;
+		}
+
 		/// Keeps ignored SVN items untracked in the managed repository, so later checkpoints and ports skip them too.
 		bool WriteSnapshotExcludes(const std::filesystem::path& repository, const std::set<std::filesystem::path>& ignored, std::string& error)
 		{
@@ -546,11 +584,18 @@ namespace uam
 			return false;
 		}
 
-		bool CollectSnapshotFiles(const AppState& app, const std::filesystem::path& source_root,
-		    bool source_is_git, std::vector<SnapshotFile>& files, std::string& error, const std::set<std::filesystem::path>& ignored = {})
+		/// skipped_links lists links left out because they leave the workspace; unreadable_repositories lists nested
+		/// folders copied whole because Git could not read their ignore rules.
+		bool CollectSnapshotFiles(const AppState& app, const std::filesystem::path& source_root, bool source_is_git, std::vector<SnapshotFile>& files, std::string& error,
+		    const std::set<std::filesystem::path>& svn_ignored, std::vector<std::filesystem::path>& skipped_links, std::vector<std::filesystem::path>& unreadable_repositories)
 		{
 			files.clear();
+			skipped_links.clear();
+			unreadable_repositories.clear();
 			error.clear();
+			// Nested ignores only prune the walk. The copied .gitignore files keep them untracked in the managed
+			// repository; a folder listed whole by --directory must not exclude files an agent adds there later.
+			std::set<std::filesystem::path> ignored = svn_ignored;
 			if (!uam::paths::IsDirectoryNoThrow(source_root))
 			{ error = "Source workspace is not an available directory. Restore the folder, then retry."; return false; }
 			if (!app.data_root.empty() && PathIsWithin(source_root, app.data_root))
@@ -593,12 +638,15 @@ namespace uam
 				if (std::filesystem::is_symlink(status))
 				{
 					file.link_target = std::filesystem::read_symlink(path, ec);
-					if (ec || file.link_target.empty() || file.link_target.has_root_name() || file.link_target.has_root_directory())
+					if (ec || file.link_target.empty())
 					{ error = "Source symbolic link cannot be isolated: " + paths::PortablePathString(relative); return false; }
-					const auto resolved = std::filesystem::weakly_canonical(path.parent_path() / file.link_target, ec);
-					if (ec || !PathIsWithin(resolved, physical_source) || IsExcludedSnapshotPath(resolved.lexically_relative(physical_source)) ||
+					const bool absolute = file.link_target.has_root_name() || file.link_target.has_root_directory();
+					const auto resolved = absolute ? std::filesystem::path() : std::filesystem::weakly_canonical(path.parent_path() / file.link_target, ec);
+					// Never recreate a link that reaches outside the copy; leave it out and warn instead of failing the
+					// whole snapshot (a virtualenv's interpreter link is the common case).
+					if (absolute || ec || !PathIsWithin(resolved, physical_source) || IsExcludedSnapshotPath(resolved.lexically_relative(physical_source)) ||
 					    (!app.data_root.empty() && PathIsWithin(resolved, app.data_root)))
-					{ error = "Source symbolic link leaves the isolated workspace: " + paths::PortablePathString(relative); return false; }
+					{ skipped_links.push_back(relative); return true; }
 					// Copy the link node, including a dangling internal link; never open its target.
 					file.size = paths::Utf8PathString(file.link_target).size();
 					file.directory_link = std::filesystem::is_directory(resolved, ec);
@@ -631,8 +679,10 @@ namespace uam
 					const auto path = it->path();
 					// relative() resolves links and can replace their authored path with their target.
 					const auto relative = path.lexically_relative(source_root);
+					bool directory = false;
 					if (IsExcludedSnapshotPath(relative) || ignored.contains(relative.lexically_normal()) || (!app.data_root.empty() && PathIsWithin(path, app.data_root))) it.disable_recursion_pending();
-					else if (!collect(path, relative)) return false;
+					// Read a nested repository's ignore rules before descending into it.
+					else if (!collect(path, relative, &directory) || (directory && !AddNestedGitIgnoredPaths(path, relative, ignored, unreadable_repositories, error))) return false;
 					it.increment(ec);
 				}
 				if (ec) { error = "Failed to enumerate source workspace: " + ec.message(); return false; }
@@ -656,8 +706,9 @@ namespace uam
 					if (seen.insert(relative).second)
 					{
 						bool directory = false;
+						// An untracked directory listed whole is a nested repository.
 						if (!collect(source_root / relative, relative, &directory) ||
-						    (directory && !collect_directory(source_root / relative))) return false;
+						    (directory && (!AddNestedGitIgnoredPaths(source_root / relative, relative, ignored, unreadable_repositories, error) || !collect_directory(source_root / relative)))) return false;
 					}
 					start = end + 1;
 				}
@@ -2090,7 +2141,7 @@ namespace uam
 	GitWorktreeOperationResult GitWorktreeService::CreateForChatCore(AppState& app, ChatSession& chat, bool persist, const GitWorktreeIntentRecorder& record, std::stop_token stop, bool automatic_unborn_snapshot) const
 	{
 		GitWorktreeOperationResult result;
-		std::string pull_warning;
+		std::string pull_warning, snapshot_warning;
 		if (!ValidatePendingGitBaseOverrideScope(app, chat, result.message)) return result;
 		if (stop.stop_requested()) { result.message = "Workspace preparation was canceled."; return result; }
 		if (!app.settings.git_enabled) { result.message = "Git is disabled in Settings."; return result; }
@@ -2162,11 +2213,24 @@ namespace uam
 		{
 			std::vector<SnapshotFile> files;
 			std::set<std::filesystem::path> svn_ignored;
+			std::vector<std::filesystem::path> skipped_links, unreadable_repositories;
 			if (source_kind == LocalSnapshotSource::Svn && !SvnIgnoredSnapshotPaths(source_root, svn_ignored, result.message, stop)) return result;
-			if (!CollectSnapshotFiles(app, source_root, unborn_source, files, result.message, svn_ignored))
+			if (!CollectSnapshotFiles(app, source_root, unborn_source, files, result.message, svn_ignored, skipped_links, unreadable_repositories))
 			{
 				return result;
 			}
+			const auto names = [](const std::vector<std::filesystem::path>& listed)
+			{
+				std::string text;
+				for (std::size_t index = 0; index < std::min<std::size_t>(listed.size(), 3); ++index)
+					text += (index ? ", " : "") + paths::PortablePathString(listed[index]);
+				if (listed.size() > 3) text += " and " + std::to_string(listed.size() - 3) + " more";
+				return text;
+			};
+			if (!skipped_links.empty())
+				snapshot_warning = "Warning: symbolic links that point outside the workspace were not copied into the isolated snapshot: " + names(skipped_links) + ".";
+			if (!unreadable_repositories.empty())
+				snapshot_warning += std::string(snapshot_warning.empty() ? "Warning: " : " ") + "Git could not read these nested repositories, so their ignored files were copied too: " + names(unreadable_repositories) + ".";
 			if (unborn_source && !IsVerifiedUnbornRepository(source_root, stop))
 			{ result.message = "The source repository changed before its isolation baseline was created."; return result; }
 			if (uam::paths::PathExistsNoThrow(repository))
@@ -2309,6 +2373,7 @@ namespace uam
 		const std::string message = managed_repository ? "Created an isolated Git worktree from a local UAM-managed baseline." : result.status.source_dirty ? "Created isolated Git worktree from HEAD. Source workspace has uncommitted changes that were not copied." : "Created isolated Git worktree.";
 		CompleteSuccessfulResult(result, Status(app, chat), message);
 		if (!pull_warning.empty()) result.status.warning = std::move(pull_warning);
+		else if (!snapshot_warning.empty()) result.status.warning = std::move(snapshot_warning);
 		else if (result.status.source_dirty && !result.status.managed_repository)
 			result.status.warning = "Warning: source changes were preserved and were not copied into the isolated worktree, which uses the verified committed base.";
 		return result;

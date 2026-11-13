@@ -974,7 +974,11 @@ namespace uam
 				if (!session.running && session.lifecycle_state == "waiting_routing") return true;
 				session.reconnect_pending = false;
 				session.reconnect_not_before_time_s = 0.0;
-				AppendAcpDiagnostic(session, "reconnect", "started", "", "", false, 0, "Structured runtime reconnected.");
+				// A launch parked on workspace preparation started nothing yet; say so instead of claiming a reconnect.
+				if (session.worktree_launch_pending && !session.running)
+					AppendAcpDiagnostic(session, "reconnect", "waiting_workspace", "", "", false, 0, "Structured runtime is waiting for workspace preparation.");
+				else
+					AppendAcpDiagnostic(session, "reconnect", "started", "", "", false, 0, "Structured runtime reconnected.");
 				if (session.ephemeral_model_discovery)
 				{
 					++session.discovery_cleanup_attaches;
