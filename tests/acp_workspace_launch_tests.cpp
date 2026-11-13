@@ -122,6 +122,11 @@ UAM_TEST(AcpWorkspaceFailureOrRevocationHoldsInputWithoutReplacement)
 		UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
 		UAM_ASSERT(!session.last_error.empty());
 		UAM_ASSERT(fixture.app.worktree_launch_preparations.empty());
+		// The failure settles: later polls neither restart preparation nor log reconnect attempts.
+		for (int poll = 0; poll < 3; ++poll) (void)uam::PollAllAcpSessions(fixture.app);
+		UAM_ASSERT(session.queue_held && !session.reconnect_pending && !session.worktree_launch_pending && !session.running);
+		UAM_ASSERT(fixture.app.worktree_launch_preparations.empty());
+		UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.event == "reconnect"; }));
 	}
 }
 

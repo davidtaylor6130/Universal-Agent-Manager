@@ -458,7 +458,7 @@ UAM_TEST(ManagedSnapshotPreservesBrokenInternalSymlink)
 	UAM_ASSERT(fs::is_symlink(fs::symlink_status(source / "future.swift")));
 }
 
-UAM_TEST(ManagedSnapshotRejectsEscapingSymlinkNodes)
+UAM_TEST(ManagedSnapshotSkipsEscapingSymlinkNodesWithWarning)
 {
 	UAM_ASSERT(GitAvailableForTests());
 	for (const int kind : {0, 1, 2})
@@ -467,17 +467,55 @@ UAM_TEST(ManagedSnapshotRejectsEscapingSymlinkNodes)
 		const fs::path source = temp.root / "source"; fs::create_directories(source);
 		fs::create_directories(temp.root / "outside");
 		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "outside/keep.txt", "external survivor"));
+		UAM_ASSERT(uam::io::WriteTextFile(source / "app.txt", "authored source"));
 		if (kind == 0) fs::create_directory_symlink("../outside", source / "escape");
 		if (kind == 1) fs::create_directory_symlink(temp.root / "outside", source / "escape");
 		if (kind == 2) { fs::create_directory_symlink("../outside", source / "indirect"); fs::create_directory_symlink("indirect", source / "escape"); }
 		uam::AppState app; app.data_root = temp.root / "data";
 		ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli"); chat.workspace_directory = source.string();
 		const auto result = uam::GitWorktreeService().CreateForChat(app, chat);
-		UAM_ASSERT(!result.ok && !result.message.empty());
-		UAM_ASSERT(chat.workspace_worktree_directory.empty());
+		if (!result.ok) throw std::runtime_error(result.message);
+		// The link is left out of the copy, never recreated pointing outside it, and the chat is told.
+		const fs::path isolated = chat.workspace_worktree_directory;
+		UAM_ASSERT_EQ(ReadFile(isolated / "app.txt"), std::string("authored source"));
+		UAM_ASSERT(!fs::exists(fs::symlink_status(isolated / "escape")));
+		UAM_ASSERT(!fs::exists(fs::symlink_status(isolated / "indirect")));
+		UAM_ASSERT(result.status.warning.find("escape") != std::string::npos);
 		UAM_ASSERT_EQ(ReadFile(temp.root / "outside/keep.txt"), std::string("external survivor"));
 		UAM_ASSERT(fs::is_symlink(fs::symlink_status(source / "escape")));
 	}
+}
+
+UAM_TEST(ManagedSnapshotPlainFolderSkipsNestedRepositoryIgnoredContent)
+{
+	// A plain folder of client sites, one of which is its own repository with an ignored virtualenv whose
+	// interpreter links outside the workspace: the ignored environment is left out and the snapshot succeeds.
+	UAM_ASSERT(GitAvailableForTests());
+	TempDir temp("uam-plain-nested-ignored");
+	const fs::path source = temp.root / "source";
+	const fs::path site = source / "site";
+	const fs::path tool = site / "tools/export";
+	fs::create_directories(tool / ".venv/bin");
+	fs::create_directories(temp.root / "python");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "python/python3.12", "external interpreter"));
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(site.string())));
+	UAM_ASSERT(uam::io::WriteTextFile(tool / ".gitignore", ".venv/\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(tool / "export.py", "print('export')\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "notes.txt", "plain folder file\n"));
+	fs::create_symlink(temp.root / "python/python3.12", tool / ".venv/bin/python3.12");
+	fs::create_symlink("python3.12", tool / ".venv/bin/python3");
+	uam::AppState app; app.data_root = temp.root / "data";
+	ChatSession chat = ChatDomainService().CreateNewChat("", "claude-cli"); chat.workspace_directory = source.string();
+	const auto result = uam::GitWorktreeService().CreateForChat(app, chat);
+	if (!result.ok) throw std::runtime_error(result.message);
+	const fs::path isolated = chat.workspace_worktree_directory;
+	UAM_ASSERT_EQ(ReadFile(isolated / "notes.txt"), std::string("plain folder file\n"));
+	UAM_ASSERT_EQ(ReadFile(isolated / "site/tools/export/export.py"), std::string("print('export')\n"));
+	UAM_ASSERT(fs::exists(isolated / "site/tools/export/.gitignore"));
+	UAM_ASSERT(!fs::exists(fs::symlink_status(isolated / "site/tools/export/.venv")));
+	UAM_ASSERT(!fs::exists(isolated / "site/.git"));
+	UAM_ASSERT(result.status.warning.empty());
+	UAM_ASSERT(fs::is_symlink(fs::symlink_status(tool / ".venv/bin/python3")));
 }
 
 
