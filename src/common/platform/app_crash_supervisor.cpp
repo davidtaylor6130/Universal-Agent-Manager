@@ -195,6 +195,9 @@ namespace uam::platform
 			command_line += L" --uam-supervised-gui --uam-supervisor-pid=" + std::to_wstring(GetCurrentProcessId());
 			if (stopped_handoff)
 				command_line += L" --uam-data-folder-normal-exit";
+			// Explorer started this process, so it holds foreground rights the windowless supervisor never uses. Pass them on,
+			// so a shell-action launch forwarded to an already running instance can bring that window to the front.
+			AllowSetForegroundWindow(ASFW_ANY);
 			STARTUPINFOW startup{};
 			startup.cb = sizeof(startup);
 			PROCESS_INFORMATION process{};
