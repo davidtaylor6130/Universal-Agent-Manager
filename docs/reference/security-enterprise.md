@@ -39,6 +39,8 @@ This document captures the current security posture for Universal Agent Managerâ
 - Native Gemini history reads cap parsed session file size and message count through platform limits.
 - Memory extraction rejects supported entries that appear to contain obvious secrets before writing `.md` memory files.
 - Each UAM control capability rejects a reused request ID among its 256 most recently seen IDs; when the window is full, only the oldest ID is evicted.
+- Agent-published [HTML views](../chat/html-views.md) load only after the user chooses Run on the card, remembered per view and exact page. The hidden runtime check stays off on every platform; with the macOS renderer sandboxed it can be reconsidered there later.
+- Git commands UAM runs itself, locally or over SSH, are built in `src/common/vcs/git_command.h`, which turns off repository-configured hooks, file-system monitors, external diff programs, text conversion and pagers ([Git](../settings/version-control/git.md)).
 
 ## Enterprise Risks and Operating Assumptions
 
