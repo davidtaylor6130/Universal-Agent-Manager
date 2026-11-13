@@ -33,6 +33,12 @@ foreach ($required in @(
 )) {
     if (-not (Test-Path -LiteralPath $required)) { throw "Packaged Windows artifact is missing $required." }
 }
+# Gemini Plan and goal-review launches refuse to start without UAM's policy beside the executable.
+$geminiPolicy = Join-Path $packageRoot 'gemini-plan-ceiling.toml'
+$sourcePolicy = Join-Path $PSScriptRoot '../assets/providers/gemini-plan-ceiling.toml'
+if (-not (Test-Path -LiteralPath $geminiPolicy) -or (Get-FileHash -LiteralPath $geminiPolicy).Hash -ne (Get-FileHash -LiteralPath $sourcePolicy).Hash) {
+    throw "Packaged Windows artifact is missing the current Gemini Plan policy: $geminiPolicy."
+}
 foreach ($remoteRunner in @(
     $nativeRunner,
     (Join-Path $packageRoot 'remote/linux-arm64/uam-runner'),

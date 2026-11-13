@@ -1235,6 +1235,12 @@ if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/providers/gemini-plan-ceiling.toml" "${UAM_RESOURCE_DEST}/gemini-plan-ceiling.toml"
     VERBATIM
   )
+else()
+  # A reused build folder must not keep a Gemini resource after Gemini is switched off.
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E rm -f "${UAM_RESOURCE_DEST}/gemini-plan-ceiling.toml"
+    VERBATIM
+  )
 endif()
 if(UAM_ENABLE_COMPUTER_USE)
   if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
