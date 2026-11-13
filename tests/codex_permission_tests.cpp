@@ -226,6 +226,87 @@ UAM_TEST(CodexNativeResidualEditPermissionCannotBeParentAutoGranted)
 #endif
 }
 
+UAM_TEST(CodexAcceptEditsUsesObservedChangesAndNeverAGrantRoot)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (const std::string scenario : {"inside", "outside", "grant-root", "unobserved"})
+	{
+		TempDir temp("uam-codex-accept-edits-scope");
+		const std::filesystem::path workspace = temp.root / "workspace";
+		std::filesystem::create_directories(workspace);
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat;
+		chat.id = "codex-accept-edits-scope";
+		chat.provider_id = "codex-cli";
+		chat.execution_host_id = "local";
+		chat.workspace_directory = workspace.string();
+		chat.command_safety_tier = "acceptEdits";
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "codex-app-server";
+		session.running = true;
+		session.processing = true;
+		session.session_id = kPermissionThread;
+		session.codex_thread_id = kPermissionThread;
+		if (scenario != "unobserved")
+		{
+			uam::AcpToolCallState item;
+			item.id = "edit";
+			item.kind = "fileChange";
+			const std::string path = scenario == "outside" ? (temp.root / "outside.txt").string() : (workspace / "src" / "main.cpp").string();
+			item.content = nlohmann::json{{"type", "fileChange"}, {"id", "edit"}, {"changes", {{{"path", path}, {"kind", "update"}}}}}.dump(2);
+			session.tool_calls.push_back(std::move(item));
+		}
+		nlohmann::json params = {{"threadId", kPermissionThread}, {"itemId", "edit"}, {"reason", "Edit source"}};
+		if (scenario == "grant-root") params["grantRoot"] = temp.root.string();
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat,
+		    nlohmann::json{{"jsonrpc", "2.0"}, {"id", 73}, {"method", "item/fileChange/requestApproval"}, {"params", params}}.dump()));
+		// No wire is attached, so an automatic approval would be attempted and the decision stays observable.
+		UAM_ASSERT(session.waiting_for_permission);
+		UAM_ASSERT_EQ(session.pending_permission.safety_tier == "acceptEdits", scenario == "inside");
+	}
+#endif
+}
+
+UAM_TEST(CodexCommandCwdAnchorsTheReadCeiling)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-codex-command-cwd");
+	const std::filesystem::path workspace = temp.root / "workspace";
+	std::filesystem::create_directories(workspace / "src");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "codex-command-cwd";
+	chat.provider_id = "codex-cli";
+	chat.execution_host_id = "local";
+	chat.workspace_directory = workspace.string();
+	chat.command_safety_tier = "off";
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "codex-app-server";
+	session.running = true;
+	session.processing = true;
+	session.session_id = kPermissionThread;
+	session.codex_thread_id = kPermissionThread;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat,
+	    nlohmann::json{{"jsonrpc", "2.0"}, {"id", 74}, {"method", "item/commandExecution/requestApproval"},
+	     {"params", {{"threadId", kPermissionThread}, {"itemId", "cmd"}, {"command", "cat secret.txt"}, {"cwd", temp.root.string()}}}}.dump()));
+	UAM_ASSERT(session.waiting_for_permission);
+	UAM_ASSERT_EQ(session.pending_permission.read_scope.cwd, std::filesystem::path(temp.root.string()));
+	// The same relative read is admitted from the workspace but not from a working directory outside it.
+	uam::command_safety::ReadScope captured = session.pending_permission.read_scope;
+	captured.resolve_executables = false; // Executable resolution has its own cases; this one isolates the cwd.
+	UAM_ASSERT(!uam::command_safety::IsReadOnlyCommand(session.pending_permission.execution_command, captured));
+	uam::command_safety::ReadScope inside = captured;
+	inside.cwd = workspace / "src";
+	UAM_ASSERT(uam::command_safety::IsReadOnlyCommand(session.pending_permission.execution_command, inside));
+#endif
+}
+
 UAM_TEST(CodexSetupReviewerObservationResetsOnFreshInitialize)
 {
 #if UAM_ENABLE_RUNTIME_CODEX_CLI

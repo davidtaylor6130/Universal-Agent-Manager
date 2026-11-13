@@ -1,9 +1,11 @@
 #include "app/storage_retention_service.h"
+#include "common/config/compute_pools.h"
 #include "app/data_folder_settings_service.h"
 #include "app/central_instruction_file_service.h"
 #include "common/config/voice_input_settings.h"
 #include "app/execution_routing_integration.h"
 #include "common/config/settings_store.h"
+#include "common/config/svn_repository_layout.h"
 #include "common/config/host_scoped_settings.h"
 #include "common/config/provider_availability.h"
 #include <stdexcept>
@@ -13,6 +15,7 @@
 #include "cef/uam_query_handler.h"
 #include "common/companion/connection_lifecycle.h"
 #include "common/companion/pairing_certificate.h"
+#include "common/companion/token_store.h"
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
 
@@ -138,6 +141,9 @@ namespace
 
 	bool ReadCompanionConfig(const uam::AppState& app, nlohmann::json& config)
 	{
+#if UAM_ENABLE_MOBILE_COMPANION
+		(void)UamCompanionService::MigrateLegacyToken(app.data_root);
+#endif
 		std::string text;
 		if (!uam::io::TryReadTextFile(CompanionConfigPath(app), text)) return false;
 		try
@@ -177,7 +183,7 @@ namespace
 
 	nlohmann::json CompanionSettingsResponse(const nlohmann::json& config)
 	{
-		const bool configured = config.is_object() && config.contains("token_file") && config["token_file"].is_string();
+		const bool configured = uam::companion::HasTokenSource(config);
 		const bool enabled = config.contains("enabled") && config["enabled"].is_boolean() && config["enabled"].get<bool>();
 		return {
 			{"configured", configured},
@@ -195,7 +201,7 @@ namespace
 		return {value.memory_enabled_default, value.memory_level_default, value.memory_idle_delay_seconds,
 		    value.memory_recall_budget_bytes, value.goal_max_loop_iterations, value.goal_token_budget, value.acp_setup_inactivity_timeout_seconds,
 		    value.acp_turn_output_limit_mib, value.memory_worker_bindings,
-		    value.permission_reviewer_provider_id, value.permission_reviewer_model_id, value.active_turn_inactivity_timeout_seconds, value.stream_loop_repeat_limit};
+		    value.permission_reviewer_provider_id, value.permission_reviewer_model_id, value.active_turn_inactivity_timeout_seconds, value.stream_loop_repeat_limit, value.tool_call_timeout_seconds};
 	}
 
 	void ApplyMemorySettings(AppSettings& target, SettingsMemoryCanonicalValues value) noexcept
@@ -210,6 +216,7 @@ namespace
 		target.acp_turn_output_limit_mib = value.acp_turn_output_limit_mib;
 		target.active_turn_inactivity_timeout_seconds = value.active_turn_inactivity_timeout_seconds;
 		target.stream_loop_repeat_limit = value.stream_loop_repeat_limit;
+		target.tool_call_timeout_seconds = value.tool_call_timeout_seconds;
 		target.memory_worker_bindings.swap(value.memory_worker_bindings);
 		target.permission_reviewer_provider_id.swap(value.permission_reviewer_provider_id);
 		target.permission_reviewer_model_id.swap(value.permission_reviewer_model_id);
@@ -223,7 +230,7 @@ namespace
 		return {{"memoryEnabledDefault", value.memory_enabled_default}, {"memoryLevelDefault", value.memory_level_default},
 		    {"memoryIdleDelaySeconds", value.memory_idle_delay_seconds}, {"memoryRecallBudgetBytes", value.memory_recall_budget_bytes},
 		    {"goalMaxLoopIterations", value.goal_max_loop_iterations}, {"goalTokenBudget", value.goal_token_budget}, {"acpSetupInactivityTimeoutSeconds", value.acp_setup_inactivity_timeout_seconds},
-		    {"acpTurnOutputLimitMiB", value.acp_turn_output_limit_mib}, {"activeTurnInactivityTimeoutSeconds", value.active_turn_inactivity_timeout_seconds}, {"streamLoopRepeatLimit", value.stream_loop_repeat_limit}, {"memoryWorkerBindings", std::move(bindings)},
+		    {"acpTurnOutputLimitMiB", value.acp_turn_output_limit_mib}, {"activeTurnInactivityTimeoutSeconds", value.active_turn_inactivity_timeout_seconds}, {"streamLoopRepeatLimit", value.stream_loop_repeat_limit}, {"toolCallTimeoutSeconds", value.tool_call_timeout_seconds}, {"memoryWorkerBindings", std::move(bindings)},
 		    {"permissionReviewerProviderId", value.permission_reviewer_provider_id}, {"permissionReviewerModelId", value.permission_reviewer_model_id}};
 	}
 
@@ -257,7 +264,7 @@ namespace
 		if (payload.contains("enabledDefault") && !payload["enabledDefault"].is_boolean()) return false;
 		for (const auto* key : {"levelDefault", "permissionReviewerProviderId", "permissionReviewerModelId"})
 			if (payload.contains(key) && !payload[key].is_string()) return false;
-		for (const auto* key : {"idleDelaySeconds", "recallBudgetBytes", "goalMaxLoopIterations", "goalTokenBudget", "acpTurnOutputLimitMiB", "acpSetupInactivityTimeoutSeconds", "activeTurnInactivityTimeoutSeconds", "streamLoopRepeatLimit"})
+		for (const auto* key : {"idleDelaySeconds", "recallBudgetBytes", "goalMaxLoopIterations", "goalTokenBudget", "acpTurnOutputLimitMiB", "acpSetupInactivityTimeoutSeconds", "activeTurnInactivityTimeoutSeconds", "toolCallTimeoutSeconds", "streamLoopRepeatLimit"})
 		{
 			if (!payload.contains(key)) continue;
 			const auto& value = payload[key];
@@ -371,6 +378,10 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	if (const std::optional<int> turn_timeout_seconds = uam::nlohmann_json::IntFieldStrict(payload, "activeTurnInactivityTimeoutSeconds"))
 	{
 		candidate.active_turn_inactivity_timeout_seconds = *turn_timeout_seconds;
+	}
+	if (const std::optional<int> tool_timeout_seconds = uam::nlohmann_json::IntFieldStrict(payload, "toolCallTimeoutSeconds"))
+	{
+		candidate.tool_call_timeout_seconds = *tool_timeout_seconds;
 	}
 	if (const std::optional<int> loop_limit = uam::nlohmann_json::IntFieldStrict(payload, "streamLoopRepeatLimit"))
 	{
@@ -496,6 +507,34 @@ void UamQueryHandler::HandleSetMcpServers(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 	cb->Success(nlohmann::json{{"servers", uam::mcp_server_config::Serialize(uam::host_scoped_settings::McpServers(m_app.settings, scope))}}.dump());
+	uam::PushStateUpdateIfChanged(browser, m_app);
+}
+
+void UamQueryHandler::HandleSetComputePools(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const nlohmann::json* requested = uam::nlohmann_json::FindArrayField(payload, "computePools");
+	if (requested == nullptr)
+	{
+		cb->Failure(400, "computePools must be an array.");
+		return;
+	}
+	std::vector<ComputePool> pools = uam::compute_pools::Parse(*requested);
+	const std::size_t requested_count = requested->size();
+	uam::compute_pools::Normalize(pools);
+	if (pools.size() != requested_count)
+	{
+		cb->Failure(400, "Each compute pool needs a name of up to 80 bytes, a limit from 1 to 64 and at least one provider.");
+		return;
+	}
+	const AppSettings previous = m_app.settings;
+	m_app.settings.compute_pools = std::move(pools);
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, "Failed to save compute pools.");
+		return;
+	}
+	cb->Success(nlohmann::json{{"computePools", uam::compute_pools::Serialize(m_app.settings.compute_pools)}}.dump());
 	uam::PushStateUpdateIfChanged(browser, m_app);
 }
 
@@ -661,6 +700,32 @@ void UamQueryHandler::HandleSetSidebarSettings(CefRefPtr<CefBrowser> browser, co
 	{
 		m_app.settings = previous;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist sidebar settings."));
+		return;
+	}
+
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetSidebarChatOrder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string_view list = uam::nlohmann_json::StringViewOrEmpty(payload, "list");
+	const nlohmann::json* order = uam::nlohmann_json::FindArrayField(payload, "order");
+	if ((list != "pinned" && list != "active") || order == nullptr ||
+	    std::any_of(order->begin(), order->end(), [](const nlohmann::json& id) { return !id.is_string(); }))
+	{
+		cb->Failure(400, "Sidebar chat order must name the pinned or active list and give chat ids as text.");
+		return;
+	}
+
+	const AppSettings previous = m_app.settings;
+	std::vector<std::string>& target = list == "pinned" ? m_app.settings.sidebar_pinned_chat_order : m_app.settings.sidebar_active_chat_order;
+	target = uam::nlohmann_json::TrimmedStringArrayField(payload, "order");
+	uam::settings::NormalizeUamAgentPreferences(m_app.settings);
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to save the sidebar order."));
 		return;
 	}
 
@@ -924,7 +989,7 @@ void UamQueryHandler::HandleRestartCompanion(CefRefPtr<CefBrowser> browser, cons
 	if (!payload.is_object() || !payload.empty())
 	{ cb->Failure(400, "Restart phone access does not accept configuration changes."); return; }
 	nlohmann::json config;
-	if (!ReadCompanionConfig(m_app, config) || !config.contains("token_file") || !config["token_file"].is_string())
+	if (!ReadCompanionConfig(m_app, config) || !uam::companion::HasTokenSource(config))
 	{ cb->Failure(409, "Phone access is not configured in Universal Agent Manager."); return; }
 	ApplyCompanionConfiguration(browser, config);
 	cb->Success(CompanionConnectionStatus(config).dump());
@@ -947,7 +1012,7 @@ void UamQueryHandler::HandleSetCompanionEnabled(CefRefPtr<CefBrowser> browser, c
 	}
 
 	nlohmann::json config;
-	if (!ReadCompanionConfig(m_app, config) || !config.contains("token_file") || !config["token_file"].is_string())
+	if (!ReadCompanionConfig(m_app, config) || !uam::companion::HasTokenSource(config))
 	{
 		cb->Failure(409, "Phone access is not configured.");
 		return;
@@ -972,34 +1037,55 @@ void UamQueryHandler::HandleSetCompanionKeychainPrompts(CefRefPtr<CefBrowser>, c
 	const std::optional<bool> allowed = uam::nlohmann_json::BoolFieldStrict(payload, "allowed");
 	if (!allowed) { cb->Failure(400, "allowed must be a boolean."); return; }
 	nlohmann::json config;
-	if (!ReadCompanionConfig(m_app, config) || !config.contains("token_file") || !config["token_file"].is_string()) { cb->Failure(409, "Phone access is not configured."); return; }
+	if (!ReadCompanionConfig(m_app, config) || !uam::companion::HasTokenSource(config)) { cb->Failure(409, "Phone access is not configured."); return; }
 	config["allow_keychain_prompts"] = *allowed;
 	if (!WriteCompanionConfig(m_app, config)) { cb->Failure(500, "Failed to persist phone access settings."); return; }
 	cb->Success(CompanionConnectionStatus(config).dump());
 }
 
-void UamQueryHandler::HandleGetCompanionToken(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleRegenerateCompanionToken(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	if (!payload.is_object() || !payload.empty()) { cb->Failure(400, "Regenerating the phone token takes no options."); return; }
 	nlohmann::json config;
-	if (!ReadCompanionConfig(m_app, config) || !config.contains("token_file") || !config["token_file"].is_string())
+	if (!ReadCompanionConfig(m_app, config) || !uam::companion::HasTokenSource(config)) { cb->Failure(409, "Phone access is not configured."); return; }
+	std::string error;
+	if (!UamCompanionService::RotateToken(m_app.data_root, &error)) { cb->Failure(409, error); return; }
+	cb->Success(CompanionConnectionStatus(config).dump());
+}
+
+void UamQueryHandler::HandleGetCompanionToken(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const nlohmann::json* rotate = payload.is_object() ? uam::nlohmann_json::FindField(payload, "rotate") : nullptr;
+	if (!payload.is_object() || payload.size() > (rotate ? 1u : 0u) || (rotate && !rotate->is_boolean()))
+	{
+		cb->Failure(400, "The phone token request accepts only a boolean rotate option.");
+		return;
+	}
+	nlohmann::json config;
+	if (!ReadCompanionConfig(m_app, config) || !uam::companion::HasTokenSource(config))
 	{
 		cb->Failure(409, "Phone access is not configured.");
 		return;
 	}
-	std::string token;
-	if (!uam::io::TryReadTextFile(config["token_file"].get<std::string>(), token))
+	// A new pairing code pairs with a fresh credential, so the shared old one stops working at once.
+	// Copy token reads the current credential and leaves every paired device connected.
+	std::string error;
+	std::optional<std::string> token;
+	if (rotate && rotate->get<bool>())
 	{
-		cb->Failure(404, "Phone access token is unavailable.");
-		return;
+		token = UamCompanionService::RotateToken(m_app.data_root, &error);
+		if (!token) { cb->Failure(409, error); return; }
 	}
-	token = uam::strings::Trim(token);
-	if (token.size() != 64 || token.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+	else
 	{
-		cb->Failure(404, "Phone access token is invalid or unavailable.");
-		return;
+		std::string text;
+		if (uam::companion::UsesCredentialStore(config)) text = UamCompanionService::ReadStoredToken(m_app.data_root).value_or(std::string{});
+		else if (uam::companion::HasLegacyTokenFile(config) && uam::io::TryReadTextFile(config["token_file"].get<std::string>(), text)) text = uam::strings::Trim(text);
+		if (!uam::companion::IsValidToken(text)) { cb->Failure(404, "Phone access token is invalid or unavailable."); return; }
+		token = std::move(text);
 	}
 	const auto status = CompanionConnectionStatus(config);
-	nlohmann::json response{{"token", token}, {"url", status.value("state", std::string{}) == "ready" ? status.value("effectiveUrl", std::string{}) : std::string{}},
+	nlohmann::json response{{"token", *token}, {"url", status.value("state", std::string{}) == "ready" ? status.value("effectiveUrl", std::string{}) : std::string{}},
 	    {"state", status["state"]}, {"reasonCode", status["reasonCode"]}, {"reason", status["reason"]}};
 	// The public CA is optional and is never a reason to expose an unready saved URL.
 	try
@@ -1498,6 +1584,12 @@ void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const 
 	{
 		cb->Failure(400, "SVN update before chat requires a boolean."); return;
 	}
+	std::vector<SvnRepositoryLayout> svn_layouts;
+	const bool has_svn_layouts = payload.contains("svnRepositoryLayouts");
+	if (has_svn_layouts && !uam::svn_layout::Parse(payload["svnRepositoryLayouts"], svn_layouts))
+	{
+		cb->Failure(400, "Each SVN repository layout needs a repository root URL or UUID and repository-relative folders for trunk, branches and tags."); return;
+	}
 	const nlohmann::json* port_value = uam::nlohmann_json::FindStringField(payload, "gitPortMethod");
 	const std::string port_method = port_value ? port_value->get<std::string>() : std::string();
 	if (payload.contains("gitPortMethod") && (!port_value || (port_method != "patch" && port_method != "merge" && port_method != "squash")))
@@ -1548,6 +1640,7 @@ void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const 
 	if (snapshot_plain_folders) m_app.settings.git_snapshot_plain_folders = *snapshot_plain_folders;
 	if (pull_before_chat) m_app.settings.git_pull_before_chat = *pull_before_chat;
 	if (svn_update_before_chat) m_app.settings.svn_update_before_chat = *svn_update_before_chat;
+	if (has_svn_layouts) m_app.settings.svn_repository_layouts = std::move(svn_layouts);
 	if (port_value) m_app.settings.git_port_method = port_method == "merge" ? GitPortMethod::Merge : port_method == "squash" ? GitPortMethod::Squash : GitPortMethod::Patch;
 	if (base_value) m_app.settings.git_default_base_branch = base_branch;
 	if (cleanup_enabled) m_app.settings.worktree_cleanup_enabled = *cleanup_enabled;

@@ -130,6 +130,7 @@ void RequestPermission(AppState& app, AcpSessionState& session, ChatSession& cha
 	if (pending.content.empty()) pending.content = request.dump(2);
 	pending.status = uam::acp_statuses::kPending;
 	pending.options = {{"allow_once", "Allow once", "allow_once"}, {"reject_once", "Deny", "reject_once"}};
+	ApplyCommandSafetyDecision(app, chat, pending); // Before replay: saved responses are checked against the captured scope.
 	if (!session.remote_source_exit_reported && ReplayPersistedInteractionResponseIfMatched(app, session, chat, {{"id", id}}, &pending))
 	{
 		if (std::ranges::any_of(chat.remote_interaction_responses, [&](const auto& saved) { return saved.request_id_json == stable_id; }))
@@ -146,7 +147,6 @@ void RequestPermission(AppState& app, AcpSessionState& session, ChatSession& cha
 	for (const AcpPendingPermissionState& queued : session.queued_permissions)
 		if (queued.request_id_json == pending.request_id_json && queued.provider_request_method == method) return;
 	AppendPermissionTurnEventIfNeeded(session, pending.request_id_json, pending.tool_call_id);
-	ApplyCommandSafetyDecision(app, chat, pending);
 	QueueAcpPermission(app, session, chat, std::move(pending));
 }
 
@@ -156,7 +156,7 @@ constexpr std::string_view kApproveImplementation = "Approve plan and implement 
 
 bool ReadOnlyPlan(const AcpSessionState& session)
 {
-	return session.goal_review_turn || session.active_uam_agent_workspace_access == "read";
+	return session.goal_review_turn || session.active_uam_agent_workspace_access != "write";
 }
 
 void RecordPlanDecision(AcpSessionState& session, const std::string& stable_id,
@@ -1377,7 +1377,7 @@ nlohmann::json CopilotCliProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState&
 	session.copilot_native_state["turnObserved"] = false;
 	session.copilot_native_state["messages"] = nlohmann::json::object();
 	session.copilot_native_state["reasoning"] = nlohmann::json::object();
-	const bool read_only = session.goal_review_turn || session.active_uam_agent_workspace_access == "read";
+	const bool read_only = session.goal_review_turn || session.active_uam_agent_workspace_access != "write";
 	const std::string mode = read_only || chat.approval_mode == uam::approval_modes::kPlanApprovalMode ? "plan" : "interactive";
 	return uam::acp_json_rpc::Request(request_id, method,
 	    {{"sessionId", session.session_id}, {"prompt", prompt}, {"mode", "enqueue"}, {"agentMode", mode}});
@@ -2105,7 +2105,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 		owner.task_id = agent;
 		owner.sub_agent_id = BuildCopilotAgentHistoryId(session.session_id, agent, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
-		ScheduleChatSave(app, chat, 0);
+		ScheduleChatSave(app, chat, 0, true);
 	}
 	const bool projects_content = type.starts_with("assistant.message") || type.starts_with("assistant.reasoning") ||
 	    type.starts_with("tool.execution_") || type.starts_with("subagent.") || type == "session.compaction_complete";
@@ -2229,7 +2229,13 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 			(void)FinalizeActiveAcpToolCallsAsCancelled(chat, session);
 			if (Message* message = CurrentAssistantMessage(chat, session)) message->interrupted = true;
 		}
-		if (!cancelled) RecordCompletedAcpPromptRecoveries(app, session, chat);
+		if (!cancelled)
+		{
+			RecordCompletedAcpPromptRecoveries(app, session, chat);
+			// Only an acknowledged send proves this prompt: an idle after observed output alone can belong to a
+			// background agent, and the send can still be rejected afterwards.
+			if (Flag(session.copilot_native_state, "sendAccepted")) (void)ConfirmTurnInputReceived(session, chat);
+		}
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser, !cancelled);
 		(void)FlushAutoRoutingRefresh(session, chat);
 		if (browser) uam::PushStreamDone(browser, chat.id);
@@ -2261,7 +2267,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 		AppendTrackedToolEvent(session, id);
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 		RecordEventReceipt(session, chat, event);
-		ScheduleChatSave(app, chat, 0);
+		ScheduleChatSave(app, chat, 0, true);
 		return true;
 	}
 	if (type.starts_with("tool.execution_"))
@@ -2273,7 +2279,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 		session.copilot_native_state["turnObserved"] = true;
 		ApplyToolEvent(session, chat, event, data, type);
 		RecordEventReceipt(session, chat, event);
-		ScheduleChatSave(app, chat, 0);
+		ScheduleChatSave(app, chat, 0, true);
 		return true;
 	}
 	if (!child && session.processing && !session.manual_compaction_pending && !uam::AcpSessionHasPendingCancel(session))
@@ -2287,7 +2293,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 			const std::string appended = AppendNativeText(session, chat, data, type.ends_with("_delta"), type.starts_with("assistant.reasoning"));
 			RecordEventReceipt(session, chat, event);
 			if (browser && !appended.empty()) uam::PushStreamToken(browser, chat.id, session.current_assistant_message_index, appended);
-			ScheduleChatSave(app, chat, 0);
+			ScheduleChatSave(app, chat, 0, true);
 		}
 	}
 	return true;

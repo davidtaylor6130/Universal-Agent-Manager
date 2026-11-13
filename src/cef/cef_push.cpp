@@ -1,4 +1,5 @@
 #include "cef/cef_push.h"
+#include "common/secrets/secret_redactor.h"
 #include "cef/state_serializer.h"
 
 #include "app/chat_domain_service.h"
@@ -17,6 +18,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -33,7 +36,9 @@ namespace
 	constexpr const char* kPushTypeStreamDone = "streamDone";
 	constexpr const char* kPushTypeCliOutput = "cliOutput";
 	constexpr const char* kPushTypeDictation = "dictation";
-	constexpr long long kStatePatchSlowSerializationMs = 8;
+	constexpr const char* kPushTypeAttachmentProgress = "attachmentProgress";
+	constexpr const char* kPushTypeCompanionConfirmations = "companionConfirmations";
+	constexpr long long kStatePatchSlowSerializationMs = 50;
 	constexpr std::size_t kStatePatchLargeMessageBytes = 64 * 1024;
 	// Streaming chat summaries (selected or background) carry the live turn
 	// timeline (turnEvents), which grows on nearly every tick during a turn;
@@ -64,12 +69,87 @@ namespace
 	nlohmann::json g_last_pushed_memory_fingerprint;
 	nlohmann::json g_last_pushed_cli_version_manager_fingerprint;
 	nlohmann::json g_last_pushed_shell_actions_fingerprint;
+	nlohmann::json g_last_pushed_compute_pool_usage_fingerprint;
+	nlohmann::json g_last_pushed_pr_watches_fingerprint;
 	std::string g_last_pushed_shell_action_notification;
 	std::string g_last_pushed_status_line;
 	std::string g_last_pushed_selected_chat_id;
 	nlohmann::json g_last_pushed_chat_order_fingerprint;
 	// Digest of each chat's compact summary at its last push; a poll tick builds JSON only for chats whose digest moved.
 	std::unordered_map<std::string, std::uint64_t> g_last_pushed_chat_digests_by_chat_id;
+	// Pushes reuse values by revision stamp (see StateSerializer::StampedCacheMode). A push that starts at least
+	// this long after the last verifying one recomputes them instead, so a write that bypassed a stamp reaches the
+	// frontend with a [desync] log line instead of never: the poll loop wakes when the interval ends, and the
+	// reconciling push can then wait out one 100 ms rebuild window, so about 3.1 s after the push that missed it.
+	constexpr std::chrono::seconds kStateReconciliationInterval{3};
+	std::chrono::steady_clock::time_point g_last_state_reconciliation_at{};
+	// A push since then trusted a stamp; the poll loop runs one more push when the interval ends even if nothing reports a change.
+	bool g_state_reconciliation_pending = false;
+	// Tests: after every push, recompute everything the stamps vouch for and count differences.
+	bool g_verify_state_caches_after_every_push = false;
+
+	/// <summary>A clock that moved backwards (stepped test clocks) counts as elapsed, so verification is never postponed by it.</summary>
+	bool ReconciliationIntervalElapsed(std::chrono::steady_clock::time_point now)
+	{
+		return now < g_last_state_reconciliation_at || now - g_last_state_reconciliation_at >= kStateReconciliationInterval;
+	}
+
+	/// <summary>Shows in the log whether non-const reads are defeating the transcript stamps, at most once a minute.</summary>
+	void ReportRestampedTranscripts()
+	{
+		static std::size_t reported = 0;
+		static auto last_report = std::chrono::steady_clock::time_point::min();
+		const std::size_t transcripts = uam::StateSerializer::RestampedUnchangedTranscriptCount();
+		const std::size_t tool_calls = uam::StateSerializer::RestampedUnchangedToolCallCount();
+		const std::size_t total = transcripts + tool_calls;
+		const auto now = std::chrono::steady_clock::now();
+		if (total == reported || (last_report != std::chrono::steady_clock::time_point::min() && now - last_report < std::chrono::seconds(60))) return;
+		uam::diagnostics::Write("[performance] State pushes recomputed " + std::to_string(total - reported) +
+		    " stamped value(s) whose content had not changed since the last report: a non-const read restamped them. Totals: loaded transcripts rehashed " +
+		    std::to_string(transcripts) + ", live tool call lists rebuilt " + std::to_string(tool_calls) + ".");
+		reported = total;
+		last_report = now;
+	}
+
+	/// <summary>Chooses whether this push verifies or trusts stamped values, and records what it did.</summary>
+	class ReconciledPush
+	{
+	  public:
+		ReconciledPush()
+		    : m_now(g_state_push_clock()), m_verify(ReconciliationIntervalElapsed(m_now)),
+		      m_mode(m_verify ? uam::StateSerializer::StampedCacheMode::Verify : uam::StateSerializer::StampedCacheMode::Trust),
+		      m_trusted_before(uam::StateSerializer::TrustedCacheReadCount())
+		{
+		}
+		~ReconciledPush()
+		{
+			if (m_verify)
+			{
+				g_last_state_reconciliation_at = m_now;
+				g_state_reconciliation_pending = false;
+				uam::StateSerializer::FlushCacheDivergenceReport();
+			}
+			else if (uam::StateSerializer::TrustedCacheReadCount() != m_trusted_before) g_state_reconciliation_pending = true;
+			ReportRestampedTranscripts();
+		}
+
+	  private:
+		std::chrono::steady_clock::time_point m_now;
+		bool m_verify;
+		uam::StateSerializer::ScopedStampedCacheMode m_mode;
+		std::size_t m_trusted_before;
+	};
+
+	void VerifyStateCachesForTests(const uam::AppState& app)
+	{
+		if (!g_verify_state_caches_after_every_push) return;
+		const uam::StateSerializer::ScopedStampedCacheMode verification(uam::StateSerializer::StampedCacheMode::Verify);
+		const uam::StateSerializer::StablePass stable_pass;
+		uam::StateSerializer::CaptureCatalogInputs(app);
+		(void)uam::StateSerializer::SerializeFingerprint(app, true, false);
+		(void)uam::StateSerializer::SerializeChatFingerprintDigests(app);
+	}
+
 	// Tests observe every built statePatch message; nullptr in production.
 	void (*g_state_patch_observer)(const std::string& message) = nullptr;
 
@@ -88,7 +168,20 @@ namespace
 		if (!frame)
 			return;
 
-		const std::string js = "window.uamPush && window.uamPush(" + json + ");";
+		// Last stop before the page: any registered secret still in the payload is replaced.
+		std::string scrubbed;
+		if (uam::secrets::Active())
+		{
+			scrubbed = json;
+			// A raw match can sit inside a number or eat an escape; then scrub the string values and serialize again.
+			if (uam::secrets::ScrubInPlace(scrubbed) && !nlohmann::json::accept(scrubbed))
+			{
+				nlohmann::json value = nlohmann::json::parse(json, nullptr, false);
+				(void)uam::secrets::ScrubJsonStrings(value);
+				scrubbed = value.is_discarded() ? std::string("null") : DumpFrontendJson(value);
+			}
+		}
+		const std::string js = "window.uamPush && window.uamPush(" + (scrubbed.empty() ? json : scrubbed) + ");";
 		frame->ExecuteJavaScript(js, frame->GetURL(), 0);
 	}
 
@@ -116,11 +209,15 @@ namespace
 		g_last_pushed_resource_collections_fingerprint = fingerprint_state.at("resourceCollections");
 		g_last_pushed_providers_fingerprint = fingerprint_state.at("providers");
 		g_last_pushed_provider_model_catalogs_fingerprint = fingerprint_state.at("providerModelCatalogs");
+		// The serializer may omit the slice only relative to a baseline it saw compared; this one came from elsewhere.
+		uam::StateSerializer::ForgetCatalogMemo();
 		g_last_pushed_startup_native_imports_fingerprint = fingerprint_state.at("startupNativeImports");
 		g_last_pushed_settings_fingerprint = SerializeSettingsForPatch(app);
 		g_last_pushed_memory_fingerprint = fingerprint_state.at("memoryActivity");
 		g_last_pushed_cli_version_manager_fingerprint = fingerprint_state.at("cliVersionManager");
 		g_last_pushed_shell_actions_fingerprint = fingerprint_state.at("shellActions");
+		g_last_pushed_compute_pool_usage_fingerprint = fingerprint_state.at("computePoolUsage");
+		g_last_pushed_pr_watches_fingerprint = fingerprint_state.at("prWatches");
 		g_last_pushed_shell_action_notification = uam::nlohmann_json::TrimmedStringValue(fingerprint_state, {"shellActionNotification"});
 		g_last_pushed_status_line = fingerprint_state.value("statusLine", std::string{});
 		g_last_pushed_selected_chat_id = ChatDomainService().SelectedChatId(app);
@@ -165,19 +262,26 @@ namespace
 		return msg;
 	}
 
+	/// <summary>Reports slow patches and large patches in every build, each at most once per five seconds.</summary>
 	void MaybeLogLargePatch(const std::string& message, int changed_chat_count, std::chrono::steady_clock::duration elapsed)
 	{
-#ifndef NDEBUG
 		const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
-		if (elapsed_ms > kStatePatchSlowSerializationMs || message.size() > kStatePatchLargeMessageBytes)
+		const auto now = std::chrono::steady_clock::now();
+		const auto due = [now](std::chrono::steady_clock::time_point& last_report)
 		{
-			uam::diagnostics::Write("[UAM] statePatch serialization took " + std::to_string(elapsed_ms) + "ms, bytes=" + std::to_string(message.size()) + ", changedChats=" + std::to_string(changed_chat_count));
-		}
-#else
-		(void)message;
-		(void)changed_chat_count;
-		(void)elapsed;
-#endif
+			if (last_report != std::chrono::steady_clock::time_point::min() && now - last_report < std::chrono::seconds(5)) return false;
+			last_report = now;
+			return true;
+		};
+		const std::string detail = "bytes=" + std::to_string(message.size()) + ", changedChats=" + std::to_string(changed_chat_count);
+		// Separate limits: a large but fast patch must not hide a slow one, nor be reported as slow.
+		static auto last_slow_report = std::chrono::steady_clock::time_point::min();
+		static auto last_large_report = std::chrono::steady_clock::time_point::min();
+		// A patch that is both slow and large falls through to the large line while the slow line is rate-limited.
+		if (elapsed_ms > kStatePatchSlowSerializationMs && due(last_slow_report))
+			uam::diagnostics::Write("[performance] statePatch serialization took " + std::to_string(elapsed_ms) + " ms, " + detail);
+		else if (message.size() > kStatePatchLargeMessageBytes && due(last_large_report))
+			uam::diagnostics::Write("[performance] statePatch is large: " + detail + ", built in " + std::to_string(elapsed_ms) + " ms");
 	}
 
 	// Structural comparison: dumping these slices (folder icons carry PNG data URLs) cost milliseconds per tick.
@@ -349,7 +453,9 @@ namespace
 
 		AddChangedJsonField(data, "providers", fingerprint_state.at("providers"), g_last_pushed_providers_fingerprint);
 
-		AddChangedJsonField(data, "providerModelCatalogs", fingerprint_state.at("providerModelCatalogs"), g_last_pushed_provider_model_catalogs_fingerprint);
+		// Absent when the serializer vouches that the catalogue inputs are unchanged since the slice was last compared here.
+		if (const nlohmann::json::const_iterator catalogs = fingerprint_state.find("providerModelCatalogs"); catalogs != fingerprint_state.end())
+			AddChangedJsonField(data, "providerModelCatalogs", *catalogs, g_last_pushed_provider_model_catalogs_fingerprint);
 		AddChangedJsonField(data, "startupNativeImports", fingerprint_state.at("startupNativeImports"), g_last_pushed_startup_native_imports_fingerprint);
 
 		const nlohmann::json settings = SerializeSettingsForPatch(app);
@@ -360,6 +466,8 @@ namespace
 		AddChangedJsonField(data, "cliVersionManager", fingerprint_state.at("cliVersionManager"), g_last_pushed_cli_version_manager_fingerprint);
 
 		AddChangedJsonField(data, "shellActions", fingerprint_state.at("shellActions"), g_last_pushed_shell_actions_fingerprint);
+		AddChangedJsonField(data, "computePoolUsage", fingerprint_state.at("computePoolUsage"), g_last_pushed_compute_pool_usage_fingerprint);
+		AddChangedJsonField(data, "prWatches", fingerprint_state.at("prWatches"), g_last_pushed_pr_watches_fingerprint);
 
 		const std::string shell_notification = uam::nlohmann_json::TrimmedStringValue(fingerprint_state, {"shellActionNotification"});
 		if (shell_notification != g_last_pushed_shell_action_notification)
@@ -487,7 +595,14 @@ namespace uam
 
 	int CapPollDelayForDeferredStatePush(int delay_ms)
 	{
-		return HasDeferredStatePush() ? std::min(delay_ms, MillisecondsUntilDeferredStatePushDue()) : delay_ms;
+		if (HasDeferredStatePush()) delay_ms = std::min(delay_ms, MillisecondsUntilDeferredStatePushDue());
+		// The reconciliation bound holds only if the poll loop wakes for it instead of on its idle interval.
+		if (g_state_reconciliation_pending)
+		{
+			const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(g_last_state_reconciliation_at + kStateReconciliationInterval - g_state_push_clock()).count();
+			delay_ms = std::min(delay_ms, remaining < 1 ? 1 : static_cast<int>(std::min<long long>(remaining, kStateReconciliationInterval / std::chrono::milliseconds(1))));
+		}
+		return delay_ms;
 	}
 
 	void SetStatePushClockForTests(std::chrono::steady_clock::time_point (*clock)())
@@ -500,8 +615,31 @@ namespace uam
 		return g_state_push_deferred && g_state_push_clock() >= g_deferred_state_push_due_at;
 	}
 
+	bool StateReconciliationDue()
+	{
+		return g_state_reconciliation_pending && ReconciliationIntervalElapsed(g_state_push_clock());
+	}
+
+	void SetStateCacheVerificationAfterEveryPushForTests(bool verify)
+	{
+		g_verify_state_caches_after_every_push = verify;
+	}
+
+	static bool PushStateUpdateIfChangedOnce(CefRefPtr<CefBrowser> browser, AppState& app);
+
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app)
 	{
+		const bool pushed = PushStateUpdateIfChangedOnce(browser, app);
+		VerifyStateCachesForTests(app);
+		return pushed;
+	}
+
+	static bool PushStateUpdateIfChangedOnce(CefRefPtr<CefBrowser> browser, AppState& app)
+	{
+		const ReconciledPush reconciled_push;
+		// The slices, the digest scan and the summaries built for changed chats read the same unchanged state.
+		const uam::StateSerializer::StablePass stable_pass;
+		uam::StateSerializer::CaptureCatalogInputs(app);
 		const auto fingerprint_started = std::chrono::steady_clock::now();
 		nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app, true, false);
 		const auto fingerprint_finished = std::chrono::steady_clock::now();
@@ -580,24 +718,79 @@ namespace uam
 	void PushStateUpdate(CefRefPtr<CefBrowser> browser, AppState& app)
 	{
 		BumpStateRevision(app);
-		nlohmann::json message = BuildFullStateUpdateMessage(app);
-		const std::string serialized_message = DumpFrontendJson(message);
-		// Reuse this push snapshot; strip baseline telemetry only after serializing its wire payload.
-		ResetPatchBaselines(app, std::move(message["data"]));
-		PostPush(browser, serialized_message);
+		{
+			const ReconciledPush reconciled_push;
+			// The full state and the digest baselines taken from it read the same unchanged state.
+			const uam::StateSerializer::StablePass stable_pass;
+			uam::StateSerializer::CaptureCatalogInputs(app);
+			nlohmann::json message = BuildFullStateUpdateMessage(app);
+			const std::string serialized_message = DumpFrontendJson(message);
+			// Reuse this push snapshot; strip baseline telemetry only after serializing its wire payload.
+			ResetPatchBaselines(app, std::move(message["data"]));
+			PostPush(browser, serialized_message);
+		}
+		VerifyStateCachesForTests(app);
+	}
+
+	namespace
+	{
+		/// Streamed tokens can split a secret; each stream holds back a possible secret prefix until it resolves.
+		struct SecretStream
+		{
+			uam::secrets::StreamFilter filter;
+			int message_index = 0;
+		};
+		std::mutex g_secret_streams_mutex;
+		std::unordered_map<std::string, SecretStream> g_secret_streams;
+
+		void PostStreamToken(CefRefPtr<CefBrowser> browser, const std::string& chat_id, int message_index, const std::string& token)
+		{
+			nlohmann::json msg = PushMessage(kPushTypeStreamToken);
+			msg["chatId"] = chat_id;
+			msg["token"] = token;
+			msg["messageIndex"] = message_index;
+			PostPush(browser, DumpFrontendJson(msg));
+		}
 	}
 
 	void PushStreamToken(CefRefPtr<CefBrowser> browser, const std::string& chat_id, int message_index, const std::string& token)
 	{
-		nlohmann::json msg = PushMessage(kPushTypeStreamToken);
-		msg["chatId"] = chat_id;
-		msg["token"] = token;
-		msg["messageIndex"] = message_index;
-		PostPush(browser, DumpFrontendJson(msg));
+		if (!uam::secrets::Active())
+		{
+			PostStreamToken(browser, chat_id, message_index, token);
+			return;
+		}
+		std::string safe;
+		std::string previous;
+		int previous_index = 0;
+		{
+			std::lock_guard lock(g_secret_streams_mutex);
+			SecretStream& stream = g_secret_streams[chat_id];
+			if (stream.message_index != message_index)
+			{
+				previous = stream.filter.Flush();
+				previous_index = stream.message_index;
+			}
+			stream.message_index = message_index;
+			safe = stream.filter.Push(token);
+		}
+		if (!previous.empty()) PostStreamToken(browser, chat_id, previous_index, previous);
+		if (!safe.empty()) PostStreamToken(browser, chat_id, message_index, safe);
 	}
 
 	void PushStreamDone(CefRefPtr<CefBrowser> browser, const std::string& chat_id)
 	{
+		std::optional<SecretStream> held;
+		{
+			std::lock_guard lock(g_secret_streams_mutex);
+			if (const auto found = g_secret_streams.find(chat_id); found != g_secret_streams.end())
+			{
+				held = std::move(found->second);
+				g_secret_streams.erase(found);
+			}
+		}
+		if (held.has_value())
+			if (const std::string rest = held->filter.Flush(); !rest.empty()) PostStreamToken(browser, chat_id, held->message_index, rest);
 		nlohmann::json msg = PushMessage(kPushTypeStreamDone);
 		msg["chatId"] = chat_id;
 		PostPush(browser, DumpFrontendJson(msg));
@@ -611,6 +804,23 @@ namespace uam
 		msg["terminalId"] = terminal_id;
 		msg["startupTime"] = startup_time_s;
 		msg["data"] = uam::base64::Encode(raw_bytes);
+		PostPush(browser, DumpFrontendJson(msg));
+	}
+
+	void PushAttachmentProgress(CefRefPtr<CefBrowser> browser, const std::string& chat_id, const std::string& attachment_id, const std::uintmax_t copied_bytes, const std::uintmax_t total_bytes)
+	{
+		nlohmann::json msg = PushMessage(kPushTypeAttachmentProgress);
+		msg["chatId"] = chat_id;
+		msg["attachmentId"] = attachment_id;
+		msg["copiedBytes"] = copied_bytes;
+		msg["totalBytes"] = total_bytes;
+		PostPush(browser, DumpFrontendJson(msg));
+	}
+
+	void PushCompanionConfirmations(CefRefPtr<CefBrowser> browser, const nlohmann::json& items)
+	{
+		nlohmann::json msg = PushMessage(kPushTypeCompanionConfirmations);
+		msg["items"] = items;
 		PostPush(browser, DumpFrontendJson(msg));
 	}
 

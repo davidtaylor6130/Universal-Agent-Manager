@@ -13,9 +13,12 @@
 #include <vector>
 
 namespace uam::io { enum class AtomicWriteStage; }
+namespace uam::secrets { struct DropResult; }
 
 namespace uam
 {
+	struct SecretDeliveryTarget;
+
 	class UamControlService
 	{
 	  public:
@@ -47,14 +50,29 @@ namespace uam
 		                            const std::map<std::string, std::vector<std::string>>& answers,
 		                            std::string* error_out = nullptr);
 
+		/// secret_request: claims the pending card for one delivery and says where the read-once drop goes.
+		static bool BeginSecretDelivery(AppState& app, std::string_view chat_id, std::string_view request_id,
+		                                SecretDeliveryTarget& target, std::string* error_out = nullptr);
+		/// The saved-secret account name for a pending secret card (no value).
+		static std::optional<std::string> SecretKeychainAccount(const AppState& app, std::string_view chat_id, std::string_view request_id);
+		/// Replies to the agent with the drop's path only; a failed drop keeps the card open for Retry.
+		static bool FinishSecretDelivery(AppState& app, std::string_view chat_id, std::string_view request_id,
+		                                 const secrets::DropResult& drop, std::string* error_out = nullptr);
+
 		// Pure entry point retained for focused authority and restart tests.
 		static nlohmann::json HandleRequestForTests(AppState& app, const std::string& capability_id,
 		                                            const nlohmann::json& request,
 		                                            int64_t now_epoch_ms);
+		/// <summary>Adds the session signature a capability's MCP server attaches to each filed request.</summary>
+		static nlohmann::json SignRequestForTests(const nlohmann::json& request, std::string_view key);
 		static bool ValidStdioToolCallForTests(const nlohmann::json& request);
-		static nlohmann::json ToolDefinitionsForTests();
+		static nlohmann::json ToolDefinitionsForTests(std::string_view hidden = {});
+		/// <summary>The comma-separated hidden-tool list a prepared uam-control server entry carries.</summary>
+		static std::string HiddenToolsForTests(const nlohmann::json& server);
 		/// <summary>Sends a chat_create first prompt; production uses the ordinary structured send.</summary>
 		using ChatCreateSender = std::function<bool(AppState&, const std::string&, const std::string&, std::string*)>;
 		static void FlushChatCreateLaunchesForTests(AppState& app, const ChatCreateSender& send);
+		/// <summary>Why a new chat could not get its own worktree; empty when it can.</summary>
+		static std::string ChatWorktreeIsolationRefusal(const AppState& app, const ChatSession& chat);
 	};
 } // namespace uam

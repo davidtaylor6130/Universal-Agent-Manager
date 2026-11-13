@@ -4,6 +4,7 @@
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/provider/provider_runtime.h"
+#include "common/security/read_only_command.h"
 #include <functional>
 #include <limits>
 #include <source_location>
@@ -889,7 +890,7 @@ UAM_TEST(GoalServiceRejectsBlankObjectivesAndUpdatesOnlyEditableUamGoals)
 	UAM_ASSERT_EQ(error, std::string("Only non-complete UAM-managed goals can be edited."));
 }
 
-UAM_TEST(GoalServiceUsesTheNormalChatModelWhenArchitectModeIsOff)
+UAM_TEST(GoalServiceReviewsWithTheGoalReviewerModelInEveryMode)
 {
 	ChatSession chat;
 	chat.model_id = "normal-model";
@@ -897,11 +898,69 @@ UAM_TEST(GoalServiceUsesTheNormalChatModelWhenArchitectModeIsOff)
 	goal.worker_model_id = "fast-worker";
 	goal.reviewer_model_id = "smart-reviewer";
 
+	// The worker uses the chat model unless Architect + worker is on; the reviewer model always applies.
 	UAM_ASSERT_EQ(uam::GoalService::WorkerModelId(chat, goal), std::string("normal-model"));
-	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal), std::string("normal-model"));
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal), std::string("smart-reviewer"));
 	chat.small_model_mode = true;
 	UAM_ASSERT_EQ(uam::GoalService::WorkerModelId(chat, goal), std::string("fast-worker"));
 	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal), std::string("smart-reviewer"));
+	chat.small_model_mode = false;
+	goal.reviewer_model_id.clear();
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal), std::string("normal-model"));
+}
+
+UAM_TEST(GoalReviewerModelFallsBackToTheChatModelWhenTheSessionDoesNotOfferIt)
+{
+	ChatSession chat;
+	chat.model_id = "opus";
+	Goal goal;
+	goal.reviewer_model_id = "haiku";
+	uam::AcpSessionState session;
+	// No advertised model list: the configured reviewer is used as-is.
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal, &session), std::string("haiku"));
+	uam::AcpConfigOptionState option;
+	option.id = "model";
+	option.category = "model";
+	uam::AcpConfigOptionChoiceState choice;
+	choice.value = "opus";
+	option.choices.push_back(choice);
+	session.available_config_options.push_back(option);
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal, &session), std::string("opus"));
+	choice.value = "haiku";
+	session.available_config_options.front().choices.push_back(choice);
+	UAM_ASSERT_EQ(uam::GoalService::ReviewerModelId(chat, goal, &session), std::string("haiku"));
+}
+
+UAM_TEST(GoalReviewPromptCarriesCappedWorkspaceChangesAndAcceptedGitReads)
+{
+	std::vector<std::tuple<std::string, std::string, int, int>> files;
+	for (int index = 0; index < 200; ++index) files.emplace_back("src/file_" + std::to_string(index) + ".cpp", "M", index, 1);
+	const std::string summary = uam::GoalService::SummarizeWorkspaceChanges(files);
+	UAM_ASSERT(summary.size() <= 2048 + 64);
+	UAM_ASSERT(summary.find("M src/file_0.cpp +0 -1\n") != std::string::npos);
+	UAM_ASSERT(uam::GoalService::SummarizeWorkspaceChanges({{"a.txt", "A", 0, 0}}) == "A a.txt\n"); // no counts without line stats
+	UAM_ASSERT(summary.find("more changed files") != std::string::npos);
+	UAM_ASSERT(uam::GoalService::SummarizeWorkspaceChanges({}).empty());
+	Goal goal;
+	goal.objective = "Add the parser.";
+	const std::string review = uam::GoalService::BuildReviewPrompt(goal, goal.objective, "Done.", 0, false, summary);
+	UAM_ASSERT(review.find("<workspaceChanges>\nM src/file_0.cpp") != std::string::npos);
+	UAM_ASSERT(uam::GoalService::BuildReviewPrompt(goal, goal.objective, "Done.").find("<workspaceChanges>") == std::string::npos);
+	// The commands the prompt names pass the reviewer's read-only ceiling; compound forms do not.
+	// Every command the prompt names passes the reviewer's read-only ceiling exactly as written; compound or
+	// unsafe forms do not.
+	const uam::command_safety::ReadScope scope{.workspace = fs::temp_directory_path() / "uam-goal-review-scope", .resolve_executables = false};
+	const auto read = [&](std::string_view command) { return uam::command_safety::IsReadOnlyCommand(command, scope); };
+	for (const std::string command : {"git status --short --ignore-submodules", "git diff --no-ext-diff --no-textconv"})
+	{
+		UAM_ASSERT(review.find("`" + command + "`") != std::string::npos);
+		UAM_ASSERT(read(command));
+	}
+	UAM_ASSERT(read("git diff --no-ext-diff --no-textconv --stat"));
+	UAM_ASSERT(read("git diff --no-ext-diff --no-textconv -- src/parser.cpp"));
+	for (const std::string_view refused : {"git status --short", "git diff", "git status --short --ignore-submodules; git diff --no-ext-diff --no-textconv",
+	         "git status --short --ignore-submodules && git diff --no-ext-diff --no-textconv", "git diff --no-ext-diff --no-textconv | head"})
+		UAM_ASSERT(!read(refused));
 }
 
 UAM_TEST(GoalServiceMaintainsOnlyOneActiveGoalPerChat)
@@ -2001,6 +2060,65 @@ UAM_TEST(AcpGoalIterationsUsePrivateContextsInOwnerChat)
 	UAM_ASSERT_EQ(session->goal_turn_kind, std::string("worker_continuation"));
 	UAM_ASSERT_EQ(session->queued_prompt, std::string("Implement the final bounded step."));
 	(void)uam::StopAcpSession(app, root.id);
+}
+
+UAM_TEST(AcpGoalWorkerTurnChargesProviderReportedUsageAndLabelsTheEstimateFallback)
+{
+	// Worker turns were charged only as visible text / 4 while reviews used provider usage, so budgets stopped ~3x late.
+	for (const bool reported : {true, false})
+	{
+		TempDir temp("uam-goal-worker-usage");
+		ScopedEnvVar scoped_path("PATH", InstallSilentGoalProviderShims(temp));
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession owner;
+		owner.id = "goal-owner";
+		owner.provider_id = "gemini-cli";
+		Goal goal;
+		goal.id = "goal-worker-usage";
+		goal.objective = "Count the worker's real usage.";
+		goal.status = GoalStatus::Active;
+		owner.active_goal_id = goal.id;
+		owner.goals.push_back(goal);
+		app.chats.push_back(std::move(owner));
+		ChatSession iteration;
+		iteration.id = "worker-iteration";
+		iteration.provider_id = "gemini-cli";
+		iteration.goal_owner_chat_id = "goal-owner";
+		iteration.goal_iteration_goal_id = goal.id;
+		iteration.goal_iteration_turn_kind = "worker_continuation";
+		iteration.messages.push_back({MessageRole::User, "Implement one step."});
+		iteration.messages.push_back({MessageRole::Assistant, "Implemented one step."});
+		app.chats.push_back(std::move(iteration));
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = "worker-iteration";
+		session->provider_id = "gemini-cli";
+		session->session_id = "native-worker";
+		session->turn_serial = 3;
+		session->turn_user_message_index = 0;
+		session->turn_assistant_message_index = 1;
+		uam::AcpSessionState* raw_session = session.get();
+		app.acp_sessions.push_back(std::move(session));
+		raw_session->processing = true;
+		uam::acp_detail::BeginGoalReviewUsage(*raw_session, false);
+		if (reported) uam::acp_detail::RecordGoalReviewTurnUsage(*raw_session, 46000);
+		raw_session->processing = false;
+		uam::acp_detail::ScheduleGoalReviewAfterSuccessfulTurn(app, *raw_session, app.chats.back(), nullptr);
+		const std::int64_t estimate = std::string("Implement one step.").size() / 4 + std::string("Implemented one step.").size() / 4;
+		UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, reported ? std::int64_t{46000} : estimate);
+		UAM_ASSERT_EQ(std::ranges::any_of(raw_session->diagnostics, [](const auto& diagnostic) { return diagnostic.reason == "goal_worker_usage_estimated"; }), !reported);
+		// The next worker turn, queued by the review, opens its own receipt so its provider usage is charged too.
+		raw_session->processing = false;
+		raw_session->queued_prompt.clear();
+		app.chats.back().messages.push_back({MessageRole::Assistant,
+		    R"({"decision":"continue","reason":"One step remains.","nextPrompt":"Implement the final step.","progressUpdate":{"remaining":["Implement the final step."],"currentStep":"Implement the final step."}})"});
+		raw_session->turn_assistant_message_index = 2;
+		UAM_ASSERT(uam::acp_detail::HandleGoalReviewCompletion(app, *raw_session, app.chats.back(), nullptr));
+		UAM_ASSERT_EQ(raw_session->goal_turn_kind, std::string("worker_continuation"));
+		UAM_ASSERT_EQ(raw_session->goal_review_usage.turn_serial, raw_session->turn_serial);
+		UAM_ASSERT(!raw_session->goal_review_usage.consumed);
+		(void)uam::StopAcpSession(app, "worker-iteration");
+	}
 }
 
 UAM_TEST(AcpLegacyGoalIterationSwapsReviewerAndWorkerModelsFromOwner)

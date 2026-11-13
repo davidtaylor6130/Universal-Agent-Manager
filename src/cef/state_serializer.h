@@ -28,9 +28,85 @@ struct StartupNativeImportSnapshot;
 class StateSerializer
 {
   public:
+	/// <summary>
+	/// While one is alive on this thread, serializations share catalog snapshots and workspace roots instead of
+	/// recomputing them per call. AppState must not change during its lifetime.
+	/// </summary>
+	class StablePass
+	{
+	  public:
+		StablePass() : m_owner(BeginStablePass()) {}
+		~StablePass() { if (m_owner) EndStablePass(); }
+		StablePass(const StablePass&) = delete;
+		StablePass& operator=(const StablePass&) = delete;
+
+	  private:
+		bool m_owner;
+	};
+
+	/// <summary>Transcript messages hashed on this thread so far, so tests can bound the hashing one push performs.</summary>
+	static std::size_t HashedTranscriptMessageCountForTests();
+
+	/// <summary>
+	/// How serializations on this thread treat values cached by revision stamp (a loaded transcript digest).
+	/// Exact, the default, computes from the source and stores nothing: a digest stored outside a push could be
+	/// pinned by a later write through a reference taken before it was computed, with no Verify pass owed for it.
+	/// Trust reuses a value whose stamp is unchanged; only state pushes do, because only they are followed by a Verify pass. Verify recomputes every value Trust would
+	/// have reused; a difference is repaired, counted and logged. That is the full reconciliation behind the stamps.
+	/// </summary>
+	enum class StampedCacheMode { Exact, Trust, Verify };
+
+	class ScopedStampedCacheMode
+	{
+	  public:
+		explicit ScopedStampedCacheMode(StampedCacheMode mode) : m_previous(SetStampedCacheMode(mode)) {}
+		~ScopedStampedCacheMode() { SetStampedCacheMode(m_previous); }
+		ScopedStampedCacheMode(const ScopedStampedCacheMode&) = delete;
+		ScopedStampedCacheMode& operator=(const ScopedStampedCacheMode&) = delete;
+
+	  private:
+		StampedCacheMode m_previous;
+	};
+
+	/// <summary>Values reused by revision stamp on this thread so far without recomputing them.</summary>
+	static std::size_t TrustedCacheReadCount();
+
+	/// <summary>Times a live session's tool calls were serialized from the session on this thread so far.</summary>
+	static std::size_t LiveToolCallSerializationCountForTests();
+
+	/// <summary>Times the providerModelCatalogs slice was built on this thread so far.</summary>
+	static std::size_t CatalogSliceBuildCountForTests();
+
+	/// <summary>Drops the catalogue values pushes reuse; call when the pushed baselines are replaced, so the next push compares the slice again.</summary>
+	static void ForgetCatalogMemo();
+
+	/// <summary>Reused values verifying passes found different from their source so far, on any thread.</summary>
+	static std::size_t CacheDivergenceCount();
+
+	/// <summary>Writes one [desync] line naming up to five values the verifying pass on this thread repaired, if any.</summary>
+	static void FlushCacheDivergenceReport();
+
+	/// <summary>
+	/// Loaded transcripts pushes on this thread rehashed although their content had not changed: something read
+	/// them through a non-const path, which restamps. A count that keeps rising means the stamps are being defeated.
+	/// </summary>
+	static std::size_t RestampedUnchangedTranscriptCount();
+
+	/// <summary>The same for live sessions' tool calls: rebuilt after a restamp although nothing in them had changed.</summary>
+	static std::size_t RestampedUnchangedToolCallCount();
+
+	/// <summary>
+	/// Reads the catalogue inputs (including the service generation) for the current StablePass now. A push calls
+	/// it before it serializes anything, so a catalogue value computed during the pass is never stored under a
+	/// generation read after a writer on another thread had already changed the service.
+	/// </summary>
+	static void CaptureCatalogInputs(const AppState& app);
+
 	/// Serialise the application state, optionally omitting loaded chat messages.
 	static nlohmann::json Serialize(const AppState& app, bool summary_only = false);
 
+	/// Inside a Trust push whose catalogue inputs are unchanged the "providerModelCatalogs" slice is omitted too:
+	/// it equals the slice the previous push compared with its baseline.
 	/// Serialise state summaries; compact catalogs are internal comparison tokens and need patch hydration.
 	/// Without include_chats the "chats" slice is omitted; poll-time diffs compare SerializeChatFingerprintDigests instead.
 	static nlohmann::json SerializeFingerprint(const AppState& app, bool compact_catalogs = false, bool include_chats = true);
@@ -99,6 +175,11 @@ class StateSerializer
 
 	/// Serialise a provider profile.
 	static nlohmann::json SerializeProvider(const ProviderProfile& profile);
+
+  private:
+	static bool BeginStablePass();
+	static void EndStablePass();
+	static StampedCacheMode SetStampedCacheMode(StampedCacheMode mode);
 };
 
 } // namespace uam

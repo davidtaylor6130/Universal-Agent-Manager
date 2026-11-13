@@ -3,6 +3,7 @@
 #include "common/platform/platform_services.h"
 #include "common/paths/path_utils.h"
 #include "common/utils/shell_escape.h"
+#include "common/vcs/git_command.h"
 #include "common/utils/string_utils.h"
 
 #include <algorithm>
@@ -34,8 +35,6 @@ namespace uam
 		if (!git_enabled && !svn_enabled) return context;
 
 		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-		const std::string path = uam::shell::EscapeArg(uam::paths::Utf8PathString(directory));
-		const std::string git = "git --no-optional-locks -C " + path + " ";
 		const std::function<bool(const std::string&, std::string&, const char*)> run = [&](const std::string& command, std::string& output, const char* svn_item)
 		{
 			const long long remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
@@ -48,7 +47,8 @@ namespace uam
 			output = uam::strings::Trim(result.output);
 			return true;
 		};
-		const auto read = [&](const std::string& command, std::string& output) { return run(command, output, nullptr); };
+		const auto read = [&](const std::string& git_arguments, std::string& output)
+		{ return run(uam::vcs::HardenedGitShellCommandInDirectory(directory, "--no-optional-locks " + git_arguments), output, nullptr); };
 		const auto svn = [&](const char* item, std::string& output) { return run({}, output, item); };
 		const std::function<bool(const std::string&)> valid_commit = [](const std::string& commit)
 		{
@@ -56,13 +56,13 @@ namespace uam
 			{ return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f'); });
 		};
 		std::string inside;
-		if (git_enabled && read(git + "rev-parse --is-inside-work-tree", inside) && inside == "true")
+		if (git_enabled && read("rev-parse --is-inside-work-tree", inside) && inside == "true")
 		{
 			context.vcs = "git";
 			std::string refs;
-			if (!read(git + "rev-parse --verify HEAD", context.current_commit) || !valid_commit(context.current_commit) ||
-			    !read(git + "branch --show-current", context.current_branch) ||
-			    !read(git + "for-each-ref --sort=-committerdate --format=" + uam::shell::EscapeArg("%(refname)%09%(objectname)%09%(objecttype)") + " refs/heads/", refs))
+			if (!read("rev-parse --verify HEAD", context.current_commit) || !valid_commit(context.current_commit) ||
+			    !read("branch --show-current", context.current_branch) ||
+			    !read("for-each-ref --sort=-committerdate --format=" + uam::shell::EscapeArg("%(refname)%09%(objectname)%09%(objecttype)") + " refs/heads/", refs))
 			{ context.error = "Could not read local Git branches."; return context; }
 			context.detached = context.current_branch.empty();
 			std::istringstream lines(refs);
@@ -81,7 +81,7 @@ namespace uam
 			}
 			std::string commit;
 			std::string branch;
-			if (!read(git + "rev-parse --verify HEAD", commit) || !read(git + "branch --show-current", branch) ||
+			if (!read("rev-parse --verify HEAD", commit) || !read("branch --show-current", branch) ||
 			    commit != context.current_commit || branch != context.current_branch)
 				context.error = "The repository changed while its context was loading.";
 			return context;

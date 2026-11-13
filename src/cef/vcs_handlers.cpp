@@ -7,11 +7,13 @@
 #include "app/git_worktree_service.h"
 #include "app/runtime_orchestration_services.h"
 #include "app/vcs_commit_service.h"
+#include "app/vcs_provider.h"
 #include "app/workspace_vcs_context_service.h"
 #include "app/worktree_launch_preparation_service.h"
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/execution_host_config.h"
+#include "common/utils/string_utils.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/paths/workspace_file_reader.h"
@@ -22,6 +24,7 @@
 #include "common/utils/time_utils.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <memory>
@@ -70,18 +73,31 @@ namespace
 		IMPLEMENT_REFCOUNTING(PendingWorktreeCreationTask);
 	};
 
-	std::shared_ptr<void> BeginRemoteVcsOperationLease(uam::AppState& app,
-	                                                   const std::string& host_id)
+	constexpr const char* kRemoteHelperSetupRunning = "This host's helper is being set up. Try again shortly.";
+
+	/// Queued remote Git work. Reads count as running on their host only while they run, so a queue behind an
+	/// unreachable host does not block helper setup; a commit counts from the moment it is queued. Work that
+	/// would start during helper setup is refused instead.
+	struct RemoteVcsQueuedWork
+	{
+		std::optional<uam::RemoteVcsActivity> activity;
+		std::shared_ptr<void> queued;
+		std::chrono::steady_clock::time_point queued_at = std::chrono::steady_clock::now();
+
+		/// False while helper setup has the host fenced.
+		bool Hold(std::shared_ptr<void>& lease) const
+		{
+			if (!activity) return true;
+			lease = activity->Hold();
+			return lease != nullptr;
+		}
+	};
+
+	RemoteVcsQueuedWork QueueRemoteVcsWork(uam::AppState& app, const std::string& host_id)
 	{
 		if (host_id.empty() || host_id == uam::execution_hosts::kLocalHostId) return {};
-		std::weak_ptr<void>& lease = app.remote_vcs_operation_leases_by_host_id[host_id];
-		std::shared_ptr<void> token = lease.lock();
-		if (!token)
-		{
-			token = std::make_shared<int>(0);
-			lease = token;
-		}
-		return token;
+		const uam::RemoteVcsActivity& activity = app.remote_vcs_operation_leases_by_host_id[host_id];
+		return {activity, activity.Queue()};
 	}
 
 	uam::AppState BuildReadOnlyAppSnapshot(std::filesystem::path data_root, AppSettings settings, std::vector<ChatFolder> folders, std::vector<ProviderProfile> provider_profiles, std::unordered_map<std::string, uam::CliProviderVersionState> provider_versions)
@@ -205,7 +221,8 @@ namespace
 		uam::AppState* live_app = &app;
 		app.worktree_operation_chat_ids.insert(chat_id);
 
-		RunAsyncCefQuery(std::move(lifetime),
+		// A query that could not be queued never runs its completion, so its gate entry is released here.
+		const bool queued = RunAsyncCefQuery(std::move(lifetime),
 		    callback,
 		    [snapshot_inputs = std::move(snapshot_inputs), state, chat_id, operation, failure_fallback = std::move(failure_fallback)]() mutable
 		    {
@@ -253,6 +270,7 @@ namespace
 			    ApplyWorktreeFields(*live_chat, *state);
 			    uam::PushStateUpdateIfChanged(browser, *live_app);
 		    });
+		if (!queued) app.worktree_operation_chat_ids.erase(chat_id);
 	}
 
 	nlohmann::json SerializeVcsCommitStatus(const uam::VcsCommitStatus& status)
@@ -288,7 +306,53 @@ namespace
 		json["warning"] = status.warning;
 		json["error"] = status.error;
 		json["baselineUnavailable"] = status.baseline_unavailable;
+		// What the active system offers beyond status, diff and commit, so the panel shows only actions that can run.
+		nlohmann::json capabilities = nlohmann::json::array();
+		if (status.available)
+			for (const uam::vcs::VcsCapability capability : uam::VcsProviderFor(status.active_vcs_type).Declaration().capabilities)
+				capabilities.push_back(uam::vcs::VcsCapabilityId(capability));
+		json["capabilities"] = std::move(capabilities);
 		return json;
+	}
+
+	nlohmann::json SerializeVcsHistoryPage(const uam::VcsHistoryPage& page)
+	{
+		nlohmann::json entries = nlohmann::json::array();
+		for (const uam::VcsHistoryEntry& entry : page.entries)
+		{
+			nlohmann::json paths = nlohmann::json::array();
+			for (const uam::VcsHistoryPath& path : entry.paths)
+				paths.push_back({{"action", path.action}, {"path", path.path}, {"kind", path.kind}, {"copyFromPath", path.copy_from_path}, {"copyFromRevision", path.copy_from_revision}});
+			entries.push_back({{"revision", entry.revision}, {"author", entry.author}, {"date", entry.date}, {"message", entry.message}, {"paths", std::move(paths)}, {"pathsOmitted", entry.paths_omitted}});
+		}
+		return {{"entries", std::move(entries)}, {"next", page.next}, {"workingRevision", page.working_revision}, {"location", page.location},
+		        {"repositoryRoot", page.repository_root}, {"repositoryUuid", page.repository_uuid}};
+	}
+
+	nlohmann::json SerializeVcsOriginReply(const uam::VcsOriginReply& reply)
+	{
+		return {{"branchPath", reply.branch_path}, {"originPath", reply.origin_path}, {"copyRevision", reply.copy_revision}, {"originRevision", reply.origin_revision},
+		        {"behindRevisions", reply.behind_revisions}, {"mergesRecorded", reply.merges_recorded}, {"behindFromLog", reply.behind_from_log},
+		        {"page", SerializeVcsHistoryPage(reply.page)}};
+	}
+
+	constexpr std::size_t kMaxVcsRequestsInFlight = 16;
+	constexpr std::size_t kMaxVcsRequestIdBytes = 160;
+
+	/// Local paths compare the way the controller's file system does; a remote host's paths are compared ignoring case only
+	/// on Windows hosts, whose separators also differ from a POSIX controller's.
+	bool WorkspacesOverlap(const uam::AppState& app, const ChatSession& chat, const std::filesystem::path& left, const std::filesystem::path& right)
+	{
+		bool case_insensitive = false;
+		if (uam::paths::IsControllerLocalWorkspace(chat))
+		{
+#if defined(_WIN32) || defined(__APPLE__)
+			case_insensitive = true;
+#endif
+		}
+		else if (const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id))
+			case_insensitive = uam::strings::TrimmedEqualsIgnoreCase(host->platform, "windows");
+		return uam::paths::DirectoriesOverlap(uam::paths::Utf8PathString(left), uam::paths::Utf8PathString(right), case_insensitive);
 	}
 
 	nlohmann::json SerializeVcsCommitResult(const uam::VcsCommitResult& result)
@@ -336,7 +400,7 @@ void UamQueryHandler::HandleGetChatWorktreeStatus(CefRefPtr<CefBrowser> /*browse
 
 	const std::string chat_id = chat->id;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	RunAsyncCefQuery(m_asyncLifetime,
+	RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime,
 	    cb,
 	    [snapshot_inputs = std::move(snapshot_inputs), chat_id]() mutable
 	    {
@@ -513,7 +577,7 @@ void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browse
 		request->worktree = expected->workspace_worktree_directory; request->branch = expected->workspace_branch_name; request->base = expected->workspace_base_ref;
 		m_app.git_port_requests[chat_id] = request;
 		m_app.worktree_operation_chat_ids.insert(chat_id);
-		if (!RunAsyncCefQuery(m_asyncLifetime, cb,
+		if (!RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb,
 		    [expected, root, settings, request]() mutable
 		    {
 			    if (request->handler_lifetime.expired()) request->cancellation->request_stop();
@@ -581,7 +645,7 @@ void UamQueryHandler::HandlePreviewChatTurnRollback(CefRefPtr<CefBrowser> /*brow
 	}
 	const std::string chat_id = chat->id;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	RunAsyncCefQuery(m_asyncLifetime, cb, [snapshot_inputs = std::move(snapshot_inputs), chat_id, message_index = *message_index]() mutable {
+	RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb, [snapshot_inputs = std::move(snapshot_inputs), chat_id, message_index = *message_index]() mutable {
 		uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		std::string warning;
 		std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(snapshot.data_root, chat_id, true, &warning);
@@ -627,7 +691,8 @@ void UamQueryHandler::HandleRollbackChatTurn(CefRefPtr<CefBrowser> browser, cons
 	const std::shared_ptr<std::optional<ChatSession>> persisted_after = std::make_shared<std::optional<ChatSession>>();
 	m_app.worktree_operation_chat_ids.insert(chat_id);
 	uam::AppState* live_app = &m_app;
-	RunAsyncCefQuery(m_asyncLifetime, cb,
+	// A query that could not be queued never runs its completion, so its gate entry is released below.
+	const bool queued = RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb,
 		[snapshot_inputs = std::move(snapshot_inputs), chat_id, index, rollback_snapshot, loaded_checkpoint_snapshot, result_state, persisted_after]() mutable {
 			uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 			std::string warning;
@@ -656,6 +721,7 @@ void UamQueryHandler::HandleRollbackChatTurn(CefRefPtr<CefBrowser> browser, cons
 			}
 			uam::PushStateUpdateIfChanged(browser, *live_app);
 		});
+	if (!queued) m_app.worktree_operation_chat_ids.erase(chat_id);
 }
 
 void UamQueryHandler::HandleCaptureChatRepositoryBaseline(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -673,7 +739,7 @@ void UamQueryHandler::HandleCaptureChatRepositoryBaseline(CefRefPtr<CefBrowser> 
 	const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
 	m_app.worktree_operation_chat_ids.insert(chat_id);
 	uam::AppState* live_app = &m_app;
-	if (!RunAsyncCefQuery(m_asyncLifetime, cb,
+	if (!RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb,
 	    [inputs = std::move(inputs), chat = chat_snapshot]() mutable
 	    {
 		    uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(inputs));
@@ -711,11 +777,14 @@ void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/
 	const std::optional<ExecutionHost> expected_host = host == nullptr ? std::nullopt : std::optional<ExecutionHost>(*host);
 	uam::AppState* live_app = &m_app;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
+	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
 
-	RunAsyncCefQuery(m_asyncLifetime, cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), requested_type, include_line_stats, request_id, comparison_ref, context_only, remote_vcs_lease]() mutable
+	RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), requested_type, include_line_stats, request_id, comparison_ref, context_only, remote_vcs]() mutable
 	                 {
+		                 std::shared_ptr<void> remote_vcs_lease;
+		                 if (!remote_vcs.Hold(remote_vcs_lease)) return AsyncFailure(409, kRemoteHelperSetupRunning);
+		                 const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		                 const uam::VcsCommitStatus status = uam::VcsCommitService().Status(snapshot, chat, requested_type, include_line_stats, comparison_ref, context_only);
 		                 return AsyncSuccess(WithOptionalRequestId(SerializeVcsCommitStatus(status), request_id));
@@ -761,10 +830,13 @@ void UamQueryHandler::HandleCaptureChatReferenceContext(CefRefPtr<CefBrowser> /*
 	const ExecutionHost expected_host = *host;
 	const std::filesystem::path data_root = m_app.data_root;
 	ReadOnlyAppSnapshotInputs inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	const std::shared_ptr<void> remote_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
-	RunAsyncCefQuery(m_asyncLifetime, cb,
-	    [inputs = std::move(inputs), captured, kind, slot = std::move(slot), remote_lease]() mutable
+	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
+	RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb,
+	    [inputs = std::move(inputs), captured, kind, slot = std::move(slot), remote_vcs]() mutable
 	    {
+		    std::shared_ptr<void> remote_vcs_lease;
+		    if (!remote_vcs.Hold(remote_vcs_lease)) return AsyncFailure(409, kRemoteHelperSetupRunning);
+		    const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
 		    const std::shared_ptr<void> active_slot = std::move(slot);
 		    uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(inputs));
 		    const uam::VcsCommitStatus status = uam::VcsCommitService().Status(snapshot, captured, uam::VcsType::Git, false, {}, true);
@@ -816,11 +888,11 @@ void UamQueryHandler::HandleGetWorkspaceFilePreview(CefRefPtr<CefBrowser> /*brow
 	const auto chat_incarnation = chat->metadata_incarnation;
 	const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, host_id);
 	const std::optional<ExecutionHost> expected_host = host == nullptr ? std::nullopt : std::optional<ExecutionHost>(*host);
-	if (host_id != "local" && (!expected_host || expected_host->transport != "ssh" || expected_host->runner_status != "ready"))
+	if (host_id != "local" && (!expected_host || !uam::remote::CanAttemptRunnerConnection(*expected_host)))
 	{ cb->Failure(503, "The chat's remote runner is unavailable. Recheck it in Settings."); return; }
 	const std::filesystem::path data_root = m_app.data_root;
 	++m_pendingFilePreviews;
-	if (!RunAsyncCefQuery(m_asyncLifetime, cb,
+	if (!RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb,
 	    [workspace, path, host_id, expected_host, chat_id = chat->id, chat_created_at]()
 	    {
 		    nlohmann::json preview;
@@ -872,11 +944,14 @@ void UamQueryHandler::HandleGetVcsFileDiff(CefRefPtr<CefBrowser> /*browser*/, co
 	const std::string comparison_ref(uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "comparisonRef"));
 	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
+	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
 
-	RunAsyncCefQuery(m_asyncLifetime, cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), path, type, request_id, comparison_ref, remote_vcs_lease]() mutable
+	RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), path, type, request_id, comparison_ref, remote_vcs]() mutable
 	                 {
+		                 std::shared_ptr<void> remote_vcs_lease;
+		                 if (!remote_vcs.Hold(remote_vcs_lease)) return AsyncFailure(409, kRemoteHelperSetupRunning);
+		                 const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		                 std::string error;
 		                 const std::string diff = uam::VcsCommitService().Diff(snapshot, chat, path, type, &error, comparison_ref);
@@ -886,6 +961,208 @@ void UamQueryHandler::HandleGetVcsFileDiff(CefRefPtr<CefBrowser> /*browser*/, co
 		                 }
 		                 return AsyncSuccess(WithOptionalRequestId(nlohmann::json{{"diff", diff}}, request_id));
 	                 });
+}
+
+void UamQueryHandler::HandleGetVcsHistory(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr) return;
+	const std::string request_id = payload.value("requestId", "");
+	if (request_id.size() > kMaxVcsRequestIdBytes || m_vcsRequestStops.contains(request_id)) { cb->Failure(400, "The repository request id is not usable."); return; }
+	if (m_vcsRequestStops.size() >= kMaxVcsRequestsInFlight) { cb->Failure(429, "Wait for another repository request to finish."); return; }
+	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
+	uam::VcsHistoryRequest request;
+	request.before = std::string(uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "before"));
+	request.search = std::string(uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "search"));
+	if (payload.contains("limit") && payload["limit"].is_number_integer()) request.limit = payload["limit"].get<int>();
+	if (request.search.size() > 256) { cb->Failure(400, "The history search is too long."); return; }
+	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
+	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
+	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
+	const std::shared_ptr<std::stop_source> stop = std::make_shared<std::stop_source>();
+	if (!request_id.empty()) m_vcsRequestStops[request_id] = stop;
+
+	if (!RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, request = std::move(request), request_id, remote_vcs, stop]() mutable
+	                 {
+		                 if (stop->stop_requested()) return AsyncFailure(499, "Canceled.");
+		                 std::shared_ptr<void> remote_vcs_lease;
+		                 if (!remote_vcs.Hold(remote_vcs_lease)) return AsyncFailure(409, kRemoteHelperSetupRunning);
+		                 const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
+		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
+		                 const uam::VcsHistoryPage page = uam::VcsCommitService().History(snapshot, chat, type, request, stop->get_token());
+		                 if (stop->stop_requested()) return AsyncFailure(499, "Canceled.");
+		                 if (!page.error.empty()) return AsyncFailure(400, page.error);
+		                 return AsyncSuccess(WithOptionalRequestId(SerializeVcsHistoryPage(page), request_id));
+	                 },
+	                 [this, request_id, stop](AsyncCefResult&)
+	                 {
+		                 const auto found = m_vcsRequestStops.find(request_id);
+		                 if (found != m_vcsRequestStops.end() && found->second == stop) m_vcsRequestStops.erase(found);
+	                 }))
+		m_vcsRequestStops.erase(request_id);
+}
+
+void UamQueryHandler::HandleGetVcsRevisionDiff(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr) return;
+	const std::string request_id = payload.value("requestId", "");
+	if (request_id.size() > kMaxVcsRequestIdBytes || m_vcsRequestStops.contains(request_id)) { cb->Failure(400, "The repository request id is not usable."); return; }
+	if (m_vcsRequestStops.size() >= kMaxVcsRequestsInFlight) { cb->Failure(429, "Wait for another repository request to finish."); return; }
+	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
+	const std::string revision(uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "revision"));
+	// Not trimmed: a repository path may end in a space.
+	const std::string path = payload.value("path", "");
+	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
+	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
+	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
+	const std::shared_ptr<std::stop_source> stop = std::make_shared<std::stop_source>();
+	if (!request_id.empty()) m_vcsRequestStops[request_id] = stop;
+
+	if (!RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, revision, path, request_id, remote_vcs, stop]() mutable
+	                 {
+		                 if (stop->stop_requested()) return AsyncFailure(499, "Canceled.");
+		                 std::shared_ptr<void> remote_vcs_lease;
+		                 if (!remote_vcs.Hold(remote_vcs_lease)) return AsyncFailure(409, kRemoteHelperSetupRunning);
+		                 const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
+		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
+		                 std::string error;
+		                 const std::string diff = uam::VcsCommitService().RevisionDiff(snapshot, chat, type, revision, path, &error, stop->get_token());
+		                 if (stop->stop_requested()) return AsyncFailure(499, "Canceled.");
+		                 if (!error.empty()) return AsyncFailure(400, error);
+		                 return AsyncSuccess(WithOptionalRequestId(nlohmann::json{{"diff", diff}}, request_id));
+	                 },
+	                 [this, request_id, stop](AsyncCefResult&)
+	                 {
+		                 const auto found = m_vcsRequestStops.find(request_id);
+		                 if (found != m_vcsRequestStops.end() && found->second == stop) m_vcsRequestStops.erase(found);
+	                 }))
+		m_vcsRequestStops.erase(request_id);
+}
+
+void UamQueryHandler::HandleGetVcsOrigin(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr) return;
+	const std::string request_id = payload.value("requestId", "");
+	if (request_id.size() > kMaxVcsRequestIdBytes || m_vcsRequestStops.contains(request_id)) { cb->Failure(400, "The repository request id is not usable."); return; }
+	if (m_vcsRequestStops.size() >= kMaxVcsRequestsInFlight) { cb->Failure(429, "Wait for another repository request to finish."); return; }
+	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
+	uam::VcsOriginRequest request;
+	request.view = std::string(uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "view"));
+	request.before = std::string(uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "before"));
+	if (payload.contains("limit") && payload["limit"].is_number_integer()) request.limit = payload["limit"].get<int>();
+	if (payload.contains("revisions"))
+	{
+		if (!payload["revisions"].is_array() || payload["revisions"].size() > 200) { cb->Failure(400, "Too many revisions were requested at once."); return; }
+		request.revisions = uam::nlohmann_json::TrimmedStringArrayField(payload, "revisions");
+	}
+	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
+	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
+	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
+	const std::shared_ptr<std::stop_source> stop = std::make_shared<std::stop_source>();
+	if (!request_id.empty()) m_vcsRequestStops[request_id] = stop;
+
+	if (!RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, request = std::move(request), request_id, remote_vcs, stop]() mutable
+	                 {
+		                 if (stop->stop_requested()) return AsyncFailure(499, "Canceled.");
+		                 std::shared_ptr<void> remote_vcs_lease;
+		                 if (!remote_vcs.Hold(remote_vcs_lease)) return AsyncFailure(409, kRemoteHelperSetupRunning);
+		                 const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
+		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
+		                 const uam::VcsOriginReply reply = uam::VcsCommitService().Origin(snapshot, chat, type, request, stop->get_token());
+		                 if (stop->stop_requested()) return AsyncFailure(499, "Canceled.");
+		                 if (!reply.error.empty()) return AsyncFailure(400, reply.error);
+		                 return AsyncSuccess(WithOptionalRequestId(SerializeVcsOriginReply(reply), request_id));
+	                 },
+	                 [this, request_id, stop](AsyncCefResult&)
+	                 {
+		                 const auto found = m_vcsRequestStops.find(request_id);
+		                 if (found != m_vcsRequestStops.end() && found->second == stop) m_vcsRequestStops.erase(found);
+	                 }))
+		m_vcsRequestStops.erase(request_id);
+}
+
+void UamQueryHandler::HandleUpdateVcsWorkspace(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr) return;
+	if (chat->imported_read_only) { cb->Failure(409, "This chat's workspace is read-only."); return; }
+	if (ChatRuntimeBusy(m_app, chat->id)) { cb->Failure(409, "Stop the active chat runtime before updating the working copy."); return; }
+	// An update rewrites files under every chat that shares this working copy, so none of them may be working in it.
+	const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
+	const bool local = uam::paths::IsControllerLocalWorkspace(*chat);
+	// Every chat sharing the working copy is fenced for the whole update, so none can start working in it meanwhile.
+	std::vector<std::string> fenced = {chat->id};
+	for (const ChatSession& other : m_app.chats)
+	{
+		if (other.id == chat->id || uam::paths::IsControllerLocalWorkspace(other) != local || (!local && other.execution_host_id != chat->execution_host_id)) continue;
+		if (!WorkspacesOverlap(m_app, *chat, workspace, uam::paths::ResolveWorkspaceRootPath(m_app, other))) continue;
+		if (ChatRuntimeBusy(m_app, other.id))
+		{
+			cb->Failure(409, "Another chat is working in this working copy. Stop it before updating.");
+			return;
+		}
+		if (m_app.worktree_operation_chat_ids.contains(other.id))
+		{
+			cb->Failure(409, "Another chat sharing this working copy has an operation in progress. Try again shortly.");
+			return;
+		}
+		fenced.push_back(other.id);
+	}
+	// The stop is always registered so quitting ends the client; an update without a request id gets its own key.
+	std::string request_id = payload.value("requestId", "");
+	if (request_id.empty()) request_id = "update:" + chat->id;
+	if (request_id.size() > kMaxVcsRequestIdBytes || m_vcsRequestStops.contains(request_id)) { cb->Failure(409, "This working copy is already being updated."); return; }
+	if (m_vcsRequestStops.size() >= kMaxVcsRequestsInFlight) { cb->Failure(429, "Wait for another repository request to finish."); return; }
+
+	// An update rewrites working-copy files: hold workspace retention and the per-chat operation guard until it settles,
+	// exactly as a commit does. DispatchAction already refuses chats that are inside another worktree operation.
+	std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease = m_app.worktree_retention_gate.TryAcquireMutation();
+	if (!lease) { cb->Failure(409, "Workspace cleanup is finishing. Try again shortly."); return; }
+	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
+	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
+	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
+	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
+	std::shared_ptr<void> remote_vcs_lease;
+	if (!remote_vcs.Hold(remote_vcs_lease)) { cb->Failure(409, kRemoteHelperSetupRunning); return; }
+	const std::shared_ptr<std::stop_source> stop = std::make_shared<std::stop_source>();
+	m_vcsRequestStops[request_id] = stop;
+	for (const std::string& id : fenced) m_app.worktree_operation_chat_ids.insert(id);
+	// An update can take minutes, so it gets its own thread rather than holding a shared slow-query lane that status,
+	// diff and history reads of other chats (or of every chat on an SSH host) wait behind.
+	if (!m_vcsUpdates) m_vcsUpdates = CefThread::CreateThread("uam-vcs-updates");
+	if (!RunAsyncCefQuery(m_vcsUpdates ? m_vcsUpdates->GetTaskRunner() : nullptr, m_asyncLifetime, cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, request_id, remote_vcs, stop, lease, remote_vcs_lease]() mutable
+	                 {
+		                 if (stop->stop_requested()) return AsyncFailure(499, "Canceled.");
+		                 const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
+		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
+		                 const uam::VcsUpdateResult update = uam::VcsCommitService().Update(snapshot, chat, type, stop->get_token());
+		                 if (!update.ok) return AsyncFailure(400, FailureDetailOrFallback(update.error, "Failed to update the working copy."));
+		                 return AsyncSuccess(WithOptionalRequestId(nlohmann::json{{"ok", true}, {"conflicts", update.conflicts}, {"revision", update.revision}, {"output", update.output}}, request_id));
+	                 },
+	                 [this, browser, fenced, request_id, stop](AsyncCefResult& result)
+	                 {
+		                 for (const std::string& id : fenced) m_app.worktree_operation_chat_ids.erase(id);
+		                 const auto found = m_vcsRequestStops.find(request_id);
+		                 if (found != m_vcsRequestStops.end() && found->second == stop) m_vcsRequestStops.erase(found);
+		                 if (result.ok) uam::PushStateUpdateIfChanged(browser, m_app);
+	                 }))
+	{
+		for (const std::string& id : fenced) m_app.worktree_operation_chat_ids.erase(id);
+		m_vcsRequestStops.erase(request_id);
+	}
+}
+
+void UamQueryHandler::HandleCancelVcsRequest(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const auto request = m_vcsRequestStops.find(payload.value("requestId", ""));
+	if (request != m_vcsRequestStops.end()) request->second->request_stop();
+	cb->Success("{}");
 }
 
 void UamQueryHandler::HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -911,13 +1188,16 @@ void UamQueryHandler::HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, cons
 	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
 	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
+	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
+	std::shared_ptr<void> remote_vcs_lease;
+	if (!remote_vcs.Hold(remote_vcs_lease)) { cb->Failure(409, kRemoteHelperSetupRunning); return; }
 	uam::AppState* live_app = &m_app;
 	const std::string chat_id = chat->id;
 	m_app.worktree_operation_chat_ids.insert(chat_id);
-	if (!RunAsyncCefQuery(m_asyncLifetime, cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, message, files, lease, remote_vcs_lease]() mutable
+	if (!RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, message, remote_vcs, files, lease, remote_vcs_lease]() mutable
 	                 {
+		                 const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		                 const uam::VcsCommitResult result = uam::VcsCommitService().Commit(snapshot, chat, type, message, files);
 		                 if (!result.ok) return AsyncFailure(400, FailureDetailOrFallback(result.error, "Failed to commit changes."));
@@ -944,11 +1224,14 @@ void UamQueryHandler::HandleGenerateVcsCommitMessage(CefRefPtr<CefBrowser> /*bro
 	const std::string request_id = payload.value("requestId", "");
 	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
+	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
 
-	RunAsyncCefQuery(m_asyncLifetime, cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, files = std::move(files), request_id, remote_vcs_lease]() mutable
+	RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, files = std::move(files), request_id, remote_vcs]() mutable
 	                 {
+		                 std::shared_ptr<void> remote_vcs_lease;
+		                 if (!remote_vcs.Hold(remote_vcs_lease)) return AsyncFailure(409, kRemoteHelperSetupRunning);
+		                 const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		                 const uam::VcsCommitMessageSuggestion suggestion = uam::VcsCommitService().GenerateMessage(snapshot, chat, type, files);
 		                 if (!suggestion.ok)
@@ -982,7 +1265,7 @@ void UamQueryHandler::HandleGetWorkspaceVcsContext(CefRefPtr<CefBrowser> /*brows
 	const std::filesystem::path root = m_app.data_root;
 	const bool git_enabled = m_app.settings.git_enabled;
 	const bool svn_enabled = m_app.settings.svn_enabled;
-	RunAsyncCefQuery(m_asyncLifetime, cb,
+	RunAsyncCefQuery(SlowQueryRunner(directory), m_asyncLifetime, cb,
 	    [directory, git_enabled, svn_enabled, slot = std::move(slot)]() mutable
 	    {
 		    const std::shared_ptr<void> active_slot = std::move(slot);

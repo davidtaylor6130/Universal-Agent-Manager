@@ -590,7 +590,8 @@ UAM_TEST(NewProviderLaunchesUseTheDefaultIsolatedWorktree)
 	const bool launched = uam::StartCliTerminalForChat(app, terminal, app.chats.front(), 24, 80);
 	const std::string launch_error = terminal.last_error;
 	// Start accepts asynchronous preparation; production polling adopts its durable workspace before dispatch.
-	for (int attempt = 0; launched && !fs::exists(marker) && attempt < 100; ++attempt)
+	// Managed isolation runs about ten Git processes before launch; two seconds was too short on a loaded machine.
+	for (int attempt = 0; launched && !fs::exists(marker) && attempt < 1000; ++attempt)
 	{
 		(void)uam::PollAllCliTerminals(nullptr, app);
 		uam::FlushPendingChatSaves(app);
@@ -615,7 +616,7 @@ UAM_TEST(NewProviderLaunchesUseTheDefaultIsolatedWorktree)
 	app.chats.push_back(structured);
 	std::string error;
 	const bool sent = uam::SendAcpPrompt(app, structured.id, "Check this workspace", &error);
-	for (int attempt = 0; sent && !fs::exists(marker) && attempt < 100; ++attempt)
+	for (int attempt = 0; sent && !fs::exists(marker) && attempt < 1000; ++attempt)
 	{
 		(void)uam::PollWorktreeLaunchPreparations(app);
 		(void)uam::PollAllAcpSessions(app, nullptr);
@@ -836,6 +837,7 @@ UAM_TEST(CliSilentTurnInterruptsThenStopsWithoutReplayingPrompt)
 	TempDir temp("uam-cli-inactivity-timeout");
 	uam::AppState app;
 	app.settings.active_turn_inactivity_timeout_seconds = 60;
+	app.settings.tool_call_timeout_seconds = 600;
 	uam::CliTerminalState terminal;
 #if defined(_WIN32)
 	const std::vector<std::string> argv = {"cmd.exe", "/C", "ping -n 31 127.0.0.1 >NUL"};
@@ -853,11 +855,27 @@ UAM_TEST(CliSilentTurnInterruptsThenStopsWithoutReplayingPrompt)
 	terminal.last_user_input_time_s = 1.0;
 	terminal.last_ai_output_time_s = 1.0;
 
-	UAM_ASSERT(uam::HandleCliTerminalInactivityTimeout(app, terminal, 61.0));
+	// A terminal turn may hold one long command, so the turn timeout alone does not interrupt it.
+	UAM_ASSERT(!uam::HandleCliTerminalInactivityTimeout(app, terminal, 61.0));
+	UAM_ASSERT(!uam::HandleCliTerminalInactivityTimeout(app, terminal, 600.0));
+	UAM_ASSERT_EQ(terminal.inactivity_interrupt_requested_time_s, 0.0);
+	UAM_ASSERT(uam::HandleCliTerminalInactivityTimeout(app, terminal, 601.0));
 	UAM_ASSERT(terminal.running);
-	UAM_ASSERT_EQ(terminal.inactivity_interrupt_requested_time_s, 61.0);
+	UAM_ASSERT_EQ(terminal.inactivity_interrupt_requested_time_s, 601.0);
+	UAM_ASSERT(uam::strings::Contains(terminal.last_error, "10-minute tool call limit"));
 	UAM_ASSERT(uam::strings::Contains(terminal.last_error, "will not be replayed"));
-	UAM_ASSERT(uam::HandleCliTerminalInactivityTimeout(app, terminal, 66.0));
+	// A tool call limit set below the turn timeout does not shorten the ceiling.
+	app.settings.tool_call_timeout_seconds = 60;
+	app.settings.active_turn_inactivity_timeout_seconds = 900;
+	uam::CliTerminalState quiet = {};
+	quiet.running = true;
+	quiet.lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	quiet.last_busy_time_s = 1.0;
+	UAM_ASSERT(!uam::HandleCliTerminalInactivityTimeout(app, quiet, 800.0));
+	UAM_ASSERT_EQ(uam::CliTerminalInactivityRecovery(quiet, 901.0, 900.0), uam::CliTerminalInactivityRecoveryAction::Interrupt);
+	app.settings.tool_call_timeout_seconds = 600;
+	app.settings.active_turn_inactivity_timeout_seconds = 60;
+	UAM_ASSERT(uam::HandleCliTerminalInactivityTimeout(app, terminal, 606.0));
 	UAM_ASSERT(!terminal.running);
 	UAM_ASSERT(!terminal.should_launch);
 	UAM_ASSERT(uam::strings::Contains(terminal.last_error, "not replayed"));

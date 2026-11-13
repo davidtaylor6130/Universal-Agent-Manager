@@ -40,6 +40,11 @@ jobs:
 
   remote-runner:
     name: Remote runner ${{ matrix.platform }} ${{ matrix.arch }}
+    # Tagged runner archives carry signed build provenance; acquire_remote_runners.ps1 refuses downloads without it.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -104,6 +109,11 @@ jobs:
             ${{ matrix.version }}
             ${{ matrix.manifest }}
           if-no-files-found: error
+      - name: Attest runner archive provenance
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: Builds/runner/${{ matrix.artifact }}.zip
       # Its own artifact: a ZIP above the Windows Release folder would nest the helper files one level down.
       - uses: actions/upload-artifact@v4
         with:
@@ -232,7 +242,15 @@ jobs:
         run: |
           binary=Builds/uam_core_tests python=python3
           if [ "$RUNNER_OS" = Windows ]; then binary=Builds/Release/uam_core_tests.exe python=python; fi
-          "$python" scripts/run_native_tests.py --jobs 1 --retry-failed-once --quarantine tests/ci_quarantine.txt "$binary"
+          "$python" scripts/run_native_tests.py --jobs 1 --retry-failed-once --flaky-report Builds/flaky-native-tests.json --quarantine tests/ci_quarantine.txt "$binary"
+      # Written only when a case failed and then passed on retry.
+      - name: Upload flaky native test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flaky-native-tests-${{ matrix.artifact }}
+          path: Builds/flaky-native-tests.json
+          if-no-files-found: ignore
 
       # macOS output: Builds/universal_agent_manager.app (ad-hoc signed via
       # `codesign --sign -`, no certificate required). ditto preserves the bundle.
@@ -281,7 +299,7 @@ jobs:
           merge-multiple: true
 
       - name: Attach packages to the GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
             dist/*.zip

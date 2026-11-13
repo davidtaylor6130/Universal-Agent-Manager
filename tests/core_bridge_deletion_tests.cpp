@@ -1,3 +1,4 @@
+#include "cef/pending_operation_gate.h"
 #include "common/companion/protocol.h"
 #include "common/provider/copilot_native_history.h"
 #include "core/chat_import_utils.h"
@@ -1701,6 +1702,52 @@ UAM_TEST(ChatDeletionPersistsFolderWorkspaceWithoutUsingCleanupWorkingDirectory)
 		UAM_ASSERT(!fs::exists(temp.root / "gemini" / ".gemini" / "tmp" / "intended" / "chats" / "same-id.json"));
 		UAM_ASSERT(fs::exists(temp.root / "gemini" / ".gemini" / "tmp" / "unrelated" / "chats" / "same-id.json"));
 	}
+}
+
+UAM_TEST(PendingOperationGatesNeverRefuseSelectionReadsOrStops)
+{
+	using uam::cef::PendingOperationRefusal;
+	// A chat with a worktree operation running can still be selected, read and stopped.
+	for (const std::string_view action : {"selectSession", "getChatMessages", "getToolCallContent", "cancelAcpTurn", "stopAcpSession", "cancelChatTitle"})
+		UAM_ASSERT(PendingOperationRefusal(action, true, true, false).empty());
+	UAM_ASSERT_EQ(PendingOperationRefusal("sendAcpPrompt", true, true, false), std::string_view("Wait for the chat worktree operation to finish."));
+	UAM_ASSERT_EQ(PendingOperationRefusal("renameSession", true, true, false), std::string_view("Wait for the chat worktree operation to finish."));
+	// Another chat's operation refuses only folder-wide work.
+	UAM_ASSERT(PendingOperationRefusal("sendAcpPrompt", false, true, false).empty());
+	UAM_ASSERT_EQ(PendingOperationRefusal("deleteFolder", false, true, false), std::string_view("Wait for the chat worktree operation to finish."));
+	// Workspace deletion keeps selection, reads, lists and stops available in every chat.
+	for (const std::string_view action : {"selectSession", "getChatMessages", "listManagedSubagents", "cancelAcpTurn", "stopAcpSession"})
+		UAM_ASSERT(PendingOperationRefusal(action, false, true, true).empty());
+	UAM_ASSERT(PendingOperationRefusal("selectSession", true, true, true).empty());
+	UAM_ASSERT_EQ(PendingOperationRefusal("getChatMessages", true, true, true), std::string_view("Chat deletion is in progress."));
+	UAM_ASSERT_EQ(PendingOperationRefusal("sendAcpPrompt", false, true, true), std::string_view("Wait for workspace deletion to finish."));
+	UAM_ASSERT(PendingOperationRefusal("sendAcpPrompt", false, false, false).empty());
+}
+
+UAM_TEST(ChatFencedByARejectedDeletionSaysItIsDeletedAtRestart)
+{
+	using uam::cef::PendingOperationRefusal;
+	const std::string_view restart = "This chat will be deleted when UAM restarts.";
+	for (const std::string_view action : {"sendAcpPrompt", "renameSession", "setChatModel"})
+		UAM_ASSERT_EQ(PendingOperationRefusal(action, true, true, false, true), restart);
+	// It can still be selected, read and stopped; an ordinary worktree operation keeps its own message.
+	for (const std::string_view action : {"selectSession", "getChatMessages", "stopAcpSession", "cancelAcpTurn"})
+		UAM_ASSERT(PendingOperationRefusal(action, true, true, false, true).empty());
+	UAM_ASSERT_EQ(PendingOperationRefusal("sendAcpPrompt", true, true, false, false), std::string_view("Wait for the chat worktree operation to finish."));
+}
+
+UAM_TEST(UnfinishedDeletionRefusesOnlyAnotherDeletionAndSaysToRestart)
+{
+	using uam::cef::UnfinishedDeletionRefusal;
+	const std::string_view restart = "An earlier deletion is unfinished and completes when UAM restarts. Restart UAM first, then try again.";
+	for (const std::string_view action : {"deleteSession", "deleteSessions", "deleteFolder", "deleteFolders", "rescanFolderChats"})
+	{
+		UAM_ASSERT_EQ(UnfinishedDeletionRefusal(action, true), restart);
+		UAM_ASSERT(UnfinishedDeletionRefusal(action, false).empty());
+	}
+	// Nothing else in the app is held by it.
+	for (const std::string_view action : {"selectSession", "sendAcpPrompt", "createSession", "getChatMessages", "stopAcpSession", "renameSession"})
+		UAM_ASSERT(UnfinishedDeletionRefusal(action, true).empty());
 }
 
 UAM_TEST(DeletionRejectsOwnershipPublicationFailureBeforeChangingLiveHistory)

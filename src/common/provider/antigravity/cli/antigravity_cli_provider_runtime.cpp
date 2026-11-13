@@ -94,7 +94,7 @@ std::vector<std::string> AntigravityCliProviderRuntime::BuildInteractiveArgv(con
 	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, chat.native_session_id);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 	const AppSettings merged = uam::provider_runtime_internal::MergeProviderSettings(profile, settings);
-	uam::provider_runtime_internal::AppendArgs(argv, uam::command_line::SplitWords(merged.provider_extra_flags));
+	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(merged, uam::provider_runtime_internal::LaunchHasReadCeiling(chat)));
 	AppendAntigravityEffort(argv, chat);
 	AppendAntigravityModeArgs(argv, chat);
 	return argv;
@@ -395,7 +395,7 @@ bool AntigravityCliProviderRuntime::OnAcpValidateGoalResume(const ChatSession& c
 		error = "The saved Antigravity conversation identity is invalid. The goal was not resumed.";
 		return false;
 	}
-	if (!restart && (goal.loop_count < 0 || goal.loop_count >= std::clamp(settings.goal_max_loop_iterations, 1, 200)))
+	if (!restart && (goal.loop_count < 0 || goal.loop_count >= uam::GoalService::IterationLimit(goal, settings)))
 	{
 		error = "Maximum goal loop iterations reached.";
 		return false;
@@ -639,7 +639,7 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 					AppendToolTurnEventIfNeeded(session, tool.id);
 				}
 				SyncAcpToolCallsToAssistantMessage(chat, session, true);
-				ScheduleChatSave(app, chat, 0.5);
+				ScheduleChatSave(app, chat, 0.5, true);
 			}
 			if (JsonDiagnosticStringValue(payload, "step_type") == "agent_response")
 			{
@@ -648,7 +648,7 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 				{
 					const std::string appended = AppendAssistantChunk(chat, session, text);
 					if (browser && !appended.empty()) uam::PushStreamToken(browser, chat.id, session.current_assistant_message_index, appended);
-					ScheduleChatSave(app, chat, 0.5);
+					ScheduleChatSave(app, chat, 0.5, true);
 				}
 			}
 			else if (step_index && JsonDiagnosticStringValue(payload, "step_type") == "tool")
@@ -665,7 +665,7 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 				if (failed) tool.content = uam::strings::JoinNonEmpty(std::vector<std::string>{tool.content, JsonDiagnosticStringValue(JsonObjectValue(details, "error"), "message")}, "\n");
 				AppendToolTurnEventIfNeeded(session, tool.id);
 				SyncAcpToolCallsToAssistantMessage(chat, session, true);
-				ScheduleChatSave(app, chat, 0.5);
+				ScheduleChatSave(app, chat, 0.5, true);
 			}
 			if (goal_limit_reached)
 			{
@@ -736,6 +736,7 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 			}
 			session.antigravity_completed_turns = turn;
 			RecordCompletedAcpPromptRecoveries(app, session, chat);
+			(void)ConfirmTurnInputReceived(session, chat);
 			CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser);
 		}
 		if (browser) uam::PushStreamDone(browser, chat.id);

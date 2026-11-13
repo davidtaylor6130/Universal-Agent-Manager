@@ -127,6 +127,10 @@ struct ProviderCliPolicy
 	ProviderCliVersionPolicy version_policy = ProviderCliVersionPolicy::AnySafeToken;
 	bool provider_managed = false;
 	const char* verified_at = nullptr;
+	/// Optional provider-owned protocol contract: true marks an installed version verified beyond fallback_version.
+	bool (*verified_protocol_version)(std::string_view version) = nullptr;
+	/// Optional provider-owned refusal naming why its adapter will not run an installed version; empty otherwise.
+	std::string (*protocol_version_refusal)(std::string_view version) = nullptr;
 };
 
 /// <summary>
@@ -295,10 +299,14 @@ class IProviderRuntime
 		return false;
 	}
 
+	/// <summary>Cheap model side workers (memory, titles, commit messages, permission review) use when the user chose none; empty keeps the provider default.</summary>
+	virtual std::string_view DefaultTextWorkerModel() const { return {}; }
 	/// <summary>Builds the argv for a provider worker command (batch mode, no terminal).</summary>
 	virtual std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const = 0;
 	/// Selects the checked local route before writing generation-specific isolation.
-	virtual bool PrepareLocalWorkerLaunch(const uam::AppState&, const ProviderProfile&, std::vector<std::string>&, std::string&, bool* private_isolation = nullptr) const
+	/// `environment` receives extra process variables for this worker only (e.g. settings env kept off its argv).
+	virtual bool PrepareLocalWorkerLaunch(const uam::AppState&, const ProviderProfile&, std::vector<std::string>&, std::string&, bool* private_isolation = nullptr,
+	    std::vector<std::pair<std::string, std::string>>* /*environment*/ = nullptr) const
 	{
 		if (private_isolation) *private_isolation = false;
 		return true;
@@ -327,11 +335,26 @@ class IProviderRuntime
 		(void)tool;
 		(void)native_item;
 	}
+	/// <summary>Seconds a tool call's own input declares as its timeout; 0 when it declares none or the stream does not expose one.</summary>
+	virtual double AcpToolDeclaredTimeoutSeconds(std::string_view tool_kind, const nlohmann::json& tool_input) const
+	{
+		(void)tool_kind;
+		(void)tool_input;
+		return 0.0;
+	}
 	/// <summary>Decodes provider extensions after common ACP tool metadata is applied.</summary>
 	virtual void ApplyAcpToolMetadata(uam::AcpToolCallState& tool, const nlohmann::json& update) const
 	{
 		(void)tool;
 		(void)update;
+	}
+
+	/// <summary>A shell tool's positive millisecond input field, as seconds; 0 otherwise. Another tool's field of the same name has its own meaning and unit.</summary>
+	static double ShellToolMillisecondsAsSeconds(std::string_view tool_kind, const nlohmann::json& tool_input, const char* field)
+	{
+		if (tool_kind != "execute") return 0.0;
+		const auto found = tool_input.is_object() ? tool_input.find(field) : tool_input.end();
+		return found != tool_input.end() && found->is_number() && found->get<double>() > 0.0 ? found->get<double>() / 1000.0 : 0.0;
 	}
 
 	// == ACP Session Strategy ==

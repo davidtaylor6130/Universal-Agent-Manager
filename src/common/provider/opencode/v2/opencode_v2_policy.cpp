@@ -1,5 +1,6 @@
 #include "common/provider/opencode_v2_session.h"
 #include "common/runtime/cli_version_parser.h"
+#include "common/utils/string_utils.h"
 #include <stdexcept>
 
 namespace uam::opencode_v2
@@ -9,8 +10,9 @@ std::string WorkerVersionError(bool checked, bool same_host, std::string_view ve
 	if (!checked || !same_host || version.empty() || !check_error.empty())
 		return "OpenCode text worker is held until the executing local host's version check succeeds. Check OpenCode in Settings, then retry; no V1 fallback was launched.";
 	if (uam::cli_versions::ExtractSemverVersion(version) != std::optional<std::string>{version} ||
-	    (!version.starts_with("1.") && version != "2.1.2"))
-		return "This OpenCode text-worker protocol has not been verified.";
+	    (!version.starts_with("1.") && !IsVerifiedV2(version)))
+		return "This OpenCode text-worker protocol has not been verified. " + UnverifiedV2Message(version, "text worker") +
+		       " OpenCode 1.x also works. Choose another worker provider in Settings or install a verified OpenCode version.";
 	return {};
 }
 
@@ -22,15 +24,14 @@ std::vector<std::string> ServeArgv(std::vector<std::string> command)
 }
 bool IsCheckedHistoryV2(std::string_view version)
 {
-	// History list/export only; the live chat adapter stays pinned to 2.1.2.
-	return version == "2.1.2" || version == "2.1.4";
+	return IsVerifiedV2(version);
 }
 std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::string> command,
 	const std::string& operation, const std::string& id)
 {
 	const bool v2 = IsCheckedHistoryV2(version);
 	if (command.empty() || (!v2 && !version.starts_with("1.")))
-		throw std::runtime_error("OpenCode " + std::string(version) + " history has not been verified; UAM imports OpenCode 1.x and checked 2.1.2 and 2.1.4.");
+		throw std::runtime_error("This OpenCode history has not been verified. " + UnverifiedV2Message(version, "history import") + " OpenCode 1.x also imports.");
 	if (operation == "list")
 	{
 		command.insert(command.end(), {"session", "list", "--format", "json", v2 ? "--standalone" : "--pure"});
@@ -43,6 +44,30 @@ std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::
 	}
 	else throw std::runtime_error("Invalid OpenCode history request.");
 	return command;
+}
+
+std::vector<std::string> RemoteHistoryArgv(std::string_view version, std::vector<std::string> command,
+	const std::string& operation, const std::string& id)
+{
+	command = HistoryArgv(version, std::move(command), operation, id);
+	if (operation == "list")
+	{
+		const auto count = std::find(command.begin(), command.end(), "--max-count");
+		if (count != command.end()) command.erase(count, count + 2);
+		command.insert(command.end(), {"--max-count", "200"});
+	}
+	return command;
+}
+
+void NormalizeHistoryList(Json& list)
+{
+	for (auto& entry : list)
+	{
+		if (entry.contains("location")) entry["directory"] = entry.at("location").at("directory");
+		// Internal refusal data from this checked dispatcher, not upstream
+		// metadata support or evidence authorizing a future native resume.
+		entry["opencode_v2_session_id"] = entry.at("id");
+	}
 }
 
 std::vector<std::string> FileBackedStdoutArgv(std::vector<std::string> command)

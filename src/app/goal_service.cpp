@@ -1,8 +1,11 @@
 #include "app/goal_service.h"
+#include "common/config/settings_normalization.h"
 
 #include "app/agent_run_scheduler.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/provider_chat_defaults.h"
+#include "common/runtime/acp/acp_model_json.h"
+#include "common/utils/range_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_internal.h"
@@ -128,6 +131,12 @@ namespace
 
 } // namespace
 
+int GoalService::IterationLimit(const Goal& goal, AppSettings settings)
+{
+	uam::settings::ClampGoalSettings(settings);
+	return goal.max_iterations > 0 ? std::min(goal.max_iterations, settings.goal_max_loop_iterations) : settings.goal_max_loop_iterations;
+}
+
 bool GoalService::CreateGoal(AppState& app, const std::string& chat_id, const std::string& objective,
                               int64_t token_budget, std::string* created_goal_id,
 							  std::string execution_owner, std::string provider_command,
@@ -198,9 +207,19 @@ std::string GoalService::WorkerModelId(const ChatSession& chat, const Goal& goal
 	return chat.small_model_mode ? uam::strings::NonEmptyOrFallback(goal.worker_model_id, chat.model_id) : chat.model_id;
 }
 
-std::string GoalService::ReviewerModelId(const ChatSession& chat, const Goal& goal)
+std::string GoalService::ReviewerModelId(const ChatSession& chat, const Goal& goal, const AcpSessionState* session)
 {
-	return chat.small_model_mode ? uam::strings::NonEmptyOrFallback(goal.reviewer_model_id, chat.model_id) : chat.model_id;
+	// The provider's "Goal reviewer model" (copied onto the goal at creation) reviews every UAM goal.
+	const std::string model = uam::strings::NonEmptyOrFallback(goal.reviewer_model_id, chat.model_id);
+	if (session != nullptr && model != chat.model_id)
+	{
+		// A model this session does not offer would fail the review, so keep the chat model.
+		const auto option = std::ranges::find_if(session->available_config_options, [](const AcpConfigOptionState& value)
+		{ return value.category == "model" || value.id == "model"; });
+		if (option != session->available_config_options.end() && !uam::ranges::Contains(uam::acp_models::ConfigModelIds(*option), model))
+			return chat.model_id;
+	}
+	return model;
 }
 
 std::size_t GoalService::PauseActiveGoalsAfterRestart(AppState& app, std::size_t* failed_out)
@@ -290,7 +309,7 @@ bool GoalService::CancelGoalWork(AppState& app, const std::string& chat_id,
 			if (first_error.empty())
 				first_error = target_session != nullptr && target_session->remote_stop_unconfirmed
 				                  ? "Remote stop could not be confirmed."
-				                  : "The remote turn is stopping.";
+				                  : AcpStopRefusalMessage(app, target_chat_id, "The remote turn is stopping.");
 			return;
 		}
 		std::string error;
@@ -981,11 +1000,13 @@ std::string GoalService::BuildReadOnlyTerminalPrompt(const Goal& goal)
 
 std::string GoalService::BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt,
                                            const std::string& recent_assistant_text, int repeated_output_count,
-                                           bool small_model_mode)
+                                           bool small_model_mode, const std::string& workspace_changes)
 {
 	std::ostringstream ss;
 	ss << "Read-only goal review: inspect the workspace, changed files, diff, relevant tests/build evidence, and objective. "
 	      "Do not rely on the worker summary alone; do not edit files or run mutating commands. "
+	      "Run one command per call (no ;, && or pipes). Accepted Git reads: `git status --short --ignore-submodules` and "
+	      "`git diff --no-ext-diff --no-textconv` (add --stat or a workspace path as needed). "
 	      "Your ONLY output must be a single JSON object, without prose or code fences:\n";
 	ss << R"({"decision":"continue|complete|blocked","reason":"","nextPrompt":"","evidence":[],"blockerKind":"","progressUpdate":{"completed":[],"remaining":[],"currentStep":"","lastVerification":""}})" << "\n\n";
 	if (repeated_output_count >= 3)
@@ -1045,8 +1066,29 @@ std::string GoalService::BuildReviewPrompt(const Goal& goal, const std::string& 
 	{
 		ss << "<recentUserPrompt>\n" << recent_user_prompt << "\n</recentUserPrompt>\n\n";
 	}
+	if (!workspace_changes.empty())
+	{
+		ss << "<workspaceChanges>\n" << workspace_changes << "</workspaceChanges>\n\n";
+	}
 	ss << "<recentAssistantText>\n" << recent_assistant_text << "\n</recentAssistantText>\n";
 	return ss.str();
+}
+
+std::string GoalService::SummarizeWorkspaceChanges(const std::vector<std::tuple<std::string, std::string, int, int>>& files)
+{
+	constexpr std::size_t kMaxBytes = 2048; // ponytail: fixed cap; the reviewer reads full diffs with git itself
+	std::string out;
+	std::size_t listed = 0;
+	for (const auto& [path, status, added, deleted] : files)
+	{
+		std::string line = uam::strings::NonEmptyOrFallback(status, "M") + " " + uam::strings::SafeLine(path, 300) +
+		    (added > 0 || deleted > 0 ? " +" + std::to_string(added) + " -" + std::to_string(deleted) : std::string{}) + "\n";
+		if (out.size() + line.size() > kMaxBytes) break;
+		out += line;
+		++listed;
+	}
+	if (listed < files.size()) out += "... " + std::to_string(files.size() - listed) + " more changed files\n";
+	return out;
 }
 
 std::optional<GoalService::ReviewDecision> GoalService::ParseReviewDecision(const std::string& text)

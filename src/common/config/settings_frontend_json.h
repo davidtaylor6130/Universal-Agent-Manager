@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/config/voice_input_settings.h"
+#include "common/config/compute_pools.h"
 
 #include "common/config/central_provider_configuration.h"
 
@@ -15,6 +16,7 @@
 #include "common/config/provider_availability.h"
 #include "common/config/settings_normalization.h"
 #include "common/config/settings_store.h"
+#include "common/config/svn_repository_layout.h"
 #include "common/models/app_models.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/excluded_provider_data.h"
@@ -110,6 +112,8 @@ namespace uam::settings_frontend_json
 		settings_json["theme"] = uam::settings::NormalizeThemeId(settings.ui_theme);
 		settings_json["showProviderIconsInSidebar"] = settings.show_provider_icons_in_sidebar;
 		settings_json["showWorktreePathInSidebar"] = settings.show_worktree_path_in_sidebar;
+		settings_json["sidebarPinnedChatOrder"] = settings.sidebar_pinned_chat_order;
+		settings_json["sidebarActiveChatOrder"] = settings.sidebar_active_chat_order;
 		settings_json["steerActiveTurnOnSend"] = settings.steer_active_turn_on_send;
 		settings_json["gitEnabled"] = settings.git_enabled;
 		settings_json["gitAutoWorktree"] = settings.git_auto_worktree;
@@ -124,6 +128,7 @@ namespace uam::settings_frontend_json
 		settings_json["httpCacheClearIntervalDays"] = settings.http_cache_clear_interval_days;
 		settings_json["svnEnabled"] = settings.svn_enabled;
 		settings_json["svnUpdateBeforeChat"] = settings.svn_update_before_chat;
+		settings_json["svnRepositoryLayouts"] = uam::svn_layout::ToJson(settings.svn_repository_layouts);
 		settings_json["voiceInputMode"] = uam::voice_input::NormalizeMode(settings.voice_input_mode);
 		settings_json["voiceInputServerBaseUrl"] = uam::strings::Trim(settings.voice_input_server_base_url);
 		settings_json["voiceInputServerEndpoint"] = uam::strings::Trim(settings.voice_input_server_endpoint);
@@ -151,6 +156,7 @@ namespace uam::settings_frontend_json
 		settings_json["acpTurnOutputLimitMiB"] = normalized_output_settings.acp_turn_output_limit_mib;
 		settings_json["streamLoopRepeatLimit"] = uam::stream_watch::NormalizeLoopRepeatLimit(settings.stream_loop_repeat_limit);
 		settings_json["activeTurnInactivityTimeoutSeconds"] = std::clamp(settings.active_turn_inactivity_timeout_seconds, uam::settings::kMinActiveTurnInactivityTimeoutSeconds, uam::settings::kMaxActiveTurnInactivityTimeoutSeconds);
+		settings_json["toolCallTimeoutSeconds"] = std::clamp(settings.tool_call_timeout_seconds, uam::settings::kMinActiveTurnInactivityTimeoutSeconds, uam::settings::kMaxActiveTurnInactivityTimeoutSeconds);
 		settings_json["acpSetupInactivityTimeoutSeconds"] = std::clamp(settings.acp_setup_inactivity_timeout_seconds, uam::settings::kMinAcpSetupInactivityTimeoutSeconds, uam::settings::kMaxAcpSetupInactivityTimeoutSeconds);
 		settings_json["updateChecksEnabled"] = settings.update_checks_enabled;
 		settings_json["automaticProviderUpdates"] = settings.automatic_provider_updates;
@@ -176,6 +182,7 @@ namespace uam::settings_frontend_json
 		settings_json["centralProviderConfiguration"] = uam::central_configuration::Serialize(settings.central_provider_configuration);
 		settings_json["mcpServers"] = uam::mcp_server_config::Serialize(settings.mcp_servers);
 		settings_json["executionHosts"] = uam::execution_hosts::Serialize(settings.execution_hosts);
+		settings_json["computePools"] = uam::compute_pools::Serialize(settings.compute_pools);
 		settings_json["executionRouting"] = SettingsStore::SerializeExecutionRoutingSettings(settings.execution_routing);
 		settings_json["favoriteUamAgentIds"] = settings.favorite_uam_agent_ids;
 		settings_json["nativeImportExcludedTitlePrefixes"] = settings.native_import_excluded_title_prefixes;

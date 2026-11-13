@@ -456,7 +456,12 @@ UAM_TEST(OpenCodeNativeCompanionRetiresDeliveredDecisionAfterControllerRestart)
 	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.app.chats.front()));
 	const auto restored = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.app.chats.front().id);
 	UAM_ASSERT(restored.has_value());
+	// The companion password is memory-only: the saved chat never carries it, so the still-live companion keeps its endpoint.
+	UAM_ASSERT(restored->remote_opencode_native_token.empty() && restored->remote_opencode_native_port == 0);
+	const auto endpoint = fixture.Session().opencode_native_companion->endpoint;
 	fixture.app.chats.front() = *restored;
+	fixture.app.chats.front().remote_opencode_native_port = endpoint.port;
+	fixture.app.chats.front().remote_opencode_native_token = endpoint.token;
 	fixture.Until([&] { return fixture.app.chats.front().remote_interaction_responses.size() == 1; });
 	UAM_ASSERT_EQ(fixture.app.chats.front().remote_interaction_responses.front().request_id_json, Json("different-native:request").dump());
 	UAM_ASSERT_EQ(fixture.replies->load(), 0);
@@ -636,7 +641,7 @@ UAM_TEST(OpenCodeNativeCompanionCapturedReadKeepsDoomLoopQuestionManualAndDelive
 		NativeCompanionFixture fixture("doom_loop");
 		fixture.app.chats.front().command_safety_tier = "off";
 		fixture.Session().goal_review_turn = goal_review;
-		fixture.Session().active_uam_agent_workspace_access = goal_review ? "" : "read";
+		fixture.Session().active_uam_agent_workspace_access = goal_review ? "write" : "read";
 		fixture.Until([&] { return fixture.Session().waiting_for_permission || fixture.replies->load() != 0; });
 		UAM_ASSERT(fixture.Session().waiting_for_permission);
 		UAM_ASSERT_EQ(fixture.replies->load(), 0);
@@ -674,7 +679,7 @@ UAM_TEST(OpenCodeNativeCompanionCapturedReadRejectsMcpDoomLoopAction)
 		NativeCompanionFixture fixture("doom_loop", true);
 		fixture.app.chats.front().command_safety_tier = "off";
 		fixture.Session().goal_review_turn = goal_review;
-		fixture.Session().active_uam_agent_workspace_access = goal_review ? "" : "read";
+		fixture.Session().active_uam_agent_workspace_access = goal_review ? "write" : "read";
 		fixture.Until([&] { return fixture.Session().waiting_for_permission || fixture.replies->load() != 0; });
 		UAM_ASSERT(fixture.Session().waiting_for_permission);
 		UAM_ASSERT_EQ(fixture.replies->load(), 0);

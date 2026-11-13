@@ -16,6 +16,7 @@
 
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/utils/uuid.h"
+#include "common/models/revisioned_vector.h"
 
 // Inert authored-input provenance. Never delivery, replay, cancellation or ownership authority.
 namespace uam::input_provenance
@@ -405,6 +406,9 @@ struct Message
 	std::optional<std::string> native_input_id;
 	/// Exact original local stdio entry completed at the OS sink; not provider processing or input authority.
 	bool input_write_completed = false;
+	// This build dispatched the row, so its delivery is judged only by write facts, receipts and the provider's own
+	// completion. Rows without it are older history, where a directly following answer is the only evidence left.
+	bool input_delivery_tracked = false;
 	std::optional<std::string> origin_request_id;
 	bool operator==(const Message&) const = default;
 };
@@ -488,6 +492,7 @@ struct Goal
 	std::string last_assistant_text;             // trimmed text of the last worker turn
 	int same_assistant_text_count = 0;           // consecutive identical worker outputs
 	int loop_count = 0;
+	int max_iterations = 0;                   // per-goal iteration ceiling; 0 uses only the Settings cap
 	std::string created_at;
 	std::string updated_at;
 	std::string execution_owner = "uam";
@@ -638,6 +643,9 @@ struct ManagedParentInputReceipt
 	bool operator==(const ManagedParentInputReceipt&) const = default;
 };
 
+inline constexpr const char* kAwaitingAutomationApprovalError = "This automation chat is waiting for approval. Start it from the chat first.";
+inline constexpr const char* kAutomationWorktreeRequiredError = "This automation chat needs its own worktree, so it was not started in a shared folder.";
+
 struct ChatSession
 {
 	/// <summary>Runtime identity retained by copies; a recreated chat receives a fresh tag.</summary>
@@ -658,6 +666,10 @@ struct ChatSession
 	std::string routing_assigned_connection_identity;
 	std::string routing_assigned_provider_configuration_identity;
 	bool routing_reservation_pending = false;
+	/// Helper version of the host when the pending reservation was made. Empty in older data, which is never released automatically.
+	std::string routing_reservation_runner_version;
+	/// The assigned identities are in the current format. False for data saved before the format changed.
+	bool routing_identity_current_format = false;
 	std::vector<std::string> routing_inherited_default_fields;
 	std::string provider_id;
 	std::string native_session_id;
@@ -714,6 +726,10 @@ struct ChatSession
 	std::string remote_prompt_delivery_session_id;
 	std::string remote_prompt_delivery_id;
 	std::string remote_prompt_delivery_payload;
+	// Native input IDs of the rows this delivery carries. Saved with the marker so the helper's receipt confirms the
+	// right rows after a reconnect or an app restart, when the runtime's own copy is gone. Meaningful only beside
+	// the delivery ID it was written with.
+	std::vector<std::string> remote_prompt_delivery_input_ids;
 	std::vector<uam::AcpRemotePendingRequestState> remote_pending_requests;
 	int remote_next_request_id = 1;
 	std::string remote_active_turn_id;
@@ -742,10 +758,27 @@ struct ChatSession
 	std::string subagent_parent_chat_id;
 	/// Exact creation timestamp of the originating UAM parent, preventing ID-reuse attachment.
 	std::string subagent_parent_created_at;
+	/// Discovery-only, never saved: the native parent session this provider's own child record names.
+	/// Native import turns it into the display link above; it grants nothing by itself.
+	std::string native_parent_session_id;
 	/// Display provenance for a top-level chat started through UAM chat_create; grants no lineage or authority.
 	std::string created_by_chat_id;
 	/// Hash of the creating request's arguments, so a model retry returns the same chat.
 	std::string created_by_request_key;
+	/// Token that created this chat through the automation API; the name is a snapshot so revocation keeps the label.
+	std::string automation_token_id;
+	std::string automation_token_name;
+	/// First prompt held until the chat is approved. Non-empty means no provider may launch.
+	std::string automation_pending_prompt;
+	int automation_max_iterations = 0;
+	std::string automation_git_permission;
+	bool AwaitsAutomationApproval() const { return !automation_pending_prompt.empty(); }
+	/// <summary>Why no provider may start for this chat, or null. Launch can clear a pending worktree it finds impossible.</summary>
+	const char* AutomationLaunchRefusal() const
+	{
+		if (AwaitsAutomationApproval()) return kAwaitingAutomationApprovalError;
+		return !automation_token_id.empty() && workspace_isolation_kind.empty() ? kAutomationWorktreeRequiredError : nullptr;
+	}
 	int branch_from_message_index = -1;
 	bool branch_message_edited = false;
 	std::string branch_operation_id;
@@ -773,7 +806,8 @@ struct ChatSession
 	std::string interaction_at;
 	bool pinned = false;
 	std::vector<std::string> linked_files;
-	std::vector<Message> messages;
+	/// Stamped so the transcript digest is recomputed only after the transcript was opened for writing.
+	uam::RevisionedVector<Message> messages;
 	bool messages_loaded = true;
 	std::size_t persisted_message_count = 0;
 	std::string persisted_messages_digest;
@@ -996,6 +1030,9 @@ struct ExecutionHost
 	std::string runner_install_identity;
 	/// SHA-256 of the helper this computer verified and published at installation; empty is unknown.
 	std::string runner_sha256;
+	/// Display only: the local build label (X.Y.Z-alpha-Q) of the app that installed the helper; empty for release builds or older records.
+	/// Never part of SameConnection, paths, sockets or compatibility checks.
+	std::string runner_build_label;
 	bool operator==(const ExecutionHost&) const = default;
 };
 
@@ -1047,6 +1084,32 @@ struct HostScopedSettings
 	std::optional<std::vector<McpServerConfiguration>> mcp_servers;
 };
 
+struct ComputePoolMember
+{
+	std::string provider_id;
+	std::string model_id; // Empty covers every model of the provider.
+};
+
+struct ComputePool
+{
+	std::string id;
+	std::string name;
+	int limit = 1;
+	std::vector<ComputePoolMember> members;
+};
+
+/// <summary>Where one SVN repository keeps its main line, branches and tags, as repository-relative folders.</summary>
+struct SvnRepositoryLayout
+{
+	/// Repository root URL or repository UUID.
+	std::string repository;
+	std::string trunk = "trunk";
+	std::string branches = "branches";
+	std::string tags = "tags";
+
+	bool operator==(const SvnRepositoryLayout&) const = default;
+};
+
 struct AppSettings
 {
 	std::string voice_input_mode = "system";
@@ -1062,10 +1125,14 @@ struct AppSettings
 	std::string provider_extra_flags;
 	int cli_idle_timeout_seconds = 600;
 	int active_turn_inactivity_timeout_seconds = 1800;
+	int tool_call_timeout_seconds = 7200; // Limit for one open tool call that declares no timeout of its own.
 	int stream_loop_repeat_limit = 20; // 0 turns stream loop stops off; see stream_watch.h.
 	std::string ui_theme = "focus";
 	bool show_provider_icons_in_sidebar = true;
 	bool show_worktree_path_in_sidebar = true;
+	// Manual sidebar order of Pinned and Active chat ids; empty keeps the default (most recent first).
+	std::vector<std::string> sidebar_pinned_chat_order;
+	std::vector<std::string> sidebar_active_chat_order;
 	bool steer_active_turn_on_send = false;
 	bool git_enabled = true;
 	bool git_auto_worktree = true;
@@ -1080,6 +1147,8 @@ struct AppSettings
 	int http_cache_clear_interval_days = 0;
 	bool svn_enabled = true;
 	bool svn_update_before_chat = false;
+	/// Repositories that do not use `trunk`/`branches`/`tags`; display only, never used to choose an action's target.
+	std::vector<SvnRepositoryLayout> svn_repository_layouts;
 	bool confirm_delete_chat = true;
 	bool confirm_delete_folder = true;
 	bool remember_last_chat = true;
@@ -1119,6 +1188,7 @@ struct AppSettings
 	CentralProviderConfiguration central_provider_configuration;
 	std::vector<McpServerConfiguration> mcp_servers;
 	std::vector<ExecutionHost> execution_hosts;
+	std::vector<ComputePool> compute_pools; // Empty leaves prompt delivery unlimited.
 	ExecutionRoutingSettings execution_routing;
 	std::vector<std::string> favorite_uam_agent_ids;
 	/// <summary>Native sessions whose title (the first user message for most providers) starts with one of these, ignoring case, are never offered for import.</summary>

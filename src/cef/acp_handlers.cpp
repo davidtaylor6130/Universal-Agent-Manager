@@ -1,11 +1,15 @@
+#include "app/pr_watch_service.h"
 #include "app/agent_run_scheduler.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_async.h"
 #include "cef/uam_query_handler_internal.h"
 
 #include "cef/cef_push.h"
+#include "cef/dropped_attachment_paths.h"
 #include "cef/state_serializer.h"
+#include "common/chat/attachment_payload.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/staged_attachment_discard.h"
 #include "common/chat/message_attachment_json.h"
 #include "common/config/execution_host_config.h"
 #include "common/config/provider_availability.h"
@@ -20,6 +24,7 @@
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "app/uam_control_service.h"
 #include "app/chat_domain_service.h"
+#include "common/utils/diagnostic_log.h"
 #include "app/attachment_preview_service.h"
 #include "common/provider/structured_attachments.h"
 #include "common/utils/base64.h"
@@ -35,8 +40,10 @@
 #include <cstring>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -64,7 +71,6 @@ namespace
 	namespace attachment_frontend_fields = uam::message_attachment_json::frontend;
 
 	constexpr std::size_t kMaxClipboardTextBytes = 1024 * 1024;
-	constexpr std::uintmax_t kMaxAttachmentBytes = 25ull * 1024ull * 1024ull;
 
 #if defined(_WIN32)
 	std::wstring WideFromUtf8(const std::string& value)
@@ -336,6 +342,9 @@ namespace
 		return true;
 	}
 
+	/// Reports (attachment id, copied bytes, total bytes) for a file copied from disk in chunks.
+	using AttachmentProgress = std::function<void(const std::string&, std::uintmax_t, std::uintmax_t)>;
+
 	struct RemoteAttachmentResult
 	{
 		bool ok = false;
@@ -348,7 +357,8 @@ namespace
 	                                              const ExecutionHost& host,
 	                                              const std::string& chat_id,
 	                                              const std::string& workspace_root,
-	                                              const std::filesystem::path& data_root)
+	                                              const std::filesystem::path& data_root,
+	                                              const AttachmentProgress& progress)
 	{
 		RemoteAttachmentResult result;
 		if (!uam::execution_hosts::IsPortableId(chat_id))
@@ -374,7 +384,7 @@ namespace
 				if (!uam::execution_hosts::IsAbsoluteRemotePath(host.platform, path))
 				{ result.status = 400; result.error = "Choose an absolute directory on this SSH host."; break; }
 				uam::remote::DirectoryListing listing;
-				if (!client.ListDirectories(uam::paths::PathFromUtf8(path), listing, &result.error)) break;
+				if (!client.ListDirectories(uam::paths::PathFromUtf8(path), listing, &result.error)) { result.status = 500; break; }
 				MessageAttachment attachment;
 				attachment.id = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kIdField});
 				if (attachment.id.empty()) attachment.id = AttachmentId();
@@ -388,57 +398,18 @@ namespace
 			}
 			const std::string source_path_text = uam::nlohmann_json::TrimmedStringValue(
 			    item, {attachment_fields::kPathField});
-			std::string bytes;
-			if (const nlohmann::json* data = uam::nlohmann_json::FindStringField(
-			        item, attachment_frontend_fields::kDataBase64Field); data != nullptr)
-			{
-				if (!uam::base64::Decode(data->get_ref<const std::string&>(), bytes))
-				{
-					result.status = 400;
-					result.error = "Attachment data is not valid base64.";
-					break;
-				}
-			}
-			else if (!source_path_text.empty())
-			{
-				const std::filesystem::path source = PlatformServicesFactory::Instance()
-				    .path_service.ExpandLeadingTildePath(source_path_text);
-				const std::optional<std::uintmax_t> size = uam::paths::FileSizeNoThrow(source);
-				if (!size || !uam::paths::IsRegularFileNoThrow(source))
-				{
-					result.status = 400;
-					result.error = "File attachment does not exist: " + source_path_text;
-					break;
-				}
-				if (*size > kMaxAttachmentBytes)
-				{
-					result.status = 413;
-					result.error = "Attachment is larger than the 25 MB limit.";
-					break;
-				}
-				if (!uam::io::TryReadBinaryFile(source, bytes))
-				{
-					result.error = "Failed to read attachment: " + source_path_text;
-					break;
-				}
-			}
-			else
-			{
-				result.status = 400;
-				result.error = "File attachments require data or a filesystem path.";
-				break;
-			}
-			if (bytes.size() > kMaxAttachmentBytes)
-			{
-				result.status = 413;
-				result.error = "Attachment is larger than the 25 MB limit.";
-				break;
-			}
-
 			MessageAttachment attachment;
 			attachment.id = uam::nlohmann_json::TrimmedStringValue(
 			    item, {attachment_fields::kIdField});
 			if (attachment.id.empty()) attachment.id = AttachmentId();
+			// A file over the in-memory limit is streamed from disk; everything else is loaded and checked whole.
+			std::string bytes;
+			std::filesystem::path streamed_source;
+			std::uintmax_t streamed_size = 0;
+			const bool streamed = uam::attachment_payload::IsStreamedSource(item, source_path_text, streamed_source, streamed_size, result.status, result.error);
+			if (streamed && !result.error.empty()) break;
+			if (!streamed && !uam::attachment_payload::Load(item, source_path_text, bytes, result.status, result.error)) break;
+
 			const std::string fallback_name = source_path_text.empty()
 			    ? "attachment"
 			    : uam::paths::Utf8PathString(
@@ -455,10 +426,30 @@ namespace
 			const std::filesystem::path target = uam::paths::PathFromUtf8(
 			    uam::execution_hosts::JoinRemotePath(host.platform, workspace_root, relative));
 			std::string error;
-			if (!client.UploadFile("attachment-" + std::to_string(index) + "-" +
-			                       uam::time::SystemEpochMicrosecondsTokenNow(),
-			                       target, bytes, &error))
+			const std::string upload_id = "attachment-" + std::to_string(index) + "-" + uam::time::SystemEpochMicrosecondsTokenNow();
+			const std::uintmax_t attachment_size = streamed ? streamed_size : bytes.size();
+			// Removing the chip cancels the copy between chunks; the helper then drops its partial file.
+			std::stop_source cancel;
+			const bool uploaded = streamed
+			    ? client.UploadFileFromPath(upload_id, target, streamed_source,
+			          [&progress, &attachment, &cancel](const std::uintmax_t sent, const std::uintmax_t total)
+			          {
+				          if (uam::attachment_payload::ExchangeCanceled(attachment.id, false)) cancel.request_stop();
+				          if (progress) progress(attachment.id, sent, total);
+			          }, &error, cancel.get_token())
+			    : client.UploadFile(upload_id, target, bytes, &error);
+			if (uploaded && uam::attachment_payload::ExchangeCanceled(attachment.id, false))
 			{
+				(void)client.RemoveFile("canceled-" + std::to_string(index), target);
+				result.status = 409;
+				result.error = "The attachment copy was canceled.";
+				break;
+			}
+			if (!uploaded)
+			{
+				// Helper error text can carry host paths; the log keeps the size and outcome only.
+				uam::diagnostics::Write("[stageChatAttachments] Remote attachment upload failed: bytes=" + std::to_string(attachment_size) + " streamed=" + (streamed ? "1" : "0") + " detail=" + (error.empty() ? "none" : "helper_error"));
+				result.status = 500;
 				result.error = error.empty() ? "Remote attachment upload failed." : error;
 				break;
 			}
@@ -466,9 +457,11 @@ namespace
 			attachment.path = relative;
 			if (host.platform == "windows" || host.platform == "Windows")
 				std::ranges::replace(attachment.path, '/', '\\');
-			attachment.size_bytes = bytes.size();
+			attachment.size_bytes = attachment_size;
 			attachment.copied = true;
-			attachment.preview_key = uam::attachment_preview::Store(data_root, bytes);
+			uam::staged_attachment_discard::ExchangeUnsent(attachment.path, uam::staged_attachment_discard::Unsent::Stage);
+			// A streamed file is never held in memory, so it gets no stored preview.
+			if (!streamed) attachment.preview_key = uam::attachment_preview::Store(data_root, bytes);
 			result.attachments.push_back(AttachmentToJson(attachment));
 			++index;
 		}
@@ -497,12 +490,27 @@ void UamQueryHandler::HandleCompactAcpSession(CefRefPtr<CefBrowser> browser, con
 
 void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	// Before any check or wait: a copy a send has named is never discarded with a chip, even while that send is
+	// still preparing or is later refused.
+	if (const nlohmann::json* named = uam::nlohmann_json::FindArrayField(payload, attachment_frontend_fields::kAttachmentsField); named != nullptr)
+	{
+		for (const nlohmann::json& item : *named)
+		{
+			if (item.is_object()) uam::staged_attachment_discard::ExchangeUnsent(uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kPathField}), uam::staged_attachment_discard::Unsent::Submit);
+		}
+	}
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string text = payload.value("text", "");
 	const int missing_chat_status = chat_id.empty() || text.empty() ? 400 : 404;
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id, missing_chat_status);
 	if (chat == nullptr)
 	{
+		return;
+	}
+	if (chat->AwaitsAutomationApproval())
+	{
+		// Ahead of the initial-mention route, which launches a child without passing through SendAcpPrompt.
+		cb->Failure(409, kAwaitingAutomationApprovalError);
 		return;
 	}
 	std::string error;
@@ -572,6 +580,30 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	// After the cheap refusals, so a send that cannot start leaves no branch behind.
 	if (ApplyPendingChatBranch(browser, *chat, cb, [this, browser, payload, cb]() { HandleSendAcpPrompt(browser, payload, cb); }))
 		return;
+	// Claimed here because every asynchronous re-entry above replays this handler and only admission below is once-only.
+	std::string send_idempotency_id;
+	if (const auto id_it = payload.find("sendIdempotencyId"); id_it != payload.end() && id_it->is_string() && uam::input_provenance::ValidOriginRequestId(id_it->get_ref<const std::string&>()))
+		send_idempotency_id = id_it->get<std::string>();
+	if (!send_idempotency_id.empty())
+	{
+		const auto claim = m_recentSendIds.Begin(chat_id, send_idempotency_id, payload.value("_uamOriginRequestId", std::string{}));
+		if (claim.claim == uam::cef::SendIdempotencyWindow::Claim::InProgress)
+		{
+			cb->Failure(409, "This message is still being sent. Check the chat before sending it again.");
+			return;
+		}
+		if (claim.claim == uam::cef::SendIdempotencyWindow::Claim::Admitted)
+		{
+			// The earlier attempt's request ID lets the client show that admitted row as this message.
+			nlohmann::json duplicate{{"duplicateSend", true}};
+			if (!claim.origin_request_id.empty()) duplicate["originRequestId"] = claim.origin_request_id;
+			cb->Success(duplicate.dump());
+			return;
+		}
+	}
+	// Shared by every path that can finish this send, so the last one to drop it releases an unsettled claim.
+	const auto settlement = std::make_shared<uam::cef::SendIdempotencySettlement>(m_recentSendIds, m_asyncLifetime, chat_id, send_idempotency_id);
+	const auto settle_send_id = [settlement](bool admitted) { settlement->Settle(admitted); };
 	const bool goal_mode = payload.value("goalMode", false);
 	const std::string goal_id = AcpPromptGoalIdFromPayload(payload);
 	const bool computer_use_mode = payload.value("computerUseMode", false);
@@ -582,10 +614,11 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	if (managed_initial_producer_enabled && chat->agent_run_id.empty() && markdown_store_files.empty() && attachments.empty() && !goal_mode && goal_id.empty() && !computer_use_mode && !steer_now)
 	{
 		const std::weak_ptr<void> lifetime = m_asyncLifetime;
-		const auto complete = [this, lifetime, browser, cb, chat_id](const uam::ManagedInitialMentionResult& result) -> bool
+		const auto complete = [this, lifetime, browser, cb, chat_id, settle_send_id](const uam::ManagedInitialMentionResult& result) -> bool
 		{
 			if (lifetime.expired())
 				return false;
+			settle_send_id(result.input_recorded);
 			nlohmann::json receipt{{"inputRecorded", result.input_recorded}, {"delegationState", result.delegation_state == uam::ManagedInitialDelegationState::Committed ? "committed" : result.delegation_state == uam::ManagedInitialDelegationState::Uncertain ? "uncertain" : "rejected"}, {"parentMessage", nullptr}, {"parentMessageIndex", nullptr}, {"error", std::string(uam::strings::Utf8Prefix(result.error, 4096))}};
 			if (result.input_recorded && result.parent_message)
 			{
@@ -628,6 +661,7 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	                    : uam::SendAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, goal_mode, &error, goal_id, computer_use_mode, origin_request_id, &input_admission);
 	if (!sent)
 	{
+		settle_send_id(false);
 		cb->Failure(chat_id.empty() || text.empty() ? 400 : 500, FailureDetailOrFallback(error, "Failed to send ACP prompt."));
 		return;
 	}
@@ -660,13 +694,16 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;
 	const std::filesystem::path data_root = m_app.data_root;
-	if (uam::DeferChatSaveResult(m_app, chat_id, [this, lifetime, data_root, browser, cb, response_json](bool saved)
+	if (uam::DeferChatSaveResult(m_app, chat_id, [this, lifetime, data_root, browser, cb, response_json, settle_send_id](bool saved)
 	{
 		if (lifetime.expired()) return;
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		if (saved && m_app.data_root == data_root) cb->Success(response_json);
+		const bool committed = saved && m_app.data_root == data_root;
+		settle_send_id(committed);
+		if (committed) cb->Success(response_json);
 		else cb->Failure(500, "Prompt was not sent because chat history could not be saved.");
 	})) return;
+	settle_send_id(true);
 	cb->Success(response_json);
 }
 
@@ -927,7 +964,7 @@ void UamQueryHandler::HandleResumeQueuedAcpPrompts(CefRefPtr<CefBrowser> browser
 	if (!payload.contains("chatId") || !payload["chatId"].is_string() || payload["chatId"].get<std::string>().empty() ||
 	    !payload.contains("expected") || !payload["expected"].is_array() || payload["expected"].empty() || payload["expected"].size() > 32)
 	{
-		cb->Failure(400, "Invalid restored queue action.");
+		cb->Failure(400, "Invalid held queue action.");
 		return;
 	}
 	std::vector<std::pair<std::string, int>> expected;
@@ -945,7 +982,7 @@ void UamQueryHandler::HandleResumeQueuedAcpPrompts(CefRefPtr<CefBrowser> browser
 	std::string error;
 	if (!uam::ResumeQueuedAcpPrompts(m_app, payload["chatId"].get<std::string>(), expected, &error))
 	{
-		cb->Failure(409, FailureDetailOrFallback(error, "Failed to resume restored queue."));
+		cb->Failure(409, FailureDetailOrFallback(error, "Failed to resume the held queue."));
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
@@ -1007,7 +1044,7 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 		}
 		if (execution_host->id != uam::execution_hosts::kLocalHostId)
 		{
-			if (execution_host->runner_status != "ready")
+			if (!uam::remote::CanAttemptRunnerConnection(*execution_host))
 			{
 				cb->Failure(409, "The selected remote runner is not ready.");
 				return;
@@ -1054,12 +1091,24 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 	{
 		(void)m_app.provider_model_catalog->StartConfiguredOpenCodeRefresh();
 	}
-	const bool should_start = m_app.provider_model_catalog->BeginDiscovery(
-	    provider_id, workspace_directory, execution_host_id);
+	// A request the UI makes by itself (opening a model menu, showing a chat on the phone) is skipped while the cached
+	// models are current or were already refreshed this run. Refresh and Retry always ask the provider.
+	const bool automatic = payload.value("automatic", false);
+	const bool should_start = automatic
+	    ? m_app.provider_model_catalog->BeginDiscoveryIfStale(provider_id, workspace_directory, execution_host_id)
+	    : m_app.provider_model_catalog->BeginDiscovery(provider_id, workspace_directory, execution_host_id);
 	if (!should_start)
 	{
+		const bool pending = m_app.provider_model_catalog->IsDiscoveryPending(provider_id, workspace_directory, execution_host_id);
+		// A skipped automatic request is "current" only when there are models to show. A refresh that failed earlier
+		// in this run answers with its stored error, so the menu is never empty without an explanation.
+		const std::string stored_error = automatic && !pending
+		    ? m_app.provider_model_catalog->GetProviderRefreshError(provider_id, workspace_directory, execution_host_id) : std::string{};
+		const bool has_models = automatic && !pending &&
+		    !m_app.provider_model_catalog->GetCachedProviderModels(provider_id, workspace_directory, execution_host_id).empty();
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Success(nlohmann::json{{"started", false}, {"pending", m_app.provider_model_catalog->IsDiscoveryPending(provider_id, workspace_directory, execution_host_id)}}.dump());
+		if (!stored_error.empty()) cb->Failure(500, stored_error);
+		else cb->Success(nlohmann::json{{"started", false}, {"pending", pending}, {"current", has_models}}.dump());
 		return;
 	}
 	std::string error;
@@ -1186,7 +1235,6 @@ void UamQueryHandler::HandleNativeModelOptions(CefRefPtr<CefBrowser> browser, co
 
 void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	(void)browser;
 	const std::string chat_id = payload.value("chatId", "");
 	if (chat_id.empty())
 	{
@@ -1232,9 +1280,20 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 			response = uam::query_handler_async::AsyncFailure(409, "Chat workspace or execution host changed while attachments were staging.");
 		}
 	};
+	// A copy can run for minutes, so it gets a slow-query thread rather than the shared file lane that VCS status,
+	// memory and saved-history reads use. A missing runner falls back to that lane.
+	const CefRefPtr<CefTaskRunner> staging_runner = SlowQueryRunner("attachment:" + chat_id);
+	// Progress for files copied from disk in chunks, at most five updates a second per request plus the last one.
+	const AttachmentProgress progress = [browser, chat_id, last = std::make_shared<std::chrono::steady_clock::time_point>()](const std::string& attachment_id, const std::uintmax_t copied, const std::uintmax_t total)
+	{
+		const auto now = std::chrono::steady_clock::now();
+		if (copied < total && now - *last < std::chrono::milliseconds(200)) return;
+		*last = now;
+		uam::PushAttachmentProgress(browser, chat_id, attachment_id, copied, total);
+	};
 	if (remote)
 	{
-		if (execution_host->runner_status != "ready" ||
+		if (!uam::remote::CanAttemptRunnerConnection(*execution_host) ||
 		    !uam::execution_hosts::IsAbsoluteRemotePath(execution_host->platform,
 		        uam::paths::Utf8PathString(workspace_root)))
 		{
@@ -1242,12 +1301,12 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 			return;
 		}
 		auto result = std::make_shared<RemoteAttachmentResult>();
-		uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime,
+		uam::query_handler_async::RunAsyncCefQuery(staging_runner, m_asyncLifetime,
 		    cb,
 		    [items = *items, host = *execution_host, chat_id,
-		     workspace = uam::paths::Utf8PathString(workspace_root), data_root = m_app.data_root, result]()
+		     workspace = uam::paths::Utf8PathString(workspace_root), data_root = m_app.data_root, result, progress]()
 		    {
-			    *result = StageRemoteAttachments(items, host, chat_id, workspace, data_root);
+			    *result = StageRemoteAttachments(items, host, chat_id, workspace, data_root, progress);
 			    return result->ok
 			        ? uam::query_handler_async::AsyncSuccess(
 			              {{"attachments", result->attachments}})
@@ -1256,8 +1315,8 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 		return;
 	}
 
-	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
-	    [items = *items, workspace_root, chat_id, data_root = m_app.data_root]()
+	uam::query_handler_async::RunAsyncCefQuery(staging_runner, m_asyncLifetime, cb,
+	    [items = *items, workspace_root, chat_id, data_root = m_app.data_root, progress]()
 	    {
 		std::error_code ec;
 		if (!uam::paths::CreateDirectoriesNoThrow(workspace_root, &ec))
@@ -1278,6 +1337,17 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 		}
 
 		auto staged = nlohmann::json::array();
+		// Copies already written are removed when a later item fails, as SSH staging does.
+		std::vector<std::filesystem::path> written;
+		const auto fail = [&written](const int status, const std::string& message)
+		{
+			for (const std::filesystem::path& path : written)
+			{
+				std::error_code remove_error;
+				std::filesystem::remove(path, remove_error);
+			}
+			return uam::query_handler_async::AsyncFailure(status, message);
+		};
 		std::size_t index = 0;
 		for (const nlohmann::json& item : items)
 		{
@@ -1306,12 +1376,12 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 			{
 				if (source_path_text.empty())
 				{
-					return uam::query_handler_async::AsyncFailure(400, "Directory attachments require a filesystem path.");
+					return fail(400, "Directory attachments require a filesystem path.");
 				}
 				const std::filesystem::path source_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
 				if (!uam::paths::IsDirectoryNoThrow(source_path))
 				{
-					return uam::query_handler_async::AsyncFailure(400, "Directory attachment does not exist: " + source_path_text);
+					return fail(400, "Directory attachment does not exist: " + source_path_text);
 				}
 				attachment.path = PathForPrompt(workspace_root, source_path);
 				attachment.copied = false;
@@ -1319,55 +1389,40 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 				continue;
 			}
 
+			// A file over the in-memory limit is copied from disk in chunks; everything else is loaded and checked whole.
 			std::string bytes;
-			if (const nlohmann::json* data_base64 = uam::nlohmann_json::FindStringField(item, attachment_frontend_fields::kDataBase64Field); data_base64 != nullptr)
+			int load_status = 500;
+			std::string load_error;
+			std::filesystem::path streamed_source;
+			std::uintmax_t streamed_size = 0;
+			const bool streamed = uam::attachment_payload::IsStreamedSource(item, source_path_text, streamed_source, streamed_size, load_status, load_error);
+			if ((streamed && !load_error.empty()) || (!streamed && !uam::attachment_payload::Load(item, source_path_text, bytes, load_status, load_error)))
 			{
-				if (!uam::base64::Decode(data_base64->get_ref<const std::string&>(), bytes))
-				{
-					return uam::query_handler_async::AsyncFailure(400, "Attachment data is not valid base64.");
-				}
-				if (bytes.size() > kMaxAttachmentBytes)
-				{
-					return uam::query_handler_async::AsyncFailure(413, "Attachment is larger than the 25 MB limit.");
-				}
-			}
-			else if (!source_path_text.empty())
-			{
-				const std::filesystem::path source_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
-				if (!uam::paths::IsRegularFileNoThrow(source_path))
-				{
-					return uam::query_handler_async::AsyncFailure(400, "File attachment does not exist: " + source_path_text);
-				}
-				const std::optional<std::uintmax_t> source_size = uam::paths::FileSizeNoThrow(source_path);
-				if (!source_size || *source_size > kMaxAttachmentBytes)
-				{
-					return uam::query_handler_async::AsyncFailure(413, "Attachment is larger than the 25 MB limit.");
-				}
-				if (!uam::io::TryReadBinaryFile(source_path, bytes))
-				{
-					return uam::query_handler_async::AsyncFailure(500, "Failed to read attachment: " + source_path_text);
-				}
-				if (bytes.size() > kMaxAttachmentBytes)
-				{
-					return uam::query_handler_async::AsyncFailure(413, "Attachment is larger than the 25 MB limit.");
-				}
-			}
-			else
-			{
-				return uam::query_handler_async::AsyncFailure(400, "File attachments require data or a filesystem path.");
+				return fail(load_status, load_error);
 			}
 
 			const std::string prefix = uam::time::SystemEpochMicrosecondsTokenNow() + "-" + std::to_string(index++);
 			const std::filesystem::path target = attachment_root / (prefix + "-" + attachment.name);
-			if (!uam::io::WriteBinaryFile(target, bytes))
+			if (streamed)
 			{
-				return uam::query_handler_async::AsyncFailure(500, "Failed to write attachment.");
+				if (!uam::attachment_payload::CopyStreamed(streamed_source, target, streamed_size,
+				        [&progress, &attachment](const std::uintmax_t copied, const std::uintmax_t total) { if (progress) progress(attachment.id, copied, total); }, load_error,
+				        [&attachment] { return uam::attachment_payload::ExchangeCanceled(attachment.id, false); }))
+				{
+					return fail(500, load_error);
+				}
 			}
+			else if (!uam::io::WriteBinaryFile(target, bytes))
+			{
+				return fail(500, "Failed to write attachment.");
+			}
+			written.push_back(target);
 			attachment.path = PathForPrompt(workspace_root, target);
 			attachment.preview_origin_path = uam::paths::Utf8PathString(std::filesystem::absolute(target));
-			attachment.preview_key = uam::attachment_preview::Store(data_root, bytes);
-			attachment.size_bytes = bytes.size();
+			if (!streamed) attachment.preview_key = uam::attachment_preview::Store(data_root, bytes);
+			attachment.size_bytes = streamed ? streamed_size : bytes.size();
 			attachment.copied = true;
+			uam::staged_attachment_discard::ExchangeUnsent(attachment.path, uam::staged_attachment_discard::Unsent::Stage);
 			staged.push_back(AttachmentToJson(attachment));
 		}
 
@@ -1375,17 +1430,174 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 	    }, complete, TID_FILE_USER_VISIBLE);
 }
 
+namespace
+{
+	/// Regular files among `paths`, each with its name and size, for the composer to stage by path.
+	nlohmann::json AttachmentFileEntries(const std::vector<std::string>& paths)
+	{
+		nlohmann::json files = nlohmann::json::array();
+		for (const std::string& text : paths)
+		{
+			const std::filesystem::path path = uam::paths::PathFromUtf8(text);
+			const std::optional<std::uintmax_t> size = uam::paths::FileSizeNoThrow(path);
+			if (!size || !uam::paths::IsRegularFileNoThrow(path))
+			{
+				continue;
+			}
+			files.push_back({{"path", text}, {"name", uam::paths::Utf8PathString(path.filename())}, {"size", *size}});
+		}
+		return files;
+	}
+
+	class AttachmentFileDialogCallback final : public CefRunFileDialogCallback
+	{
+	  public:
+		AttachmentFileDialogCallback(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback) : m_lifetime(std::move(lifetime)), m_callback(std::move(callback)) {}
+		void OnFileDialogDismissed(const std::vector<CefString>& file_paths) override
+		{
+			std::vector<std::string> paths;
+			for (const CefString& path : file_paths)
+			{
+				paths.push_back(path.ToString());
+			}
+			// Sizes are read off the UI thread: a picked file can sit on a slow or dead network share.
+			uam::query_handler_async::RunAsyncCefQuery(m_lifetime, m_callback, [paths]() { return uam::query_handler_async::AsyncSuccess({{"files", AttachmentFileEntries(paths)}}); });
+		}
+
+	  private:
+		std::weak_ptr<void> m_lifetime;
+		CefRefPtr<CefMessageRouterBrowserSide::Callback> m_callback;
+		IMPLEMENT_REFCOUNTING(AttachmentFileDialogCallback);
+	};
+} // namespace
+
+// The desktop composer picks files through the native dialog so each attachment has a path to copy from; the
+// renderer's own file input gives bytes only. Never offered to the phone companion.
+void UamQueryHandler::HandlePickChatAttachmentFiles(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	(void)payload;
+	if (m_dispatchingCompanion || browser == nullptr || browser->GetHost() == nullptr)
+	{
+		cb->Failure(403, "Files can be picked only from the desktop app.");
+		return;
+	}
+	browser->GetHost()->RunFileDialog(FILE_DIALOG_OPEN_MULTIPLE, "Attach files", CefString(), {}, new AttachmentFileDialogCallback(m_asyncLifetime, cb));
+}
+
+void UamQueryHandler::HandleTakeDroppedAttachmentPaths(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	(void)browser;
+	(void)payload;
+	if (m_dispatchingCompanion)
+	{
+		cb->Failure(403, "Dropped files are available only in the desktop app.");
+		return;
+	}
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [paths = uam::cef::ExchangeDroppedAttachmentPaths()]() { return uam::query_handler_async::AsyncSuccess({{"files", AttachmentFileEntries(paths)}}); });
+}
+
+// The composer calls this when a chip is removed while its file is still being copied.
+void UamQueryHandler::HandleCancelChatAttachmentStaging(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	(void)browser;
+	const std::string attachment_id = payload.value("attachmentId", "");
+	if (attachment_id.empty() || attachment_id.size() > 1024)
+	{
+		cb->Failure(400, "An attachment id is required.");
+		return;
+	}
+	uam::attachment_payload::ExchangeCanceled(attachment_id, true);
+	cb->Success("{}");
+}
+
+// The composer calls this when the user removes a chip whose copy already finished. Only a copy this chat staged
+// and nothing has sent, queued or recorded is deleted; a sent attachment keeps its file.
+void UamQueryHandler::HandleDiscardStagedChatAttachment(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	(void)browser;
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string path = payload.value("path", "");
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
+	{
+		return;
+	}
+	if (m_dispatchingCompanion || !uam::staged_attachment_discard::IsStagedCopyPath(path, chat_id))
+	{
+		cb->Failure(400, "Only an attachment copy staged for this chat can be discarded.");
+		return;
+	}
+	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
+	const ExecutionHost* execution_host = uam::execution_hosts::Find(m_app.settings.execution_hosts, chat->execution_host_id);
+	// Taken out of the unsent set here, on the UI thread, so a send that arrives later cannot race the delete below.
+	if (uam::staged_attachment_discard::IsReferenced(m_app, path) || workspace_root.empty() || execution_host == nullptr ||
+	    !uam::staged_attachment_discard::ExchangeUnsent(path, uam::staged_attachment_discard::Unsent::TakeForDiscard))
+	{
+		cb->Success(R"({"removed":false})");
+		return;
+	}
+	const std::string portable = uam::staged_attachment_discard::Portable(path);
+	const bool remote = execution_host->id != uam::execution_hosts::kLocalHostId;
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner("attachment:" + chat_id), m_asyncLifetime, cb,
+	    [remote, host = *execution_host, workspace_root, portable]()
+	    {
+		    bool removed = false;
+		    if (remote)
+		    {
+			    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, host);
+			    removed = uam::remote::CanAttemptRunnerConnection(host) && client.Connect(nullptr) &&
+			              client.RemoveFile("discard-" + uam::time::SystemEpochMicrosecondsTokenNow(),
+			                  uam::paths::PathFromUtf8(uam::execution_hosts::JoinRemotePath(host.platform, uam::paths::Utf8PathString(workspace_root), portable)));
+		    }
+		    else
+		    {
+			    const std::filesystem::path target = workspace_root / uam::paths::PathFromUtf8(portable);
+			    removed = uam::paths::IsRegularFileNoThrow(target) && uam::paths::RemoveFileNoThrow(target);
+		    }
+		    uam::diagnostics::Write(std::string("[stageChatAttachments] Unsent attachment copy discarded: remote=") + (remote ? "1" : "0") + " removed=" + (removed ? "1" : "0"));
+		    return uam::query_handler_async::AsyncSuccess({{"removed", removed}});
+	    }, {}, TID_FILE_USER_VISIBLE);
+}
+
 void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
 
 	std::string error;
-	if (!uam::CancelAcpTurn(m_app, chat_id, &error))
+	// A desktop Cancel turn keeps queued input and holds it, so nothing sends until the user resumes or removes it.
+	// The phone has no Resume control yet, so a companion cancel keeps the earlier discard (pending the owner's decision).
+	const bool hold_queue = !m_dispatchingCompanion;
+	if (!uam::CancelAcpTurn(m_app, chat_id, &error, true, hold_queue, hold_queue))
 	{
-		cb->Failure(500, FailureDetailOrFallback(error, "Failed to cancel ACP turn."));
+		// A refusal that names its own cause wins over the flags below: this call stopped nothing.
+		if (error == "Could not save quota continuation cancellation.")
+		{
+			cb->Failure(500, "The quota wait could not be cancelled because its state could not be saved. Try again.");
+			return;
+		}
+		if (error.starts_with("Held prompts could not be discarded because ") ||
+		    error == "The referenced unsent draft has pending delivery or later work. Remove it after that settles.")
+		{
+			cb->Failure(500, error);
+			return;
+		}
+		// A remote stop in flight, or one UAM is reconnecting to confirm (helper not reattached), is progress.
+		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
+		if (session != nullptr && (session->remote_stop_pending || (session->remote_stop_unconfirmed && !session->running)))
+		{
+			if (m_app.pr_watch_service != nullptr) (void)m_app.pr_watch_service->EndWatchesForChat(chat_id);
+			uam::PushStateUpdateIfChanged(browser, m_app);
+			cb->Success(R"({"pending":true})");
+			return;
+		}
+		// Transport errors and the status line can carry OS text; only fixed runtime wording reaches the notice.
+		uam::diagnostics::Write("[cancelAcpTurn] Cancel was refused; the runtime diagnostics hold the cause.");
+		cb->Failure(500, "The turn could not be cancelled. Try again.");
 		return;
 	}
 
+	// Pressing Stop also ends the chat's pull request watches, so a later wake cannot restart the work.
+	if (m_app.pr_watch_service != nullptr) (void)m_app.pr_watch_service->EndWatchesForChat(chat_id);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
@@ -1446,6 +1658,24 @@ void UamQueryHandler::HandleResolveAcpUserInput(CefRefPtr<CefBrowser> browser, c
 	cb->Success("{}");
 }
 
+/// The user-facing reason a stop was refused, from the chat's own state; the global status line can hold
+/// another operation's text (a quota-wait refusal sets none), so it is never forwarded.
+static std::string StopRefusalReason(uam::AppState& app, const std::string& chat_id)
+{
+	const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat_id);
+	const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+	if (session != nullptr && session->restart_marker_save_pending)
+		return "The remote restart is waiting for its recovery data to be saved. Try again shortly.";
+	if (session != nullptr && !session->running && chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId &&
+	    (chat->remote_turn_reconnect_pending || chat->remote_process_exists))
+		return "The remote host is disconnected. Reconnect it before stopping, so UAM can confirm the turn ended.";
+	if (session != nullptr && session->queue_held)
+		return "Held prompts could not be discarded, so the runtime was not stopped. Try again.";
+	if (session != nullptr && session->running && chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId)
+		return "The remote stop could not be recorded before it was sent, so nothing was stopped. Try again.";
+	return "The runtime could not be stopped. Try again.";
+}
+
 void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
@@ -1453,19 +1683,30 @@ void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser, const 
 	if (!uam::StopAcpSession(m_app, chat_id, purpose))
 	{
 		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
-		if (session != nullptr && (session->local_stop_pending || session->remote_stop_pending))
+		// A stop in flight, or an unconfirmed remote stop UAM retries after reconnecting, is progress. With the helper
+		// reattached (running) this call should have sent the stop, so a false return there is a real refusal.
+		if (session != nullptr && (session->local_stop_pending || session->remote_stop_pending || (session->remote_stop_unconfirmed && !session->running)))
 		{
 			uam::PushStateUpdateIfChanged(browser, m_app);
 			cb->Success(R"({"pending":true})");
 			return;
 		}
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Failure(409, FailureDetailOrFallback(
-		    m_app.status_line, "Failed to stop the structured runtime."));
+		cb->Failure(409, StopRefusalReason(m_app, chat_id));
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleTreatRemoteStopAsStopped(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	// Desktop only: the phone has no confirmation for an override that can leave a process running on the host.
+	std::string error;
+	const bool settled = uam::TreatUnconfirmedRemoteStopAsStopped(m_app, payload.value("chatId", ""), &error);
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	if (settled) cb->Success("{}");
+	else cb->Failure(409, error);
 }
 
 void UamQueryHandler::HandleWriteClipboardText(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)

@@ -1,5 +1,8 @@
 #include "common/usage/usage_store.h"
 #include "common/usage/antigravity_accounting.h"
+#ifndef UAM_HEADLESS_RUNNER
+#include "common/utils/diagnostic_log.h"
+#endif
 #include "common/utils/io_utils.h"
 
 #include <cmath>
@@ -17,7 +20,7 @@ namespace uam::usage
 		using Database = std::unique_ptr<sqlite3, decltype(&sqlite3_close)>;
 		using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
 
-		Database Open(const std::filesystem::path& path, std::string& error)
+		Database Open(const std::filesystem::path& path, std::string& error, bool create = true)
 		{
 			Database database(nullptr, sqlite3_close);
 			if (path.empty()) { error = "Usage storage has no data root."; return database; }
@@ -34,7 +37,7 @@ namespace uam::usage
 			const std::u8string utf8 = native.u8string();
 			const std::string filename(reinterpret_cast<const char*>(utf8.data()), utf8.size());
 			sqlite3* raw = nullptr;
-			const int status = sqlite3_open_v2(filename.c_str(), &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX, nullptr);
+			const int status = sqlite3_open_v2(filename.c_str(), &raw, SQLITE_OPEN_READWRITE | (create ? SQLITE_OPEN_CREATE : 0) | SQLITE_OPEN_NOMUTEX, nullptr);
 			database.reset(raw);
 			if (status != SQLITE_OK) { error = "Could not open usage storage."; database.reset(); return database; }
 			sqlite3_busy_timeout(database.get(), 50);
@@ -50,6 +53,12 @@ namespace uam::usage
 			{ error = "Could not initialize usage storage."; database.reset(); return database; }
 			if (version == 1 && sqlite3_exec(database.get(), "BEGIN IMMEDIATE; CREATE TABLE archived_facts(identity TEXT PRIMARY KEY, created INTEGER NOT NULL, data TEXT NOT NULL) WITHOUT ROWID; CREATE INDEX archived_facts_time ON archived_facts(created); PRAGMA user_version=2; COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
 			{ error = "Could not migrate usage storage."; database.reset(); return database; }
+			// Change detection reads the rollback-journal file change counter (Store::ChangeCounter); WAL commits never advance it.
+			sqlite3_stmt* journal_raw = nullptr;
+			if (sqlite3_prepare_v2(database.get(), "PRAGMA journal_mode", -1, &journal_raw, nullptr) != SQLITE_OK) { error = "Could not inspect usage storage journal."; database.reset(); return database; }
+			Statement journal(journal_raw, sqlite3_finalize);
+			const unsigned char* mode = sqlite3_step(journal.get()) == SQLITE_ROW ? sqlite3_column_text(journal.get(), 0) : nullptr;
+			if (!mode || std::string_view(reinterpret_cast<const char*>(mode)) == "wal") { error = "Usage storage uses an unsupported journal mode."; database.reset(); return database; }
 			return database;
 		}
 
@@ -245,8 +254,8 @@ namespace uam::usage
 
 	namespace
 	{
-		// Each sweep runs before its own worker creates anything of that kind, so a day-old match belongs to an earlier run.
-		void SweepDayOldScratch(const std::filesystem::path& folder, const std::string& files, std::string_view folders)
+		// Each sweep runs before its own worker creates anything of that kind, so a match of at least max_age belongs to an earlier run.
+		void SweepScratch(const std::filesystem::path& folder, const std::string& files, std::string_view folders, std::chrono::hours max_age)
 		{
 			std::error_code error;
 			for (std::filesystem::directory_iterator it(folder, std::filesystem::directory_options::skip_permission_denied, error), end; !error && it != end; it.increment(error))
@@ -254,35 +263,53 @@ namespace uam::usage
 				const std::string name = paths::Utf8PathString(it->path().filename());
 				std::error_code status_error;
 				const std::filesystem::file_status status = std::filesystem::symlink_status(it->path(), status_error);
-				const bool scratch = (name.starts_with(files) && std::filesystem::is_regular_file(status)) || (!folders.empty() && name.starts_with(folders) && std::filesystem::is_directory(status));
+				const bool scratch = (!files.empty() && name.starts_with(files) && std::filesystem::is_regular_file(status)) || (!folders.empty() && name.starts_with(folders) && std::filesystem::is_directory(status));
 				if (status_error || !scratch) continue;
 				const std::filesystem::file_time_type modified = std::filesystem::last_write_time(it->path(), status_error);
-				if (!status_error && std::filesystem::file_time_type::clock::now() - modified >= std::chrono::hours(24)) std::filesystem::remove_all(it->path(), status_error);
+				if (!status_error && (max_age.count() == 0 || std::filesystem::file_time_type::clock::now() - modified >= max_age)) std::filesystem::remove_all(it->path(), status_error);
 			}
 		}
 	}
 
-	void RemoveAbandonedScratch(const std::filesystem::path& data_root)
+	void RemoveAbandonedScratch(const std::filesystem::path& data_root, bool no_other_owner)
 	{
 		if (data_root.empty() || paths::IsLinkOrReparsePointNoThrow(data_root / "usage")) return;
-		SweepDayOldScratch(data_root / "usage", std::string("receipts.jsonl") + io::kTempWritePathSuffix, "combined-");
+		SweepScratch(data_root / "usage", std::string("receipts.jsonl") + io::kTempWritePathSuffix, "", no_other_owner ? std::chrono::hours(0) : std::chrono::hours(24));
+		SweepScratch(data_root / "usage", "", "combined-", no_other_owner ? std::chrono::hours(0) : std::chrono::hours(24));
 	}
 
 	void RemoveAbandonedRemoteViews(const std::filesystem::path& data_root)
 	{
+		if (data_root.empty() || paths::IsLinkOrReparsePointNoThrow(data_root / "usage")) return;
 		const std::filesystem::path remote = data_root / "usage" / "remote";
-		if (data_root.empty() || paths::IsLinkOrReparsePointNoThrow(data_root / "usage") || paths::IsLinkOrReparsePointNoThrow(remote)) return;
+		if (paths::IsLinkOrReparsePointNoThrow(remote)) return;
 		std::error_code error;
 		for (std::filesystem::directory_iterator it(remote, std::filesystem::directory_options::skip_permission_denied, error), end; !error && it != end; it.increment(error))
 		{
 			std::error_code status_error;
 			if (!std::filesystem::is_directory(std::filesystem::symlink_status(it->path(), status_error)) || status_error) continue;
-			SweepDayOldScratch(it->path(), std::string("receipt-view") + io::kTempWritePathSuffix, "");
-			SweepDayOldScratch(it->path(), "snapshot-v3.jsonl.download-", "");
+			SweepScratch(it->path(), std::string("receipt-view") + io::kTempWritePathSuffix, "", std::chrono::hours(24));
+			SweepScratch(it->path(), "snapshot-v3.jsonl.download-", "", std::chrono::hours(24));
 		}
 	}
 
-	Store::Store(std::filesystem::path data_root) : m_path(data_root.empty() ? std::filesystem::path{} : data_root / "usage" / "history-index-v1.sqlite") {}
+	void LogLedgerWork(std::string_view origin, std::int64_t build_ms)
+	{
+#ifdef UAM_HEADLESS_RUNNER
+		// ponytail: the headless runner has no diagnostic log; add one here if helper timings are ever needed.
+		(void)origin; (void)build_ms;
+#else
+		if (build_ms >= 1000) { diagnostics::Write("[performance] Usage ledger build (" + std::string(origin) + ") took " + std::to_string(build_ms) + " ms."); return; }
+		if (build_ms >= 0) return;
+		static std::atomic<std::int64_t> last_skip{-3600000};
+		const std::int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+		std::int64_t previous = last_skip.load();
+		if (now - previous >= 3600000 && last_skip.compare_exchange_strong(previous, now))
+			diagnostics::Write("[performance] Usage ledger build (" + std::string(origin) + ") skipped; inputs unchanged. Logged at most hourly.");
+#endif
+	}
+
+	Store::Store(std::filesystem::path data_root, bool existing) : m_path(data_root.empty() ? std::filesystem::path{} : data_root / "usage" / "history-index-v1.sqlite"), m_existing(existing) {}
 
 	bool Store::Import(const std::vector<SourceRecord>& records, std::string& error, const std::function<bool()>& cancelled) const
 	{
@@ -292,7 +319,7 @@ namespace uam::usage
 			if (!entry.record || !Valid(*entry.record) || (entry.record->dedupe_key.empty() && (entry.source_id.empty() || entry.source_id.size() > 8192)))
 			{ error = "Usage accounting record is invalid."; return false; }
 		if (cancelled && cancelled()) { error = "Usage collection was cancelled."; return false; }
-		Database database = Open(m_path, error);
+		Database database = Open(m_path, error, !m_existing);
 		if (!database) return false;
 		sqlite3_progress_handler(database.get(), 1000, Stop, const_cast<std::function<bool()>*>(&cancelled));
 		if (sqlite3_exec(database.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK) { error = "Usage storage is busy."; return false; }
@@ -496,16 +523,14 @@ namespace uam::usage
 	{
 		error.clear();
 		if (!visitor || generated_ms <= 0 || generated_ms > kMaxExactTokenCount) { error = "Usage collection time is invalid."; return false; }
-		Database database = Open(m_path, error);
+		Database database = Open(m_path, error, !m_existing);
 		if (!database) return false;
 		sqlite3_progress_handler(database.get(), 1000, Stop, const_cast<std::function<bool()>*>(&cancelled));
 		sqlite3_stmt* raw = nullptr;
 		if (sqlite3_prepare_v2(database.get(), "SELECT name FROM sqlite_master WHERE type='table' AND name='imported_facts'", -1, &raw, nullptr) != SQLITE_OK) return false;
 		Statement probe(raw, sqlite3_finalize);
 		const bool imported = sqlite3_step(probe.get()) == SQLITE_ROW; probe.reset();
-		const std::string predicate = "created<?1 OR identity>=?2 AND identity<?3";
-		const std::string query = imported ? "SELECT identity,created,data FROM imported_facts WHERE " + predicate + " ORDER BY created,scope,identity" :
-		    "SELECT identity,created,data FROM facts WHERE " + predicate + " UNION ALL SELECT identity,created,data FROM archived_facts WHERE " + predicate + " ORDER BY created,identity";
+		const std::string query = LifetimeRecordsSql(imported);
 		if (sqlite3_prepare_v2(database.get(), query.c_str(), -1, &raw, nullptr) != SQLITE_OK) { error = "Could not read usage accounting."; return false; }
 		Statement statement(raw, sqlite3_finalize);
 		const std::string lower = std::string("[\"native\",\"") + provider_ids::kAntigravityCli + "\",";
@@ -530,6 +555,23 @@ namespace uam::usage
 		return true;
 	}
 
+	std::string Store::LifetimeRecordsSql(bool imported)
+	{
+		const std::string predicate = "created<?1 OR identity>=?2 AND identity<?3";
+		// imported_facts_time ends in the WITHOUT ROWID key, so (created,scope,identity) reads in index order.
+		return imported ? "SELECT identity,created,data FROM imported_facts INDEXED BY imported_facts_time WHERE " + predicate + " ORDER BY created,scope,identity" :
+		    "SELECT identity,created,data FROM facts WHERE " + predicate + " UNION ALL SELECT identity,created,data FROM archived_facts WHERE " + predicate + " ORDER BY created,identity";
+	}
+
+	std::uint32_t Store::ChangeCounter() const
+	{
+		std::ifstream input(m_path, std::ios::binary);
+		unsigned char bytes[28] = {};
+		if (!input.read(reinterpret_cast<char*>(bytes), sizeof bytes)) return 0;
+		// Offset 24 of the file header, big-endian; a no-op commit never touches it.
+		return static_cast<std::uint32_t>(bytes[24]) << 24 | static_cast<std::uint32_t>(bytes[25]) << 16 | static_cast<std::uint32_t>(bytes[26]) << 8 | bytes[27];
+	}
+
 	std::optional<Ledger> Store::ReadLifetimeLedger(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled) const
 	{
 		AliasReduction aliases;
@@ -543,7 +585,7 @@ namespace uam::usage
 		}, error, cancelled) || !aliases.Finish(cancelled))
 		{ if (error.empty()) error = "Could not resolve accounting aliases."; return std::nullopt; }
 		std::size_t duplicates = aliases.Duplicates();
-		Database database = Open(m_path, error);
+		Database database = Open(m_path, error, !m_existing);
 		if (!database) return std::nullopt;
 		sqlite3_stmt* stats_raw = nullptr;
 		if (sqlite3_prepare_v2(database.get(), "SELECT duplicates FROM imported_stats", -1, &stats_raw, nullptr) == SQLITE_OK)
@@ -571,10 +613,10 @@ namespace uam::usage
 	{
 		error.clear();
 		if (records.size() > 2048 || scope.empty() || scope.size() > 512) { error = "Usage accounting batch is invalid."; return false; }
-		Database database = Open(m_path, error);
+		Database database = Open(m_path, error, !m_existing);
 		if (!database) return false;
 		sqlite3_progress_handler(database.get(), 1000, Stop, const_cast<std::function<bool()>*>(&cancelled));
-		if (sqlite3_exec(database.get(), "BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS imported_facts(scope TEXT,identity TEXT,created INTEGER,data TEXT,PRIMARY KEY(scope,identity)) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS imported_stats(duplicates INTEGER); INSERT INTO imported_stats SELECT 0 WHERE NOT EXISTS(SELECT 1 FROM imported_stats)", nullptr, nullptr, nullptr) != SQLITE_OK)
+		if (sqlite3_exec(database.get(), "BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS imported_facts(scope TEXT,identity TEXT,created INTEGER,data TEXT,PRIMARY KEY(scope,identity)) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS imported_facts_time ON imported_facts(created); CREATE TABLE IF NOT EXISTS imported_stats(duplicates INTEGER); INSERT INTO imported_stats SELECT 0 WHERE NOT EXISTS(SELECT 1 FROM imported_stats)", nullptr, nullptr, nullptr) != SQLITE_OK)
 		{ error = "Could not prepare combined usage accounting."; return false; }
 		sqlite3_stmt* raw = nullptr;
 		if (sqlite3_prepare_v2(database.get(), "INSERT INTO imported_facts VALUES(?1,?2,?3,?4) ON CONFLICT(scope,identity) DO UPDATE SET created=excluded.created,data=excluded.data WHERE excluded.created<imported_facts.created", -1, &raw, nullptr) != SQLITE_OK) { error = "Could not prepare combined usage accounting."; return false; }
@@ -620,7 +662,7 @@ namespace uam::usage
 		error.clear();
 		if (generated_ms <= 0 || generated_ms > kMaxExactTokenCount) { error = "Usage collection time is invalid."; return std::nullopt; }
 		if (cancelled && cancelled()) { error = "Usage collection was cancelled."; return std::nullopt; }
-		Database database = Open(m_path, error);
+		Database database = Open(m_path, error, !m_existing);
 		if (!database) return std::nullopt;
 		sqlite3_progress_handler(database.get(), 1000, Stop, const_cast<std::function<bool()>*>(&cancelled));
 		const std::int64_t retention_start = std::max<std::int64_t>(0, generated_ms / 86400000 * 86400000 - 89LL * 86400000);

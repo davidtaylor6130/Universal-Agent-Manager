@@ -35,7 +35,7 @@ import {
   providerCapabilities,
   providerMetadataForId,
 } from '../../utils/providerMetadata'
-import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_STREAM_LOOP_REPEAT_LIMIT, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeCppMessage, sanitizeManagedOriginRunId, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeWindowsPowerShell, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
+import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_TOOL_CALL_TIMEOUT_SECONDS, DEFAULT_STREAM_LOOP_REPEAT_LIMIT, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeCppMessage, sanitizeManagedOriginRunId, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeWindowsPowerShell, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, sanitizeVcsHistoryPage, sanitizeVcsOriginReply, stringOr } from '../cpp/sanitizers'
 import {
   acpBindingsEquivalent,
   attachmentsEquivalent,
@@ -54,6 +54,7 @@ import type {
   AcpBinding,
   AcpLifecycleState,
   AcpUserInputAnswers,
+  SecretSubmission,
   ChatAttachmentInput,
   ChatMessagesResponse,
   CliBinding,
@@ -77,6 +78,10 @@ import type {
   VcsCommitResult,
   VcsCommitStatus,
   VcsFileDiffResponse,
+  VcsHistoryPage,
+  VcsOriginReply,
+  VcsOriginView,
+  VcsUpdateResult,
   VcsType,
 } from '../cpp/types'
 import type { AppState, AcceptedHistoryPage, AcpPromptPresentationObserver, ZustandSet, ZustandGet } from '../storeTypes'
@@ -119,6 +124,27 @@ const initialProviders: Provider[] = [
 ].filter((provider) => SUPPORTED_CLI_PROVIDER_IDS.includes(provider.id))
 
 let sessionCounter = 10
+
+function codexOptionsTitle(options: { reasoningEffort?: string; serviceTier?: string }) {
+  if (options.reasoningEffort !== undefined && options.serviceTier !== undefined) return 'Reasoning and speed were not changed'
+  return options.reasoningEffort !== undefined ? 'Reasoning was not changed' : 'Speed was not changed'
+}
+
+/**
+ * A refused chat control: one message names the control, then the backend's reason, or a generic next step when it
+ * sent none. The toast shows only the message (its detail is never displayed), so the reason belongs in it.
+ * A caller that already names the change takes the raw reason for its own notice.
+ */
+function reportRefusal(title: string, reason: string | undefined, onFailure?: (reason: string) => void) {
+  // The bridge's own failures carry raw exception text; that stays in the console, never in a notice.
+  const shown = reason && !reason.startsWith('Bridge request failed:') && !reason.startsWith('Invalid bridge payload:') ? reason : ''
+  if (onFailure) onFailure(shown)
+  else reportAppFailure(`${title}. ${shown || 'Try again.'}`, '')
+}
+
+type AcceptedModel = Pick<Session, 'modelId' | 'reasoningEffort' | 'serviceTier' | 'serviceTierExplicit' | 'updatedAt'>
+/** Per chat, the model state the backend last accepted while model changes are in flight; a refusal rolls back to it. */
+const acceptedModelByChatId = new Map<string, AcceptedModel>()
 
 function makeId(prefix: string, counter: number) {
   return `${prefix}-${counter}`
@@ -250,6 +276,20 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
   const boundedTailReloads = new Map<string, number>()
   const loadedMessagesDigestByChatId = new Map<string, string>()
   const messageHydrationGenerationByChatId = new Map<string, number>()
+  // Per chat, the last composer submission whose reply never confirmed admission. Its idempotency ID belongs to that
+  // submission (the caller's token), never to its text: a new submission always gets a new ID, identical words or not.
+  // `payloadKey` holds everything the request carries besides its IDs; a retry must match it exactly.
+  type UnconfirmedSubmission = { token: string; id: string; payloadKey: string; requestIds: string[]; turnSerial: number }
+  const unconfirmedSubmissionBySessionId = new Map<string, UnconfirmedSubmission>()
+  // Native state already shows the attempt (a row or receipt carries one of its request IDs) or a later turn started,
+  // so pressing Send again is a new message. Over-retiring can deliver twice; it never swallows a new message.
+  const submissionLanded = (sessionId: string, submission: UnconfirmedSubmission) => {
+    const state = get()
+    const binding = state.acpBindingBySessionId[sessionId]
+    if ((binding?.turnSerial ?? 0) > submission.turnSerial) return true
+    return [...(state.messages[sessionId] ?? []), ...(binding?.pendingDirectPrompts ?? []), ...(binding?.unsentDirectPrompts ?? []), ...(binding?.queuedPrompts ?? [])]
+      .some((record) => typeof record.originRequestId === 'string' && submission.requestIds.includes(record.originRequestId))
+  }
   // ponytail: fixed caps for hover prefetch; tune when profiling shows memory or bridge pressure.
   const PREFETCH_MAX_IN_FLIGHT = 2
   const PREFETCH_MAX_RETAINED = 4
@@ -531,6 +571,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     goalTokenBudget: 0,
     acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
     activeTurnInactivityTimeoutSeconds: DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS,
+    toolCallTimeoutSeconds: DEFAULT_TOOL_CALL_TIMEOUT_SECONDS,
     streamLoopRepeatLimit: DEFAULT_STREAM_LOOP_REPEAT_LIMIT,
     acpTurnOutputLimitMiB: DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
     appVersion: `V${packageVersion}`,
@@ -560,6 +601,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     gitDefaultBaseBranch: '',
     gitPullBeforeChat: false,
     svnUpdateBeforeChat: false,
+    svnRepositoryLayouts: [],
     gitPortMethod: 'patch' as VcsStorageSettings['gitPortMethod'],
     worktreeCleanupEnabled: true,
     worktreeRetentionDays: 14,
@@ -1543,6 +1585,55 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return `diff -- ${path}\n`
     },
 
+    getVcsHistory: async (id: string, vcsType: VcsType, options?: { before?: string; limit?: number; search?: string; requestId?: string }): Promise<VcsHistoryPage> => {
+      if (!isCefContext()) {
+        // Browser preview only: a short sample so the view can be developed without the desktop app.
+        const newest = options?.before ? Number(options.before) : 42
+        const entries = Array.from({ length: Math.max(0, Math.min(options?.limit ?? 50, newest, 6)) }, (_, index) => ({
+          revision: String(newest - index), author: 'sample', date: new Date(Date.UTC(2026, 0, 20 - index)).toISOString(), message: `Sample revision ${newest - index}`,
+          paths: [{ action: 'M', path: '/trunk/src/example.ts', kind: 'file', copyFromPath: '', copyFromRevision: '' }], pathsOmitted: 0,
+        }))
+        return { entries, next: newest - entries.length > 0 ? String(newest - entries.length) : '', workingRevision: options?.before ? '' : '41', location: options?.before ? '' : '^/trunk', repositoryRoot: '', repositoryUuid: '' }
+      }
+      // A stopped request fails by design, so failures are reported by the caller instead of the console.
+      const response = await sendToCEF({ action: 'getVcsHistory', payload: { chatId: id, vcsType, ...options } }, false)
+      if (!response.ok) throw new Error(response.error || 'Failed to load history.')
+      const page = sanitizeVcsHistoryPage(cefPayloadOrRawResponse(response))
+      if (!page) throw new Error('The history reply was not understood.')
+      return page
+    },
+
+    getVcsRevisionDiff: async (id: string, vcsType: VcsType, revision: string, path: string, requestId?: string): Promise<string> => {
+      if (!isCefContext()) return `Index: ${path}\n--- ${path}\t(revision ${Number(revision) - 1})\n+++ ${path}\t(revision ${revision})\n@@ -1 +1,2 @@\n sample\n+changed in r${revision}\n`
+      const response = await sendToCEF<VcsFileDiffResponse>({ action: 'getVcsRevisionDiff', payload: { chatId: id, vcsType, revision, path, requestId } }, false)
+      if (!response.ok) throw new Error(response.error || 'Failed to load this change.')
+      return typeof response.data?.diff === 'string' ? response.data.diff : ''
+    },
+
+    getVcsOrigin: async (id: string, vcsType: VcsType, view: VcsOriginView, options?: { before?: string; limit?: number; revisions?: string[]; requestId?: string }): Promise<VcsOriginReply> => {
+      // Browser preview only: a main line, which has no origin to compare with.
+      if (!isCefContext()) return sanitizeVcsOriginReply({})!
+      const response = await sendToCEF({ action: 'getVcsOrigin', payload: { chatId: id, vcsType, view, ...options } }, false)
+      if (!response.ok) throw new Error(response.error || 'Failed to read where this line was copied from.')
+      const reply = sanitizeVcsOriginReply(cefPayloadOrRawResponse(response))
+      if (!reply) throw new Error('The branch origin reply was not understood.')
+      return reply
+    },
+
+    updateVcsWorkspace: async (id: string, vcsType: VcsType, requestId?: string): Promise<VcsUpdateResult> => {
+      if (!isCefContext()) return { ok: true, conflicts: false, revision: '42', output: '', error: '' }
+      const response = await sendToCEF({ action: 'updateVcsWorkspace', payload: { chatId: id, vcsType, requestId } }, false)
+      if (!response.ok) return { ok: false, conflicts: false, revision: '', output: '', error: response.error || 'Failed to update the working copy.' }
+      const data = cefPayloadOrRawResponse(response)
+      return isRecord(data)
+        ? { ok: true, conflicts: data.conflicts === true, revision: stringOr(data.revision), output: stringOr(data.output), error: '' }
+        : { ok: true, conflicts: false, revision: '', output: '', error: '' }
+    },
+
+    cancelVcsRequest: (requestId: string) => {
+      if (isCefContext() && requestId) void sendToCEF({ action: 'cancelVcsRequest', payload: { requestId } }).catch(() => undefined)
+    },
+
     commitVcsChanges: async (id: string, vcsType: VcsType, message: string, files: string[]): Promise<VcsCommitResult> => {
       if (isCefContext()) {
         const response = await sendToCEF<VcsCommitResult>({
@@ -1626,6 +1717,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               } : s)),
             }))
             pendingRequestIdsByKey.delete(requestKey)
+            reportRefusal('The chat was not renamed', resp.error)
           }
         )
         return
@@ -1806,7 +1898,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    setSessionModel: async (id: string, modelId: string): Promise<boolean> => {
+    setSessionModel: async (id: string, modelId: string, onFailure?: (reason: string) => void): Promise<boolean> => {
       const requestedModelId = modelId.trim()
       if (!isAllowedAcpModelId(requestedModelId)) {
         return false
@@ -1855,6 +1947,15 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const requestKey = `setSessionModel:${id}`
         const requestId = createRequestId('setSessionModel')
         rememberPendingRequest(requestKey, requestId)
+        if (!acceptedModelByChatId.has(id)) {
+          acceptedModelByChatId.set(id, {
+            modelId: previousSession.modelId,
+            reasoningEffort: previousSession.reasoningEffort,
+            serviceTier: previousSession.serviceTier,
+            serviceTierExplicit: previousSession.serviceTierExplicit,
+            updatedAt: previousSession.updatedAt,
+          })
+        }
         pendingModelByChatId.set(id, {
           requestId,
           modelId: requestedModelId,
@@ -1884,23 +1985,36 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               pendingModelByChatId.delete(id)
             }
             clearPendingRequest(requestKey, response.requestId)
+            acceptedModelByChatId.delete(id)
+          } else if (acceptedModelByChatId.has(id)) {
+            // A superseded change the backend accepted is the state a later refusal returns to.
+            acceptedModelByChatId.set(id, {
+              modelId: typeof response.data?.modelId === 'string' ? response.data.modelId : requestedModelId,
+              reasoningEffort: typeof response.data?.reasoningEffort === 'string' ? response.data.reasoningEffort : requestedReasoningEffort,
+              serviceTier: typeof response.data?.serviceTier === 'string' ? response.data.serviceTier : requestedServiceTier,
+              serviceTierExplicit: typeof response.data?.serviceTierExplicit === 'boolean' ? response.data.serviceTierExplicit : requestedServiceTierExplicit,
+              updatedAt: optimisticUpdatedAt,
+            })
           }
           return true
         }
 
         if (isLatestPendingRequest(requestKey, response.requestId)) {
+          const accepted = acceptedModelByChatId.get(id) ?? previousSession
+          acceptedModelByChatId.delete(id)
           set((state) => ({
             sessions: state.sessions.map((s) => s.id === id ? {
               ...s,
-              modelId: previousSession.modelId,
-              reasoningEffort: previousSession.reasoningEffort,
-              serviceTier: previousSession.serviceTier,
-              serviceTierExplicit: previousSession.serviceTierExplicit,
-              updatedAt: s.updatedAt === optimisticUpdatedAt ? previousSession.updatedAt : s.updatedAt,
+              modelId: accepted.modelId,
+              reasoningEffort: accepted.reasoningEffort,
+              serviceTier: accepted.serviceTier,
+              serviceTierExplicit: accepted.serviceTierExplicit,
+              updatedAt: s.updatedAt === optimisticUpdatedAt ? accepted.updatedAt : s.updatedAt,
             } : s),
           }))
           pendingRequestIdsByKey.delete(requestKey)
           if (pendingModelByChatId.get(id)?.requestId === response.requestId) pendingModelByChatId.delete(id)
+          reportRefusal('The model was not changed', response.error, onFailure)
         }
 
         return false
@@ -1928,18 +2042,22 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       })
       if (!isLatestPendingRequest(requestKey, response.requestId)) return response.ok
       clearPendingRequest(requestKey, response.requestId)
+      if (!response.ok) reportRefusal('The reviewer model was not changed', response.error)
       if (!response.ok || typeof response.data?.reviewerModelId !== 'string') return false
       set((state) => ({ sessions: state.sessions.map((session) => session.id === id ? { ...session, reviewerModelId: response.data!.reviewerModelId } : session) }))
       return true
     },
 
-    setSessionCodexOptions: async (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }): Promise<boolean> => {
+    setSessionCodexOptions: async (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }, onFailure?: (reason: string) => void): Promise<boolean> => {
       const previousSession = get().sessions.find((s) => s.id === id)
 	  if (!previousSession) {
         return false
       }
 	  const acp = get().acpBindingBySessionId[id]
-	  if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') return false
+	  if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') {
+	    reportRefusal(codexOptionsTitle(options), 'Reasoning and speed can change once the current turn finishes.', onFailure)
+	    return false
+	  }
 	  const providerId = previousSession.providerId ?? DEFAULT_PROVIDER_ID
 	  const codexProvider = providerId === CODEX_CLI_PROVIDER_ID
 	  const copilotProvider = providerId === COPILOT_CLI_PROVIDER_ID
@@ -1993,7 +2111,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           return true
         }
 
-        if (isLatestPendingRequest(requestKey, response.requestId)) pendingRequestIdsByKey.delete(requestKey)
+        if (isLatestPendingRequest(requestKey, response.requestId)) {
+          pendingRequestIdsByKey.delete(requestKey)
+          reportRefusal(codexOptionsTitle(options), response.error, onFailure)
+        }
         return false
       }
 
@@ -2097,7 +2218,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 		clearPendingRequest(requestKey, response.requestId)
 		return true
 	  }
-	  if (isLatestPendingRequest(requestKey, response.requestId)) pendingRequestIdsByKey.delete(requestKey)
+	  if (isLatestPendingRequest(requestKey, response.requestId)) {
+		pendingRequestIdsByKey.delete(requestKey)
+		reportRefusal('The UAM agent was not changed', response.error)
+	  }
 	  return false
     },
 
@@ -2308,10 +2432,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return Boolean(previousSession)
       }
 
+      const optimisticUpdatedAt = new Date()
       const applyMode = () => {
         set((state) => ({
           sessions: state.sessions.map((s) =>
-            s.id === id ? { ...s, smallModelMode: enabled, updatedAt: new Date() } : s
+            s.id === id ? { ...s, smallModelMode: enabled, updatedAt: optimisticUpdatedAt } : s
           ),
         }))
       }
@@ -2331,10 +2456,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           return true
         }
         if (isLatestPendingRequest(requestKey, response.requestId)) {
+          // Only this control's field rolls back; newer state from pushes or other controls stays.
           set((state) => ({
-            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+            sessions: state.sessions.map((s) => (s.id === id ? {
+              ...s,
+              smallModelMode: previousSession.smallModelMode,
+              updatedAt: s.updatedAt === optimisticUpdatedAt ? previousSession.updatedAt : s.updatedAt,
+            } : s)),
           }))
           pendingRequestIdsByKey.delete(requestKey)
+          reportRefusal('Small-model mode was not changed', response.error)
         }
         return false
       }
@@ -2843,20 +2974,41 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (isCefContext()) {
         const requestKey = `sendAcpPrompt:${sessionId}`
         rememberPendingRequest(requestKey, actionErrorId)
+        const sendPayload = {
+          chatId: sessionId,
+          text: prompt,
+          markdownStoreFiles,
+          attachments,
+          goalMode: goalId != null,
+          goalId,
+          computerUseMode: Boolean(state.sessions.find((session) => session.id === sessionId)?.computerUseEnabled),
+          steerNow,
+        }
+        // A retry of the same unconfirmed submission keeps its ID, so native admits it once. Any change to what it
+        // carries (text including quoted references, skills, attachments, mode) makes it a new submission.
+        const payloadKey = JSON.stringify({ ...sendPayload, attachments: attachments.map((attachment) => attachment.id) })
+        const submissionToken = onStarted?.submissionToken
+        const unconfirmed = submissionToken ? unconfirmedSubmissionBySessionId.get(sessionId) : undefined
+        const retrying = unconfirmed !== undefined && unconfirmed.token === submissionToken && unconfirmed.payloadKey === payloadKey &&
+          !submissionLanded(sessionId, unconfirmed)
+        const sendIdempotencyId = retrying ? unconfirmed.id : createRequestId('send')
+        const turnSerialAtSend = retrying ? unconfirmed.turnSerial : (state.acpBindingBySessionId[sessionId]?.turnSerial ?? 0)
+        const earlierRequestIds = retrying ? unconfirmed.requestIds : []
         const response = await sendToCEF({
           action: 'sendAcpPrompt',
           requestId: actionErrorId,
-          payload: {
-            chatId: sessionId,
-            text: prompt,
-            markdownStoreFiles,
-            attachments,
-            goalMode: goalId != null,
-            goalId,
-            computerUseMode: Boolean(state.sessions.find((session) => session.id === sessionId)?.computerUseEnabled),
-            steerNow,
-          },
+          payload: { ...sendPayload, sendIdempotencyId },
         })
+        if (response.ok || !submissionToken) unconfirmedSubmissionBySessionId.delete(sessionId)
+        else unconfirmedSubmissionBySessionId.set(sessionId, { token: submissionToken, id: sendIdempotencyId, payloadKey,
+          requestIds: [...earlierRequestIds, actionErrorId], turnSerial: turnSerialAtSend })
+        // Native already admitted this submission under an earlier attempt: that attempt's row is this message.
+        const admittedOrigin = response.ok && isRecord(response.data) && response.data.duplicateSend === true &&
+          typeof response.data.originRequestId === 'string' ? response.data.originRequestId : undefined
+        if (admittedOrigin) {
+          try { onStarted?.onDuplicateOf?.(admittedOrigin, earlierRequestIds) }
+          catch { /* Presentation is optional and cannot change the native send outcome. */ }
+        }
         const ownsAttempt = isLatestPendingRequest(requestKey, actionErrorId)
         clearPendingRequest(requestKey, actionErrorId)
 		if (!get().sessions.some((session) => session.id === sessionId)) return false
@@ -3145,7 +3297,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    discoverProviderModels: async (sessionId: string, providerId = '', workspaceDirectory = '', executionHostId = ''): Promise<boolean> => {
+    discoverProviderModels: async (sessionId: string, providerId = '', workspaceDirectory = '', executionHostId = '', automatic = false): Promise<boolean> => {
       if (!isCefContext()) return false
       const initial = get()
       const session = sessionId ? initial.sessions.find((entry) => entry.id === sessionId) : undefined
@@ -3184,9 +3336,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const mayProjectReply = (state: AppState) => Boolean(preparedBinding && stillOwnsSelector(state) &&
         // A binding-only or identity-less selector must remain the exact object prepared by this call.
         ((owner && (native.sessionId || native.threadId)) || state.acpBindingBySessionId[sessionId] === preparedBinding))
-      const response = await sendToCEF<{ started?: boolean; pending?: boolean }>({
+      const response = await sendToCEF<{ started?: boolean; pending?: boolean; current?: boolean }>({
         action: 'discoverProviderModels',
-        payload: { chatId: sessionId, ...(providerId ? { providerId } : {}), ...(workspaceDirectory ? { workspaceDirectory } : {}), ...(executionHostId ? { executionHostId } : {}) },
+        payload: { chatId: sessionId, ...(providerId ? { providerId } : {}), ...(workspaceDirectory ? { workspaceDirectory } : {}), ...(executionHostId ? { executionHostId } : {}), ...(automatic ? { automatic: true } : {}) },
       })
       if (!response.ok) {
         if (sessionId) set((state) => mayProjectReply(state) ? ({
@@ -3203,7 +3355,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           [sessionId]: { ...state.acpBindingBySessionId[sessionId], modelsLoading: true },
         },
       }) : state)
-      return Boolean(response.data?.started || response.data?.pending)
+      return Boolean(response.data?.started || response.data?.pending || response.data?.current)
     },
 
     setAcpConfigOption: async (sessionId: string, configId: string, value: string): Promise<boolean> => {
@@ -3223,6 +3375,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           action: 'cancelAcpTurn',
           payload: { chatId: sessionId },
         })
+        if (!response.ok) reportRefusal('The turn was not cancelled', response.error)
         return response.ok
       }
 
@@ -3387,12 +3540,31 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
+    // Always through the bridge: its dev stub redacts the value. The value is never written to state.
+    submitSecretRequest: async (sessionId: string, requestId: string, submission: SecretSubmission) => {
+      const response = await sendToCEF({ action: 'submitSecretRequest', payload: { chatId: sessionId, requestId, ...submission } }, false)
+      return response.ok ? { ok: true } : { ok: false, error: response.error || 'The secret was not delivered.' }
+    },
+
+    forgetSavedSecret: async (sessionId: string, requestId: string) => {
+      const response = await sendToCEF({ action: 'forgetSavedSecret', payload: { chatId: sessionId, requestId } }, false)
+      return response.ok ? { ok: true } : { ok: false, error: response.error || 'The saved secret was not forgotten.' }
+    },
+
+    treatRemoteStopAsStopped: async (sessionId: string): Promise<boolean> => {
+      if (!isCefContext()) return false
+      const response = await sendToCEF({ action: 'treatRemoteStopAsStopped', payload: { chatId: sessionId } })
+      if (!response.ok) reportRefusal('Treat as stopped did not finish', response.error)
+      return response.ok
+    },
+
     stopAcpSession: async (sessionId: string, purpose: 'interrupt' | 'timeout' = 'interrupt'): Promise<boolean> => {
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'stopAcpSession',
           payload: purpose === 'timeout' ? { chatId: sessionId, purpose } : { chatId: sessionId },
         })
+        if (!response.ok) reportRefusal('The runtime was not stopped', response.error)
         return response.ok
       }
 

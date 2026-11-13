@@ -15,7 +15,7 @@
 #include "app/application.h"
 #include "common/platform/app_crash_supervisor.h"
 #include "app/uam_control_service.h"
-#include "cef/uam_cef_app.h"
+#include "cef/uam_cef_renderer_app.h"
 #include "computer_use/computer_use_mcp_server.h"
 
 #include "include/cef_app.h"
@@ -139,7 +139,7 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPWSTR
 		if (const std::optional<int> supervisor_exit = uam::platform::RunAppCrashSupervisor(arguments))
 			return *supervisor_exit;
 	}
-	auto cef_app = CefRefPtr<UamCefApp>(new UamCefApp());
+	auto cef_app = CefRefPtr<UamCefRendererApp>(new UamCefRendererApp());
 	const int exit_code = CefExecuteProcess(main_args, cef_app.get(), nullptr);
 	if (exit_code >= 0)
 		return exit_code;
@@ -184,7 +184,7 @@ int main(int argc, char* argv[])
 		if (const std::optional<int> supervisor_exit = uam::platform::RunAppCrashSupervisor(arguments))
 			return *supervisor_exit;
 	}
-	auto cef_app = CefRefPtr<UamCefApp>(new UamCefApp());
+	auto cef_app = CefRefPtr<UamCefRendererApp>(new UamCefRendererApp());
 	const int exit_code = CefExecuteProcess(main_args, cef_app.get(), nullptr);
 	if (exit_code >= 0)
 		return exit_code;

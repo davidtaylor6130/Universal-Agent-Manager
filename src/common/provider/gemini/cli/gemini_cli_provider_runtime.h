@@ -3,6 +3,9 @@
 #include "common/provider/provider_runtime.h"
 #include "common/provider/gemini_options.h"
 
+/// <summary>UAM admin-tier Gemini Plan policy installed beside the executable resources.</summary>
+std::filesystem::path GeminiPlanCeilingPolicyPath();
+
 class GeminiCliProviderRuntime final : public IProviderRuntime
 {
   public:
@@ -44,8 +47,11 @@ class GeminiCliProviderRuntime final : public IProviderRuntime
 	bool UsesLocalHistory(const ProviderProfile& profile) const override;
 	bool UsesCliOutput(const ProviderProfile& profile) const override;
 	bool UsesGeminiPathBootstrap(const ProviderProfile& profile) const override;
+	std::string_view DefaultTextWorkerModel() const override { return "flash-lite"; }
 	std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const override;
 	std::vector<std::string> BuildStructuredLaunchArgv(const ProviderProfile& profile, const ChatSession& chat) const override;
+	bool PrepareStructuredLaunch(uam::AcpSessionState& session, const ProviderProfile&, std::string_view, bool remote,
+	    std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>&, std::string& error) const override;
 	std::string OnAcpMapApprovalModeId(const std::string& mode_id) const override;
 	ProviderDiscoveryResult DiscoverChatSources(const ProviderProfile& profile) const override;
 };

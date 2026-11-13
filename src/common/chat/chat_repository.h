@@ -231,6 +231,8 @@ class ChatRepository
 	/// <summary>Captures primary-file metadata without reading transcript bodies; missing files have a stable revision.</summary>
 	static std::optional<std::string> ChatStorageRevision(const std::filesystem::path& data_root, std::string_view chat_id);
 	static std::optional<std::string> ChatSummaryStorageRevision(const std::filesystem::path& data_root, std::string_view chat_id);
+	/// <summary>True when the chat's own content is refused before any file is written, so the cause is not storage.</summary>
+	static bool ChatContentRefusesSave(const ChatSession& chat);
 	/// <summary>Publishes prepared files after the caller validates current chat and deletion state.</summary>
 	/// Optional primary observation is DATA only: Rejected before write admission,
 	/// Uncertain after admission without confirmation, Committed on the atomic receipt.
@@ -239,6 +241,9 @@ class ChatRepository
 	static std::string ChatMetadataFingerprint(const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Stages display-only lineage after an explicit native open; requires actual source tool evidence and matching identities. The caller must publish or roll back the chat save.</summary>
 	static bool ApplyNativeChildDisplayLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id, bool attested_gemini_listing = false);
+	/// <summary>Native import's link: the evidence is the parent the child's own native record names
+	/// (child.native_parent_session_id), under the same identity rules as an explicit open.</summary>
+	static bool ApplyImportedNativeChildLineage(const ChatSession& source, ChatSession& child);
 	/// <summary>Saves one chat; native refreshes may skip byte-identical files while repairing summaries.</summary>
 	static bool SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged = false);
 	/// Bounded canonical DATA only; no publication receipt, graph promotion or runtime authority.

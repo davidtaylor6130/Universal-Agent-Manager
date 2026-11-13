@@ -10,7 +10,7 @@ The registry resolves a provider runtime. Each runtime builds structured, termin
 
 Startup model discovery preserves cached and existing-chat scopes and the default provider's registered workspace scopes. After restoring chat selection, it also prewarms enabled structured providers for the initial New chat folder, using requested-folder, selected-chat-folder and first-folder priority. Discovery stays limited to two concurrent processes and rechecks host connection, workspace, availability and provider compatibility before launching. The current startup-discovery path excludes Antigravity; that is an implementation limitation rather than a release-scope exception. Cached choices remain usable during refresh failure, and other previously unused provider/workspace pairs retain manual refresh.
 
-Permissions for structured tool requests pass through the native permission layer before resolution. Stop, cancel, exit and resume state belong to the owning runtime/session, especially when multiple chats run concurrently.
+Permissions for structured tool requests pass through the native permission layer before resolution. Stop, cancel, exit and resume state belong to the owning runtime/session, especially when multiple chats run concurrently. Provider output still buffered when a local stop settles is processed in the same per-poll batches as live output (up to 256 lines or 4 ms); only a line that itself ends a running process cuts a batch short, so a large buffer no longer holds the chat in "stopping" for one poll per line (`AcpStopAtItsDeadlineWithBufferedOutputIsStillFinalisedExactlyOnce`).
 
 ## Ownership and checks
 

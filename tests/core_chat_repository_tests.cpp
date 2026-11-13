@@ -133,6 +133,59 @@ UAM_TEST(ChatRepositoryToleratesLegacyFieldsAndDropsThemOnWrite)
 	UAM_ASSERT(!inherited->service_tier_explicit);
 }
 
+UAM_TEST(ChatRepositoryKeepsRemoteOpenCodeServerPasswordInMemoryAndScrubsLegacyFiles)
+{
+	TempDir temp("uam-chat-opencode-native-secret");
+	const std::string password = "private-opencode-server-password";
+	ChatSession chat;
+	chat.id = "remote-opencode";
+	chat.provider_id = "opencode-cli";
+	chat.execution_host_id = "ssh-test";
+	chat.title = "Remote OpenCode";
+	chat.remote_process_exists = true;
+	chat.remote_structured_protocol = "acp";
+	chat.remote_opencode_native_port = 50001;
+	chat.remote_opencode_native_token = password;
+	chat.messages.push_back(Message{MessageRole::User, "Keep this history"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path primary = AppPaths::UamChatFilePath(temp.root, chat.id);
+	const fs::path summary = AppPaths::UamChatSummaryFilePath(temp.root, chat.id);
+	UAM_ASSERT(ChatRepository::LoadLocalChatSummaries(temp.root).size() == 1);
+	for (const fs::path& path : {primary, summary})
+	{
+		const std::string text = ReadFile(path);
+		UAM_ASSERT(text.find(password) == std::string::npos);
+		UAM_ASSERT(text.find("remote_opencode_native") == std::string::npos);
+	}
+	UAM_ASSERT_EQ(chat.remote_opencode_native_token, password);
+
+	// Migration: files written by older builds lose the password on the next load, together with its backup and summary.
+	auto legacy = nlohmann::json::parse(ReadFile(primary));
+	legacy["remote_opencode_native_port"] = 50001;
+	legacy["remote_opencode_native_token"] = password;
+	const fs::path backup = uam::io::MakeBackupPath(primary);
+	for (const fs::path& path : {primary, backup})
+		UAM_ASSERT(uam::io::WriteTextFile(path, legacy.dump()));
+	auto legacy_summary = nlohmann::json::parse(ReadFile(summary));
+	legacy_summary["remote_opencode_native_token"] = password;
+	legacy_summary["summary_source_size"] = fs::file_size(primary);
+	UAM_ASSERT(uam::io::WriteTextFile(summary, legacy_summary.dump()));
+	for (const bool include_messages : {false, true})
+	{
+		const std::vector<ChatSession> loaded = include_messages ? ChatRepository::LoadLocalChats(temp.root) : ChatRepository::LoadLocalChatSummaries(temp.root);
+		UAM_ASSERT_EQ(loaded.size(), std::size_t{1});
+		UAM_ASSERT(loaded.front().remote_opencode_native_token.empty());
+		UAM_ASSERT_EQ(loaded.front().remote_opencode_native_port, 0);
+		UAM_ASSERT(loaded.front().remote_process_exists);
+		UAM_ASSERT_EQ(loaded.front().title, chat.title);
+		for (const fs::path& path : {primary, backup, summary})
+			UAM_ASSERT(!fs::exists(path) || ReadFile(path).find(password) == std::string::npos);
+	}
+	const std::optional<ChatSession> full = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(full.has_value());
+	UAM_ASSERT_EQ(full->messages, chat.messages);
+}
+
 UAM_TEST(ChatRepositoryPersistsRemoteTurnReconnectMarker)
 {
 	TempDir temp("uam-chat-remote-turn-reconnect");
@@ -675,6 +728,41 @@ UAM_TEST(ChatRepositoryPersistsMemoryLevelAndMigratesLegacyBoolean)
 	UAM_ASSERT(!loaded.front().memory_enabled);
 }
 
+UAM_TEST(ChatRepositoryQueuedAgentAccessFailsClosedToRead)
+{
+	TempDir temp("uam-chat-queued-agent-access");
+	ChatSession chat;
+	chat.id = "queued-agent-access";
+	chat.provider_id = "codex-cli";
+	chat.title = "Queued access";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-01T00:00:01.000Z";
+	for (const std::string id : {"write", "missing", "unknown", "empty"})
+	{
+		uam::AcpQueuedUserPromptState queued;
+		queued.id = id;
+		queued.text = "Queued " + id;
+		chat.acp_queued_prompts.push_back(queued);
+	}
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path path = AppPaths::UamChatFilePath(temp.root, chat.id);
+	nlohmann::json saved = nlohmann::json::parse(ReadFile(path));
+	nlohmann::json& prompts = saved["acp_queued_prompts"];
+	UAM_ASSERT_EQ(prompts.size(), std::size_t{4});
+	UAM_ASSERT_EQ(prompts[0].value("uam_agent_workspace_access", ""), std::string("write"));
+	prompts[1].erase("uam_agent_workspace_access");
+	prompts[2]["uam_agent_workspace_access"] = "Write";
+	prompts[3]["uam_agent_workspace_access"] = "";
+	UAM_ASSERT(uam::io::WriteTextFile(path, saved.dump(2)));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->acp_queued_prompts.size(), std::size_t{4});
+	// Only an explicit write grant survives; anything else loads as the read ceiling.
+	UAM_ASSERT_EQ(loaded->acp_queued_prompts[0].uam_agent_workspace_access, std::string("write"));
+	for (std::size_t index = 1; index < 4; ++index)
+		UAM_ASSERT_EQ(loaded->acp_queued_prompts[index].uam_agent_workspace_access, std::string("read"));
+}
+
 UAM_TEST(ChatRepositoryValidPrimaryIgnoresOlderBackupMemoryMetadata)
 {
 	TempDir temp("uam-chat-memory-backup-mismatch");
@@ -1047,9 +1135,36 @@ UAM_TEST(QueueJournalBoundsAndBaseRevisionMismatchNeverAcknowledgeLostInput)
 	UAM_ASSERT(uam::io::WriteTextFile(primary, changed));
 	const std::optional<ChatSession> held = ChatRepository::LoadLocalChat(temp.root, chat.id);
 	UAM_ASSERT(held.has_value());
-	UAM_ASSERT(held->acp_queue_storage_error);
+	// The journal extends this primary's own queue revision and only the file witness changed (a restore,
+	// a sync tool, a touched file). The input is neither lost nor a permanent block: it stays held for the
+	// user, and the chat can be saved and sent to again.
+	UAM_ASSERT(!held->acp_queue_storage_error);
 	UAM_ASSERT(held->acp_queue_held);
 	UAM_ASSERT_EQ(held->acp_queued_prompts.front().text, chat.acp_queued_prompts.front().text);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, *held));
+	const std::optional<ChatSession> rebound = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(rebound && !rebound->acp_queue_storage_error && rebound->acp_queue_held);
+	UAM_ASSERT_EQ(rebound->acp_queued_prompts.front().text, chat.acp_queued_prompts.front().text);
+}
+
+UAM_TEST(QueueJournalForAnotherQueueRevisionStaysHeldWithStorageError)
+{
+	TempDir temp("uam-queue-journal-other-revision");
+	ChatSession chat = QueueJournalFixture(temp.root);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path primary = AppPaths::UamChatFilePath(temp.root, chat.id);
+	const std::string older_primary = ReadFile(primary);
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.acp_queued_prompts.front().text = "Edited";
+	++chat.acp_queued_prompts.front().revision;
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	// An older primary (a backup fallback or restore) carries a queue revision this journal was not written
+	// against. Which queue is newer is not provable, so nothing is repaired automatically.
+	UAM_ASSERT(uam::io::WriteTextFile(primary, older_primary));
+	const std::optional<ChatSession> held = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(held && held->acp_queue_storage_error && held->acp_queue_held);
+	UAM_ASSERT_EQ(held->acp_queued_prompts.front().text, std::string("Edited"));
 	UAM_ASSERT(!ChatRepository::SaveChat(temp.root, *held));
 }
 

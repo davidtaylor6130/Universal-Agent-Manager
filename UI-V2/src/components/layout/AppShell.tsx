@@ -1,6 +1,7 @@
 import { SettingsLoading } from '../settings/SettingsPrimitives'
 import { StartupNativeImportChooser } from '../modals/StartupNativeImportChooser'
 import { LegacyChatImportPrompt } from '../modals/LegacyChatImportPrompt'
+import { CompanionConfirmationPrompt } from '../modals/CompanionConfirmationPrompt'
 import { ProviderMcpWarning } from '../shared/ProviderMcpWarning'
 import { nextAttentionSession } from '../../utils/nextAttention'
 import { useShallow } from 'zustand/react/shallow'
@@ -8,7 +9,7 @@ import { subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { subscribeSubagentNavigation } from '../../utils/subagentNavigation'
 import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
-import { PanelLeftClose, PanelLeftOpen, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCheck, CheckCircle2, AlertTriangle, ArrowUpRight, Info, X, CircleAlert, ChartNoAxesCombined } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCheck, CheckCircle2, AlertTriangle, ArrowUpRight, Info, X, CircleAlert, ChartNoAxesCombined, ChevronRight, Monitor, Server } from 'lucide-react'
 import './panels.css'
 
 /** GitHub mark (lucide dropped brand icons). */
@@ -49,20 +50,23 @@ import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonit
 import { FILE_MANAGER_NAME, matchShortcut, shortcutLabel } from '../../utils/shortcuts'
 import { focusActiveInput } from '../../utils/activeInputFocus'
 import { APP_FAILURE_EVENT, reportAppFailure, type AppFailure } from '../../utils/appFailure'
+import { reportPullRequestWatchNotices } from '../../utils/prWatchNotices'
 import { useNotificationClock, useNotificationTimes } from '../../hooks/useNotificationTimes'
 import { notificationTimeGroup } from '../../utils/notificationTime'
 import { useRowLeave } from './useRowLeave'
 import { isSshHost } from '../../utils/remoteWorkspace'
-import { SSH_ENABLED } from '../../config/buildFeatures'
+import { MOBILE_COMPANION_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
+import { CustomIcon } from '../shared/CustomIcon'
+import { loadNewChatPanel, loadSettingsPanel, loadUsagePanel, warmPanelOn } from './panelModules'
 
 // These panels subscribe to their own state; shell navigation must not rerender their histories.
 const ChatPanel = memo(MainPanel)
 const ChatSidebar = memo(Sidebar)
 
-const SettingsModal = lazy(() => import('../settings/SettingsModal').then(({ SettingsModal }) => ({ default: SettingsModal })))
-const UsagePage = lazy(() => import('../usage/UsagePage').then(({ UsagePage }) => ({ default: UsagePage })))
+const SettingsModal = lazy(() => loadSettingsPanel().then(({ SettingsModal }) => ({ default: SettingsModal })))
+const UsagePage = lazy(() => loadUsagePanel().then(({ UsagePage }) => ({ default: UsagePage })))
 const VcsCommitPanel = lazy(() => import('./VcsCommitPanel').then(({ VcsCommitPanel }) => ({ default: VcsCommitPanel })))
-const NewChatModal = lazy(() => import('../sidebar/NewChatModal').then(({ NewChatModal }) => ({ default: NewChatModal })))
+const NewChatModal = lazy(() => loadNewChatPanel().then(({ NewChatModal }) => ({ default: NewChatModal })))
 const MemoryScanModal = lazy(() => import('../settings/MemoryScanModal').then(({ MemoryScanModal }) => ({ default: MemoryScanModal })))
 const MarkdownStoreModal = lazy(() => import('../settings/MarkdownStoreModal').then(({ MarkdownStoreModal }) => ({ default: MarkdownStoreModal })))
 
@@ -323,21 +327,22 @@ function providerUpdateNotificationId(result: UpdateMonitor['providerUpdateResul
 
 /** Full per-update detail for the bell row and copy text; versions may themselves contain ` · `, so updates are separated by `; `. */
 function updateSummaryText(updates: UpdateMonitor['updates']): string {
-  return updates.map((update) => `${update.name} ${update.latestVersion}`).join('; ')
+  return updates.map((update) => `${update.name} ${update.latestDisplay ?? update.latestVersion}`).join('; ')
 }
 
 const UPDATE_NOTICE_LIST_LIMIT = 3
 
 /** Toast copy: one update reads as one sentence; several get a plural title and a short list, full details stay in the bell and Review updates. */
 export function updateNoticeText(updates: UpdateMonitor['updates']): string {
-  const line = (update: UpdateMonitor['updates'][number]) => `${update.name} ${update.latestVersion.split(' · ')[0]}`
+  const line = (update: UpdateMonitor['updates'][number]) => `${update.name} ${(update.latestDisplay ?? update.latestVersion).split(' · ')[0]}`
   if (updates.length === 1) return `Update available: ${line(updates[0])}`
   const extra = updates.length - UPDATE_NOTICE_LIST_LIMIT
   return [`${updates.length} updates available`, ...updates.slice(0, extra > 1 ? UPDATE_NOTICE_LIST_LIMIT : updates.length).map(line), ...(extra > 1 ? [`and ${extra} more`] : [])].join('\n')
 }
 
 function updateNotificationId(updates: UpdateMonitor['updates']): string {
-  return `updates-${updateSummaryText(updates)}`
+  // Keyed on latestVersion, not display text, so a new local build label does not re-raise a seen notice.
+  return `updates-${updates.map((update) => `${update.name} ${update.latestVersion}`).join('; ')}`
 }
 
 function missingFolderNotificationId(folder: { id: string; name: string; directory: string }): string {
@@ -439,7 +444,7 @@ function LeftActivityRail({ settingsOpen, usageOpen, onToggleUsage, onToggleSett
       />
       <div className="uam-side-rail__spacer" />
       <ThemeToggle />
-      <IconButton icon={<ChartNoAxesCombined size={17} />} label="Usage" tooltipSide="right" active={usageOpen} onClick={onToggleUsage} />
+      <IconButton icon={<ChartNoAxesCombined size={17} />} label="Usage" tooltipSide="right" active={usageOpen} onClick={onToggleUsage} {...warmPanelOn(loadUsagePanel)} />
       <IconButton
         icon={<Settings2 size={17} />}
         label="Settings"
@@ -447,6 +452,7 @@ function LeftActivityRail({ settingsOpen, usageOpen, onToggleUsage, onToggleSett
         shortcut={shortcutLabel('settings')}
         active={settingsOpen}
         onClick={onToggleSettings}
+        {...warmPanelOn(loadSettingsPanel)}
       />
     </aside>
   )
@@ -460,6 +466,23 @@ function shortNotificationTime(time: number, now: number): string {
   const hours = Math.floor(minutes / 60)
   if (hours < 24) return `${hours}h`
   return `${Math.floor(hours / 24)}d`
+}
+
+/** Which computer an update is for; SSH helper updates exist only in SSH builds. */
+function updateHostId(update: UpdateMonitor['updates'][number]): string {
+  return update.executionHostId || (__UAM_FEATURE_SSH__ && update.remoteHostId) || 'local'
+}
+
+/** The computer an update belongs to, with the icon the sidebar and pickers use for it. */
+function NotificationHost({ hostId }: { hostId: string }) {
+  const host = useAppStore((s) => s.executionHosts.find((candidate) => candidate.id === hostId))
+  const remote = hostId !== 'local'
+  return (
+    <span className="uam-np-row__host">
+      <CustomIcon icon={host?.customIcon} fallback={remote ? <Server size={12} aria-hidden /> : <Monitor size={12} aria-hidden />} />
+      <span className="truncate">{host?.label || (remote ? hostId : 'This computer')}</span>
+    </span>
+  )
 }
 
 function NotificationsPanel({
@@ -495,10 +518,29 @@ function NotificationsPanel({
   const [busyAction, setBusyAction] = useState('')
   const [confirmingFolderId, setConfirmingFolderId] = useState('')
   const headingRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
   const rows = useRowLeave()
+  // UI-local: which rows show their full message, and which collapsed titles are cut off.
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [overflowingIds, setOverflowingIds] = useState<ReadonlySet<string>>(() => new Set())
+  const toggleExpanded = (id: string) => setExpandedIds((current) => {
+    const next = new Set(current)
+    if (!next.delete(id)) next.add(id)
+    return next
+  })
+  useLayoutEffect(() => {
+    const next = new Set<string>()
+    listRef.current?.querySelectorAll<HTMLElement>('[data-np-title]').forEach((title) => {
+      const id = title.dataset.npTitle!
+      // An expanded title wraps, so it keeps the measurement it had while collapsed.
+      if (expandedIds.has(id) ? overflowingIds.has(id) : title.scrollWidth > title.clientWidth) next.add(id)
+    })
+    if (next.size !== overflowingIds.size || [...next].some((id) => !overflowingIds.has(id))) setOverflowingIds(next)
+  })
 
   type NotificationAction = { label: string; variant?: ButtonVariant; run: () => void | Promise<void> }
-  type Notification = { id: string; title: string; detail: string; warning?: boolean; notice?: 'info' | 'success'; failure?: AppFailure; actions?: NotificationAction[] }
+  /** `hostId` labels a single-computer notice; `hostLines` replaces the expanded detail with one line per computer; `label` names the row for copy and dismiss when the visible title omits the computer. */
+  type Notification = { id: string; title: string; label?: string; detail: string; warning?: boolean; notice?: 'info' | 'success'; failure?: AppFailure; actions?: NotificationAction[]; hostId?: string; hostLines?: Array<{ key: string; hostId: string; text: string }> }
 
   const notifications: Notification[] = [
     ...(statusLine ? [{
@@ -520,12 +562,17 @@ function NotificationsPanel({
       id: updateNotificationId(updates),
       title: `${updates.length} update${updates.length === 1 ? '' : 's'} available`,
       detail: updateSummaryText(updates),
+      hostLines: updates.map((update) => ({ key: update.id, hostId: updateHostId(update), text: `${update.shortName ?? update.name} ${update.latestDisplay ?? update.latestVersion}` })),
+      // Updates for one computer name it on the collapsed row too.
+      ...new Set(updates.map(updateHostId)).size === 1 ? { hostId: updateHostId(updates[0]) } : {},
       actions: [{ label: 'Review updates', variant: 'primary' as const, run: onReviewUpdates }],
     }] : []),
     ...providerUpdateResults.filter((result) => result.status === 'succeeded').map((result): Notification => ({
       id: providerUpdateNotificationId(result),
-      title: `${result.name} update completed`,
+      title: `${result.shortName} update completed`,
+      label: `${result.name} update completed`,
       detail: result.message || `Installed ${result.installedVersion}.`,
+      hostId: result.executionHostId || 'local',
     })),
     ...missingFolders.map((folder): Notification => ({
       id: missingFolderNotificationId(folder),
@@ -611,7 +658,7 @@ function NotificationsPanel({
             <span className="uam-np-empty__text">Warnings and completed system actions will appear here.</span>
           </div>
         ) : (
-          <div className="grid gap-1">
+          <div ref={listRef} className="grid gap-1">
             <ConfirmDialog
               open={Boolean(confirmingFolder)}
               title="Remove workspace folder?"
@@ -641,21 +688,57 @@ function NotificationsPanel({
                   const exactTime = time.toLocaleString()
                   const fullDetail = [notification.failure?.message, notification.detail].filter(Boolean).join(' · ')
                   const relativeTime = shortNotificationTime(notification.time, now)
+                  const expanded = expandedIds.has(notification.id)
+                  const expandable = expanded || Boolean(fullDetail) || overflowingIds.has(notification.id)
+                  const toggle = () => toggleExpanded(notification.id)
+                  const title = (
+                    <div
+                      className="uam-np-row__title"
+                      {...expandable ? {
+                        role: 'button',
+                        tabIndex: 0,
+                        'aria-expanded': expanded,
+                        onKeyDown: (event: ReactKeyboardEvent) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') return
+                          event.preventDefault()
+                          toggle()
+                        },
+                      } : {}}
+                    >
+                      <span data-np-title={notification.id}>{notification.title}</span>
+                      {expandable && <ChevronRight size={14} className="uam-np-row__chevron" aria-hidden />}
+                    </div>
+                  )
+                  const label = notification.label ?? notification.title
                   return (
                     <div key={notification.id} className="uam-np-collapse" data-state={rows.leaving.has(notification.id) ? 'closed' : 'open'}>
-                    <div className="uam-np-row">
+                    <div
+                      className="uam-np-row"
+                      data-expandable={expandable || undefined}
+                      data-expanded={expanded || undefined}
+                      onClick={(event) => {
+                        // Only the row's bar toggles: its buttons and links act alone, and finishing a text selection is not a click.
+                        if (!expandable || (event.target as Element).closest('button, a, input, select, textarea, .uam-np-row__detail')) return
+                        if (window.getSelection()?.isCollapsed === false) return
+                        toggle()
+                      }}
+                    >
                       <span className="uam-np-row__icon" data-tone={tone} aria-hidden><ToneIcon size={14} /></span>
-                      <Tooltip label={fullDetail}>
-                        <div className="uam-np-row__title">
-                          <span>{notification.title}</span>
-                          {fullDetail && <span className="sr-only">{fullDetail}</span>}
-                        </div>
-                      </Tooltip>
+                      <div className="uam-np-row__body">
+                        {title}
+                        {fullDetail && !expanded && <span className="sr-only">{fullDetail}</span>}
+                        {expanded && (notification.hostLines ? (
+                          <ul className="uam-np-row__detail">
+                            {notification.hostLines.map((line) => <li key={line.key} className="flex min-w-0 flex-wrap items-start gap-x-2"><NotificationHost hostId={line.hostId} /><span className="min-w-0">{line.text}</span></li>)}
+                          </ul>
+                        ) : fullDetail && <div className="uam-np-row__detail">{fullDetail}</div>)}
+                        {notification.hostId && <NotificationHost hostId={notification.hostId} />}
+                      </div>
                       <Tooltip label={exactTime}>
                         <time tabIndex={0} className="uam-np-row__meta rounded-sm" dateTime={time.toISOString()} aria-label={relativeTime}>{relativeTime}</time>
                       </Tooltip>
                       <div className="flex shrink-0 items-center gap-1">
-                        {(tone === 'error' || tone === 'warning' || fullDetail) && <CopyTextButton text={[notification.title, fullDetail].filter(Boolean).join('\n')} label="Copy message" title="Copy message" />}
+                        {(tone === 'error' || tone === 'warning' || fullDetail) && <CopyTextButton text={[label, fullDetail].filter(Boolean).join('\n')} label="Copy message" title="Copy message" />}
                         {notification.actions?.map((action) => {
                           const actionId = `${notification.id}-${action.label}`
                           return (
@@ -675,7 +758,7 @@ function NotificationsPanel({
                       <IconButton
                         size="sm"
                         icon={<X size={14} />}
-                        label={`Dismiss ${notification.title}`}
+                        label={`Dismiss ${label}`}
                         onClick={() => {
                           rows.leave([notification.id], () => onDismiss(notification.id))
                           headingRef.current?.focus()
@@ -809,6 +892,12 @@ export function AppShell() {
     window.addEventListener(APP_FAILURE_EVENT, onFailure)
     return () => window.removeEventListener(APP_FAILURE_EVENT, onFailure)
   }, [showTransientAlert])
+
+  // Pull request watch news goes to the same panel; declared after the listener above so the first notices are heard.
+  const prWatches = useAppStore((s) => s.prWatches)
+  useEffect(() => {
+    reportPullRequestWatchNotices(prWatches, (chatId) => useAppStore.getState().sessions.find((candidate) => candidate.id === chatId)?.name)
+  }, [prWatches])
 
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)
@@ -1172,6 +1261,7 @@ export function AppShell() {
 
       <StartupNativeImportChooser />
       <LegacyChatImportPrompt />
+      {MOBILE_COMPANION_ENABLED && <CompanionConfirmationPrompt />}
       <TransientAlertSurface alerts={alertSuppressed ? [] : transientAlerts} notice={alertNotice} fallbackId={alertFallbackId} onFallbackChange={setAlertFallback} onAction={(action) => action === 'updates' ? openUpdates() : openNotifications()} onDismiss={dismissTransientAlert} />
 
       {/* Modals */}

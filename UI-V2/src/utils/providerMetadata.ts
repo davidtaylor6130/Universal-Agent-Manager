@@ -105,7 +105,7 @@ export const CODEX_SPEED_OPTIONS = !CODEX_ENABLED ? [] : [
 
 const GEMINI_MEMORY_MODEL_IDS = ['', 'auto-gemini-3', 'pro', 'flash', 'flash-lite']
 const GEMINI_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: string }> = {
-  '': { label: 'Default', detail: 'Use Gemini settings' },
+  '': { label: 'Default', detail: 'Flash Lite, low cost' },
   'auto-gemini-3': { label: 'Auto 3', detail: 'Gemini 3 routing' },
   pro: { label: 'Pro', detail: 'Prioritize capability' },
   flash: { label: 'Flash', detail: 'Prioritize speed' },
@@ -113,14 +113,14 @@ const GEMINI_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: string
 }
 const CODEX_MEMORY_MODEL_IDS = ['', 'gpt-5.6', 'gpt-5.4', 'gpt-5.3', 'gpt-5.2', 'gpt-5.1']
 const CODEX_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: string }> = {
-  '': { label: 'Default', detail: 'Use Codex settings' },
+  '': { label: 'Default', detail: 'GPT-5.4 Mini, low cost' },
   'gpt-5.6': { label: 'GPT-5.6', detail: 'Latest frontier coding model' },
   'gpt-5.4': { label: 'GPT-5.4', detail: 'Frontier coding model' },
   'gpt-5.4-mini': { label: 'GPT-5.4 Mini', detail: 'Smaller fast model' },
   'gpt-5.2': { label: 'GPT-5.2', detail: 'Balanced coding model' },
 }
 const CLAUDE_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: string }> = {
-  '': { label: 'Default', detail: 'Use Claude Code settings' },
+  '': { label: 'Default', detail: 'Haiku, low cost' },
   sonnet: { label: 'Sonnet', detail: 'Latest Sonnet alias' },
   opus: { label: 'Opus', detail: 'Latest Opus alias' },
 }

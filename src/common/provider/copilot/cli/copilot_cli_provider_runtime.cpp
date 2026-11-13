@@ -509,7 +509,7 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildInteractiveArgv(const P
 	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, chat.native_session_id);
 
 	AppendCopilotModeArgs(argv, chat);
-	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings));
+	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings, uam::provider_runtime_internal::LaunchHasReadCeiling(chat)));
 	return argv;
 }
 
@@ -553,11 +553,21 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildStructuredLaunchArgv(co
 {
 	std::vector<std::string> argv = {"copilot", "--headless", "--stdio", "--no-auto-update"};
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--effort", NormalizeCopilotReasoningEffort(chat.reasoning_effort));
-	if (uam::computer_use::AvailableForChat(chat) && uam::computer_use::UsesUamBackend(chat) && uam::computer_use::IsPortableMcpChatId(chat.id))
+	if (uam::computer_use::AttachableForLaunch(chat) && uam::computer_use::UsesUamBackend(chat) && uam::computer_use::IsPortableMcpChatId(chat.id))
 	{
 		argv.push_back("--allow-tool=uam-computer(computer_observe),uam-computer(computer_action)");
 	}
+	// Deny rules win over saved approvals, repository or user allow rules and --allow-tool, so a read
+	// ceiling cannot run commands, change files or store memories without Plan's own native refusal.
+	if (uam::provider_runtime_internal::LaunchHasReadCeiling(chat))
+		uam::provider_runtime_internal::AppendLiteralArgs(argv, {"--deny-tool=shell", "--deny-tool=write", "--deny-tool=memory"});
 	return argv;
+}
+
+std::vector<std::pair<std::string, std::string>> CopilotCliProviderRuntime::BuildStructuredLaunchEnvironment(const ProviderProfile&, const ChatSession&) const
+{
+	// An inherited COPILOT_ALLOW_ALL would approve every tool before UAM is asked.
+	return {{"COPILOT_ALLOW_ALL", "false"}};
 }
 
 std::string CopilotCliProviderRuntime::OnAcpMapApprovalModeId(const std::string& mode_id) const
@@ -743,7 +753,8 @@ std::string CopilotCliProviderRuntime::LocalCliCompatibilityError(const uam::App
 	{
 		return "Checking GitHub Copilot CLI compatibility. Try again in a moment.";
 	}
-	if (state.supported)
+	// A failed or timed-out check says nothing about the installation; only a confirmed result blocks.
+	if (state.supported || !state.check_error.empty())
 	{
 		return "";
 	}

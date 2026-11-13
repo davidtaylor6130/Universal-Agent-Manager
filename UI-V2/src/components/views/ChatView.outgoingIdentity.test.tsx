@@ -168,7 +168,12 @@ describe('ChatView exact outgoing action identity', () => {
     expect(identities.map(identity => identity.requestId)).toEqual(sends().map(request => request.requestId))
     expect(identities[0].requestId).not.toBe(identities[1].requestId)
     expect(identities.every(identity => identity.requestId.length > 0 && identity.requestId.length <= 128)).toBe(true)
-    expect(sends()[0].payload).toEqual(sends()[1].payload)
+    // Two calls are two submissions: identical bytes, distinct idempotency IDs.
+    const { sendIdempotencyId: firstSubmission, ...firstPayload } = sends()[0].payload
+    const { sendIdempotencyId: secondSubmission, ...secondPayload } = sends()[1].payload
+    expect(firstPayload).toEqual(secondPayload)
+    expect(firstSubmission).toEqual(expect.any(String))
+    expect(firstSubmission).not.toBe(secondSubmission)
     callbacks.forEach(callback => callback.ack())
     await expect(Promise.all([first, second])).resolves.toEqual([true, true])
     expect(useAppStore.getState().messages[ID]).toBe(original)

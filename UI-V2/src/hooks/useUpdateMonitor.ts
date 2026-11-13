@@ -5,9 +5,13 @@ import {
   UPDATE_CHECK_INTERVAL_MS,
   availableUpdates,
   availableRemoteHelperUpdates,
+  automaticUpdateVersion,
+  fetchNpmReleaseHistory,
+  localBuildLabel,
   fetchLatestUpdateCatalog,
   readCachedUpdateCatalog,
   type LatestUpdateCatalog,
+  type NpmReleaseHistory,
 } from '../services/updateCatalog'
 import { isSshHost } from '../utils/remoteWorkspace'
 import { SSH_ENABLED } from '../config/buildFeatures'
@@ -24,6 +28,8 @@ function updateCheckErrorIdentity(message: string): string {
 
 export function useUpdateMonitor() {
   const appVersion = useAppStore((state) => state.appVersion)
+  const uiBuildId = useAppStore((state) => state.uiBuildId)
+  const appBuildLabel = localBuildLabel(appVersion, uiBuildId)
   const runnerProtocolVersion = useAppStore((state) => state.runnerProtocolVersion)
   const providers = useAppStore((state) => state.providers)
   const providerAvailability = useAppStore((state) => state.providerAvailability)
@@ -47,6 +53,8 @@ export function useUpdateMonitor() {
   const autoCheckAttemptedRef = useRef(false)
   const checkingRef = useRef(false)
   const autoInstallAttempts = useRef(new Set<string>())
+  // One registry read per provider per update check; effect reruns reuse it.
+  const releaseHistories = useRef(new Map<string, { checkedAt: string; history: Promise<NpmReleaseHistory | null> }>())
 
   const checkNow = useCallback(async () => {
     if (checkingRef.current) return
@@ -110,8 +118,8 @@ export function useUpdateMonitor() {
     // Like a build-excluded provider, one disabled on a computer is neither offered nor automatically updated there.
     ...availableUpdates(catalog, appVersion, versionManager, providers, dismissedVersions)
       .filter((update) => !update.providerId || !providerDisabledOn(providerAvailability, update.providerId, update.executionHostId || 'local')),
-    ...availableRemoteHelperUpdates(appVersion, runnerProtocolVersion, executionHosts, dismissedVersions),
-  ], [appVersion, catalog, dismissedVersions, executionHosts, providerAvailability, providers, runnerProtocolVersion, versionManager])
+    ...availableRemoteHelperUpdates(appVersion, runnerProtocolVersion, executionHosts, dismissedVersions, appBuildLabel),
+  ], [appBuildLabel, appVersion, catalog, dismissedVersions, executionHosts, providerAvailability, providers, runnerProtocolVersion, versionManager])
 
   const applyRemoteHelperUpdate = useCallback(async (hostId: string): Promise<CEFResponse> => {
     const host = executionHosts.find((candidate) => candidate.id === hostId)
@@ -123,7 +131,7 @@ export function useUpdateMonitor() {
         // Native completion can race the pushed state patch; reconcile the card immediately.
         useAppStore.setState((state) => ({
           executionHosts: state.executionHosts.map((candidate) => candidate.id === hostId
-            ? { ...candidate, runnerStatus: 'ready', runnerVersion: appVersion, runnerProtocolVersion, runnerSha256: candidate.bundledRunnerSha256 }
+            ? { ...candidate, runnerStatus: 'ready', runnerVersion: appVersion, runnerProtocolVersion, runnerSha256: candidate.bundledRunnerSha256, runnerBuildLabel: appBuildLabel || undefined }
             : candidate),
         }))
       }
@@ -133,7 +141,7 @@ export function useUpdateMonitor() {
     } finally {
       setRemoteHelperUpdatingId('')
     }
-  }, [appVersion, executionHosts, remoteHelperUpdatingId, runnerProtocolVersion])
+  }, [appBuildLabel, appVersion, executionHosts, remoteHelperUpdatingId, runnerProtocolVersion])
 
   const installCliProviderVersion = useCallback((providerId: string, version: string, executionHostId: string | undefined, signal: AbortSignal) => {
     if (signal.aborted) return Promise.resolve(false)
@@ -180,23 +188,46 @@ export function useUpdateMonitor() {
   }, [applyCliProviderVersion])
 
   useEffect(() => {
-    if (!automaticProviderUpdates || !cefStateHydrated || checking) return
-    const targets: { providerId: string; version: string; executionHostId?: string }[] = []
-    for (const update of updates) {
-      if (!update.providerId || !update.installable || (SSH_ENABLED && update.remoteHostId)) continue
+    if (!automaticProviderUpdates || !cefStateHydrated || checking || !catalog) return
+    const candidates = updates.flatMap((update) => {
+      if (!update.providerId || !update.installable || (SSH_ENABLED && update.remoteHostId)) return []
       const state = providerStates.find((entry) => entry.providerId === update.providerId &&
         (entry.executionHostId || 'local') === (update.executionHostId || 'local'))
-      if (!state || state.running || state.lastInstallStatus === 'awaiting-verification' || state.blockingChatIds?.length || state.checkError) continue
-      const attempt = JSON.stringify([update.id, update.latestVersion])
-      if (autoInstallAttempts.current.has(attempt)) continue
-      autoInstallAttempts.current.add(attempt)
-      // One automatic attempt per release. Failures remain available for manual retry.
-      targets.push({ providerId: update.providerId, version: update.latestVersion, ...(update.executionHostId ? { executionHostId: update.executionHostId } : {}) })
-    }
-    if (targets.length) void sendToCEF({ action: 'applyCliProviderVersions', payload: { targets } }).then((response) => {
-      if (!response.ok) setError(response.error || 'Automatic provider updates could not start. Retry manually in Updates.')
-    }, () => setError('Automatic provider updates could not start. Retry manually in Updates.'))
-  }, [automaticProviderUpdates, cefStateHydrated, checking, updates, providerStates, applyCliProviderVersion])
+      if (!state || state.running || state.lastInstallStatus === 'awaiting-verification' || state.blockingChatIds?.length || state.checkError) return []
+      return [{ update, providerId: update.providerId, state }]
+    })
+    if (!candidates.length) return
+    let cancelled = false
+    void Promise.all(candidates.map(async ({ update, providerId, state }) => {
+      let cached = releaseHistories.current.get(providerId)
+      if (cached?.checkedAt !== catalog.checkedAt) {
+        cached = { checkedAt: catalog.checkedAt, history: fetchNpmReleaseHistory(providerId) }
+        releaseHistories.current.set(providerId, cached)
+      }
+      const history = await cached.history
+      // Only an npm install that tracks latest can take an older, already-aged release; other installers move to their current one.
+      const exactOnly = !(state.installMethod === undefined || state.installMethod === 'npm') || state.preferredVersion !== 'latest'
+      // Unknown publish time or deprecation never auto-installs; the update stays available manually.
+      const version = history ? automaticUpdateVersion(history, update.currentVersion, update.latestVersion, exactOnly) : ''
+      return version ? { id: update.id, providerId, version, ...(update.executionHostId ? { executionHostId: update.executionHostId } : {}) } : null
+    })).then((resolved) => {
+      if (cancelled) return
+      const targets: { providerId: string; version: string; executionHostId?: string }[] = []
+      for (const target of resolved) {
+        if (!target) continue
+        const { id, ...install } = target
+        const attempt = JSON.stringify([id, install.version])
+        if (autoInstallAttempts.current.has(attempt)) continue
+        autoInstallAttempts.current.add(attempt)
+        // One automatic attempt per release. Failures remain available for manual retry.
+        targets.push(install)
+      }
+      if (targets.length) void sendToCEF({ action: 'applyCliProviderVersions', payload: { targets } }).then((response) => {
+        if (!response.ok) setError(response.error || 'Automatic provider updates could not start. Retry manually in Updates.')
+      }, () => setError('Automatic provider updates could not start. Retry manually in Updates.'))
+    })
+    return () => { cancelled = true }
+  }, [automaticProviderUpdates, cefStateHydrated, checking, catalog, updates, providerStates])
 
   const requestCliProviderUpdate = useCallback(async (providerId: string, version: string, executionHostId?: string) => {
     return sendToCEF({ action: 'applyCliProviderVersion', payload: { providerId, version, allowInteractiveElevation: true, ...(executionHostId ? { executionHostId } : {}) } })
@@ -241,6 +272,7 @@ export function useUpdateMonitor() {
       providerId: state.providerId,
       ...(state.executionHostId ? { executionHostId: state.executionHostId } : {}),
       name: `${provider?.shortName || provider?.name || state.providerId}${state.executionHostId ? ` · ${state.executionHostName || state.executionHostId}` : ''}`,
+      shortName: provider?.shortName || provider?.name || state.providerId,
       status: state.lastInstallStatus,
       message: state.lastInstallStatus === 'succeeded' ? `Installed ${state.installedVersion || 'provider update'}.` : state.message,
       output: state.lastOutput,

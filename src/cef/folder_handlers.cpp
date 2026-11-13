@@ -254,7 +254,14 @@ void UamQueryHandler::StartPreparedDeletion(CefRefPtr<CefBrowser> browser,
 	{
 		const std::shared_ptr<uam::WorkspaceDeletionTask> current = weak_task.lock();
 		if (!current || m_workspaceDeletionTask.lock() != current) return;
-		if (m_app.data_root == data_root)
+		// A rejected commit keeps its recovery record, which completes the deletion at restart: its chats stay fenced
+		// until then and no other deletion can start. The app-wide lock itself is released on every path.
+		if (current->commit_rejected)
+		{
+			m_deletionAwaitsRestart = true;
+			m_chatsDeletedAtRestart.insert(current->deleted_ids.begin(), current->deleted_ids.end());
+		}
+		else if (m_app.data_root == data_root)
 			for (const std::string& id : current->deleted_ids) m_app.worktree_operation_chat_ids.erase(id);
 		m_workspaceDeletionTask.reset();
 		m_workspaceDeletionPending = false;
@@ -270,19 +277,29 @@ void UamQueryHandler::StartPreparedDeletion(CefRefPtr<CefBrowser> browser,
 	    },
 	    [this, browser, cb, task, single_chat, unlock, data_root, lifetime](uam::query_handler_async::AsyncCefResult& response)
 	    {
+		    // Every exit, including an exception, releases the deletion lock; only the hand-off to the committed
+		    // cleanup task disarms this, because that task releases the lock itself.
+		    struct UnlockOnExit
+		    {
+			    const std::function<void()>& unlock;
+			    bool armed = true;
+			    ~UnlockOnExit()
+			    {
+				    if (!armed) return;
+				    try { unlock(); }
+				    catch (...) {}
+			    }
+		    } release{unlock};
 		    if (m_workspaceDeletionTask.lock() != task || m_app.data_root != data_root)
 		    {
-			    unlock();
 			    response = uam::query_handler_async::AsyncFailure(409, "Deletion ownership changed. Recovery evidence was preserved.");
 			    return;
 		    }
-		    if (!response.ok) { unlock(); return; }
+		    if (!response.ok) return;
 		    uam::CommitWorkspaceDeletion(m_app, *task);
 		    if (task->commit_rejected)
 		    {
 			    response = uam::query_handler_async::AsyncFailure(500, m_app.status_line);
-			    m_app.deletion_progress.reset();
-			    uam::PushStateUpdateIfChanged(browser, m_app);
 			    return;
 		    }
 		    const std::string selected_id = ChatDomainService().SelectedChatId(m_app);
@@ -318,6 +335,7 @@ void UamQueryHandler::StartPreparedDeletion(CefRefPtr<CefBrowser> browser,
 			        cb->Success(result_body);
 		        })))
 		    {
+			    release.armed = false;
 			    response.callback_deferred = true;
 		    }
 		    else
@@ -325,7 +343,6 @@ void UamQueryHandler::StartPreparedDeletion(CefRefPtr<CefBrowser> browser,
 			    m_app.status_line = task->deleting_chats
 			        ? "Chat deletion is committed. Disk cleanup will finish safely on restart."
 			        : "Workspace deletion is committed. Disk cleanup will finish safely on restart.";
-			    unlock();
 			    response = uam::query_handler_async::AsyncSuccess(nlohmann::json::parse(result_body));
 		    }
 	    })) unlock();

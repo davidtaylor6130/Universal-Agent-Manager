@@ -2,7 +2,7 @@ import type { MemoryLevel } from '../types/memory'
 import type { MemoryWorkerBinding } from './cpp/types'
 import {
   clampedFiniteNumberOr, normalizeMemoryLevel, normalizeGoalMaxLoopIterations,
-  normalizeAcpSetupInactivityTimeoutSeconds, normalizeActiveTurnInactivityTimeoutSeconds, normalizeStreamLoopRepeatLimit, normalizeAcpTurnOutputLimitMiB,
+  normalizeAcpSetupInactivityTimeoutSeconds, normalizeActiveTurnInactivityTimeoutSeconds, normalizeToolCallTimeoutSeconds, normalizeStreamLoopRepeatLimit, normalizeAcpTurnOutputLimitMiB,
   MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS,
   MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES,
 } from './cpp/sanitizers'
@@ -18,6 +18,7 @@ export interface MemorySettingsValues {
   acpSetupInactivityTimeoutSeconds: number
   acpTurnOutputLimitMiB: number
   activeTurnInactivityTimeoutSeconds: number
+  toolCallTimeoutSeconds: number
   streamLoopRepeatLimit: number
   memoryWorkerBindings: Record<string, MemoryWorkerBinding>
   permissionReviewerProviderId: string
@@ -47,14 +48,14 @@ export interface MemorySettingsWriteDependencies {
 }
 const fields = [
   'memoryEnabledDefault', 'memoryLevelDefault', 'memoryIdleDelaySeconds', 'memoryRecallBudgetBytes',
-  'goalMaxLoopIterations', 'goalTokenBudget', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB', 'activeTurnInactivityTimeoutSeconds', 'streamLoopRepeatLimit',
+  'goalMaxLoopIterations', 'goalTokenBudget', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB', 'activeTurnInactivityTimeoutSeconds', 'toolCallTimeoutSeconds', 'streamLoopRepeatLimit',
   'memoryWorkerBindings', 'permissionReviewerProviderId', 'permissionReviewerModelId',
 ] as const
 const wireNames: Record<keyof MemorySettingsValues, string> = {
   memoryEnabledDefault: 'enabledDefault', memoryLevelDefault: 'levelDefault',
   memoryIdleDelaySeconds: 'idleDelaySeconds', memoryRecallBudgetBytes: 'recallBudgetBytes',
   goalMaxLoopIterations: 'goalMaxLoopIterations', goalTokenBudget: 'goalTokenBudget', acpSetupInactivityTimeoutSeconds: 'acpSetupInactivityTimeoutSeconds',
-  acpTurnOutputLimitMiB: 'acpTurnOutputLimitMiB', activeTurnInactivityTimeoutSeconds: 'activeTurnInactivityTimeoutSeconds', streamLoopRepeatLimit: 'streamLoopRepeatLimit', memoryWorkerBindings: 'workerBindings',
+  acpTurnOutputLimitMiB: 'acpTurnOutputLimitMiB', activeTurnInactivityTimeoutSeconds: 'activeTurnInactivityTimeoutSeconds', toolCallTimeoutSeconds: 'toolCallTimeoutSeconds', streamLoopRepeatLimit: 'streamLoopRepeatLimit', memoryWorkerBindings: 'workerBindings',
   permissionReviewerProviderId: 'permissionReviewerProviderId', permissionReviewerModelId: 'permissionReviewerModelId',
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -79,6 +80,7 @@ export function parseMemorySettingsValues(raw: unknown): MemorySettingsValues | 
     !integer(value.acpTurnOutputLimitMiB) || value.acpTurnOutputLimitMiB !== normalizeAcpTurnOutputLimitMiB(value.acpTurnOutputLimitMiB) ||
     !integer(value.streamLoopRepeatLimit) || value.streamLoopRepeatLimit !== normalizeStreamLoopRepeatLimit(value.streamLoopRepeatLimit) ||
     !integer(value.activeTurnInactivityTimeoutSeconds) || value.activeTurnInactivityTimeoutSeconds !== normalizeActiveTurnInactivityTimeoutSeconds(value.activeTurnInactivityTimeoutSeconds) ||
+    !integer(value.toolCallTimeoutSeconds) || value.toolCallTimeoutSeconds !== normalizeToolCallTimeoutSeconds(value.toolCallTimeoutSeconds) ||
     !text(value.permissionReviewerProviderId) || !text(value.permissionReviewerModelId) || !record(value.memoryWorkerBindings)) return null
   const bindings: Record<string, unknown> = value.memoryWorkerBindings
   for (const [key, entry] of Object.entries(bindings)) {
@@ -119,6 +121,7 @@ function normalizeRequested(partial: Partial<MemorySettingsValues>, previous: Me
   if (partial.acpTurnOutputLimitMiB !== undefined) next.acpTurnOutputLimitMiB = normalizeAcpTurnOutputLimitMiB(partial.acpTurnOutputLimitMiB)
   if (partial.streamLoopRepeatLimit !== undefined) next.streamLoopRepeatLimit = normalizeStreamLoopRepeatLimit(partial.streamLoopRepeatLimit)
   if (partial.activeTurnInactivityTimeoutSeconds !== undefined) next.activeTurnInactivityTimeoutSeconds = normalizeActiveTurnInactivityTimeoutSeconds(partial.activeTurnInactivityTimeoutSeconds)
+  if (partial.toolCallTimeoutSeconds !== undefined) next.toolCallTimeoutSeconds = normalizeToolCallTimeoutSeconds(partial.toolCallTimeoutSeconds)
   if (partial.permissionReviewerProviderId !== undefined) next.permissionReviewerProviderId = partial.permissionReviewerProviderId
   if (partial.permissionReviewerModelId !== undefined) next.permissionReviewerModelId = partial.permissionReviewerModelId
   if (partial.memoryWorkerBindings !== undefined) {

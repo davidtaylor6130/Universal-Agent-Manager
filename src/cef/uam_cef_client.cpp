@@ -1,10 +1,12 @@
 #include "cef/uam_cef_client.h"
 #include "cef/cef_push.h"
+#include "cef/dropped_attachment_paths.h"
 #include "cef/state_serializer.h"
 #include "cef/uam_cef_security.h"
 #include "cef/uam_window_chrome.h"
 #include "include/views/cef_browser_view.h"
 #include "include/views/cef_window.h"
+#include "common/runtime/app_time.h"
 #include "common/utils/diagnostic_log.h"
 #include "include/cef_task.h"
 
@@ -323,6 +325,23 @@ bool UamCefClient::OnProcessMessageReceived(CefRefPtr<CefBrowser>        browser
 // CefDragHandler
 // ---------------------------------------------------------------------------
 
+bool UamCefClient::OnDragEnter(CefRefPtr<CefBrowser> browser, CefRefPtr<CefDragData> dragData, DragOperationsMask mask)
+{
+	CEF_REQUIRE_UI_THREAD();
+	(void)mask;
+	std::vector<std::string> paths;
+	std::vector<CefString> dragged;
+	if (browser != nullptr && m_browser != nullptr && browser->IsSame(m_browser) && dragData != nullptr && dragData->GetFilePaths(dragged))
+	{
+		for (const CefString& path : dragged)
+		{
+			paths.push_back(path.ToString());
+		}
+	}
+	uam::cef::ExchangeDroppedAttachmentPaths(std::move(paths));
+	return false;
+}
+
 void UamCefClient::OnDraggableRegionsChanged(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const std::vector<CefDraggableRegion>& regions)
 {
 	CEF_REQUIRE_UI_THREAD();
@@ -461,5 +480,8 @@ bool UamCefClient::OnConsoleMessage(CefRefPtr<CefBrowser> browser, cef_log_sever
 	const std::string text = message.ToString();
 	if (level >= LOGSEVERITY_ERROR || text.starts_with("[UI recovery]") || text.starts_with("[UI startup]"))
 		uam::diagnostics::Write("[frontend] " + text);
+	static bool ui_ready_logged = false;
+	if (text.starts_with("[UI startup] Initial state loaded") && !std::exchange(ui_ready_logged, true))
+		uam::diagnostics::Write("[performance] startup UI ready at " + std::to_string(static_cast<long long>(uam::GetAppTimeSeconds() * 1000.0)) + " ms since launch.");
 	return false;
 }

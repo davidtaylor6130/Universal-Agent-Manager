@@ -13,6 +13,7 @@ Requirements:
 - Node.js 20 and npm
 - Internet access during the first configure so CMake can fetch CEF and `nlohmann/json`
 - Xcode command-line tools on macOS, or MSVC Build Tools on Windows
+- macOS 13 or newer to run the app: the bundled CEF 156 framework requires it, and every bundle declares it as `LSMinimumSystemVersion`. No `CMAKE_OSX_DEPLOYMENT_TARGET` is set, so a build also requires the macOS version of the machine that built it
 - The provider CLIs you intend to run: `gemini`, `codex`, `claude`, `opencode`, `copilot`, or `agy`
 
 CMake requires build directories inside `Builds/`. CLion's default `cmake-build-*` directories are also accepted.
@@ -45,6 +46,8 @@ cmake -S . -B Builds/dev \
   -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
 cmake --build Builds/dev --config Release --parallel 4
 ```
+
+Make and Ninja pick the build type when configuring and ignore `--config`. A configure that names no `CMAKE_BUILD_TYPE` now uses Release; before, it compiled the app without optimisation and without `NDEBUG`. Pass `-DCMAKE_BUILD_TYPE=Debug` for a debug build with those generators. An existing Make or Ninja build folder whose cached build type is empty becomes a Release build the next time it is configured, and rebuilds its objects once.
 
 On Windows, initialize MSVC before running the same commands:
 
@@ -91,11 +94,13 @@ cmake -S . -B Builds \
 cmake --build Builds --config Release --parallel 4
 ```
 
-The GitHub release workflow builds these helpers independently, verifies their reported version, and injects all three into each desktop package.
+The GitHub release workflow builds these helpers independently, verifies their reported version, attests each tagged runner archive's build provenance, and injects all three into each desktop package.
 
-On Windows, `./build.ps1` acquires the three matching `UAM-runner-<platform>-<architecture>.zip` release assets before configuring the app. Existing artifacts are reused only after their SHA-256, exact application version, protocol and source fingerprint pass validation. Releases publish these small archives separately from desktop packages. Local builds and CI use `scripts/acquire_remote_runners.ps1` and the same four-file contract.
+macOS builds with phone access bundle the companion HTTPS transport from a pinned Caddy release (`UAM_CADDY_VERSION` in `CMakeLists.txt`), downloaded and checked against its repository-pinned SHA-256 during configuration; a mismatch fails the build. A `caddy` on the build machine's PATH is never used. The packaged-app smoke test checks the bundled version.
 
-For an offline or unreleased source version, download that revision's three runner artifacts from CI. Put the runner, `uam-runner.sha256`, `uam-runner.version` and `uam-runner.manifest.json` files in each directory above, or provide the standalone ZIPs with `./build.ps1 -RemoteRunnerArchiveDirectory C:\UAM-helpers -Offline`. Acquisition fails before CMake and names the missing platform or mismatched version. It never substitutes an older helper.
+On Windows, `./build.ps1` acquires the three matching `UAM-runner-<platform>-<architecture>.zip` release assets before configuring the app. Each downloaded or supplied archive must pass `gh attestation verify` against the build provenance the release workflow signs for the exact `v<version>` tag, so the GitHub CLI must be installed and signed in; an archive without that provenance, including one from a release published before attestations, is refused. Existing artifacts are reused only after their SHA-256, exact application version, protocol and source fingerprint pass validation. Releases publish these small archives separately from desktop packages. Local builds and CI use `scripts/acquire_remote_runners.ps1` and the same four-file contract.
+
+For an offline or unreleased source version, download that revision's three runner artifacts from CI. Put the runner, `uam-runner.sha256`, `uam-runner.version` and `uam-runner.manifest.json` files in each directory above, or provide the standalone ZIPs with `./build.ps1 -RemoteRunnerArchiveDirectory C:\UAM-helpers -Offline`. `-Offline` skips the provenance check, so use it only for artifacts you obtained from this repository's CI yourself. Acquisition fails before CMake and names the missing platform or mismatched version. It never substitutes an older helper.
 
 
 ## Tests and release gates
@@ -108,6 +113,7 @@ npm --prefix UI-V2 run test
 npm --prefix UI-V2 run build
 
 cmake -S . -B Builds/tests \
+  -DCMAKE_BUILD_TYPE=Debug \
   -DUAM_BUILD_TESTS=ON \
   -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
 cmake --build Builds/tests --config Debug --parallel 4
@@ -128,6 +134,6 @@ Every pull request runs:
 
 Pull requests that change only Markdown, `LICENSE` or diagram files skip the native jobs. The provider CLI contract checks probe the latest published CLIs rather than repository code, so they run after relevant pushes and weekly. Every push to `main` or the V5 integration branch additionally runs the full core suite on macOS Intel and Windows x64, and, when their files change, the 38 native build-flag rows (19 profiles on macOS and Windows) (V5 branch) and the Windows Computer Use check, so a platform-only regression appears on the base branch within one push. A pull request can still request the native build-flag rows with the `build-flags` label.
 
-Native build jobs compile the core test binary while the helper builds are still running, then wait for the helper artifacts (`scripts/wait_for_remote_runners.py`) before building and packaging the app. Native CI jobs restore a per-platform `ccache` saved by the latest push to the base branch; pull requests read it without saving. The cache may grow to 3 GB, so a full Windows build's objects fit without evicting entries mid-build, and entries unused for two days are dropped before a push saves it, and the native dependency caches (CEF and other fetched sources, including the sources each remote helper job fetches so a cache hit avoids the GitHub download) are likewise saved only by branch pushes, which release tag helper builds read from `main`; only the small npm cache can still be saved by a pull request that changes the lockfile. After each CI push a cleanup job deletes superseded copies, keeping the newest of each cache family on that branch, so the repository stays under the 10 GB Actions cache limit. Windows CI uses Ninja Multi-Config inside the MSVC developer environment so the cache applies there too, keeping the `Release/` output layout. A newer push to the same pull request cancels its older CI run. `python3 scripts/check_workflows.py` checks locally, without GitHub, that every workflow parses and that every job configuring CMake restores its fetched sources first (needs PyYAML). CI runs native core cases in two processes, with the wall-clock-budget cases in `tests/ci_serial.txt` running alone afterwards; each shard keeps that order for its share.
+Native build jobs compile the core test binary while the helper builds are still running, then wait for the helper artifacts (`scripts/wait_for_remote_runners.py`) before building and packaging the app. Native CI jobs restore a per-platform `ccache` saved by the latest push to the base branch; pull requests read it without saving. The cache may grow to 3 GB, so a full Windows build's objects fit without evicting entries mid-build, and entries unused for two days are dropped before a push saves it, and the native dependency caches (CEF and other fetched sources, including the sources each remote helper job fetches so a cache hit avoids the GitHub download) are likewise saved only by branch pushes, which release tag helper builds read from `main`; only the small npm cache can still be saved by a pull request that changes the lockfile. After each CI push a cleanup job deletes superseded copies, keeping the newest of each cache family on that branch, so the repository stays under the 10 GB Actions cache limit. Windows CI uses Ninja Multi-Config inside the MSVC developer environment so the cache applies there too, keeping the `Release/` output layout. A newer push to the same pull request cancels its older CI run. Actions from outside GitHub's own `actions/` organisation are pinned to a full commit SHA, with the release tag in a trailing comment. `python3 scripts/check_workflows.py` checks locally, without GitHub, that every workflow parses, that every such action is pinned and that every job configuring CMake restores its fetched sources first (needs PyYAML). CI runs native core cases in two processes, with the wall-clock-budget cases in `tests/ci_serial.txt` running alone afterwards; each shard keeps that order for its share.
 
 Release tags must match the numeric version in `UI-V2/package.json`, optionally followed by a prerelease suffix (for example `v5.0.0-alpha.1` for version `5.0.0`); suffixed tags are published as GitHub prereleases so they never replace the latest release. A release candidate tag containing `-rc` (for example `v5.0.0-rc.1`) is the full release gate: it builds and tests every native case on macOS ARM, macOS Intel and Windows, runs all build-flag rows, and publishes nothing. Before tagging a final release, its commit must have a passed release candidate run. A final tag on that commit rebuilds and packages without repeating the native or frontend test runs; without one, the final tag runs them as before. The release job gates native core cases through one retry and `tests/ci_quarantine.txt` like CI, but keeps running every case serially. The release workflow publishes the two macOS archives, the Windows archive, and the frontend SBOM.

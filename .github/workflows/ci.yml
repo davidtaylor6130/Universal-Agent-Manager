@@ -153,6 +153,9 @@ jobs:
       - name: Verify native runner memory (Linux)
         if: runner.os == 'Linux'
         run: python3 scripts/test_remote_runner_memory.py --runner Builds/runner/uam-runner
+      - name: Verify runner survives closed bridges (Linux)
+        if: runner.os == 'Linux'
+        run: python3 scripts/test_remote_runner_closed_bridge.py --runner Builds/runner/uam-runner
       - name: Smoke runner version (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -187,7 +190,7 @@ jobs:
           key: macOS-arm64-uam-ninja-deps-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: macOS-arm64-uam-ninja-deps-
       # Same key and configuration as the macOS ARM test job, which alone saves the cache.
-      - uses: hendrikmuhs/ccache-action@v1.2
+      - uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
         with:
           key: macOS-arm64-uam-native
           max-size: 3G
@@ -195,8 +198,9 @@ jobs:
       - run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$GITHUB_WORKSPACE/Builds/remote-artifacts"
       - run: cmake --build Builds/tests --config Release --target uam_core_tests --parallel 4
       # The cases find uam-runner and its metadata beside the binary, read the runner's generated build header, and
-      # resolve source paths from the build folder (CMakeCache.txt).
-      - run: tar -cf core-tests.tar -C Builds/tests uam_core_tests uam-runner uam-runner.sha256 uam-runner.version uam-runner.manifest.json CMakeCache.txt generated
+      # resolve source paths from the build folder (CMakeCache.txt). Gemini Plan and goal-review launches refuse to
+      # start without gemini-plan-ceiling.toml beside the binary, as in the app.
+      - run: tar -cf core-tests.tar -C Builds/tests uam_core_tests uam-runner uam-runner.sha256 uam-runner.version uam-runner.manifest.json gemini-plan-ceiling.toml CMakeCache.txt generated
       - uses: actions/upload-artifact@v4
         with:
           name: uam-core-tests-macos-arm64
@@ -221,7 +225,15 @@ jobs:
       - name: Run native core tests
         # Two processes, except cases with tight wall-clock budgets, which run alone afterwards; a failed case
         # gets one fresh serial retry. Budgets are unchanged; together the shards run every case once.
-        run: python3 scripts/run_native_tests.py --shard ${{ matrix.shard }}/4 --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --quarantine tests/ci_quarantine.txt Builds/tests/uam_core_tests
+        run: python3 scripts/run_native_tests.py --shard ${{ matrix.shard }}/4 --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --flaky-report Builds/flaky-native-tests.json --quarantine tests/ci_quarantine.txt Builds/tests/uam_core_tests
+      # Written only when a case failed and then passed on retry.
+      - name: Upload flaky native test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flaky-native-tests-macos-arm64-${{ matrix.shard }}
+          path: Builds/flaky-native-tests.json
+          if-no-files-found: ignore
 
   test:
     name: Test ${{ matrix.name }}
@@ -253,7 +265,7 @@ jobs:
       # Pull requests reuse the compiler cache saved by the latest base-branch push. A 2 GB limit filled the Windows
       # cache and evicted entries mid-build (about 70% hits on base pushes). Entries unused for two days are dropped
       # before a push saves, so a failed build cannot empty the cache and one copy per platform stays well under 10 GB.
-      - uses: hendrikmuhs/ccache-action@v1.2
+      - uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
         with:
           key: ${{ runner.os }}-${{ matrix.arch }}-uam-native
           max-size: 3G
@@ -305,7 +317,15 @@ jobs:
         if: matrix.name != 'macOS ARM'
         # Two processes, except cases with tight wall-clock budgets, which run alone afterwards; a failed case
         # gets one fresh serial retry. Budgets are unchanged.
-        run: python3 scripts/run_native_tests.py --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --quarantine tests/ci_quarantine.txt Builds/tests/uam_core_tests
+        run: python3 scripts/run_native_tests.py --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --flaky-report Builds/flaky-native-tests.json --quarantine tests/ci_quarantine.txt Builds/tests/uam_core_tests
+      # Written only when a case failed and then passed on retry.
+      - name: Upload flaky native test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flaky-native-tests-${{ matrix.artifact }}
+          path: Builds/flaky-native-tests.json
+          if-no-files-found: ignore
       - name: Package macOS review build
         run: ditto -c -k --keepParent Builds/tests/universal_agent_manager.app ${{ matrix.archive }}
       - name: Smoke test packaged macOS app
@@ -345,7 +365,7 @@ jobs:
       # Pull requests reuse the compiler cache saved by the latest base-branch push. A 2 GB limit filled the Windows
       # cache and evicted entries mid-build (about 70% hits on base pushes). Entries unused for two days are dropped
       # before a push saves, so a failed build cannot empty the cache and one copy per platform stays well under 10 GB.
-      - uses: hendrikmuhs/ccache-action@v1.2
+      - uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
         with:
           key: Windows-x64-uam-native
           max-size: 3G
@@ -356,7 +376,7 @@ jobs:
         # Real-time scanning of compiler outputs and the thousands of fixture files the native suite
         # creates dominates hosted-runner builds and fixed test deadlines; product code and budgets are unchanged.
         run: Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE", "$env:RUNNER_TEMP", "$env:TEMP"
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: x64
       - run: npm --prefix UI-V2 ci
@@ -462,7 +482,15 @@ jobs:
             if [ ! -s "$RUNNER_TEMP/selected.txt" ]; then echo 'No native core case covers this change.'; exit 0; fi
             if [ "$(cat "$RUNNER_TEMP/selected.txt")" != '*' ]; then names=("@$RUNNER_TEMP/selected.txt"); fi
           fi
-          "$python" scripts/run_native_tests.py --shard ${{ matrix.shard }}/4 --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --quarantine tests/ci_quarantine.txt "$binary" "${names[@]}"
+          "$python" scripts/run_native_tests.py --shard ${{ matrix.shard }}/4 --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --flaky-report Builds/flaky-native-tests.json --quarantine tests/ci_quarantine.txt "$binary" "${names[@]}"
+      # Written only when a case failed and then passed on retry.
+      - name: Upload flaky native test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flaky-native-tests-windows-x64-${{ matrix.shard }}
+          path: Builds/flaky-native-tests.json
+          if-no-files-found: ignore
 
   # Each save adds a dated cache copy; keep only the newest per key family on this branch so the
   # repository stays under the 10 GB Actions cache limit and pull requests restore the latest one.

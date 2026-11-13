@@ -145,6 +145,7 @@ namespace
 	constexpr std::string_view kChatRemotePromptDeliverySessionIdField = "remote_prompt_delivery_session_id";
 	constexpr std::string_view kChatRemotePromptDeliveryIdField = "remote_prompt_delivery_id";
 	constexpr std::string_view kChatRemotePromptDeliveryPayloadField = "remote_prompt_delivery_payload";
+	constexpr std::string_view kChatRemotePromptDeliveryInputIdsField = "remote_prompt_delivery_input_ids";
 	constexpr std::string_view kChatAcpQueuedPromptsField = "acp_queued_prompts";
 	constexpr std::string_view kChatAcpQueueHeldField = "acp_queue_held";
 	constexpr std::string_view kChatAcpDispatchedQueuedPromptCountField = "acp_dispatched_queued_prompt_count";
@@ -523,6 +524,7 @@ namespace
 			if (!string("uam_agent_definition_snapshot", value.uam_agent_definition_snapshot, 256U * 1024U)) return invalid();
 			if (!string("uam_agent_instructions", value.uam_agent_instructions, 192U * 1024U)) return invalid();
 			if (!string("uam_agent_workspace_access", value.uam_agent_workspace_access, 256)) return invalid();
+			if (value.uam_agent_workspace_access != "write") value.uam_agent_workspace_access = "read";
 			if (!string("uam_agent_execution_capability", value.uam_agent_execution_capability, 256)) return invalid();
 			if (!ids("uam_agent_skills", value.uam_agent_skills)) return invalid();
 			if (!ids("uam_agent_delegates", value.uam_agent_delegates)) return invalid();
@@ -706,8 +708,8 @@ namespace
 		prompt.uam_agent_instructions = JsonStringOrEmpty(obj.Find("uam_agent_instructions"));
 		prompt.uam_agent_skills = JsonStringArrayOrEmpty(obj.Find("uam_agent_skills"));
 		prompt.uam_agent_delegates = JsonStringArrayOrEmpty(obj.Find("uam_agent_delegates"));
-		prompt.uam_agent_workspace_access = uam::strings::NonEmptyOrFallback(
-		    JsonStringOrEmpty(obj.Find("uam_agent_workspace_access")), "write");
+		// Fail closed: only an explicit "write" grants write access; missing or unknown values are read-only.
+		prompt.uam_agent_workspace_access = JsonStringOrEmpty(obj.Find("uam_agent_workspace_access")) == "write" ? "write" : "read";
 		prompt.uam_agent_execution_capability = uam::strings::NonEmptyOrFallback(
 		    JsonStringOrEmpty(obj.Find("uam_agent_execution_capability")), "uam-prompt-injected");
 		prompt.markdown_store_files = JsonStringArrayOrEmpty(obj.Find("markdown_store_files"));
@@ -1025,6 +1027,7 @@ namespace
 		uam::json::SetString(obj, kMessageCreatedAtField, msg.created_at);
 		if (msg.native_input_id && uam::input_provenance::ValidNativeInputId(*msg.native_input_id)) uam::json::SetString(obj, "native_input_id", *msg.native_input_id);
 		if (msg.role == MessageRole::User && msg.input_write_completed && msg.native_input_id && uam::input_provenance::ValidNativeInputId(*msg.native_input_id)) uam::json::SetBool(obj, "input_write_completed", true);
+		if (msg.role == MessageRole::User && msg.input_delivery_tracked) uam::json::SetBool(obj, "input_delivery_tracked", true);
 		if (msg.origin_request_id && uam::input_provenance::ValidOriginRequestId(*msg.origin_request_id)) uam::json::SetString(obj, "origin_request_id", *msg.origin_request_id);
 
 		SetNonEmptyString(obj, kMessageProviderField, msg.provider);
@@ -1179,6 +1182,7 @@ namespace
 		msg.model_id = JsonStringOrEmpty(obj.Find("model_id"));
 		msg.native_input_id = InputProvenanceFromJson(obj.Find("native_input_id"), true);
 		if (const auto* completed = obj.Find("input_write_completed"); completed && completed->type == JsonValue::Type::Bool && completed->bool_value && msg.role == MessageRole::User && msg.native_input_id) msg.input_write_completed = true;
+		if (const auto* tracked = obj.Find("input_delivery_tracked"); tracked && tracked->type == JsonValue::Type::Bool && tracked->bool_value && msg.role == MessageRole::User) msg.input_delivery_tracked = true;
 		msg.origin_request_id = InputProvenanceFromJson(obj.Find("origin_request_id"), false);
 		if (const auto* origin = obj.Find("managed_origin_run_id"); origin && origin->type == JsonValue::Type::String && uam::uuid::IsCanonicalUuid(origin->string_value)) msg.managed_origin_run_id = origin->string_value;
 		msg.tokens_input = NonNegativeIntFieldOrZero(obj.Find(kMessageTokensInputField));
@@ -1423,7 +1427,7 @@ namespace
 
 	bool MessageIdentityFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
 	{
-		return lhs.input_write_completed == rhs.input_write_completed && lhs.native_input_id == rhs.native_input_id && lhs.origin_request_id == rhs.origin_request_id && lhs.managed_origin_run_id == rhs.managed_origin_run_id && lhs.role == rhs.role && lhs.content == rhs.content && lhs.created_at == rhs.created_at && lhs.provider == rhs.provider && lhs.model_id == rhs.model_id && lhs.provider_event_ids == rhs.provider_event_ids;
+		return lhs.input_write_completed == rhs.input_write_completed && lhs.input_delivery_tracked == rhs.input_delivery_tracked && lhs.native_input_id == rhs.native_input_id && lhs.origin_request_id == rhs.origin_request_id && lhs.managed_origin_run_id == rhs.managed_origin_run_id && lhs.role == rhs.role && lhs.content == rhs.content && lhs.created_at == rhs.created_at && lhs.provider == rhs.provider && lhs.model_id == rhs.model_id && lhs.provider_event_ids == rhs.provider_event_ids;
 	}
 
 	bool MessageUsageFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
@@ -1600,6 +1604,9 @@ namespace
 		    lhs.computer_use_backend != rhs.computer_use_backend ||
 		    lhs.goal_owner_chat_id != rhs.goal_owner_chat_id ||
 		    lhs.created_by_chat_id != rhs.created_by_chat_id || lhs.created_by_request_key != rhs.created_by_request_key ||
+		    lhs.automation_token_id != rhs.automation_token_id || lhs.automation_token_name != rhs.automation_token_name ||
+		    lhs.automation_pending_prompt != rhs.automation_pending_prompt || lhs.automation_max_iterations != rhs.automation_max_iterations ||
+		    lhs.automation_git_permission != rhs.automation_git_permission ||
 		    lhs.goal_iteration_goal_id != rhs.goal_iteration_goal_id ||
 		    lhs.goal_iteration_turn_kind != rhs.goal_iteration_turn_kind ||
 		    lhs.goal_iteration_repair_attempts != rhs.goal_iteration_repair_attempts ||
@@ -1617,8 +1624,6 @@ namespace
 		       lhs.remote_process_exists == rhs.remote_process_exists &&
 		       lhs.remote_prompt_image_supported == rhs.remote_prompt_image_supported &&
 		       lhs.remote_structured_protocol == rhs.remote_structured_protocol &&
-		       lhs.remote_opencode_native_port == rhs.remote_opencode_native_port &&
-		       lhs.remote_opencode_native_token == rhs.remote_opencode_native_token &&
 		       lhs.remote_manual_compaction_pending == rhs.remote_manual_compaction_pending &&
 		       lhs.remote_manual_compaction_boundary_json == rhs.remote_manual_compaction_boundary_json &&
 		       lhs.remote_stop_cleanup_pending == rhs.remote_stop_cleanup_pending &&
@@ -1636,6 +1641,8 @@ namespace
 		       lhs.routing_assigned_connection_identity == rhs.routing_assigned_connection_identity &&
 		       lhs.routing_assigned_provider_configuration_identity == rhs.routing_assigned_provider_configuration_identity &&
 		       lhs.routing_reservation_pending == rhs.routing_reservation_pending &&
+		       lhs.routing_reservation_runner_version == rhs.routing_reservation_runner_version &&
+		       lhs.routing_identity_current_format == rhs.routing_identity_current_format &&
 		       lhs.remote_process_control_token == rhs.remote_process_control_token &&
 		       lhs.remote_delivered_stdout_cursor == rhs.remote_delivered_stdout_cursor &&
 		       lhs.remote_delivered_stderr_cursor == rhs.remote_delivered_stderr_cursor &&
@@ -1647,6 +1654,7 @@ namespace
 		       lhs.remote_prompt_delivery_session_id == rhs.remote_prompt_delivery_session_id &&
 		       lhs.remote_prompt_delivery_id == rhs.remote_prompt_delivery_id &&
 		       lhs.remote_prompt_delivery_payload == rhs.remote_prompt_delivery_payload &&
+		       lhs.remote_prompt_delivery_input_ids == rhs.remote_prompt_delivery_input_ids &&
 		       lhs.remote_pending_requests == rhs.remote_pending_requests &&
 		       lhs.remote_next_request_id == rhs.remote_next_request_id &&
 		       lhs.remote_active_turn_id == rhs.remote_active_turn_id &&
@@ -1689,7 +1697,23 @@ namespace
 		std::string error;
 		// Retain recognized primary ownership even when unrelated validation rejects the chat.
 		bool managed_followup_input_unavailable = false;
+		// The document still holds a remote OpenCode server password written by an older build.
+		bool legacy_opencode_native_secret = false;
 	};
+
+	// Older builds saved the remote OpenCode server password and its port in chat files. Both now stay in memory only.
+	constexpr std::string_view kLegacyOpenCodeNativeTokenField = "remote_opencode_native_token";
+	constexpr std::string_view kLegacyOpenCodeNativePortField = "remote_opencode_native_port";
+
+	/// <summary>Drops the legacy endpoint fields from a parsed chat document; true when a password was present.</summary>
+	bool EraseLegacyOpenCodeNativeSecret(JsonValue& root)
+	{
+		const JsonValue* token = root.Find(kLegacyOpenCodeNativeTokenField);
+		const bool secret = token != nullptr && token->type == JsonValue::Type::String && !token->string_value.empty();
+		root.object_value.erase(std::string(kLegacyOpenCodeNativeTokenField));
+		root.object_value.erase(std::string(kLegacyOpenCodeNativePortField));
+		return secret;
+	}
 
 	void ApplyChatTimestampFallbacks(ChatSession& chat, bool legacy_interaction = true);
 
@@ -1914,16 +1938,37 @@ namespace
 		// Preserve uncertainty for this owner, without importing a known foreign owner's marker.
 		if (managed_marker && (raw_owner.empty() || raw_owner == owner))
 			chat.managed_followup_input_unavailable = true;
-		const bool matches = journal && journal->owner == owner &&
-		    journal->base_queue_revision == chat.acp_queue_storage_revision &&
+		// The journal extends exactly the queue revision this primary carries. An ordinary UAM full save
+		// either consumes the journal (handled above) or is refused while it exists, so a primary whose size
+		// or time witness alone differs was restored, synced or touched outside UAM. The one UAM writer that
+		// skips the journal check, a stopped-launch own publication, can write a newer transcript under the
+		// same queue revision; the journal is then still the newer queue over that transcript. In both cases
+		// its input is kept, held, and each prompt is re-validated against the transcript when dispatched.
+		const bool extends_saved_queue = journal && journal->owner == owner &&
+		    journal->base_queue_revision == chat.acp_queue_storage_revision;
+		const bool matches = extends_saved_queue &&
 		    ChatRepository::ChatStorageRevision(data_root, chat.id) == journal->base_revision;
-		if (matches)
+		if (extends_saved_queue)
 		{
 			chat.acp_queued_prompts = journal->prompts;
-			chat.acp_queue_held = journal->held;
+			// A rebound journal never sends on its own: its input stays held and visible until the user
+			// resumes it. The next queue or full save records the current primary as its base.
+			chat.acp_queue_held = journal->held || (!matches && !journal->prompts.empty());
+			if (!matches)
+			{
+				// Every load repeats the rebind until a save records the new base; say so once per launch.
+				static std::mutex logged_mutex;
+				static std::unordered_set<std::string> logged;
+				const std::lock_guard<std::mutex> lock(logged_mutex);
+				if (logged.insert(chat.id).second)
+					uam::diagnostics::Write("Queued inputs kept held: journal rebound to a saved chat whose file witness changed " + chat.id);
+			}
 			chat.acp_dispatched_queued_prompt_count = journal->dispatched;
 			chat.acp_queue_storage_revision = journal->revision;
-			if (journal->memory_progress)
+			// Memory progress counts rows of the transcript the journal was written beside. A restored older
+			// primary can hold fewer, so a rebound journal keeps the primary's own progress: rows may be
+			// processed again, never skipped.
+			if (journal->memory_progress && matches)
 			{
 				chat.memory_last_processed_message_count = journal->memory_progress->first;
 				chat.memory_last_processed_at = journal->memory_progress->second;
@@ -1952,6 +1997,9 @@ namespace
 		}
 
 		JsonValue& root = *root_opt;
+		// Read-only imports are never scrubbed (their archive layout has its own writer) and export already redacts them.
+		const bool legacy_opencode_native_secret = EraseLegacyOpenCodeNativeSecret(root) &&
+		    !JsonBoolOrDefault(root.Find(kChatImportedReadOnlyField), false);
 		if (recognized_managed_input)
 		{
 			const std::string id = JsonStringOrEmpty(root.Find(kChatIdField));
@@ -2042,15 +2090,6 @@ namespace
 		chat.remote_prompt_image_supported = chat.remote_process_exists && JsonBoolOrDefault(root.Find("remote_prompt_image_supported"), false);
 		chat.remote_structured_protocol = chat.remote_process_exists ? JsonStringOrEmpty(root.Find("remote_structured_protocol")) : "";
 		if (chat.remote_structured_protocol.size() > 64) return {std::nullopt, "contains invalid remote protocol identity"};
-		const double native_port = JsonNumberOrDefault(root.Find("remote_opencode_native_port"), 0);
-		chat.remote_opencode_native_port = native_port >= 1 && native_port <= 65535 && std::floor(native_port) == native_port ? static_cast<int>(native_port) : 0;
-		chat.remote_opencode_native_token = JsonStringOrEmpty(root.Find("remote_opencode_native_token"));
-		if (!chat.remote_process_exists || chat.remote_opencode_native_port == 0 || chat.remote_opencode_native_token.size() < 16 ||
-		    chat.remote_opencode_native_token.size() > 256 || std::ranges::any_of(chat.remote_opencode_native_token, [](unsigned char ch) { return ch < 33 || ch > 126; }))
-		{
-			chat.remote_opencode_native_port = 0;
-			chat.remote_opencode_native_token.clear();
-		}
 		chat.remote_manual_compaction_pending = chat.remote_process_exists && JsonBoolOrDefault(root.Find("remote_manual_compaction_pending"), false);
 		chat.remote_manual_compaction_boundary_json = JsonStringOrEmpty(root.Find("remote_manual_compaction_boundary_json"));
 		if (chat.remote_manual_compaction_boundary_json.size() > 2 * 1024 * 1024) return {std::nullopt, "contains oversized remote compaction evidence"};
@@ -2070,6 +2109,8 @@ namespace
 		chat.routing_assigned_provider_configuration_identity = JsonStringOrEmpty(root.Find("routing_assigned_provider_configuration_identity"));
 		if (chat.routing_mode != "automatic") chat.routing_mode = "explicit";
 		chat.routing_reservation_pending = JsonBoolOrDefault(root.Find("routing_reservation_pending"), false);
+		chat.routing_reservation_runner_version = JsonStringOrEmpty(root.Find("routing_reservation_runner_version"));
+		chat.routing_identity_current_format = JsonBoolOrDefault(root.Find("routing_identity_current_format"), false);
 		chat.remote_restart_pending = JsonBoolOrDefault(
 		    root.Find(kChatRemoteRestartPendingField), false);
 		if (root.Find(kChatRemoteProcessExistsField) == nullptr)
@@ -2137,6 +2178,11 @@ namespace
 			chat.remote_prompt_delivery_id.clear();
 			chat.remote_prompt_delivery_payload.clear();
 		}
+		// Row confirmation only: malformed or oversized lists are dropped, which leaves those rows unconfirmed.
+		chat.remote_prompt_delivery_input_ids = JsonStringArrayOrEmpty(root.Find(kChatRemotePromptDeliveryInputIdsField));
+		if (chat.remote_prompt_delivery_id.empty() || chat.remote_prompt_delivery_input_ids.size() > 64 ||
+		    !std::ranges::all_of(chat.remote_prompt_delivery_input_ids, [](const std::string& id) { return uam::input_provenance::ValidNativeInputId(id); }))
+			chat.remote_prompt_delivery_input_ids.clear();
 		chat.remote_active_turn_id = JsonStringOrEmpty(root.Find(kChatRemoteActiveTurnIdField));
 		if (chat.remote_active_turn_id.size() > 256) chat.remote_active_turn_id.clear();
 		const double turn_serial = JsonNumberOrDefault(root.Find(kChatRemoteTurnSerialField), 0);
@@ -2269,8 +2315,6 @@ namespace
 			chat.remote_process_exists = false;
 			chat.remote_structured_protocol.clear();
 			chat.remote_prompt_image_supported = false;
-			chat.remote_opencode_native_port = 0;
-			chat.remote_opencode_native_token.clear();
 			chat.remote_manual_compaction_pending = false;
 			chat.remote_manual_compaction_boundary_json.clear();
 			chat.remote_stop_cleanup_pending = false;
@@ -2285,6 +2329,7 @@ namespace
 			chat.remote_prompt_delivery_session_id.clear();
 			chat.remote_prompt_delivery_id.clear();
 			chat.remote_prompt_delivery_payload.clear();
+			chat.remote_prompt_delivery_input_ids.clear();
 			chat.remote_pending_requests.clear();
 			chat.remote_next_request_id = 1;
 			chat.remote_active_turn_id.clear();
@@ -2322,6 +2367,11 @@ namespace
 		    JsonStringOrEmpty(root.Find(kChatGoalOwnerChatIdField)));
 		chat.created_by_chat_id = uam::strings::Trim(JsonStringOrEmpty(root.Find(kChatCreatedByChatIdField)));
 		chat.created_by_request_key = JsonStringOrEmpty(root.Find(kChatCreatedByRequestKeyField));
+		chat.automation_token_id = JsonStringOrEmpty(root.Find("automation_token_id"));
+		chat.automation_token_name = JsonStringOrEmpty(root.Find("automation_token_name"));
+		chat.automation_pending_prompt = JsonStringOrEmpty(root.Find("automation_pending_prompt"));
+		chat.automation_max_iterations = NonNegativeIntFieldOrZero(root.Find("automation_max_iterations"));
+		chat.automation_git_permission = JsonStringOrEmpty(root.Find("automation_git_permission"));
 		chat.goal_iteration_goal_id = uam::strings::Trim(
 		    JsonStringOrEmpty(root.Find(kChatGoalIterationGoalIdField)));
 		chat.goal_iteration_turn_kind = JsonStringOrEmpty(root.Find(kChatGoalIterationTurnKindField));
@@ -2509,6 +2559,7 @@ namespace
 				goal.last_assistant_text = JsonStringOrEmpty(goal_obj.Find("lastAssistantText"));
 				goal.same_assistant_text_count = NonNegativeIntFieldOrZero(goal_obj.Find("sameAssistantTextCount"));
 				goal.loop_count = NonNegativeIntFieldOrZero(goal_obj.Find("loopCount"));
+				goal.max_iterations = NonNegativeIntFieldOrZero(goal_obj.Find("maxIterations"));
 				goal.created_at = JsonStringOrEmpty(goal_obj.Find("createdAt"));
 				goal.updated_at = JsonStringOrEmpty(goal_obj.Find("updatedAt"));
 				goal.execution_owner = JsonStringOrEmpty(goal_obj.Find("executionOwner")) == "provider" ? "provider" : "uam";
@@ -2678,7 +2729,9 @@ namespace
 		}
 		HoldManagedQueue(chat);
 		if (!ChatAttachmentsPersistable(chat)) return {std::nullopt, "contains invalid attachment ownership"};
-		return {std::move(chat), ""};
+		LoadChatResult loaded{std::move(chat), ""};
+		loaded.legacy_opencode_native_secret = legacy_opencode_native_secret;
+		return loaded;
 	}
 	catch (const std::length_error&)
 	{
@@ -3920,16 +3973,20 @@ private:
 	std::function<bool(ChatPublicationFile, uam::io::AtomicWriteStage)> m_stopped_creation_hook;
 };
 
+bool ChatRepository::ChatContentRefusesSave(const ChatSession& chat)
+{
+	return (!chat.managed_followup_incarnation.empty() && !uam::uuid::IsCanonicalUuid(chat.managed_followup_incarnation)) ||
+	    !std::ranges::all_of(chat.acp_queued_prompts, ValidManagedPrompt) ||
+	    !uam::chat_ids::IsSafeStorageChatId(chat.id) || !ChatAttachmentsPersistable(chat);
+}
+
 bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged, PreparedChatSave* prepared, std::string* fingerprint, std::string* saved_revision, PreparedChatPublication* publication, SavedChatPrimaryWitness* primary_witness)
 try
 {
 	std::unique_lock<std::mutex> lock(ChatSaveMutex(), std::defer_lock);
 	if (prepared == nullptr && fingerprint == nullptr) lock.lock();
 
-	if ((fingerprint == nullptr && chat.managed_followup_input_unavailable) ||
-	    (!chat.managed_followup_incarnation.empty() && !uam::uuid::IsCanonicalUuid(chat.managed_followup_incarnation)) ||
-	    !std::ranges::all_of(chat.acp_queued_prompts, ValidManagedPrompt) ||
-	    !uam::chat_ids::IsSafeStorageChatId(chat.id) || !ChatAttachmentsPersistable(chat))
+	if ((fingerprint == nullptr && chat.managed_followup_input_unavailable) || ChatContentRefusesSave(chat))
 	{
 		return false;
 	}
@@ -4049,8 +4106,6 @@ try
 	                   chat.remote_process_exists);
 	uam::json::SetBool(root, "remote_prompt_image_supported", chat.remote_process_exists && chat.remote_prompt_image_supported);
 	uam::json::SetString(root, "remote_structured_protocol", chat.remote_process_exists ? chat.remote_structured_protocol : "");
-	uam::json::SetNumber(root, "remote_opencode_native_port", chat.remote_process_exists ? chat.remote_opencode_native_port : 0);
-	uam::json::SetString(root, "remote_opencode_native_token", chat.remote_process_exists ? chat.remote_opencode_native_token : "");
 	uam::json::SetBool(root, "remote_manual_compaction_pending", chat.remote_process_exists && chat.remote_manual_compaction_pending);
 	uam::json::SetString(root, "remote_manual_compaction_boundary_json",
 	    chat.remote_manual_compaction_pending || HasOwnedClaudeMaintenanceTerminalReceipt(chat) ? chat.remote_manual_compaction_boundary_json : "");
@@ -4069,6 +4124,8 @@ try
 	uam::json::SetString(root, "routing_assigned_connection_identity", chat.routing_assigned_connection_identity);
 	uam::json::SetString(root, "routing_assigned_provider_configuration_identity", chat.routing_assigned_provider_configuration_identity);
 	uam::json::SetBool(root, "routing_reservation_pending", chat.routing_reservation_pending);
+	uam::json::SetString(root, "routing_reservation_runner_version", chat.routing_reservation_runner_version);
+	uam::json::SetBool(root, "routing_identity_current_format", chat.routing_identity_current_format);
 	uam::json::SetBool(root, kChatRemoteRestartPendingField,
 	                   chat.remote_restart_pending);
 	uam::json::SetString(root, kChatRemoteProcessControlTokenField,
@@ -4107,6 +4164,8 @@ try
 	                     chat.remote_prompt_delivery_id);
 	uam::json::SetString(root, kChatRemotePromptDeliveryPayloadField,
 	                     chat.remote_prompt_delivery_payload);
+	if (!chat.remote_prompt_delivery_id.empty() && !chat.remote_prompt_delivery_input_ids.empty())
+		uam::json::SetValue(root, kChatRemotePromptDeliveryInputIdsField, StringArrayToJson(chat.remote_prompt_delivery_input_ids));
 	uam::json::SetString(root, kChatRemotePromptDeliverySessionIdField,
 	                     chat.remote_prompt_delivery_session_id);
 	if (chat.remote_active_turn_id.size() > 256 || chat.remote_turn_serial < 0 ||
@@ -4225,6 +4284,14 @@ try
 		uam::json::SetString(root, kChatCreatedByChatIdField, chat.created_by_chat_id);
 		uam::json::SetString(root, kChatCreatedByRequestKeyField, chat.created_by_request_key);
 	}
+	if (!chat.automation_token_id.empty())
+	{
+		uam::json::SetString(root, "automation_token_id", chat.automation_token_id);
+		uam::json::SetString(root, "automation_token_name", chat.automation_token_name);
+		uam::json::SetString(root, "automation_pending_prompt", chat.automation_pending_prompt);
+		uam::json::SetNumber(root, "automation_max_iterations", static_cast<double>(chat.automation_max_iterations));
+		uam::json::SetString(root, "automation_git_permission", chat.automation_git_permission);
+	}
 	uam::json::SetString(root, kChatGoalIterationGoalIdField, chat.goal_iteration_goal_id);
 	uam::json::SetString(root, kChatGoalIterationTurnKindField, chat.goal_iteration_turn_kind);
 	uam::json::SetNumber(root, kChatGoalIterationRepairAttemptsField, static_cast<double>(chat.goal_iteration_repair_attempts));
@@ -4310,6 +4377,7 @@ try
 			uam::json::SetString(goal_obj, "lastAssistantText", goal.last_assistant_text);
 			uam::json::SetNumber(goal_obj, "sameAssistantTextCount", static_cast<double>(goal.same_assistant_text_count));
 			uam::json::SetNumber(goal_obj, "loopCount", static_cast<double>(goal.loop_count));
+			if (goal.max_iterations > 0) uam::json::SetNumber(goal_obj, "maxIterations", static_cast<double>(goal.max_iterations));
 			uam::json::SetString(goal_obj, "createdAt", goal.created_at);
 			uam::json::SetString(goal_obj, "updatedAt", goal.updated_at);
 			uam::json::SetString(goal_obj, "executionOwner", goal.execution_owner == "provider" ? "provider" : "uam");
@@ -4822,7 +4890,28 @@ std::string ChatRepository::ChatMetadataFingerprint(const fs::path& data_root, c
 	return fingerprint;
 }
 
+namespace
+{
+	/// One identity rule for both links: `declared_parent` is the parent a provider's own child record names (native
+	/// import); without it the parent's loaded spawn tool calls must name the child (explicit open), or, for Gemini,
+	/// the attested listing of the parent's child directory.
+	bool ApplyNativeChildLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id, std::string_view declared_parent, bool attested_gemini_listing);
+}
+
 bool ChatRepository::ApplyNativeChildDisplayLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id, bool attested_gemini_listing)
+{
+	return ApplyNativeChildLineage(source, child, native_child_id, {}, attested_gemini_listing);
+}
+
+bool ChatRepository::ApplyImportedNativeChildLineage(const ChatSession& source, ChatSession& child)
+{
+	const std::string declared = uam::strings::Trim(child.native_parent_session_id);
+	return !declared.empty() && ApplyNativeChildLineage(source, child, child.imported_read_only ? child.id : child.native_session_id, declared, false);
+}
+
+namespace
+{
+bool ApplyNativeChildLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id, std::string_view declared_parent, bool attested_gemini_listing)
 {
 	// This is a display receipt of a validated open, not evidence that a native
 	// session can be resumed or controlled. Titles and tool arguments are not IDs.
@@ -4831,7 +4920,7 @@ bool ChatRepository::ApplyNativeChildDisplayLineage(const ChatSession& source, C
 	// Gemini ACP reports no child IDs, so tool evidence cannot exist. A reference this app just listed
 	// from the attested parent directory is that evidence instead, and needs no loaded parent messages.
 	const bool listed = attested_gemini_listing && provider == uam::provider_ids::kGeminiCli && uam::native_agents::ParseHistoryId(native_id).has_value();
-	if (source.imported_read_only || (!source.messages_loaded && !listed) || source.id.empty() || child.id.empty() || source.id == child.id ||
+	if (source.imported_read_only || (declared_parent.empty() && !source.messages_loaded && !listed) || source.id.empty() || child.id.empty() || source.id == child.id ||
 	    uam::strings::IsBlank(source.created_at) || uam::strings::IsBlank(source.native_session_id) || native_id.empty() ||
 	    provider != uam::provider_ids::NormalizeCliProviderAliasOrSelf(child.provider_id)) return false;
 	if (uam::strings::NonEmptyOrFallback(uam::strings::Trim(source.execution_host_id), "local") !=
@@ -4872,9 +4961,13 @@ bool ChatRepository::ApplyNativeChildDisplayLineage(const ChatSession& source, C
 	{
 		return codex ? uam::codex::ThreadIdKey(id) == uam::codex::ThreadIdKey(native_id) : id == native_id;
 	};
-	bool evidence = listed;
+	// A child's own record naming this exact parent session is evidence by itself; a passive reference already carries it.
+	bool evidence = listed || (!declared_parent.empty() &&
+	    (codex ? uam::codex::ThreadIdKey(declared_parent) == uam::codex::ThreadIdKey(source.native_session_id) : declared_parent == uam::strings::Trim(source.native_session_id)));
+	if (!declared_parent.empty() && !evidence) return false;
 	for (const Message& message : source.messages)
 	{
+		if (evidence) break;
 		if (message.role != MessageRole::Assistant) continue;
 		for (const ToolCall& tool : message.tool_calls)
 		{
@@ -4896,6 +4989,7 @@ bool ChatRepository::ApplyNativeChildDisplayLineage(const ChatSession& source, C
 	child.subagent_parent_chat_id = source.id;
 	child.subagent_parent_created_at = source.created_at;
 	return true;
+}
 }
 
 bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged)
@@ -5478,6 +5572,11 @@ namespace
 		hydrated.goal_owner_chat_id = summary.goal_owner_chat_id;
 		hydrated.created_by_chat_id = summary.created_by_chat_id;
 		hydrated.created_by_request_key = summary.created_by_request_key;
+		hydrated.automation_token_id = summary.automation_token_id;
+		hydrated.automation_token_name = summary.automation_token_name;
+		hydrated.automation_pending_prompt = summary.automation_pending_prompt;
+		hydrated.automation_max_iterations = summary.automation_max_iterations;
+		hydrated.automation_git_permission = summary.automation_git_permission;
 		hydrated.goal_iteration_goal_id = summary.goal_iteration_goal_id;
 		hydrated.goal_iteration_turn_kind = summary.goal_iteration_turn_kind;
 		hydrated.goal_iteration_repair_attempts = summary.goal_iteration_repair_attempts;
@@ -5505,6 +5604,8 @@ namespace
 		hydrated.routing_assigned_connection_identity = summary.routing_assigned_connection_identity;
 		hydrated.routing_assigned_provider_configuration_identity = summary.routing_assigned_provider_configuration_identity;
 		hydrated.routing_reservation_pending = summary.routing_reservation_pending;
+		hydrated.routing_reservation_runner_version = summary.routing_reservation_runner_version;
+		hydrated.routing_identity_current_format = summary.routing_identity_current_format;
 		hydrated.remote_delivered_stdout_cursor = summary.remote_delivered_stdout_cursor;
 		hydrated.remote_delivered_stderr_cursor = summary.remote_delivered_stderr_cursor;
 		hydrated.remote_source_exit_pending = summary.remote_source_exit_pending;
@@ -5514,6 +5615,7 @@ namespace
 		hydrated.remote_prompt_delivery_session_id = summary.remote_prompt_delivery_session_id;
 		hydrated.remote_prompt_delivery_id = summary.remote_prompt_delivery_id;
 		hydrated.remote_prompt_delivery_payload = summary.remote_prompt_delivery_payload;
+		hydrated.remote_prompt_delivery_input_ids = summary.remote_prompt_delivery_input_ids;
 		hydrated.remote_pending_requests = summary.remote_pending_requests;
 		hydrated.remote_next_request_id = summary.remote_next_request_id;
 		hydrated.remote_active_turn_id = summary.remote_active_turn_id;
@@ -5630,6 +5732,46 @@ namespace
 		chats.push_back(recovered);
 	}
 
+	/// <summary>One-time migration: removes a legacy remote OpenCode password from a chat's primary and backup files.</summary>
+	/// <remarks>Runs before the chat enters memory. The stale summary cache is deleted and rebuilds from the primary,
+	/// and a queue journal bound to the old primary is rebound to the rewritten one so its input is not held.</remarks>
+	void ScrubLegacyOpenCodeNativeSecret(const fs::path& data_root, const std::string& chat_id)
+	{
+		std::lock_guard<std::mutex> lock(ChatSaveMutex());
+		const fs::path primary_path = AppPaths::UamChatFilePath(data_root, chat_id);
+		const auto scrub = [](const fs::path& path)
+		{
+			std::string text;
+			if (uam::paths::IsLinkOrReparsePointNoThrow(path) || !uam::io::TryReadTextFile(path, text, kMaxChatJsonBytes)) return false;
+			std::optional<JsonValue> root = ParseJson(text);
+			if (!root || root->type != JsonValue::Type::Object || JsonBoolOrDefault(root->Find(kChatImportedReadOnlyField), false) ||
+			    !EraseLegacyOpenCodeNativeSecret(*root)) return false;
+			bool written = false;
+			try { written = uam::io::WriteTextFile(path, SerializeJson(*root, kMaxChatJsonBytes)); }
+			catch (const std::exception&) {}
+			if (!written) uam::diagnostics::Write("[chat-storage] Could not remove a legacy OpenCode server password from " + path.filename().string() + ".");
+			return written;
+		};
+		const std::optional<std::string> old_revision = StorageRevision(primary_path);
+		if (scrub(primary_path) && old_revision)
+		{
+			const fs::path journal_path = QueueJournalPath(data_root, chat_id);
+			std::string text;
+			std::optional<JsonValue> journal = !uam::paths::IsLinkOrReparsePointNoThrow(journal_path) &&
+			    uam::io::TryReadTextFile(journal_path, text, kMaxQueueJournalBytes) ? ParseJson(text) : std::nullopt;
+			const std::optional<std::string> new_revision = StorageRevision(primary_path);
+			if (journal && journal->type == JsonValue::Type::Object && new_revision &&
+			    JsonStringOrEmpty(journal->Find("base_revision")) == *old_revision)
+			{
+				uam::json::SetString(*journal, "base_revision", *new_revision);
+				(void)uam::io::WriteTextFile(journal_path, SerializeJson(*journal));
+			}
+		}
+		(void)scrub(uam::io::MakeBackupPath(primary_path));
+		std::error_code ignored;
+		fs::remove(AppPaths::UamChatSummaryFilePath(data_root, chat_id), ignored);
+	}
+
 	std::vector<ChatSession> LoadLocalChatsImpl(const std::filesystem::path& data_root, bool include_messages, std::string* warning_out)
 	{
 		std::vector<ChatSession> chats;
@@ -5686,9 +5828,19 @@ namespace
 					primary_chat = ParseLocalChatFile(summary_path, false, source_size);
 				}
 			}
+			if (primary_chat.legacy_opencode_native_secret)
+			{
+				ScrubLegacyOpenCodeNativeSecret(data_root, entry.path().stem().string());
+				primary_chat = {};
+			}
 			if (!primary_chat.chat)
 			{
 				primary_chat = ParseLocalChatFile(entry.path(), include_messages);
+				if (primary_chat.legacy_opencode_native_secret)
+				{
+					ScrubLegacyOpenCodeNativeSecret(data_root, entry.path().stem().string());
+					primary_chat = ParseLocalChatFile(entry.path(), include_messages);
+				}
 				if (include_messages && primary_chat.chat)
 					ApplySummaryOpenedAtToFullChat(entry.path(), *primary_chat.chat);
 			}

@@ -165,13 +165,6 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   const recordActivity = useRuntimeActivity(session.id)
   const runtimeDescriptionId = useId()
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
-  const [stopRuntimeError, setStopRuntimeError] = useState('')
-  useEffect(() => setStopRuntimeError(''), [session.id])
-  useEffect(() => {
-    if (!stopRuntimeError) return
-    reportAppFailure('Runtime stop failed', stopRuntimeError)
-    setStopRuntimeError('')
-  }, [stopRuntimeError])
   const refreshFor = useRef({ key: nativeFollowupOwnerKey })
   if (refreshFor.current.key !== nativeFollowupOwnerKey) refreshFor.current = { key: nativeFollowupOwnerKey }
   const refreshOwner = refreshFor.current
@@ -246,12 +239,8 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
           aria-label="Stop runtime"
           aria-describedby={runtimeDescriptionId}
           disabled={runtimeStopState.disabled}
-          onClick={() => {
-            setStopRuntimeError('')
-            void stopAcpSession(session.id, 'timeout').then((ok) => {
-              if (!ok) setStopRuntimeError('The runtime did not stop. Try again.')
-            }).catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
-          }}
+          // The store reports a refused stop with its reason; sendToCEF resolves rather than rejects.
+          onClick={() => { void stopAcpSession(session.id, 'timeout') }}
         >
           <span className="uam-runtime-stop-icon">
             {icon}
@@ -719,7 +708,8 @@ export function MainPanel() {
       data-testid={`pane-drop-target-${index + 1}`}
       data-leaf-id={leafId}
       data-drop-target={dropTargetPane === leafId}
-      style={{ outline: dropTargetPane === leafId ? `2px solid ${chatPaneColors[index]}` : 'none', outlineOffset: -2 }}
+      // --pane-drop-color lets a pointer drag from Pinned or Active (sortableDrag.ts) outline the pane the same way.
+      style={{ outline: dropTargetPane === leafId ? `2px solid ${chatPaneColors[index]}` : 'none', outlineOffset: -2, '--pane-drop-color': chatPaneColors[index] } as React.CSSProperties}
       onDragOver={(event) => {
         if (!Array.from(event.dataTransfer.types).includes('text/x-uam-chat-id')) return
         event.preventDefault()

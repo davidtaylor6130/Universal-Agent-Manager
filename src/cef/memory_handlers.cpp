@@ -190,31 +190,43 @@ void UamQueryHandler::HandleCreateMemoryEntry(CefRefPtr<CefBrowser> browser, con
 	draft.confidence = payload.value("confidence", "medium");
 	draft.source_chat_id = payload.value("sourceChatId", "");
 
-	MemoryLibraryService::Entry created;
-	if (!MemoryLibraryService::CreateEntry(scope, draft, &created, &error))
+	// An SSH scope asks its host, which may not answer for 45 seconds: never on the UI thread (#870).
+	const auto create = [scope, draft]()
 	{
-		cb->Failure(400, FailureDetailOrFallback(error, "Failed to create memory entry."));
+		MemoryLibraryService::Entry created;
+		std::string error;
+		if (!MemoryLibraryService::CreateEntry(scope, draft, &created, &error))
+			return AsyncFailure(400, FailureDetailOrFallback(error, "Failed to create memory entry."));
+		nlohmann::json response;
+		response["id"] = created.id;
+		response["title"] = created.title;
+		response["category"] = created.category;
+		response["scope"] = created.scope;
+		response["confidence"] = created.confidence;
+		response["sourceChatId"] = created.source_chat_id;
+		response["lastObserved"] = created.last_observed;
+		response["occurrenceCount"] = created.occurrence_count;
+		response["preview"] = created.preview;
+		response["filePath"] = uam::paths::Utf8PathString(created.file_path);
+		response["scopeType"] = created.scope_type;
+		response["folderId"] = created.folder_id;
+		response["scopeLabel"] = created.scope_label;
+		response["rootPath"] = uam::paths::Utf8PathString(created.root_path);
+		return AsyncSuccess(std::move(response));
+	};
+	const auto changed = [this, browser](AsyncCefResult& result)
+	{
+		if (!result.ok) return;
+		MemoryService::RefreshMemoryActivityAsync(m_app);
+		uam::PushStateUpdateIfChanged(browser, m_app);
+	};
+	if (scope.remote_host)
+	{
+		RunAsyncCefQuery(SlowQueryRunner(scope.remote_host->id), m_asyncLifetime, cb, create, changed);
 		return;
 	}
-
-	nlohmann::json response;
-	response["id"] = created.id;
-	response["title"] = created.title;
-	response["category"] = created.category;
-	response["scope"] = created.scope;
-	response["confidence"] = created.confidence;
-	response["sourceChatId"] = created.source_chat_id;
-	response["lastObserved"] = created.last_observed;
-	response["occurrenceCount"] = created.occurrence_count;
-	response["preview"] = created.preview;
-	response["filePath"] = uam::paths::Utf8PathString(created.file_path);
-	response["scopeType"] = created.scope_type;
-	response["folderId"] = created.folder_id;
-	response["scopeLabel"] = created.scope_label;
-	response["rootPath"] = uam::paths::Utf8PathString(created.root_path);
-	MemoryService::RefreshMemoryActivityAsync(m_app);
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(response.dump());
+	AsyncCefResult result = create();
+	CompleteAsyncCefQuery(cb, result, changed);
 }
 
 void UamQueryHandler::HandleDeleteMemoryEntry(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -227,15 +239,28 @@ void UamQueryHandler::HandleDeleteMemoryEntry(CefRefPtr<CefBrowser> browser, con
 		return;
 	}
 
-	if (!MemoryLibraryService::DeleteEntry(scope, payload.value("entryId", ""), &error))
+	const std::string entry_id = payload.value("entryId", "");
+	const auto remove = [scope, entry_id]()
 	{
-		cb->Failure(404, FailureDetailOrFallback(error, "Failed to delete memory entry."));
+		std::string error;
+		if (!MemoryLibraryService::DeleteEntry(scope, entry_id, &error))
+			return AsyncFailure(404, FailureDetailOrFallback(error, "Failed to delete memory entry."));
+		return AsyncSuccess(nlohmann::json::object());
+	};
+	const auto changed = [this, browser](AsyncCefResult& result)
+	{
+		if (!result.ok) return;
+		MemoryService::RefreshMemoryActivityAsync(m_app);
+		uam::PushStateUpdateIfChanged(browser, m_app);
+	};
+	// An SSH entry is deleted on its host, which may not answer for 45 seconds: never on the UI thread (#870).
+	if (scope.remote_host || (scope.scope_type == "all" && entry_id.starts_with("remote:")))
+	{
+		RunAsyncCefQuery(SlowQueryRunner(scope.remote_host ? scope.remote_host->id : std::string("memory")), m_asyncLifetime, cb, remove, changed);
 		return;
 	}
-
-	MemoryService::RefreshMemoryActivityAsync(m_app);
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success("{}");
+	AsyncCefResult result = remove();
+	CompleteAsyncCefQuery(cb, result, changed);
 }
 
 void UamQueryHandler::HandleOpenMemoryRoot(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)

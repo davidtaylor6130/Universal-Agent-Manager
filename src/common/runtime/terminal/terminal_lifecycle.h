@@ -62,6 +62,8 @@ bool PendingCallMatchesCliTerminalIdentity(const AppState& app, std::string_view
 bool IsCliTerminalEligibleForBackgroundIdleShutdown(const AppState& app, const CliTerminalState& terminal, std::string_view selected_chat_id, double now);
 void StopCliTerminal(CliTerminalState& terminal, bool clear_identity = false, CliTerminalStopMode stop_mode = CliTerminalStopMode::Graceful);
 CliTerminalState* FindCliTerminalForChat(AppState& app, std::string_view chat_id);
+/// <summary>True while the running native CLI has work a switch to structured chat would interrupt.</summary>
+bool CliTerminalBlocksAcpHandoff(const CliTerminalState& terminal);
 bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std::string* error_out = nullptr);
 void SyncCliTerminalToNativeHistory(AppState& app, const CliTerminalState& terminal, bool wait_for_stop = false);
 bool StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, bool sync_to_history = true);

@@ -8,6 +8,7 @@ import { createUiSlice } from './slices/uiSlice'
 import { parseUamPushPayload } from './push/uamPush'
 import { sanitizeCppAppState, sanitizeCppStatePatch } from './cpp/sanitizers'
 import { preferredFamilyChat, setPreferredFamilyChat } from '../utils/branchPreferenceStorage'
+import { APP_FAILURE_EVENT, type AppFailure } from '../utils/appFailure'
 
 type TestWindow = Window & typeof globalThis & {
   cefQuery?: Window['cefQuery']
@@ -1554,6 +1555,22 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts).toEqual([expect.objectContaining({ id: 'real-outbox', revision: 1, text: 'Keep this input', attachments: [expect.objectContaining(attachment)] })])
   })
 
+  it('hands held phone confirmations from the desktop bootstrap to the confirmation prompt', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    const item = { id: 'confirm-1', chatId: 'chat-1', chatTitle: 'Chat 1', description: 'Change permission mode to YOLO', expiresAt: Date.now() + 60_000 }
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).action === 'getInitialState') onSuccess(JSON.stringify({ ...makeCppState(1), companionConfirmations: [item] }))
+      else onSuccess('{}')
+    }
+    const dispatched = vi.fn((_event: Event) => true)
+    testWindow.dispatchEvent = dispatched
+    await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const event = dispatched.mock.calls.map(([sent]) => sent as CustomEvent).find((sent) => sent.type === 'uam-companion-confirmations')
+    expect(event?.detail).toEqual({ type: 'companionConfirmations', items: [item] })
+  })
+
   it('hydrates the bootstrap full state even when a same-revision patch arrived first (#622)', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
@@ -2341,6 +2358,13 @@ describe('useAppStore Gemini CLI slice', () => {
       content: 'Second answer',
       isStreaming: true,
     })
+  })
+
+  it('accepts attachment copy progress only with a chat, an attachment and consistent byte counts', () => {
+    const progress = { type: 'attachmentProgress', chatId: 'chat-1', attachmentId: 'a', copiedBytes: 4, totalBytes: 10 }
+    expect(parseUamPushPayload(progress)).toMatchObject({ ok: true, message: progress })
+    for (const bad of [{ copiedBytes: 11 }, { copiedBytes: -1 }, { totalBytes: '10' }, { attachmentId: 3 }, { chatId: undefined }])
+      expect(parseUamPushPayload({ ...progress, ...bad }).ok).toBe(false)
   })
 
   it('validates optional native stream message positions', () => {
@@ -5453,6 +5477,160 @@ describe('useAppStore Gemini CLI slice', () => {
     })
   })
 
+  describe('backend refusals', () => {
+    const refusal = 'Refused by the backend for this chat.'
+    const captureFailures = () => {
+      // Earlier cases in this file replace dispatchEvent, so capture at the dispatch itself.
+      const failures: AppFailure[] = []
+      const previous = window.dispatchEvent
+      window.dispatchEvent = vi.fn((event: Event) => {
+        if (event.type === APP_FAILURE_EVENT) failures.push((event as CustomEvent<AppFailure>).detail)
+        return true
+      })
+      return { failures, stop: () => { window.dispatchEvent = previous } }
+    }
+    const seedChat = (binding?: Partial<AcpBinding>) => {
+      const now = new Date('2026-01-01T00:00:00.000Z')
+      useAppStore.setState({
+        sessions: [{
+          id: 'chat-1', name: 'Chat', viewMode: 'chat', folderId: 'default', providerId: 'codex-cli', modelId: 'gpt-5',
+          reasoningEffort: 'low', serviceTier: 'flex', reviewerModelId: 'gpt-5', uamAgentId: 'build', smallModelMode: false, createdAt: now, updatedAt: now,
+        }],
+        acpBindingBySessionId: binding ? { 'chat-1': binding as AcpBinding } : {},
+      })
+    }
+
+    // Mid-flight shows whether the control writes optimistically; after the refusal only accepted state remains.
+    it.each([
+      ['rename', 'The chat was not renamed', async () => { useAppStore.getState().renameSession('chat-1', 'Renamed') }, { name: 'Renamed' }, { name: 'Chat' }],
+      ['model', 'The model was not changed', () => useAppStore.getState().setSessionModel('chat-1', 'gpt-5.1'), { modelId: 'gpt-5.1' }, { modelId: 'gpt-5', reasoningEffort: 'low', serviceTier: 'flex' }],
+      ['reasoning', 'Reasoning was not changed', () => useAppStore.getState().setSessionCodexOptions('chat-1', { reasoningEffort: 'high' }), { reasoningEffort: 'low' }, { reasoningEffort: 'low' }],
+      ['speed', 'Speed was not changed', () => useAppStore.getState().setSessionCodexOptions('chat-1', { serviceTier: 'fast' }), { serviceTier: 'flex' }, { serviceTier: 'flex' }],
+      ['reviewer model', 'The reviewer model was not changed', () => useAppStore.getState().setSessionReviewerModel('chat-1', 'gpt-5.1'), { reviewerModelId: 'gpt-5' }, { reviewerModelId: 'gpt-5' }],
+      ['UAM agent', 'The UAM agent was not changed', () => useAppStore.getState().setSessionUamAgent('chat-1', 'plan'), { uamAgentId: 'build' }, { uamAgentId: 'build' }],
+      ['small model mode', 'Small-model mode was not changed', () => useAppStore.getState().setSessionSmallModelMode('chat-1', true), { smallModelMode: true }, { smallModelMode: false }],
+      ['cancel turn', 'The turn was not cancelled', () => useAppStore.getState().cancelAcpTurn('chat-1'), {}, {}],
+      ['stop', 'The runtime was not stopped', () => useAppStore.getState().stopAcpSession('chat-1'), {}, {}],
+    ])('names the control once with the reason when %s is refused', async (_label, title, change, inFlight, rolledBack) => {
+      for (const reason of [refusal, '']) {
+        seedChat()
+        const rejects: Array<() => void> = []
+        window.cefQuery = ({ onFailure }) => { rejects.push(() => onFailure(409, reason)) }
+        const capture = captureFailures()
+        try {
+          const pending = change()
+          expect(useAppStore.getState().sessions[0]).toMatchObject(inFlight)
+          expect(rejects).toHaveLength(1)
+          rejects[0]()
+          await pending
+          await new Promise((resolve) => setTimeout(resolve, 0))
+          // An empty backend reason still says what to do next instead of reverting silently.
+          expect(capture.failures.map(({ message, detail }) => ({ message, detail }))).toEqual([{ message: `${title}. ${reason || 'Try again.'}`, detail: '' }])
+          expect(useAppStore.getState().sessions[0]).toMatchObject(rolledBack)
+        } finally { capture.stop() }
+      }
+    })
+
+    it.each(['Bridge request failed: std::bad_alloc', 'Invalid bridge payload: [json.exception.type_error.302] type must be string'])('keeps raw bridge text (%s) out of the notice', async (bridgeError) => {
+      seedChat()
+      window.cefQuery = ({ onFailure }) => { onFailure(500, bridgeError) }
+      const capture = captureFailures()
+      const reasons: string[] = []
+      try {
+        await useAppStore.getState().setSessionUamAgent('chat-1', 'plan')
+        await useAppStore.getState().setSessionModel('chat-1', 'gpt-5.1', (reason) => reasons.push(reason))
+        expect(capture.failures.map(({ message, detail }) => ({ message, detail }))).toEqual([{ message: 'The UAM agent was not changed. Try again.', detail: '' }])
+        expect(reasons).toEqual([''])
+      } finally { capture.stop() }
+    })
+
+    it('rolls a refused model change back to the last accepted model, not an unconfirmed one', async () => {
+      seedChat()
+      const callbacks: Array<{ onSuccess: (response: string) => void; onFailure: (code: number, message: string) => void }> = []
+      window.cefQuery = ({ onSuccess, onFailure }) => { callbacks.push({ onSuccess, onFailure }) }
+      const capture = captureFailures()
+      try {
+        const toB = useAppStore.getState().setSessionModel('chat-1', 'gpt-5.1')
+        const toC = useAppStore.getState().setSessionModel('chat-1', 'gpt-5.2')
+        expect(useAppStore.getState().sessions[0].modelId).toBe('gpt-5.2')
+        callbacks[1].onFailure(409, refusal)
+        await toC
+        // B was never accepted, so the refusal of C returns to A.
+        expect(useAppStore.getState().sessions[0].modelId).toBe('gpt-5')
+        callbacks[0].onFailure(409, refusal)
+        await toB
+        expect(useAppStore.getState().sessions[0].modelId).toBe('gpt-5')
+        expect(capture.failures).toHaveLength(1)
+
+        // When the superseded change is accepted first, a later refusal returns to it.
+        const toD = useAppStore.getState().setSessionModel('chat-1', 'gpt-5.1')
+        const toE = useAppStore.getState().setSessionModel('chat-1', 'gpt-5.2')
+        callbacks[2].onSuccess(JSON.stringify({ modelId: 'gpt-5.1', reasoningEffort: 'low', serviceTier: 'flex' }))
+        await toD
+        callbacks[3].onFailure(409, refusal)
+        await toE
+        expect(useAppStore.getState().sessions[0].modelId).toBe('gpt-5.1')
+        expect(capture.failures).toHaveLength(2)
+      } finally { capture.stop() }
+    })
+
+    it('restores only the small-model field when that change is refused', async () => {
+      seedChat()
+      let reject: () => void = () => { throw new Error('request was not sent') }
+      window.cefQuery = ({ onFailure }) => { reject = () => onFailure(409, refusal) }
+      const capture = captureFailures()
+      try {
+        const change = useAppStore.getState().setSessionSmallModelMode('chat-1', true)
+        useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => ({ ...session, name: 'Renamed elsewhere' })) }))
+        reject()
+        await change
+        expect(useAppStore.getState().sessions[0]).toMatchObject({ smallModelMode: false, name: 'Renamed elsewhere' })
+      } finally { capture.stop() }
+    })
+
+    it('names why reasoning cannot change while a turn runs, without asking the backend', async () => {
+      seedChat({ processing: true, lifecycleState: 'processing' })
+      const requests: string[] = []
+      window.cefQuery = ({ request }) => { requests.push(request) }
+      const capture = captureFailures()
+      try {
+        await expect(useAppStore.getState().setSessionCodexOptions('chat-1', { reasoningEffort: 'high' })).resolves.toBe(false)
+        expect(capture.failures.map(({ message, detail }) => ({ message, detail }))).toEqual([{ message: 'Reasoning was not changed. Reasoning and speed can change once the current turn finishes.', detail: '' }])
+        expect(requests).toEqual([])
+      } finally { capture.stop() }
+    })
+
+    it('gives the reason to a caller that reports the failed change itself instead of a second notice', async () => {
+      seedChat()
+      window.cefQuery = ({ onFailure }) => { onFailure(409, refusal) }
+      const capture = captureFailures()
+      const reasons: string[] = []
+      try {
+        await expect(useAppStore.getState().setSessionModel('chat-1', 'gpt-5.1', (reason) => reasons.push(reason))).resolves.toBe(false)
+        await expect(useAppStore.getState().setSessionCodexOptions('chat-1', { reasoningEffort: 'high' }, (reason) => reasons.push(reason))).resolves.toBe(false)
+        expect(reasons).toEqual([refusal, refusal])
+        expect(capture.failures).toEqual([])
+      } finally { capture.stop() }
+    })
+
+    it('does not report a refusal that a newer change already superseded', async () => {
+      seedChat()
+      const callbacks: Array<{ onSuccess: (response: string) => void; onFailure: (code: number, message: string) => void }> = []
+      window.cefQuery = ({ onSuccess, onFailure }) => { callbacks.push({ onSuccess, onFailure }) }
+      const capture = captureFailures()
+      try {
+        const older = useAppStore.getState().setSessionModel('chat-1', 'gpt-5.1')
+        const newer = useAppStore.getState().setSessionModel('chat-1', 'gpt-5.2')
+        callbacks[1].onSuccess(JSON.stringify({ modelId: 'gpt-5.2', reasoningEffort: 'low', serviceTier: 'flex' }))
+        await newer
+        callbacks[0].onFailure(409, refusal)
+        await older
+        expect(capture.failures).toEqual([])
+        expect(useAppStore.getState().sessions[0].modelId).toBe('gpt-5.2')
+      } finally { capture.stop() }
+    })
+  })
+
   it('sends planning mode changes when the live runtime mode differs from the saved chat mode', async () => {
     const now = new Date()
     const requests: Array<{ action: string; payload?: unknown }> = []
@@ -6825,6 +7003,29 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().steerActiveTurnOnSend).toBe(false)
   })
 
+  it('hydrates and saves the manual Pinned and Active chat order through native settings', async () => {
+    // Until a list is saved the sidebar keeps its default order.
+    expect(useAppStore.getState().sidebarPinnedChatOrder).toEqual([])
+    expect(useAppStore.getState().sidebarActiveChatOrder).toEqual([])
+    const restarted = makeCppState(1)
+    restarted.settings.sidebarPinnedChatOrder = ['chat-b', 'chat-a']
+    useAppStore.getState().loadFromCef(restarted)
+    expect(useAppStore.getState().sidebarPinnedChatOrder).toEqual(['chat-b', 'chat-a'])
+
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      requests.push(JSON.parse(request))
+      if (requests.length === 1) onSuccess('{}')
+      else onFailure(500, 'Failed to save the sidebar order.')
+    }
+    await expect(useAppStore.getState().setSidebarChatOrder('active', ['chat-c', 'chat-a'])).resolves.toBe(true)
+    expect(requests[0]).toMatchObject({ action: 'setSidebarChatOrder', payload: { list: 'active', order: ['chat-c', 'chat-a'] } })
+    expect(useAppStore.getState().sidebarActiveChatOrder).toEqual(['chat-c', 'chat-a'])
+    // A refused save restores the confirmed order.
+    await expect(useAppStore.getState().setSidebarChatOrder('active', ['chat-a', 'chat-c'])).resolves.toBe(false)
+    expect(useAppStore.getState().sidebarActiveChatOrder).toEqual(['chat-c', 'chat-a'])
+  })
+
   it('projects native Computer Use cleanup and retains it across unrelated sparse patches', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
@@ -6930,6 +7131,7 @@ describe('useAppStore Gemini CLI slice', () => {
       acpSetupInactivityTimeoutSeconds: state.acpSetupInactivityTimeoutSeconds,
       acpTurnOutputLimitMiB: state.acpTurnOutputLimitMiB,
       activeTurnInactivityTimeoutSeconds: state.activeTurnInactivityTimeoutSeconds,
+      toolCallTimeoutSeconds: state.toolCallTimeoutSeconds,
       streamLoopRepeatLimit: state.streamLoopRepeatLimit,
       memoryWorkerBindings: state.memoryWorkerBindings,
       permissionReviewerProviderId: state.permissionReviewerProviderId,
@@ -7022,7 +7224,7 @@ describe('useAppStore Gemini CLI slice', () => {
     const scope = '11111111-1111-4111-8111-111111111111'
     let canonical = { memoryEnabledDefault: true, memoryLevelDefault: 'strict', memoryIdleDelaySeconds: 60,
       memoryRecallBudgetBytes: 2048, goalMaxLoopIterations: 200, goalTokenBudget: 0, acpSetupInactivityTimeoutSeconds: 600,
-      acpTurnOutputLimitMiB: 1024, activeTurnInactivityTimeoutSeconds: 1800, streamLoopRepeatLimit: 20, memoryWorkerBindings: {}, permissionReviewerProviderId: '', permissionReviewerModelId: '' }
+      acpTurnOutputLimitMiB: 1024, activeTurnInactivityTimeoutSeconds: 1800, toolCallTimeoutSeconds: 7200, streamLoopRepeatLimit: 20, memoryWorkerBindings: {}, permissionReviewerProviderId: '', permissionReviewerModelId: '' }
     const sent: string[] = []
     let settingsRevision = 0
     let writes = 0
@@ -7833,6 +8035,8 @@ describe('useAppStore Gemini CLI slice', () => {
 
     await expect(useAppStore.getState().discoverProviderModels('chat-1')).resolves.toBe(true)
     expect(requests).toContainEqual(expect.objectContaining({ action: 'discoverProviderModels', payload: { chatId: 'chat-1' } }))
+    await useAppStore.getState().discoverProviderModels('chat-1', '', '', '', true)
+    expect(requests).toContainEqual(expect.objectContaining({ action: 'discoverProviderModels', payload: { chatId: 'chat-1', automatic: true } }))
     expect(useAppStore.getState().acpBindingBySessionId['chat-1'].modelsLoading).toBe(true)
   })
 
@@ -8006,10 +8210,12 @@ describe('useAppStore Gemini CLI slice', () => {
     await useAppStore.getState().resumeGoal('chat-1', 'goal-1', true)
     await useAppStore.getState().stopAcpSession('chat-1', 'timeout')
     await useAppStore.getState().stopAcpSession('chat-1')
+    expect(await useAppStore.getState().treatRemoteStopAsStopped('chat-1')).toBe(true)
     expect(requests.map(({ action, payload }) => ({ action, payload }))).toEqual([
       { action: 'resumeGoal', payload: { chatId: 'chat-1', goalId: 'goal-1', restart: true } },
       { action: 'stopAcpSession', payload: { chatId: 'chat-1', purpose: 'timeout' } },
       { action: 'stopAcpSession', payload: { chatId: 'chat-1' } },
+      { action: 'treatRemoteStopAsStopped', payload: { chatId: 'chat-1' } },
     ])
   })
 
@@ -8494,7 +8700,7 @@ describe('observed memory fallback through real store ingestion, authored UNRUN'
     const scope = '11111111-1111-4111-8111-111111111111'
     const values = { memoryEnabledDefault: true, memoryLevelDefault: 'strict', memoryIdleDelaySeconds: 60,
       memoryRecallBudgetBytes: 2048, goalMaxLoopIterations: 200, goalTokenBudget: 0, acpSetupInactivityTimeoutSeconds: 600,
-      acpTurnOutputLimitMiB: 1024, activeTurnInactivityTimeoutSeconds: 1800, streamLoopRepeatLimit: 20, memoryWorkerBindings: {}, permissionReviewerProviderId: '', permissionReviewerModelId: '' }
+      acpTurnOutputLimitMiB: 1024, activeTurnInactivityTimeoutSeconds: 1800, toolCallTimeoutSeconds: 7200, streamLoopRepeatLimit: 20, memoryWorkerBindings: {}, permissionReviewerProviderId: '', permissionReviewerModelId: '' }
     const actions: string[] = []
     const gets: { done: boolean; fail: () => void }[] = []
     const saves: Promise<boolean>[] = []

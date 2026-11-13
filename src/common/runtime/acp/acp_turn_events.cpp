@@ -168,8 +168,13 @@ namespace
 			    .child_activity = tool_call.child_activity,
 			    .sub_agent_children = tool_call.sub_agent_children,
 			    .sub_agent_children_authoritative = tool_call.sub_agent_children_authoritative,
+			    // A call still open after a reattach holds the turn from the reattach; its real start is unknown.
+			    .stream_watch_started_s = uam::acp_statuses::IsActiveStatus(tool_call.status) ? GetAppTimeSeconds() : -1.0,
 			    .stream_watch_observed = true, // Restored history is never new loop evidence after a reattach.
 			});
+			if (AcpToolCallState& restored = session.tool_calls.back(); restored.stream_watch_started_s > 0.0)
+				restored.declared_timeout_s = ProviderRuntimeRegistry::ResolveById(session.provider_id)
+				    .AcpToolDeclaredTimeoutSeconds(restored.kind, nlohmann::json::parse(restored.args_json, nullptr, false));
 		}
 	}
 }

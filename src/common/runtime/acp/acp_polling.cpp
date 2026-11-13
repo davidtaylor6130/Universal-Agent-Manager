@@ -1,5 +1,6 @@
 #include "app/agent_run_scheduler.h"
 #include "common/runtime/acp/acp_polling.h"
+#include "common/secrets/secret_redactor.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_update_handler.h"
@@ -17,6 +18,7 @@
 #include "common/utils/string_utils.h"
 #include "remote/runner_proxy.h"
 
+#include <utility>
 #include <charconv>
 
 #include <algorithm>
@@ -312,6 +314,9 @@ namespace uam::acp_detail
 		{
 			BufferedStdoutResult result;
 			std::size_t consumed = 0;
+			// A line that ends the process stops this batch. Output drained after a stop starts with the process already
+			// ended, so it keeps going to the line and time limits instead of handling one line per poll.
+			const bool was_running = session.running;
 			while (session.transport_ownership_error.empty() && result.lines < max_lines && PollClock::now() < deadline)
 			{
 				if (session.protocol_kind == uam::provider_profile_constants::kProtocolCopilotSdk && consumed < session.stdout_buffer.size() && session.stdout_buffer[consumed] != '\x1e')
@@ -330,7 +335,7 @@ namespace uam::acp_detail
 					consumed += frame.consumed_bytes;
 					++result.lines;
 					result.changed = ProcessAcpLine(app, session, chat, body, browser) || result.changed;
-					if (!session.running)
+					if (was_running && !session.running)
 						break;
 					continue;
 				}
@@ -392,7 +397,7 @@ namespace uam::acp_detail
 					continue;
 				}
 				result.changed = ProcessAcpLine(app, session, chat, line, browser) || result.changed;
-				if (!session.running)
+				if (was_running && !session.running)
 				{
 					break;
 				}
@@ -464,9 +469,60 @@ std::size_t ProcessBufferedAcpStdoutAfterStop(AppState& app, AcpSessionState& se
 	return ProcessBufferedAcpStdout(app, session, chat, browser, max_lines, PollClock::now() + kAcpStdoutTimePerPoll).lines;
 }
 
+namespace
+{
+	/// A secret the provider echoed in pieces (streamed deltas) only becomes whole in the accumulated transcript,
+	/// so the newest entries are scrubbed again after every line, before anything reads or saves them. Only the
+	/// tail can complete a match: this line's bytes plus the longest pattern.
+	struct SecretTranscriptScrub
+	{
+		AcpSessionState& session;
+		ChatSession& chat;
+		std::size_t line_bytes;
+		~SecretTranscriptScrub()
+		{
+			if (!uam::secrets::Active()) return;
+			const std::size_t window = line_bytes + uam::secrets::MaxPatternBytes();
+			const auto tail = [window](std::string& text) { (void)uam::secrets::ScrubTail(text, window); };
+			// ponytail: the newest few entries are the only ones a delta can extend; older ones were scrubbed when newest.
+			const auto newest = [](auto& items, std::size_t count) { return items.size() > count ? items.size() - count : 0; };
+			for (std::size_t index = newest(session.turn_events, 4); index < session.turn_events.size(); ++index)
+			{
+				tail(session.turn_events[index].text);
+				tail(session.turn_events[index].title);
+			}
+			for (std::size_t index = newest(session.tool_calls, 8); index < session.tool_calls.size(); ++index)
+			{
+				tail(session.tool_calls[index].title);
+				tail(session.tool_calls[index].content);
+				tail(session.tool_calls[index].args_json);
+			}
+			tail(session.pending_assistant_thoughts);
+			for (std::size_t index = newest(chat.messages, 3); index < chat.messages.size(); ++index)
+			{
+				Message& message = chat.messages[index];
+				tail(message.content);
+				tail(message.thoughts);
+				tail(message.plan_summary);
+				for (std::size_t block = newest(message.blocks, 4); block < message.blocks.size(); ++block)
+				{
+					tail(message.blocks[block].text);
+					tail(message.blocks[block].title);
+				}
+				for (std::size_t tool = newest(message.tool_calls, 8); tool < message.tool_calls.size(); ++tool)
+				{
+					tail(message.tool_calls[tool].args_json);
+					tail(message.tool_calls[tool].result_text);
+				}
+			}
+		}
+	};
+}
+
 bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line, CefRefPtr<CefBrowser> browser)
 {
 	const std::string trimmed = uam::strings::Trim(line);
+	const SecretTranscriptScrub scrub_after_line{session, chat, line.size()};
 	if (trimmed.empty())
 	{
 		return false;
@@ -514,10 +570,12 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 		const std::string error_message = observed_decode_failure ? "Invalid structured data during native process observation." :
 		    std::string("Invalid JSON from ") + RuntimeDisplayName(session) + ": " + ex.what();
 		AppendAcpDiagnostic(session, "parse", "invalid_json", "", "", false, 0, error_message,
-		    observed_decode_failure ? std::string{} : CapDiagnosticString(trimmed, kMaxAcpDiagnosticDetailBytes));
+		    observed_decode_failure ? std::string{} : CapDiagnosticString(uam::secrets::Scrub(trimmed), kMaxAcpDiagnosticDetailBytes));
 		InvalidateAcpTransport(app, session, chat, error_message);
 		return true;
 	}
+	// Secrets typed into UAM are removed from every string value before any handler, transcript, push or log sees it.
+	(void)uam::secrets::ScrubJsonStrings(message);
 	// The guard belongs to the captured process adapter, not mutable chat/provider
 	// metadata. It must precede reconnect, usage and every other shared projection.
 	if (const IProviderRuntime* guard = session.native_pre_dispatch_runtime;
@@ -539,6 +597,7 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 		session.recovering_remote_process = false;
 		ReactivateConfirmedRemoteGoal(app, chat);
 		session.reconnect_attempts = 0;
+		session.reconnect_first_failure_turn_serial = -1; // Reattached: a later failure starts a new budget.
 		return true;
 	}
 
@@ -650,15 +709,19 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		const std::string old_session_id = chat.remote_prompt_delivery_session_id;
 		const std::string old_delivery_id = chat.remote_prompt_delivery_id;
 		const std::string old_payload = chat.remote_prompt_delivery_payload;
+		// The IDs saved with this marker stand in when a reconnect or restart dropped the runtime's copy.
+		const std::vector<std::string> input_ids = session.pending_remote_delivery_input_ids.empty()
+		    ? chat.remote_prompt_delivery_input_ids : session.pending_remote_delivery_input_ids;
 		chat.remote_prompt_delivery_session_id.clear();
 		chat.remote_prompt_delivery_id.clear();
 		chat.remote_prompt_delivery_payload.clear();
+		chat.remote_prompt_delivery_input_ids.clear();
 		if (SaveChatQuietly(app, chat))
 		{
 			session.pending_remote_input_receipt_id.clear();
 			// The helper wrote this exact delivery to the provider: that is the remote input-write fact (#628).
 			// Only rows with one unique matching native input ID settle; unknown or duplicate IDs stay unconfirmed.
-			for (const std::string& input_id : session.pending_remote_delivery_input_ids)
+			for (const std::string& input_id : input_ids)
 			{
 				Message* exact = nullptr;
 				int matches = 0;
@@ -678,6 +741,7 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 			chat.remote_prompt_delivery_session_id = old_session_id;
 			chat.remote_prompt_delivery_id = old_delivery_id;
 			chat.remote_prompt_delivery_payload = old_payload;
+			chat.remote_prompt_delivery_input_ids = input_ids;
 			app.status_line = "Remote prompt receipt is waiting for a successful local save.";
 			return true;
 		}
@@ -883,11 +947,28 @@ bool SettleClaudeBackgroundTasks(AcpSessionState& session, ChatSession* chat, co
 		return true;
 	};
 	bool changed = false;
-	for (AcpToolCallState& tool : session.tool_calls) changed |= settle_child(tool.task_id, tool.status);
+	// Read through const access and write only the rows that settle: opening the stamped tool calls or the
+	// transcript for writing restamps them, and the next state push would rebuild or rehash them for nothing.
+	const auto& tool_calls = std::as_const(session.tool_calls);
+	for (std::size_t index = 0; index < tool_calls.size(); ++index)
+	{
+		std::string settled = tool_calls[index].status;
+		if (!settle_child(tool_calls[index].task_id, settled)) continue;
+		session.tool_calls[index].status = std::move(settled);
+		changed = true;
+	}
 	if (chat != nullptr)
 	{
-		for (Message& message : chat->messages)
-			for (ToolCall& tool : message.tool_calls) changed |= settle_child(tool.task_id, tool.status);
+		const auto& messages = std::as_const(chat->messages);
+		for (std::size_t message_index = 0; message_index < messages.size(); ++message_index)
+			for (std::size_t tool_index = 0; tool_index < messages[message_index].tool_calls.size(); ++tool_index)
+			{
+				const ToolCall& tool = messages[message_index].tool_calls[tool_index];
+				std::string settled = tool.status;
+				if (!settle_child(tool.task_id, settled)) continue;
+				chat->messages[message_index].tool_calls[tool_index].status = std::move(settled);
+				changed = true;
+			}
 		if (changed) chat->updated_at = AcpTimestampNow();
 	}
 	session.claude_live_background_task_ids.clear();

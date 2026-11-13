@@ -29,6 +29,11 @@
 #include <unordered_set>
 #include <vector>
 
+// Set per source by CMake from UAM_LOCAL_BUILD_VERSION; empty for release builds.
+#ifndef UAM_LOCAL_BUILD_LABEL
+#define UAM_LOCAL_BUILD_LABEL ""
+#endif
+
 namespace
 {
 	std::unordered_map<std::string, std::string> g_remote_install_tokens;
@@ -198,6 +203,9 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 	const auto stop = std::make_shared<std::stop_source>();
 	std::erase_if(m_remoteInstallStops, [](const auto& install) { return install.second.expired(); });
 	m_remoteInstallStops.emplace_back(query, stop);
+	// Fence before counting: a queued Git read that starts from here on is refused instead of launching the helper
+	// this request replaces. The fence lasts as long as the request's callback, so it ends with the install.
+	cb = new RemoteInstallScanPauseCallback(cb, m_app.remote_vcs_operation_leases_by_host_id[host.id].Fence());
 	uam::remote_install::HostRuntimeBlockReason block_reason = uam::remote_install::HostRuntimeBlockReason::None;
 	std::string block_chat_id;
 	if (HostHasActiveRuntimeWork(m_app, host.id, true, &block_reason, &block_chat_id))
@@ -244,11 +252,14 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		std::shared_ptr<void> pause = m_app.startup_native_import_service->PauseBackgroundScanOnHost(host.id);
 		if (pause) cb = new RemoteInstallScanPauseCallback(cb, std::move(pause));
 	}
+	// A saved stop is set aside unanswered only when this install asks the same helper to stop, which refuses while it owns a process.
+	const bool same_helper = previous_host.has_value() &&
+	    uam::remote_install::InstallKeepsHelperEndpoint(*previous_host, plan.version, host.runner_directory, uam::remote::kRunnerProtocolVersion);
 	// Idle kept-alive provider processes stop through the confirmed remote stop; unreachable saved authority does not block (#771).
 	const std::size_t stopping_idle = uam::remote_install::QuiesceRetainedProcessesOnHost(m_app, host.id, &g_remote_install_reattach_probes[host.id]);
 	if (stopping_idle != 0)
 		uam::diagnostics::Write("[remote-install] stopping idle chat processes host_id=" + host.id + " count=" + std::to_string(stopping_idle));
-	if (uam::remote_install::HostHasRuntimeWork(m_app, host.id, uam::remote_install::HostWorkScope::InstallWait, nullptr, nullptr, &g_remote_install_reattach_probes[host.id]))
+	if (uam::remote_install::HostHasRuntimeWork(m_app, host.id, uam::remote_install::HostWorkScope::InstallWait, nullptr, nullptr, &g_remote_install_reattach_probes[host.id], same_helper))
 	{
 		ExecutionHost reserved = previous_host.value_or(host);
 		reserved.runner_status = "installing";
@@ -281,7 +292,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 			RefreshUsageTargets();
 			uam::PushStateUpdateIfChanged(browser, m_app);
 			CefRefPtr<PendingRemoteInstallTask> task = new PendingRemoteInstallTask(m_asyncLifetime,
-			    [this, browser, payload, cb, query, stop, reserved, nonce, restore](bool expired)
+			    [this, browser, payload, cb, query, stop, reserved, nonce, restore, same_helper](bool expired)
 			    {
 				const auto operation = g_remote_install_tokens.find(reserved.id);
 				const auto current = FindMutableHost(m_app.settings.execution_hosts, reserved.id);
@@ -306,7 +317,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 					uam::remote_install::HostRuntimeBlockReason wait_block_reason = uam::remote_install::HostRuntimeBlockReason::None;
 					std::string wait_block_chat_id;
 					(void)uam::remote_install::HostHasRuntimeWork(m_app, reserved.id, uam::remote_install::HostWorkScope::InstallWait, &wait_block_reason, &wait_block_chat_id,
-					    &g_remote_install_reattach_probes[reserved.id]);
+					    &g_remote_install_reattach_probes[reserved.id], same_helper);
 					(void)restore();
 					g_remote_install_reattach_probes.erase(reserved.id);
 					uam::diagnostics::Write(std::string("[remote-install] wait expired host_id=") + reserved.id + " reason=" + uam::remote_install::HostRuntimeBlockReasonCode(wait_block_reason) +
@@ -318,7 +329,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 				// A reattach that became idle during the wait is stopped too.
 				(void)uam::remote_install::QuiesceRetainedProcessesOnHost(m_app, reserved.id, &g_remote_install_reattach_probes[reserved.id]);
 				if (uam::remote_install::HostHasRuntimeWork(m_app, reserved.id, uam::remote_install::HostWorkScope::InstallWait, nullptr, nullptr,
-				        &g_remote_install_reattach_probes[reserved.id])) return false;
+				        &g_remote_install_reattach_probes[reserved.id], same_helper)) return false;
 				if (!restore())
 				{
 					g_remote_install_reattach_probes.erase(reserved.id);
@@ -361,6 +372,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		host.runner_version = existing->runner_version;
 		host.runner_protocol_version = existing->runner_protocol_version;
 		host.runner_sha256 = existing->runner_sha256;
+		host.runner_build_label = existing->runner_build_label;
 		host.last_seen_at = existing->last_seen_at;
 		*existing = host;
 	}
@@ -378,7 +390,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		const auto probes = g_remote_install_reattach_probes.find(host.id);
 		const uam::remote_install::ReattachProbes* retried = probes == g_remote_install_reattach_probes.end() ? nullptr : &probes->second;
 		for (const ChatSession& chat : m_app.chats)
-			if (uam::remote_install::ClassifyRetainedProcess(m_app, chat, host.id, retried) == uam::remote_install::RetainedProcess::Unreachable)
+			if (uam::remote_install::ClassifyRetainedProcess(m_app, chat, host.id, retried, same_helper) == uam::remote_install::RetainedProcess::Unreachable)
 				uam::diagnostics::Write("[remote-install] set aside unreachable process host_id=" + host.id + " chat_id=" + chat.id +
 				    " retried=" + std::to_string(retried != nullptr && retried->contains(chat.id)) +
 				    " runtime=" + std::to_string(uam::FindAcpSessionForChat(m_app, chat.id) != nullptr));
@@ -620,6 +632,8 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 			    found->runner_protocol_version = uam::remote::kRunnerProtocolVersion;
 			    // The checksum the bootstrap verified before publishing the remote manifest; it identifies a rebuild with an unchanged version.
 			    found->runner_sha256 = uam::remote::InstalledArtifactSha256(*install_plan, *result);
+			    // Display only: names the local build that packaged this helper; release builds record none.
+			    found->runner_build_label = UAM_LOCAL_BUILD_LABEL;
 		    }
 		    if (!PersistenceCoordinator().SaveSettings(m_app))
 		    {
@@ -720,7 +734,7 @@ void UamQueryHandler::HandleCheckRemoteHostInstruction(CefRefPtr<CefBrowser>, co
 	{ cb->Failure(400, "Use an absolute instruction file path on this SSH host."); return; }
 	if (host->runner_install_unresolved)
 	{ cb->Failure(409, "Retry helper setup to reconcile the unfinished installation first."); return; }
-	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [host = *host, path]()
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(host->id), m_asyncLifetime, cb, [host = *host, path]()
 	{
 		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
 		    host);
@@ -934,7 +948,7 @@ void UamQueryHandler::HandleListRemoteDirectories(CefRefPtr<CefBrowser> browser,
 		std::string startup_error;
 	};
 	auto result = std::make_shared<DirectoryResult>();
-	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime,
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(host.id), m_asyncLifetime,
 	    cb, [host, directory, result]()
 	    {
 		uam::remote::RunnerClient client(

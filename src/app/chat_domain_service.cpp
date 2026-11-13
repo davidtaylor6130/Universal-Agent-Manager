@@ -861,12 +861,12 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	}
 
 	const ChatSession& source = app.chats[source_index];
-	const std::vector<Message>* source_messages = source.messages_loaded ? &source.messages : nullptr;
+	const std::vector<Message>* source_messages = source.messages_loaded ? &source.messages.items() : nullptr;
 	if (source_messages == nullptr && prepared_source != nullptr)
 	{
 		const BranchHistoryIdentity expected = CaptureBranchHistoryIdentity(source);
 		if (prepared_source->messages_loaded && MatchesBranchHistoryIdentity(*prepared_source, expected))
-			source_messages = &prepared_source->messages;
+			source_messages = &prepared_source->messages.items();
 		else
 		{
 			app.status_line = "Branch source history changed while loading. Retry the branch.";
@@ -881,7 +881,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 			app.status_line = uam::strings::NonEmptyOrFallback(hydrate_warning, "Failed to load branch source messages.");
 			return false;
 		}
-		source_messages = &app.chats[source_index].messages;
+		source_messages = &std::as_const(app.chats[source_index]).messages.items();
 	}
 
 	if (message_index < 0 || message_index >= static_cast<int>(source_messages->size()))
@@ -1072,6 +1072,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	if (branch_input.content != original_input.content || branch_input.attachments != original_input.attachments ||
 	    branch_input.markdown_store_files != original_input.markdown_store_files || branch_input.markdown_store_prompt_blocks != original_input.markdown_store_prompt_blocks)
 		branch_input.input_write_completed = false;
+		branch_input.input_delivery_tracked = false; // A copy in a branch was never dispatched from it.
 	// Asset-bearing default calls are worker/test-only. The only production CEF
 	// caller supplies a bounded-worker prepared token, including for cold history.
 	std::unique_ptr<uam::PreparedBranchOriginals> synchronous_originals;

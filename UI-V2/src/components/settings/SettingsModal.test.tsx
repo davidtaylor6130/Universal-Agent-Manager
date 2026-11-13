@@ -198,7 +198,7 @@ describe('SettingsModal memory settings', () => {
   it('shows exact unconfirmed settings fields as persistent warning drafts without a save or dismiss action', () => {
     useAppStore.setState({ memorySettingsUnconfirmedFields: [
       'memoryEnabledDefault', 'memoryLevelDefault', 'memoryIdleDelaySeconds', 'memoryRecallBudgetBytes',
-      'goalMaxLoopIterations', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB', 'activeTurnInactivityTimeoutSeconds', 'streamLoopRepeatLimit',
+      'goalMaxLoopIterations', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB', 'activeTurnInactivityTimeoutSeconds', 'toolCallTimeoutSeconds', 'streamLoopRepeatLimit',
       'memoryWorkerBindings', 'permissionReviewerProviderId', 'permissionReviewerModelId',
     ] })
     const { host, root } = renderModal()
@@ -210,7 +210,7 @@ describe('SettingsModal memory settings', () => {
       const fields = notice.querySelector<HTMLUListElement>('ul[aria-label="Unconfirmed settings fields"]')!
       expect(Array.from(fields.querySelectorAll('li'), (item) => item.textContent)).toEqual([
         'Default memory enabled', 'Default memory policy', 'Memory idle delay', 'Memory recall budget',
-        'Goal loop limit', 'Provider setup timeout', 'Provider output limit', 'Provider turn timeout', 'Repeated output limit', 'Memory worker selections',
+        'Goal loop limit', 'Provider setup timeout', 'Provider output limit', 'Provider turn timeout', 'Tool call limit', 'Repeated output limit', 'Memory worker selections',
         'Permission reviewer provider', 'Permission reviewer model',
       ])
       // Notice is a single bar now: the title is text, not a collapse header, so no buttons remain.
@@ -505,7 +505,7 @@ describe('SettingsModal memory settings', () => {
   it('loads phone access settings and only requests the token when copying', async () => {
     const actions: string[] = []
     window.cefQuery = ({ request, onSuccess }) => {
-      const parsed = JSON.parse(request) as { action: string; payload?: { enabled?: boolean } }
+      const parsed = JSON.parse(request) as { action: string; payload?: Record<string, unknown> }
       actions.push(parsed.action)
       if (parsed.action === 'getCompanionSettings') {
         onSuccess(JSON.stringify({ configured: true, enabled: true, state: 'ready', effectiveUrl: 'https://phone.example/companion', url: 'https://phone.example/companion', restartRequired: false }))
@@ -513,6 +513,8 @@ describe('SettingsModal memory settings', () => {
         expect(parsed.payload).toEqual({ enabled: false })
         onSuccess(JSON.stringify({ configured: true, enabled: false, state: 'disabled', effectiveUrl: '', url: 'https://phone.example/companion', restartRequired: false }))
       } else if (parsed.action === 'getCompanionToken') {
+        // Copy token reads the current token; only a pairing code or Regenerate token issues a new one.
+        expect(parsed.payload ?? {}).toEqual({})
         onSuccess(JSON.stringify({ token: 'a'.repeat(64) }))
       } else {
         onSuccess('{}')
@@ -711,6 +713,35 @@ describe('SettingsModal memory settings', () => {
     }
   })
 
+  it('shows each helper build label and flags only a recorded label that differs from the app build', () => {
+    const { appVersion, uiBuildId } = useAppStore.getState()
+    useAppStore.setState({
+      appVersion: 'V5.1.0',
+      uiBuildId: '5.1.0-alpha-13-Darwin-20261111T000000Z',
+      executionHosts: [
+        { ...subPageHost('old', 'Old build'), runnerVersion: '5.1.0', runnerBuildLabel: '5.1.0-alpha-11', runnerSha256: 'a'.repeat(64), bundledRunnerSha256: 'b'.repeat(64) },
+        // An identical helper binary from an older counter needs no hint.
+        { ...subPageHost('rebuilt', 'Same binary'), runnerVersion: '5.1.0', runnerBuildLabel: '5.1.0-alpha-12', runnerSha256: 'b'.repeat(64), bundledRunnerSha256: 'b'.repeat(64) },
+        { ...subPageHost('same', 'Same build'), runnerVersion: '5.1.0', runnerBuildLabel: '5.1.0-alpha-13' },
+        { ...subPageHost('release', 'Release'), runnerVersion: '5.1.0' },
+      ] as never,
+    })
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host)
+      expect(host.textContent).toContain('helper 5.1.0-alpha-11')
+      expect(host.textContent).toContain('helper 5.1.0-alpha-12')
+      expect(host.textContent).toContain('helper 5.1.0-alpha-13')
+      // Records without a label (older apps, release installs) keep the plain version and no hint.
+      expect(host.textContent).toMatch(/helper 5\.1\.0(?!-)/)
+      expect(host.textContent!.match(/App is 5\.1\.0-alpha-13/g)).toHaveLength(1)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState({ appVersion, uiBuildId })
+    }
+  })
+
   it('opens each configured host on its own sub-page and returns focus on Back', () => {
     useAppStore.setState({ executionHosts: [subPageHost('host-a', 'Host A'), subPageHost('host-b', 'Host B')] as never })
     const { host, root } = renderModal()
@@ -892,6 +923,84 @@ describe('SettingsModal memory settings', () => {
     expect(document.body.textContent).not.toContain('Install helper on colima?')
     expect(failures.at(-1)?.message).toContain('This UAM build does not contain a runner for linux/s390x.')
     expect(failures.at(-1)?.detail).toBe('')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('closes the setup dialog on install, shows progress on the host row and still reports a later refusal', async () => {
+    useAppStore.setState({
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+        { id: 'ssh-homelab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '5.0.0', platform: 'linux', architecture: 'x64', lastSeenAt: '' },
+      ],
+    })
+    const refusal = 'Remote CLI verification failed. (cli-verification)'
+    let failInstall: (() => void) | null = null
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      if (parsed.action === 'previewRemoteHost') {
+        onSuccess(JSON.stringify({ host: { ...parsed.payload, transport: 'ssh', runnerStatus: 'ready', runnerVersion: '5.0.0', platform: 'linux', architecture: 'x64', lastSeenAt: '' }, preview: '1. Check remote platform' }))
+        return
+      }
+      if (parsed.action === 'installRemoteHost') { failInstall = () => onFailure(409, refusal); return }
+      onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+    await act(async () => { (host.querySelector('button[aria-label="Reinstall helper on Homelab"]') as HTMLButtonElement).click() })
+    expect(document.body.textContent).toContain('Install helper on Homelab?')
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
+    })
+
+    expect(document.body.textContent).not.toContain('Install helper on Homelab?')
+    const row = host.querySelector('[aria-label="Remote host task running on Homelab"]')
+    expect(row?.getAttribute('aria-busy')).toBe('true')
+    expect(row?.classList.contains('uam-progress-fill')).toBe(true)
+    expect(document.activeElement).toBe(host.querySelector('[data-host-open="ssh-homelab"]'))
+
+    await act(async () => { failInstall?.() })
+    expect(failures.at(-1)?.message).toBe(refusal)
+    expect(host.querySelector('[aria-label="Remote host task running on Homelab"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('returns focus to the SSH alias when a new host fails after its installing row appeared', async () => {
+    const local = { id: 'local', label: 'This computer', transport: 'local' as const, sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' }
+    useAppStore.setState({ executionHosts: [local] })
+    let failInstall: (() => void) | null = null
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      if (parsed.action === 'previewRemoteHost') {
+        onSuccess(JSON.stringify({ host: { ...parsed.payload, transport: 'ssh', runnerStatus: 'uninstalled', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' }, preview: '1. Check remote platform' }))
+        return
+      }
+      if (parsed.action === 'installRemoteHost') { failInstall = () => onFailure(502, 'ssh: connect to host homelab port 22: Connection refused'); return }
+      onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+    const alias = host.querySelector('input[aria-label="SSH config alias"]') as HTMLInputElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(alias, 'homelab')
+      alias.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click() })
+    await act(async () => { Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click() })
+    expect(document.body.textContent).not.toContain('Install helper on homelab?')
+
+    // The backend pushes the reserved row; focus follows it.
+    act(() => useAppStore.setState({ executionHosts: [local, { id: 'ssh-homelab', label: 'homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'installing', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' }] }))
+    expect(document.activeElement).toBe(host.querySelector('[data-host-open="ssh-homelab"]'))
+
+    // The failure arrives first, then the restore push removes the row.
+    await act(async () => { failInstall?.() })
+    expect(failures.at(-1)?.detail).toBe('Check the SSH connection and try again.')
+    act(() => useAppStore.setState({ executionHosts: [local] }))
+    expect(document.activeElement).toBe(host.querySelector('input[aria-label="SSH config alias"]'))
 
     act(() => root.unmount())
     host.remove()
@@ -1677,6 +1786,10 @@ describe('SettingsModal memory settings', () => {
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ streamLoopRepeatLimit: 0 })
     act(() => (host.querySelector('button[aria-label="Increase provider turn timeout by 15 minutes"]') as HTMLButtonElement).click())
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ activeTurnInactivityTimeoutSeconds: 2700 })
+    // The tool call limit is its own row with the same 15-minute stepper and a two-hour default.
+    expect(host.querySelector('output[aria-label="Tool call limit"]')?.textContent).toBe('2 h')
+    act(() => (host.querySelector('button[aria-label="Decrease tool call limit by 15 minutes"]') as HTMLButtonElement).click())
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ toolCallTimeoutSeconds: 6300 })
 
     act(() => root.unmount())
     host.remove()

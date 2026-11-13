@@ -1,5 +1,9 @@
 #include "cef/companion_server.h"
+#include "app/automation_api_service.h"
 #include "common/companion/connection_config.h"
+#include "common/companion/token_store.h"
+#include "common/platform/credential_store.h"
+#include "common/utils/io_utils.h"
 
 #if defined(__APPLE__)
 #include "common/platform/platform_application_macos.h"
@@ -23,6 +27,8 @@
 #include <cstdlib>
 #include <iterator>
 #include <limits>
+#include <set>
+#include <random>
 
 namespace
 {
@@ -243,18 +249,118 @@ uam::companion::ConnectionConfiguration ReadConnectionConfiguration(const std::f
 	}
 	return uam::companion::ResolveConnectionConfiguration(persisted, environment);
 }
+
+uam::companion::TokenStoreAccess CompanionTokenStore(const std::filesystem::path& data_root)
+{
+	if (const auto& override_factory = uam::companion::TokenStoreOverrideForTests()) return override_factory(data_root);
+	const std::string account = uam::companion::TokenCredentialAccount(data_root);
+	return {[account] { return uam::platform::ReadAppSecret(uam::companion::kTokenCredentialService, account); },
+	    [account](const std::string& token) { return uam::platform::WriteAppSecret(uam::companion::kTokenCredentialService, account, token); }};
+}
+
+std::atomic<bool> g_allow_descendant_clients_for_tests{false};
+std::mutex g_rotated_tokens_mutex;
+std::map<std::filesystem::path, std::string> g_rotated_tokens;
+std::atomic<std::uint64_t> g_token_revision{0};
+
+std::string NewCompanionToken()
+{
+	// std::random_device draws from the OS generator on macOS (arc4random) and Windows (rand_s).
+	std::random_device random;
+	static constexpr char kHex[] = "0123456789abcdef";
+	std::string token;
+	for (int index = 0; index < 8; ++index)
+	{
+		const unsigned int word = random();
+		for (int shift = 28; shift >= 0; shift -= 4) token += kHex[(word >> shift) & 0xf];
+	}
+	return token;
+}
+}
+
+std::optional<std::string> UamCompanionService::RotateToken(const std::filesystem::path& data_root, std::string* error)
+{
+	const auto fail = [&](const char* message) { if (error) *error = message; return std::nullopt; };
+	if (uam::env::GetNonEmptyString("UAM_COMPANION_TOKEN_FILE"))
+		return fail("Phone access uses the token file named by UAM_COMPANION_TOKEN_FILE. Replace that file and restart instead.");
+	(void)MigrateLegacyToken(data_root);
+	std::string text;
+	if (data_root.empty() || !uam::io::TryReadTextFile(data_root / "companion.json", text, 64 * 1024)) return fail("Phone access is not configured.");
+	const nlohmann::json config = nlohmann::json::parse(text, nullptr, false);
+	if (!uam::companion::HasTokenSource(config)) return fail("Phone access is not configured.");
+	const std::string token = NewCompanionToken();
+	if (uam::companion::UsesCredentialStore(config))
+	{
+		const uam::companion::TokenStoreAccess store = CompanionTokenStore(data_root);
+		if (!store.write(token) || store.read() != token) return fail("Could not save a new phone access token in the system credential store.");
+	}
+	else
+	{
+		// Fallback when the credential store refused the migration: the legacy file stays private to this user.
+		const std::filesystem::path token_file = config["token_file"].get<std::string>();
+		std::error_code permissions_error;
+		if (!uam::io::WriteTextFile(token_file, token)) return fail("Could not save a new phone access token.");
+		std::filesystem::permissions(token_file, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write, std::filesystem::perm_options::replace, permissions_error);
+	}
+	{
+		std::lock_guard<std::mutex> lock(g_rotated_tokens_mutex);
+		g_rotated_tokens[data_root] = token;
+		++g_token_revision;
+	}
+	return token;
+}
+
+void UamCompanionServer::AllowDescendantClientsForTests(bool allowed)
+{
+	g_allow_descendant_clients_for_tests = allowed;
+}
+
+std::optional<std::string> UamCompanionService::ReadStoredToken(const std::filesystem::path& data_root)
+{
+	return CompanionTokenStore(data_root).read();
+}
+
+bool UamCompanionService::MigrateLegacyToken(const std::filesystem::path& data_root)
+{
+	static std::mutex mutex;
+	static std::set<std::filesystem::path> attempted;
+	std::lock_guard<std::mutex> lock(mutex);
+	// The development launcher's environment token file stays a file; it never names the saved configuration.
+	if (data_root.empty() || uam::env::GetNonEmptyString("UAM_COMPANION_TOKEN_FILE") || !attempted.insert(data_root).second) return false;
+	const std::filesystem::path config_path = data_root / "companion.json";
+	std::string text;
+	if (!uam::io::TryReadTextFile(config_path, text, 64 * 1024)) return false;
+	const nlohmann::json config = nlohmann::json::parse(text, nullptr, false);
+	if (!uam::companion::HasLegacyTokenFile(config) || uam::companion::UsesCredentialStore(config)) return false;
+	const std::filesystem::path token_file = config["token_file"].get<std::string>();
+	std::string token_text;
+	const std::optional<std::string> file_token = uam::io::TryReadTextFile(token_file, token_text, 4096) ? std::optional<std::string>(token_text) : std::nullopt;
+	const std::optional<nlohmann::json> migrated = uam::companion::MigrateLegacyToken(config, file_token, CompanionTokenStore(data_root));
+	if (!migrated || !uam::io::WriteTextFileWithBackup(config_path, migrated->dump(2) + "\n"))
+	{
+		std::cerr << "Phone access token was not moved to the system credential store; its existing file stays in use.\n";
+		return false;
+	}
+	std::error_code error;
+	if (!std::filesystem::remove(token_file, error) || error)
+		std::cerr << "Phone access token moved to the system credential store, but its old file could not be deleted.\n";
+	return true;
 }
 
 CefRefPtr<UamCompanionServer> UamCompanionServer::StartFromEnvironment(Dispatch dispatch, const std::filesystem::path& data_root)
 {
 	const auto config = ReadConnectionConfiguration(data_root);
 	if (!config.valid || !config.configured || !config.enabled) return nullptr;
-	std::ifstream input(config.token_file);
 	std::string token;
-	std::getline(input, token);
-	if (token.size() != 64 || token.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+	if (config.credential_store) token = UamCompanionService::ReadStoredToken(data_root).value_or(std::string{});
+	else
 	{
-		std::cerr << "Companion disabled: invalid token file.\n";
+		std::ifstream input(config.token_file);
+		std::getline(input, token);
+	}
+	if (!uam::companion::IsValidToken(token))
+	{
+		std::cerr << (config.credential_store ? "Companion disabled: no valid token in the system credential store.\n" : "Companion disabled: invalid token file.\n");
 		return nullptr;
 	}
 	const int port = config.port;
@@ -284,7 +390,7 @@ CefRefPtr<UamCompanionServer> UamCompanionServer::StartFromEnvironment(Dispatch 
 #if defined(__APPLE__)
 	if (!origin.empty()) uam::platform::RequestMacLocalNetworkAccess();
 #endif
-	CefRefPtr<UamCompanionServer> handler = new UamCompanionServer(std::move(token), origin, std::move(dispatch), std::move(proxy_executable), std::move(proxy_config));
+	CefRefPtr<UamCompanionServer> handler = new UamCompanionServer(std::move(token), data_root, origin, std::move(dispatch), port, std::move(proxy_executable), std::move(proxy_config));
 	CefServer::CreateServer("127.0.0.1", static_cast<uint16_t>(port), 8, handler);
 	return handler;
 }
@@ -475,6 +581,7 @@ namespace
 
 std::shared_ptr<UamCompanionService> UamCompanionService::Create(const std::filesystem::path& data_root, UamCompanionServer::Dispatch dispatch)
 {
+	(void)MigrateLegacyToken(data_root);
 	auto service = std::shared_ptr<UamCompanionService>(new UamCompanionService(data_root,
 	    [data_root, dispatch = std::move(dispatch)](const uam::companion::ConnectionDesired& desired)
 	    { return std::make_unique<CefConnectionRuntime>(data_root, dispatch, desired); }));
@@ -568,7 +675,36 @@ std::optional<nlohmann::json> UamCompanionServer::ReadTransferChunk(const std::s
 	return nlohmann::json{{"base64", CefBase64Encode(chunk->bytes.data(), chunk->bytes.size()).ToString()}, {"nextOffset", chunk->next_offset}, {"done", chunk->done}};
 }
 
-void UamCompanionServer::OnHttpRequest(CefRefPtr<CefServer> server, int connection_id, const CefString&, CefRefPtr<CefRequest> request)
+std::string UamCompanionServer::CurrentToken()
+{
+	std::lock_guard<std::mutex> lock(m_mutex);
+	if (const std::uint64_t revision = g_token_revision.load(); revision != m_token_revision)
+	{
+		std::lock_guard<std::mutex> rotated_lock(g_rotated_tokens_mutex);
+		if (const auto rotated = g_rotated_tokens.find(m_data_root); rotated != g_rotated_tokens.end()) m_token = rotated->second;
+		m_token_revision = revision;
+	}
+	return m_token;
+}
+
+bool UamCompanionServer::ClientLaunchedByUam(const CefString& client_address)
+{
+	if (g_allow_descendant_clients_for_tests) return false;
+	const std::string address = client_address.ToString();
+	const std::size_t separator = address.rfind(':');
+	int client_port = 0;
+	if (separator == std::string::npos ||
+	    std::from_chars(address.data() + separator + 1, address.data() + address.size(), client_port).ec != std::errc{}) return false;
+#if defined(_WIN32)
+	const std::int64_t proxy = m_proxy_process.process_info.dwProcessId;
+#else
+	const std::int64_t proxy = m_proxy_process.child_pid;
+#endif
+	// Unknown ownership is allowed: the bearer token remains the boundary there.
+	return uam::platform::LoopbackClientDescendsFromThisProcess(client_port, m_port, proxy > 0 ? proxy : -1).value_or(false);
+}
+
+void UamCompanionServer::OnHttpRequest(CefRefPtr<CefServer> server, int connection_id, const CefString& client_address, CefRefPtr<CefRequest> request)
 {
 	const bool accepts_gzip = AcceptsGzip(request->GetHeaderByName("Accept-Encoding"));
 	CefRefPtr<UamCompanionServer> self = this;
@@ -577,6 +713,10 @@ void UamCompanionServer::OnHttpRequest(CefRefPtr<CefServer> server, int connecti
 	if (!CefParseURL(request->GetURL(), url)) { reply->Failure(400, "Invalid URL."); return; }
 	const std::string path = CefString(&url.path);
 	if (path.empty() || path.front() != '/') { reply->Failure(400, "Invalid path."); return; }
+	// Agents and terminals UAM started must not drive phone or automation access, even holding a token.
+	if ((request->GetMethod() != "GET" || uam::AutomationApiService::IsApiPath(path)) && ClientLaunchedByUam(client_address))
+	{ reply->Failure(403, "Phone and automation access refuse programs started by Universal Agent Manager, such as agents and terminals."); return; }
+	if (uam::AutomationApiService::IsApiPath(path)) { HandleAutomationRequest(request, path, reply); return; }
 	if (request->GetMethod() == "GET")
 	{
 		const std::filesystem::path executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath();
@@ -614,7 +754,7 @@ void UamCompanionServer::OnHttpRequest(CefRefPtr<CefServer> server, int connecti
 		return;
 	}
 	const std::string authorization = request->GetHeaderByName("Authorization");
-	const std::string expected = "Bearer " + m_token;
+	const std::string expected = "Bearer " + CurrentToken();
 	unsigned int difference = static_cast<unsigned int>(authorization.size() ^ expected.size());
 	for (std::size_t i = 0; i < expected.size(); ++i)
 		difference |= static_cast<unsigned int>(expected[i] ^ (i < authorization.size() ? authorization[i] : 0));
@@ -646,6 +786,37 @@ void UamCompanionServer::OnHttpRequest(CefRefPtr<CefServer> server, int connecti
 		element->GetBytes(element->GetBytesCount(), body.data() + offset);
 	}
 	ProcessApiRequest(std::move(body), reply);
+}
+
+void UamCompanionServer::HandleAutomationRequest(CefRefPtr<CefRequest> request, const std::string& path, CefRefPtr<Callback> reply)
+{
+	// Automation callers are servers; any browser Origin is a cross-site attempt.
+	if (!request->GetHeaderByName("Origin").empty()) { reply->Failure(403, "Browser requests are not accepted."); return; }
+	const std::optional<std::string> token_hash = uam::AutomationApiService::TokenHashFromAuthorization(request->GetHeaderByName("Authorization").ToString());
+	if (!token_hash) { reply->Failure(401, "Invalid automation token."); return; }
+	CefRefPtr<CefPostData> post = request->GetPostData();
+	CefPostData::ElementVector elements;
+	if (post) post->GetElements(elements);
+	std::string body;
+	for (CefRefPtr<CefPostDataElement> element : elements)
+	{
+		if (element->GetType() != PDE_TYPE_BYTES || element->GetBytesCount() > uam::AutomationApiService::kMaxBodyBytes - body.size())
+		{
+			reply->Failure(413, "Request exceeds 256 KiB.");
+			return;
+		}
+		const std::size_t offset = body.size();
+		body.resize(offset + element->GetBytesCount());
+		element->GetBytes(element->GetBytesCount(), body.data() + offset);
+	}
+	// A bodyless status poll still occupies an admission slot.
+	const auto admission = m_request_admission.Acquire(std::max<std::size_t>(body.size(), 1));
+	if (!admission) { reply->Failure(503, "Companion request capacity exhausted. Wait for current actions to finish."); return; }
+	reply = new AdmittedReply(reply, admission);
+	nlohmann::json envelope = {{"action", "automationHttpRequest"}, {"payload", {{"method", request->GetMethod().ToString()}, {"path", path}, {"tokenHash", *token_hash}, {"body", std::move(body)}}}};
+	CefRefPtr<UamCompanionServer> self = this;
+	std::function<void()> dispatch_request = [self, envelope = std::move(envelope), reply]() { self->m_dispatch(envelope, reply); };
+	if (!CefPostTask(TID_UI, new Task(std::move(dispatch_request)))) reply->Failure(503, "UAM is shutting down.");
 }
 
 void UamCompanionServer::ProcessApiRequest(std::string body, CefRefPtr<Callback> reply, bool transferred)
@@ -771,6 +942,7 @@ void UamCompanionServer::DispatchCompanion(nlohmann::json envelope, CefRefPtr<Ca
 		{
 			reply->Failure(status, action == "getProviderMcpStatus"
 			    ? "MCP status could not be read. Refresh or check the main device."
+			    : status == 428 ? "Confirm this change on the desktop. It waits there for 5 minutes."
 			    : "Settings could not be saved. Refresh current values and check the main device.");
 		};
 		JsonReply::SuccessHandler prepare = [self, reply, action, envelope = std::move(envelope), failure](nlohmann::json state) mutable

@@ -164,9 +164,10 @@ UAM_TEST(VcsProviderSettingsGateFollowsEachSystemsOwnSwitch)
 
 UAM_TEST(VcsProviderReadOnlyListsApplyOnlyToTheirOwnExecutable)
 {
-	using uam::command_safety::IsReadOnlyCommand;
-	UAM_ASSERT(IsReadOnlyCommand("git status --short"));
-	UAM_ASSERT(IsReadOnlyCommand("git --no-pager status"));
+	const uam::command_safety::ReadScope scope{.workspace = fs::temp_directory_path() / "uam-vcs-read-scope", .resolve_executables = false};
+	const auto IsReadOnlyCommand = [&](std::string_view command) { return uam::command_safety::IsReadOnlyCommand(command, scope); };
+	UAM_ASSERT(IsReadOnlyCommand("git status --short --ignore-submodules"));
+	UAM_ASSERT(IsReadOnlyCommand("git --no-pager status --ignore-submodules"));
 	UAM_ASSERT(IsReadOnlyCommand("svn status --quiet"));
 	UAM_ASSERT(IsReadOnlyCommand("svn log --limit 2"));
 	// One system's actions and leading flag must not leak into the other's grammar.

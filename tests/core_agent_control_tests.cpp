@@ -1106,8 +1106,12 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 		UAM_ASSERT_EQ(server.value("name", ""), std::string("uam-control"));
 		UAM_ASSERT_EQ(server["args"].size(), static_cast<std::size_t>(1));
 		UAM_ASSERT_EQ(server["args"][0].get<std::string>(), std::string("--uam-control-mcp"));
-		UAM_ASSERT_EQ(server["env"].size(), static_cast<std::size_t>(1));
-		UAM_ASSERT(server["args"].dump().find(server["env"][0].value("value", "")) == std::string::npos);
+		// The capability directory and the session's request key travel only in the environment; a hidden-tool
+		// list may follow (e.g. builds without Computer Use).
+		UAM_ASSERT(server["env"].size() >= static_cast<std::size_t>(2) && server["env"].size() <= static_cast<std::size_t>(3));
+		UAM_ASSERT_EQ(server["env"][1].value("name", ""), std::string("UAM_CONTROL_REQUEST_KEY"));
+		for (const nlohmann::json& entry : server["env"])
+			UAM_ASSERT(server["args"].dump().find(entry.value("value", "")) == std::string::npos);
 		return raw_session->uam_control_capability_id;
 	};
 	auto call = [&](const std::string& capability, std::string request_id,
@@ -1387,7 +1391,8 @@ UAM_TEST(UamControlComputerUseRequiresVisibleGuiApproval)
 	nlohmann::json allow_request = request;
 	allow_request["requestId"] = "computer-use-allow";
 	UAM_ASSERT(uam::io::WriteTextFile(
-	    allow_directory / "requests" / "computer-use-allow.json", allow_request.dump()));
+	    allow_directory / "requests" / "computer-use-allow.json",
+	    uam::UamControlService::SignRequestForTests(allow_request, app.uam_control_capabilities.front().request_key).dump()));
 	UAM_ASSERT(uam::UamControlService::ProcessPendingRequests(app));
 	UAM_ASSERT(!app.chats.front().computer_use_enabled);
 	const std::optional<uam::AcpPendingUserInputState> allow_question =
@@ -1415,20 +1420,24 @@ UAM_TEST(UamControlComputerUseRequiresVisibleGuiApproval)
 	              std::string("computer_use_request"));
 	UAM_ASSERT_EQ(persisted_chat->uam_control_audit.back().result, std::string("ok"));
 
-	const nlohmann::json expired_request = {
-	    {"requestId", "computer-use-expired"}, {"method", "computer_use_request"},
-	    {"arguments", {{"reason", "This request should expire without a user answer."}}},
+	// An approval waits until it is answered: one asked long ago is still pending and still answerable.
+	const nlohmann::json old_request = {
+	    {"requestId", "computer-use-old"}, {"method", "computer_use_request"},
+	    {"arguments", {{"reason", "This request waits for the user for as long as it takes."}}},
 	};
 	app.chats.front().computer_use_enabled = false;
 	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(
-	    app, app.uam_control_capabilities.front().id, expired_request, now - 91000)
+	    app, app.uam_control_capabilities.front().id, old_request, now - 3600000)
 	               .value("pendingApproval", false));
-	UAM_ASSERT(uam::UamControlService::ProcessPendingRequests(app));
-	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, chat_id).has_value());
-	std::string expired_text;
-	UAM_ASSERT(uam::io::TryReadTextFile(
-	    allow_directory / "responses" / "computer-use-expired.json", expired_text));
-	UAM_ASSERT(nlohmann::json::parse(expired_text).value("error", "").find("timed out") != std::string::npos);
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	const auto old_question = uam::UamControlService::PendingApprovalForChat(app, chat_id);
+	UAM_ASSERT(old_question.has_value());
+	UAM_ASSERT(!fs::exists(allow_directory / "responses" / "computer-use-old.json"));
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(
+	    app, chat_id, old_question->request_id_json, {{"computerUse", {"Deny"}}}, &error));
+	std::string old_text;
+	UAM_ASSERT(uam::io::TryReadTextFile(allow_directory / "responses" / "computer-use-old.json", old_text));
+	UAM_ASSERT(nlohmann::json::parse(old_text).value("error", "").find("denied") != std::string::npos);
 
 	uam::AppState remote_app;
 	remote_app.data_root = temp.root / "remote";
@@ -1582,6 +1591,93 @@ UAM_TEST(UamControlGoalApprovalAndChildComputerUseScope)
 	uam::UamControlService::Shutdown(app);
 }
 
+UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
+{
+	TempDir temp("uam-control-tool-gating");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession root = ChatDomainService().CreateNewChat("", "opencode-cli");
+	root.id = "chat-tool-gating";
+	root.uam_control_enabled = true;
+	root.execution_host_id = "local";
+	app.chats.push_back(std::move(root));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = "opencode-cli";
+	session->running = true;
+	uam::AcpSessionState& raw = *session;
+	app.acp_sessions.push_back(std::move(session));
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+	const auto hidden_for = [&](uam::AcpSessionState& target) {
+		nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+		UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, target, app.chats.front(), "session/new", setup, &error));
+		return uam::UamControlService::HiddenToolsForTests(setup["params"]["mcpServers"].back());
+	};
+	const auto names = [](const nlohmann::json& tools) {
+		std::vector<std::string> out;
+		for (const nlohmann::json& tool : tools) out.push_back(tool.value("name", ""));
+		return out;
+	};
+
+	// Every listed tool explains itself; the old placeholder is gone.
+	for (const nlohmann::json& tool : uam::UamControlService::ToolDefinitionsForTests())
+		UAM_ASSERT(!tool.value("description", "").empty() && tool.value("description", "") != "Bounded UAM control operation.");
+
+	// A local root build chat keeps every tool.
+	UAM_ASSERT_EQ(hidden_for(raw), std::string(UAM_ENABLE_COMPUTER_USE ? "" : "computer_use_request"));
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests("").size(), std::size_t{17});
+
+	// A chat started by another chat cannot start chats, so chat_create is not offered.
+	app.chats.front().created_by_chat_id = "creator";
+	std::string hidden = hidden_for(raw);
+	UAM_ASSERT(hidden.find("chat_create") != std::string::npos && hidden.find("agent_") == std::string::npos);
+	UAM_ASSERT(!uam::ranges::Contains(names(uam::UamControlService::ToolDefinitionsForTests(hidden)), "chat_create"));
+	app.chats.front().created_by_chat_id.clear();
+
+	// A read-only agent loses mutations and Computer Use; Plan-mode switching stays a server-side check.
+	raw.active_uam_agent_workspace_access = "read";
+	hidden = hidden_for(raw);
+	for (const std::string name : {"agent_cancel", "goal_create", "chat_create", "computer_use_request", "secret_request"})
+		UAM_ASSERT(hidden.find(name) != std::string::npos);
+	UAM_ASSERT(hidden.find("agent_delegate") == std::string::npos);
+	// A missing workspace access counts as read-only too.
+	raw.active_uam_agent_workspace_access.clear();
+	UAM_ASSERT(hidden_for(raw).find("goal_create") != std::string::npos);
+	raw.active_uam_agent_workspace_access = "write";
+
+	// A goal reviewer gets no UAM tools; the worker that follows keeps them.
+	raw.goal_review_turn = true;
+	UAM_ASSERT(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).empty());
+	raw.goal_review_turn = false;
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).size(), std::size_t{UAM_ENABLE_COMPUTER_USE ? 17 : 16});
+
+	// A temporary side chat cannot watch pull requests, so it is not offered the watch tools.
+	app.chats.front().temporary_parent_chat_id = "parent";
+	hidden = hidden_for(raw);
+	UAM_ASSERT(hidden.find("pr_watch") != std::string::npos && hidden.find("pr_unwatch") != std::string::npos);
+	UAM_ASSERT(hidden.find("secret_request") != std::string::npos);
+	app.chats.front().temporary_parent_chat_id.clear();
+
+	// Automation chats have no one to type a secret; Plan mode keeps it behind its one-time Allow.
+	app.chats.front().automation_token_id = "token";
+	UAM_ASSERT(hidden_for(raw).find("secret_request") != std::string::npos);
+	app.chats.front().automation_token_id.clear();
+	app.chats.front().approval_mode = "plan";
+	UAM_ASSERT(hidden_for(raw).find("secret_request") == std::string::npos);
+	app.chats.front().approval_mode = "default";
+
+	// CLI View cannot show HTML views or hold an agent wait.
+	app.cli_terminals.push_back(std::make_unique<uam::CliTerminalState>());
+	nlohmann::json server;
+	UAM_ASSERT(uam::UamControlService::PrepareTerminalMcpServer(app, *app.cli_terminals.back(), app.chats.front(), server, error));
+	const std::vector<std::string> cli_tools = names(uam::UamControlService::ToolDefinitionsForTests(uam::UamControlService::HiddenToolsForTests(server)));
+	for (const std::string name : {"agent_wait", "html_view_preview", "html_view_publish"})
+		UAM_ASSERT(!uam::ranges::Contains(cli_tools, name));
+	UAM_ASSERT(uam::ranges::Contains(cli_tools, "user_question"));
+	uam::UamControlService::Shutdown(app);
+}
+
 UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
 {
 	TempDir temp("uam-control-user-question");
@@ -1690,17 +1786,30 @@ UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
 	    app, child_id, child_pending->request_id_json,
 	    {{"userQuestion", {"Review the SSH runtime"}}}, &error));
 
-	const nlohmann::json expired_request = {
-	    {"requestId", "question-expired"}, {"method", "user_question"},
-	    {"arguments", {{"question", "This should expire."}}},
+	// A question has no deadline. Only its caller leaving ends it: the provider cancelling the call, or its tool
+	// connection closing or being replaced.
+	const auto ask = [&](const char* id)
+	{
+		UAM_ASSERT(uam::UamControlService::HandleRequestForTests(app, capability_id,
+		    {{"requestId", id}, {"method", "user_question"}, {"arguments", {{"question", "This waits for the user."}}}}, now).value("pendingApproval", false));
+		(void)uam::UamControlService::ProcessPendingRequests(app);
+		UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
 	};
-	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(
-	    app, capability_id, expired_request, now).value("pendingApproval", false));
-	const auto root_capability = std::ranges::find(app.uam_control_capabilities, capability_id,
-	                                                &uam::UamControlCapability::id);
-	UAM_ASSERT(root_capability != app.uam_control_capabilities.end());
-	root_capability->pending_approval->expires_at_epoch_ms = now - 1;
-	UAM_ASSERT(uam::UamControlService::ProcessPendingRequests(app));
+	const auto transport = [&](const char* id, const char* method, nlohmann::json arguments)
+	{
+		return uam::UamControlService::HandleRequestForTests(app, capability_id, {{"requestId", id}, {"method", method}, {"arguments", std::move(arguments)}}, now).value("ok", false);
+	};
+	UAM_ASSERT(transport("question-connect", "_mcp_initialized", {{"connectionId", "connection-a"}}));
+	ask("question-cancelled");
+	UAM_ASSERT(transport("question-cancel-other", "_mcp_cancel_request", {{"connectionId", "connection-a"}, {"requestId", "another-call"}}));
+	UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	UAM_ASSERT(transport("question-cancel", "_mcp_cancel_request", {{"connectionId", "connection-a"}, {"requestId", "question-cancelled"}}));
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	ask("question-replaced");
+	UAM_ASSERT(transport("question-reconnect", "_mcp_initialized", {{"connectionId", "connection-b"}}));
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	ask("question-closed");
+	UAM_ASSERT(transport("question-disconnect", "_mcp_disconnected", {{"connectionId", "connection-b"}}));
 	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
 
 	uam::UamControlService::Shutdown(app);
@@ -2707,6 +2816,15 @@ UAM_TEST(AgentRunSchedulerKeepsMixedProviderChildrenInsideTheParentAccessCeiling
 
 			std::string run_id;
 			std::string error;
+			// A read-only parent keeps its own provider's enforcement; another provider is refused.
+			if (child_provider != parent_provider)
+			{
+				UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(
+				    app, root.id, parent.id, "worker", "Do the child task.", &run_id, &error, child_provider));
+				UAM_ASSERT(error.find("own provider") != std::string::npos);
+				UAM_ASSERT_EQ(app.agent_runs.size(), std::size_t{1});
+				continue;
+			}
 			UAM_ASSERT(uam::AgentRunScheduler::Enqueue(
 			    app, root.id, parent.id, "worker", "Do the child task.", &run_id, &error, child_provider));
 			const AgentRun& child = app.agent_runs.back();
@@ -3145,10 +3263,17 @@ UAM_TEST(UamControlDelegationUsesCapabilityAndRunSnapshotsAcrossProviders)
 	const nlohmann::json listed = uam::UamControlService::HandleRequestForTests(
 	    app, capability.id, {{"requestId", "list-1"}, {"method", "agent_list"}, {"arguments", nlohmann::json::object()}}, 1000);
 	UAM_ASSERT(listed.value("ok", false));
-	UAM_ASSERT_EQ(listed["result"].size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(listed["result"][0].value("id", ""), std::string("worker"));
+	UAM_ASSERT_EQ(listed["result"]["agents"].size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(listed["result"]["agents"][0].value("id", ""), std::string("worker"));
 
-	const std::string child_provider = app.provider_profiles.back().id;
+	// The read-only parent may not hand its child to another provider's enforcement.
+	const nlohmann::json cross_provider = uam::UamControlService::HandleRequestForTests(
+	    app, capability.id,
+	    {{"requestId", "delegate-cross"}, {"method", "agent_delegate"},
+	     {"arguments", {{"agentId", "worker"}, {"task", "Must not start."}, {"providerId", app.provider_profiles.back().id}}}}, 1001);
+	UAM_ASSERT(app.provider_profiles.back().id != root.provider_id);
+	UAM_ASSERT(cross_provider.value("error", "").find("own provider") != std::string::npos);
+	const std::string child_provider = root.provider_id;
 	const nlohmann::json rejected_delegate = uam::UamControlService::HandleRequestForTests(
 	    app, capability.id,
 	    {{"requestId", "delegate-rejected"}, {"method", "agent_delegate"},

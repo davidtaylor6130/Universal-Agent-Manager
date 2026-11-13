@@ -45,7 +45,7 @@ function hasDescendant(ownerId: string, sessions: Session[], test: (id: string) 
 }
 
 /** Each family member keeps its own native lineage and managed control authority. */
-function OwnerChildren({ owner, grouped = false }: { owner: Session; grouped?: boolean }) {
+function OwnerChildren({ owner }: { owner: Session }) {
   const sessions = useAppStore(state => state.sessions)
   const activeId = useAppStore(state => state.activeSessionId)
   const children = useMemo(() => nativeSubagentChildren(owner.id, sessions), [owner.id, sessions])
@@ -66,7 +66,6 @@ function OwnerChildren({ owner, grouped = false }: { owner: Session; grouped?: b
   const total = children.length + (owner.managedSubagentCount ?? 0)
   const hasList = children.length > 0 || managed
   const content = <>
-    {grouped && <SessionItem sessionId={owner.id} session={owner} familySessionIds={[owner.id]} />}
     {/* ui: raw button kept — bespoke toggle class with its own chevron; Button would restyle it */}
     {hasList && <button type="button" className="uam-subagent-toggle" aria-expanded={expanded} aria-controls={listId} disabled={searchOpen} onClick={() => setChosen(open => !open)}>
       <ChevronRight size={12} className="uam-subagent-toggle__chevron" aria-hidden />
@@ -77,9 +76,7 @@ function OwnerChildren({ owner, grouped = false }: { owner: Session; grouped?: b
       {managed && <div ref={anchor} hidden={!chosen}>{near && (chosen || mountedReader) && <ManagedSubagentPanel sourceChatId={owner.id} catalogue viewportVisible={visible} collapsed={!chosen} />}</div>}
     </div>
   </>
-  // The labelled group only exists once there is something to list.
-  const hasRows = grouped || hasList
-  return <div role={hasRows ? 'group' : undefined} aria-label={hasRows ? `Subagents of ${owner.name || 'chat'}` : undefined} data-subagent-parent={grouped ? owner.id : undefined}>{content}</div>
+  return <div role="group" aria-label={`Subagents of ${owner.name || 'chat'}`}>{content}</div>
 }
 
 /** Children are one-line robot rows under their parent behind one per-parent disclosure, closed by default. */
@@ -100,7 +97,7 @@ export const SubagentSessionItem = memo(function SubagentSessionItem({ orphan = 
   return <div data-subagent-parent={props.sessionId}>
     {row}
     <div className="uam-subagent-catalogue__children">
-      {owners.map(owner => <OwnerChildren key={owner.id} owner={owner} grouped={owner.id !== props.sessionId} />)}
+      {owners.map(owner => <OwnerChildren key={owner.id} owner={owner} />)}
     </div>
   </div>
 })

@@ -370,6 +370,92 @@ UAM_TEST(RemoteOpenCodeFailedVersionCheckHoldsRawQueueUntilExplicitRetry)
 #endif
 }
 
+UAM_TEST(LocalFailedVersionCheckStillLaunchesAfterItsOwnRetry)
+{
+#if defined(__APPLE__)
+	for (const std::string provider : {"opencode-cli", "gemini-cli"})
+	{
+		RemoteOpenCodeVersionLaunchFixture fixture(provider);
+		const fs::path stand_in = fixture.temp.root / (provider == "gemini-cli" ? "gemini" : "opencode");
+		UAM_ASSERT(uam::io::WriteTextFile(stand_in, "#!/bin/sh\ncat >/dev/null\n"));
+		fs::permissions(stand_in, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		ChatSession& chat = fixture.app.chats.front();
+		chat.execution_host_id = "local"; chat.reasoning_effort = provider == "gemini-cli" ? "high" : "";
+		chat.model_id = provider == "gemini-cli" ? "gemini-3.1-pro-preview" : "";
+		uam::CliProviderVersionState& version = fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider, "local")];
+		version.checked = true; version.check_error = "Could not check this CLI's version."; version.execution_host = uam::execution_hosts::LocalHost();
+		UAM_ASSERT(fixture.Start());
+		UAM_ASSERT(fixture.Session().pending_local_launch != nullptr);
+		UAM_ASSERT(!version.checked); // The launch's own retry of the failed check.
+		version.checked = true;
+		std::string error;
+		UAM_ASSERT(fixture.Start(&error));
+		UAM_ASSERT(error.empty());
+		UAM_ASSERT(fixture.Session().last_error.find("Could not prepare") == std::string::npos);
+	}
+#endif
+}
+
+UAM_TEST(OpenCodeBelowPermissionMinimumStopsAfterAFailedVersionCheck)
+{
+#if defined(__APPLE__)
+	for (const bool queued : {false, true})
+	{
+		RemoteOpenCodeVersionLaunchFixture fixture;
+		ChatSession& chat = fixture.app.chats.front();
+		chat.execution_host_id = "local";
+		fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", "local")].check_error = "Could not check OpenCode version.";
+		uam::AcpSessionState& session = fixture.Session();
+		session.process_execution_host_id = "local"; session.running = true; session.initialized = true; session.agent_version = "1.10.0";
+		if (queued) session.queued_user_prompts.push_back({.text = "Queued during startup", .id = "queued"});
+		UAM_ASSERT(!uam::acp_detail::SendSessionSetupIfReady(fixture.app, session, chat));
+		UAM_ASSERT(!session.running); // Stopped, so polling does not repeat the rejected setup.
+		UAM_ASSERT(!session.reconnect_pending);
+		UAM_ASSERT_EQ(session.queue_held, queued); // With no queue there is nothing to hold, and Retry stays available.
+		UAM_ASSERT(session.last_error.find("1.15.13") != std::string::npos);
+		UAM_ASSERT(session.session_setup_request_id == 0 && !session.session_ready);
+	}
+#endif
+}
+
+UAM_TEST(OpenCodeRejectedSetupKeepsItsReasonThroughPolling)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	const fs::path stand_in = fixture.temp.root / "opencode";
+	UAM_ASSERT(uam::io::WriteTextFile(stand_in, "#!/bin/sh\nread line\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentInfo\":{\"name\":\"OpenCode\",\"version\":\"1.10.0\"},\"agentCapabilities\":{}}}'\ncat >/dev/null\n"));
+	fs::permissions(stand_in, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	fixture.app.chats.front().execution_host_id = "local";
+	uam::CliProviderVersionState& version = fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", "local")];
+	version.checked = true; version.check_error = "Could not check OpenCode version."; version.execution_host = uam::execution_hosts::LocalHost();
+	UAM_ASSERT(fixture.Start());
+	version.checked = true;
+	UAM_ASSERT(fixture.Start());
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (fixture.Session().running && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::PollAllAcpSessions(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(!fixture.Session().running);
+	UAM_ASSERT(fixture.Session().last_error.find("1.15.13") != std::string::npos);
+#endif
+}
+
+UAM_TEST(GeminiNamedThinkingUsesDefaultWhenTheVersionIsUnknown)
+{
+	TempDir temp("uam-gemini-thinking-unknown-version");
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = false;
+	ChatSession chat; chat.provider_id = "gemini-cli"; chat.model_id = "gemini-3.1-pro-preview"; chat.reasoning_effort = "high";
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, uam::execution_hosts::LocalHost(), temp.root, bundle, error, nullptr, ""));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(!bundle.manifest.contains("geminiThinking"));
+	UAM_ASSERT_EQ(chat.reasoning_effort, std::string("high"));
+}
+
 UAM_TEST(RemoteOpenCodeWarmAndRecoveryLaunchesDoNotProbeOrReconfigure)
 {
 #if defined(__APPLE__)
@@ -1009,6 +1095,16 @@ UAM_TEST(CentralSshClientTransfersRealAssetsAndPreservesHostContext)
 	UAM_ASSERT(installed.find("Host instruction") != std::string::npos);
 	UAM_ASSERT(installed.find("Workspace instruction") != std::string::npos);
 	UAM_ASSERT(installed.find(target.string()) != std::string::npos);
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	// OpenCode reads the workspace AGENTS.md itself, so the launch file must not repeat it.
+	std::vector<std::string> opencode_argv{"opencode"};
+	uam::provider_setup::Environment opencode_environment;
+	UAM_ASSERT(uam::provider_setup::Apply(uam::provider_ids::kOpenCodeCli, target, temp.root, opencode_argv, opencode_environment, error));
+	const nlohmann::json opencode_config = nlohmann::json::parse(uam::provider_setup::EnvironmentValue(opencode_environment, "OPENCODE_CONFIG_CONTENT"));
+	const std::string opencode_installed = ReadFile(uam::paths::PathFromUtf8(opencode_config["instructions"].back().get<std::string>()));
+	UAM_ASSERT(opencode_installed.find("Host instruction") != std::string::npos);
+	UAM_ASSERT(opencode_installed.find("Workspace instruction") == std::string::npos);
+#endif
 	client.Disconnect();
 }
 
@@ -2450,7 +2546,10 @@ UAM_TEST(GeminiThinkingDisabledCentralSetupProducesExactImmutableManifest)
 		auto invalid = medium.manifest; invalid["geminiThinking"] = candidate;
 		UAM_ASSERT(!uam::provider_setup::ValidateManifest(invalid, error));
 	}
-	UAM_ASSERT(!uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, inherited, error));
+	// An unknown version launches Default; a checked version without this level is still refused.
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, inherited, error));
+	UAM_ASSERT(!inherited.manifest.contains("geminiThinking"));
+	UAM_ASSERT(!uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, inherited, error, nullptr, "0.38.1"));
 }
 
 UAM_TEST(RequiredSessionMcpPreparationSurvivesDisabledCentralSetup)
@@ -3053,7 +3152,7 @@ UAM_TEST(OpenCodeUamControlDeadlineUsesOwnedProfileAndPreservesNativePolicy)
 	const auto before_argv = argv;
 	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
 	auto actual = nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT"));
-	UAM_ASSERT_EQ(actual["mcp"]["uam-control"], (nlohmann::json{{"type", "local"}, {"command", nlohmann::json::array()}, {"enabled", false}, {"timeout", 120000}}));
+	UAM_ASSERT_EQ(actual["mcp"]["uam-control"], (nlohmann::json{{"type", "local"}, {"command", nlohmann::json::array()}, {"enabled", false}, {"timeout", 7200000}}));
 	actual["mcp"].erase("uam-control");
 	UAM_ASSERT_EQ(actual, original);
 	UAM_ASSERT_EQ(argv, before_argv);
@@ -3068,7 +3167,7 @@ UAM_TEST(OpenCodeUamControlDeadlineUsesOwnedProfileAndPreservesNativePolicy)
 	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error, session_servers));
 	actual = nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT"));
 	UAM_ASSERT_EQ(actual["mcp"]["uam-control"], (nlohmann::json{{"type", "local"}, {"command", {"private-owned-uam", "--uam-control-mcp"}},
-	    {"environment", {{"PRIVATE_FIXTURE", "owned-value"}}}, {"enabled", true}, {"timeout", 120000}}));
+	    {"environment", {{"PRIVATE_FIXTURE", "owned-value"}}}, {"enabled", true}, {"timeout", 7200000}}));
 	actual["mcp"].erase("uam-control");
 	UAM_ASSERT_EQ(actual, original);
 

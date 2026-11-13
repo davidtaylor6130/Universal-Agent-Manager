@@ -1304,7 +1304,7 @@ describe('ChatView', () => {
     })
     expect(setSessionProvider).toHaveBeenCalledOnce()
     expect(setSessionProvider).toHaveBeenCalledWith('chat-1', 'codex-cli', expect.any(Function), false)
-    expect(setSessionModel).toHaveBeenCalledWith('chat-1', '')
+    expect(setSessionModel).toHaveBeenCalledWith('chat-1', '', expect.any(Function))
     expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
 
     act(() => root.unmount())
@@ -1558,13 +1558,92 @@ describe('ChatView', () => {
     const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')
     const confirm = Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) => button.textContent === 'Switch to Codex')
 
-    expect(dialog?.textContent).toContain('Codex CLI is unavailable.')
+    expect(dialog?.textContent).toContain('Codex is not installed or not on PATH.')
+    expect(dialog?.querySelector('[role="alert"]')).not.toBeNull()
     expect(confirm?.disabled).toBe(true)
     expect(setSessionProvider).not.toHaveBeenCalled()
 
     act(() => root.unmount())
     host.remove()
     useAppStore.setState({ setSessionProvider: originalSetSessionProvider, cliVersionManager: originalCliVersionManager })
+  })
+
+  it('notes that a saved Gemini thinking level launches as Default after a failed version check', () => {
+    const originalCliVersionManager = useAppStore.getState().cliVersionManager
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, providerId: 'gemini', reasoningEffort: 'high' })),
+      cliVersionManager: { ...state.cliVersionManager, providers: [{ providerId: 'gemini-cli', installedVersion: '', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'unavailable', message: 'Could not check Gemini CLI version.', checkError: 'Could not check Gemini CLI version.', running: false, lastCommand: '', lastOutput: '' }] },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(document.body.textContent).toContain('Using Default thinking')
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ cliVersionManager: originalCliVersionManager })
+  })
+
+  it('uses the version state of the chat\'s own computer for handoff', () => {
+    const originalCliVersionManager = useAppStore.getState().cliVersionManager
+    const local = { providerId: 'codex-cli', installedVersion: '1.0.0', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'verified' as const, message: '', running: false, lastCommand: '', lastOutput: '' }
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, executionHostId: 'ssh-lab' })),
+      cliVersionManager: { ...state.cliVersionManager, providers: [local], remoteProviders: [{ ...local, executionHostId: 'ssh-lab', installedVersion: '', status: 'unavailable' as const, message: 'Could not check Codex CLI version.' }] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')
+    const confirm = Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) => button.textContent === 'Switch to Codex')
+
+    expect(dialog?.textContent).toContain('Codex is not installed or not on PATH.')
+    expect(confirm?.disabled).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ cliVersionManager: originalCliVersionManager })
+  })
+
+  it('allows handoff after a failed version check and notes it neutrally', async () => {
+    const originalCliVersionManager = useAppStore.getState().cliVersionManager
+    useAppStore.setState((state) => ({
+      cliVersionManager: { ...state.cliVersionManager, providers: [{ providerId: 'codex-cli', installedVersion: '', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'unavailable', message: 'Could not check Codex CLI version.', checkError: 'Could not check Codex CLI version.', running: false, lastCommand: '', lastOutput: '' }] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')
+    const confirm = Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) => button.textContent === 'Switch to Codex')
+
+    expect(dialog?.textContent).toContain('Could not check Codex CLI version. Check Settings > CLI Version.')
+    expect(dialog?.textContent).not.toContain('not installed')
+    expect(dialog?.querySelector('[role="alert"]')).toBeNull()
+    expect(confirm?.disabled).toBe(false)
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ cliVersionManager: originalCliVersionManager })
   })
 
   it('restores a separate unsent draft for each chat across navigation and remount', () => {
@@ -2349,6 +2428,32 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('shows the pool wait while a turn is held for a compute slot', () => {
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'processing',
+          processing: true,
+          turnEvents: [],
+          turnAssistantMessageIndex: -1,
+          computePoolWait: { poolName: 'InferDeck', inUse: 2, limit: 2 },
+        },
+      },
+      messages: { ...state.messages, 'chat-1': [{ id: 'held', role: 'user', content: 'Held question', createdAt: new Date(), acpPromptNotSent: true }] },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.querySelector('[data-testid="compute-pool-wait"]')?.textContent).toBe('Waiting for InferDeck slot (2/2)')
+    expect(host.textContent).not.toContain('Delivery not confirmed')
+    expect(host.querySelector('[data-testid="turn-starting"]')).toBeNull()
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('starts one working clock immediately and keeps time when the first turn event arrives', async () => {
     vi.useFakeTimers()
     useAppStore.setState((state) => ({
@@ -2619,6 +2724,23 @@ describe('ChatView', () => {
         await act(async () => { queue.click(); await Promise.resolve() })
         expect(sendAcpPrompt).toHaveBeenCalledTimes(3)
         expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', 'Stop and use Postgres', [], undefined, expect.any(Function))
+      } finally { done() }
+    })
+
+    it('queues instead of steering while the turn is held for a compute slot', async () => {
+      useAppStore.setState((state) => ({
+        steerActiveTurnOnSend: true,
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], computePoolWait: { poolName: 'InferDeck', inUse: 2, limit: 2 } } },
+      }))
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(false))
+      useAppStore.setState({ sendAcpPrompt })
+      const { host, done } = mount()
+      try {
+        const textarea = typeDraft(host, 'Wait your turn')
+        expect(host.querySelector('button[aria-label="Interrupt and steer"]')).toBeNull()
+        expect((host.querySelector('button[aria-label="Interrupt and steer instead"]') as HTMLButtonElement).disabled).toBe(true)
+        await act(async () => { enter(textarea); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', 'Wait your turn', [], undefined, expect.any(Function))
       } finally { done() }
     })
 
@@ -3797,6 +3919,74 @@ describe('ChatView', () => {
     } finally { act(() => root.unmount()); host.remove() }
   })
 
+  it('refuses a file the browser reads back empty or over the limit instead of staging a hollow copy', async () => {
+    const stageChatAttachments = vi.fn(() => Promise.resolve([]))
+    useAppStore.setState({ stageChatAttachments })
+    // Chromium returns an empty result, with no error, for a file too large to hold as one string.
+    class EmptyResultReader { result = ''; onload: (() => void) | null = null; onerror: (() => void) | null = null; readAsDataURL() { queueMicrotask(() => this.onload?.()) } }
+    vi.stubGlobal('FileReader', EmptyResultReader)
+    writeChatComposerDraft('chat-1', { text: 'Keep my text', attachments: [] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
+      const attach = async (file: File) => {
+        Object.defineProperty(input, 'files', { value: [file], configurable: true })
+        await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })); await Promise.resolve(); await Promise.resolve() })
+      }
+      await attach(new File(['video'], 'clip.MOV', { type: 'video/quicktime' }))
+      expect(reportedText()).toContain('clip.MOV could not be read, so it was not attached.')
+      const oversized = new File(['video'], 'huge.MOV', { type: 'video/quicktime' })
+      Object.defineProperty(oversized, 'size', { value: 25 * 1024 * 1024 + 1 })
+      await attach(oversized)
+      expect(reportedText()).toContain('huge.MOV is larger than the 25 MB limit') // The desktop app adds a hint after this.
+      expect(stageChatAttachments).not.toHaveBeenCalled()
+      // The failed chips and the draft stay; nothing can be sent until they are removed.
+      expect(host.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep my text')
+      expect(host.textContent).toContain('clip.MOV')
+      expect(host.querySelector('button[type="submit"]:not([disabled])')).toBeNull()
+    } finally { vi.unstubAllGlobals(); act(() => root.unmount()); host.remove() }
+  })
+
+  it('stages a large file by path without reading it, shows copy progress and refuses one over 4 GB', async () => {
+    let finish!: (staged: Array<{ id: string; name: string; type: string; size: number; path: string }>) => void
+    const stageChatAttachments = vi.fn((_chatId: string, _items: Array<{ id: string }>) => new Promise<Array<{ id: string; name: string; type: string; size: number; path: string }>>((resolve) => { finish = resolve }))
+    useAppStore.setState({ stageChatAttachments })
+    const readAsDataURL = vi.fn()
+    vi.stubGlobal('FileReader', class { readAsDataURL = readAsDataURL })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
+      const attach = async (name: string, size: number) => {
+        const file = new File(['video'], name, { type: 'video/quicktime' })
+        Object.defineProperty(file, 'size', { value: size })
+        Object.defineProperty(file, 'path', { value: `/Users/me/${name}` })
+        Object.defineProperty(input, 'files', { value: [file], configurable: true })
+        await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })); await Promise.resolve(); await Promise.resolve() })
+      }
+      await attach('clip.MOV', 2 * 1024 * 1024 * 1024)
+      expect(readAsDataURL).not.toHaveBeenCalled()
+      const item = stageChatAttachments.mock.calls[0][1][0]
+      expect(item).toMatchObject({ name: 'clip.MOV', path: '/Users/me/clip.MOV', size: 2 * 1024 * 1024 * 1024, dataBase64: undefined })
+      expect(host.textContent).toContain('copying')
+      act(() => { window.dispatchEvent(new CustomEvent('uam-attachment-progress', { detail: { type: 'attachmentProgress', chatId: 'chat-1', attachmentId: item.id, copiedBytes: 4, totalBytes: 10 } })) })
+      expect(host.textContent).toContain('copying 40%')
+      // Progress for another chat's copy is ignored.
+      act(() => { window.dispatchEvent(new CustomEvent('uam-attachment-progress', { detail: { type: 'attachmentProgress', chatId: 'other', attachmentId: item.id, copiedBytes: 9, totalBytes: 10 } })) })
+      expect(host.textContent).toContain('copying 40%')
+      await act(async () => { finish([{ id: item.id, name: 'clip.MOV', type: 'file', size: 2 * 1024 * 1024 * 1024, path: '.UAM/attachments/chat-1/clip.MOV' }]); await Promise.resolve() })
+      expect(host.textContent).not.toContain('copying')
+      await attach('huge.MOV', 4 * 1024 * 1024 * 1024 + 1)
+      expect(reportedText()).toContain('huge.MOV is larger than the 4 GB limit.')
+      expect(stageChatAttachments).toHaveBeenCalledTimes(1)
+    } finally { vi.unstubAllGlobals(); act(() => root.unmount()); host.remove() }
+  })
+
   it('keeps newer staging errors and the draft when an older attachment send fails', async () => {
     let settle!: (ok: boolean) => void
     useAppStore.setState({
@@ -3850,6 +4040,39 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('restarts a tool call limit stop by raising the tool call limit, not the turn timeout', async () => {
+    const setMemorySettings = vi.fn(async () => true)
+    const retryFailedMessage = vi.fn(async () => ({ ok: true }))
+    const user = { ...useAppStore.getState().messages['chat-1'][0] }
+    useAppStore.setState((state) => ({
+      setMemorySettings,
+      retryFailedMessage,
+      activeTurnInactivityTimeoutSeconds: 1800,
+      toolCallTimeoutSeconds: 7200,
+      messages: { ...state.messages, 'chat-1': [user] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'error', processing: false, running: true,
+          lastError: 'Gemini ACP turn stopped because a tool call exceeded its 120-minute limit without a result.', timeoutStop: { label: 'Tool call limit', seconds: 7200, kind: 'tool' },
+          pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent).toContain('A tool call exceeded its 2 h limit with no result')
+      const restart = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Restart with +15 min')!
+      await act(async () => { restart.click() })
+      expect(setMemorySettings).toHaveBeenCalledWith({ toolCallTimeoutSeconds: 8100 })
+      expect(retryFailedMessage).toHaveBeenCalledWith('chat-1', 0)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it.each(['restart', 'output', 'refused'] as const)('presents a timeout stop as a notice and restarts it after saving the raised limit (%s)', async (branch) => {
     const order: string[] = []
     const setMemorySettings = vi.fn(async () => { order.push('save'); return true })
@@ -3881,10 +4104,14 @@ describe('ChatView', () => {
         expect(retryFailedMessage).not.toHaveBeenCalled()
         expect(host.textContent).toContain('This turn already produced output')
       } else {
-        expect(order).toEqual(['save', 'retry'])
+        // A refused restart saves the previous limit back, so the setting is not left raised.
+        expect(order).toEqual(branch === 'refused' ? ['save', 'retry', 'save'] : ['save', 'retry'])
         expect(retryFailedMessage).toHaveBeenCalledWith('chat-1', 0)
       }
-      if (branch === 'refused') expect(host.querySelector('[role="alert"]')?.textContent).toContain('Wait for pending runtime work.')
+      if (branch === 'refused') {
+        expect(setMemorySettings).toHaveBeenLastCalledWith({ activeTurnInactivityTimeoutSeconds: 1800 })
+        expect(host.querySelector('[role="alert"]')?.textContent).toContain('Wait for pending runtime work.')
+      }
     } finally {
       act(() => root.unmount())
       host.remove()
@@ -5905,7 +6132,7 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       await Promise.resolve()
     })
-    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(3, 'chat-1', { reasoningEffort: 'xhigh' })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(3, 'chat-1', { reasoningEffort: 'xhigh' }, expect.any(Function))
     expect(appNotices.join('\n')).toContain('Reasoning changed to Extra High.')
 
     await act(async () => {
@@ -5913,8 +6140,22 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       await Promise.resolve()
     })
-    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex', serviceTierExplicit: true })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex', serviceTierExplicit: true }, expect.any(Function))
     expect(appNotices.join('\n')).toContain('Speed changed to Flex.')
+
+    // A refused slash change names the backend reason in its one notice; the store reports nothing else.
+    setSessionCodexOptions.mockImplementationOnce(((_id: string, _options: unknown, onFailure?: (reason: string) => void) => {
+      onFailure?.('Reasoning is locked by the provider.')
+      return Promise.resolve(false)
+    }) as never)
+    appNotices.length = 0
+    appFailures.length = 0
+    await act(async () => {
+      setDraft('/reasoning high')
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(appFailures.map(({ message, detail }) => ({ message, detail }))).toEqual([{ message: 'Failed to change reasoning to High. Reasoning is locked by the provider.', detail: '' }])
 
     act(() => root.unmount())
     host.remove()
@@ -10402,7 +10643,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    if (path === '/companion') expect(discover).toHaveBeenCalledWith('chat-1')
+    if (path === '/companion') expect(discover).toHaveBeenCalledWith('chat-1', '', '', '', true)
     else expect(discover).not.toHaveBeenCalled()
 
     const selector = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement
@@ -10463,7 +10704,7 @@ describe('ChatView', () => {
       expect(textarea.value).toBe(savedDraft.text)
       await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Select provider and model"]')!.click())
       expect(discover).toHaveBeenCalledTimes(1)
-      expect(discover).toHaveBeenCalledWith('', 'opencode-cli', workspaceDirectory, expectedHost)
+      expect(discover).toHaveBeenCalledWith('', 'opencode-cli', workspaceDirectory, expectedHost, true)
       expect(host.querySelector('.uam-composer-textarea')).toBe(textarea)
       expect(textarea.value).toBe(savedDraft.text)
       expect(readChatComposerDraft(session.id)).toEqual(savedDraft)
@@ -11959,17 +12200,18 @@ describe('ChatView', () => {
 
 
   it.each([
-    { label: 'identified unknown', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action' }, expected: 'unconfirmed' },
-    { label: 'positive write', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action', inputWriteCompleted: true }, expected: null },
-    { label: 'malformed boolean', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', inputWriteCompleted: 'true' }, expected: 'unconfirmed' },
-    { label: 'malformed input ID', fields: { nativeInputId: 'bad-id', inputWriteCompleted: true }, expected: null },
-    { label: 'legacy absent fields', fields: {}, expected: null },
-  ])('shares historical input presentation across main, managed and passive native routes: $label', async ({ fields, expected }) => {
+    // answered: the provider's output directly follows the input, which is proof it was received.
+    { label: 'identified unknown', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action' }, answered: false, expected: 'unconfirmed' },
+    { label: 'identified unknown but answered', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action' }, answered: true, expected: null },
+    { label: 'positive write', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action', inputWriteCompleted: true }, answered: true, expected: null },
+    { label: 'malformed boolean', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', inputWriteCompleted: 'true' }, answered: false, expected: 'unconfirmed' },
+    { label: 'malformed input ID', fields: { nativeInputId: 'bad-id', inputWriteCompleted: true }, answered: true, expected: null },
+    { label: 'legacy absent fields', fields: {}, answered: true, expected: null },
+  ])('shares historical input presentation across main, managed and passive native routes: $label', async ({ label, fields, answered, expected }) => {
     const previous = useAppStore.getState()
-    const rows = [
-      { role: 'user', content: 'Historical **input** remains readable', createdAt: '2026-10-16T16:00:00Z', ...fields },
-      { role: 'assistant', content: 'Recorded answer\n\n```ts\nconst kept = true\n```', createdAt: '2026-10-16T16:00:01Z' },
-    ] as unknown as Parameters<typeof reconcileCppMessages>[2]
+    const input = { role: 'user', content: 'Historical **input** remains readable', createdAt: '2026-10-16T16:00:00Z', providerId: 'codex-cli', ...fields }
+    const output = { role: 'assistant', content: 'Recorded answer\n\n```ts\nconst kept = true\n```', createdAt: '2026-10-16T16:00:01Z', providerId: 'codex-cli' }
+    const rows = (answered ? [input, output] : [output, input]) as unknown as Parameters<typeof reconcileCppMessages>[2]
     const child = { ...previous.sessions[0], id: 'input-child', name: 'Input child', providerId: 'codex-cli', importedReadOnly: true,
       subagentParentChatId: 'absent-parent', subagentParentCreatedAt: '2026-01-01T00:00:00.000Z' }
     const native = vi.fn(async () => ''); const load = vi.fn(async () => true)
@@ -12001,6 +12243,9 @@ describe('ChatView', () => {
       expect(same.delivery).toBe(expected)
       expect(same.body).toContain('Historical'); expect(same.answer).toContain('kept')
       expect(capture(managed)).toEqual(same); expect(capture(passive)).toEqual(same)
+      // Hiding the marker for an answered row is display only: without a write fact it still offers no actions.
+      if (label === 'identified unknown but answered') for (const host of [main, managed, passive])
+        expect(host.querySelector('article.conversation-turn--user')!.querySelector('[aria-label="Retry message"],[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()
       if (expected === 'unconfirmed') for (const host of [main, managed, passive]) {
         const user = host.querySelector('article.conversation-turn--user')!
         expect(user.querySelector('[aria-label="Retry message"],[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()

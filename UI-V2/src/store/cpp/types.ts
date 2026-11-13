@@ -38,6 +38,7 @@ export type AcpAttentionKind =
 export interface CppMessage {
   /** Positive historical local OS-sink write fact only; absent/false is unknown, never retry authority. */
   inputWriteCompleted?: boolean
+  inputDeliveryTracked?: boolean
   /** Inert per-input provenance; never admission/delivery/control proof. */
   nativeInputId?: string
   originRequestId?: string
@@ -158,6 +159,11 @@ export interface CppChat {
   subagentParentCreatedAt?: string
   /** Display-only chat_create provenance; never lineage, resume or control authority. */
   createdByChatId?: string
+  /** Automation API origin and approval hold; the prompt is held until the user starts the chat. */
+  automationTokenName?: string
+  automationGitPermission?: string
+  automationMaxIterations?: number
+  automationPendingPrompt?: string
   managedSubagentCount?: number
   managedSubagentRevision?: number
   messagesDigest?: string
@@ -381,7 +387,28 @@ export interface AcpPendingUserInput {
   status: string
   attentionKind?: AcpAttentionKind
   questions: AcpUserInputQuestion[]
+  /** UAM-control `secret_request`: the value is typed into the card and goes straight to native, never into this state. */
+  secretRequest?: AcpSecretRequest
 }
+
+export interface AcpSecretRequest {
+  label: string
+  reason: string
+  placeholder: string
+  /** Empty or an https sign-in page, opened in the system browser. */
+  url: string
+  /** Provider display name, e.g. "Codex". */
+  provider: string
+  /** Null: the chat runs on this computer. */
+  host: { name: string; platform: string } | null
+  /** This computer's platform, for the local wording: "macos" or "windows". */
+  localPlatform: string
+  /** The chat is in Plan mode: the user allows this one request before the field appears. */
+  planOptIn: boolean
+  keychain: { available: boolean; saved: boolean }
+}
+
+export type SecretSubmission = { value?: string; useSaved?: boolean; save?: boolean }
 
 export type AcpUserInputAnswers = Record<string, string[]>
 
@@ -496,8 +523,8 @@ export interface ManualCompactionAvailability {
 export interface AcpTimeoutStop {
   label: string
   seconds: number
-  /** 'loop' when the stream watch stopped repeated output (#636); absent for a timeout. */
-  kind?: 'loop'
+  /** 'loop' when the stream watch stopped repeated output (#636); 'tool' when an open tool call outlasted the tool-call limit; absent for a turn timeout. */
+  kind?: 'loop' | 'tool'
   /** Loop: the repeated stream (text, thought or tool call), its repeat count and a bounded example. */
   channel?: string
   count?: number
@@ -507,6 +534,9 @@ export interface AcpTimeoutStop {
 export interface CppAcpSession {
   lastStopReason?: string
   timeoutStop?: AcpTimeoutStop | null
+  computePoolWait?: ComputePoolWait
+  /** A remote stop has stayed unconfirmed long enough for the user to be offered Treat as stopped. */
+  remoteStopForceAvailable?: boolean
   idleCountdownStartsAtMs?: number
   idleShutdownAtMs?: number
   idleShutdownTimeoutSeconds?: number
@@ -703,6 +733,50 @@ export interface CliVersionManager {
   remoteProviders?: CliVersionProviderState[]
 }
 
+export interface ComputePoolMember {
+  providerId: string
+  /** Empty covers every model of the provider. */
+  modelId: string
+}
+
+export interface ComputePool {
+  id: string
+  name: string
+  limit: number
+  members: ComputePoolMember[]
+}
+
+export interface ComputePoolWait {
+  poolName: string
+  inUse: number
+  limit: number
+}
+
+export type ComputePoolUsage = Record<string, { inUse: number; waiting: number }>
+
+/** One pull request linked to one chat. The native watch service owns it; the UI only displays and toggles it. */
+export interface PullRequestWatch {
+  chatId: string
+  /** owner/name on github.com. */
+  repository: string
+  number: number
+  url: string
+  title: string
+  state: 'open' | 'closed' | 'merged' | 'missing' | 'unknown'
+  /** False for a link that is kept but no longer wakes the chat. */
+  watching: boolean
+  checksPassed: number
+  checksFailed: number
+  checksPending: number
+  conflicting: boolean
+  /** The last read failed; watching ends after eight in a row. */
+  readFailing: boolean
+  /** GitHub's rate limit paused reading. */
+  paused: boolean
+  /** Latest news of this app run; a new serial is reported once in the notifications panel. */
+  notice?: { serial: number; message: string; tone: 'info' | 'success' | 'warning' }
+}
+
 export interface ShellAction {
   id: string
   label: string
@@ -750,6 +824,8 @@ export interface VcsStorageSettings {
   gitDefaultBaseBranch: string
   gitPullBeforeChat: boolean
   svnUpdateBeforeChat: boolean
+  /** Repositories that do not use trunk/branches/tags; display only. */
+  svnRepositoryLayouts: SvnRepositoryLayout[]
   gitPortMethod: 'patch' | 'merge' | 'squash'
   worktreeCleanupEnabled: boolean
   worktreeRetentionDays: number
@@ -765,6 +841,8 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   theme: StoredTheme
   showProviderIconsInSidebar?: boolean
   showWorktreePathInSidebar?: boolean
+  sidebarPinnedChatOrder?: string[]
+  sidebarActiveChatOrder?: string[]
   steerActiveTurnOnSend?: boolean
   gitEnabled?: boolean
   svnEnabled?: boolean
@@ -776,7 +854,9 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   goalTokenBudget: number
   acpSetupInactivityTimeoutSeconds?: number
   activeTurnInactivityTimeoutSeconds?: number
+  toolCallTimeoutSeconds?: number
   streamLoopRepeatLimit?: number
+  computePools?: ComputePool[]
   acpTurnOutputLimitMiB?: number
   updateChecksEnabled: boolean
   automaticProviderUpdates: boolean
@@ -905,7 +985,77 @@ export interface VcsCommitStatus {
   lineStatsReady: boolean
   /** The chat comparison has no usable baseline, so Retry cannot help. */
   baselineUnavailable?: boolean
+  /** What the active system offers beyond status, diff and commit, such as `history` and `update`. */
+  capabilities?: string[]
   warning: string
+  error: string
+}
+
+/** Where one SVN repository keeps its main line, branches and tags, as repository-relative folders. */
+export interface SvnRepositoryLayout {
+  /** Repository root URL or repository UUID. */
+  repository: string
+  trunk: string
+  branches: string
+  tags: string
+}
+
+export interface VcsHistoryPath {
+  action: string
+  /** Repository path as the system reports it (SVN: `/trunk/a.txt`). */
+  path: string
+  kind: string
+  copyFromPath: string
+  copyFromRevision: string
+}
+
+export interface VcsHistoryEntry {
+  revision: string
+  author: string
+  date: string
+  message: string
+  paths: VcsHistoryPath[]
+  /** Changed paths left out to keep the reply bounded. */
+  pathsOmitted: number
+}
+
+export interface VcsHistoryPage {
+  entries: VcsHistoryEntry[]
+  /** Cursor for the next older page; empty at the start of history. */
+  next: string
+  /** Newest page only. */
+  workingRevision: string
+  location: string
+  /** Newest page only: identify the repository for its layout setting. */
+  repositoryRoot: string
+  repositoryUuid: string
+}
+
+/** How a branch or tag relates to the path it was copied from; an empty `originPath` means a main line. */
+export interface VcsOriginSummary {
+  branchPath: string
+  originPath: string
+  copyRevision: string
+  originRevision: string
+  /** Origin revisions SVN's merge tracking would still merge, newest first; with no merge recorded, every origin revision since the copy. */
+  behindRevisions: string[]
+  /** A merge from the origin is recorded, so `behindRevisions` leaves out what was merged. */
+  mergesRecorded: boolean
+  /** Merge tracking could not be read; `behindRevisions` is every origin revision since the copy. */
+  behindFromLog: boolean
+}
+
+export type VcsOriginView = 'summary' | 'ahead' | 'behind'
+
+export interface VcsOriginReply extends VcsOriginSummary {
+  page: VcsHistoryPage
+}
+
+export interface VcsUpdateResult {
+  ok: boolean
+  conflicts: boolean
+  revision: string
+  output: string
   error: string
 }
 
@@ -947,6 +1097,8 @@ export interface VcsCommitMessageSuggestion {
 
 export interface CppAppState {
   startupNativeImports?: StartupNativeImportStatus
+  /** Desktop bootstrap only: phone requests still waiting for confirmation; read raw, never stored in app state. */
+  companionConfirmations?: unknown
   unchanged?: false
   stateRevision?: number
   bootId?: string
@@ -964,6 +1116,8 @@ export interface CppAppState {
   memoryActivity?: MemoryActivity
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
+  computePoolUsage?: ComputePoolUsage
+  prWatches?: PullRequestWatch[]
   shellActionNotification?: string
   statusLine?: string
   deletionProgress?: CppDeletionProgress
@@ -998,6 +1152,8 @@ export interface CppStatePatch {
   memoryActivity?: MemoryActivity
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
+  computePoolUsage?: ComputePoolUsage
+  prWatches?: PullRequestWatch[]
   shellActionNotification?: string
   statusLine?: string
 }
@@ -1026,6 +1182,9 @@ export type ProviderSwitchOverride = 'none' | 'warn' | 'disconnected' | 'strande
 export interface AcpBinding {
   lastStopReason?: string
   timeoutStop?: AcpTimeoutStop
+  computePoolWait?: ComputePoolWait
+  /** A remote stop has stayed unconfirmed long enough for the user to be offered Treat as stopped. */
+  remoteStopForceAvailable?: boolean
   idleCountdownStartsAtMs?: number
   idleShutdownAtMs?: number
   idleShutdownTimeoutSeconds?: number
@@ -1089,6 +1248,16 @@ export interface CliTranscript {
 
 export type PushChannelStatus = 'no-push-yet' | 'connected' | 'parse-error' | 'invalid-message'
 
+/** A phone request held until the desktop user allows or denies it; the stored request itself stays native. */
+export interface CompanionConfirmation {
+  id: string
+  chatId: string
+  chatTitle: string
+  description: string
+  /** Epoch milliseconds. */
+  expiresAt: number
+}
+
 export type DictationPushMessage =
   | { type: 'dictation'; dictationId: string; event: 'interim' | 'final'; text: string }
   | { type: 'dictation'; dictationId: string; event: 'error'; message: string }
@@ -1108,10 +1277,12 @@ export type ParsedPushMessage =
   | { type: 'streamToken'; chatId: string; token: string; messageIndex?: number }
   | { type: 'streamDone'; chatId: string }
   | DictationPushMessage
+  | { type: 'attachmentProgress'; chatId: string; attachmentId: string; copiedBytes: number; totalBytes: number }
+  | { type: 'companionConfirmations'; items: CompanionConfirmation[] }
 
 export type ParsedPushResult =
   | { ok: true; message: ParsedPushMessage }
-  | { ok: false; status: Exclude<PushChannelStatus, 'connected' | 'no-push-yet'>; error: string }
+  | { ok: false; status: Exclude<PushChannelStatus, 'connected' | 'no-push-yet'>; error: string; mayHaveCarriedState?: true }
 
 export interface CentralProviderConfiguration {
   mcpOverrides?: Array<{ providerId: string; executionHostId: string; serverId: string; enabled: boolean; kind?: 'preference' }>
