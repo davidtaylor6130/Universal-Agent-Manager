@@ -1054,6 +1054,7 @@ UAM_TEST(ComputerUseBackgroundScanIsNotScheduledWhileGloballyDisabled)
 	UAM_ASSERT(!service.ScanPendingForTests());
 }
 
+#if UAM_ENABLE_COMPUTER_USE && (defined(_WIN32) || defined(__APPLE__))
 namespace
 {
 	long CurrentPidForComputerUseTests()
@@ -1064,17 +1065,9 @@ namespace
 		return static_cast<long>(getpid());
 #endif
 	}
-
-	// launchd/init and the Windows System process always exist; the probe treats access denial as alive.
-#if defined(_WIN32)
-	constexpr long kLivePid = 4;
-#else
-	constexpr long kLivePid = 1;
-#endif
-	constexpr long kDeadPid = 999999999;
 }
 
-UAM_TEST(ComputerUseInstallSweepRemovesOnlyDeadInstallerStaging)
+UAM_TEST(ComputerUseInstallSweepRemovesOnlyAbandonedStagingCopies)
 {
 	TempDir temp("uam-computer-use-sweep");
 	const fs::path root = temp.root / "Computer Use";
@@ -1083,40 +1076,47 @@ UAM_TEST(ComputerUseInstallSweepRemovesOnlyDeadInstallerStaging)
 		fs::create_directories(path / "Contents" / "MacOS");
 		std::ofstream(path / "Contents" / "MacOS" / "UAM Computer Use") << "binary";
 	};
-	const long self = CurrentPidForComputerUseTests();
-	UAM_ASSERT(!uam::computer_use::InstallProcessAlive(kDeadPid));
-	UAM_ASSERT(uam::computer_use::InstallProcessAlive(kLivePid));
-	make_copy(uam::computer_use::InstallStagingPath(root, kDeadPid));
-	make_copy(uam::computer_use::InstallStagingPath(root, self));
-	make_copy(uam::computer_use::InstallStagingPath(root, kLivePid));
+	UAM_ASSERT(!uam::computer_use::HasInstallStaging(temp.root / "missing"));
 	make_copy(root / "UAM Computer Use.app");
-	fs::create_directories(root / ".staging-not-a-pid");
-	std::ofstream(root / ".staging-12345678") << "not a directory";
 	std::ofstream(root / ".receipt") << "a\nb\n";
 	std::ofstream(root / ".install.lock");
+	fs::create_directories(root / ".staging-not-a-pid");
+	fs::create_directories(root / ".staging-");
+	std::ofstream(root / ".staging-12345678") << "not a directory";
+	UAM_ASSERT(!uam::computer_use::HasInstallStaging(root));
+	// Copies are made only under the install lock, so a copy whose PID was reused by a live process is still abandoned.
+	make_copy(uam::computer_use::InstallStagingPath(root, 1));
+	make_copy(uam::computer_use::InstallStagingPath(root, 999999999));
+	make_copy(uam::computer_use::InstallStagingPath(root, CurrentPidForComputerUseTests()));
+	UAM_ASSERT(uam::computer_use::HasInstallStaging(root));
 #if !defined(_WIN32)
-	// A link named like a dead installer's copy is never followed into its target.
+	// A link named like a copy is never followed into its target or removed.
 	const fs::path outside = temp.root / "outside";
 	fs::create_directories(outside);
 	std::ofstream(outside / "keep.txt") << "keep";
-	fs::create_directory_symlink(outside, uam::computer_use::InstallStagingPath(root, kDeadPid + 1));
+	fs::create_directory_symlink(outside, root / ".staging-424242");
+	// A link inside a copy is removed without deleting what it points at.
+	fs::create_directory_symlink(outside, uam::computer_use::InstallStagingPath(root, 1) / "Contents" / "Frameworks");
 #endif
 
-	UAM_ASSERT_EQ(uam::computer_use::SweepStaleInstallStaging(root, self), std::size_t{1});
+	UAM_ASSERT_EQ(uam::computer_use::SweepInstallStaging(root), std::size_t{3});
 
-	UAM_ASSERT(!fs::exists(uam::computer_use::InstallStagingPath(root, kDeadPid)));
-	UAM_ASSERT(!fs::exists(uam::computer_use::InstallStagingPath(root, self)));
-	UAM_ASSERT(fs::is_directory(uam::computer_use::InstallStagingPath(root, kLivePid)));
+	UAM_ASSERT(!fs::exists(uam::computer_use::InstallStagingPath(root, 1)));
+	UAM_ASSERT(!fs::exists(uam::computer_use::InstallStagingPath(root, 999999999)));
+	UAM_ASSERT(!fs::exists(uam::computer_use::InstallStagingPath(root, CurrentPidForComputerUseTests())));
 	UAM_ASSERT(fs::is_regular_file(root / "UAM Computer Use.app" / "Contents" / "MacOS" / "UAM Computer Use"));
 	UAM_ASSERT(fs::is_directory(root / ".staging-not-a-pid"));
+	UAM_ASSERT(fs::is_directory(root / ".staging-"));
 	UAM_ASSERT(fs::is_regular_file(root / ".staging-12345678"));
 	UAM_ASSERT(fs::is_regular_file(root / ".receipt"));
 	UAM_ASSERT(fs::exists(root / ".install.lock"));
 #if !defined(_WIN32)
-	UAM_ASSERT(fs::is_symlink(uam::computer_use::InstallStagingPath(root, kDeadPid + 1)));
+	UAM_ASSERT(fs::is_symlink(root / ".staging-424242"));
 	UAM_ASSERT(fs::is_regular_file(outside / "keep.txt"));
 #endif
-	UAM_ASSERT_EQ(uam::computer_use::SweepStaleInstallStaging(temp.root / "missing", self), std::size_t{0});
+	UAM_ASSERT(!uam::computer_use::HasInstallStaging(root));
+	UAM_ASSERT_EQ(uam::computer_use::SweepInstallStaging(root), std::size_t{0});
+	UAM_ASSERT_EQ(uam::computer_use::SweepInstallStaging(temp.root / "missing"), std::size_t{0});
 }
 
 UAM_TEST(ComputerUseInstallStagingGuardRemovesCopyOnEveryExit)
@@ -1168,3 +1168,4 @@ UAM_TEST(ComputerUseInstallReceiptMatchSkipsReinstall)
 	UAM_ASSERT(!uam::computer_use::InstallReceiptMatches(root, "bin", "other"));
 	UAM_ASSERT(!uam::computer_use::InstallReceiptMatches(root, "", ""));
 }
+#endif

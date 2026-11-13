@@ -5,6 +5,7 @@
 #include "common/paths/app_paths.h"
 #include "common/utils/env_utils.h"
 #include "common/platform/data_folder_writer_lease.h"
+#include "common/utils/diagnostic_log.h"
 #include "app/data_folder_transition.h"
 
 #import <Foundation/Foundation.h>
@@ -51,7 +52,7 @@ namespace uam::computer_use
 		  public:
 			explicit Lock(const std::filesystem::path& path)
 			{
-				m_fd = open(path.c_str(), O_CREAT | O_RDWR, 0600);
+				m_fd = open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
 				if (m_fd < 0) return;
 				const auto deadline = std::chrono::steady_clock::now() + kTimeout;
 				while (flock(m_fd, LOCK_EX | LOCK_NB) != 0)
@@ -225,7 +226,8 @@ namespace uam::computer_use
 			if (std::rename(staging.c_str(), installed.c_str()) != 0)
 			{
 				const std::string reason = std::strerror(errno);
-				if (std::filesystem::exists(previous)) std::rename(previous.c_str(), installed.c_str());
+				std::error_code rollback_error;
+				if (std::filesystem::exists(previous, rollback_error)) std::rename(previous.c_str(), installed.c_str());
 				SetError(error, "Could not activate the Computer Use helper: " + reason + ".");
 				return {};
 			}
@@ -237,30 +239,33 @@ namespace uam::computer_use
 			{
 				SetError(error, "Could not write the Computer Use install receipt.");
 				// Move the unrecorded copy back to staging (the guard removes it) and restore the previous helper.
-				if (std::filesystem::exists(installed)) std::rename(installed.c_str(), staging.c_str());
-				if (std::filesystem::exists(previous)) std::rename(previous.c_str(), installed.c_str());
+				std::error_code rollback_error;
+				if (std::filesystem::exists(installed, rollback_error)) std::rename(installed.c_str(), staging.c_str());
+				if (std::filesystem::exists(previous, rollback_error)) std::rename(previous.c_str(), installed.c_str());
 				return {};
 			}
 			[manager removeItemAtPath:[NSString stringWithUTF8String:previous.c_str()] error:nil];
 			return installed;
 		}
 
-		/// Takes the lock, clears copies left by dead installers and sets `installed` when the receipt already matches.
-		bool InstalledIfCurrent(const InstallContext& context, std::filesystem::path& installed, std::string* error)
+		/// Under the lock, sets `installed` when the receipt already matches and reports leftover staging copies.
+		/// It never deletes here: this runs in the CLI-owned MCP process, which may be killed at any moment.
+		bool InstalledIfCurrent(const InstallContext& context, std::filesystem::path& installed, bool& leftovers, std::string* error)
 		{
 			Lock lock(context.root / ".install.lock");
 			if (!lock.acquired()) { SetError(error, "Timed out waiting for the Computer Use install lock."); return false; }
-			SweepStaleInstallStaging(context.root, getpid());
+			leftovers = HasInstallStaging(context.root);
 			installed = InstallReceiptMatches(context.root, context.binary_hash, context.plist_hash) ? context.root / "UAM Computer Use.app" : std::filesystem::path{};
 			return true;
 		}
 
 		/// Installs in a separate session so a provider CLI that kills its MCP server on a startup timeout
 		/// cannot interrupt the copy; the next start then finds the finished install instead of copying again.
-		bool RunDetachedInstall(const std::filesystem::path& embedded_app, std::string* error)
+		/// Without `wait`, the installer only clears leftover copies and is not waited for.
+		bool RunDetachedInstall(const std::filesystem::path& embedded_app, bool wait, std::string* error)
 		{
 			int output[2] = {-1, -1};
-			if (pipe(output) != 0) { SetError(error, "Could not start the Computer Use installer."); return false; }
+			if (wait && pipe(output) != 0) { SetError(error, "Could not start the Computer Use installer."); return false; }
 			posix_spawnattr_t attributes;
 			posix_spawn_file_actions_t actions;
 			posix_spawnattr_init(&attributes);
@@ -268,7 +273,8 @@ namespace uam::computer_use
 			posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT);
 			posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
 			posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
-			posix_spawn_file_actions_adddup2(&actions, output[1], STDERR_FILENO);
+			if (wait) posix_spawn_file_actions_adddup2(&actions, output[1], STDERR_FILENO);
+			else posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
 			std::string binary = (embedded_app / "Contents" / "MacOS" / "UAM Computer Use").string();
 			std::string mcp_flag = kMcpServerFlag, install_flag = kInstallFlag;
 			char* argv[] = {binary.data(), mcp_flag.data(), install_flag.data(), nullptr};
@@ -276,13 +282,15 @@ namespace uam::computer_use
 			const int spawn_error = posix_spawn(&pid, argv[0], &actions, &attributes, argv, environ);
 			posix_spawn_file_actions_destroy(&actions);
 			posix_spawnattr_destroy(&attributes);
-			close(output[1]);
+			if (wait) close(output[1]);
 			if (spawn_error != 0)
 			{
-				close(output[0]);
+				if (wait) close(output[0]);
 				SetError(error, "Could not start the Computer Use installer: " + std::string(std::strerror(spawn_error)) + ".");
 				return false;
 			}
+			// ponytail: an unwaited sweeper stays a zombie until this MCP process exits; it runs once after leftovers appear.
+			if (!wait) return true;
 			std::string diagnostics;
 			std::array<char, 4096> buffer{};
 			for (ssize_t count; (count = read(output[0], buffer.data(), buffer.size())) != 0;)
@@ -305,17 +313,24 @@ namespace uam::computer_use
 		if (error != nullptr) error->clear();
 		InstallContext context;
 		std::filesystem::path installed;
-		if (!OpenInstallContext(embedded_app, context, error) || !InstalledIfCurrent(context, installed, error)) return {};
-		if (!installed.empty()) return installed;
-		// Only a changed embedded helper reaches this point; an unchanged one never copies again.
-		if (!RunDetachedInstall(embedded_app, error) || !InstalledIfCurrent(context, installed, error)) return {};
+		bool leftovers = false;
+		if (!OpenInstallContext(embedded_app, context, error) || !InstalledIfCurrent(context, installed, leftovers, error)) return {};
+		if (!installed.empty())
+		{
+			// An unchanged helper is never copied again; abandoned copies are cleared by a detached installer.
+			std::string ignored;
+			if (leftovers) (void)RunDetachedInstall(embedded_app, false, &ignored);
+			return installed;
+		}
+		if (!RunDetachedInstall(embedded_app, true, error) || !InstalledIfCurrent(context, installed, leftovers, error)) return {};
 		if (installed.empty()) SetError(error, "The Computer Use installer finished without a matching install receipt.");
 		return installed;
 	}
 
 	bool IsComputerUseInstallInvocation(const std::vector<std::string>& arguments)
 	{
-		return std::find(arguments.begin(), arguments.end(), kInstallFlag) != arguments.end();
+		// Only the exact installer command line; a chat label equal to the flag must not match.
+		return arguments.size() == 3 && arguments[1] == kMcpServerFlag && arguments[2] == kInstallFlag;
 	}
 
 	int RunComputerUseInstall()
@@ -329,14 +344,15 @@ namespace uam::computer_use
 		if (!OpenInstallContext(embedded_app, context, &error)) { std::fprintf(stderr, "%s\n", error.c_str()); return 1; }
 		Lock lock(context.root / ".install.lock");
 		if (!lock.acquired()) { std::fprintf(stderr, "Timed out waiting for the Computer Use install lock.\n"); return 1; }
-		const std::size_t remaining = SweepStaleInstallStaging(context.root, getpid());
+		// Copies are only made under this lock, so every staging copy seen here was abandoned by a killed installer.
+		if (const std::size_t removed = SweepInstallStaging(context.root); removed > 0)
+			diagnostics::Write("Computer Use install removed " + std::to_string(removed) + " abandoned helper staging copies.");
 		if (InstallReceiptMatches(context.root, context.binary_hash, context.plist_hash)) return 0;
-		if (remaining >= kMaxInstallStagingCopies)
+		if (InstallLocked(embedded_app, context, &error).empty())
 		{
-			std::fprintf(stderr, "Computer Use install refused: %zu unfinished helper copies are still owned by running processes.\n", remaining);
+			std::fprintf(stderr, "%s\n", error.c_str());
 			return 1;
 		}
-		if (InstallLocked(embedded_app, context, &error).empty()) { std::fprintf(stderr, "%s\n", error.c_str()); return 1; }
 		return 0;
 	}
 } // namespace uam::computer_use
