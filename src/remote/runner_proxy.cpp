@@ -748,6 +748,11 @@ namespace uam::remote
 
 	bool RemoteMcpShimFilter::Observe(bool desktop_live, const std::string& epoch, std::string& replies)
 	{
+		// The helper already dropped what a replaced tool server had not read, so a fence still owed for it would only
+		// lock out its healthy replacement. With no earlier server named, nothing was dropped and the fence stays owed.
+		// ponytail: a reopen after a lost connection still fences before the new name is known; that costs the
+		// replacement one restart, and only when both the fence request and the connection failed.
+		if (m_fenceOwed && !m_fenceEpoch.empty() && epoch != m_fenceEpoch) m_fenceOwed = false;
 		std::vector<std::string> replaced;
 		bool waiting = false, card = false;
 		for (auto& [key, pending] : m_pending)
@@ -764,12 +769,14 @@ namespace uam::remote
 		}
 		// The host already dropped what a replaced tool server had not read, so these cannot run later.
 		for (const std::string& key : replaced) Fail(key, replies);
-		if (desktop_live || !waiting || card) return false;
+		if (desktop_live || !waiting || card) return m_fenceOwed;
 		for (auto it = m_pending.begin(); it != m_pending.end();)
 		{
 			const std::string key = (it++)->first;
 			if (m_pending.at(key).sent) Fail(key, replies);
 		}
+		m_fenceOwed = true;
+		m_fenceEpoch = epoch;
 		return true;
 	}
 
@@ -1635,8 +1642,19 @@ $e
 		void ShimObserve(RunnerClient& channel, RemoteMcpShimFilter& filter, const std::string& channel_id, std::string& replies)
 		{
 			if (!channel.ChannelDesktopReported()) return;
-			if (filter.Observe(ShimDesktopLive(channel), channel.ChannelDesktopEpoch(), replies))
-				(void)channel.OpenChannel(channel_id, nullptr, true, 0, {}, {}, true);
+			// A failed fence is retried on the next pass: the failed calls stay buffered until the helper drops them.
+			if (filter.Observe(ShimDesktopLive(channel), channel.ChannelDesktopEpoch(), replies) &&
+			    channel.OpenChannel(channel_id, nullptr, true, 0, {}, {}, true))
+				filter.Fenced();
+		}
+
+		/// Reopens the shim's channel after a lost connection, fencing it first when a fence is still owed.
+		bool ShimReopen(RunnerClient& channel, RemoteMcpShimFilter& filter, const std::string& channel_id, std::string& error)
+		{
+			channel.Disconnect();
+			if (!channel.OpenChannel(channel_id, &error, true, 0, {}, {}, filter.FenceOwed())) return false;
+			filter.Fenced();
+			return true;
 		}
 	}
 
@@ -1693,8 +1711,7 @@ $e
 			if (!channel.PollChannel(channel_id, "desktopToRemote", output, &error,
 			                         &output_cursor))
 			{
-				channel.Disconnect();
-				if (!channel.OpenChannel(channel_id, &error, true)) break;
+				if (!ShimReopen(channel, filter, channel_id, error)) break;
 				continue;
 			}
 			// Replies first: one that arrived with the news of a replaced tool server is still the real answer.
@@ -1758,8 +1775,7 @@ $e
 			if (!channel.PollChannel(channel_id, "desktopToRemote", output, &error,
 			                         &output_cursor))
 			{
-				channel.Disconnect();
-				if (!channel.OpenChannel(channel_id, &error, true))
+				if (!ShimReopen(channel, filter, channel_id, error))
 				{
 					input_failed = true;
 					break;

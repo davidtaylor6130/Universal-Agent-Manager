@@ -506,6 +506,8 @@ namespace uam
 			nlohmann::json chat_create_arguments;
 			/// secret_request card state (label, reason, Plan opt-in, delivery in progress); never the value.
 			nlohmann::json secret_request;
+			/// The caller's structured turn when the card was shown, or -1 when it was shown outside one.
+			int turn_serial = -1;
 		};
 
 		std::string id;
