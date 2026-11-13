@@ -1007,7 +1007,8 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 	m_app.startup_native_import_service = std::make_shared<uam::StartupNativeImportService>();
 	m_app.startup_native_import_service->Initialize(m_app);
 	const std::chrono::steady_clock::time_point native_import_finished = std::chrono::steady_clock::now();
-	MemoryService::RefreshMemoryActivity(m_app);
+	// Counting memory entries probes every chat's workspace; the poll applies the count when it is ready.
+	MemoryService::RefreshMemoryActivityAsync(m_app);
 
 	if (!m_app.chats.empty())
 	{

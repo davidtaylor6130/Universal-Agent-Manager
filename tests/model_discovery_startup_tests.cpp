@@ -733,3 +733,24 @@ UAM_TEST(OpenCodeExplicitConfigurationRefreshRetainsCacheOnFailureAndRetries)
 	catalog.Initialize(temp.root / "third-data");
 	UAM_ASSERT(catalog.GetConfiguredOpenCodeDefaultModel().empty());
 }
+
+// Startup resolves each workspace once and never for a provider turned off on that computer.
+UAM_TEST(StartupModelDiscoverySkipsTurnedOffProvidersAndRepeatedWorkspaces)
+{
+	StartupDiscoveryFixture fixture;
+	for (int index = 0; index < 50; ++index)
+	{
+		ChatSession chat;
+		chat.id = "repeat-" + std::to_string(index);
+		chat.provider_id = index % 2 == 0 ? "codex-cli" : "claude-cli";
+		chat.workspace_directory = fixture.app.folders.front().directory;
+		fixture.app.chats.push_back(chat);
+	}
+	const std::vector<uam::ModelDiscoveryScope> all = uam::StartupModelDiscoveryService::CollectScopes(fixture.app);
+	UAM_ASSERT(std::ranges::count(all, std::string("codex-cli"), &uam::ModelDiscoveryScope::provider_id) >= 1);
+	UAM_ASSERT(uam::provider_availability::Set(fixture.app.settings, "codex-cli", "local", false));
+	const std::vector<uam::ModelDiscoveryScope> scopes = uam::StartupModelDiscoveryService::CollectScopes(fixture.app);
+	UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("codex-cli"), &uam::ModelDiscoveryScope::provider_id), 0);
+	UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("claude-cli"), &uam::ModelDiscoveryScope::provider_id),
+	    std::ranges::count(all, std::string("claude-cli"), &uam::ModelDiscoveryScope::provider_id));
+}
