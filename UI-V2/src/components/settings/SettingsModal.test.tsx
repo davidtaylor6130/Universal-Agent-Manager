@@ -1649,6 +1649,20 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('opens the manual memory scan chooser from Memory settings', () => {
+    const openMemoryScanModal = vi.fn(async () => true)
+    const original = useAppStore.getState().openMemoryScanModal
+    useAppStore.setState({ openMemoryScanModal })
+    const { host, root } = renderModal()
+    try {
+      openMemorySettingsSection(host)
+      const scan = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Scan chats')
+      expect(scan?.disabled).toBe(false)
+      act(() => scan!.click())
+      expect(openMemoryScanModal).toHaveBeenCalledTimes(1)
+    } finally { useAppStore.setState({ openMemoryScanModal: original }); act(() => root.unmount()); host.remove() }
+  })
+
   it('shows a matching local alpha version in About without changing the release version', () => {
     const previous = useAppStore.getState()
     useAppStore.setState({ appVersion: 'V4.11.0', uiBuildId: '4.11.0-alpha-1-Darwin-20261002T220000Z' })
