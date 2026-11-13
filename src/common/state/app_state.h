@@ -1542,6 +1542,11 @@ namespace uam
 			std::string storage_revision;
 			std::size_t message_count = 0;
 			std::string updated_at;
+			/// The saved parent read at `storage_revision`, so a parent that keeps streaming is compared against it
+			/// instead of being read and parsed again on every poll; another revision or an older read reads the file
+			/// again. Runs waiting on one parent share it, so one parent-sized copy lives until delivery or pruning.
+			std::shared_ptr<const ChatSession> saved_parent;
+			int64_t saved_parent_read_steady_ms = 0;
 		};
 		std::unordered_map<std::string, AgentResultRetry> agent_result_retry_steady_ms;
 		int64_t managed_result_recovery_retry_steady_ms = 0;

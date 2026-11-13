@@ -390,7 +390,7 @@ namespace uam
 			return true;
 		}
 
-		bool InitialStoredChatMatches(const std::filesystem::path& root, ChatSession saved, const ChatSession& captured);
+		bool InitialStoredChatMatches(const std::filesystem::path& root, const ChatSession& stored, const ChatSession& captured);
 
 		bool HasResultCard(const ChatSession& chat, const std::string& delivery_id)
 		{
@@ -459,11 +459,28 @@ namespace uam
 			// A loaded parent is not proof that its saved history is still current.
 			// Refuse stale data rather than replacing authored messages or adopting a foreign graph.
 			const auto revision = ChatRepository::ChatStorageRevision(app.data_root, root->id);
-			const auto saved = ChatRepository::LoadLocalChat(app.data_root, root->id, true, nullptr, false);
-			if (!revision || !saved || !InitialStoredChatMatches(app.data_root, *saved, *root) ||
-			    ChatRepository::ChatStorageRevision(app.data_root, root->id) != revision)
+			// A parent that keeps streaming fails this check on every poll. Its saved file is parsed at most once per
+			// storage revision and retry interval, shared by every run waiting on it, not once per run and poll (#948).
+			// The revision is size and modification time, the same token the publish below checks; the age bound keeps
+			// a same-size rewrite within one coarse timestamp tick from being masked for longer than a retry interval.
+			std::shared_ptr<const ChatSession> saved;
+			int64_t read_steady_ms = now_steady_ms;
+			if (revision)
+				for (const auto& [id, retry] : app.agent_result_retry_steady_ms)
+					if (retry.saved_parent && retry.saved_parent->id == root->id && retry.storage_revision == *revision &&
+					    now_steady_ms - retry.saved_parent_read_steady_ms < kResultDeliveryRetryMs)
+					{
+						saved = retry.saved_parent;
+						read_steady_ms = retry.saved_parent_read_steady_ms;
+						break;
+					}
+			if (revision && !saved)
+				if (auto loaded = ChatRepository::LoadLocalChat(app.data_root, root->id, true, nullptr, false))
+					saved = std::make_shared<const ChatSession>(std::move(*loaded));
+			const bool saved_current = saved && ChatRepository::ChatStorageRevision(app.data_root, root->id) == revision;
+			if (!saved_current || !InitialStoredChatMatches(app.data_root, *saved, *root))
 			{
-				app.agent_result_retry_steady_ms[run.id] = {now_steady_ms + kResultDeliveryRetryMs, revision.value_or(std::string{}), root->messages.size(), root->updated_at};
+				app.agent_result_retry_steady_ms[run.id] = {now_steady_ms + kResultDeliveryRetryMs, revision.value_or(std::string{}), root->messages.size(), root->updated_at, saved_current ? saved : nullptr, read_steady_ms};
 				return false;
 			}
 			app.agent_result_retry_steady_ms.erase(run.id);
@@ -587,10 +604,12 @@ namespace uam
 		{
 			return nlohmann::json::array({chat.id, chat.agent_run_id, chat.managed_followup_incarnation, chat.created_at, chat.provider_id, chat.folder_id, chat.execution_host_id, chat.workspace_directory, chat.workspace_source_directory, chat.workspace_worktree_directory, chat.workspace_isolation_kind, chat.routing_mode, chat.routing_source_folder_id, chat.routing_source_directory, chat.routing_assigned_connection_identity, chat.routing_assigned_provider_configuration_identity, chat.routing_inherited_default_fields, comparison_model ? *comparison_model : chat.model_id, chat.reasoning_effort, chat.service_tier, chat.service_tier_explicit, chat.approval_mode, chat.command_safety_tier, chat.uam_agent_id, chat.uam_control_enabled, chat.uam_control_explicitly_disabled, chat.active_goal_id, chat.goal_owner_chat_id, chat.temporary_parent_chat_id, chat.imported_read_only, chat.side_cleanup_requested, chat.extra_flags}).dump();
 		}
-		bool InitialStoredChatMatches(const std::filesystem::path& root, ChatSession saved, const ChatSession& captured)
+		bool InitialStoredChatMatches(const std::filesystem::path& root, const ChatSession& stored, const ChatSession& captured)
 		{
-			if (!saved.messages_loaded || saved.messages != captured.messages)
+			if (!stored.messages_loaded || stored.messages != captured.messages)
 				return false;
+			// Copied only once the messages match: a mismatch, the common case while a parent streams, copies nothing.
+			ChatSession saved = stored;
 			// These two fields are load-cache projections; exact loaded bodies already establish the prefix.
 			// The detailed publisher advances the full-save receipt; its own queue and full-primary CAS remain mandatory.
 			// Every authored metadata field, queue storage owner/revision and birth remains exact.
