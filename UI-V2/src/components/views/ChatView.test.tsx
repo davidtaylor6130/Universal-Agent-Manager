@@ -7393,7 +7393,7 @@ describe('ChatView', () => {
     act(() => permissionButton.click())
     const reviewOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('AI review'))!
     act(() => reviewOption.click())
-    expect(document.body.textContent).not.toContain('Accept Edits')
+    expect(document.body.textContent).not.toMatch(/accept edits/i)
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'aiReview')
     expect(setSessionApprovalMode).not.toHaveBeenCalled()
 
