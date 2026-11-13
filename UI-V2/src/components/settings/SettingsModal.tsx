@@ -1760,7 +1760,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 disabled={!activeSession || activeSession.computerUseEnabled || computerUseBusy}
                 options={[
                   { value: 'auto', label: 'Automatic (recommended)' },
-                  { value: 'provider', label: 'Provider built-in', disabled: !activeComputerUseProviderAvailable },
+                  { value: 'provider', label: 'Provider built-in', disabled: !activeComputerUseProviderAvailable, description: activeComputerUseProviderAvailable ? undefined : CODEX_ENABLED ? 'Codex chats only' : 'Not in this build' },
                   { value: 'uam', label: 'UAM controlled' },
                 ]}
                 onChange={(value) => {

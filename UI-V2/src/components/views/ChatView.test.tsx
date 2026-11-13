@@ -6205,6 +6205,23 @@ describe('ChatView', () => {
     await act(async () => { high.click(); await Promise.resolve() })
     expect(setSessionCodexOptions).toHaveBeenCalledWith('chat-1', { reasoningEffort: 'high' })
 
+    // The /reasoning hint names no provider in a non-Codex chat, and the command changes this chat's reasoning.
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    const setDraft = (value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    act(() => setDraft('/rea'))
+    const slashReasoning = Array.from(document.body.querySelectorAll('[aria-label="Slash commands"] [role="option"]')).find((option) => option.textContent?.includes('/reasoning')) as HTMLElement
+    expect(slashReasoning.textContent).toContain('Choose reasoning')
+    expect(slashReasoning.textContent).not.toContain('Codex')
+    await act(async () => {
+      setDraft('/reasoning low')
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(setSessionCodexOptions).toHaveBeenLastCalledWith('chat-1', { reasoningEffort: 'low' }, expect.any(Function))
+
     act(() => root.unmount())
     host.remove()
   })
