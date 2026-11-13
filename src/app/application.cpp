@@ -1135,10 +1135,13 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 void Application::Shutdown()
 {
+	// Quit must not wait on a remote host: no remote connection starts from here, and the waits already under way end together
+	uam::remote::BeginRunnerShutdown();
 	if (m_startupChats.valid())
 	{
 		// Quit while the chat list loads: the loader writes summary caches under the data-folder lock released below,
-		// and runs a previous process left behind still need their stop requests, which name chats.
+		// and runs a previous process left behind still need their stop requests, which name chats. Remote ones fail fast
+		// after BeginRunnerShutdown above, as any remote work does during quit.
 		m_startupChatLoader.join();
 		try
 		{
@@ -1149,8 +1152,6 @@ void Application::Shutdown()
 		catch (const std::exception& error) { uam::diagnostics::Write(std::string("Startup chat list failed to load: ") + error.what()); }
 		m_app.startup_state_loading = false;
 	}
-	// Quit must not wait on a remote host: no remote connection starts from here, and the waits already under way end together
-	uam::remote::BeginRunnerShutdown();
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	if (m_app.opencode_native_activity)
 		m_app.opencode_native_activity->Stop();
