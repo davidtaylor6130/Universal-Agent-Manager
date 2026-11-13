@@ -94,7 +94,7 @@ std::vector<std::string> AntigravityCliProviderRuntime::BuildInteractiveArgv(con
 	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, chat.native_session_id);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 	const AppSettings merged = uam::provider_runtime_internal::MergeProviderSettings(profile, settings);
-	uam::provider_runtime_internal::AppendArgs(argv, uam::command_line::SplitWords(merged.provider_extra_flags));
+	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(merged, uam::provider_runtime_internal::LaunchHasReadCeiling(chat)));
 	AppendAntigravityEffort(argv, chat);
 	AppendAntigravityModeArgs(argv, chat);
 	return argv;
