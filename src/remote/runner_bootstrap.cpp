@@ -577,9 +577,10 @@ test -z "$uam_reload" || systemctl --user daemon-reload >/dev/null 2>&1
 	{
 		// Fail closed like the spool pass: every running uam-runner.exe must have a readable path. A folder is renamed before deletion, so a folder
 		// with a file still open is kept whole; [IO.Directory]::Delete removes links inside without following them.
+		// A start-at-login entry that retirement kept (an unchecked helper) still names its folder.
+		// The body stays adjacent raw strings only: scripts/test_bootstrap_metadata.py extracts it from source.
 		return R"PS(try { $ErrorActionPreference='Stop'; $uamSelf=[IO.Path]::GetFullPath($uamCurrent); $uamSelfDir=Split-Path $uamSelf; $uamSelfRoot=Split-Path $uamSelfDir; $uamUsed=@(); $uamKnown=$true; )PS"
 		    R"PS(foreach ($process in @(Get-CimInstance Win32_Process)) { if ($process.ExecutablePath) { $uamUsed+=[IO.Path]::GetFullPath($process.ExecutablePath) } elseif ($process.Name -ieq 'uam-runner.exe') { $uamKnown=$false } }; )PS"
-		    // A start-at-login entry that retirement kept (an unchecked helper) still names its folder.
 		    R"PS(if ($uamRunKey) { $uamRun=Get-Item -LiteralPath $uamRunKey -ErrorAction SilentlyContinue; if ($uamRun) { foreach ($name in $uamRun.GetValueNames()) { )PS"
 		    R"PS(if ($name -like 'uam-runner-*' -and [string]$uamRun.GetValue($name) -match '^"([^"]+)"') { try { $uamUsed+=[IO.Path]::GetFullPath($Matches[1]) } catch { $uamKnown=$false } } } } }; )PS"
 		    R"PS($uamFolders=@(Get-ChildItem -LiteralPath $uamSelfRoot -Directory -ErrorAction SilentlyContinue | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } | Sort-Object LastWriteTimeUtc -Descending); )PS"
