@@ -502,8 +502,16 @@ UAM_TEST(ManagedSnapshotPlainFolderSkipsNestedRepositoryIgnoredContent)
 	UAM_ASSERT(uam::io::WriteTextFile(tool / ".gitignore", ".venv/\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(tool / "export.py", "print('export')\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(source / "notes.txt", "plain folder file\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(tool / ".venv/pyvenv.cfg", "home = outside\n"));
 	fs::create_symlink(temp.root / "python/python3.12", tool / ".venv/bin/python3.12");
 	fs::create_symlink("python3.12", tool / ".venv/bin/python3");
+	// A nested folder Git cannot read as a repository is still copied whole, with a warning.
+	fs::create_directories(source / "broken");
+	UAM_ASSERT(uam::io::WriteTextFile(source / "broken/.git", "gitdir: missing-administrative-folder\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "broken/kept.txt", "broken nested repository file\n"));
+	// Git ignores an empty .git folder, and so does the snapshot.
+	fs::create_directories(source / "empty/.git");
+	UAM_ASSERT(uam::io::WriteTextFile(source / "empty/kept.txt", "empty marker file\n"));
 	uam::AppState app; app.data_root = temp.root / "data";
 	ChatSession chat = ChatDomainService().CreateNewChat("", "claude-cli"); chat.workspace_directory = source.string();
 	const auto result = uam::GitWorktreeService().CreateForChat(app, chat);
@@ -512,9 +520,14 @@ UAM_TEST(ManagedSnapshotPlainFolderSkipsNestedRepositoryIgnoredContent)
 	UAM_ASSERT_EQ(ReadFile(isolated / "notes.txt"), std::string("plain folder file\n"));
 	UAM_ASSERT_EQ(ReadFile(isolated / "site/tools/export/export.py"), std::string("print('export')\n"));
 	UAM_ASSERT(fs::exists(isolated / "site/tools/export/.gitignore"));
+	UAM_ASSERT(!fs::exists(isolated / "site/tools/export/.venv/pyvenv.cfg"));
 	UAM_ASSERT(!fs::exists(fs::symlink_status(isolated / "site/tools/export/.venv")));
 	UAM_ASSERT(!fs::exists(isolated / "site/.git"));
-	UAM_ASSERT(result.status.warning.empty());
+	UAM_ASSERT_EQ(ReadFile(isolated / "broken/kept.txt"), std::string("broken nested repository file\n"));
+	UAM_ASSERT_EQ(ReadFile(isolated / "empty/kept.txt"), std::string("empty marker file\n"));
+	UAM_ASSERT(result.status.warning.find("broken") != std::string::npos);
+	UAM_ASSERT(result.status.warning.find("empty") == std::string::npos);
+	UAM_ASSERT(result.status.warning.find("symbolic") == std::string::npos);
 	UAM_ASSERT(fs::is_symlink(fs::symlink_status(tool / ".venv/bin/python3")));
 }
 

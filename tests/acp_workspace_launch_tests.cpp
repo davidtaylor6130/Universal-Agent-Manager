@@ -131,6 +131,30 @@ UAM_TEST(AcpWorkspaceFailureOrRevocationHoldsInputWithoutReplacement)
 }
 
 
+UAM_TEST(AcpReconnectParkedOnWorkspaceLogsWaitingNotStarted)
+{
+	// A reconnect that only parks on workspace preparation started nothing; its diagnostic must not claim a reconnect.
+	WorkspacePromptFixture fixture;
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedOwnedAcpWorkspaceTask(fixture);
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = fixture.app.chats.front();
+	uam::AcpQueuedUserPromptState prompt;
+	prompt.id = "private-parked-workspace";
+	prompt.text = "Input waiting for its workspace";
+	session.queued_user_prompts.push_back(prompt);
+	chat.acp_queued_prompts = {prompt};
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+	session.reconnect_pending = true;
+	session.reconnect_not_before_time_s = 0.0;
+	for (int poll = 0; poll < 5 && !session.worktree_launch_pending; ++poll) (void)uam::PollAllAcpSessions(fixture.app);
+	UAM_ASSERT(session.worktree_launch_pending && !session.running);
+	const auto logged = [&session](const char* reason) { return std::ranges::any_of(session.diagnostics, [reason](const uam::AcpDiagnosticEntryState& entry) { return entry.event == "reconnect" && entry.reason == reason; }); };
+	UAM_ASSERT(logged("waiting_workspace"));
+	UAM_ASSERT(!logged("started"));
+	UAM_ASSERT(task->cancellation && !task->cancellation->stop_requested());
+}
+
+
 namespace
 {
 	// Binds the fixture session to a running managed run so the scheduler owns its outcome.
